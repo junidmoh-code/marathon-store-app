@@ -7555,8 +7555,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
   };
+  // objectFit CONTAIN, not cover: live product photos are predominantly
+  // 600×800 portrait (13-sample survey of /orders productPhotoUrl,
+  // 2026-08-13 — 11×600×800, 1×1500×1500 AI catalogue, 1 landscape). A
+  // portrait photo in a landscape cover box lost ~half the shoe on laptops;
+  // contain shows the whole product on the card's dark stage instead.
   const Photo = ({ p, big }) => p.photoUrl
-    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
 
   return (
@@ -7588,7 +7593,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
         /* Skip layout/paint for cards scrolled out of view. contain-intrinsic-size
            reserves each card's box so the scrollbar stays honest. Worth ~10x on the
            till's integrated graphics; harmless everywhere else. */
-        .ad-card{content-visibility:auto;contain-intrinsic-size:auto 300px}
+        .ad-card{content-visibility:auto;contain-intrinsic-size:auto 360px}
         .ad-more{width:100%;margin-top:16px;padding:13px;border-radius:13px;cursor:pointer;font-family:inherit;
                  background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.12);color:#cfd6e4;
                  font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:10px}
@@ -7596,7 +7601,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
         .ad-more-n{font-size:11px;font-weight:600;color:rgba(233,238,255,.35)}
         .ad-card{position:relative;background:linear-gradient(180deg,rgba(255,255,255,.02),transparent 45%),rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;transition:transform .2s cubic-bezier(.2,.7,.2,1),border-color .2s,box-shadow .2s}
         .ad-card:hover,.ad-card:focus-visible{transform:translateY(-5px);border-color:rgba(74,127,255,.55);box-shadow:0 18px 42px -20px rgba(60,110,255,.6);outline:none}
-        .ad-thumb{aspect-ratio:16/11;position:relative;overflow:hidden;background:#0a1020;display:grid;place-items:center}
+        /* 1/1 box (was 16/11): most photos are 3:4 portrait — in the old
+           landscape box even object-fit:contain would shrink them to ~half
+           the card width. A square box keeps a portrait photo at 75% width
+           while the contained image (see Photo) always shows the whole shoe. */
+        .ad-thumb{aspect-ratio:1/1;position:relative;overflow:hidden;background:#0a1020;display:grid;place-items:center}
         .ad-cat{position:absolute;top:9px;left:9px;font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9DBCFF;background:rgba(4,6,14,.72);border:1px solid rgba(255,255,255,.08);padding:3px 8px;border-radius:999px}
         .ad-zoom{position:absolute;top:8px;right:8px;width:29px;height:29px;border:0;border-radius:9px;background:rgba(0,0,0,.5);color:#fff;display:grid;place-items:center;cursor:pointer;opacity:0;transform:translateY(-4px);transition:.18s}
         .ad-card:hover .ad-zoom,.ad-card:focus-within .ad-zoom{opacity:1;transform:none}
@@ -9340,8 +9349,11 @@ function AssistantView({ products, onExit, orders = [] }) {
                             borderRadius:12, overflow:"hidden", cursor:"pointer", position:"relative",
                             boxShadow: isSel ? "0 0 16px rgba(60,110,255,.2)" : "none" }}>
                 <div style={{ width:"100%", height:140, position:"relative", background: isSel ? "rgba(60,110,255,.05)" : "rgba(255,255,255,.05)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:52 }}>
+                  {/* contain (was cover): photos are mostly 3:4 portrait — cover
+                      cropped ~45% of the shoe in this 140px-tall box on phone
+                      and tablet too, not just the desktop grid. */}
                   {p.photoUrl
-                    ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+                    ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
                     : <span>{p.photo}</span>}
                   {/* View full photo(s) — opens the gallery viewer (primary + extra
                       angles) without triggering the card's add-to-cart tap. */}
