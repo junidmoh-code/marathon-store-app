@@ -157,6 +157,16 @@ describe("what the index excludes", () => {
     expect(buildCustomerIndex({ junk: { phone: "Mike from Model", name: "Mike" } })).toHaveLength(0);
   });
 
+  it("drops merged-away tombstones — the survivor wins the slot, even when the tombstone would beat it on the winner rule", () => {
+    const idx = indexCustomersByPhone({
+      // Tombstone is named AND newer — would beat the survivor if not excluded.
+      "27712345678": { phone: "+27712345678", name: "Old Twin", lastOrderAt: "2026-08-01T00:00:00Z", mergedInto: "0712345678" },
+      "0712345678": { phone: "0712345678", name: "Musa", lastOrderAt: "2026-07-01T00:00:00Z" },
+    });
+    expect(idx.get("+27712345678").name).toBe("Musa");
+    expect(idx.get("+27712345678")._key).toBe("0712345678");
+  });
+
   it("carries lastOrderAt for ordering, and COPIES orderCount for display", () => {
     const [rec] = buildCustomerIndex({
       "0712345678": { phone: "0712345678", name: "Sara", lastOrderAt: "2026-07-01T00:00:00Z", orderCount: 9 },

@@ -18,9 +18,13 @@ export function normalizeSAPhone(raw) {
   const d = s.replace(/\D/g, "");                                    // digits only
   if (!d) return "";
   if (d.startsWith("00")) return "+" + d.slice(2);                   // 00<cc>… → +<cc>…
-  if (d.startsWith("27")) return "+" + d;                            // 27XXXXXXXXX
-  if (d.startsWith("0"))  return "+27" + d.slice(1);                 // 0XXXXXXXXX (local)
-  return "+27" + d;                                                  // bare national (e.g. 9-digit, no 0)
+  if (/^27\d{9}$/.test(d)) return "+" + d;                           // 27XXXXXXXXX
+  if (/^0\d{9}$/.test(d))  return "+27" + d.slice(1);                // 0XXXXXXXXX (local)
+  if (/^\d{9}$/.test(d) && !d.startsWith("0")) return "+27" + d;     // bare 9-digit national
+  // Unrecognisable digits (wrong length / foreign cc typed without "+"): keep
+  // them as-is rather than +27-mangling — the 2026-08 census found live
+  // records like "+2771845" and "+26651463" minted by over-eager prefixing.
+  return d;
 }
 
 // Strict validity for the REQUIRED customer-order phone: exactly 10 digits
@@ -55,11 +59,15 @@ export function saSignificantDigits(raw) {
 
 // All key shapes a /customers record for this phone may live under, in probe
 // order: the typed digits first, then the local 0-form, then the international
-// 27-form. The same phone can already live under a different key shape: order
-// phones arrive as "27656996104" while the POS keys staff-created customers as
-// "0656996104" (the 2026-07 POS audit found 31 duplicate pairs, 30 from exactly
-// this 27↔0 split). Reads must probe every shape so an existing record is found
-// and updated in place, never duplicated. Mirrors POS's phoneKeyVariants.
+// 27-form, then the bare 9-digit form (no trunk 0). The same phone can already
+// live under a different key shape: order phones arrive as "27656996104",
+// the POS keys staff-created customers as "0656996104" (the 2026-07 POS audit
+// found 31 duplicate pairs, 30 from exactly this 27↔0 split), and the 2026-08
+// census found live records keyed by the bare national digits ("813995333" —
+// a number typed without its leading 0). Reads must probe every shape so an
+// existing record is found and updated in place, never duplicated. Mirrors
+// POS's phoneKeyVariants (which still lacks the bare-9 probe — tracked in the
+// phone-merge POS report).
 export function phoneKeyVariants(phone) {
   const digits = (phone || "").replace(/\D/g, "");
   if (!digits) return [];
@@ -71,8 +79,20 @@ export function phoneKeyVariants(phone) {
   if (local.length === 10 && local.startsWith("0")) {
     const intl = "27" + local.slice(1);
     if (!out.includes(intl)) out.push(intl);
+    const bare = local.slice(1);
+    if (!out.includes(bare)) out.push(bare);
   }
   return out;
+}
+
+// Grouping identity for READ-side aggregation (insights, customer list): one
+// key per person regardless of stored dialect. SA numbers collapse to the
+// local 0-form; anything else keeps its digits so a foreign or malformed
+// number is never folded into someone else's identity; digit-less input maps
+// to "unknown". NEVER use this as a write key — customerWriteKey owns minting.
+export function phoneGroupKey(raw) {
+  const local = toLocalSA(raw);
+  return local || "unknown";
 }
 
 // Key a NEW /customers record is minted at: the canonical local 0XXXXXXXXX

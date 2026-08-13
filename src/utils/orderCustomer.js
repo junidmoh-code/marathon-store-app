@@ -17,13 +17,33 @@ import { isValidCustomerCode, reserveNextCode } from "./customerCodes.js";
 // typed shape first), or the canonical local 0-form key (customerWriteKey)
 // when none exists yet. Returns { key, existing } so callers keep their single
 // read.
+//
+// MERGE-AWARE: a record carrying mergedInto is a tombstone left by the
+// customer-merge runner — its money and history moved to the survivor. Writing
+// bookkeeping to the tombstone would re-fragment the customer the merge just
+// unified, so resolution follows the pointer (bounded hops, same cycle guard
+// contract as mergedProducts.followMerge; a dangling pointer falls back to the
+// tombstone rather than dropping the customer).
+const MAX_MERGE_HOPS = 5;
+
 export async function resolveCustomerKey(phone) {
   const variants = phoneKeyVariants(phone);
   if (variants.length === 0) return { key: "unknown", existing: null };
   for (const key of variants) {
     const snap = await get(ref(database, `customers/${key}`));
     const val = snap.val();
-    if (val) return { key, existing: val };
+    if (!val) continue;
+    let curKey = key, cur = val;
+    const seen = new Set([key]);
+    for (let hop = 0; hop < MAX_MERGE_HOPS && cur.mergedInto && !seen.has(cur.mergedInto); hop++) {
+      const nextKey = cur.mergedInto;
+      seen.add(nextKey);
+      const next = (await get(ref(database, `customers/${nextKey}`))).val();
+      if (!next) break; // dangling pointer — stay on the tombstone
+      curKey = nextKey;
+      cur = next;
+    }
+    return { key: curKey, existing: cur };
   }
   return { key: customerWriteKey(phone), existing: null };
 }

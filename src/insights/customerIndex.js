@@ -59,6 +59,10 @@ export function indexCustomersByPhone(customersDb) {
   const byPhone = new Map();
   for (const [key, c] of Object.entries(customersDb || {})) {
     if (!c || typeof c !== "object") continue;
+    // A merged-away record (customer-merge runner tombstone) must never win a
+    // suggestion slot: its survivor carries the live name/history, and showing
+    // the tombstone would resurrect the duplicate the merge just removed.
+    if (c.mergedInto) continue;
 
     // The `phone` FIELD is preferred, but some records carry junk there (a name,
     // a partial number, a malformed international) while the record KEY holds the

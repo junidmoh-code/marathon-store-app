@@ -2,7 +2,7 @@
 // flexible entry formats staff use, including the short / no-leading-0 numbers.
 
 import { describe, it, expect } from "vitest";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, customerWriteKey } from "./phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, customerWriteKey, phoneGroupKey } from "./phone";
 
 describe("normalizeSAPhone", () => {
   it("keeps empty / whitespace-only input empty (phone is optional)", () => {
@@ -44,6 +44,13 @@ describe("normalizeSAPhone", () => {
 
   it("preserves a +-prefixed non-SA international number (separators stripped)", () => {
     expect(normalizeSAPhone("+1 415 555 0123")).toBe("+14155550123");
+  });
+
+  it("refuses to +27-mangle digits that match no SA shape (census-found bug)", () => {
+    expect(normalizeSAPhone("81399533")).toBe("81399533");      // truncated 8-digit
+    expect(normalizeSAPhone("2712345678")).toBe("2712345678");  // 27-prefix, wrong length
+    expect(normalizeSAPhone("26651463")).toBe("26651463");      // foreign cc, no +
+    expect(normalizeSAPhone("07123456789")).toBe("07123456789"); // 0-lead, 11 digits
   });
 });
 
@@ -99,16 +106,17 @@ describe("saSignificantDigits", () => {
 // updated in place, never duplicated; new records are minted at the canonical
 // local 0-form key (customerWriteKey).
 describe("phoneKeyVariants", () => {
-  it("probes typed digits first, then the local 0-form, then the 27-form", () => {
-    expect(phoneKeyVariants("+27656996104")).toEqual(["27656996104", "0656996104"]);
-    expect(phoneKeyVariants("0656996104")).toEqual(["0656996104", "27656996104"]);
+  it("probes typed digits, local 0-form, 27-form, then the bare 9-digit form", () => {
+    expect(phoneKeyVariants("+27656996104")).toEqual(["27656996104", "0656996104", "656996104"]);
+    expect(phoneKeyVariants("0656996104")).toEqual(["0656996104", "27656996104", "656996104"]);
   });
 
-  it("0-form, +27 and 27 inputs all cover both dialect keys, so an existing record in either shape is found", () => {
-    for (const input of ["0656996104", "+27656996104", "27656996104"]) {
+  it("every input dialect covers ALL live key dialects (0-form, 27-form, bare-9), so an existing record in any shape is found", () => {
+    for (const input of ["0656996104", "+27656996104", "27656996104", "656996104"]) {
       const variants = phoneKeyVariants(input);
-      expect(variants).toContain("0656996104"); // POS-minted local key
+      expect(variants).toContain("0656996104");  // POS-minted local key
       expect(variants).toContain("27656996104"); // legacy international key
+      expect(variants).toContain("656996104");   // bare-9 key (census: 4 live records)
     }
   });
 
@@ -147,5 +155,23 @@ describe("customerWriteKey (key new /customers records are minted at)", () => {
     expect(customerWriteKey("+14155550123")).toBe("14155550123");
     expect(customerWriteKey("")).toBe("unknown");
     expect(customerWriteKey(null)).toBe("unknown");
+  });
+});
+
+// Read-side aggregation identity: every dialect of one SA number groups under
+// one key; non-SA numbers keep their own digits (never folded); junk → unknown.
+describe("phoneGroupKey", () => {
+  it("collapses all four stored dialects of one number to one group key", () => {
+    for (const input of ["0813995333", "+27813995333", "27813995333", "813995333"]) {
+      expect(phoneGroupKey(input)).toBe("0813995333");
+    }
+  });
+  it("keeps a non-SA number distinct instead of folding it into an SA group", () => {
+    expect(phoneGroupKey("+14155550123")).toBe("14155550123");
+  });
+  it("maps digit-less input to 'unknown'", () => {
+    expect(phoneGroupKey("")).toBe("unknown");
+    expect(phoneGroupKey(null)).toBe("unknown");
+    expect(phoneGroupKey("abc")).toBe("unknown");
   });
 });
