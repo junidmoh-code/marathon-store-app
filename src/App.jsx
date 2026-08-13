@@ -4310,8 +4310,10 @@ import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUp
 // EVERY product price write goes through the guarded batch path (audit trail +
 // specials interlock + restore-by-batchId) — never a bare update() on
 // products/{id}/stockPrice|retailPrice. See priceStore.js.
-import { applyPriceBatch } from "./components/admin/priceStore";
+import { applyPriceBatch, restorePriceBatch } from "./components/admin/priceStore";
 import { asStoredPrice } from "./utils/priceBatch";
+import { buildBulkFillPlan } from "./utils/bulkPricing";
+import BulkPricePreview from "./components/admin/BulkPricePreview";
 
 // Missing-Prices category chips: All + the real top-levels (so a new category
 // appears automatically) + an Uncategorized catch-all. Keys match typeOf()
@@ -4336,6 +4338,16 @@ function MissingPricesTab({ products = [] }) {
   // large, or null. Tapping the small photo opens it; tapping the large photo
   // (or ✕ / backdrop) closes it again.
   const [photoView, setPhotoView] = useState(null);
+  // ── Bulk fill: select many, apply ONE stock and/or ONE retail price to all.
+  // The plan is previewed (current → new, count, skips) and only the confirmed
+  // plan is written — as one audited batch, undoable by its batchId.
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkStock, setBulkStock] = useState("");
+  const [bulkRetail, setBulkRetail] = useState("");
+  const [bulkOverwrite, setBulkOverwrite] = useState(false); // default SKIP already-priced
+  const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [lastBatch, setLastBatch] = useState(null); // { batchId, count } → Undo banner
   const PAGE_SIZE = 50;
 
   const CATEGORY_FILTERS = MISSING_PRICE_FILTERS;
@@ -4435,6 +4447,55 @@ function MissingPricesTab({ products = [] }) {
     }
   };
 
+  // ── Bulk fill machinery ──
+  const productsById = useMemo(() => Object.fromEntries((products || []).filter(p => p && p.id).map(p => [p.id, p])), [products]);
+  // Selection survives paging but drops ids that left the missing list (priced
+  // meanwhile) so the count over the button never overstates.
+  const listIds = useMemo(() => new Set(list.map(p => p.id)), [list]);
+  const liveSelected = useMemo(() => new Set([...selected].filter(id => listIds.has(id))), [selected, listIds]);
+  const toggleSelect = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const pageAllSelected = pageItems.length > 0 && pageItems.every(p => liveSelected.has(p.id));
+  const togglePage = () => setSelected(prev => {
+    const n = new Set(prev);
+    for (const p of pageItems) pageAllSelected ? n.delete(p.id) : n.add(p.id);
+    return n;
+  });
+
+  const bulkPlan = useMemo(() => (bulkPreviewOpen
+    ? buildBulkFillPlan({ products, selectedIds: [...liveSelected], stockDraft: bulkStock, retailDraft: bulkRetail, overwrite: bulkOverwrite })
+    : null), [bulkPreviewOpen, products, liveSelected, bulkStock, bulkRetail, bulkOverwrite]);
+
+  const openBulkPreview = () => {
+    const probe = buildBulkFillPlan({ products, selectedIds: [...liveSelected], stockDraft: bulkStock, retailDraft: bulkRetail, overwrite: bulkOverwrite });
+    if (!probe.ok) { alert(probe.error); return; }
+    setBulkPreviewOpen(true);
+  };
+
+  const applyBulkFill = async () => {
+    if (!bulkPlan?.ok || bulkBusy) return;
+    setBulkBusy(true);
+    const res = await applyPriceBatch({
+      action: "bulk_fill",
+      lines: bulkPlan.lines,
+      label: `Missing Prices bulk fill — ${bulkPlan.count} products`,
+    });
+    setBulkBusy(false);
+    if (!res.ok) { alert("Nothing was written: " + res.message); return; }
+    setBulkPreviewOpen(false);
+    setSelected(new Set());
+    setBulkStock(""); setBulkRetail(""); setBulkOverwrite(false);
+    setLastBatch({ batchId: res.batchId, count: res.count });
+  };
+
+  const undoLastBatch = async () => {
+    if (!lastBatch || bulkBusy) return;
+    setBulkBusy(true);
+    const res = await restorePriceBatch(lastBatch.batchId, productsById);
+    setBulkBusy(false);
+    if (!res.ok) { alert("Undo failed — nothing was changed: " + res.message); return; }
+    setLastBatch(null);
+  };
+
   return (
     <div style={{ padding: "0 14px 30px" }}>
       {/* Header */}
@@ -4443,8 +4504,23 @@ function MissingPricesTab({ products = [] }) {
         <span style={{ background: "rgba(251,191,36,.15)", border: "1px solid rgba(251,191,36,.35)", color: "#FBBF24", fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 12 }}>{list.length}</span>
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,.45)", marginBottom: 12 }}>
-        Products without a selling price. Assign prices immediately — saving opens the next one automatically.
+        Products without a selling price. Assign prices immediately — saving opens the next one automatically. Tick several to fill one price across all of them.
       </div>
+
+      {/* Undo banner — the last bulk batch stays reversible in one action */}
+      {lastBatch && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(74,202,122,.08)", border: "1px solid rgba(74,202,122,.35)", borderRadius: 10, padding: "9px 12px", marginBottom: 12 }}>
+          <span style={{ flex: 1, fontSize: 12, color: "#4ACA7A", fontWeight: 600 }}>
+            Prices applied to {lastBatch.count} product{lastBatch.count === 1 ? "" : "s"} (batch {lastBatch.batchId.slice(0, 20)}…)
+          </span>
+          <button onClick={undoLastBatch} disabled={bulkBusy}
+            style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.2)", borderRadius: 8, color: "#fff", padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            {bulkBusy ? "Undoing…" : "Undo"}
+          </button>
+          <button onClick={() => setLastBatch(null)} disabled={bulkBusy}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,.4)", fontSize: 14, cursor: "pointer" }}>✕</button>
+        </div>
+      )}
 
       {/* Category summary */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
@@ -4465,7 +4541,30 @@ function MissingPricesTab({ products = [] }) {
         </select>
         <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search name, SKU, barcode…"
           style={{ flex: 1, minWidth: 140, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+        {list.length > 0 && (
+          <button onClick={togglePage}
+            style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "rgba(255,255,255,.75)", padding: "8px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            {pageAllSelected ? "Unselect page" : "Select page"}
+          </button>
+        )}
       </div>
+
+      {/* Bulk fill bar — one stock and/or one retail price for the whole selection */}
+      {liveSelected.size > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", background: "rgba(74,127,255,.07)", border: "1px solid rgba(74,127,255,.35)", borderRadius: 10, padding: "9px 10px", marginBottom: 12 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#9DBCFF" }}>{liveSelected.size} selected</span>
+          <input value={bulkStock} onChange={e => setBulkStock(e.target.value)} placeholder="Stock price (R)" inputMode="decimal"
+            style={{ width: 110, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+          <input value={bulkRetail} onChange={e => setBulkRetail(e.target.value)} placeholder="Retail price (R)" inputMode="decimal"
+            style={{ width: 110, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+          <button onClick={openBulkPreview}
+            style={{ background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            Preview…
+          </button>
+          <button onClick={() => setSelected(new Set())}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,.45)", fontSize: 12, cursor: "pointer" }}>Clear</button>
+        </div>
+      )}
 
       {/* Empty state */}
       {list.length === 0 && (
@@ -4479,7 +4578,9 @@ function MissingPricesTab({ products = [] }) {
         <>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {pageItems.map(p => (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)" }}>
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
+                <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
+                  style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
                 <img src={p.photoUrl || ""} alt="" loading="lazy"
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -4594,6 +4695,21 @@ function MissingPricesTab({ products = [] }) {
             <div style={{ marginTop: 14, color: "#fff", fontSize: 14, fontWeight: 600, textAlign: "center", maxWidth: 520 }}>{photoView.name}</div>
           )}
         </div>
+      )}
+
+      {/* Bulk-fill preview — the operator confirms EXACTLY this plan or nothing */}
+      {bulkPreviewOpen && (
+        <BulkPricePreview
+          title="Fill missing prices"
+          subtitle={[bulkStock.trim() && `Stock R${bulkStock.trim()}`, bulkRetail.trim() && `Retail R${bulkRetail.trim()}`].filter(Boolean).join(" · ")}
+          plan={bulkPlan?.ok ? bulkPlan : null}
+          overwrite={bulkOverwrite}
+          onOverwriteChange={setBulkOverwrite}
+          busy={bulkBusy}
+          confirmLabel="Apply"
+          onConfirm={applyBulkFill}
+          onCancel={() => setBulkPreviewOpen(false)}
+        />
       )}
     </div>
   );

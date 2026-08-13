@@ -147,3 +147,29 @@ test("batch ids are key-safe and chronologically ordered by key", () => {
   const id = mintBatchId();
   assert.match(id, /^pb_\d{13}_[a-z0-9]+$/);
 });
+
+test("bulk fill end to end: the write is EXACTLY the previewed plan — same products, same values, nothing else", async () => {
+  const { buildBulkFillPlan } = await import("../../utils/bulkPricing.js");
+  const products = [
+    { id: "p100", name: "Nike Cap" },                                  // bare
+    { id: "p200", name: "Puma Tee", stockPrice: 90, retailPrice: 180 }, // priced → skipped by default
+    { id: "p300", name: "Bystander", retailPrice: 500 },               // NOT selected
+  ];
+  const plan = buildBulkFillPlan({ products, selectedIds: ["p100", "p200"], stockDraft: "70", retailDraft: "150" });
+  assert.equal(plan.ok, true);
+  assert.equal(plan.count, 1); // p200 skipped (already priced, skip is default)
+  assert.deepEqual(plan.skippedAlready.map((s) => s.pid), ["p200"]);
+
+  const res = await applyPriceBatch({ action: "bulk_fill", lines: plan.lines, label: "e2e" });
+  assert.equal(res.ok, true);
+  // Written: exactly the plan's one product, with the previewed values.
+  const patch = updateCalls[0].patch;
+  const productPaths = Object.keys(patch).filter((k) => k.startsWith("products/"));
+  assert.deepEqual(productPaths.sort(), ["products/p100/retailPrice", "products/p100/stockPrice"]);
+  assert.equal(patch["products/p100/stockPrice"], 70);
+  assert.equal(patch["products/p100/retailPrice"], 150);
+  // Untouched: the skipped product and the unselected bystander.
+  assert.equal(store["products/p200/retailPrice"], 180);
+  assert.equal(store["products/p200/stockPrice"], 90);
+  assert.equal(store["products/p300/retailPrice"], 500);
+});
