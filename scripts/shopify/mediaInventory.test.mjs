@@ -32,11 +32,14 @@ describe("buildMediaPlan", () => {
 });
 
 describe("networkTotals — one sellable pool", () => {
+  // Real /stock shape: movement-stamped cell objects (applyMovement), with a
+  // bare-number tolerance for legacy cells.
+  const cell = (qty) => ({ qty, lastType: "received", mv: "-Ox123", v: 1 });
   const stock = {
-    marathon_pe: { p1: { "8": 3, "9": 1, "5_5": 2 } },
-    hub2:        { p1: { "8": 2, "9": -4 } },       // negative clamps to 0
-    in_transit:  { p1: { "8": 1 } },
-    trophy:      { p2: { "8": 99 } },               // other product — ignored
+    "marathon-pe": { p1: { "8": cell(3), "9": cell(1), "5_5": cell(2) } },
+    hub2:          { p1: { "8": cell(2), "9": cell(-4) } },   // negative clamps to 0
+    in_transit:    { p1: { "8": 1 } },                        // legacy bare number
+    trophy:        { p2: { "8": cell(99) } },                 // other product — ignored
   };
   it("sums every location per size, clamping negative cells to 0", () => {
     expect(networkTotals(stock, "p1", ["8", "9", "5.5"])).toEqual({
@@ -49,7 +52,7 @@ describe("networkTotals — one sellable pool", () => {
     expect(networkTotals(stock, "p1", ["12"])).toEqual({ "12": 0 });
   });
   it("one-size uses the '_' sentinel cell", () => {
-    const t = networkTotals({ pe: { p3: { _: 5 } } }, "p3", ["_"]);
+    const t = networkTotals({ pe: { p3: { _: cell(5) } } }, "p3", ["_"]);
     expect(t).toEqual({ _: 5 });
   });
   it("empty tree → zeros, never a crash", () => {

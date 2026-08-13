@@ -9,7 +9,9 @@
 // requireSingleLocation and setAvailable do the I/O.
 import { stockSizeKey } from "../../src/utils/sizeKey.js";
 
-// stockTree = the whole /stock value: { location: { productId: { sizeKey: qty } } }.
+// stockTree = the whole /stock value: { location: { productId: { sizeKey: cell } } }
+// where a cell is the movement-stamped object { qty, lastType, mv, … } the
+// applyMovement pipeline writes (a bare number is tolerated for old data).
 // → { [sizeKey]: networkQty } for this product's sizes (encoded keys).
 export function networkTotals(stockTree, productId, sizes) {
   const totals = {};
@@ -17,8 +19,9 @@ export function networkTotals(stockTree, productId, sizes) {
   for (const perProduct of Object.values(stockTree || {})) {
     const cells = perProduct?.[productId];
     if (!cells) continue;
-    for (const [key, qty] of Object.entries(cells)) {
+    for (const [key, cell] of Object.entries(cells)) {
       if (!(key in totals)) continue; // sizes not in the record don't ship
+      const qty = cell !== null && typeof cell === "object" ? cell.qty : cell;
       totals[key] += Math.max(0, Number(qty) || 0);
     }
   }
