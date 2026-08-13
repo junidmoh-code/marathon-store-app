@@ -4307,6 +4307,15 @@ function AdminReviewCategoriesTab({ products = [] }) {
 }
 
 import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUpdates, validatePrices } from "./utils/missingPrices";
+// EVERY product price write goes through the guarded batch path (audit trail +
+// specials interlock + restore-by-batchId) — never a bare update() on
+// products/{id}/stockPrice|retailPrice. See priceStore.js.
+import { applyPriceBatch, restorePriceBatch } from "./components/admin/priceStore";
+import { asStoredPrice } from "./utils/priceBatch";
+import { buildBulkFillPlan } from "./utils/bulkPricing";
+import BulkPricePreview from "./components/admin/BulkPricePreview";
+import BulkPricingTab from "./components/admin/BulkPricingTab";
+import SpecialsTab from "./components/admin/SpecialsTab";
 
 // Missing-Prices category chips: All + the real top-levels (so a new category
 // appears automatically) + an Uncategorized catch-all. Keys match typeOf()
@@ -4331,6 +4340,16 @@ function MissingPricesTab({ products = [] }) {
   // large, or null. Tapping the small photo opens it; tapping the large photo
   // (or ✕ / backdrop) closes it again.
   const [photoView, setPhotoView] = useState(null);
+  // ── Bulk fill: select many, apply ONE stock and/or ONE retail price to all.
+  // The plan is previewed (current → new, count, skips) and only the confirmed
+  // plan is written — as one audited batch, undoable by its batchId.
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkStock, setBulkStock] = useState("");
+  const [bulkRetail, setBulkRetail] = useState("");
+  const [bulkOverwrite, setBulkOverwrite] = useState(false); // default SKIP already-priced
+  const [bulkPreviewOpen, setBulkPreviewOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [lastBatch, setLastBatch] = useState(null); // { batchId, count } → Undo banner
   const PAGE_SIZE = 50;
 
   const CATEGORY_FILTERS = MISSING_PRICE_FILTERS;
@@ -4388,7 +4407,22 @@ function MissingPricesTab({ products = [] }) {
     setSaving(true);
     try {
       const updates = buildUpdates(editProduct, costDraft, retailDraft);
-      await update(ref(database, `products/${editProduct.id}`), updates);
+      // Through the guarded batch path: records who/when/from/to under a
+      // batchId and refuses to touch a product whose retail price is currently
+      // a special (wasPrice would go stale).
+      if (Object.keys(updates).length > 0) {
+        const from = {}, to = {};
+        for (const field of Object.keys(updates)) {
+          from[field] = asStoredPrice(editProduct[field]);
+          to[field] = updates[field];
+        }
+        const res = await applyPriceBatch({
+          action: "single_edit",
+          label: `Missing Prices: ${editProduct.name || editProduct.id}`,
+          lines: { [editProduct.id]: { name: editProduct.name || "", from, to } },
+        });
+        if (!res.ok) { alert("Save failed: " + res.message); return; } // finally resets saving
+      }
       // Open the next missing-price product for continuous entry.
       // Use openEdit so drafts are derived from the next product (preserves
       // the retail<cost confirmation for single-missing-price products).
@@ -4415,6 +4449,66 @@ function MissingPricesTab({ products = [] }) {
     }
   };
 
+  // ── Bulk fill machinery ──
+  const productsById = useMemo(() => Object.fromEntries((products || []).filter(p => p && p.id).map(p => [p.id, p])), [products]);
+  // Selection survives paging but drops ids that left the missing list (priced
+  // meanwhile) so the count over the button never overstates.
+  const listIds = useMemo(() => new Set(list.map(p => p.id)), [list]);
+  const liveSelected = useMemo(() => new Set([...selected].filter(id => listIds.has(id))), [selected, listIds]);
+  const toggleSelect = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const pageAllSelected = pageItems.length > 0 && pageItems.every(p => liveSelected.has(p.id));
+  const togglePage = () => setSelected(prev => {
+    const n = new Set(prev);
+    for (const p of pageItems) pageAllSelected ? n.delete(p.id) : n.add(p.id);
+    return n;
+  });
+
+  const bulkPlan = useMemo(() => (bulkPreviewOpen
+    ? buildBulkFillPlan({ products, selectedIds: [...liveSelected], stockDraft: bulkStock, retailDraft: bulkRetail, overwrite: bulkOverwrite })
+    : null), [bulkPreviewOpen, products, liveSelected, bulkStock, bulkRetail, bulkOverwrite]);
+
+  const openBulkPreview = () => {
+    const probe = buildBulkFillPlan({ products, selectedIds: [...liveSelected], stockDraft: bulkStock, retailDraft: bulkRetail, overwrite: bulkOverwrite });
+    if (!probe.ok) { alert(probe.error); return; }
+    setBulkPreviewOpen(true);
+  };
+
+  // try/finally so no rejection can strand the busy flag (CodeRabbit, PR #355).
+  const applyBulkFill = async () => {
+    if (!bulkPlan?.ok || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      const res = await applyPriceBatch({
+        action: "bulk_fill",
+        lines: bulkPlan.lines,
+        label: `Missing Prices bulk fill — ${bulkPlan.count} products`,
+      });
+      if (!res.ok) { alert("Nothing was written: " + res.message); return; }
+      setBulkPreviewOpen(false);
+      setSelected(new Set());
+      setBulkStock(""); setBulkRetail(""); setBulkOverwrite(false);
+      setLastBatch({ batchId: res.batchId, count: res.count });
+    } catch (e) {
+      alert("Nothing was written: " + (e?.message || e));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const undoLastBatch = async () => {
+    if (!lastBatch || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      const res = await restorePriceBatch(lastBatch.batchId, productsById);
+      if (!res.ok) { alert("Undo failed — nothing was changed: " + res.message); return; }
+      setLastBatch(null);
+    } catch (e) {
+      alert("Undo failed — nothing was changed: " + (e?.message || e));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <div style={{ padding: "0 14px 30px" }}>
       {/* Header */}
@@ -4423,8 +4517,23 @@ function MissingPricesTab({ products = [] }) {
         <span style={{ background: "rgba(251,191,36,.15)", border: "1px solid rgba(251,191,36,.35)", color: "#FBBF24", fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 12 }}>{list.length}</span>
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,.45)", marginBottom: 12 }}>
-        Products without a selling price. Assign prices immediately — saving opens the next one automatically.
+        Products without a selling price. Assign prices immediately — saving opens the next one automatically. Tick several to fill one price across all of them.
       </div>
+
+      {/* Undo banner — the last bulk batch stays reversible in one action */}
+      {lastBatch && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(74,202,122,.08)", border: "1px solid rgba(74,202,122,.35)", borderRadius: 10, padding: "9px 12px", marginBottom: 12 }}>
+          <span style={{ flex: 1, fontSize: 12, color: "#4ACA7A", fontWeight: 600 }}>
+            Prices applied to {lastBatch.count} product{lastBatch.count === 1 ? "" : "s"} (batch {lastBatch.batchId.slice(0, 20)}…)
+          </span>
+          <button onClick={undoLastBatch} disabled={bulkBusy}
+            style={{ background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.2)", borderRadius: 8, color: "#fff", padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            {bulkBusy ? "Undoing…" : "Undo"}
+          </button>
+          <button onClick={() => setLastBatch(null)} disabled={bulkBusy}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,.4)", fontSize: 14, cursor: "pointer" }}>✕</button>
+        </div>
+      )}
 
       {/* Category summary */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
@@ -4445,7 +4554,30 @@ function MissingPricesTab({ products = [] }) {
         </select>
         <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search name, SKU, barcode…"
           style={{ flex: 1, minWidth: 140, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+        {list.length > 0 && (
+          <button onClick={togglePage}
+            style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "rgba(255,255,255,.75)", padding: "8px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            {pageAllSelected ? "Unselect page" : "Select page"}
+          </button>
+        )}
       </div>
+
+      {/* Bulk fill bar — one stock and/or one retail price for the whole selection */}
+      {liveSelected.size > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", background: "rgba(74,127,255,.07)", border: "1px solid rgba(74,127,255,.35)", borderRadius: 10, padding: "9px 10px", marginBottom: 12 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#9DBCFF" }}>{liveSelected.size} selected</span>
+          <input value={bulkStock} onChange={e => setBulkStock(e.target.value)} placeholder="Stock price (R)" inputMode="decimal"
+            style={{ width: 110, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+          <input value={bulkRetail} onChange={e => setBulkRetail(e.target.value)} placeholder="Retail price (R)" inputMode="decimal"
+            style={{ width: 110, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.15)", borderRadius: 8, color: "#fff", padding: "8px 10px", fontSize: 12 }} />
+          <button onClick={openBulkPreview}
+            style={{ background: "#4A7FFF", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+            Preview…
+          </button>
+          <button onClick={() => setSelected(new Set())}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,.45)", fontSize: 12, cursor: "pointer" }}>Clear</button>
+        </div>
+      )}
 
       {/* Empty state */}
       {list.length === 0 && (
@@ -4459,7 +4591,9 @@ function MissingPricesTab({ products = [] }) {
         <>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {pageItems.map(p => (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.07)" }}>
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
+                <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
+                  style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
                 <img src={p.photoUrl || ""} alt="" loading="lazy"
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -4574,6 +4708,21 @@ function MissingPricesTab({ products = [] }) {
             <div style={{ marginTop: 14, color: "#fff", fontSize: 14, fontWeight: 600, textAlign: "center", maxWidth: 520 }}>{photoView.name}</div>
           )}
         </div>
+      )}
+
+      {/* Bulk-fill preview — the operator confirms EXACTLY this plan or nothing */}
+      {bulkPreviewOpen && (
+        <BulkPricePreview
+          title="Fill missing prices"
+          subtitle={[bulkStock.trim() && `Stock R${bulkStock.trim()}`, bulkRetail.trim() && `Retail R${bulkRetail.trim()}`].filter(Boolean).join(" · ")}
+          plan={bulkPlan?.ok ? bulkPlan : null}
+          overwrite={bulkOverwrite}
+          onOverwriteChange={setBulkOverwrite}
+          busy={bulkBusy}
+          confirmLabel="Apply"
+          onConfirm={applyBulkFill}
+          onCancel={() => setBulkPreviewOpen(false)}
+        />
       )}
     </div>
   );
@@ -5720,7 +5869,7 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Categories ↔ Missing Prices) — the AI tabs live in AI Studio now.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"]]
+      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         const badge = val === "review-categories" ? pendingCategoryCount
@@ -5941,7 +6090,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount]];
+    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -5956,6 +6105,10 @@ function AdminView({ products, orders, onExit }) {
               ? <><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>
               : key === "review-categories"
               ? <><path d="M3 7h4l2 3h9a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></>
+              : key === "bulk-pricing"
+              ? <><path d="M20.59 13.41 12 22l-8.59-8.59A2 2 0 0 1 3 12V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.41.59L22 12z" /><circle cx="7.5" cy="7.5" r="1.2" /></>
+              : key === "specials"
+              ? <><line x1="19" y1="5" x2="5" y2="19" /><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>
               : <><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></>}
           </svg>
           <span style={{ flex:1 }}>{label}</span>
@@ -5967,13 +6120,19 @@ function AdminView({ products, orders, onExit }) {
     };
     const title = adminSection === "assign-categories" ? "Assign Categories"
       : adminSection === "review-categories" ? "Categories"
-      : adminSection === "missing-prices" ? "Missing Prices" : "Products";
+      : adminSection === "missing-prices" ? "Missing Prices"
+      : adminSection === "bulk-pricing" ? "Bulk Pricing"
+      : adminSection === "specials" ? "Specials" : "Products";
     const subtitle = adminSection === "assign-categories"
       ? "Give every product its real category. Nothing else changes."
       : adminSection === "review-categories"
       ? "Sort uncategorised products into the browse tree."
       : adminSection === "missing-prices"
       ? "Products without a selling price — assign prices immediately."
+      : adminSection === "bulk-pricing"
+      ? "Reprice many products at once — fixed values or a percentage, previewed and undoable."
+      : adminSection === "specials"
+      ? "Run specials: the till charges the sale price; the normal price comes back exactly when you end it."
       : "Add products, set sizes & pricing, and manage the catalogue.";
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
@@ -6014,6 +6173,8 @@ function AdminView({ products, orders, onExit }) {
               {adminSection === "assign-categories" ? <AssignCategoriesTab products={products} registry={taxonomy} />
                 : adminSection === "review-categories" ? <AdminReviewCategoriesTab products={products} />
                 : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
+                : adminSection === "bulk-pricing" ? <BulkPricingTab products={products} />
+                : adminSection === "specials" ? <SpecialsTab products={products} />
                 : productsBody}
             </div>
           </div>
@@ -6025,6 +6186,8 @@ function AdminView({ products, orders, onExit }) {
   if (adminSection === "assign-categories") return reviewShell(<AssignCategoriesTab products={products} registry={taxonomy} />);
   if (adminSection === "review-categories") return reviewShell(<AdminReviewCategoriesTab products={products} />);
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
+  if (adminSection === "bulk-pricing") return reviewShell(<BulkPricingTab products={products} />);
+  if (adminSection === "specials") return reviewShell(<SpecialsTab products={products} />);
 
   return (
     <div style={ADMIN_WRAP}>
@@ -6356,24 +6519,39 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const [retailPriceDraft, setRetailPriceDraft] = useState(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
   useEffect(() => { setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : ""); }, [product.stockPrice]);
   useEffect(() => { setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : ""); }, [product.retailPrice]);
+  const revertPriceDraft = (field) => {
+    if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
+    if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
+  };
+  // Serialized: one price save in flight at a time (CodeRabbit, PR #355) — two
+  // interleaved saves could each record a stale `from` and land out of order.
+  // Both inputs are disabled while a save runs.
+  const [priceSaving, setPriceSaving] = useState(false);
   const savePrice = (field, draft) => {
     const trimmed = String(draft).trim();
-    if (trimmed === "") {
-      update(ref(database, `products/${product.id}`), { [field]: null })
-        .catch(err => console.warn(`update ${field} failed:`, err));
-      return;
-    }
-    const num = Number(trimmed);
+    const num = trimmed === "" ? null : Number(trimmed);
     // Reject 0 (and negatives / NaN) — matching the create flow's `> 0` rule.
     // The POS contract is that prices are unset/null, never `0` (a free price
     // would mis-ring at checkout). Restore the previous value from RTDB.
-    if (!Number.isFinite(num) || num <= 0) {
-      if (field === "stockPrice")  setStockPriceDraft( typeof product.stockPrice  === "number" ? String(product.stockPrice)  : "");
-      if (field === "retailPrice") setRetailPriceDraft(typeof product.retailPrice === "number" ? String(product.retailPrice) : "");
-      return;
-    }
-    update(ref(database, `products/${product.id}`), { [field]: num })
-      .catch(err => console.warn(`update ${field} failed:`, err));
+    if (num !== null && (!Number.isFinite(num) || num <= 0)) { revertPriceDraft(field); return; }
+    const from = asStoredPrice(product[field]);
+    if (num === from) return; // unchanged — nothing to write or record
+    if (priceSaving) { revertPriceDraft(field); return; } // one save at a time
+    setPriceSaving(true);
+    // Through the guarded batch path: audited under a batchId, and refused if
+    // the product is on special (its retailPrice IS the special price; end the
+    // special first so wasPrice can't go stale).
+    applyPriceBatch({
+      action: "single_edit",
+      label: `Edit: ${product.name || product.id}`,
+      lines: { [product.id]: { name: product.name || "", from: { [field]: from }, to: { [field]: num } } },
+    }).then((res) => {
+      if (!res.ok) {
+        revertPriceDraft(field);
+        if (res.code === "on_special") alert(res.message);
+        else console.warn(`update ${field} failed:`, res.message);
+      }
+    }).finally(() => setPriceSaving(false));
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox
@@ -6645,7 +6823,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           <div style={{ flex:1, padding:"14px 16px", borderRight:"1px solid rgba(255,255,255,.06)" }}>
             <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Stock Price</div>
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
-                   value={stockPriceDraft}
+                   value={stockPriceDraft} disabled={priceSaving}
                    onChange={e => setStockPriceDraft(e.target.value)}
                    onBlur={() => savePrice("stockPrice", stockPriceDraft)}
                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
@@ -6654,7 +6832,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           <div style={{ flex:1, padding:"14px 16px" }}>
             <div style={{ fontSize:11, color:"rgba(255,255,255,.45)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4 }}>Retail Price</div>
             <input type="number" inputMode="decimal" min="0" step="0.01" placeholder="—"
-                   value={retailPriceDraft}
+                   value={retailPriceDraft} disabled={priceSaving}
                    onChange={e => setRetailPriceDraft(e.target.value)}
                    onBlur={() => savePrice("retailPrice", retailPriceDraft)}
                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
