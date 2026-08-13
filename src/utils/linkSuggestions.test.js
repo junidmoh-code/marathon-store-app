@@ -189,6 +189,26 @@ describe("confusable folding (claim 8) — real floor scan 742CFA0011264", () =>
   });
 });
 
+describe("exact confirmed owners (includeExact — the intake gate's pre-form check)", () => {
+  it("excluded by default: the count flow resolves exact owners before its panel opens", () => {
+    const out = codeSuggestions("742CFA00122G4", GRIPSHOTS);
+    expect(out.every((s) => s.tier !== "exact")).toBe(true);
+  });
+  it("includeExact adds the confirmed owner (capture-only intake never checked this pre-form)", () => {
+    const out = codeSuggestions("742CFA00122G4", GRIPSHOTS, { includeExact: true });
+    const exact = out.find((s) => s.tier === "exact");
+    expect(exact).toBeTruthy();
+    expect(exact.product.id).toBe("g12");
+    expect(exact.score).toBe(TIER_SCORES.exact);
+    expect(exact.reason).toContain("exactly this code");
+  });
+  it("buildLinkSuggestions passes the flag through and ranks the exact owner FIRST", () => {
+    const out = buildLinkSuggestions({ kind: "code", normalised: "742CFA00122G4", products: GRIPSHOTS, includeExact: true });
+    expect(out[0].tier).toBe("exact");
+    expect(out[0].product.id).toBe("g12");
+  });
+});
+
 describe("pending codes (claim 9)", () => {
   it("a pendingStyleCode equal to the scan is the strongest suggestion", () => {
     const out = buildLinkSuggestions({

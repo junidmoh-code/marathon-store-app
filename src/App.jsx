@@ -60,7 +60,8 @@ import { TongueLabelReader } from "./components/stock/TongueLabelReader";
 import { styleCodeOwners } from "./components/stock/hubCleanupCore";
 import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
-import { normaliseStyleCode } from "./utils/styleCode";
+import { normaliseStyleCode, formatStyleCodeForDisplay as formatStyleCodeDisplay } from "./utils/styleCode";
+import { buildLinkSuggestions } from "./utils/linkSuggestions";
 import { displaySendNeedsSize } from "./utils/displaySend";
 import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
@@ -7954,7 +7955,7 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
     return products.find((x) => x && x.id === fetched.id) || null;
   };
 
-  const handleCode = async (display) => {
+  const handleCode = async (display, meta = null) => {
     setBusy(true);
     setNote(null);
     try {
@@ -7984,11 +7985,26 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
         const p = await resolveCandidate(aliasOwner);
         if (p) { finish(p); return; }
       }
+      // Nothing owns the code — but the panel must not open EMPTY-HANDED
+      // (owner spec 2026-08-13, same ranking as the count's link panel:
+      // code family, misreads, truncated reads, the printed model name, all
+      // from the catalog already in memory). Read-only here: a tap SELECTS
+      // the product for this sale, it files nothing — assistants may not
+      // write aliases, and this surface never could.
+      const close = buildLinkSuggestions({
+        kind: "code", normalised: normaliseStyleCode(display),
+        modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
+        products,
+      });
+      if (close.length) {
+        setNote({ text: `No product carries ${display} exactly — but these are close. Check the photo against the shoe:`, suggestions: close });
+        return;
+      }
       setNote({ text: `The label reads ${display}, but no registered product carries it — search by name instead.` });
     } finally { setBusy(false); }
   };
 
-  const handleTokens = async (tokens) => {
+  const handleTokens = async (tokens, meta = null) => {
     setBusy(true);
     setNote(null);
     try {
@@ -8013,6 +8029,19 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
           setNote({ text: "The label wording is close to these — tap the right one:", candidates });
           return;
         }
+      }
+      // Below-band never dead-ends either: the match call's own candidates,
+      // the label's words against product names, and the model-name line all
+      // rank (same engine as everywhere else). Read-only, tap = select.
+      const close = buildLinkSuggestions({
+        kind: "tokens", tokens,
+        aliasCandidates: match && Array.isArray(match.candidates) ? match.candidates : null,
+        modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
+        products,
+      });
+      if (close.length) {
+        setNote({ text: "The label isn't registered to any product — but these look close. Check the photo against the shoe:", suggestions: close });
+        return;
       }
       setNote({ text: "The label reads fine, but it isn't registered to any product — search by name instead." });
     } finally { setBusy(false); }
@@ -8048,6 +8077,32 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
                       : <div style={{ width: 56, height: 56, borderRadius: 10, background: "rgba(120,150,255,.08)",
                                       display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👟</div>}
                     <div style={{ fontSize: 14.5, fontWeight: 700, color: "#fff", flex: 1 }}>{p.name}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+            {/* Ranked near-matches (owner spec 2026-08-13) — photo, name, the
+                registered code and WHY each row is offered. Tap = select for
+                this sale; nothing is filed from here. */}
+            {note.suggestions && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                {note.suggestions.slice(0, 6).map((s) => (
+                  <button key={s.product.id} type="button" onClick={() => finish(s.product)}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", textAlign: "left", cursor: "pointer",
+                             background: "rgba(12,16,30,.7)", border: "1px solid rgba(120,150,255,.25)", borderRadius: 13 }}>
+                    {s.product.photoUrl
+                      ? <img src={s.product.photoUrl} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 10 }} />
+                      : <div style={{ width: 56, height: 56, borderRadius: 10, background: "rgba(120,150,255,.08)",
+                                      display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>👟</div>}
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 14.5, fontWeight: 700, color: "#fff" }}>{s.product.name}</div>
+                      {s.code && (
+                        <div style={{ fontSize: 11, color: "rgba(233,238,255,.5)", fontVariantNumeric: "tabular-nums" }}>
+                          {formatStyleCodeDisplay(s.code)}{s.field === "pending" ? " (pending)" : ""}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 11, color: "#AFC6FF", lineHeight: 1.45, marginTop: 2 }}>{s.reasons.join(" · ")}</div>
+                    </div>
                   </button>
                 ))}
               </div>

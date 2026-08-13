@@ -42,7 +42,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
 import { perSizeAutoCandidate } from "../../utils/perSizeStyleCode";
-import { buildLinkSuggestions } from "../../utils/linkSuggestions";
+import { buildLinkSuggestions, codeSuggestions } from "../../utils/linkSuggestions";
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
@@ -1563,6 +1563,20 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
   //   different colourway → registered as a SIBLING owner via styleCodeSibling;
   //                         both keep the code, neither is flagged.
   const conflictOwners = chosenCode ? styleCodeOwners(chosenCode, products, product.id) : [];
+  // Confident code-relatives of OTHER products (family / misread / truncated /
+  // pending-exact) — the non-blocking wrong-shoe heads-up below. Exact owners
+  // are the collision question's job, colourway near-misses are normal stock.
+  const nearRelatives = useMemo(() => {
+    const norm = chosenCode ? normaliseStyleCode(chosenCode) : null;
+    if (!norm) return [];
+    return codeSuggestions(norm, products)
+      .filter((s) => s.product.id !== product.id
+        && (s.tier === "family" || s.tier === "misread" || s.tier === "truncated" || s.tier === "pendingExact"))
+      // codeSuggestions returns catalogue-iteration order; the note shows ONE
+      // relative, so it must be the STRONGEST, not the first encountered
+      // (Sonnet + Kimi substitute review, PR #351 — their one shared finding).
+      .sort((a, b) => b.score - a.score);
+  }, [chosenCode, products, product.id]);
   // Answered "different colourway" for THIS code (or the index already lists
   // this product as a sibling owner — checked below). Keyed by the normalised
   // code so re-entering a different code re-asks.
@@ -1695,12 +1709,28 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
           )}
         </div>
       ) : chosenCode && conflictOwners.length === 0 ? (
-        <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
-                      padding: "12px 14px", marginBottom: 18, fontSize: 14, color: "#B7F0CC",
-                      display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
-          <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
-            style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ background: "rgba(74,222,128,.08)", border: "1px solid rgba(74,222,128,.3)", borderRadius: 13,
+                        padding: "12px 14px", fontSize: 14, color: "#B7F0CC",
+                        display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ flex: 1 }}>✓ Style number: <strong>{chosenCode}</strong> <span style={{ color: GRAY, fontSize: 11.5 }}>({codeSource === "label" ? "read off the tongue label" : "typed"})</span></span>
+            <button type="button" onClick={() => { setChosenCode(null); setCodeSource(null); }}
+              style={{ ...bGhost, fontSize: 12, minHeight: 38, padding: "0 12px" }}>✎ Change</button>
+          </div>
+          {/* NEAR-RELATIVE HEADS-UP (owner spec 2026-08-13) — non-blocking.
+              The exact-collision question above handles a code another product
+              CARRIES; this catches a code one step away from one (per-size
+              family, one-character misread, truncated read). Wrong-shoe
+              registrations are silent count corruption — a heads-up costs one
+              glance at the photo the operator already vouched for. */}
+          {nearRelatives.length > 0 && (
+            <div style={{ marginTop: 8, background: "rgba(251,191,36,.06)", border: "1px solid rgba(251,191,36,.25)",
+                          borderRadius: 11, padding: "9px 12px", fontSize: 12.5, color: "#FDE9B0", lineHeight: 1.5 }}>
+              Heads-up: {chosenCode} is close to “{nearRelatives[0].product.name}”
+              ({formatStyleCodeForDisplay(nearRelatives[0].code)} — {nearRelatives[0].reason}).
+              Make sure the shoe you're holding is <strong>{product.name}</strong> before saving.
+            </div>
+          )}
         </div>
       ) : chosenCode && conflictOwners.length > 0 && !siblingOk ? (
         /* ── THE COLLISION QUESTION (owner spec 2026-08-07) ─────────────────
