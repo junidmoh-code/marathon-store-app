@@ -31,6 +31,7 @@ const getPath = (p) => {
   return hasChildren ? out : null;
 };
 const read = (path) => getPath(path);
+const failReads = new Set(); // paths whose get() rejects (simulates a missing rule)
 const updateCalls = [];
 const applyUpdate = (base, patch) => {
   for (const [k, v] of Object.entries(patch)) {
@@ -43,7 +44,9 @@ const applyUpdate = (base, patch) => {
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
-  get: (r) => Promise.resolve({ val: () => getPath(r.path), exists: () => getPath(r.path) != null }),
+  get: (r) => failReads.has(r.path)
+    ? Promise.reject(new Error("Permission denied"))
+    : Promise.resolve({ val: () => getPath(r.path), exists: () => getPath(r.path) != null }),
   query: (r, ...mods) => ({ path: r.path, mods }),
   orderByKey: () => "orderByKey",
   limitToLast: (n) => ({ limitToLast: n }),
@@ -57,6 +60,7 @@ const { applyPriceBatch, restorePriceBatch, previewRestore, loadRecentBatches, m
 beforeEach(() => {
   for (const k of Object.keys(store)) delete store[k];
   updateCalls.length = 0;
+  failReads.clear();
   store["products/p100/name"] = "Nike Cap";
   store["products/p200/name"] = "Puma Tee";
   store["products/p200/stockPrice"] = 90;
@@ -231,4 +235,46 @@ test("bulk fill end to end: the write is EXACTLY the previewed plan — same pro
   assert.equal(store["products/p200/retailPrice"], 180);
   assert.equal(store["products/p200/stockPrice"], 90);
   assert.equal(store["products/p300/retailPrice"], 500);
+});
+
+// ── FAIL OPEN (live incident 2026-08-13): an unreadable /specials node — e.g.
+// its console rule not yet published — must never block a price. ──────────────
+
+test("FAIL OPEN: a price save proceeds when the specials check cannot read — the price and its history still land", async () => {
+  failReads.add("specials");
+  const res = await applyPriceBatch({ action: "bulk_change",
+    lines: { p200: { name: "Puma Tee", from: { retailPrice: 180 }, to: { retailPrice: 200 } } } });
+  assert.equal(res.ok, true);
+  assert.equal(store["products/p200/retailPrice"], 200);
+  assert.ok(read(`price_history/${res.batchId}`).lines); // audit still rides the write
+  assert.equal(res.specialsCheckSkipped, true); // the bypass is never silent
+  // A readable check does NOT carry the flag.
+  failReads.clear();
+  const clean = await applyPriceBatch({ action: "bulk_change",
+    lines: { p200: { name: "Puma Tee", from: { retailPrice: 200 }, to: { retailPrice: 210 } } } });
+  assert.equal(clean.ok, true);
+  assert.equal(clean.specialsCheckSkipped, undefined);
+});
+
+test("FAIL OPEN: a restore proceeds when the specials check cannot read — exact priors still return", async () => {
+  const res = await applyPriceBatch({ action: "bulk_change",
+    lines: { p200: { name: "Puma Tee", from: { retailPrice: 180 }, to: { retailPrice: 200 } } } });
+  assert.equal(res.ok, true);
+  failReads.add("specials");
+  const undo = await restorePriceBatch(res.batchId, { p200: { retailPrice: 200 } });
+  assert.equal(undo.ok, true);
+  assert.equal(store["products/p200/retailPrice"], 180);
+  assert.equal(undo.specialsCheckSkipped, true); // the bypass is never silent
+});
+
+test("FAIL CLOSED stays for starting a special: an unreadable re-check writes nothing (an unseen existing special must not be overwritten)", async () => {
+  const { buildSpecialStartPlan } = await import("../../utils/specials.js");
+  const plan = buildSpecialStartPlan({ products: [{ id: "p200", name: "Puma Tee", retailPrice: 180 }], specials: {}, selectedIds: ["p200"],
+    mode: "percent", percentDraft: "25", startedAt: "2026-08-13T10:00:00.000Z" });
+  failReads.add("specials");
+  const res = await startSpecials(plan);
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "specials_unreadable");
+  assert.equal(updateCalls.length, 0);
+  assert.equal(store["products/p200/retailPrice"], 180);
 });
