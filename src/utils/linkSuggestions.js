@@ -489,8 +489,14 @@ export function buildLinkSuggestions({ kind, normalised, modelName, tokens, allC
     const primary = normaliseStyleCode(normalised);
     const pooled = [...new Set((Array.isArray(allCodes) ? allCodes : [])
       .map(normaliseStyleCode).filter((c) => c && c !== primary))];
+    // includeExact is ALWAYS on for the pooled tokens: the caller's "exact
+    // owners resolved before the panel" rationale covers the PRIMARY code's
+    // resolution path, but an alternate token's owner is found by the
+    // any-token round trip — and when that call failed or was degraded, this
+    // row is the one honest recovery the operator gets. Suggest, never
+    // decide: the row is still a button.
     for (const extra of pooled) {
-      for (const h of codeSuggestions(extra, products, { includeExact })) {
+      for (const h of codeSuggestions(extra, products, { includeExact: true })) {
         hits.push({ ...h, reason: `${h.reason} (via the label's other token ${formatStyleCodeForDisplay(extra)})` });
       }
     }
