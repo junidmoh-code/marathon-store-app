@@ -78,6 +78,44 @@ const label = {
 };
 const meta = { fontSize: 12, color: "rgba(233,238,255,.45)", lineHeight: 1.5 };
 
+// ─── SIMILAR-PRODUCT CARDS — the pre-duplicate question, one renderer ────────
+// (Owner spec 2026-08-13.) Ranked near matches from linkSuggestions.js —
+// exact/pending codes, per-size families, one-character misreads, truncated
+// reads, the label's printed model name. Shown wherever intake is about to
+// open the create form: tapping a card routes to ADD STOCK on that product
+// instead. Photo first — the operator is holding the shoe.
+function SimilarCards({ suggestions, onAddStock }) {
+  return (
+    <>
+      {suggestions.slice(0, 6).map((s) => (
+        <div key={s.product.id}
+          onClick={() => onAddStock(s.product.id)}
+          role="button" tabIndex={0}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAddStock(s.product.id); } }}
+          style={{ display: "flex", gap: 14, alignItems: "center", background: "rgba(255,255,255,.03)",
+                   border: "1px solid rgba(120,150,255,.16)", borderRadius: 14, padding: 12, cursor: "pointer" }}>
+          <div style={{ width: 84, height: 84, flexShrink: 0, borderRadius: 12, overflow: "hidden",
+                        background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {s.product.photoUrl
+              ? <img src={s.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 15.5, fontWeight: 750, color: "#fff", lineHeight: 1.25 }}>{s.product.name || "Unnamed product"}</div>
+            {s.code && (
+              <div style={{ ...meta, marginTop: 4, fontFamily: "ui-monospace, monospace" }}>
+                {formatStyleCodeForDisplay(s.code)}{s.field === "pending" ? " (pending)" : ""}
+              </div>
+            )}
+            <div style={{ ...meta, marginTop: 4, color: "#AFC6FF" }}>{s.reasons.join(" · ")}</div>
+          </div>
+          <span style={{ ...meta, color: BLUE, fontWeight: 800, flexShrink: 0 }}>ADD STOCK →</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
 function Note({ tone, children }) {
   const c = tone === "bad" ? RED : tone === "warn" ? AMBER : tone === "good" ? GREEN : BLUE;
   const bg = tone === "bad" ? "rgba(248,113,113,.09)" : tone === "warn" ? "rgba(251,191,36,.09)"
@@ -254,6 +292,19 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     }
 
     setError(null); setBusy("resolving");
+    // The near-match ranking runs on the ENFORCED path too (owner spec
+    // 2026-08-13): a Lacoste per-size sibling label is a code the resolver has
+    // never seen — the external catalogue may even confirm it as its own SKU —
+    // and both roads led straight to the create form. The list renders inside
+    // the "unknown" and "found" steps; the resolver's own outcome still rules.
+    setSimilarStep({
+      payload: null,
+      suggestions: buildLinkSuggestions({
+        kind: "code", normalised, includeExact: true,
+        modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
+        products,
+      }),
+    });
     try {
       // confusableRetry is on ONLY when the code came off a photo — a human who
       // typed it did not misread a glyph, so manual entry never pays for the
@@ -504,31 +555,7 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
             to it instead.
           </Note>
 
-          {similarStep.suggestions.slice(0, 6).map((s) => (
-            <div key={s.product.id}
-              onClick={() => onAddStock(s.product.id)}
-              role="button" tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAddStock(s.product.id); } }}
-              style={{ display: "flex", gap: 14, alignItems: "center", background: "rgba(255,255,255,.03)",
-                       border: "1px solid rgba(120,150,255,.16)", borderRadius: 14, padding: 12, cursor: "pointer" }}>
-              <div style={{ width: 84, height: 84, flexShrink: 0, borderRadius: 12, overflow: "hidden",
-                            background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {s.product.photoUrl
-                  ? <img src={s.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 15.5, fontWeight: 750, color: "#fff", lineHeight: 1.25 }}>{s.product.name || "Unnamed product"}</div>
-                {s.code && (
-                  <div style={{ ...meta, marginTop: 4, fontFamily: "ui-monospace, monospace" }}>
-                    {formatStyleCodeForDisplay(s.code)}{s.field === "pending" ? " (pending)" : ""}
-                  </div>
-                )}
-                <div style={{ ...meta, marginTop: 4, color: "#AFC6FF" }}>{s.reasons.join(" · ")}</div>
-              </div>
-              <span style={{ ...meta, color: BLUE, fontWeight: 800, flexShrink: 0 }}>ADD STOCK →</span>
-            </div>
-          ))}
+          <SimilarCards suggestions={similarStep.suggestions} onAddStock={onAddStock} />
 
           <button type="button" onClick={() => { setSimilarStep(null); onProceed(similarStep.payload); }}
             style={btn("rgba(74,222,128,.14)", "#B7F0CC", { border: "2px solid rgba(74,222,128,.5)" })}>
@@ -739,6 +766,20 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
             <div style={{ ...meta, marginTop: 8, fontFamily: "ui-monospace, monospace" }}>{result.displayCode}</div>
           </div>
 
+          {/* The vendor knowing the code does NOT mean WE don't have the shoe:
+              a per-size sibling's label is its own SKU out there but the same
+              physical shoe in here. Confirming would create the duplicate. */}
+          {similarStep && similarStep.suggestions.length > 0 && (
+            <>
+              <Note tone="warn">
+                <b>We may already have this shoe</b> — the code is close to {similarStep.suggestions.length === 1
+                  ? "one product" : `${similarStep.suggestions.length} products`} in our own catalogue.
+                If it's one of these, add stock to it instead of confirming a new record.
+              </Note>
+              <SimilarCards suggestions={similarStep.suggestions} onAddStock={onAddStock} />
+            </>
+          )}
+
           <button type="button" onClick={confirmFetched} style={btn(BLUE, "#fff")}>
             ✓ Confirm — this is it
           </button>
@@ -812,6 +853,16 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           <div style={{ ...meta, fontFamily: "ui-monospace, monospace", fontSize: 15, color: "#fff" }}>
             {result?.displayCode || formatStyleCodeForDisplay(normalised)}
           </div>
+          {similarStep && similarStep.suggestions.length > 0 && (
+            <>
+              <Note tone="warn">
+                <b>But check these first</b> — some brands print a different code per size, and a
+                one-character misread looks exactly like a new code. If it's one of these, add stock
+                instead of creating a duplicate.
+              </Note>
+              <SimilarCards suggestions={similarStep.suggestions} onAddStock={onAddStock} />
+            </>
+          )}
           <button type="button" onClick={rejectFetched} style={btn(BLUE, "#fff")}>
             Enter the details
           </button>
