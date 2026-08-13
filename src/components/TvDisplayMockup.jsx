@@ -5,6 +5,7 @@
 // data so /#tvmock still works for design iteration.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import TvSpecialsRail from "./TvSpecialsRail";
 import shoebox    from "../assets/tv/shoebox.png";
 import yeezy     from "../assets/tv/header-shoe.png";
 import jumpman   from "../assets/tv/jumpman.png";
@@ -544,7 +545,7 @@ const STATUS_MAP = {
   tomorrow: "coming_tomorrow",
 };
 
-export default function TvDisplayMockup({ orders: liveProp, onExit }) {
+export default function TvDisplayMockup({ orders: liveProp, specials, onExit }) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 10_000);
@@ -679,9 +680,15 @@ export default function TvDisplayMockup({ orders: liveProp, onExit }) {
         {SECTIONS.map((s) => <Column key={s.id} section={s} sneakersOn={sneakersOn} wcSkin={wcSkin}/>)}
       </main>
 
-      {/* SHOE CONVEYOR — keep an equal-height spacer when hidden so the column
-          area below the main grid never grows/shifts. */}
-      {sneakersOn ? <ShoeConveyor wcSkin={wcSkin} /> : <div style={{ height: wcSkin ? 116 : 160, flexShrink: 0 }} />}
+      {/* BOTTOM BAND — specials advertising takes the conveyor's exact slot
+          (same 160px, flexShrink:0 → zero layout shift) whenever at least one
+          special is running; it is content, so it shows even with the
+          decorative sneakers toggled off. With NO specials the band falls
+          back to the decorative conveyor (or its equal-height spacer) — the
+          board's clean empty state is simply its long-standing look. */}
+      {(specials && specials.length > 0)
+        ? <TvSpecialsRail specials={specials} />
+        : sneakersOn ? <ShoeConveyor wcSkin={wcSkin} /> : <div style={{ height: wcSkin ? 116 : 160, flexShrink: 0 }} />}
 
       {/* SHOEBOX SCREENSAVER — position:fixed, so omitting it has no layout impact.
           Behind SHOW_DVD_BOX (off for now); the sneakers toggle is unchanged. */}
