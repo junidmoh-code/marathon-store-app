@@ -157,3 +157,106 @@ describe("solvePlan", () => {
     expect(p.storeUnits).toBe(2);
   });
 });
+
+// ═══ CATEGORY POLICY — the engine's standing owner-armed source, mirrored ═════
+// (2026-08-13.) resolveTarget resolves /config/refillEngine/categoryPolicy
+// between explicit rows and the rule standards; these tests pin this file's
+// mirror of it: same validation, same two size modes, same precedence, same
+// survival of the kill switch.
+import { categoryRun, resolvedRun } from "./solvePlan";
+
+const POLICY = {
+  perfumes: {
+    "marathon-pe": { target: 8, reorderPoint: 3, minQty: 4 },
+    hub2: { target: 10, reorderPoint: 5, minQty: 5 },
+  },
+  "fitted-caps": {
+    perSize: true,
+    "marathon-pe": { target: 2, reorderPoint: 0 },
+    hub2: { target: 5, reorderPoint: 0 },
+  },
+};
+
+describe("categoryRun — the map folded into the { loc: { SIZE: target } } shape", () => {
+  it("one-size mode speaks for the '_' sentinel ONLY, at exactly the mapped locations", () => {
+    const run = categoryRun({ policy: POLICY, categoryKey: "perfumes", sizes: ["_"] });
+    expect(run).toEqual({ "marathon-pe": { _: 8 }, hub2: { _: 10 } });
+    expect(run.trophy).toBeUndefined();   // decision 5: unnamed locations get nothing
+  });
+  it("per-size mode covers every declared size, with dead sizes at an EXPLICIT 0", () => {
+    const units = { S: 3, M: 1, XXXL: 0 };
+    const run = categoryRun({
+      policy: POLICY, categoryKey: "fitted-caps", sizes: ["S", "M", "XXXL"],
+      unitsAnywhere: (sz) => units[sz] || 0,
+    });
+    expect(run["marathon-pe"]).toEqual({ S: 2, M: 2, XXXL: 0 });
+    expect(run.hub2).toEqual({ S: 5, M: 5, XXXL: 0 });
+  });
+  it("arms NOTHING for an unmapped key, a missing map, or a malformed entry — fail-safe both sides", () => {
+    expect(categoryRun({ policy: POLICY, categoryKey: "t-shirts", sizes: ["M"] })).toEqual({});
+    expect(categoryRun({ policy: undefined, categoryKey: "perfumes", sizes: ["_"] })).toEqual({});
+    expect(categoryRun({ policy: POLICY, categoryKey: undefined, sizes: ["_"] })).toEqual({});
+    expect(categoryRun({ policy: POLICY, categoryKey: "", sizes: ["_"] })).toEqual({});
+    for (const bad of [
+      { "marathon-pe": { target: "8" } },
+      { "marathon-pe": { target: -2 } },
+      { "marathon-pe": { target: Infinity } },
+      { "marathon-pe": 8 },
+      ["not", "a", "map"],
+    ]) {
+      expect(categoryRun({ policy: { perfumes: bad }, categoryKey: "perfumes", sizes: ["_"] })).toEqual({});
+    }
+  });
+});
+
+describe("resolvedRun with the category policy — precedence is the engine's, exactly", () => {
+  it("a mapped row-less perfume qualifies at the mapped legs with no run and no rows", () => {
+    const run = resolvedRun({
+      std: {}, sizes: ["_"], targets: null, pid: "scent1",
+      ruleBasedTargets: true, categoryPolicy: POLICY, categoryKey: "perfumes",
+    });
+    expect(run["marathon-pe"]).toEqual({ _: 8 });
+    expect(run.hub2).toEqual({ _: 10 });
+    expect(qualifyingSizes(["_"], "central", "marathon-pe", run)).toEqual(["_"]);
+    expect(qualifyingSizes(["_"], "central", "trophy", run)).toEqual([]);
+  });
+  it("an explicit row still WINS over the map — including an explicit 0", () => {
+    const targets = { "marathon-pe": { scent1: { _: { target: 3 } } }, hub2: { scent1: { _: { target: 0 } } } };
+    const run = resolvedRun({
+      std: {}, sizes: ["_"], targets, pid: "scent1",
+      ruleBasedTargets: true, categoryPolicy: POLICY, categoryKey: "perfumes",
+    });
+    expect(run["marathon-pe"]._).toBe(3);
+    expect(run.hub2._).toBe(0);   // deliberately excluded beats the map's 10
+  });
+  it("the map survives the kill switch while the rule standards die with it", () => {
+    const run = resolvedRun({
+      std: { "marathon-pe": { M: 2 } }, sizes: ["_", "M"], targets: null, pid: "x",
+      ruleBasedTargets: false, categoryPolicy: POLICY, categoryKey: "perfumes",
+    });
+    expect(run["marathon-pe"]).toEqual({ _: 8 });   // map alive, run dead
+  });
+  it("one-size mode never touches letter sizes — an uncollapsed mapped product keeps its run", () => {
+    const run = resolvedRun({
+      std: { "marathon-pe": { M: 2 } }, sizes: ["M"], targets: null, pid: "cap1",
+      ruleBasedTargets: true, categoryPolicy: { "caps-beanies": { "marathon-pe": { target: 5 } } }, categoryKey: "caps-beanies",
+    });
+    expect(run["marathon-pe"].M).toBe(2);   // the garment run, untouched
+    expect(run["marathon-pe"]._).toBe(5);   // the sentinel, mapped
+  });
+  it("per-size mode BEATS the garment run, dead-size 0 included", () => {
+    const run = resolvedRun({
+      std: { "marathon-pe": { S: 1, M: 2, XXXL: 1 } }, sizes: ["S", "M", "XXXL"], targets: null, pid: "fc1",
+      ruleBasedTargets: true, categoryPolicy: POLICY, categoryKey: "fitted-caps",
+      unitsAnywhere: (sz) => (sz === "XXXL" ? 0 : 4),
+    });
+    expect(run["marathon-pe"]).toEqual({ S: 2, M: 2, XXXL: 0 });
+    // The dead size fails the qualifying test — it can never be seeded.
+    expect(qualifyingSizes(["S", "M", "XXXL"], "hub2", "marathon-pe", run)).toEqual(["S", "M"]);
+  });
+  it("a product outside the map resolves byte-for-byte as before the map existed", () => {
+    const args = { std: { "marathon-pe": { M: 2 }, hub2: { M: 3 } }, sizes: ["M"], targets: null, pid: "tee1", ruleBasedTargets: true };
+    expect(resolvedRun({ ...args, categoryPolicy: POLICY, categoryKey: "t-shirts" }))
+      .toEqual(resolvedRun(args));
+  });
+});

@@ -1,7 +1,7 @@
 // Tests for the pure refill-engine core. Run: cd functions && node --test
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate, resolveTarget } = require("../lib/refill-engine.cjs");
 
 // ── retryHistoryKey — RTDB keys may NOT contain . # $ [ ] / ────────────────────
 // Regression pin for the 2026-07-22 outage: an ISO timestamp in the key (its ".")
@@ -1807,4 +1807,196 @@ test("RETRY: no source stock pauses retry, resumes when stock arrives", () => {
     stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(5) } }, central: {}, trophy: {} },
   }));
   assert.equal(wet.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "source stock arrives → retry resumes");
+});
+
+// ═══ CATEGORY POLICY — /config/refillEngine/categoryPolicy (2026-08-13) ═══════
+// The owner's standing rule: the CATEGORY a product is given is what arms it.
+// These tests pin the whole contract: precedence (explicit row > map > clothing
+// rules), the two size modes, the dead-size 0, the off switch, survival of the
+// kill switch, and byte-for-byte non-interference with unmapped clothing and
+// footwear.
+const CAT_CONFIG = {
+  ...CONFIG,
+  categoryPolicy: {
+    perfumes: {
+      "marathon-pe": { target: 8, reorderPoint: 3, minQty: 4 },
+      hub2: { target: 10, reorderPoint: 5, minQty: 5 },
+    },
+    "caps-beanies": {
+      "marathon-pe": { target: 5, reorderPoint: 0, minQty: 3 },
+      hub2: { target: 10, reorderPoint: 0, minQty: 5 },
+    },
+    "fitted-caps": {
+      perSize: true,
+      "marathon-pe": { target: 2, reorderPoint: 0, minQty: 1 },
+      hub2: { target: 5, reorderPoint: 0, minQty: 3 },
+    },
+  },
+};
+const CAT_PRODUCTS = {
+  scent1: { name: "Gentleman Givenchy perfume", categoryKey: "perfumes", sizes: ["_"] },   // NO productType — the live shape
+  beanie1: { name: "Nike beanie brown", productType: "clothing", categoryKey: "caps-beanies", subcategory: "Caps & Hats", sizes: ["_"] },
+  capLegacy: { name: "Lacoste cap", productType: "clothing", categoryKey: "caps-beanies", subcategory: "Caps & Hats", sizes: ["M"] },
+  fitted1: { name: "TC fitted cap navy/red", productType: "clothing", categoryKey: "fitted-caps", subcategory: "Caps & Hats", sizes: ["S", "M", "XXXL"] },
+  p1: PRODUCTS.p1,   // the unmapped clothing control
+  shoe1: { name: "Air Zoom", category: "Footwear", sizes: ["8"] },
+};
+const catCtx = (over = {}) => ({
+  targets: {}, config: CAT_CONFIG, products: CAT_PRODUCTS,
+  stock: {
+    central: { scent1: { _: cell(48) }, fitted1: { M: cell(0) } },
+    hub2: { fitted1: { M: cell(3), S: cell(1) } },
+    "marathon-pe": { capLegacy: { M: cell(0) }, fitted1: { S: cell(2), M: cell(1) } },
+    trophy: {},
+  },
+  ...over,
+});
+
+test("category policy: a row-less perfume resolves the map at both mapped legs — and nowhere else", () => {
+  const ctx = catCtx();
+  assert.deepEqual(resolveTarget(ctx, "marathon-pe", "scent1", "_"),
+    { target: 8, minQty: 4, reorderPoint: 3, source: "category_policy" });
+  assert.deepEqual(resolveTarget(ctx, "hub2", "scent1", "_"),
+    { target: 10, minQty: 5, reorderPoint: 5, source: "category_policy" });
+  // Decision 5: a location the entry does not name gets NOTHING.
+  assert.equal(resolveTarget(ctx, "trophy", "scent1", "_"), null);
+});
+
+test("category policy: an explicit row still WINS — the map never overrides it", () => {
+  const ctx = catCtx({ targets: { "marathon-pe": { scent1: { _: { target: 3, minQty: 1, reorderPoint: 1 } } } } });
+  assert.deepEqual(resolveTarget(ctx, "marathon-pe", "scent1", "_"),
+    { target: 3, minQty: 1, reorderPoint: 1, source: "explicit" });
+  // …including an explicit 0 — "deliberately excluded" beats the map too.
+  const zero = catCtx({ targets: { hub2: { scent1: { _: { target: 0, minQty: 0 } } } } });
+  assert.equal(resolveTarget(zero, "hub2", "scent1", "_").target, 0);
+  assert.equal(resolveTarget(zero, "hub2", "scent1", "_").source, "explicit");
+});
+
+test("category policy one-size mode: '_' resolves the map, a LETTER falls through to the clothing rules", () => {
+  const ctx = catCtx();
+  // The collapsed/one-size record: map numbers on the sentinel.
+  assert.deepEqual(resolveTarget(ctx, "marathon-pe", "beanie1", "_"),
+    { target: 5, minQty: 3, reorderPoint: 0, source: "category_policy" });
+  // The uncollapsed legacy record: its M cell keeps the garment run (M: 2)
+  // exactly as before the map existed — the map does not starve letter stock.
+  assert.deepEqual(resolveTarget(ctx, "marathon-pe", "capLegacy", "M"),
+    { target: 2, minQty: 1, reorderPoint: null, source: "default" });
+});
+
+test("category policy per-size mode: live sizes get the numbers, dead sizes get an EXPLICIT 0, undeclared get nothing", () => {
+  const ctx = catCtx();
+  // M holds units (hub2 3, pe 1) → mapped numbers at both legs.
+  assert.deepEqual(resolveTarget(ctx, "marathon-pe", "fitted1", "M"),
+    { target: 2, minQty: 1, reorderPoint: 0, source: "category_policy" });
+  assert.deepEqual(resolveTarget(ctx, "hub2", "fitted1", "M"),
+    { target: 5, minQty: 3, reorderPoint: 0, source: "category_policy" });
+  // XXXL is declared and stocked NOWHERE → target 0 from the map — a STOP that
+  // the garment run below can never re-arm (it would have said XXXL: 1).
+  const dead = resolveTarget(ctx, "marathon-pe", "fitted1", "XXXL");
+  assert.equal(dead.target, 0);
+  assert.equal(dead.source, "category_policy");
+  // An undeclared size resolves nothing from the map (nor the run).
+  assert.equal(resolveTarget(ctx, "marathon-pe", "fitted1", "L"), null);
+});
+
+test("category policy: dead-size 0 ARMS ITSELF the moment units exist anywhere", () => {
+  const ctx = catCtx();
+  ctx.stock.central.fitted1 = { ...ctx.stock.central.fitted1, XXXL: cell(4) };
+  assert.equal(resolveTarget(ctx, "marathon-pe", "fitted1", "XXXL").target, 2);
+});
+
+test("category policy: survives the kill switch — and the OFF SWITCH is deleting the entry", () => {
+  // ruleBasedTargets off: the run dies, the map does not (it is owner-armed
+  // policy, same reasoning as explicit rows).
+  const killed = catCtx({ config: { ...CAT_CONFIG, ruleBasedTargets: false } });
+  assert.equal(resolveTarget(killed, "marathon-pe", "beanie1", "_").target, 5);
+  assert.equal(resolveTarget(killed, "marathon-pe", "capLegacy", "M"), null); // the run is dead
+  // THE off switch: delete /config/refillEngine/categoryPolicy/<key> → the
+  // category falls back to exactly the pre-map branches, live, no deploy.
+  const { perfumes, ...rest } = CAT_CONFIG.categoryPolicy;
+  const off = catCtx({ config: { ...CAT_CONFIG, categoryPolicy: rest } });
+  assert.equal(resolveTarget(off, "marathon-pe", "scent1", "_"), null);
+  // And an entirely absent/garbled map arms nothing (fail-safe).
+  assert.equal(resolveTarget(catCtx({ config: CONFIG }), "marathon-pe", "scent1", "_"), null);
+  assert.equal(resolveTarget(catCtx({ config: { ...CONFIG, categoryPolicy: "on" } }), "marathon-pe", "scent1", "_"), null);
+});
+
+test("category policy: malformed entries arm NOTHING (fail-safe direction)", () => {
+  for (const bad of [
+    { "marathon-pe": { target: "8" } },          // stringy number
+    { "marathon-pe": { target: -2 } },           // negative
+    { "marathon-pe": { target: Infinity } },     // non-finite
+    { "marathon-pe": 8 },                        // location not an object
+    ["not", "a", "map"],                         // entry not an object
+  ]) {
+    const cfg = { ...CAT_CONFIG, categoryPolicy: { perfumes: bad } };
+    assert.equal(resolveTarget(catCtx({ config: cfg }), "marathon-pe", "scent1", "_"), null,
+      `entry ${JSON.stringify(bad)} must arm nothing`);
+  }
+});
+
+test("category policy: unmapped clothing and footwear resolve BYTE-FOR-BYTE as without the map", () => {
+  const withMap = catCtx();
+  const noMap = catCtx({ config: CONFIG });
+  for (const [dest, pid, size] of [
+    ["marathon-pe", "p1", "M"], ["marathon-pe", "p1", "L"], ["trophy", "p1", "M"],
+    ["hub2", "shoe1", "8"], ["marathon-pe", "shoe1", "8"],
+  ]) {
+    assert.deepEqual(resolveTarget(withMap, dest, pid, size), resolveTarget(noMap, dest, pid, size),
+      `${dest}/${pid}/${size} must be untouched by the map`);
+  }
+});
+
+test("category policy END TO END: a stranded perfume raises the central→hub2 leg with NO row and NO cell", () => {
+  const plan = computeRefillPlan({
+    nowMs: NOW, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    targets: {},
+    stock: { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+  });
+  const i = plan.intents.find((x) => x.dest === "hub2" && x.productId === "scent1");
+  assert.ok(i, "hub2 buffer intent raised for the mapped perfume");
+  assert.equal(i.source, "central");
+  assert.equal(i.qty, 10);                    // the map's hub2 target
+  assert.equal(i.sizeKey, "_");               // the sentinel survives the whole path
+  assert.equal(i.size, "_");                  // …and the raw size IS the declared "_" catalogue size
+  // The shop leg does NOT fire this scan (hub2 has nothing yet) — the cascade
+  // parks it as awaiting-upstream, exactly the actionable-only contract.
+  assert.ok(!plan.intents.find((x) => x.dest === "marathon-pe" && x.productId === "scent1"));
+  assert.ok(plan.exceptions.awaitingUpstream.items.find((x) => x.loc === "marathon-pe" && x.pid === "scent1"),
+    "shop demand visible as awaiting upstream");
+});
+
+test("category policy END TO END: reorderPoint 0 keeps a mapped one-size cell SILENT until it sells out", () => {
+  const plan = computeRefillPlan({
+    nowMs: NOW, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    targets: {},
+    stock: {
+      central: {}, hub2: { beanie1: { _: cell(10) } },
+      "marathon-pe": { beanie1: { _: cell(1) } },   // below target 5, above rp 0
+      trophy: {},
+    },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+  });
+  assert.ok(!plan.intents.find((x) => x.productId === "beanie1" && x.dest === "marathon-pe"),
+    "1 on hand > reorderPoint 0 → silent");
+  const empty = computeRefillPlan({
+    nowMs: NOW, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    targets: {},
+    stock: {
+      central: {}, hub2: { beanie1: { _: cell(10) } },
+      "marathon-pe": { beanie1: { _: cell(0) } },
+      trophy: {},
+    },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+  });
+  const i = empty.intents.find((x) => x.productId === "beanie1" && x.dest === "marathon-pe");
+  assert.ok(i, "sold out → the whole gap at once");
+  assert.equal(i.qty, 5);
+});
+
+test("category policy: the WHOLE PLAN is byte-identical for an unmapped snapshot with the map present", () => {
+  const withMap = computeRefillPlan(base({ config: { ...CONFIG, categoryPolicy: CAT_CONFIG.categoryPolicy } }));
+  const noMap = computeRefillPlan(base());
+  assert.deepEqual(withMap, noMap);
 });
