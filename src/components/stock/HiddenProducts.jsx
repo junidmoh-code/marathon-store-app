@@ -20,7 +20,7 @@
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { usePermissions } from "./../PermissionsContext";
+import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, FONT } from "./ui";
 import { ProductCard, Badge } from "./healthWidgets";
 import { serverNowMs } from "../../utils/serverTime";
