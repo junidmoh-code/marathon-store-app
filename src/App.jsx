@@ -2679,15 +2679,18 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
                      onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
     : null;
   // Shopify Publishing — the online-store push pipeline (clean names,
-  // condition grades, nominations). Self-gating like StockHoldCard: renders
-  // null unless super-admin or stockRole admin, mirroring the console write
-  // rule on /shopify_publish. Writes only /shopify_publish.
-  const shopifyCard = (
+  // condition grades, nominations). Gated here (super-admin or stockRole
+  // admin, mirroring the console write rule on /shopify_publish) so the
+  // desktop wrapper div doesn't render an empty gap for everyone else; the
+  // component ALSO gates itself as defence in depth. Writes only
+  // /shopify_publish.
+  const shopifyVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+  const shopifyCard = shopifyVisible ? (
     <ShopifyPublishCard
       viewer={{ isSuperAdmin, stockRole: isSuperAdmin ? "admin" : (homePerm?.stockRole || null) }}
       products={products}
     />
-  );
+  ) : null;
 
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
@@ -2841,7 +2844,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               for an admin with no other tiles. */}
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
           {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
-          <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{shopifyCard}</div>
+          {shopifyCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{shopifyCard}</div>}
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
