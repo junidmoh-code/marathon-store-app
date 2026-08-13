@@ -9,6 +9,20 @@
 // lexicographic sort can move the cursor backwards and loop forever.
 // startAt is inclusive, so the overlap record is dropped on every page after
 // the first.
+// REST shallow read — the Admin SDK has no shallow, and a key-count must not
+// cost the node's full weight. The OAuth token travels in an Authorization
+// header, never the URL query string (query strings leak into logs).
+export async function shallowKeys(adminApp, path) {
+  const token = await adminApp.options.credential.getAccessToken();
+  const base = adminApp.options.databaseURL;
+  const res = await fetch(`${base}/${path}.json?shallow=true`, {
+    headers: { Authorization: `Bearer ${token.access_token}` },
+  });
+  if (!res.ok) throw new Error(`shallow read of /${path} failed: ${res.status}`);
+  const val = await res.json();
+  return val ? Object.keys(val) : [];
+}
+
 export async function readMapPaged(db, path, { pageSize = 500, meter = () => {} } = {}) {
   const out = {};
   let lastKey = null;
@@ -27,7 +41,10 @@ export async function readMapPaged(db, path, { pageSize = 500, meter = () => {} 
     }
     if (added === 0) break;
     lastKey = keys[keys.length - 1];
-    if (keys.length < pageSize) break;
+    // Terminate on NEW records, not raw keys: later pages include the
+    // inclusive cursor overlap, so a final page of pageSize-1 new records
+    // holds pageSize keys and would trigger one redundant overlap-only read.
+    if (added < pageSize) break;
   }
   return out;
 }

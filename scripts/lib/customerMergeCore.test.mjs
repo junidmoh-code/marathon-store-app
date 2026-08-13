@@ -8,7 +8,7 @@ import { readFileSync } from "fs";
 import {
   formatClass, canonicalSA, collapseGroups, classifyGroup, nameNorm,
   pickSurvivor, creditBalance, totalCreditAcross, buildMergePlan,
-  applyUpdates, readTreePath,
+  applyUpdates, readTreePath, extractLoserRefs,
 } from "./customerMergeCore.mjs";
 
 // ── fixture: one SAFE pair with money on both sides ─────────────────────────
@@ -70,8 +70,9 @@ function planFromTree(tree, overrides = {}) {
     survivorIndex: tree.customer_index.sales[S], loserIndex: tree.customer_index.sales[L],
     loserSaleOwners: { saleL1: L, saleL2: L },
     loserCreditOwners: { credB: L },
-    laybys: tree.laybys, laybyPulls: tree.laybyPulls, orders: tree.orders,
+    loserRefs: extractLoserRefs(L, tree.laybys, tree.laybyPulls, tree.orders, { survivorKey: S, canonical: CANON }),
     loserAudit: { issued: tree.pos.audit.store_credit_issued[L], removed: {}, onAccount: {}, onAccountConfig: {} },
+    survivorAudit: { issued: tree.pos.audit.store_credit_issued[S] || {}, removed: {}, onAccount: {}, onAccountConfig: {} },
     classification: "SAFE", nowIso: "2026-08-13T20:00:00.000Z",
     mergeId: "batch1_" + L, batchId: "batch1",
     ...overrides,
@@ -245,6 +246,80 @@ describe("buildMergePlan — refusals", () => {
     const tree = fixtureTree();
     tree.customers[L].mergedInto = S;
     expect(planFromTree(tree).refusals.some((r) => r.why.includes("already merged"))).toBe(true);
+  });
+  it("an audit event id already present under the survivor refuses the group", () => {
+    const tree = fixtureTree();
+    tree.pos.audit.store_credit_issued[S] = { evt1: { amount: 999 } }; // same id as loser's
+    expect(planFromTree(tree).refusals.some((r) => r.why.includes("audit event id collision"))).toBe(true);
+  });
+  it("a merge txn already on the survivor ledger refuses (replay guard)", () => {
+    const tree = fixtureTree();
+    tree.pos.creditLedger[S].txns[`merge_batch1_${L}`] = { amount: 0 };
+    expect(planFromTree(tree).refusals.some((r) => r.why.includes("already on survivor ledger"))).toBe(true);
+  });
+});
+
+describe("extractLoserRefs — the drift-fingerprint slices", () => {
+  it("selects exactly the loser's laybys, pulls and orders", () => {
+    const tree = fixtureTree();
+    const refs = extractLoserRefs(L, tree.laybys, tree.laybyPulls, tree.orders);
+    expect(Object.keys(refs.laybys)).toEqual(["saleL1"]);
+    expect(Object.keys(refs.pulls)).toEqual(["pull1"]);
+    expect(Object.keys(refs.orders)).toEqual(["ord1"]);
+  });
+  it("an open layby with NO holding and NO index row still gets its sale re-pointed", () => {
+    const tree = fixtureTree();
+    delete tree.customers[L].laybyHoldings;          // holding lost
+    delete tree.customer_index.sales[L].saleL1;      // index row never written
+    const plan = planFromTree(tree);
+    expect(plan.refusals).toBeUndefined();
+    expect(plan.updates["pos/sales/saleL1/customerId"]).toBe(S); // via the laybys leg
+  });
+  it("matches by STRIPPED DIGITS, the census comparison — a '+27…'-stored layby still re-points", () => {
+    const tree = fixtureTree();
+    tree.laybys.saleL1.customerPhone = "+27619467420"; // digits == loser key, string !=
+    const plan = planFromTree(tree);
+    expect(plan.refusals).toBeUndefined();
+    expect(plan.updates["laybys/saleL1/customerPhone"]).toBe(S);
+  });
+  it("a record canonically in the group but matching NEITHER member key refuses the pair (never silently stranded)", () => {
+    const tree = fixtureTree();
+    tree.laybys.saleL1.customerPhone = "619467420"; // bare-9: this group, neither key
+    const plan = planFromTree(tree);
+    expect(plan.refusals.some((r) => r.why.includes("matching neither member key"))).toBe(true);
+  });
+});
+
+describe("resweep and survivor-reachability", () => {
+  it("resweep mode re-folds a drifted tombstone (mergedInto is the precondition, not a refusal)", () => {
+    const tree = fixtureTree();
+    tree.customers[L].mergedInto = S; // already merged; POS wrote new credit onto it since
+    const plan = planFromTree(tree, { resweep: true });
+    expect(plan.refusals).toBeUndefined();
+    const after = applyUpdates(tree, plan.updates);
+    expect(readTreePath(after, `customers/${S}/storeCredit/credB/remainingAmount`)).toBe(2500);
+    expect(readTreePath(after, `customers/${L}/storeCredit`)).toBe(null);
+    expect(readTreePath(after, `customers/${L}/mergedInto`)).toBe(S);
+  });
+  it("resweep without a mergedInto pointer refuses (it is not a first merge)", () => {
+    const plan = planFromTree(fixtureTree(), { resweep: true });
+    expect(plan.refusals.some((r) => r.why.includes("no mergedInto pointer"))).toBe(true);
+  });
+  it("a bare-9 survivor key refuses the pair — the POS probe cannot find it", () => {
+    const plan = planFromTree(fixtureTree(), { survivorKey: "619467420" });
+    expect(plan.refusals.some((r) => r.why.includes("bare-9 key the POS probe cannot find"))).toBe(true);
+  });
+});
+
+describe("collapseGroups — tombstones leave membership", () => {
+  it("an already-merged record no longer counts, so a triple pair-merges down across runs", () => {
+    const { groups, tombstones } = collapseGroups({
+      "0813995333": { name: "A" },
+      "27813995333": { name: "A", mergedInto: "0813995333" }, // merged on run 1
+      "813995333": { name: "A" },
+    });
+    expect(tombstones).toHaveLength(1);
+    expect(groups.get("+27813995333").map((m) => m.key).sort()).toEqual(["0813995333", "813995333"]);
   });
 });
 

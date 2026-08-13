@@ -66,12 +66,17 @@ export function recordCanonical(key) {
 // ── grouping ────────────────────────────────────────────────────────────────
 
 // customers: { key → record }. Returns Map<canonical, [{key, rec}, …]> holding
-// ONLY canonicals with 2+ records (the collapse groups), plus a side list of
-// unmergeable records (no canonical identity).
+// ONLY canonicals with 2+ LIVE records (the collapse groups), plus side lists:
+// unmergeable (no canonical identity) and tombstones (already merged away).
+// Tombstones are excluded from membership — counting them would freeze a
+// triple at "group of 3" forever after its first pair-merge, and make every
+// post-merge dry run refuse the pairs it already merged (Fable review, #364).
 export function collapseGroups(customers) {
   const byCanon = new Map();
   const unmergeable = [];
+  const tombstones = [];
   for (const [key, rec] of Object.entries(customers || {})) {
+    if (rec?.mergedInto) { tombstones.push({ key, rec }); continue; }
     const canon = recordCanonical(key);
     if (!canon) { unmergeable.push({ key, rec }); continue; }
     if (!byCanon.has(canon)) byCanon.set(canon, []);
@@ -81,7 +86,7 @@ export function collapseGroups(customers) {
   for (const [canon, members] of byCanon) {
     if (members.length >= 2) groups.set(canon, members);
   }
-  return { groups, byCanon, unmergeable };
+  return { groups, byCanon, unmergeable, tombstones };
 }
 
 // ── name agreement → SAFE / REVIEW ──────────────────────────────────────────
@@ -252,6 +257,43 @@ export function readTreePath(tree, path) {
 //     gains mergedInto/mergedAt/mergedBatchId; every byte the plan touches is
 //     captured in preState (the reversal recipe, persisted by the runner).
 
+// The loser-referencing slices of the three small whole nodes. ONE predicate,
+// used by the runner at plan time AND at drift-check time, so the records the
+// plan writes from are exactly the records the drift fingerprint covers — a
+// layby/order created for the loser after planning changes the slice and
+// aborts the pair (Codex review, PR #364).
+//
+// Matching is on STRIPPED DIGITS, the same comparison the census uses — a
+// layby whose customerPhone is stored as "+27619467420" belongs to the
+// "27619467420" loser exactly as the census counted it (Fable review, #364).
+// A value that canonicalises into this GROUP but matches neither member's
+// digits (e.g. a bare-9 string when the pair is 0-form/27-form) lands in
+// `ambiguous`, and buildMergePlan refuses the pair rather than stranding a
+// layby on the tombstone silently.
+export function extractLoserRefs(loserKey, laybys = {}, laybyPulls = {}, orders = {}, opts = {}) {
+  const { survivorKey = null, canonical = null } = opts;
+  const digitsOf = (v) => String(v || "").replace(/\D/g, "");
+  const ambiguous = [];
+  const pick = (node, field, kind) => {
+    const out = {};
+    for (const [id, v] of Object.entries(node || {})) {
+      const d = digitsOf(v?.[field]);
+      if (!d) continue;
+      if (d === loserKey) { out[id] = v; continue; }
+      if (d !== survivorKey && canonical && canonicalSA(d) === canonical) {
+        ambiguous.push({ kind, id, value: v?.[field] });
+      }
+    }
+    return out;
+  };
+  return {
+    laybys: pick(laybys, "customerPhone", "layby"),
+    pulls: pick(laybyPulls, "customerPhone", "laybyPull"),
+    orders: pick(orders, "customerId", "order"),
+    ambiguous,
+  };
+}
+
 // Sales-history edges the plan re-points for the LOSER: customer_index/sales
 // pointers move to the survivor and each pos/sales record's customerId is
 // rewritten (the index is derived from pos/sales — re-pointing only the index
@@ -263,19 +305,35 @@ export function buildMergePlan(input) {
     survivorLedger, loserLedger, survivorIndex, loserIndex,
     loserSaleOwners = {},      // saleId → pos/sales/{id}/customerId (fresh)
     loserCreditOwners = {},    // creditId → pos/storeCredits/{id}/customerId (fresh)
-    laybys = {}, laybyPulls = {}, orders = {},
+    loserRefs = { laybys: {}, pulls: {}, orders: {} }, // extractLoserRefs output
     loserAudit = {},           // { issued, removed, onAccount, onAccountConfig }
+    survivorAudit = {},        // same shape — destinations, collision-checked
     classification, nowIso, mergeId, batchId,
   } = input;
 
   const refusals = [];
   const refuse = (why) => refusals.push({ canonical, why });
 
+  const resweep = input.resweep === true;
+
   if (classification !== "SAFE") refuse(`classification is ${classification} — only SAFE groups merge`);
+  for (const a of loserRefs.ambiguous || []) {
+    refuse(`${a.kind} ${a.id} carries ${JSON.stringify(a.value)} — canonically this group but matching neither member key; fix the record by hand first`);
+  }
   if (!survivor) refuse("survivor record missing on fresh read");
   if (!loser) refuse("loser record missing on fresh read");
-  if (loser?.mergedInto) refuse(`loser already merged into ${loser.mergedInto}`);
+  // resweep mode re-folds NEW accruals off an already-merged tombstone (the
+  // POS can still write onto it until it ships mergedInto awareness) — there
+  // the tombstone pointer is the precondition, not a refusal.
+  if (!resweep && loser?.mergedInto) refuse(`loser already merged into ${loser.mergedInto}`);
+  if (resweep && !loser?.mergedInto) refuse("resweep requested but loser carries no mergedInto pointer");
   if (survivor?.mergedInto) refuse(`survivor is itself merged into ${survivor.mergedInto}`);
+  // A bare-9 survivor key is unreachable by the POS's variant probe (it lacks
+  // the bare-9 dialect): every future till visit would re-mint a duplicate.
+  // Sale history stays the stated survivor rule; a bare-9 winner REFUSES the
+  // pair for an owner decision instead (Sonnet architect review, #364).
+  if (/^\d{9}$/.test(survivorKey) && !survivorKey.startsWith("0"))
+    refuse(`survivor ${survivorKey} is a bare-9 key the POS probe cannot find — owner must pick the survivor by hand`);
 
   const sBal = creditBalance(survivor || {});
   const lBal = creditBalance(loser || {});
@@ -314,6 +372,17 @@ export function buildMergePlan(input) {
   const lTxns = lLed?.txns || {};
   for (const tid of Object.keys(lTxns)) {
     if (sTxns[tid] !== undefined) refuse(`ledger txn id collision: ${tid}`);
+  }
+  if (sTxns[`merge_${mergeId}`] !== undefined) refuse(`merge txn merge_${mergeId} already on survivor ledger`);
+
+  // Audit destinations are READ, never assumed absent: a collision would let
+  // the move overwrite a survivor event, and rollback (whose preState would
+  // wrongly say "absent") would then delete it (Codex review, PR #364).
+  for (const k of ["issued", "removed", "onAccount", "onAccountConfig"]) {
+    for (const eventId of Object.keys(loserAudit[k] || {})) {
+      if ((survivorAudit[k] || {})[eventId] !== undefined)
+        refuse(`audit event id collision under survivor (${k}): ${eventId}`);
+    }
   }
 
   const loserIdx = loserIndex || {};
@@ -417,37 +486,38 @@ export function buildMergePlan(input) {
     updates[`customer_index/sales/${survivorKey}/${saleId}`] = ptr;
     updates[`customer_index/sales/${loserKey}/${saleId}`] = null;
   }
+  // Re-point scope: index rows + layby holdings + laybys carrying the loser's
+  // phone (laybyId === saleId). The laybys leg covers an open layby whose
+  // holding or index row was never written — its instalments read
+  // sale.customerId and must land on the survivor (Codex review, PR #364).
   const salesToRepoint = new Set([
     ...Object.keys(loserIdx).filter((sid) => loserSaleOwners[sid] === loserKey),
     ...Object.keys(loserHoldings).filter((sid) => loserSaleOwners[sid] === loserKey),
+    ...Object.keys(loserRefs.laybys).filter((sid) => loserSaleOwners[sid] === loserKey),
   ]);
   for (const saleId of salesToRepoint) {
     touch(`pos/sales/${saleId}/customerId`, loserKey);
     updates[`pos/sales/${saleId}/customerId`] = survivorKey;
   }
 
-  // laybys / laybyPulls carry the loser KEY as customerPhone — re-point
+  // laybys / laybyPulls carry the loser KEY as customerPhone — re-point.
+  // The slices arrive pre-filtered (extractLoserRefs, the same predicate the
+  // drift check fingerprints), so iteration here is total.
   const repointedLaybys = [];
-  for (const [id, l] of Object.entries(laybys)) {
-    if (String(l?.customerPhone || "") === loserKey) {
-      touch(`laybys/${id}/customerPhone`, l.customerPhone);
-      updates[`laybys/${id}/customerPhone`] = survivorKey;
-      repointedLaybys.push({ id, invoiceNo: l.invoiceNo, status: l.status });
-    }
+  for (const [id, l] of Object.entries(loserRefs.laybys)) {
+    touch(`laybys/${id}/customerPhone`, l.customerPhone);
+    updates[`laybys/${id}/customerPhone`] = survivorKey;
+    repointedLaybys.push({ id, invoiceNo: l.invoiceNo, status: l.status });
   }
-  for (const [id, p] of Object.entries(laybyPulls)) {
-    if (String(p?.customerPhone || "") === loserKey) {
-      touch(`laybyPulls/${id}/customerPhone`, p.customerPhone);
-      updates[`laybyPulls/${id}/customerPhone`] = survivorKey;
-    }
+  for (const [id, p] of Object.entries(loserRefs.pulls)) {
+    touch(`laybyPulls/${id}/customerPhone`, p.customerPhone);
+    updates[`laybyPulls/${id}/customerPhone`] = survivorKey;
   }
 
   // open store-app orders pointing at the loser
-  for (const [id, o] of Object.entries(orders)) {
-    if (o?.customerId === loserKey) {
-      touch(`orders/${id}/customerId`, loserKey);
-      updates[`orders/${id}/customerId`] = survivorKey;
-    }
+  for (const [id] of Object.entries(loserRefs.orders)) {
+    touch(`orders/${id}/customerId`, loserKey);
+    updates[`orders/${id}/customerId`] = survivorKey;
   }
 
   // audit subtrees MOVE verbatim (event push-keys are globally unique)
@@ -466,7 +536,9 @@ export function buildMergePlan(input) {
     }
   }
 
-  // tombstone the loser (identity fields preserved) + the merge record
+  // tombstone the loser (identity fields preserved) + the merge record. On a
+  // resweep the pointer is re-aimed at the ULTIMATE survivor (the chain may
+  // have moved since the original merge).
   touch(`customers/${loserKey}/mergedInto`, loser.mergedInto ?? null);
   touch(`customers/${loserKey}/mergedAt`, loser.mergedAt ?? null);
   touch(`customers/${loserKey}/mergedBatchId`, loser.mergedBatchId ?? null);
@@ -475,19 +547,22 @@ export function buildMergePlan(input) {
   updates[`customers/${loserKey}/mergedBatchId`] = batchId;
 
   // Recorded in preState (as previously-absent) so a disk-snapshot rollback
-  // removes the bookkeeping rows too, not just the data writes.
+  // removes the bookkeeping rows too, not just the data writes. The audit row
+  // follows the established pos/audit shape — {category}/{customerId}/{eventId}
+  // — so a per-customer audit-trail reader finds merges without special-casing
+  // (Sonnet architect review, #364).
   touch(`customer_merges/${mergeId}`, undefined);
-  touch(`pos/audit/merge_${mergeId}`, undefined);
+  touch(`pos/audit/customer_merge/${survivorKey}/${mergeId}`, undefined);
   updates[`customer_merges/${mergeId}`] = {
     mergeId, batchId, canonical, survivor: survivorKey, loser: loserKey, at: nowIso,
-    creditCentsMoved, ledgerCentsMoved,
+    resweep, creditCentsMoved, ledgerCentsMoved,
     loserRecord: loser,                      // full pre-merge loser record
     preState,                                // every path this merge changed, prior value
   };
-  updates[`pos/audit/merge_${mergeId}`] = {
+  updates[`pos/audit/customer_merge/${survivorKey}/${mergeId}`] = {
     action: "customer_merge", actingUserUid: "customer-merge-script",
     timestamp: nowIso, targetCustomerId: survivorKey,
-    details: { loser: loserKey, canonical, mergeId, batchId },
+    details: { loser: loserKey, canonical, mergeId, batchId, resweep },
   };
 
   return {

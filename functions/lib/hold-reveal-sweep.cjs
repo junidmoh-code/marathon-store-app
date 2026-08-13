@@ -62,8 +62,19 @@ async function runHoldRevealSweep({ db, enqueueWhatsApp, nowMs }) {
       await db.ref(`orders/${id}/readyNotifiedAt`).set(new Date().toISOString()).catch(() => {});
       sent++;
     } catch (e) {
-      // Enqueue failed AFTER we claimed — re-hold so a later sweep retries. If the
-      // re-hold ALSO fails the message is lost (rare double-failure) — log loudly.
+      // An invalid-argument refusal is TERMINAL: enqueueWhatsApp now rejects
+      // unusable recipient phones outright (instead of mangling them into
+      // +27…), so retrying can never succeed — re-holding would loop this
+      // order through every sweep forever. Leave the claim cleared and log
+      // loudly so the number gets fixed by hand.
+      if (e && e.code === "invalid-argument") {
+        console.error("dispatchHoldRevealSweep: unusable phone, order_ready NOT sent (terminal):", id, e.message);
+        cleared++;
+        continue;
+      }
+      // Transient enqueue failure AFTER we claimed — re-hold so a later sweep
+      // retries. If the re-hold ALSO fails the message is lost (rare
+      // double-failure) — log loudly.
       await db.ref(`orders/${id}/readyNotifyPending`).set(true)
         .catch(err => console.error("dispatchHoldRevealSweep: re-hold FAILED, order_ready may be lost:", id, err.message));
       console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);

@@ -30,7 +30,7 @@ import {
   formatClass, canonicalSA, collapseGroups, classifyGroup,
   pickSurvivor, creditBalance, totalCreditAcross,
 } from "./lib/customerMergeCore.mjs";
-import { readMapPaged } from "./lib/rtdbPaged.mjs";
+import { readMapPaged, shallowKeys as sharedShallowKeys } from "./lib/rtdbPaged.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -51,17 +51,12 @@ async function readAt(path, node) {
   meter(node, val);
   return val;
 }
-// REST shallow read — the Admin SDK has no shallow, and a key-count must not
-// cost the node's full weight. Uses the ADC token the SDK already holds.
+// Shallow key-count via the shared helper (Authorization header, no token in
+// the URL). Metered by key count — shallow responses are keys-only.
 async function shallowKeys(path, node) {
-  const token = await admin.app().options.credential.getAccessToken();
-  const res = await fetch(
-    `https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app/${path}.json?shallow=true&access_token=${token.access_token}`,
-  );
-  if (!res.ok) throw new Error(`shallow read of /${path} failed: ${res.status}`);
-  const val = await res.json();
-  meter(node + " (shallow)", val);
-  return val ? Object.keys(val) : [];
+  const keys = await sharedShallowKeys(admin.app(), path);
+  meter(node + " (shallow)", keys);
+  return keys;
 }
 
 const readCustomersPaged = () =>
@@ -92,7 +87,21 @@ async function main() {
   }
 
   // ── collapse groups ──────────────────────────────────────────────────────
-  const { groups, byCanon, unmergeable } = collapseGroups(customers);
+  const { groups, byCanon, unmergeable, tombstones } = collapseGroups(customers);
+
+  // Drifted tombstones: an already-merged record that accrued NEW money or
+  // history since its merge (the POS can still write onto tombstone keys).
+  // The merge runner re-sweeps these; the census makes them visible.
+  const driftedTombstones = [];
+  for (const t of tombstones) {
+    const bal = creditBalance(t.rec);
+    const holdings = t.rec?.laybyHoldings && typeof t.rec.laybyHoldings === "object" ? Object.keys(t.rec.laybyHoldings).length : 0;
+    const ledger = await readAt(`pos/creditLedger/${t.key}`, "pos/creditLedger");
+    const idxKeys = await shallowKeys(`customer_index/sales/${t.key}`, "customer_index/sales");
+    if (bal.total > 0 || bal.count > 0 || holdings > 0 || ledger || idxKeys.length) {
+      driftedTombstones.push({ key: t.key, mergedInto: t.rec.mergedInto, creditCents: bal.total, creditRecords: bal.count, holdings, ledger: !!ledger, salePointers: idxKeys.length });
+    }
+  }
 
   // laybys / laybyPulls — shallow count gate, then whole read
   const laybyKeys = await shallowKeys("laybys", "laybys");
@@ -178,6 +187,8 @@ async function main() {
   for (const g of groupReports) sizes[g.size] = (sizes[g.size] || 0) + 1;
   for (const [s, n] of Object.entries(sizes)) console.log(`  groups of ${s}: ${n}`);
   console.log(`largest group: ${groupReports[0]?.size ?? 0} records (${groupReports[0]?.canonical ?? "-"})`);
+  console.log(`already-merged tombstones: ${tombstones.length}${driftedTombstones.length ? `  ⚠ ${driftedTombstones.length} DRIFTED (accrued money/history since merge — runner will re-sweep)` : ""}`);
+  for (const d of driftedTombstones) console.log(`  DRIFTED ${d.key} → ${d.mergedInto}  credit=${fmtR(d.creditCents)}/${d.creditRecords}rec holdings=${d.holdings} ledger=${d.ledger} salePtrs=${d.salePointers}`);
   console.log(`records with no canonical SA identity (never grouped/merged): ${unmergeable.length}`);
   for (const u of unmergeable.slice(0, 25)) console.log(`  ${u.key}  name=${JSON.stringify(u.rec?.name || "")} phone=${JSON.stringify(u.rec?.phone ?? null)}`);
 
@@ -217,6 +228,7 @@ async function main() {
     recordCount: allKeys.length,
     keyFormats, fieldFormats, fieldKeyMismatch, mismatches,
     unmergeable: unmergeable.map((u) => ({ key: u.key, name: u.rec?.name || "", phone: u.rec?.phone ?? null })),
+    tombstoneCount: tombstones.length, driftedTombstones,
     safeCount: safe.length, reviewCount: review.length,
     baseCredit, storeCreditQueuePending: queueKeys.length,
     groups: groupReports,

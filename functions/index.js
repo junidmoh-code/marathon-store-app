@@ -36,7 +36,11 @@ function normaliseSAPhone(raw) {
   const s = String(raw || "").trim();
   if (s.startsWith("+")) {
     const d = s.slice(1).replace(/[^\d]/g, "");
-    return d ? "+" + d : null;
+    // A "+27" that isn't a complete SA number is exactly the malformed class
+    // the census found ("+2771845") — refuse it. Other country codes can't be
+    // shape-validated here beyond E.164's 8–15 digit envelope.
+    if (d.startsWith("27")) return /^27\d{9}$/.test(d) ? "+" + d : null;
+    return d.length >= 8 && d.length <= 15 ? "+" + d : null;
   }
   let digits = s.replace(/[^\d]/g, "");
   if (!digits) return null;

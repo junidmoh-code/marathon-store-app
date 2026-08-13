@@ -86,13 +86,19 @@ export function phoneKeyVariants(phone) {
 }
 
 // Grouping identity for READ-side aggregation (insights, customer list): one
-// key per person regardless of stored dialect. SA numbers collapse to the
-// local 0-form; anything else keeps its digits so a foreign or malformed
-// number is never folded into someone else's identity; digit-less input maps
-// to "unknown". NEVER use this as a write key — customerWriteKey owns minting.
+// key per person regardless of stored dialect. COMPLETE SA numbers collapse
+// to the local 0-form; anything else keeps its raw digits so a foreign or
+// malformed number is never folded into someone else's identity — including
+// a "+"-prefixed foreign 9-digit number, which toLocalSA would happily 0-pad
+// into a fake SA collision (Codex review, PR #364). Digit-less input maps to
+// "unknown". NEVER use this as a write key — customerWriteKey owns minting.
 export function phoneGroupKey(raw) {
-  const local = toLocalSA(raw);
-  return local || "unknown";
+  const s = (raw == null ? "" : String(raw)).trim();
+  if (!s) return "unknown";
+  const e164 = normalizeSAPhone(s);
+  if (/^\+27\d{9}$/.test(e164)) return "0" + e164.slice(3);
+  const d = s.replace(/\D/g, "");
+  return d || "unknown";
 }
 
 // Key a NEW /customers record is minted at: the canonical local 0XXXXXXXXX

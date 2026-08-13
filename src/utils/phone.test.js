@@ -169,6 +169,9 @@ describe("phoneGroupKey", () => {
   it("keeps a non-SA number distinct instead of folding it into an SA group", () => {
     expect(phoneGroupKey("+14155550123")).toBe("14155550123");
   });
+  it("never 0-pads a +-prefixed foreign 9-digit number into a fake SA identity", () => {
+    expect(phoneGroupKey("+123456789")).toBe("123456789"); // NOT "0123456789"
+  });
   it("maps digit-less input to 'unknown'", () => {
     expect(phoneGroupKey("")).toBe("unknown");
     expect(phoneGroupKey(null)).toBe("unknown");

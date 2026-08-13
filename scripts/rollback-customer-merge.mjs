@@ -93,6 +93,18 @@ async function main() {
 
   for (const m of snapshot.merges) {
     if (ONLY && !ONLY.has(m.mergeId) && !ONLY.has(m.canonical)) continue;
+
+    // Provenance, not equality: a merge only restores if its RTDB marker
+    // (customer_merges/{mergeId}, written atomically WITH the merge) proves it
+    // applied. Path-value equality alone cannot distinguish an unapplied plan
+    // from an independent manual change that happens to match the planned
+    // value — restoring on that evidence would undo real staff work (Codex
+    // review, PR #364). This is also crash-safe: the marker lands in the same
+    // atomic update as the data, so a run killed mid-loop leaves markers for
+    // exactly the pairs that landed.
+    const marker = (await db.ref(`customer_merges/${m.mergeId}`).once("value")).val();
+    if (!marker) { console.log(`  SKIP   ${m.mergeId} (${m.canonical}) — no merge marker in RTDB, never applied`); noopMerges += 1; continue; }
+
     const paths = Object.keys(m.preState);
     const classes = {};
     let anyMergeOutput = false, anyDiverged = false;

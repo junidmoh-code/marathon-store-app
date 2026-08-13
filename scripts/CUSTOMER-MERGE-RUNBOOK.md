@@ -28,6 +28,30 @@ The classification and plan rules live in ONE module shared by every script:
 - One run at a time: RTDB lock `_migrations/customerPhoneMerge/runLock`,
   acquired by transaction, never auto-stolen.
 
+## Preconditions before an execute run
+
+- **HARD GATE — POS tombstone handling.** The POS has no `mergedInto`
+  awareness yet (docs/POS-PHONE-MERGE-IMPACT.md): after a merge, till staff
+  who look up the losing dialect see the tombstone with ZERO credit and can
+  attach new sales/credits/laybys to it, re-fragmenting what the merge
+  consolidated. Do not run `--execute` until EITHER the POS ships its
+  tombstone filter + pointer-follow, OR the owner explicitly accepts running
+  before that with a follow-up sweep (re-running this merge later re-folds
+  anything that accrued on a tombstone).
+- **Tills closed / quiet hours — LOAD-BEARING, not advisory.** A till
+  redemption landing between a pair's drift check and its atomic update would
+  be clobbered by the verbatim credit move, and the base-wide total would NOT
+  catch it (the clobber restores a pre-spend amount). Closed tills close this
+  window; no guard in the runner does.
+- `pos/storeCreditQueue` empty (the runner refuses otherwise).
+- **Run the POS index backfill first** (POS repo:
+  `scripts/migrate/backfill-customer-sale-index.mjs`, idempotent) so
+  `customer_index/sales` is complete — the runner's `pos/sales.customerId`
+  re-pointing scope is index-derived plus layby holdings plus the laybys node.
+  A pre-index-era plain sale missing from the index would stay attributed to
+  the tombstone (display/history only; open laybys are covered regardless via
+  the laybys leg).
+
 ## Steps
 
 1. **Census (read-only, writes nothing):**

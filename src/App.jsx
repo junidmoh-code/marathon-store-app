@@ -1891,10 +1891,13 @@ function CustomersView({ onExit }) {
     });
     // Merge Firebase opt-in status. Records may live under the local "0…" key
     // (new canonical form) or the legacy international "27…" key — probe every
-    // shape, same as resolveCustomerKey, so opt-in follows the record.
+    // shape, same as resolveCustomerKey, so opt-in follows the record. Merge
+    // tombstones are skipped: a later survivor-side opt-in never reaches the
+    // tombstone, so reading it would silently drop the customer from the
+    // broadcast list.
     return Object.values(byPhone)
       .map(c => {
-        const fb = phoneKeyVariants(c.phone).map(k => customersDb[k]).find(Boolean) || {};
+        const fb = phoneKeyVariants(c.phone).map(k => customersDb[k]).find(v => v && !v.mergedInto) || {};
         return { ...c, optedIn: fb.optedIn || false };
       })
       .sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));

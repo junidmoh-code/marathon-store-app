@@ -29,6 +29,15 @@
 // whole customer base (sum of every storeCredit child's remainingAmount) is
 // computed from paged reads BEFORE any write and re-computed AFTER the last
 // write. One cent of difference exits 1 and prints the rollback command.
+// SCOPE: the proof assumes no concurrent till activity — a redemption landing
+// in the ms between a pair's drift check and its update() is clobbered in a
+// way that RESTORES a pre-spend amount, which this recount cannot see. That
+// is why "tills closed" is a hard precondition, not advice (see runbook).
+//
+// The run lock has no lease/heartbeat: after a hard kill (SIGKILL, power
+// loss) it must be cleared by hand with the printed firebase command — an
+// accepted trade-off for a low-frequency operator-run tool; an auto-expiring
+// lock is exactly the "other run looks old" reasoning that double-applies.
 
 import { createRequire } from "module";
 import { writeFileSync, readFileSync } from "fs";
@@ -36,9 +45,9 @@ import { hostname, tmpdir } from "os";
 import { join } from "path";
 import {
   collapseGroups, classifyGroup, pickSurvivor, creditBalance,
-  totalCreditAcross, buildMergePlan, canonicalSA,
+  totalCreditAcross, buildMergePlan, canonicalSA, extractLoserRefs,
 } from "./lib/customerMergeCore.mjs";
-import { readMapPaged } from "./lib/rtdbPaged.mjs";
+import { readMapPaged, shallowKeys } from "./lib/rtdbPaged.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -81,27 +90,37 @@ function stable(v) {
 }
 
 // Everything one group's plan rests on, freshly read. Also reused verbatim for
-// the pre-write drift check: same reads, same shape, compared by stable().
-async function readGroupInputs(survivorKey, loserKey) {
-  const [survivor, loser, survivorLedger, loserLedger, survivorIndex, loserIndex] = await Promise.all([
+// the pre-write drift check: same reads, same shape, compared by stable() — so
+// EVERY node the plan derives a write from is inside the drift fingerprint,
+// including the loser's slices of laybys/laybyPulls/orders (a layby or order
+// created for the loser after planning changes the slice and aborts the pair).
+// The three small whole-node reads repeat per pair; this is a one-off
+// migration in quiet hours and correctness of the fingerprint outranks the
+// ~100 KB they cost.
+async function readGroupInputs(survivorKey, loserKey, canonical) {
+  const [survivor, loser, survivorLedger, loserLedger, survivorIndex, loserIndex, laybys, laybyPulls, orders] = await Promise.all([
     readAt(`customers/${survivorKey}`), readAt(`customers/${loserKey}`),
     readAt(`pos/creditLedger/${survivorKey}`), readAt(`pos/creditLedger/${loserKey}`),
     readAt(`customer_index/sales/${survivorKey}`), readAt(`customer_index/sales/${loserKey}`),
+    readAt("laybys"), readAt("laybyPulls"), readAt("orders"),
   ]);
+  const loserRefs = extractLoserRefs(loserKey, laybys || {}, laybyPulls || {}, orders || {}, { survivorKey, canonical });
   const loserCredits = (loser?.storeCredit && typeof loser.storeCredit === "object") ? Object.keys(loser.storeCredit) : [];
   const loserHoldings = (loser?.laybyHoldings && typeof loser.laybyHoldings === "object") ? Object.keys(loser.laybyHoldings) : [];
-  const saleIds = [...new Set([...Object.keys(loserIndex || {}), ...loserHoldings])];
+  const saleIds = [...new Set([...Object.keys(loserIndex || {}), ...loserHoldings, ...Object.keys(loserRefs.laybys)])];
   const loserSaleOwners = {};
   for (const sid of saleIds) loserSaleOwners[sid] = await readAt(`pos/sales/${sid}/customerId`);
   const loserCreditOwners = {};
   for (const cid of loserCredits) loserCreditOwners[cid] = await readAt(`pos/storeCredits/${cid}/customerId`);
-  const loserAudit = {
-    issued: await readAt(`pos/audit/store_credit_issued/${loserKey}`) || {},
-    removed: await readAt(`pos/audit/store_credit_removed/${loserKey}`) || {},
-    onAccount: await readAt(`pos/audit/on_account/${loserKey}`) || {},
-    onAccountConfig: await readAt(`pos/audit/on_account_config/${loserKey}`) || {},
-  };
-  return { survivor, loser, survivorLedger, loserLedger, survivorIndex, loserIndex, loserSaleOwners, loserCreditOwners, loserAudit };
+  const auditSubtrees = async (key) => ({
+    issued: await readAt(`pos/audit/store_credit_issued/${key}`) || {},
+    removed: await readAt(`pos/audit/store_credit_removed/${key}`) || {},
+    onAccount: await readAt(`pos/audit/on_account/${key}`) || {},
+    onAccountConfig: await readAt(`pos/audit/on_account_config/${key}`) || {},
+  });
+  const loserAudit = await auditSubtrees(loserKey);
+  const survivorAudit = await auditSubtrees(survivorKey);
+  return { survivor, loser, survivorLedger, loserLedger, survivorIndex, loserIndex, loserSaleOwners, loserCreditOwners, loserRefs, loserAudit, survivorAudit };
 }
 
 async function main() {
@@ -137,36 +156,84 @@ async function main() {
   const creditBefore = totalCreditAcross(customersBefore);
   console.log(`baseline: ${Object.keys(customersBefore).length} customers, total credit R${(creditBefore.total / 100).toFixed(2)} in ${creditBefore.credits} records\n`);
 
-  const { groups } = collapseGroups(customersBefore);
-  const laybys = (await readAt("laybys")) || {};
-  const laybyPulls = (await readAt("laybyPulls")) || {};
-  const orders = (await readAt("orders")) || {};
+  const { groups, tombstones } = collapseGroups(customersBefore);
+  if (tombstones.length) console.log(`(${tombstones.length} already-merged tombstone(s) excluded from grouping)\n`);
 
-  const saleCounts = {};
-  for (const members of groups.values()) {
-    for (const m of members) {
-      saleCounts[m.key] = Object.keys((await readAt(`customer_index/sales/${m.key}`)) || {}).length;
-    }
+  // Size gate before the whole reads inside readGroupInputs: these three nodes
+  // are believed small; a surprise-large one aborts instead of downloading.
+  const [laybyCount, pullCount, orderCount] = await Promise.all([
+    shallowKeys(admin.app(), "laybys"), shallowKeys(admin.app(), "laybyPulls"), shallowKeys(admin.app(), "orders"),
+  ].map((p) => p.then((k) => k.length)));
+  if (laybyCount > 3000 || pullCount > 3000 || orderCount > 3000) {
+    console.error(`ABORT: laybys=${laybyCount} laybyPulls=${pullCount} orders=${orderCount} — unexpectedly large, refusing whole reads.`);
+    process.exit(1);
   }
 
-  // ── plan every group from fresh reads ────────────────────────────────────
+  // ── plan every group from fresh reads (SAFE pairs only) ──────────────────
   const planned = [], refused = [], skipped = [];
+  const saleCounts = {};
   for (const [canonical, members] of groups) {
     if (ONLY && !ONLY.has(canonical)) continue;
     const cls = classifyGroup(members);
     if (cls.classification !== "SAFE") { skipped.push({ canonical, why: `REVIEW (${cls.tag})` }); continue; }
-    if (members.length !== 2) { skipped.push({ canonical, why: `group of ${members.length} — runner only merges pairs` }); continue; }
+    if (members.length !== 2) { skipped.push({ canonical, why: `group of ${members.length} — runner merges pairs; re-run after this pair merges` }); continue; }
+    for (const m of members) {
+      saleCounts[m.key] = Object.keys((await readAt(`customer_index/sales/${m.key}`)) || {}).length;
+    }
     const { survivor: sv, losers } = pickSurvivor(members, saleCounts);
     const survivorKey = sv.key, loserKey = losers[0].key;
-    const inputs = await readGroupInputs(survivorKey, loserKey);
+    const inputs = await readGroupInputs(survivorKey, loserKey, canonical);
     const mergeId = `${batchId}_${loserKey}`;
     const plan = buildMergePlan({
       canonical, survivorKey, loserKey, ...inputs,
-      laybys, laybyPulls, orders,
       classification: cls.classification, nowIso, mergeId, batchId,
     });
     if (plan.refusals) { refused.push(...plan.refusals); continue; }
     planned.push({ canonical, survivorKey, loserKey, mergeId, plan, inputsHash: stable(inputs) });
+  }
+
+  // ── drifted tombstones: money that accrued on an already-merged record ───
+  // The POS can still write onto a tombstone key until it ships mergedInto
+  // awareness, and a tombstone never re-enters grouping (size 1 at its
+  // canonical). Without this scan that money would be stranded invisibly —
+  // hidden from store-app search by the index filter, hidden from this tool
+  // by the membership filter (Sonnet architect review, #364). A drifted
+  // tombstone is re-swept: same plan builder, resweep mode, into the ultimate
+  // live survivor found by following the pointer chain.
+  // Walk mergedInto to the first LIVE record; null on a cycle or a dangling
+  // pointer (those tombstones are reported for hand-fixing, never guessed at).
+  const followChain = (startKey) => {
+    let key = startKey;
+    const seen = new Set([key]);
+    while (customersBefore[key]?.mergedInto) {
+      const next = customersBefore[key].mergedInto;
+      if (seen.has(next) || !customersBefore[next] || seen.size > 6) return null;
+      seen.add(next);
+      key = next;
+    }
+    return key;
+  };
+  for (const t of tombstones) {
+    const bal = creditBalance(t.rec);
+    const holdings = t.rec?.laybyHoldings && typeof t.rec.laybyHoldings === "object" ? Object.keys(t.rec.laybyHoldings).length : 0;
+    const [ledger, idx] = await Promise.all([readAt(`pos/creditLedger/${t.key}`), readAt(`customer_index/sales/${t.key}`)]);
+    const drifted = bal.total > 0 || bal.count > 0 || holdings > 0 || !!ledger || !!(idx && Object.keys(idx).length);
+    if (!drifted) continue;
+    const canonical = canonicalSA(t.key) || `tombstone:${t.key}`;
+    const target = followChain(t.key);
+    if (!target || target === t.key) {
+      refused.push({ canonical, why: `tombstone ${t.key} drifted (credit R${(bal.total / 100).toFixed(2)}, ${holdings} holding(s)) but its mergedInto chain ends nowhere live — fix by hand` });
+      continue;
+    }
+    const inputs = await readGroupInputs(target, t.key, canonicalSA(t.key));
+    const mergeId = `${batchId}_resweep_${t.key}`;
+    const plan = buildMergePlan({
+      canonical, survivorKey: target, loserKey: t.key, ...inputs,
+      classification: "SAFE", resweep: true, nowIso, mergeId, batchId,
+    });
+    if (plan.refusals) { refused.push(...plan.refusals.map((r) => ({ ...r, why: `RESWEEP ${r.why}` }))); continue; }
+    planned.push({ canonical, survivorKey: target, loserKey: t.key, mergeId, plan, inputsHash: stable(inputs), resweep: true });
+    console.log(`  RESWEEP ${t.key} drifted since its merge (credit R${(bal.total / 100).toFixed(2)}, ${holdings} holding(s)) → re-folding into ${target}`);
   }
 
   console.log(`groups: ${planned.length} planned, ${skipped.length} skipped (REVIEW/size), ${refused.length} refused by guards`);
@@ -219,6 +286,12 @@ async function main() {
   }
 
   // ── EXECUTE ONLY: run lock by transaction, never read-then-write ─────────
+  console.log("⚠ EXECUTE MODE. 'Tills closed / quiet hours' is LOAD-BEARING, not advisory:");
+  console.log("  a till redemption landing in the milliseconds between a pair's drift check");
+  console.log("  and its atomic update would be clobbered by the verbatim credit move, and");
+  console.log("  the base-wide total would NOT catch it (the clobber restores a pre-spend");
+  console.log("  amount). The storeCreditQueue gate and run lock do not close that window —");
+  console.log("  closed tills do.\n");
   let lockHeld = false;
   const mine = { startedAt: nowIso, pid: process.pid, host: hostname(), releasedAt: null };
   const { committed, snapshot: lockSnap } = await db.ref(LOCK).transaction((cur) => {
@@ -237,6 +310,7 @@ async function main() {
     lockHeld = false;
     try { await db.ref(`${LOCK}/releasedAt`).set(new Date().toISOString()); } catch { /* best effort */ }
   };
+  releaseLockOnCrash = release;
   process.on("exit", () => { if (lockHeld) console.error(`\n⚠ run lock still held — clear it: firebase database:remove /${LOCK} --project marathon-club`); });
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, async () => { await release(); process.exit(130); });
 
@@ -245,7 +319,7 @@ async function main() {
     // pre-write drift check: identical fresh reads, compared byte-for-byte.
     // ANY concurrent activity on this pair since planning skips the group —
     // a plan built on stale reads must never be applied.
-    const again = await readGroupInputs(p.survivorKey, p.loserKey);
+    const again = await readGroupInputs(p.survivorKey, p.loserKey, p.canonical);
     if (stable(again) !== p.inputsHash) {
       report.aborted.push({ canonical: p.canonical, why: "drift between plan and apply — group skipped" });
       console.error(`  DRIFT  ${p.canonical} — skipped (re-run to re-plan)`);
@@ -295,7 +369,12 @@ async function main() {
   process.exit(report.aborted.length ? 1 : 0);
 }
 
+// Set once the execute-mode lock is acquired, so a thrown error releases it
+// (the exit-handler alone only warns).
+let releaseLockOnCrash = async () => {};
+
 main().catch(async (e) => {
   console.error("MERGE RUN FAILED:", e);
+  await releaseLockOnCrash();
   process.exit(1);
 });
