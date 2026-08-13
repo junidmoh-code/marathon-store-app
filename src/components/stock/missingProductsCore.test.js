@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  computeMissingProducts, groupOf, countByCategory, isClothing,
+  computeMissingProducts, groupOf, countByCategory, isClothing, isPerfume,
   buildChips, pickActiveTab,
 } from "./missingProductsCore";
 
@@ -13,17 +13,24 @@ const BAG     = { id: "b1", name: "Nike Duffel",  category: "Accessories", subca
 const WATCH   = { id: "w1", name: "Swarovski",    category: "Accessories", subcategory: "Watches",  productType: "clothing", sizes: ["_"] };
 const BELT    = { id: "be1", name: "Belt Premium", category: "Accessories", subcategory: "Belts",   productType: "clothing", sizes: ["_"] };
 const SNEAKER = { id: "s1", name: "Air Force 1",  category: "Footwear",    subcategory: "Sneakers", productType: "sneaker",  sizes: ["8", "9"] };
-const PERFUME = { id: "pf1", name: "Queen of Fire", category: "Perfume",   subcategory: "Perfume",  sizes: ["_"] };
+// A perfume exactly as the catalogue holds one (2026-08-13): NO productType at
+// all — the app form cannot create these, they are script-written — and
+// categoryKey "perfumes" is the identity all 65 live records share.
+const PERFUME = { id: "pf1", name: "Queen of Fire", category: "Perfume",   subcategory: "Perfume",  categoryKey: "perfumes", sizes: ["_"] };
+// The two live hybrids: categoryKey "perfumes" AND productType "clothing".
+// isClothing wins, so they stay under Clothing exactly where they are today.
+const HYBRID  = { id: "hy1", name: "Perfume Gift Bag", category: "Accessories", subcategory: "Bags", categoryKey: "perfumes", productType: "clothing", sizes: ["_"] };
 
-const PRODUCTS = [TEE, JERSEY, UNCAT, BAG, WATCH, BELT, SNEAKER, PERFUME];
+const PRODUCTS = [TEE, JERSEY, UNCAT, BAG, WATCH, BELT, SNEAKER, PERFUME, HYBRID];
 const cell = (qty) => ({ qty });
 
-// Owner directive 2026-08-05: exactly two chips — Sneakers and Clothing, with
-// Clothing holding EVERYTHING non-sneaker. This supersedes the 2026-08-04
-// per-subcategory chips (PR #308); these tests pin the new contract so a revert
-// to per-type chips fails here.
-describe("groupOf — everything in this tab is Clothing", () => {
-  it("puts every product type under the ONE Clothing chip", () => {
+// Owner directives, layered: 2026-08-05 — Sneakers and Clothing, with Clothing
+// holding everything non-sneaker (superseding the 2026-08-04 per-subcategory
+// chips of PR #308); 2026-08-13 — Perfume added as its own third fixed chip,
+// with the Clothing count unchanged. These tests pin that three-chip contract
+// so a revert to per-type chips, or perfume bleeding into Clothing, fails here.
+describe("groupOf — clothing is one pile, perfume is its own chip", () => {
+  it("puts every clothing product under the ONE Clothing chip", () => {
     for (const p of [TEE, JERSEY, BAG, WATCH, BELT, UNCAT]) {
       expect(groupOf(p)).toEqual({ key: "clothing", label: "Clothing" });
     }
@@ -31,11 +38,33 @@ describe("groupOf — everything in this tab is Clothing", () => {
   it("uncategorised is not split out — it is simply part of Clothing", () => {
     // Under #308 this was its own chip (45% of the tab). The 2026-08-05
     // directive folds it in: nothing is hidden, because the Clothing chip IS
-    // the whole tab.
+    // the clothing pile.
     expect(groupOf(UNCAT).key).toBe("clothing");
     expect(groupOf({ subcategory: "" }).key).toBe("clothing");
     expect(groupOf({}).key).toBe("clothing");
     expect(groupOf(null).key).toBe("clothing");
+  });
+  it("perfume gets its OWN chip — the Clothing count must not change", () => {
+    expect(groupOf(PERFUME)).toEqual({ key: "perfume", label: "Perfume" });
+  });
+  it("a clothing-typed record stays Clothing even with categoryKey 'perfumes'", () => {
+    // The two live hybrids appear under Clothing today; admitting perfume must
+    // move NOTHING that is already visible.
+    expect(groupOf(HYBRID).key).toBe("clothing");
+  });
+});
+
+describe("isPerfume — the exact live identity, and nothing wider", () => {
+  it("admits a live perfume record (no productType, '_' size)", () => {
+    expect(isPerfume(PERFUME)).toBe(true);
+  });
+  it("admits nothing else — category/subcategory spellings do NOT count", () => {
+    // categoryKey is the one field all 65 live perfumes share; a look-alike
+    // record without it stays out, as does every other class in the catalogue.
+    expect(isPerfume({ category: "Perfume", subcategory: "Perfume", sizes: ["_"] })).toBe(false);
+    for (const p of [TEE, JERSEY, UNCAT, BAG, WATCH, BELT, SNEAKER, null, undefined, {}]) {
+      expect(isPerfume(p)).toBe(false);
+    }
   });
 });
 
@@ -73,9 +102,28 @@ describe("computeMissingProducts — which products are stranded", () => {
     });
     expect(cards).toHaveLength(0);
   });
-  it("excludes perfume — no productType and no garment size means not clothing", () => {
+  it("ADMITS perfume — stranded perfume was invisible here until 2026-08-13", () => {
+    // The old contract ("excludes perfume") is deliberately flipped: 6 perfumes
+    // holding 288 units sat stranded at Central with no way to ever be seen or
+    // solved. A perfume card carries the perfume group so it renders under its
+    // own chip, leaving the Clothing count untouched.
     const cards = computeMissingProducts({
       allStock: { central: { pf1: { _: cell(9) } } }, products: PRODUCTS,
+    });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ pid: "pf1", source: "central", kind: "Only in Central", units: 9, group: "perfume", groupLabel: "Perfume" });
+    // The one-size sentinel survives as the card's size key — never a label.
+    expect(cards[0].sizes).toEqual([{ size: "_", avail: 9 }]);
+  });
+  it("a perfume a shop already carries is not stranded — same carriage rule as clothing", () => {
+    const cards = computeMissingProducts({
+      allStock: { central: { pf1: { _: cell(9) } }, "marathon-pe": { pf1: { _: cell(0) } } }, products: PRODUCTS,
+    });
+    expect(cards).toHaveLength(0);
+  });
+  it("a perfume with no units anywhere is not a card — nothing to send", () => {
+    const cards = computeMissingProducts({
+      allStock: { central: { pf1: { _: cell(0) } } }, products: PRODUCTS,
     });
     expect(cards).toHaveLength(0);
   });
@@ -119,9 +167,18 @@ describe("countByCategory — the chip numbers", () => {
   const allStock = {
     central: { t1: { M: cell(4) }, j1: { L: cell(3) }, b1: { _: cell(6) }, w1: { _: cell(2) }, be1: { _: cell(1) }, u1: { M: cell(7) } },
   };
-  it("every card counts under the one Clothing chip", () => {
+  it("every clothing card counts under the one Clothing chip", () => {
     const counts = countByCategory(computeMissingProducts({ allStock, products: PRODUCTS }));
     expect(counts).toEqual({ clothing: 6 });
+  });
+  it("a stranded perfume counts under Perfume — Clothing stays byte-for-byte", () => {
+    // The hybrid (clothing-typed, categoryKey "perfumes") lands under Clothing:
+    // admitting perfume changes no number that already rendered.
+    const withPerfume = {
+      central: { ...allStock.central, pf1: { _: cell(9) }, hy1: { _: cell(2) } },
+    };
+    const counts = countByCategory(computeMissingProducts({ allStock: { central: withPerfume.central }, products: PRODUCTS }));
+    expect(counts).toEqual({ clothing: 7, perfume: 1 });
   });
   it("THE LOAD-BEARING PROPERTY: the chips account for every single card", () => {
     // If this ever fails, stranded stock is invisible in the one tab meant to
@@ -137,29 +194,42 @@ describe("countByCategory — the chip numbers", () => {
   });
 });
 
-describe("buildChips + pickActiveTab — two fixed chips", () => {
+describe("buildChips + pickActiveTab — three fixed chips", () => {
   const card = () => ({ group: "clothing", groupLabel: "Clothing" });
   const many = (n) => Array.from({ length: n }, card);
+  const perfumeCard = () => ({ group: "perfume", groupLabel: "Perfume" });
 
-  it("is always exactly [Clothing, Sneakers] — no per-type chips", () => {
+  it("is always exactly [Clothing, Perfume, Sneakers] — no per-type chips", () => {
     expect(buildChips(many(41), 12)).toEqual([
       ["clothing", "Clothing", 41],
+      ["perfume", "Perfume", 0],
       ["sneakers", "Sneakers", 12],
     ]);
   });
-  it("both chips render even at zero, so the row never reshuffles", () => {
+  it("counts each chip from its GROUP — perfume cards never inflate Clothing", () => {
+    const chips = buildChips([...many(3), perfumeCard(), perfumeCard()], 1);
+    expect(chips).toEqual([
+      ["clothing", "Clothing", 3],
+      ["perfume", "Perfume", 2],
+      ["sneakers", "Sneakers", 1],
+    ]);
+  });
+  it("all chips render even at zero, so the row never reshuffles", () => {
     expect(buildChips([], 0)).toEqual([
       ["clothing", "Clothing", 0],
+      ["perfume", "Perfume", 0],
       ["sneakers", "Sneakers", 0],
     ]);
     expect(buildChips(undefined, undefined)).toEqual([
       ["clothing", "Clothing", 0],
+      ["perfume", "Perfume", 0],
       ["sneakers", "Sneakers", 0],
     ]);
   });
   it("keeps the user's selection while it still exists", () => {
     const chips = buildChips(many(5), 3);
     expect(pickActiveTab(chips, "clothing")).toBe("clothing");
+    expect(pickActiveTab(chips, "perfume")).toBe("perfume");
     expect(pickActiveTab(chips, "sneakers")).toBe("sneakers");
   });
   it("a stale per-type selection from before this change falls back, never blanks", () => {

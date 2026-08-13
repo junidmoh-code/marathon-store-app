@@ -369,7 +369,10 @@ export default function HealthView({ products = [], onExit }) {
     () => (allStock && Object.keys(allStock).length ? computeMissingProducts({ allStock, products }) : null),
     [allStock, products],
   );
-  const missingProductsClothing = missingProductCards?.length ?? null;
+  // Clothing AND perfume cards (2026-08-13) — everything the NetworkTransfer
+  // list renders. Named for what it is NOT (sneakers), because the headline sum
+  // below adds the sneaker list on top and must count every card exactly once.
+  const missingNonSneaker = missingProductCards?.length ?? null;
   // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
   // scan's exception buckets: the engine's Health loop is clothing-only
   // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
@@ -384,7 +387,7 @@ export default function HealthView({ products = [], onExit }) {
   );
   // null while stock loads — see missingProductCards. Sneakers alone would be a
   // half-answer, so the whole figure waits rather than under-reporting.
-  const missingProducts = missingProductsClothing == null ? null : missingProductsClothing + missingSneakerCards.length;
+  const missingProducts = missingNonSneaker == null ? null : missingNonSneaker + missingSneakerCards.length;
   // ("Needs Review" was removed 2026-07-12 v3 — the confidence signal still
   // feeds /stock_confidence for future use, but every dashboard card must lead
   // to an action, and a score without a workflow didn't.)
@@ -439,9 +442,9 @@ export default function HealthView({ products = [], onExit }) {
       //              nearly the whole catalogue and mean nothing. Hub 1 and Hub 2
       //              are where sneaker buffer lives.
       case "missingProducts": {
-        // Two fixed chips — Clothing (every stranded non-sneaker card, owner
-        // directive 2026-08-05) and Sneakers (its own list). Both always render,
-        // even at 0, so the row never reshuffles under the operator.
+        // Three fixed chips — Clothing (owner directive 2026-08-05), Perfume
+        // (2026-08-13) and Sneakers (its own list). All always render, even at
+        // 0, so the row never reshuffles under the operator.
         const chips = buildChips(missingProductCards || [], missingSneakerCards.length);
         const activeTab = pickActiveTab(chips, missingTab);
         return (

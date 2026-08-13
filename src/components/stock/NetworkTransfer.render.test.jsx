@@ -69,12 +69,12 @@ const STOCK = {
 const BEANIE_ONLY = PRODUCTS.filter((p) => p.id === BEANIE);
 const JERSEY_ONLY = PRODUCTS.filter((p) => p.id === JERSEY);
 
-const render = (targets, { products = BEANIE_ONLY, stock = STOCK, settled = true, error = false } = {}) => {
+const render = (targets, { products = BEANIE_ONLY, stock = STOCK, settled = true, error = false, category = "clothing" } = {}) => {
   const cards = computeMissingProducts({ allStock: stock, products });
   let tree;
   act(() => {
     tree = TestRenderer.create(
-      <NetworkTransfer products={products} category="clothing" allStock={stock} cards={cards}
+      <NetworkTransfer products={products} category={category} allStock={stock} cards={cards}
         targets={targets} targetsSettled={settled} targetsError={error} />
     );
   });
@@ -298,6 +298,114 @@ describe("the coverage estimate reads the cell the stock is actually in", () => 
     const text = textOf(tree);
     expect(text).toMatch(/covers/);
     expect(text).not.toMatch(/Central has 0\/4/);
+  });
+});
+
+describe("perfume — visible, and solvable against the correct hub (2026-08-13)", () => {
+  // A perfume exactly as the catalogue holds one: categoryKey "perfumes", NO
+  // productType (the form can't create them), one-size. Before the isPerfume
+  // gate these products were invisible in this tab in every state — absent, not
+  // greyed — so 288 units sat stranded at Central with no path out.
+  const SCENT = "scent1";
+  const SCENT_ONLY = [{ id: SCENT, name: "Gentleman Givenchy perfume", category: "Perfume", subcategory: "Perfume", categoryKey: "perfumes", sizes: ["_"] }];
+  const SCENT_STOCK = { central: { [SCENT]: { _: cell(48) } } };
+  // The live perfume policy shape (perfume-targets-2026-07-28): rows at
+  // marathon-pe and hub2 ONLY — Trophy carries no perfume and must not qualify.
+  const SCENT_ROWS = {
+    hub2: { [SCENT]: { _: { target: 10, minQty: 5, reorderPoint: 5 } } },
+    "marathon-pe": { [SCENT]: { _: { target: 8, minQty: 4, reorderPoint: 3 } } },
+  };
+  const renderScent = (targets, over = {}) => render(targets, { products: SCENT_ONLY, stock: SCENT_STOCK, category: "perfume", ...over });
+
+  it("a stranded perfume RENDERS as a card under its own tab", () => {
+    const cards = computeMissingProducts({ allStock: SCENT_STOCK, products: SCENT_ONLY });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ pid: SCENT, source: "central", group: "perfume", units: 48 });
+    let tree;
+    act(() => {
+      tree = TestRenderer.create(
+        <NetworkTransfer products={SCENT_ONLY} category="perfume" allStock={SCENT_STOCK} cards={cards}
+          targets={SCENT_ROWS} targetsSettled={true} targetsError={false} />
+      );
+    });
+    expect(textOf(tree)).toMatch(/Gentleman Givenchy perfume/);
+  });
+
+  it("with its explicit rows, Solve is ARMED and pre-selects Marathon PE — the shop the rows name", () => {
+    const tree = renderScent(SCENT_ROWS);
+    expect(solveButton(tree).props.disabled).toBe(false);
+    act(() => { solveButton(tree).props.onClick(); });
+    // Trophy has no perfume row, so the qualifying store is Marathon PE.
+    expect(buttonSaying(tree, "Solve — carry at Marathon PE")).toBeDefined();
+  });
+
+  it("Central-stranded perfume seeds Hub 2 AND the shop, on the '_' sentinel, and writes no target row", async () => {
+    const tree = renderScent(SCENT_ROWS);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Solve — carry at Marathon PE").props.onClick(); });
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const payload = updateMock.mock.calls[0][1];
+    const keys = Object.keys(payload);
+    // The correct hub leg: central-stranded → hub2 + shop, never Trophy.
+    expect(keys.sort()).toEqual([`stock/hub2/${SCENT}/_`, `stock/marathon-pe/${SCENT}/_`]);
+    for (const k of keys) {
+      expect(k.endsWith("/_")).toBe(true);           // the sentinel IS the cell key
+      expect(k).not.toMatch(/^stock_targets/);       // Solve never arms policy
+      expect(payload[k]).toMatchObject({ qty: 0, v: 0, mv: "seed" });
+    }
+  });
+
+  it("WITHOUT rows the perfume is VISIBLE but greyed, and says it needs a target", () => {
+    // Absent → greyed is the whole point of the change: the operator can now
+    // SEE the stranded stock and read exactly what arming it takes.
+    const tree = renderScent({});
+    const btn = solveButton(tree);
+    expect(btn.props.disabled).toBe(true);
+    const text = textOf(tree);
+    expect(text).toMatch(/Solve unavailable/);
+    expect(text).toMatch(/one-size/i);
+    expect(text).toMatch(/target/i);
+  });
+
+  it("THE MIRROR: a non-clothing card must NOT arm from the subcategory policy or the size run", () => {
+    // The engine's size run and subcategory policy are both nested inside
+    // isClothing(product) (refill-engine.cjs resolveTarget), so neither can ever
+    // fire for a perfume. Solve must refuse them by the SAME predicate: a
+    // one-size perfume whose subcategory happens to hold a live policy (Watches
+    // keeps 2, applied to every catalogue size including "_") would otherwise
+    // light up on a standard the engine will never apply — seed, vanish, never
+    // refill. isClothing here and isClothing in the engine are the same test,
+    // which is exactly what keeps the two honest for mis-filed records too: a
+    // typeless record with a stray letter size is clothing to BOTH sides.
+    const ODD = [{ id: SCENT, name: "Odd perfume", category: "Perfume", subcategory: "Watches", categoryKey: "perfumes", sizes: ["_"] }];
+    const tree = render({}, { products: ODD, stock: SCENT_STOCK, category: "perfume" });
+    const btn = solveButton(tree);
+    expect(btn.props.disabled).toBe(true);
+    expect(btn.props.title).toMatch(/target/i);
+    // …while an explicit row still arms the same record, exactly like the engine.
+    const rows = { hub2: { [SCENT]: { _: { target: 3 } } }, "marathon-pe": { [SCENT]: { _: { target: 2 } } } };
+    const armed = render(rows, { products: ODD, stock: SCENT_STOCK, category: "perfume" });
+    expect(solveButton(armed).props.disabled).toBe(false);
+  });
+
+  it("with the kill switch OFF, a row-less perfume still asks for a TARGET — never blames the switch", () => {
+    // "Automatic refills are switched off" is a remedy sentence: it tells the
+    // operator that flipping the switch will fix this row. For a perfume it
+    // never will — the rule branches are nested inside isClothing on both
+    // sides of the mirror — so the row must ask for the one thing that works:
+    // a target row. (Sonnet review, PR #350.)
+    paths["config/refillEngine"] = { ...CONFIG, ruleBasedTargets: false };
+    const tree = renderScent({});
+    const btn = solveButton(tree);
+    expect(btn.props.disabled).toBe(true);
+    expect(btn.props.title).toMatch(/target/i);
+    expect(btn.props.title).not.toMatch(/switched off/i);
+  });
+
+  it("a perfume the shop already carries never becomes a card — the engine owns it from there", () => {
+    const carried = { ...SCENT_STOCK, "marathon-pe": { [SCENT]: { _: cell(0) } } };
+    const cards = computeMissingProducts({ allStock: carried, products: SCENT_ONLY });
+    expect(cards).toHaveLength(0);
   });
 });
 

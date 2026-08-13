@@ -9,7 +9,8 @@
 //   → Transfer — immediate one-step applyMovement, straight from Health.
 //
 // Data is computed LIVE from /stock (not the scan snapshot) so a transfer
-// retires its card instantly. Strictly clothing; strictly existing tokens.
+// retires its card instantly. Clothing and perfume (2026-08-13 — see
+// missingProductsCore's isPerfume note); strictly existing tokens.
 
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, get, update, onValue } from "firebase/database";
@@ -21,7 +22,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
-import { computeMissingProducts } from "./missingProductsCore";
+import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -184,10 +185,24 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // operator configured — which is what greyed out every beanie. Applying the kill
   // switch per location INSIDE resolvedRun is the other half: explicit rows must
   // outlive it, exactly as they do in resolveTarget.
-  const runFor = (pid) => resolvedRun({
-    std: stdRun, subRun, subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
-    targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
-  });
+  // NON-CLOTHING CARDS (perfume, 2026-08-13) SEE EXPLICIT ROWS ONLY. The
+  // engine's rule branches — the size run AND the subcategory policy — are both
+  // nested inside isClothing(product) (refill-engine.cjs resolveTarget), so for
+  // a perfume they can never fire, whatever the config says. This mirror must
+  // refuse them too, or a mis-filed perfume carrying a stray letter size would
+  // light Solve up on the strength of a garment run the engine will never
+  // apply — the exact false-solve (seed, vanish, never refill) this module
+  // exists to prevent. solvePlan.js's own header called this the "one mirror
+  // gap that lives elsewhere" back when the cards list was clothing-only; with
+  // perfume admitted, "elsewhere" is here. Clothing is byte-for-byte unchanged.
+  const runFor = (pid) => {
+    const ruleEligible = isClothing(byId.get(pid));
+    return resolvedRun({
+      std: ruleEligible ? stdRun : {}, subRun: ruleEligible ? subRun : undefined,
+      subcategory: byId.get(pid)?.subcategory, sizes: catalogSizes(pid),
+      targets: targetRows, pid, ruleBasedTargets: cfg?.ruleBasedTargets,
+    });
+  };
   // Sizes safe to seed — a positive target at every seed location (solvePlan.js).
   // A size with no target would seed a cell the engine never refills, then vanish
   // with a false "solved", so it's excluded. (Codex fix a.)
@@ -347,9 +362,19 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // and the disabled test, so the button cannot go grey without the row
         // saying why.
         const armed = STORES.some((s) => seedLocations(card.source, s).every(ruleOn));
+        // The kill switch is only a REMEDY for products the rule branches can
+        // serve — and those are nested inside isClothing (see runFor). For a
+        // perfume the switch's position changes nothing: on or off, only an
+        // explicit row can arm it. So a non-clothing card must never be told
+        // "automatic refills are switched off" — that sends the operator to
+        // flip a switch that cannot help — and instead falls through to the
+        // one-size "needs a target set" sentence, which is the actual remedy.
+        // Clothing keeps the real switch state, byte-for-byte. (Sonnet review,
+        // PR #350.)
         const solveBlocked = solveReason({
           canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
-          hasSourceStock: card.units > 0, policyAtAnyStore, ruleOnAnywhere: armed, targetsError,
+          hasSourceStock: card.units > 0, policyAtAnyStore,
+          ruleOnAnywhere: isClothing(byId.get(card.pid)) ? armed : true, targetsError,
           // `.every` is vacuously true on an empty list, which would have called a
           // product with no usable catalogue size "one-size" and told the operator
           // to go and set a target for a size it does not have. (Sonnet, PR #342.)

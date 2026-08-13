@@ -25,24 +25,55 @@ import { sizeRank } from "./hubSizeRank";
 
 const STORES = ["marathon-pe", "trophy"];
 
-// ── GROUPING: exactly two chips — Sneakers and Clothing ──────────────────────
+// ── GROUPING: three chips — Clothing, Perfume, Sneakers ──────────────────────
 // Owner directive 2026-08-05: "remove the rest of the categories and just leave
 // sneakers and clothing which clothing is going to have everything in it."
 // This SUPERSEDES the 2026-08-04 per-subcategory directive (one chip per product
 // type) that PR #308 built — the operator found a row of ten chips slower to
 // work than one pile.
 //
-// So: every card in this list — bags, watches, t-shirts, tracksuits, and the
-// 45% with no subcategory at all — lands under ONE Clothing chip. Sneakers keep
-// their separate list (MissingFootwear) exactly as before. The uncategorised
-// pile is no longer split out; by the same directive it is simply part of
-// Clothing, and nothing is hidden — the Clothing chip IS the whole tab.
+// So: every clothing card in this list — bags, watches, t-shirts, tracksuits,
+// and the 45% with no subcategory at all — lands under ONE Clothing chip.
+// Sneakers keep their separate list (MissingFootwear) exactly as before. The
+// uncategorised pile is no longer split out; by the same directive it is simply
+// part of Clothing, and nothing is hidden — the Clothing chip IS the clothing
+// pile.
+//
+// PERFUME (owner directive 2026-08-13) gets its OWN chip rather than joining
+// the pile, for one load-bearing reason: the Clothing chip's count must stay
+// byte-for-byte what it was — the engine, the scan and the operator's mental
+// model all treat "clothing" as the isClothing() class, and folding perfume in
+// would change that number everywhere it is read. A perfume card is decided by
+// isPerfume() below; the two legacy records that carry BOTH categoryKey
+// "perfumes" AND productType "clothing" stay under Clothing (isClothing wins),
+// exactly where they appear today.
 //
 // groupOf keeps its shape ({ key, label }) so computeMissingProducts, the cards'
 // group/groupLabel fields, and NetworkTransfer's `c.group === category` filter
 // all work unchanged.
-export function groupOf() {
+export function groupOf(p) {
+  if (isPerfume(p) && !isClothing(p)) return { key: "perfume", label: "Perfume" };
   return { key: "clothing", label: "Clothing" };
+}
+
+// ── PERFUME — the second class this tab admits (owner directive 2026-08-13) ──
+// Perfume was invisible here, and the invisibility was total: a perfume short
+// at a shop could never be seen, never be solved, and its stock sat stranded at
+// Central indefinitely (6 products / 288 units measured 2026-08-13). The cause
+// is the isClothing() gate below — live perfume records carry NO productType at
+// all (the app form can't create them; they are script-written), and their only
+// size is the "_" sentinel, so both the flag branch and the garment-size
+// fallback say "not clothing".
+//
+// categoryKey === "perfumes" is the identity every live perfume record shares
+// (65/65 measured 2026-08-13; category "Perfume" and subcategory "Perfume" hold
+// only 63). It admits perfume and NOTHING else — deliberately narrow, because
+// the engine manages non-clothing only through explicit /stock_targets rows,
+// and perfume is the one non-clothing class the owner has armed rows for
+// (112 rows at marathon-pe + hub2). Widening this to other typeless categories
+// is an owner decision, not a code default.
+export function isPerfume(p) {
+  return !!p && p.categoryKey === "perfumes";
 }
 
 // Is this product clothing in the engine's sense? Byte-identical to
@@ -73,7 +104,10 @@ export function computeMissingProducts({ allStock, products } = {}) {
   const pids = new Set([...Object.keys(allStock?.central || {}), ...Object.keys(allStock?.hub2 || {})]);
   for (const pid of pids) {
     const p = byId.get(pid);
-    if (!isClothing(p)) continue;
+    // Clothing OR perfume — the two classes this tab owns. Footwear keeps its
+    // own list (missingFootwearCore); everything else stays out until the owner
+    // asks for it (see the isPerfume note on why the gate is this narrow).
+    if (!isClothing(p) && !isPerfume(p)) continue;
     const ce = sumAt("central", pid), h2 = sumAt("hub2", pid);
     const carriedDownstream = carries("marathon-pe", pid) || carries("trophy", pid);
     let source = null, kind = null;
@@ -106,15 +140,22 @@ export function countByCategory(cards) {
 }
 
 // ── the chip row itself ──────────────────────────────────────────────────────
-// Pure so it can be tested (the project has no component test runner). Two
-// FIXED chips, both always present: Clothing (every stranded non-sneaker card,
-// per the 2026-08-05 directive above) and Sneakers (its own list). Always
-// rendering both — even at 0 — keeps the row stable under the operator's finger
-// and guarantees chips[0] exists, which is what makes pickActiveTab's fallback
-// safe.
+// Pure so it can be tested (the project has no component test runner). Three
+// FIXED chips, all always present: Clothing (every stranded clothing card, per
+// the 2026-08-05 directive above), Perfume (2026-08-13), and Sneakers (its own
+// list). Always rendering all of them — even at 0 — keeps the row stable under
+// the operator's finger and guarantees chips[0] exists, which is what makes
+// pickActiveTab's fallback safe.
+//
+// The Clothing count is the GROUP count, not the card count — with perfume in
+// the list those are different numbers, and the Clothing chip must keep showing
+// exactly what it showed before perfume was admitted. On a clothing-only list
+// the two are equal, which is why the old `.length` was ever right.
 export function buildChips(cards, sneakerCount) {
+  const n = (key) => (cards || []).filter((c) => c?.group === key).length;
   return [
-    ["clothing", "Clothing", (cards || []).length],
+    ["clothing", "Clothing", n("clothing")],
+    ["perfume", "Perfume", n("perfume")],
     ["sneakers", "Sneakers", sneakerCount || 0],
   ];
 }
