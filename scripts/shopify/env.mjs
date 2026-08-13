@@ -39,3 +39,22 @@ export function requireEnv(name) {
   }
   return v;
 }
+
+// The ONE store this program talks to. SHOPIFY_SHOP is pinned to it: the token
+// grant posts CLIENT_SECRET to https://{shop}/… and the GraphQL client sends
+// the access token there — an unnoticed .env edit pointing at another host
+// would hand both to that host. Everything URL-building goes through here.
+const EXPECTED_SHOP = "nu3ei8-0p.myshopify.com";
+
+export function requireShop() {
+  const shop = requireEnv("SHOPIFY_SHOP");
+  if (shop !== EXPECTED_SHOP) {
+    console.error(
+      `SHOPIFY_SHOP is "${shop}" but this program only talks to ${EXPECTED_SHOP}. ` +
+        `Refusing to send credentials anywhere else; update EXPECTED_SHOP in ` +
+        `scripts/shopify/env.mjs if the store itself has genuinely changed.`
+    );
+    process.exit(2);
+  }
+  return shop;
+}

@@ -18,7 +18,7 @@
 // (a blind retry could create a product twice). Recovery is the caller's
 // re-run path, which reconciles by ID map / exact title instead of re-creating.
 import { getAccessToken, invalidateToken } from "./token.mjs";
-import { requireEnv } from "./env.mjs";
+import { requireShop } from "./env.mjs";
 
 export const API_VERSION = "2026-07";
 
@@ -26,7 +26,7 @@ const MAX_ATTEMPTS = 5;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export async function graphql(query, variables = {}, { mutation = false } = {}) {
-  const shop = requireEnv("SHOPIFY_SHOP");
+  const shop = requireShop();
   const url = `https://${shop}/admin/api/${API_VERSION}/graphql.json`;
 
   let attempt = 0;

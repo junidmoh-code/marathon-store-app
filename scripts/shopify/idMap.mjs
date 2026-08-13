@@ -82,6 +82,54 @@ export function planIdMapWrite(existing, mapping) {
   return newKeys.length ? { action: "merge", newKeys } : { action: "noop" };
 }
 
+// Atomically claim a Shopify product for ONE record: a single transaction on
+// the /shopify_sync parent verifies no other node references the gid AND
+// writes this record's pending {shopifyProductId} pointer — closing the
+// scan-then-write race two concurrent runs would otherwise have. The parent
+// transaction moves the whole node; fine at this slice's scale (handfuls),
+// revisit with a reverse index when the sync goes catalogue-wide. Throws if
+// the gid is already claimed elsewhere or this record maps to a different gid.
+export async function claimShopifyProduct(db, productId, shopifyProductId) {
+  assertSafeSegment(productId, "productId");
+  for (let attempt = 0; ; attempt++) {
+    let refusal = null;
+    const result = await db.ref("shopify_sync").transaction((all) => {
+      refusal = null;
+      const nodes = all || {};
+      for (const [pid, node] of Object.entries(nodes)) {
+        if (pid !== productId && node?.shopifyProductId === shopifyProductId) {
+          refusal = `already claimed by record ${pid}`;
+          return undefined; // abort
+        }
+      }
+      const mine = nodes[productId];
+      if (mine && mine.shopifyProductId !== shopifyProductId) {
+        refusal = `record already maps to ${mine.shopifyProductId}`;
+        return undefined;
+      }
+      if (mine) return all; // claim already held — commit unchanged
+      return { ...nodes, [productId]: { shopifyProductId } };
+    });
+    if (refusal) {
+      // Same stale-local-cache caveat as writeIdMap: confirm once against the
+      // server before treating the refusal as real.
+      if (attempt === 0) {
+        const server = (await db.ref("shopify_sync").get()).val() || {};
+        const clash = Object.entries(server).find(
+          ([pid, node]) =>
+            (pid !== productId && node?.shopifyProductId === shopifyProductId) ||
+            (pid === productId && node?.shopifyProductId !== shopifyProductId)
+        );
+        if (!clash) continue;
+        throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
+      }
+      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
+    }
+    if (!result.committed) throw new Error("claim transaction did not commit");
+    return;
+  }
+}
+
 // db = admin.database(). Returns the plan it executed.
 //
 // Runs as an RTDB TRANSACTION, not read-then-write: two concurrent writers

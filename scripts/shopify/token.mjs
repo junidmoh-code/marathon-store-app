@@ -12,7 +12,7 @@
 // The token is cached IN MEMORY ONLY and re-minted 5 minutes before expiry.
 // It is never written to disk and never logged; only expires_in / scope are
 // safe to print.
-import { requireEnv } from "./env.mjs";
+import { requireEnv, requireShop } from "./env.mjs";
 
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
@@ -30,7 +30,7 @@ export async function getAccessToken() {
 }
 
 async function mint() {
-  const shop = requireEnv("SHOPIFY_SHOP");
+  const shop = requireShop();
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: requireEnv("SHOPIFY_CLIENT_ID"),

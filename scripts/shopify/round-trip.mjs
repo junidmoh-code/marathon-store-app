@@ -20,7 +20,7 @@ import { graphql } from "./client.mjs";
 import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { shopifyTitle } from "./nameRewrite.mjs";
-import { buildMapping, writeIdMap } from "./idMap.mjs";
+import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -187,9 +187,11 @@ if (mapNode) {
     // Surface the ID before anything else can fail — if every later step dies,
     // the operator still has the created product's handle in the output.
     console.error(`created: ${shopifyProductId}`);
-    // Durable pointer FIRST: if the read-back below fails, a re-run finds this
-    // pending node (map-first check) and reconciles instead of re-creating.
-    await writeIdMap(db, productId, { shopifyProductId, variants: {} });
+    // Durable pointer FIRST — an atomic claim on the /shopify_sync parent: if
+    // the read-back below fails, a re-run finds this pending node (map-first
+    // check) and reconciles instead of re-creating; concurrent runs cannot
+    // both claim the same gid.
+    await claimShopifyProduct(db, productId, shopifyProductId);
   }
 }
 
@@ -285,6 +287,11 @@ const line = (r) => cols.map((k) => String(r[k]).padEnd(w(k))).join("  ");
 console.log(line(Object.fromEntries(cols.map((k) => [k, k]))));
 console.log(cols.map((k) => "-".repeat(w(k))).join("  "));
 for (const r of rows) console.log(line(r));
+
+// An adoption becomes durable only NOW — after the identity gate passed. The
+// claim is atomic on the /shopify_sync parent, so the advisory pre-adopt scan
+// racing another run cannot end in two records owning one gid.
+if (adopted) await claimShopifyProduct(db, productId, shopifyProductId);
 
 const mapping = buildMapping(shopifyProductId, rows);
 const plan = await writeIdMap(db, productId, mapping);

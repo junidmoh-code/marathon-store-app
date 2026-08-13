@@ -40,7 +40,9 @@ function stubFetch(gqlResponses) {
 
 async function freshClient() {
   vi.resetModules();
-  process.env.SHOPIFY_SHOP = "stub-shop.myshopify.com";
+  // Must be the pinned shop — requireShop() refuses anything else. fetch is
+  // stubbed, so no request ever leaves the process.
+  process.env.SHOPIFY_SHOP = "nu3ei8-0p.myshopify.com";
   process.env.SHOPIFY_CLIENT_ID = "stub-id";
   process.env.SHOPIFY_CLIENT_SECRET = "stub-secret";
   return import("./client.mjs");

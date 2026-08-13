@@ -3,7 +3,9 @@
 Slice 1 of the Shopify push program (app → concret.co.za, one-way). This document
 records the **live** shape of the catalogue as read from the code and a read-only
 census of RTDB on 2026-08-13, and proposes the ID-map fields the sync will need.
-Nothing in this slice writes to RTDB, ships a sync, or deploys anything.
+No sync ships and nothing deploys in this slice — but `round-trip.mjs --commit`
+DOES create one Shopify DRAFT product and write its ID map to
+`/shopify_sync/{productId}` (the only RTDB path this slice may touch).
 
 Program contract (fixed): the app is the source of truth for product data and
 stock; Shopify is the source of truth for orders only. Nothing flows back into
@@ -177,8 +179,9 @@ eyeballing a record in the console, at the cost of points 1–2 above. Also open
 node name `/shopify_sync` vs `/shopify/products`, and whether `syncedAt` /
 per-variant timestamps are wanted at all in slice 2.
 
-This slice writes **none** of these fields — the round-trip script prints the
-IDs and stops.
+Resolution: the dedicated `/shopify_sync/{productId}` node shipped (owner
+decision) — `idMap.mjs` writes `shopifyProductId` + per-encoded-size variant
+IDs on `round-trip.mjs --commit`; `syncedAt` stays deferred (note in §5 shape).
 
 ---
 

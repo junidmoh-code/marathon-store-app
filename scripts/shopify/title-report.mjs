@@ -2,7 +2,8 @@
 // READ-ONLY. Runs shopifyTitle over every /products name and prints the
 // products whose rewrite trips a guard (empty / digit-leading / <3 chars after
 // the brand strip) — the manual-naming worklist for the Shopify push. Nothing
-// is written anywhere; exit code is always 0 so it can run in a pipeline.
+// is written anywhere. A flagged count is NOT a failure (exit 0); only a
+// credential/RTDB error exits non-zero.
 //
 //   node scripts/shopify/title-report.mjs            counts + first 40 rows
 //   node scripts/shopify/title-report.mjs --all      every flagged row
