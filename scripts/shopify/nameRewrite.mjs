@@ -62,7 +62,7 @@ export const BRAND_PATTERNS = [
   P("calvin klein|kelvin klein|ck"),
   P("tommy hilfiger|tommy"),
   P("the north face|north face"),
-  P("off[\\s-]?white"),
+  P("off[\\s-]?white", "off-white"),
   P("true religion"),
   P("stone island"),
   P("ralph lauren|polo ralph(?: lauren)?", "ralph lauren"),

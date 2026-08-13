@@ -157,6 +157,11 @@ describe("stripBrandFromName — real catalogue names", () => {
     // not a fragment sliced out of the regex source
     expect(brandsIn("Dolce & Gabbana White Blue Denim")).toEqual(["dolce & gabbana"]);
     expect(brandsIn("Levi’s beanie navy #5")).toEqual(["levi's"]);
+    expect(brandsIn("Off-White hoodie")).toEqual(["off-white"]);
+    // every label must be a clean name, never regex syntax
+    for (const re of BRAND_PATTERNS) {
+      expect(re.label, `label for /${re.source}/`).not.toMatch(/[\\[\]()?:]/);
+    }
   });
 
   it("no pattern strips a kept line mark (list-level pin of the allowlist)", () => {

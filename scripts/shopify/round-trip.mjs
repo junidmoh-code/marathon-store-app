@@ -140,6 +140,17 @@ if (mapNode) {
       );
       process.exit(1);
     }
+    // Title alone is NOT identity (twin names exist). Without a SKU there is
+    // nothing durable to verify the candidate against, so a SKU-less record
+    // never auto-adopts — a human confirms in the admin and can hand-seed
+    // the map, or gives the record a SKU first.
+    if (!product.sku) {
+      console.error(
+        `Refusing to adopt ${exact[0].id}: record ${productId} has no SKU, so the ` +
+          `candidate can't be identity-checked beyond its title. Confirm by hand.`
+      );
+      process.exit(1);
+    }
     console.error(
       `Product with this exact title already exists (${exact[0].id}) and ` +
         `/shopify_sync/${productId} is empty — adopting it instead of creating.`
@@ -250,6 +261,16 @@ if (adopted && product.sku) {
     }
   }
 }
+// Adoption also demands an EXACT size match — drift tolerance is for products
+// we already own (reconcile), not for claiming an ambiguous same-title one:
+// a partial overlap is evidence this is somebody else's product, and writing
+// even the intersection would make the record its durable owner.
+if (adopted && (missing.length || extras.length)) {
+  hard.push(
+    `adopted product's variants don't exactly match the record ` +
+      `(missing: ${missing.join(", ") || "none"}; extra: ${extras.join(", ") || "none"})`
+  );
+}
 if (hard.length) {
   console.error(
     `Refusing to write the ID map: ${hard.join("; ")}. ` +
@@ -269,6 +290,23 @@ const mapping = buildMapping(shopifyProductId, rows);
 const plan = await writeIdMap(db, productId, mapping);
 console.log(`\n/shopify_sync/${productId} ← ID map (${plan.action}, ${rows.length} variants)`);
 console.log(JSON.stringify(mapping, null, 2));
+
+// Post-write uniqueness check: the pre-adopt ownership scan can race another
+// operator (scan → both see no owner → both write). A reverse index could
+// close that window but would grow the decided /shopify_sync node shape, so
+// this slice DETECTS the collision loudly instead — with a single operator
+// running one product at a time, detection is proportionate.
+const finalScan = (await db.ref("shopify_sync").get()).val() || {};
+const twins = Object.keys(finalScan).filter(
+  (pid) => pid !== productId && finalScan[pid]?.shopifyProductId === shopifyProductId
+);
+if (twins.length) {
+  console.error(
+    `🚨 ${shopifyProductId} is ALSO mapped by record(s) ${twins.join(", ")} — two ` +
+      `records now point at one Shopify product. Resolve by hand before any sync runs.`
+  );
+  process.exit(1);
+}
 
 if (missing.length || extras.length) {
   console.error(
