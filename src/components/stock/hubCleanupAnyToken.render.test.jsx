@@ -145,6 +145,12 @@ describe("any-token resolution in the count flow", () => {
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
     const after = textOf(tr);
+    // The CHOOSE panel specifically — the link panel also lists both products
+    // (fillToMin browses the whole catalogue), so the panel TITLE is the
+    // assertion that distinguishes "the human is asked to pick between
+    // owners" from "the scan fell through to browsing".
+    expect(after).toContain("One code, more than one product");
+    expect(after).not.toContain("link it");
     expect(after).toContain("Lacoster white");
     expect(after).toContain("Some Other Boot");
     expect(recordLabelCodes).not.toHaveBeenCalled();
