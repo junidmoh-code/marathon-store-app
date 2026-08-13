@@ -10,8 +10,10 @@
 //   3. The label's printed model name (meta.modelName) becomes suggestions.
 //   4. A token reading's below-band match candidates — previously discarded —
 //      surface as suggestions; the tap files addLabelAlias with the tokens.
-//   5. A code with no plausible relative shows the honest no-suggestions
-//      message and the name search still works.
+//   5. A code with no plausible relative STILL fills the panel — the closest
+//      catalogue rows under the honest "nothing matched closely" heading
+//      (owner spec 2026-08-13: a blank panel sends the operator back to name
+//      search, the duplicate-creating move) — and the name search still works.
 //   6. "Note as never registered" stays available below the suggestions.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
@@ -200,13 +202,34 @@ describe("the link panel's ranked suggestions", () => {
     expect(after).toContain("the label prints");
   });
 
-  it("a code with no plausible relative says so plainly and the name search still works", async () => {
+  it("THE SFA/SMA FLOOR CASE: a Lacoste label from another article family opens the panel with the shoe on top — same colour code", async () => {
+    // pAud is registered as 745SMA00421G; the label in hand prints the OTHER
+    // size band's family, 745SFA0005-21G — gender letters and length both
+    // differ, only the trailing colour code 21G survives (owner spec
+    // 2026-08-13, staff blocked mid-count).
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("745SFA0005-21G", null); });
+    const after = textOf(tr);
+    expect(after).toContain("Is it one of these");
+    expect(after).toContain("Lacoste Audysol White");
+    expect(after).toContain("same colour code 21G");
+    // And the tap files through the EXISTING alias door, nothing before it:
+    expect(recordLabelCodes).not.toHaveBeenCalled();
+    const row = buttonWith(tr, "Lacoste Audysol White");
+    await act(async () => { await row.props.onClick(); });
+    expect(recordLabelCodes).toHaveBeenCalledWith({ productId: "pAud", chosenCode: "745SFA000521G", otherCodes: [] });
+  });
+
+  it("a code with no plausible relative STILL fills the panel — closest rows, honest heading — and the name search still works", async () => {
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("CT8527-999", null); });
     const after = textOf(tr);
     expect(after).toContain("link it");
+    // NEVER EMPTY: the honest heading replaces the match claim, and every
+    // catalogue product (7 in this fixture) renders as a tappable row.
     expect(after).not.toContain("Is it one of these");
-    expect(after).toContain("No registered code or label reading is close");
+    expect(after).toContain("Nothing matched closely");
+    for (const p of PRODUCTS) expect(after).toContain(p.name);
     // Search still reaches everything:
     const search = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "This is the same shoe as…")[0];
     await act(async () => { search.props.onChange({ target: { value: "Audysol" } }); });

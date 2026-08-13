@@ -20,12 +20,25 @@
 //   8. Confusable folding is COMPARISON-ONLY: 742CFA0011264 (the real G→6
 //      floor misread) reaches the Gripshot family as a misread suggestion.
 //   9. A pendingStyleCode equal to the scan is the top suggestion.
+//  10. THE SFA/SMA FLOOR CASE (owner spec 2026-08-13): the label 745SMA004-21G
+//      in hand, the product registered 745SFA000521G — gender letters AND
+//      length differ, only the trailing colour code survives. The colourCode
+//      tier surfaces it near the top with "same colour code 21G" as the
+//      reason, while the AUTO-LINK rule (perSizeStyleCode.js) still refuses
+//      the same pair: the two thresholds are separate and must stay so.
+//  11. NEVER EMPTY: fillToMin pads the panel with honest "closest" rows from
+//      any non-empty catalogue; fillers never outrank a real tier; the
+//      default (no fillToMin) keeps the old empty-means-nothing contract.
+//  12. weak rows (brandSegment / substring / closest) are browsing evidence:
+//      flagged so the intake gate's BLOCKING step can ignore them, while
+//      colourCode is NOT weak — it is exactly the duplicate-minting label.
 import { describe, it, expect } from "vitest";
 import {
   buildLinkSuggestions, codeSuggestions, modelNameSuggestions, aliasSuggestions,
-  splitStyleCode, isOneEditApart, isTruncatedPair, foldConfusables,
-  TIER_SCORES, NAME_DF_CAP,
+  closestCandidates, splitStyleCode, isOneEditApart, isTruncatedPair, foldConfusables,
+  longestCommonSubstring, TIER_SCORES, NAME_DF_CAP,
 } from "./linkSuggestions.js";
+import { perSizeAutoCandidate, perSizeSiblingCodes } from "./perSizeStyleCode.js";
 
 const GRIPSHOTS = [
   { id: "g5", name: "Lacoste Gripshot Mid White", styleCodeNormalised: "742CFA00052G4", photoUrl: "p5.jpg" },
@@ -155,31 +168,131 @@ describe("alias candidates (claim 5)", () => {
 });
 
 describe("threshold honesty (claim 6)", () => {
-  it("a code with no plausible relative returns EMPTY — never a padded list", () => {
+  it("a code with no plausible relative returns EMPTY by default — the padded list is opt-in", () => {
     const out = buildLinkSuggestions({ kind: "code", normalised: "ZZ9QQ7XW1", products: [...NOISE, ...GRIPSHOTS] });
     expect(out).toEqual([]);
   });
 });
 
-describe("truncated reads (claim 7) — real floor scan 742CFA0007", () => {
-  it("742CFA0007 finds 742CFA00072G4 — the label lost its colour block to glare", () => {
-    const out = codeSuggestions("742CFA0007", GRIPSHOTS);
+describe("the SFA/SMA floor case (claim 10) — 2026-08-13, staff blocked mid-count", () => {
+  const AUDYSOL = { id: "aud", name: "Lacoste Audysol White", styleCodeNormalised: "745SFA000521G", photoUrl: "aud.jpg" };
+  it("scanning 745SMA004-21G suggests the product registered as 745SFA000521G at the top — same colour code 21G", () => {
+    const out = buildLinkSuggestions({ kind: "code", normalised: "745SMA00421G", products: [...NOISE, AUDYSOL, ...GRIPSHOTS] });
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].product.id).toBe("aud");
+    expect(out[0].tier).toBe("colourCode");
+    expect(out[0].reasons.join(" ")).toContain("same colour code 21G");
+  });
+  it("the SAME pair still refuses to auto-link — the tight threshold is a different rule in a different file", () => {
+    // perSizeStyleCode.js demands identical gender letters and an article
+    // block exactly one digit apart; SFA vs SMA fails clause 2 outright.
+    expect(perSizeSiblingCodes("745SMA00421G", "745SFA000521G")).toBe(false);
+    expect(perSizeAutoCandidate("745SMA00421G", [AUDYSOL])).toBe(null);
+  });
+  it("colourCode needs a shared lead — the same colour code on an unrelated brand family is not a suggestion", () => {
+    // Two nike-format codes sharing only the trailing 002: no shared prefix,
+    // no tier (colour codes like -100 repeat across half the catalogue).
+    const out = codeSuggestions("ZQ1111002", [{ id: "nk", name: "Nike P-6000 White", styleCodeNormalised: "HF5509002" }]);
+    expect(out.filter((s) => s.tier === "colourCode")).toEqual([]);
+  });
+  it("colourCode sits below misread but above the name tier's base — one char off is still stronger evidence", () => {
+    expect(TIER_SCORES.colourCode).toBeLessThan(TIER_SCORES.misread);
+    expect(TIER_SCORES.colourCode).toBeGreaterThan(TIER_SCORES.name);
+  });
+});
+
+describe("the loose browsing tiers (claim 12) — shared lead, shared fragment", () => {
+  it("a shared 4+ char lead in the same format is a weak brandSegment suggestion", () => {
+    // 745SMA00421G vs 745SMA0042A9 — the live navy/light-green pair: two
+    // chars apart (not misread), colours differ (not colourCode), lead of 10.
+    const out = codeSuggestions("745SMA00421G", [{ id: "nvy", name: "Lacoste Audyssey Navy", styleCodeNormalised: "745SMA0042A9" }]);
     expect(out.length).toBe(1);
+    expect(out[0].tier).toBe("brandSegment");
+    expect(out[0].weak).toBe(true);
+    expect(out[0].reason).toContain("745SMA0042");
+  });
+  it("a long shared fragment ANYWHERE is a weak substring suggestion; short fragments are refused", () => {
+    expect(longestCommonSubstring("742CFA00112G4", "888742CFA1111")).toBe("742CFA");
+    const out = codeSuggestions("742CFA00112G4", [{ id: "x", name: "Odd import", styleCodeNormalised: "888742CFA1111" }]);
+    expect(out.length).toBe(1);
+    expect(out[0].tier).toBe("substring");
+    expect(out[0].weak).toBe(true);
+    expect(out[0].reason).toContain("742CFA");
+    expect(codeSuggestions("742CF999999", [{ id: "x", name: "Odd", styleCodeNormalised: "888742CF11111" }])
+      .filter((s) => s.tier === "substring")).toEqual([]); // 5 shared < the floor of 6
+  });
+  it("every code-evidence tier outranks every weak tier's cap — weak rows can never displace evidence", () => {
+    for (const strong of ["family", "misread", "colourCode", "truncated", "name"]) {
+      expect(TIER_SCORES[strong]).toBeGreaterThan(40); // brandSegment's cap
+    }
+  });
+});
+
+describe("the panel is NEVER empty (claim 11) — fillToMin", () => {
+  const CATALOGUE = [...NOISE, ...GRIPSHOTS];
+  it("a scan with no plausible relative still yields rows from any non-empty catalogue, honestly labelled", () => {
+    const out = buildLinkSuggestions({ kind: "code", normalised: "ZZ9QQ7XW1", products: CATALOGUE, fillToMin: 10 });
+    expect(out.length).toBe(CATALOGUE.length); // 7 products — all it can supply
+    for (const s of out) {
+      expect(s.tier).toBe("closest");
+      expect(s.weak).toBe(true);
+      expect(s.score).toBeLessThanOrEqual(TIER_SCORES.closest);
+      expect(s.reasons.join(" ")).toMatch(/not a close match|never empty/);
+    }
+  });
+  it("fillers only pad the TAIL — real matches keep the top and their scores stay above every filler", () => {
+    const out = buildLinkSuggestions({ kind: "code", normalised: "742CFA00112G4", products: CATALOGUE, fillToMin: 10 });
+    expect(out.length).toBe(CATALOGUE.length);
+    expect(out.slice(0, 5).every((s) => s.tier === "family")).toBe(true);
+    const firstFiller = out.findIndex((s) => s.tier === "closest");
+    expect(firstFiller).toBe(5);
+    expect(out[4].score).toBeGreaterThan(out[5].score);
+  });
+  it("an empty catalogue is the ONE case that stays empty — there is nothing to show", () => {
+    expect(buildLinkSuggestions({ kind: "code", normalised: "ZZ9QQ7XW1", products: [], fillToMin: 10 })).toEqual([]);
+  });
+  it("closest rows say WHY they are there when any affinity exists — fragment or shared name words", () => {
+    const rows = closestCandidates({ normalised: "745SMA00421G", labelWords: ["GRIPSHOT"], products: GRIPSHOTS, limit: 10 });
+    expect(rows.length).toBe(5);
+    expect(rows[0].reason).toContain("its name shares");
+  });
+  it("excludeIds and merged-away products never resurface as fillers", () => {
+    const rows = closestCandidates({ normalised: "ZZ9QQ7XW1", products: [
+      ...GRIPSHOTS.map((p) => (p.id === "g5" ? { ...p, mergedInto: "elsewhere" } : p)),
+    ], excludeIds: ["g6"], limit: 10 });
+    expect(rows.map((r) => r.product.id).sort()).toEqual(["g12", "g16", "g7"]);
+  });
+});
+
+describe("truncated reads (claim 7) — real floor scan 742CFA0007", () => {
+  it("742CFA0007 finds 742CFA00072G4 on top — the rest of the family rides along as weak lead-sharers", () => {
+    const out = codeSuggestions("742CFA0007", GRIPSHOTS).sort((a, b) => b.score - a.score);
     expect(out[0].product.id).toBe("g7");
     expect(out[0].tier).toBe("truncated");
+    // The 2026-08-13 loosening: the other four Gripshots share an 8-9 char
+    // lead, so they surface too — weak, below the truncated hit.
+    expect(out.length).toBe(5);
+    expect(out.slice(1).every((s) => s.tier === "brandSegment" && s.weak === true)).toBe(true);
   });
-  it("a 6-char Nike body prefix is refused — below the 8-char floor it fans out across colourways", () => {
+  it("a 6-char Nike body prefix is never a truncated CLAIM — it fans out across colourways, so it rides as a weak row", () => {
     expect(isTruncatedPair("CT8527", "CT8527016")).toBe(false);
-    expect(codeSuggestions("CT8527", [{ id: "n", name: "Nike", styleCodeNormalised: "CT8527016" }])).toEqual([]);
+    // The 2026-08-13 loosening: it still SHOWS (the operator gets the body's
+    // colourways to browse, photos first) — but weak, never worded as a read.
+    const out = codeSuggestions("CT8527", [{ id: "n", name: "Nike", styleCodeNormalised: "CT8527016" }]);
+    expect(out.length).toBe(1);
+    expect(out[0].tier).toBe("substring");
+    expect(out[0].weak).toBe(true);
   });
 });
 
 describe("confusable folding (claim 8) — real floor scan 742CFA0011264", () => {
   it("G→6 misreads reach the family as misread suggestions, comparison-only", () => {
     const out = codeSuggestions("742CFA0011264", GRIPSHOTS);
-    const ids = out.map((s) => s.product.id).sort();
-    expect(ids).toEqual(["g12", "g16"]); // one edit after folding 2G4→264
-    expect(out.every((s) => s.tier === "misread")).toBe(true);
+    const misreads = out.filter((s) => s.tier === "misread").map((s) => s.product.id).sort();
+    expect(misreads).toEqual(["g12", "g16"]); // one edit after folding 2G4→264
+    // The 2026-08-13 loosening: the remaining family shares the 742CFA00 lead
+    // and rides along as weak rows underneath — never as misreads.
+    expect(out.filter((s) => s.tier !== "misread").every((s) => s.weak === true)).toBe(true);
   });
   it("folding never touches identity — an exact-after-fold code is NOT an exact match", () => {
     expect(foldConfusables("742CFA00122G4")).toBe("742CFA0012264");

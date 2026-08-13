@@ -52,12 +52,42 @@
 //                  candidates were previously discarded on the floor — here
 //                  they become visible, ranked below code and name evidence.
 //
+// ── THE TWO THRESHOLDS (owner spec 2026-08-13, the SFA/SMA incident) ─────────
+// SUGGESTING is cheap and LOOSE — a wrong suggestion costs the operator a
+// glance at a photo. AUTO-LINKING is dangerous and TIGHT — it acts silently.
+// The tight threshold lives in perSizeStyleCode.js (perSizeAutoCandidate:
+// exactly one digit apart, exactly one candidate, cluster-refusal) and is NOT
+// used by anything in this file. This file is the loose threshold, and it got
+// looser after the live count proved the confident tiers alone still dead-end:
+// the shoe registered as 745SFA000521G rejected its own label 745SMA004-21G —
+// Lacoste splits ONE shoe across article families by size band (SFA vs SMA),
+// so gender letters and length both differ and only the trailing colour code
+// survives. Hence three LOOSE tiers below the confident ones:
+//
+//   COLOUR-CODE    same format, identical printed colour segment, shared
+//                  leading segment (≥3 chars) — the SFA/SMA case. Strong
+//                  enough to sit just under misread; NOT flagged weak, so the
+//                  intake gate's pre-duplicate question fires on it too (this
+//                  is exactly the label that used to sail into the create
+//                  form and mint a duplicate).
+//   BRAND-SEGMENT  same format, shared leading segment ≥4 chars. weak: true.
+//   SUBSTRING      longest common substring ≥6 anywhere in the code.
+//                  weak: true.
+//
+// weak: true marks rows for BROWSING, not evidence: the link panel shows
+// them, but StyleCodeGate's blocking pre-duplicate step ignores them (else
+// every registration would trip an interstitial of prefix-cousins).
+//
+// And the fallback: buildLinkSuggestions({ fillToMin: N }) pads the result to
+// N rows with the CLOSEST catalogue candidates (tier "closest", honest reason,
+// score capped under every real tier) — the count panel passes 10 so it is
+// NEVER empty while the catalogue holds anything. Callers that need the old
+// "empty means nothing plausible" contract simply don't pass fillToMin.
+//
 // Cross-validated against every live code as a synthetic scan: no confident
 // tier ever puts a mismatched-colour candidate on top. ZERO extra reads: the
 // catalogue is the in-memory prop, the alias candidates rode the match call
-// the flow already made. If nothing scores, the caller says so plainly and
-// falls through to search — a weak suggestion is never dressed up as a
-// confident one.
+// the flow already made. Everything here is still SUGGEST, NEVER DECIDE.
 
 import { normaliseStyleCode, styleCodeFormat, formatStyleCodeForDisplay } from "./styleCode.js";
 import { isMergedAway } from "./mergedProducts.js";
@@ -69,11 +99,24 @@ export const TIER_SCORES = Object.freeze({
   pendingExact: 100,
   family: 90,        // + (2 - artDiff) * 3  → 93 for one digit apart, 90 for two
   misread: 60,
+  colourCode: 57,    // the SFA/SMA tier — just under misread, above name's base
   truncated: 55,
   name: 50,          // + 2 per extra distinctive token hit, capped at 58
   alias: 20,         // + containment * 25, capped at 45
   colourway: 30,
+  brandSegment: 28,  // + 2 per shared prefix char beyond 4, capped at 40. weak
+  substring: 12,     // + 3 per shared char beyond 6, capped at 27. weak
+  closest: 10,       // CAP for fillToMin fallback rows — under every real tier
 });
+
+// Loose-tier floors — measured against the live catalogue, not guessed:
+// colour+prefix needs 3 shared leading chars (745S… shares 4 in the SFA/SMA
+// case; 2 would pair every DD-prefix Nike with every white colourway);
+// prefix-only needs 4; a bare shared substring needs 6 (5 pairs half the
+// Lacoste catalogue via "SMA0").
+export const COLOUR_PREFIX_MIN = 3;
+export const BRAND_SEGMENT_MIN = 4;
+export const SUBSTRING_MIN = 6;
 
 // A name-token that appears in more product names than this is a brand or
 // category word, not a model name — it identifies nothing.
@@ -112,6 +155,31 @@ export function splitStyleCode(code) {
     if (m) return { format: f, body: m[1], colour: m[2] };
   }
   return { format: f, body: code, colour: "" };
+}
+
+const commonPrefixLen = (a, b) => {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+};
+
+/** Longest common substring (contiguous) — the shared fragment itself. */
+export function longestCommonSubstring(a, b) {
+  if (!a || !b) return "";
+  let best = 0, end = 0;
+  let prev = new Array(b.length + 1).fill(0);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = new Array(b.length + 1).fill(0);
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        cur[j] = prev[j - 1] + 1;
+        if (cur[j] > best) { best = cur[j]; end = i; }
+      }
+    }
+    prev = cur;
+  }
+  return a.slice(end - best, end);
 }
 
 const hamming = (a, b) => {
@@ -228,6 +296,33 @@ export function codeSuggestions(scanNormalised, products, { includeExact = false
       if (isTruncatedPair(scan, code)) {
         hits.push({ product: p, code, field, tier: "truncated", score: TIER_SCORES.truncated,
                     reason: `reads like its registered code ${formatStyleCodeForDisplay(code)} with the end cut off — labels lose their last characters to glare. Check the photo.` });
+        continue;
+      }
+      // ── LOOSE TIERS from here down (see the header) — suggesting is cheap ──
+      const prefixLen = commonPrefixLen(scan, code);
+      // COLOUR-CODE — the SFA/SMA case: same format, identical printed colour
+      // segment, shared lead. Lengths may DIFFER (745SFA000521G is 13 chars,
+      // 745SMA00421G is 12) — that mismatch is exactly why the family tier
+      // could never reach this pair.
+      if (ss.format && ss.format === sc.format && ss.colour && ss.colour === sc.colour
+          && prefixLen >= COLOUR_PREFIX_MIN) {
+        hits.push({ product: p, code, field, tier: "colourCode", score: TIER_SCORES.colourCode,
+                    reason: `same colour code ${ss.colour} — its registered code is ${formatStyleCodeForDisplay(code)}, and some brands split one shoe across code families by size. Check the photo.` });
+        continue;
+      }
+      // BRAND-SEGMENT — the codes start the same way. Browsing evidence only.
+      if (ss.format && ss.format === sc.format && prefixLen >= BRAND_SEGMENT_MIN) {
+        hits.push({ product: p, code, field, tier: "brandSegment", weak: true,
+                    score: Math.min(TIER_SCORES.brandSegment + (prefixLen - BRAND_SEGMENT_MIN) * 2, 40),
+                    reason: `same code family — both start ${scan.slice(0, prefixLen)}… (registered as ${formatStyleCodeForDisplay(code)})` });
+        continue;
+      }
+      // SUBSTRING — a long shared fragment anywhere. Browsing evidence only.
+      const frag = longestCommonSubstring(scan, code);
+      if (frag.length >= SUBSTRING_MIN) {
+        hits.push({ product: p, code, field, tier: "substring", weak: true,
+                    score: Math.min(TIER_SCORES.substring + (frag.length - SUBSTRING_MIN) * 3, 27),
+                    reason: `shares “${frag}” with its registered code ${formatStyleCodeForDisplay(code)}` });
       }
     }
   }
@@ -295,6 +390,52 @@ export function aliasSuggestions(candidates, products, excludeIds = []) {
 }
 
 /**
+ * The NEVER-EMPTY fallback (owner spec 2026-08-13): when the real tiers found
+ * fewer than the panel wants to show, rank the WHOLE in-memory catalogue by
+ * whatever weak affinity exists — longest shared code fragment (≥3 chars),
+ * shared label/name words INCLUDING brand words (a brand word is useless as
+ * evidence but fine for browsing: "same brand, similar name") — and return the
+ * closest, honestly labelled. Scores are capped under every real tier so a
+ * filler can never outrank evidence. Falling back to a blank search box is the
+ * failure this exists to fix: the operator hunted BY NAME and made duplicates.
+ */
+export function closestCandidates({ normalised, labelWords, products, excludeIds, limit = 10 }) {
+  const scan = normaliseStyleCode(normalised);
+  const toks = [...new Set(nameTokens(Array.isArray(labelWords) ? labelWords.join(" ") : labelWords || ""))]
+    .filter((t) => !GENERIC_LABEL_TOKENS.has(t) && !/^\d+$/.test(t));
+  const excluded = new Set(excludeIds || []);
+  const rows = [];
+  for (const p of products || []) {
+    if (!p || !p.id || isMergedAway(p) || excluded.has(p.id)) continue;
+    let frag = "";
+    if (scan) {
+      for (const { code } of productCodes(p)) {
+        const f = longestCommonSubstring(scan, code);
+        if (f.length > frag.length) frag = f;
+      }
+    }
+    const nameSet = new Set(nameTokens(p.name));
+    const sharedWords = toks.filter((t) => nameSet.has(t));
+    const raw = (frag.length >= 3 ? frag.length : 0) + sharedWords.length * 2;
+    const bits = [];
+    if (frag.length >= 3) bits.push(`its code shares “${frag}”`);
+    if (sharedWords.length) bits.push(`its name shares “${sharedWords.join(" ")}”`);
+    rows.push({
+      product: p, code: normaliseStyleCode(p.styleCodeNormalised) || null,
+      field: p.styleCodeNormalised ? "confirmed" : null,
+      tier: "closest", weak: true, raw,
+      score: Math.min(TIER_SCORES.closest, raw),
+      reason: bits.length
+        ? `not a close match — but ${bits.join(" and ")}`
+        : `no code or name overlap — shown so the list is never empty`,
+    });
+  }
+  rows.sort((a, b) => b.raw - a.raw
+    || String(a.product.name || "").localeCompare(String(b.product.name || "")));
+  return rows.slice(0, limit).map(({ raw, ...r }) => ({ ...r, reasons: [r.reason] }));
+}
+
+/**
  * THE entry point: everything the link panel knows about this label, ranked.
  *
  *   kind "code":   normalised (+ modelName when the OCR carried one)
@@ -302,11 +443,15 @@ export function aliasSuggestions(candidates, products, excludeIds = []) {
  *                  excludeIds for candidates the operator already rejected)
  *
  * Deduped by product — a product hit through several tiers keeps its best
- * score and shows every reason. Sorted best-first. An EMPTY return means
- * nothing plausible exists and the caller must say so honestly — never pad
- * this list to avoid the message.
+ * score and shows every reason. Sorted best-first.
+ *
+ * fillToMin = 0 (the default) keeps the old contract: an EMPTY return means
+ * nothing plausible exists and the caller says so honestly. fillToMin = N
+ * pads the tail with closestCandidates rows (tier "closest", weak, honestly
+ * worded) so the COUNT panel is never empty — a filler never outranks a real
+ * tier, and the row's reason never dresses it up as one.
  */
-export function buildLinkSuggestions({ kind, normalised, modelName, tokens, aliasCandidates, excludeIds, products, includeExact = false }) {
+export function buildLinkSuggestions({ kind, normalised, modelName, tokens, aliasCandidates, excludeIds, products, includeExact = false, fillToMin = 0 }) {
   let hits = [];
   if (kind === "code") {
     hits = hits.concat(codeSuggestions(normalised, products, { includeExact }));
@@ -328,7 +473,18 @@ export function buildLinkSuggestions({ kind, normalised, modelName, tokens, alia
     const prev = byId.get(h.product.id);
     if (!prev) { byId.set(h.product.id, { ...h, reasons: [h.reason] }); continue; }
     if (!prev.reasons.includes(h.reason)) prev.reasons.push(h.reason);
-    if (h.score > prev.score) { prev.score = h.score; prev.tier = h.tier; prev.code = h.code; prev.field = h.field; }
+    // The best tier owns the row — including its weak/strong standing.
+    if (h.score > prev.score) { prev.score = h.score; prev.tier = h.tier; prev.code = h.code; prev.field = h.field; prev.weak = h.weak; }
   }
-  return [...byId.values()].sort((a, b) => b.score - a.score);
+  const ranked = [...byId.values()].sort((a, b) => b.score - a.score);
+  if (fillToMin > 0 && ranked.length < fillToMin) {
+    return ranked.concat(closestCandidates({
+      normalised: kind === "code" ? normalised : "",
+      labelWords: [modelName, ...(Array.isArray(tokens) ? tokens : [])].filter(Boolean),
+      products,
+      excludeIds: [...(excludeIds || []), ...ranked.map((h) => h.product.id)],
+      limit: fillToMin - ranked.length,
+    }));
+  }
+  return ranked;
 }
