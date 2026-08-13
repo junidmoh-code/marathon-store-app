@@ -74,6 +74,37 @@ test("rail renders name, special price and struck was-price", () => {
   expect(text).toContain("SPECIAL");
 });
 
+test("marquee → static: the strip's imperative transform is cleared", () => {
+  // 6 specials overflow the 1920px mock container → marquee mode drives the
+  // strip with an imperative translateX. Shrinking to 1 special flips the
+  // rail static — the effect cleanup must wipe the leftover transform or the
+  // centred rail stays shifted off-screen (CodeRabbit PR #362 finding).
+  const many = Array.from({ length: 6 }, (_, i) => ({
+    id: `p${i}`, name: `S${i}`, price: 100 + i, startedAt: `2026-08-0${i + 1}`,
+  }));
+  const nodes = [];
+  const origRaf = globalThis.requestAnimationFrame;
+  const origCaf = globalThis.cancelAnimationFrame;
+  let rafCalls = 0;
+  globalThis.requestAnimationFrame = (cb) => { rafCalls += 1; if (rafCalls === 1) cb(); return rafCalls; };
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    let tree;
+    act(() => {
+      tree = create(<TvSpecialsRail specials={many} />, {
+        createNodeMock: () => { const n = { offsetWidth: 1920, style: {} }; nodes.push(n); return n; },
+      });
+    });
+    const strip = nodes.find((n) => (n.style.transform || "").includes("translateX"));
+    expect(strip, "marquee should have set a translateX transform").toBeTruthy();
+    act(() => { tree.update(<TvSpecialsRail specials={many.slice(0, 1)} />); });
+    expect(strip.style.transform).toBe("");
+  } finally {
+    globalThis.requestAnimationFrame = origRaf;
+    globalThis.cancelAnimationFrame = origCaf;
+  }
+});
+
 test("no specials → the rail renders nothing at all", () => {
   let tree;
   act(() => { tree = create(<TvSpecialsRail specials={[]} />, { createNodeMock: NODE_MOCK }); });

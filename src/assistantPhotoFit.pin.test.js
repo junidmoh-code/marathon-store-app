@@ -20,10 +20,15 @@ test("AssistantDesktop Photo helper contains (never crops) the product image", (
   expect(helper[0]).not.toContain('"cover"');
 });
 
-test(".ad-thumb is a square stage, not a 16/11 crop box", () => {
-  const rule = app.match(/\.ad-thumb\{[^}]*\}/);
-  expect(rule, ".ad-thumb rule should exist").toBeTruthy();
-  expect(rule[0]).toContain("aspect-ratio:1/1");
+test(".ad-thumb is a square stage, not a 16/11 crop box — in EVERY declaration", () => {
+  // Check every .ad-thumb rule so a later override can't quietly restore the
+  // crop box (CodeRabbit PR #362 finding).
+  const rules = [...app.matchAll(/\.ad-thumb\{[^}]*\}/g)].map((m) => m[0]);
+  expect(rules.length, ".ad-thumb rule should exist").toBeGreaterThan(0);
+  for (const rule of rules) {
+    expect(rule).toContain("aspect-ratio:1/1");
+    expect(rule).not.toContain("16/11");
+  }
 });
 
 test("narrow-layout photo card contains its image in the 140px box", () => {

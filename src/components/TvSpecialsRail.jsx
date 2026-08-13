@@ -124,7 +124,12 @@ export default function TvSpecialsRail({ specials }) {
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      // Drop the imperative offset: when the rail goes back to static (fewer
+      // specials now fit), the strip must not stay shifted off-screen.
+      el.style.transform = "";
+    };
   }, [copies, base]);
 
   if (!count) return null; // clean empty state — caller falls back to the conveyor

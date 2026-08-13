@@ -32,9 +32,16 @@ test("text layout: keys emit chars, shift uppercases exactly one key", () => {
   const onKey = vi.fn();
   let tree;
   act(() => { tree = create(<OnScreenKeyboard layout="text" onKey={onKey} />); });
+  const shiftBtn = () =>
+    tree.root.findAllByType("button").find((b) => b.props["aria-label"] === "Shift");
+  expect(shiftBtn().props["aria-pressed"]).toBe(false);
   tap(tree, "a");
   tap(tree, "Shift");
-  tap(tree, "b");           // shifted
+  expect(shiftBtn().props["aria-pressed"]).toBe(true);
+  // While shifted, assistive tech must be told the key emits the UPPERCASE
+  // character — the aria-label itself flips to "B".
+  tap(tree, "B");           // shifted
+  expect(shiftBtn().props["aria-pressed"]).toBe(false);
   tap(tree, "c");           // shift must have reset
   expect(onKey.mock.calls.map((c) => c[0])).toEqual(["a", "B", "c"]);
 });

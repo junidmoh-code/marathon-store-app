@@ -81,10 +81,11 @@ export default function OnScreenKeyboard({
   // the input the parent is filling.
   const noFocusSteal = (e) => e.preventDefault();
 
-  const Key = ({ label, onTap, wide, active, disabled, ariaLabel }) => (
+  const Key = ({ label, onTap, wide, active, disabled, ariaLabel, ariaPressed }) => (
     <button
       type="button"
       aria-label={ariaLabel || label}
+      aria-pressed={ariaPressed}
       disabled={disabled}
       onPointerDown={noFocusSteal}
       onMouseDown={noFocusSteal}
@@ -134,11 +135,13 @@ export default function OnScreenKeyboard({
             <div key={i} style={rowStyle}>
               {row.map((k) =>
                 k === "⇧" ? (
-                  <Key key={k} label="⇧" ariaLabel="Shift" active={shift} onTap={() => setShift(s => !s)} />
+                  <Key key={k} label="⇧" ariaLabel="Shift" ariaPressed={shift} active={shift} onTap={() => setShift(s => !s)} />
                 ) : k === "⌫" ? (
                   <Key key={k} label="⌫" ariaLabel="Backspace" onTap={() => onBackspace && onBackspace()} />
                 ) : (
-                  <Key key={k} label={shift ? k.toUpperCase() : k} ariaLabel={k} onTap={() => press(k)} />
+                  // aria-label tracks the SHIFTED character so assistive tech
+                  // announces exactly what the key will emit.
+                  <Key key={k} label={shift ? k.toUpperCase() : k} ariaLabel={shift ? k.toUpperCase() : k} onTap={() => press(k)} />
                 )
               )}
             </div>
