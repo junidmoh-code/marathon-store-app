@@ -1,26 +1,26 @@
 // ── One-product round trip: RTDB → Shopify product with one variant/size ─────
-// Reads ONE product from RTDB (READ-ONLY — this script never writes RTDB),
-// maps it to a Shopify productSet payload, and:
+// Reads ONE product from RTDB, maps it to a Shopify productSet payload, and:
 //
 //   node scripts/shopify/round-trip.mjs <productId>            dry run —
 //       prints the exact payload that WOULD be sent, and nothing else.
 //   node scripts/shopify/round-trip.mjs <productId> --commit   creates the
 //       product ONCE, reads it back, prints productId + every variantId and
-//       inventoryItemId as a table, then stops.
-//
-// The returned IDs are printed only — persisting them into RTDB is a later
-// slice, blocked on the ID-map naming decision in docs/SHOPIFY-SYNC.md §5.
+//       inventoryItemId as a table, writes the ID map to
+//       /shopify_sync/<productId> (idMap.mjs — idempotent, never clobbers),
+//       then stops.
 //
 // Safety rails:
 //   • Created as status DRAFT — never visible on the storefront.
 //   • Refuses to --commit if a product with the identical title already
 //     exists on the shop (guards against accidental duplicates on re-run).
-//   • RTDB access is read-only via ADC (same pattern as scripts/*.mjs).
+//   • RTDB via ADC: reads /products, writes ONLY /shopify_sync (the sole RTDB
+//     path this whole slice may touch). Never /products, /stock or /barcodes.
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey } from "../../src/utils/sizeKey.js";
 import { sortSizes } from "./sizeOrder.mjs";
 import { shopifyTitle } from "./nameRewrite.mjs";
+import { buildMapping, writeIdMap } from "./idMap.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -135,8 +135,11 @@ const p = back.product;
 console.log(`created (status ${p.status}): ${p.title}`);
 console.log(`productId: ${p.id}`);
 console.log("");
+// Variant titles are DISPLAY values ("One Size"); the ID map must key by the
+// original catalogue size token, so map display → size before building it.
+const sizeByDisplay = new Map(sizes.map((s) => [sizeName(s), s]));
 const rows = p.variants.nodes.map((v) => ({
-  size: v.title,
+  size: sizeByDisplay.get(v.title) ?? v.title,
   variantId: v.id,
   inventoryItemId: v.inventoryItem?.id ?? "",
 }));
@@ -146,7 +149,9 @@ const line = (r) => cols.map((k) => String(r[k]).padEnd(w(k))).join("  ");
 console.log(line(Object.fromEntries(cols.map((k) => [k, k]))));
 console.log(cols.map((k) => "-".repeat(w(k))).join("  "));
 for (const r of rows) console.log(line(r));
-console.log(
-  "\nIDs printed only — NOT written to RTDB (naming decision pending, docs/SHOPIFY-SYNC.md §5)."
-);
+
+const mapping = buildMapping(shopifyProductId, rows);
+const plan = await writeIdMap(admin.database(), productId, mapping);
+console.log(`\n/shopify_sync/${productId} ← ID map (${plan.action})`);
+console.log(JSON.stringify(mapping, null, 2));
 process.exit(0);
