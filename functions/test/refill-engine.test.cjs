@@ -1838,8 +1838,13 @@ const CAT_PRODUCTS = {
   beanie1: { name: "Nike beanie brown", productType: "clothing", categoryKey: "caps-beanies", subcategory: "Caps & Hats", sizes: ["_"] },
   capLegacy: { name: "Lacoste cap", productType: "clothing", categoryKey: "caps-beanies", subcategory: "Caps & Hats", sizes: ["M"] },
   fitted1: { name: "TC fitted cap navy/red", productType: "clothing", categoryKey: "fitted-caps", subcategory: "Caps & Hats", sizes: ["S", "M", "XXXL"] },
-  p1: PRODUCTS.p1,   // the unmapped clothing control
-  shoe1: { name: "Air Zoom", category: "Footwear", sizes: ["8"] },
+  // The unmapped controls carry REAL categoryKeys — an unmapped KEY, not a
+  // missing one, is the case a sloppy map lookup would wrongly match.
+  p1: { ...PRODUCTS.p1, categoryKey: "t-shirts" },
+  shoe1: { name: "Air Zoom", category: "Footwear", categoryKey: "sneakers", sizes: ["8"] },
+  // A one-size NON-mapped class: the exact record a sloppy lookup would arm,
+  // because "_" is the size a one-size map entry speaks for.
+  belt1: { name: "Belt Premium", productType: "clothing", categoryKey: "belts", sizes: ["_"] },
 };
 const catCtx = (over = {}) => ({
   targets: {}, config: CAT_CONFIG, products: CAT_PRODUCTS,
@@ -1941,6 +1946,7 @@ test("category policy: unmapped clothing and footwear resolve BYTE-FOR-BYTE as w
   for (const [dest, pid, size] of [
     ["marathon-pe", "p1", "M"], ["marathon-pe", "p1", "L"], ["trophy", "p1", "M"],
     ["hub2", "shoe1", "8"], ["marathon-pe", "shoe1", "8"],
+    ["marathon-pe", "belt1", "_"], ["hub2", "belt1", "_"],
   ]) {
     assert.deepEqual(resolveTarget(withMap, dest, pid, size), resolveTarget(noMap, dest, pid, size),
       `${dest}/${pid}/${size} must be untouched by the map`);
