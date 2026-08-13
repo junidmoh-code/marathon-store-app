@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue } from "react";
-import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt } from "firebase/database";
+import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -28,6 +28,8 @@ import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import TvDisplayMockup from "./components/TvDisplayMockup";
+import { useSpecials } from "./components/TvSpecialsRail";
+import { TV_ORDER_KEY_START, TV_ORDER_KEY_END } from "./utils/tvOrdersRange";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
 import DisplayChecks from "./pages/DisplayChecks";
@@ -794,6 +796,44 @@ function useOrders(scopeShop = null) {
     return () => unsub();
   }, [authReady, scopeShop]);
 
+  return orders;
+}
+
+// ─── TV ORDERS (BANDWIDTH-SCOPED) ────────────────────────────────────────────
+// The always-on TV kiosk's variant of useOrders: an orderByKey range that
+// keeps customer orders (numeric daily keys "001"…"999") and excludes the
+// clothing-refill carts (keys "R###-…") SERVER-SIDE. The TV never showed
+// refill rows anyway (TvWithAutoCollect drops customerName === "Shop Refill"),
+// but the full-node listen still downloaded them — measured 2026-08-13:
+// 2,150 KB per sync, of which only 465 KB were customer orders, re-paid on
+// every kiosk boot/auto-update reload. See src/utils/tvOrdersRange.js for
+// the range's correctness argument. Key queries need no .indexOn, and the
+// live /orders rule allows any query for users with no destShop pin (the
+// anonymous TV session). Same sorted-array shape as useOrders; the legacy
+// {items:[…]} migration is long done (every live key is per-id), so the
+// migration branch is deliberately absent here.
+function useTvOrders() {
+  const authReady = useAuthReady();
+  const [orders, setOrders] = useState([]);
+  useEffect(() => {
+    if (!authReady) return;
+    const readRef = query(
+      ref(database, "orders"),
+      orderByKey(), startAt(TV_ORDER_KEY_START), endAt(TV_ORDER_KEY_END)
+    );
+    const unsub = onValue(readRef, (snap) => {
+      const data = snap.val();
+      setOrders(
+        data
+          ? Object.values(data).filter(Boolean)
+              .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+          : []
+      );
+    }, (err) => {
+      console.warn("Firebase read error on /orders (TV key range):", err);
+    });
+    return () => unsub();
+  }, [authReady]);
   return orders;
 }
 
@@ -17743,6 +17783,11 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
     .filter(Boolean), [laybyPulls]);
   const allOrders = useMemo(() => [...(orders || []), ...laybyOrders], [orders, laybyOrders]);
 
+  // Live specials for the advertising band (fail-open inside the hook: an
+  // unreadable /specials just leaves the rail off). Subscribed here so BOTH
+  // TV mounts (#tv kiosk and the in-app DISPLAY role) carry the ads.
+  const specials = useSpecials();
+
   // ── TV AUTO-UPDATE ──────────────────────────────────────────────────────────
   // A kiosk TV is never manually reloaded, so a deploy otherwise never reaches it
   // (the page keeps running the in-memory bundle it loaded hours ago — which is
@@ -17845,7 +17890,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
 
   return (
     <>
-      <TvDisplayMockup orders={filteredOrders} onExit={onExit} />
+      <TvDisplayMockup orders={filteredOrders} specials={specials} onExit={onExit} />
       {/* Audio-unlock tap ONLY (browsers block audio until one user gesture per page
           load). Shows until tapped once, then disappears entirely — there is no
           persistent mute toggle. After the tap, announcements play from the preloaded
@@ -17875,7 +17920,7 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
 // auth that AuthGate kicks off; renders the bare TV display with no admin
 // chrome, no role selector, no login screen.
 function TvOnlyShell() {
-  const orders = useOrders();
+  const orders = useTvOrders(); // key-range scoped — see useTvOrders
   // Hidden top-right double-tap leaves the #tv kiosk URL → back to the normal app.
   return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
 }
