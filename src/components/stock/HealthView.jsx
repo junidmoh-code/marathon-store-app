@@ -24,6 +24,7 @@ import {
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
+  useHiddenMissingProducts,
 } from "./useStock";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
@@ -40,6 +41,8 @@ import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
+import { partitionHidden } from "./hiddenProductsCore";
+import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
@@ -369,10 +372,25 @@ export default function HealthView({ products = [], onExit }) {
     () => (allStock && Object.keys(allStock).length ? computeMissingProducts({ allStock, products }) : null),
     [allStock, products],
   );
+  // ── HIDE — a view filter, strictly DOWNSTREAM of the compute ───────────────
+  // computeMissingProducts stays the single unforked source; hiding partitions
+  // its output here, so the chips, the headline count and the list all read
+  // the same visible set and cannot drift. The hidden set is one small node
+  // (/settings/missingProductsHidden — hiddenProductsCore.js); a null map
+  // (loading or unreadable) fails open to "nothing hidden". Hiding changes
+  // NOTHING the engine or the scan reads — a hidden product still refills.
+  const hiddenMap = useHiddenMissingProducts();
+  const { visible: missingVisible } = useMemo(
+    () => partitionHidden(missingProductCards || [], hiddenMap),
+    [missingProductCards, hiddenMap],
+  );
   // Clothing AND perfume cards (2026-08-13) — everything the NetworkTransfer
   // list renders. Named for what it is NOT (sneakers), because the headline sum
   // below adds the sneaker list on top and must count every card exactly once.
-  const missingNonSneaker = missingProductCards?.length ?? null;
+  // VISIBLE cards only (2026-08-13): a hidden product leaves the list and every
+  // count that describes the list — dashboard tile, drill-in badge, chips —
+  // in the same render. Null-while-loading is preserved from the raw compute.
+  const missingNonSneaker = missingProductCards == null ? null : missingVisible.length;
   // SNEAKERS are computed CLIENT-SIDE from live /stock, deliberately, not from the
   // scan's exception buckets: the engine's Health loop is clothing-only
   // (`if (!isClothing(...)) continue` — "sneakers never appear in Health"), so a
@@ -445,8 +463,13 @@ export default function HealthView({ products = [], onExit }) {
         // Three fixed chips — Clothing (owner directive 2026-08-05), Perfume
         // (2026-08-13) and Sneakers (its own list). All always render, even at
         // 0, so the row never reshuffles under the operator.
-        const chips = buildChips(missingProductCards || [], missingSneakerCards.length);
-        const activeTab = pickActiveTab(chips, missingTab);
+        // The Hidden tab is NOT in the chip list — its entrance is the
+        // unlabelled HoldSpot below, so pickActiveTab (which only knows the
+        // visible chips) is bypassed for it. Leaving the tab any normal way
+        // (tapping a chip) drops back to chip-world and the Hidden chip
+        // disappears again.
+        const chips = buildChips(missingVisible, missingSneakerCards.length);
+        const activeTab = missingTab === "hidden" ? "hidden" : pickActiveTab(chips, missingTab);
         return (
           <DetailShell title="Missing Products" sub="Stranded upstream — pick sizes, pick a destination, transfer" count={missingProducts ?? "—"} onBack={back}>
             <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
@@ -461,10 +484,31 @@ export default function HealthView({ products = [], onExit }) {
                   {label} ({n})
                 </button>
               ))}
+              {/* Once OPEN the hidden tab announces itself — the discretion is
+                  about the entrance, not about pretending the screen you are
+                  on doesn't exist. Leaving via any chip hides it again. */}
+              {activeTab === "hidden" && (
+                <button onClick={() => setMissingTab("hidden")}
+                  style={{
+                    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                    border: "1px solid rgba(60,110,255,.5)", background: "rgba(60,110,255,.14)", color: BLUE_L,
+                  }}>
+                  {/* Entry count, not hidden-CARD count: the tab lists every
+                      entry including NO LONGER MISSING ones (the state-change
+                      rule), so its chip must count what the tab shows. */}
+                  Hidden ({Object.keys(hiddenMap || {}).length})
+                </button>
+              )}
+              {/* The unlabelled entrance: press-and-hold the empty space at
+                  the end of the chip row (see HiddenProducts.jsx HoldSpot for
+                  the full rationale — discretion, NOT access control). */}
+              <HoldSpot onTrigger={() => setMissingTab("hidden")} />
             </div>
-            {activeTab === "sneakers"
+            {activeTab === "hidden"
+              ? <HiddenProducts products={products} cards={missingProductCards || []} hiddenMap={hiddenMap} />
+              : activeTab === "sneakers"
               ? <MissingFootwear products={products} />
-              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingProductCards || []} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
+              : <NetworkTransfer products={products} category={activeTab} allStock={allStock} cards={missingVisible} targets={allTargetsRaw} targetsSettled={targetsState.settled} targetsError={targetsState.error} />}
           </DetailShell>
         );
       }
@@ -715,7 +759,13 @@ export default function HealthView({ products = [], onExit }) {
               <StatCard label="Missing Products" value={missingProducts == null ? "—" : missingProducts}
                         tone={missingProducts == null ? GRAY : missingProducts ? AMBER : GREEN}
                         sub={missingProducts == null ? "Loading live stock…" : "Stranded upstream — transfer from here"}
-                        onClick={() => setScreen("missingProducts")} />
+                        // A stale "hidden" selection must NOT survive leaving the
+                        // screen — HealthView never unmounts between drill-ins, so
+                        // without this, one hold gesture would leave the hidden tab
+                        // one PLAIN TAP away for the rest of the session, exactly
+                        // the over-the-counter exposure the HoldSpot exists to
+                        // prevent. Normal chip stickiness is untouched.
+                        onClick={() => { setMissingTab((t) => (t === "hidden" ? null : t)); setScreen("missingProducts"); }} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Recount Needed" value={count("recountNeeded")} tone={count("recountNeeded") ? RED : GREEN}

@@ -23,6 +23,7 @@ import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets"
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing } from "./missingProductsCore";
+import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -67,6 +68,60 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [edits, setEdits] = useState({});     // `${pid}|${size}` → qty
   const [busyPid, setBusyPid] = useState(null);
   const [done, setDone] = useState({});       // pid → {moved, dest, failed[]}
+
+  // ── HIDE — a view filter, never an action on stock ─────────────────────────
+  // Writes ONE entry to /settings/missingProductsHidden/{pid} (who, when,
+  // optional reason — hiddenProductsCore.js) and nothing else. The card leaves
+  // the list because HealthView's partition reacts to the node, so removal is
+  // as live as every other state on this screen. Reason is OPTIONAL by owner
+  // decision — the panel's third choice hides with no reason at all.
+  const [hidePid, setHidePid] = useState(null);   // which row's hide panel is open
+  const [hideBusy, setHideBusy] = useState(null);
+  const [hideErr, setHideErr] = useState({});     // pid → message (write failed)
+  const hide = async (card, reason) => {
+    if (hideBusy || !canAct) return;
+    setHideBusy(card.pid);
+    try {
+      await update(ref(database), {
+        [`${HIDDEN_ROOT}/${card.pid}`]: hideEntry({ at: serverNowMs(), by: auth.currentUser?.uid, reason }),
+      });
+      // The card vanishes via the subscription; clearing the panel state just
+      // keeps a stale pid from re-opening on a product hidden and unhidden.
+      setHidePid((cur) => (cur === card.pid ? null : cur));
+      setHideErr((e) => { const n = { ...e }; delete n[card.pid]; return n; });
+    } catch (e) {
+      setHideErr((prev) => ({ ...prev, [card.pid]: `Couldn't hide — nothing changed, retry. (${e?.message || "error"})` }));
+    }
+    setHideBusy(null);
+  };
+
+  // ── BULK HIDE — the scale path (hundreds of seasonal entries at once) ──────
+  // Select mode turns every card into a checkbox; the action bar hides the
+  // WHOLE selection in ONE multi-path update built by bulkHideUpdate, which
+  // writes exactly the selected pids' entries and nothing else (pinned in
+  // hiddenProductsCore.test.js). Same provenance shape as a single hide: one
+  // gesture, one at/by/reason for the batch.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState({});   // pid → true
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkErr, setBulkErr] = useState(null);
+  const exitSelect = () => { setSelectMode(false); setSelected({}); setBulkErr(null); };
+  // A selection is a statement about the cards the operator was LOOKING AT.
+  // Switching chips swaps the list under the checkboxes, so carrying the
+  // selection across would let a Clothing selection ride silently into a
+  // Perfume bulk hide. Reset on category change.
+  useEffect(() => { exitSelect(); }, [category]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const bulkHide = async (reason) => {
+    if (bulkBusy || !canAct || !selectedPids.length) return;
+    setBulkBusy(true);
+    try {
+      await update(ref(database), bulkHideUpdate(selectedPids, { at: serverNowMs(), by: auth.currentUser?.uid, reason }));
+      exitSelect();
+    } catch (e) {
+      setBulkErr(`Couldn't hide — nothing changed, retry. (${e?.message || "error"})`);
+    }
+    setBulkBusy(false);
+  };
 
   // Solve (engine-managed) — separate from the manual transfer above.
   const [solvePid, setSolvePid] = useState(null);   // which row's Solve panel is open
@@ -143,6 +198,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const all = allCards || computeMissingProducts({ allStock, products });
     return category && category !== "all" ? all.filter((c) => c.group === category) : all;
   }, [allCards, allStock, products, category]);
+  // Selection reconciled against the RENDERED list (`cards`, not the allCards
+  // prop): a selected card that resolves out mid-select — or that the
+  // standalone-fallback path computed locally, where allCards is null — must
+  // neither inflate the "N selected" count nor ride into the bulk write.
+  // Deriving from the prop broke select mode entirely on the fallback path
+  // (empty set → nothing ever counted). (Kimi + Sonnet substitute pair,
+  // PR #356.)
+  const cardPidSet = useMemo(() => new Set(cards.map((c) => c.pid)), [cards]);
+  const selectedPids = Object.keys(selected).filter((k) => selected[k] && cardPidSet.has(k));
 
   // Catalog sizes to seed. The one-size "_" sentinel is KEPT (it used to be
   // dropped here): it is a real, seedable cell key for a one-size product, and
@@ -334,7 +398,55 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   return (
     <>
       {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to transfer — viewing only.</div>}
+      {canAct && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
+          {selectMode ? (
+            <>
+              <span style={{ fontSize: 11.5, color: GRAY, marginRight: "auto" }}>{selectedPids.length} selected — tap cards to add</span>
+              <button onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))}
+                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                Select all ({cards.length})
+              </button>
+              <button onClick={exitSelect}
+                      style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }}
+                    style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+              Select
+            </button>
+          )}
+        </div>
+      )}
       {cards.map((card) => {
+        // Select mode: the card IS the checkbox — panels and actions stand
+        // down so a mis-tap can only toggle selection, never move stock.
+        if (selectMode) {
+          const on = !!selected[card.pid];
+          const toggle = () => setSelected((s) => ({ ...s, [card.pid]: !s[card.pid] }));
+          return (
+            <div key={card.pid} role="checkbox" aria-checked={on} tabIndex={0} onClick={toggle}
+                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+                 style={{ cursor: "pointer" }}>
+              <ProductCard
+                photo={card.photo} name={card.name}
+                badges={<>
+                  <Badge tone={AMBER}>{card.kind.toUpperCase()}</Badge>
+                  <Badge tone={BLUE_L}>{card.units} units at {LOC_LABEL[card.source]}</Badge>
+                </>}
+                right={
+                  <div style={{ width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14,
+                                border: on ? "1px solid rgba(74,222,128,.6)" : "1px solid rgba(255,255,255,.2)",
+                                background: on ? "rgba(74,222,128,.2)" : "rgba(255,255,255,.03)", color: on ? GREEN : "rgba(255,255,255,.3)" }}>
+                    {on ? "✓" : ""}
+                  </div>
+                }
+              />
+            </div>
+          );
+        }
         const open = openPid === card.pid;
         const result = done[card.pid];
         const dest = dests[card.pid] || destOptions(card)[0];
@@ -349,6 +461,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // button under an enabled Solve, which reads as broken. The operator can
         // still pick either store; this only changes which one is pre-selected.
         const sStore = storeFor(card);
+        const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
@@ -397,12 +510,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             </>}
             right={
               <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
+                {canAct && (
+                  <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
+                          style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
+                    {hOpen ? "Close" : "Hide"}
+                  </button>
+                )}
+                <button onClick={() => { setSolvePid(sOpen ? null : card.pid); setOpenPid(null); setHidePid(null); setSolved((d) => { const n = { ...d }; delete n[card.pid]; return n; }); }} disabled={!!solveBlocked}
                         title={solveBlocked || undefined}
                         style={{ background: sOpen ? "rgba(74,222,128,.15)" : "rgba(74,222,128,.1)", border: "1px solid rgba(74,222,128,.4)", color: GREEN, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: solveBlocked ? "default" : "pointer", opacity: solveBlocked ? 0.4 : 1, fontFamily: FONT }}>
                   {sOpen ? "Close" : "Solve"}
                 </button>
-                <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); }}
+                <button onClick={() => { setOpenPid(open ? null : card.pid); setSolvePid(null); setHidePid(null); }}
                         style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
                   {open ? "Close" : "Move manually"}
                 </button>
@@ -414,11 +533,32 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 used to hide. It sits above the panels so it is readable with the
                 row collapsed — which is the state an operator meets it in. */}
             {solveBlocked && (
-              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open ? 8 : 0 }}>
+              <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginBottom: sOpen || open || hOpen ? 8 : 0 }}>
                 Solve unavailable — {solveBlocked}
               </div>
             )}
-            {sResult ? (
+            {hOpen ? (
+              <>
+                {/* Hide = discretion, not action: the sentence says so, and the
+                    reason is one optional tap — never a form, never required. */}
+                <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginBottom: 8 }}>
+                  Hide from this list only — stock, refills and every other screen carry on as normal. Staff can unhide it from the hidden list.
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {HIDE_REASONS.map((r) => (
+                    <button key={r.key} onClick={() => hide(card, r.key)} disabled={hideBusy === card.pid} style={destChip(false)}>
+                      {r.label}
+                    </button>
+                  ))}
+                  <button onClick={() => hide(card)} disabled={hideBusy === card.pid} style={destChip(false)}>
+                    {hideBusy === card.pid ? "Hiding…" : "Hide without a reason"}
+                  </button>
+                </div>
+                {hideErr[card.pid] && (
+                  <div style={{ fontSize: 11.5, color: RED, lineHeight: 1.4, marginTop: 8 }}>{hideErr[card.pid]}</div>
+                )}
+              </>
+            ) : sResult ? (
               <div style={{ fontSize: 12.5 }}>
                 <span style={{ color: sResult.ok ? GREEN : RED, fontWeight: 700 }}>{sResult.msg}</span>
               </div>
@@ -498,6 +638,22 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           </ProductCard>
         );
       })}
+      {selectMode && selectedPids.length > 0 && (
+        <div style={{ ...GLASS, position: "sticky", bottom: 8, padding: "10px 12px", marginTop: 10, background: "rgba(20,22,30,.97)" }}>
+          <div style={{ fontSize: 11.5, color: GRAY, marginBottom: 8 }}>
+            Hide <b style={{ color: "#fff" }}>{selectedPids.length}</b> product{selectedPids.length === 1 ? "" : "s"} from this list — reason is optional, stock and refills carry on as normal.
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {HIDE_REASONS.map((r) => (
+              <button key={r.key} onClick={() => bulkHide(r.key)} disabled={bulkBusy} style={destChip(false)}>{r.label}</button>
+            ))}
+            <button onClick={() => bulkHide()} disabled={bulkBusy} style={destChip(false)}>
+              {bulkBusy ? "Hiding…" : "Hide without a reason"}
+            </button>
+          </div>
+          {bulkErr && <div style={{ fontSize: 11.5, color: RED, marginTop: 8 }}>{bulkErr}</div>}
+        </div>
+      )}
     </>
   );
 }
