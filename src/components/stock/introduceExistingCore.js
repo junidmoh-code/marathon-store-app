@@ -23,7 +23,6 @@ import { database, auth } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { categoryPolicyLocs } from "./solvePlan";
-import { categoryPolicyLocs } from "./solvePlan";
 
 // Approved standard runs — owner policy 2026-07-13 (corrected same day):
 //   STORES (marathon-pe, trophy) — REDUCED run: both stores were full before
@@ -91,12 +90,6 @@ export function computeUnintroduced(allStock, allTargets, productsById, dests = 
       // one-tap write of generic standard-run rows that OUTRANK the map
       // forever and quietly disable its off switch. (Sonnet review, PR #352.)
       if (categoryPolicyLocs(categoryPolicy, productsById.get(pid)?.categoryKey).length) continue;
-      // CATEGORY-MAPPED = ALREADY GOVERNED (2026-08-13). The category policy
-      // arms a product with no row at all, so "no explicit row" no longer
-      // means "unintroduced". Listing a mapped product here would offer a
-      // one-tap write of generic standard-run rows that OUTRANK the map
-      // forever and quietly disable its off switch. (Sonnet review, PR #352.)
-      if (categoryPolicyLocs(categoryPolicy, productsById.get(pid)?.categoryKey).length) continue;
       // Cell PRESENCE, not quantity: a sold-to-zero cell still proves the
       // product circulated (lockstep with the engine) — it migrates too, so
       // its proven demand gets redistributed the moment targets exist.
@@ -155,11 +148,12 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
   // Category-mapped products are ALREADY GOVERNED — writing standard-run rows
   // onto one would outrank the map forever and disable its off switch.
   // computeUnintroduced filters them, but this writer re-applies the rule
-  // against the config it was HANDED (same defense-in-depth as the fresh
-  // targets re-read above): a stale list must never become a stray row.
+  // against BOTH the config it was handed AND the live node it just read:
+  // a stale list or a stale config must never become a stray row.
   const migratable = items.filter((i) => i.migratable
     && !dests.some((d) => liveTargets?.[d]?.[i.pid])
-    && !categoryPolicyLocs(config?.categoryPolicy, i.categoryKey).length);
+    && !categoryPolicyLocs(config?.categoryPolicy, i.categoryKey).length
+    && !categoryPolicyLocs(livePolicy, i.categoryKey).length);
   const skippedTaken = items.filter((i) => i.migratable).length - migratable.length;
   let done = 0, cells = 0;
   const failed = [];
