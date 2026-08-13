@@ -504,6 +504,12 @@ export function buildLinkSuggestions({ kind, normalised, modelName, tokens, allC
     // The label's word set (model-name line included) — same name tier the
     // token flow uses; DF caps silence brand words, the dedupe folds overlap.
     if (Array.isArray(tokens) && tokens.length) hits = hits.concat(modelNameSuggestions(tokens, products));
+    // The alias store's candidates ride the CODE panel too (review, PR #354):
+    // a label registered pre-widening as a token reading now extracts a code,
+    // lands in this panel — and its own HIGH/MID alias match must not vanish.
+    if (Array.isArray(aliasCandidates) && aliasCandidates.length) {
+      hits = hits.concat(aliasSuggestions(aliasCandidates, products, excludeIds));
+    }
   } else if (kind === "tokens") {
     hits = hits.concat(modelNameSuggestions(tokens, products));
     // A code-less read may still carry a clean model-name line the merged

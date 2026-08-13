@@ -233,6 +233,14 @@ async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
   };
 }
 
+// A candidate that is a strict PREFIX of another candidate is a truncation of
+// it, not a second code — the collapse this whole feature forbids (CT8527-016
+// and CT8527-700 both reduce to "CT8527"). Order is preserved; the longer
+// read always wins. Used on the tier-2 union in both branches.
+function dropStrictPrefixes(codes) {
+  return codes.filter((c) => c && !codes.some((t) => t && t !== c && t.startsWith(c)));
+}
+
 // ── TIER 2.5 — THE LEARNED LAYOUT RULE (owner spec 2026-08-08) ───────────────
 // When the funnel still holds SEVERAL candidates, a human has possibly already
 // answered "which token is the style number" for this label LAYOUT (the shape
@@ -370,11 +378,29 @@ async function runLabelRead(db, {
         // resolves in one step, but EVERY code-shaped token tier 1 read — and
         // every extra token tier 2 itself saw — stays a candidate, gets filed
         // as an identity, and can match an existing product.
-        const rest = [...new Set([...(g.otherCodes || []), ...candidates])].filter((c) => c !== g.code);
-        candidates = [g.code, ...rest].slice(0, MAX_CANDIDATES);
+        // THE GUARD CUTS BOTH WAYS (review, PR #354): tier 1 can be the
+        // truncator too — a blurred label reads "CT8527" beside a second
+        // token, tier 2 reads the full CT8527-016. Keeping the prefix would
+        // file it as a permanent alias and a later blurred scan of the -700
+        // colourway would silently resolve to the wrong product. So the
+        // union drops every candidate that is a strict prefix of another
+        // kept candidate, whichever tier produced it.
+        candidates = dropStrictPrefixes([g.code,
+          ...[...new Set([...(g.otherCodes || []), ...candidates])].filter((c) => c !== g.code),
+        ]).slice(0, MAX_CANDIDATES);
         preferred = g.code;
         source = "gemini";
         brand = g.brand; size = g.size; confidence = g.confidence;
+      } else if (Array.isArray(g.otherCodes) && g.otherCodes.length) {
+        // No trusted PRIMARY code — but the validated extra tokens are still
+        // real tokens off a real label; dropping them re-created the one-line
+        // loss one branch over (CodeRabbit, PR #354). No `preferred` is set:
+        // nothing here says which token is the style number, so a
+        // multi-candidate result still asks. The same both-ways prefix guard
+        // applies.
+        const hadNone = candidates.length === 0;
+        candidates = dropStrictPrefixes([...new Set([...candidates, ...g.otherCodes])]).slice(0, MAX_CANDIDATES);
+        if (hadNone && candidates.length) source = "gemini";
       }
       // Extras: tier 2 only FILLS GAPS tier 1 left. Both were validated
       // through the same gates (lexicon line / digit run), and a code-less
@@ -407,10 +433,14 @@ async function runLabelRead(db, {
   const tokens = labelTokens(visionText);
 
   const tier2Failed = tier2Used && errors.some((e) => e.tier === "gemini");
-  // A layout rule or a tier-2 pick both settle a multi-candidate read — the
-  // ambiguity is decided, not frozen. The unsettled case stays exactly what it
+  // A tier-2 pick SETTLES a multi-candidate read — the ambiguity is decided,
+  // not frozen, and the pick rides the cache as `pk`. Without the `preferred`
+  // clause a vision-tier error beside a successful tier-2 read (which now
+  // keeps the full token set, so candidates.length > 1) would make the photo
+  // permanently uncacheable and re-bill BOTH tiers on every retake for the
+  // 90-day TTL (review, PR #354). The unsettled case stays exactly what it
   // was: an error left the funnel undecided, so nothing is cached.
-  const settled = !tier2Failed && (!errors.length || candidates.length === 1);
+  const settled = !tier2Failed && (!errors.length || candidates.length === 1 || preferred !== null);
   if (settled) {
     try {
       await cacheRef.set(buildOcrCacheRecord({

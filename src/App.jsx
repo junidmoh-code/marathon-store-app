@@ -58,7 +58,7 @@ import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
 import { TongueLabelReader } from "./components/stock/TongueLabelReader";
 import { styleCodeOwners } from "./components/stock/hubCleanupCore";
-import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes } from "./components/stock/hubCleanupStore";
+import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, answerStyleCodeSibling, lookupCodeAlias, resolveAnyCodes, recordLabelCodes } from "./components/stock/hubCleanupStore";
 import { extractDominantColours } from "./utils/dominantColours";
 import { normaliseStyleCode, formatStyleCodeForDisplay as formatStyleCodeDisplay } from "./utils/styleCode";
 import { buildLinkSuggestions } from "./utils/linkSuggestions";
@@ -7985,15 +7985,45 @@ function AssistantLabelFinder({ products, onFound, onClose }) {
         const p = await resolveCandidate(aliasOwner);
         if (p) { finish(p); return; }
       }
+      // ── ANY-TOKEN RESOLUTION AT THE TILL (review, PR #354) ─────────────────
+      // The label printed OTHER code-shaped tokens and the shoe may be
+      // registered under one of THEM ("Lacoster white" holds its production
+      // line). Read-only round trip — same door the count flow uses; a tap
+      // still only SELECTS for this sale, nothing files. A failed call just
+      // falls through to the ranked list below.
+      const scanNorm = normaliseStyleCode(display);
+      const tillAlternates = (meta && Array.isArray(meta.allCodes) ? meta.allCodes : [])
+        .map(normaliseStyleCode).filter((c) => c && c !== scanNorm);
+      if (tillAlternates.length) {
+        let anyTok = null;
+        try { anyTok = await resolveAnyCodes(tillAlternates); } catch { /* ranked list below */ }
+        if (anyTok && anyTok.resolved) {
+          const p = await resolveCandidate(anyTok.resolved);
+          if (p) { finish(p); return; }
+        } else if (anyTok && anyTok.owners.length > 1) {
+          const candidates = [];
+          for (const o of anyTok.owners) {
+            const p = await resolveCandidate(o.productId);
+            if (p && !candidates.some((c) => c.id === p.id)) candidates.push(p);
+          }
+          if (candidates.length > 1) {
+            setNote({ text: "This label's numbers match more than one product — tap the right one:", candidates });
+            return;
+          }
+        }
+      }
       // Nothing owns the code — but the panel must not open EMPTY-HANDED
       // (owner spec 2026-08-13, same ranking as the count's link panel:
       // code family, misreads, truncated reads, the printed model name, all
       // from the catalog already in memory). Read-only here: a tap SELECTS
       // the product for this sale, it files nothing — assistants may not
-      // write aliases, and this surface never could.
+      // write aliases, and this surface never could. EVERY token pools
+      // (review, PR #354) — the same merged list the count panel gets.
       const close = buildLinkSuggestions({
-        kind: "code", normalised: normaliseStyleCode(display),
+        kind: "code", normalised: scanNorm,
         modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
+        allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+        tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
         products,
       });
       if (close.length) {

@@ -256,6 +256,104 @@ test("P6a: the full Lacoste read carries all three tokens through the funnel", a
   assert.ok(out.tokens.includes("LGUARD"), "the model-name line rides the same response");
 });
 
+test("P6b: valid otherCodes survive even when tier 2's primary code is empty", async () => {
+  // Tier 2 could not name THE style code but did read a real token — dropping
+  // it would re-create the one-line loss one branch over (CodeRabbit #354).
+  // No preferred is set: nothing said which token is the style number.
+  const db = fakeDb({});
+  const out = await runLabelRead(db, baseRead({
+    visionFetch: visionOk("MADE IN VIETNAM"),
+    geminiFetch: geminiOk({ styleCode: "", otherCodes: ["A8425"], styleCodeConfidence: 0 }),
+  }));
+  assert.deepStrictEqual(out.candidates, ["A8425"]);
+  assert.strictEqual(out.preferred, null);
+  assert.strictEqual(out.source, "gemini");
+});
+
+test("P6c: a code-less tier-2 otherCode that truncates a tier-1 read is discarded", async () => {
+  // Vision failed (so tier 1 errored) — wait, the guard matters when tier 1
+  // DID read: two candidates → tier 2 fires, returns no primary but an
+  // otherCode that is a strict prefix of a tier-1 candidate. Same collapse
+  // risk as the primary-code truncation guard; same fate.
+  const db = fakeDb({});
+  const out = await runLabelRead(db, baseRead({
+    visionFetch: visionOk("CT8527-016\nIE3437"),
+    geminiFetch: geminiOk({ styleCode: "", otherCodes: ["CT8527"], styleCodeConfidence: 0 }),
+  }));
+  assert.ok(out.candidates.includes("CT8527016"), "tier 1's full read must stand");
+  assert.ok(!out.candidates.includes("CT8527"), "the truncating otherCode must be discarded");
+});
+
+test("P6d: TIER 1 truncations are dropped when tier 2 read the full code (review #354)", async () => {
+  // A blurred label: tier 1 reads "CT8527" (a legitimate adidas-block shape —
+  // the suffix was unreadable) beside a second token; tier 2 reads the full
+  // code. Keeping the prefix would file it as a permanent alias of the -016
+  // colourway, and a later blurred scan of the -700 would silently resolve
+  // wrong. The prefix guard cuts BOTH ways.
+  const db = fakeDb({});
+  const out = await runLabelRead(db, baseRead({
+    visionFetch: visionOk("CT8527\nIE3437"),
+    geminiFetch: geminiOk({ styleCode: "CT8527-016", styleCodeConfidence: 0.9 }),
+  }));
+  assert.ok(out.candidates.includes("CT8527016"), "tier 2's full read must stand");
+  assert.ok(!out.candidates.includes("CT8527"), "tier 1's truncation must be dropped");
+  assert.ok(out.candidates.includes("IE3437"), "the unrelated token survives");
+});
+
+test("P6e: a vision outage beside a settled tier-2 pick still CACHES (review #354)", async () => {
+  // Vision 500s, tier 2 answers with a pick and an extra token. The read is
+  // DECIDED (preferred is set) — without the preferred clause in `settled`,
+  // candidates.length > 1 would make this photo permanently uncacheable and
+  // re-bill BOTH tiers on every retake for the 90-day TTL.
+  const db = fakeDb({});
+  let visionCalls = 0;
+  const failing = async (...a) => { visionCalls++; return { ok: false, status: 500, async json() { return {}; } }; };
+  const gem = geminiOk({ styleCode: "A6CWNEN3", otherCodes: ["A8425"], styleCodeConfidence: 0.9 });
+  const first = await runLabelRead(db, baseRead({ visionFetch: failing, geminiFetch: gem }));
+  assert.deepStrictEqual(first.candidates, ["A6CWNEN3", "A8425"]);
+  assert.strictEqual(first.preferred, "A6CWNEN3");
+  const row = Object.values(db.data.style_code_ocr_cache || {})[0];
+  assert.ok(row, "the settled pick must cache despite the vision error");
+  assert.strictEqual(row.pk, "A6CWNEN3");
+  const second = await runLabelRead(db, baseRead({ visionFetch: failing, geminiFetch: gem }));
+  assert.strictEqual(second.fromCache, true, "the retake must not re-bill");
+  assert.strictEqual(visionCalls, 1);
+});
+
+test("P5b: a same-code owner DISPUTE found by resolveAnyCode is filed for a human (review #354)", async () => {
+  // The write race codeAliasOwnersAll documents: two alias records point ONE
+  // code at two products. codeLookup files the pair; resolveAnyCode must too
+  // — fail-closed for this scan AND queued so the race is ever resolved.
+  const db = fakeDb({
+    products: { pA: { id: "pA", name: "A" }, pB: { id: "pB", name: "B" } },
+    label_aliases: {
+      al1: { productId: "pA", c: { A6CWNEN3: true }, n: 1 },
+      al2: { productId: "pB", c: { A6CWNEN3: true }, n: 1 },
+    },
+  });
+  const out = await runLabelAlias(db, { action: "resolveAnyCode", codes: ["A6CWNEN3"], actor: ACTOR, nowMs: NOW });
+  assert.strictEqual(out.resolved, null, "a disputed code never resolves silently");
+  const pair = db.data.duplicate_candidates && db.data.duplicate_candidates.pA__pB;
+  assert.ok(pair, "the dispute lands in /duplicate_candidates so a human closes it");
+  assert.strictEqual(pair.status, "open");
+});
+
+test("P5c: owners via DIFFERENT codes are label ambiguity, NOT a filed duplicate", async () => {
+  // Two tokens naming two products goes to the picker; it is not the
+  // same-code write race and must not open a duplicate pair by itself.
+  const db = fakeDb({
+    products: { pA: { id: "pA", name: "A", styleCodeNormalised: "A8425" }, pB: { id: "pB", name: "B" } },
+    [STYLE_CODE_INDEX_PATH]: { A8425: { productId: "pA", claimedAt: 1 } },
+    label_aliases: { al1: { productId: "pB", c: { A6CWNEN3: true }, n: 1 } },
+  });
+  const out = await runLabelAlias(db, {
+    action: "resolveAnyCode", codes: ["A8425", "A6CWNEN3"], actor: ACTOR, nowMs: NOW,
+  });
+  assert.strictEqual(out.resolved, null);
+  assert.strictEqual(out.owners.length, 2);
+  assert.strictEqual(db.data.duplicate_candidates, undefined, "cross-code owners file nothing");
+});
+
 test("P7: a learned layout rule answers BEFORE tier 2 is paid for", async () => {
   // The Lacoste layout, already taught: lacoste-ref is the style number among
   // {lacoste-ref, numeric-6-3, label-serial}. Tier 2 must NOT be called.

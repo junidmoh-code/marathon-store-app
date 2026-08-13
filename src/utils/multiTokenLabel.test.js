@@ -43,6 +43,11 @@ describe("the format twins carry label-serial identically", () => {
       expect(fn("TTJJ21FB00001")).toBe("label-serial");
       expect(fn("US10UK9")).toBe(null);
       expect(fn("EUR42CM27")).toBe(null);
+      // Gender-qualified size markers and a trailing width word are still
+      // size lines, never serials (CodeRabbit, PR #354).
+      expect(fn("USM8UK8")).toBe(null);
+      expect(fn("USW8UK8")).toBe(null);
+      expect(fn("US10UK9WIDE")).toBe(null);
     }
   });
 });

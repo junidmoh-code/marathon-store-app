@@ -22,6 +22,7 @@ const recordLabelCodes = vi.fn(async () => ({ ok: true, attached: [], conflicts:
 const addLabelAlias = vi.fn(async () => ({ ok: true }));
 const recordUnresolvedScan = vi.fn(async () => ({ ok: true }));
 const matchLabelAlias = vi.fn(async () => ({ band: "low", candidates: [] }));
+const fetchProductFollowingMerge = vi.fn(async () => null);
 
 vi.mock("./hubCleanupStore", () => ({
   loadRegister: async () => ({}),
@@ -32,7 +33,7 @@ vi.mock("./hubCleanupStore", () => ({
   lookupBarcode: async () => null,
   loadAllStock: async () => ({}),
   loadDuplicateCandidates: async () => ({}),
-  fetchProductFollowingMerge: async () => null,
+  fetchProductFollowingMerge: (...a) => fetchProductFollowingMerge(...a),
   lookupStyleClaim: (...a) => lookupStyleClaim(...a),
   matchLabelAlias: (...a) => matchLabelAlias(...a),
   addLabelAlias: (...a) => addLabelAlias(...a),
@@ -108,6 +109,8 @@ beforeEach(() => {
   lookupCodeAlias.mockImplementation(async () => null);
   resolveAnyCodes.mockImplementation(async () => ({ resolved: null, owners: [] }));
   recordLabelCodes.mockImplementation(async () => ({ ok: true, attached: [], conflicts: [] }));
+  matchLabelAlias.mockImplementation(async () => ({ band: "low", candidates: [] }));
+  fetchProductFollowingMerge.mockImplementation(async () => null);
 });
 
 describe("any-token resolution in the count flow", () => {
@@ -164,6 +167,76 @@ describe("any-token resolution in the count flow", () => {
     const after = textOf(tr);
     expect(after).toContain("link it");
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
+  it("same-code owners the index registers as SIBLINGS get the colourway picker, never the merge framing (review #354)", async () => {
+    // Both owners rode ONE code, and the claim vouches for both — a
+    // registered colourway set. The collision framing would offer the live
+    // Merge affordance; merging two legitimate colourways destroys stock
+    // history.
+    resolveAnyCodes.mockImplementation(async () => ({
+      resolved: null,
+      owners: [
+        { productId: "pLW", code: "352890625", via: "index" },
+        { productId: "pOther", code: "352890625", via: "index" },
+      ],
+    }));
+    lookupStyleClaim.mockImplementation(async () => ({
+      productId: "pLW", claimedAt: 1, node: null,
+      siblings: { pOther: { addedAt: 1 } },
+    }));
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
+    const after = textOf(tr);
+    expect(after).toContain("Which colourway is it?");
+    expect(after).not.toContain("One code, more than one product");
+  });
+
+  it("a resolved owner whose product fetch THROWS surfaces an error — never the link panel (review #354)", async () => {
+    // The server just PROVED an owner exists; a network blink must not
+    // degrade that into 'link it' (duplicate-minting) or a never-registered
+    // note. Same rule as the claim and alias branches.
+    resolveAnyCodes.mockImplementation(async () => ({
+      resolved: "pUnknown", owners: [{ productId: "pUnknown", code: "352890625", via: "index" }],
+    }));
+    fetchProductFollowingMerge.mockImplementation(async () => { throw new Error("network down"); });
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
+    const after = textOf(tr);
+    expect(after).not.toContain("link it");
+    expect(after).toContain("couldn't be loaded");
+    expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
+  it("the TOKEN-OVERLAP fallback resolves a pre-widening label silently on a HIGH band (review #354)", async () => {
+    // A label registered pre-widening as a token reading now extracts its
+    // serial as a single candidate and lands in the code flow — the alias
+    // store's HIGH-band answer must still resolve it.
+    matchLabelAlias.mockImplementation(async () => ({
+      band: "high", candidates: [{ productId: "pLW", score: 0.92, shared: 4 }],
+    }));
+    const tr = await mountOnCountTab();
+    await act(async () => {
+      await readerProps.onCode("TTJJ21FB00001", { allCodes: ["TTJJ21FB00001"], modelName: null, tokens: ["LGUARD", "BRKR", "CTT"] });
+    });
+    expect(matchLabelAlias).toHaveBeenCalledWith(["LGUARD", "BRKR", "CTT"]);
+    const after = textOf(tr);
+    expect(after).toContain("Lacoster white");
+    expect(after).not.toContain("link it");
+    expect(recordLabelCodes).not.toHaveBeenCalled(); // single candidate → fileAllCodes has nothing extra to file
+  });
+
+  it("a below-band token match rides the CODE link panel as alias-tier rows (review #354)", async () => {
+    matchLabelAlias.mockImplementation(async () => ({
+      band: "low", candidates: [{ productId: "pLW", score: 0.4, shared: 2 }],
+    }));
+    const tr = await mountOnCountTab();
+    await act(async () => {
+      await readerProps.onCode("TTJJ21FB00001", { allCodes: ["TTJJ21FB00001"], modelName: null, tokens: ["LGUARD", "BRKR", "CTT"] });
+    });
+    const after = textOf(tr);
+    expect(after).toContain("link it");
+    expect(after).toContain("its saved label reading shares");
   });
 
   it("the link panel POOLS the label's other tokens into its ranked rows", async () => {

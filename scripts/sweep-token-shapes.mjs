@@ -13,10 +13,13 @@
 //      construction). HEURISTIC, stated openly: brand words are read from the
 //      product's own name/brand fields, which are messy; the list is a report
 //      for a human, never an input to a write.
-//   3. RECOVERY — for each suspected code, would the NEW full-token extractor
-//      surface the stored code from a label that prints it in any of its
-//      printed spellings (run-together / split / hyphenated)? The stored line
-//      is still on the label, so recovery = the extractor captures the shape.
+//   3. SHAPE COVERAGE — for each suspected code, does the NEW full-token
+//      extractor capture the stored line's SHAPE when a SYNTHETIC label
+//      prints it in each plausible spelling (run-together / split /
+//      hyphenated)? This is a shape-recognition check, not a claim about any
+//      real photo: actual recovery additionally depends on the physical label
+//      still printing that line legibly (the owner's floor proofs say it
+//      does — the stored line came OFF the label) and on OCR reading it.
 //
 // ZERO writes. Run: node scripts/sweep-token-shapes.mjs
 
@@ -61,26 +64,29 @@ const suspected = rows.filter((r) => {
   return false;
 });
 
-// RECOVERY: embed each suspected code, in each printed spelling, in a
-// label-shaped text and ask the REAL extractor whether the code comes back.
+// SHAPE COVERAGE: embed each suspected code, in each plausible printed
+// spelling, in a SYNTHETIC label text and ask the REAL extractor whether the
+// code comes back. Recognising the shape on a synthetic print is the
+// necessary half of recovery; the sufficient half (the physical label, the
+// OCR pass) can only be proven at the shelf.
 const spellings = (code) => {
   const out = [code]; // run-together
   if (/^\d{9}$/.test(code)) out.push(`${code.slice(0, 5)} ${code.slice(5)}`, `${code.slice(0, 6)}-${code.slice(6)}`);
   if (/^\d{8}$/.test(code)) out.push(`${code.slice(0, 4)} ${code.slice(4)}`, `${code.slice(0, 6)}-${code.slice(6)}`);
   return out;
 };
-const recoveredBy = (code, printed) =>
+const shapeCapturedBy = (code, printed) =>
   extractStyleCodeCandidates(`BRAND MODEL LINE\n${printed}\nUK 8 US 9 EUR 42.5\nMADE IN VIETNAM`)
     .some((c) => c.normalised === code);
 
-let recoveredAll = 0, recoveredAny = 0;
+let capturedAll = 0, capturedAny = 0;
 for (const r of suspected) {
   const forms = spellings(r.code);
-  const hits = forms.map((f) => recoveredBy(r.code, f));
-  r.recoveredAny = hits.some(Boolean);
-  r.recoveredAll = hits.every(Boolean);
-  if (r.recoveredAny) recoveredAny++;
-  if (r.recoveredAll) recoveredAll++;
+  const hits = forms.map((f) => shapeCapturedBy(r.code, f));
+  r.capturedAny = hits.some(Boolean);
+  r.capturedAll = hits.every(Boolean);
+  if (r.capturedAny) capturedAny++;
+  if (r.capturedAll) capturedAll++;
 }
 
 const distinctProducts = new Set(rows.map((r) => r.id)).size;
@@ -94,13 +100,13 @@ console.log(`\nSUSPECTED production/date/serial lines: ${suspected.length} rows 
 console.log(`  numeric-6-3 non-Nike: ${suspected.filter((r) => r.shape === "numeric-6-3").length}` +
   ` · puma-6-2 non-Puma: ${suspected.filter((r) => r.shape === "puma-6-2").length}` +
   ` · label-serial: ${suspected.filter((r) => r.shape === "label-serial").length}`);
-console.log(`RECOVERED by a full-token read: any printed spelling ${recoveredAny}/${suspected.length}` +
-  ` · every spelling ${recoveredAll}/${suspected.length}`);
+console.log(`SHAPE CAPTURED by the new extractor (synthetic prints): any spelling ${capturedAny}/${suspected.length}` +
+  ` · every spelling ${capturedAll}/${suspected.length}`);
 
 console.log(`\nSAMPLE (30):`);
 for (const r of suspected.slice(0, 30)) {
   console.log(`  ${r.id.padEnd(24)} ${r.code.padEnd(16)} ${r.shape.padEnd(13)} ${r.field.padEnd(9)} ` +
-    `${r.recoveredAll ? "recovers" : r.recoveredAny ? "recovers(some spellings)" : "NOT recovered"}  ${r.name.slice(0, 48)}`);
+    `${r.capturedAll ? "shape captured" : r.capturedAny ? "shape captured(some spellings)" : "shape NOT captured"}  ${r.name.slice(0, 48)}`);
 }
 
 process.exit(0);

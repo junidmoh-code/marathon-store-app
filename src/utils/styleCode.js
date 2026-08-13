@@ -67,10 +67,12 @@ export const STYLE_CODE_FORMATS = [
   // counts as code-shaped. It is matching/alias vocabulary — the brands above
   // stay the canonical shapes staff are taught to look for.
   // The leading lookahead refuses strings composed ENTIRELY of size-system
-  // markers + digits ("US10UK9", "EUR42CM27") — the one non-code shape that
-  // also interleaves. The OCR path masks size lines before extraction; this
-  // guard covers the paths that validate a bare string (tier-2 output, typed).
-  { name: "label-serial", re: /^(?!(?:(?:US|UK|EU|EUR|FR|JP|JPN|CM|BR|MX|CN|KR|AU|SIZE)\d+)+$)(?=[A-Z0-9]{6,16}$)(?:[A-Z]+\d+){2,}[A-Z]{0,8}$/ },
+  // markers + digits ("US10UK9", "EUR42CM27"), including gender-qualified
+  // markers (USM8UK8, USW8UK8) and a trailing width word (US10UK9WIDE) —
+  // the one non-code shape that also interleaves (CodeRabbit, PR #354). The
+  // OCR path masks size lines before extraction; this guard covers the paths
+  // that validate a bare string (tier-2 output, typed).
+  { name: "label-serial", re: /^(?!(?:(?:USM|USW|UKM|UKW|US|UK|EU|EUR|FR|JP|JPN|CM|BR|MX|CN|KR|AU|SIZE)\d+)+(?:WIDE)?$)(?=[A-Z0-9]{6,16}$)(?:[A-Z]+\d+){2,}[A-Z]{0,8}$/ },
 ];
 
 // Which brand family a code shape implies. Used ONLY for observability — the

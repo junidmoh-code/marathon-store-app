@@ -455,7 +455,18 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         try { anyTok = await resolveAnyCodes(alternates); } catch { /* degrade to the panel below */ }
         if (anyTok && anyTok.resolved) {
           let p = products.find((x) => x && x.id === anyTok.resolved && !isMergedAway(x)) || null;
-          if (!p) p = await fetchProductFollowingMerge(anyTok.resolved).catch(() => null);
+          if (!p) {
+            try {
+              p = await fetchProductFollowingMerge(anyTok.resolved);
+            } catch (err) {
+              // A FAILED read is not a ghost — the server just PROVED an owner
+              // exists; falling through to the link panel would invite the
+              // operator to mint a duplicate or a false never-registered note
+              // (review, PR #354; same rule as the claim and alias branches).
+              flash("err", `Another number on this label matches a registered product, but it couldn't be loaded (${err?.message || err}) — try again.`);
+              return;
+            }
+          }
           const cp = p ? countPanelFor(p) : null;
           if (cp) {
             const matched = anyTok.owners[0] && anyTok.owners[0].code;
@@ -473,8 +484,23 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             if (p && !claimants.some((c) => c.id === p.id)) claimants.push(p);
           }
           if (claimants.length > 1) {
+            // SIBLINGS, NOT COLLISION, when every owner rode ONE code and the
+            // index registers them as that code's colourway set (review,
+            // PR #354): the collision framing offers the live Merge
+            // affordance, and merging two legitimate colourways destroys
+            // stock history. Cross-code owners keep the collision framing —
+            // one label naming two products IS the duplicate question.
+            const ownerCodes = [...new Set(anyTok.owners.map((o) => normaliseStyleCode(o.code)).filter(Boolean))];
+            let siblingSet = false;
+            if (ownerCodes.length === 1) {
+              try {
+                const sharedClaim = await lookupStyleClaim(ownerCodes[0]);
+                siblingSet = allRegisteredSiblings(sharedClaim, claimants.map((c) => c.id));
+              } catch { /* unknown stays collision framing — fail closed on merge, not on ask */ }
+            }
             setPanel({
-              mode: "choose", code: display, claimants, siblings: false, unloadedIds: [],
+              mode: "choose", code: ownerCodes.length === 1 ? (formatStyleCodeForDisplay(ownerCodes[0]) || display) : display,
+              claimants, siblings: siblingSet, unloadedIds: [],
               allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
             });
             return;
@@ -490,7 +516,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // link panel — never a guess. A DIFFERENT colourway suffix never gets
       // here (the rule refuses it), because same fit in another colour is a
       // different product.
-      const openLink = () => setPanel({
+      const openLink = (aliasCandidates = null) => setPanel({
         mode: "link", kind: "code", display, normalised,
         allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
         // The label's printed model line, when the OCR carried one — the
@@ -499,6 +525,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // The label's stable word set (owner spec 2026-08-13) — feeds the
         // panel's name tier even on a code-ful read.
         tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
+        // The alias store's own candidates, when the token fallback below ran
+        // — they surface through the panel's alias tier.
+        aliasCandidates,
       });
       const p = perSizeAutoCandidate(normalised, products);
       if (p) {
@@ -528,6 +557,33 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         setPanel(countPanelFor(p));
         return;
       }
+      // ── THE TOKEN-OVERLAP FALLBACK (review, PR #354) ───────────────────────
+      // Labels registered BEFORE the widening as code-less token readings
+      // (t-map aliases) can now extract their serial as a single candidate —
+      // which lands here instead of the token flow, and without this step the
+      // alias store's HIGH-band answer would never be consulted: registered
+      // stock would read as unrecognised until a human re-linked every label.
+      // Same bands as handleAliasTokens: HIGH resolves silently; anything
+      // else rides the panel's alias tier as candidates.
+      let aliasCandidates = null;
+      const fallbackTokens = meta && Array.isArray(meta.tokens) ? meta.tokens.filter(Boolean) : [];
+      if (fallbackTokens.length >= 2) {
+        try {
+          const match = await matchLabelAlias(fallbackTokens);
+          if (match.band === "high" && match.candidates[0]) {
+            const p2 = products.find((x) => x && x.id === match.candidates[0].productId && !isMergedAway(x))
+              || await fetchProductFollowingMerge(match.candidates[0].productId).catch(() => null);
+            const cp2 = p2 ? countPanelFor(p2) : null;
+            if (cp2) {
+              flash("ok", `${display} isn't registered as a number, but this label's wording is — “${p2.name}”.`, 6000);
+              fileAllCodes(p2.id);
+              setPanel(cp2);
+              return;
+            }
+          }
+          if (Array.isArray(match.candidates) && match.candidates.length) aliasCandidates = match.candidates;
+        } catch { /* the panel below is the degrade path — never a dead end */ }
+      }
       // A clean read nothing owns NEVER dead-ends (the Lacoste labels blocked
       // a live count exactly here). The operator is holding a real shoe —
       // offer "this is the same shoe as…" with a product search; the pick
@@ -535,7 +591,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // scan of this size resolves silently. "Note as never registered"
       // survives inside the panel as the deliberate answer, not the automatic
       // one.
-      openLink();
+      openLink(aliasCandidates);
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 

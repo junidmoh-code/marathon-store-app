@@ -51,6 +51,10 @@ import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
+// Read-only any-token ownership — the pre-duplicate step's server half
+// (review, PR #354): alias-only owners never stamp a product row, so the
+// local ranking alone cannot see them.
+const labelAliasFn = httpsCallable(functions, "labelAlias");
 
 const BLUE = "#4A7FFF";
 const AMBER = "#FBBF24";
@@ -306,6 +310,29 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
         tokens: (photoMatchesCode && labelExtras && labelExtras.tokens) || null,
         products,
       }).filter((s) => !s.weak);
+      // ── ALIAS-ONLY OWNERSHIP IS INVISIBLE TO THE LOCAL SCAN (review,
+      // PR #354) ── the count flow files code aliases that never stamp a
+      // product row, so the in-memory ranking above cannot see them. One
+      // read-only round trip asks the server the same any-token question the
+      // count flow asks; a known owner blocks HERE, photo-first, instead of
+      // surfacing post-hoc as a duplicate pair after the record exists.
+      // Best-effort: a failed call leaves the local ranking standing.
+      try {
+        const { data } = await labelAliasFn({
+          action: "resolveAnyCode",
+          codes: [normalised, ...((photoMatchesCode && labelAllCodes) || [])],
+        });
+        for (const o of (data && Array.isArray(data.owners) ? data.owners : [])) {
+          const p = products.find((x) => x && x.id === o.productId);
+          if (p && !similar.some((s) => s.product.id === p.id)) {
+            similar.unshift({
+              product: p, code: normaliseStyleCode(o.code) || null, field: "confirmed",
+              tier: "exact", score: 105,
+              reasons: ["a number on this label already identifies this product"],
+            });
+          }
+        }
+      } catch { /* the local ranking still stands */ }
       if (similar.length) {
         setSimilarStep({ payload, suggestions: similar });
         setStep("similar");

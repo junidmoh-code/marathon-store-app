@@ -148,21 +148,45 @@ async function runLabelAlias(db, { action, tokens, productId, code, chosenCode, 
     const all = normaliseAliasCodes(Array.isArray(codes) ? codes : []);
     if (!all.length) return { owners: [], resolved: null };
     const aliases = (await db.ref(LABEL_ALIASES_PATH).get()).val() || {};
+    // Per-code reads run in PARALLEL — this call sits in the middle of a live
+    // count; up to 8 sequential index+query round trips is avoidable latency.
+    const perCode = await Promise.all(all.map(async (c) => {
+      const [claim, stamped] = await Promise.all([
+        db.ref(`${STYLE_CODE_INDEX_PATH}/${c}`).get().then((s) => s.val()),
+        findProductsByStyleCode(db, c),
+      ]);
+      return { c, claim, stamped, aliasOwners: codeAliasOwnersAll(c, aliases) };
+    }));
     const raw = []; // { code, productId, via } before merge-pointer resolution
-    for (const c of all) {
-      const claim = (await db.ref(`${STYLE_CODE_INDEX_PATH}/${c}`).get()).val();
+    for (const { c, claim, stamped, aliasOwners } of perCode) {
       for (const o of claimOwnerIds(claim)) raw.push({ code: c, productId: o, via: "index" });
-      for (const o of codeAliasOwnersAll(c, aliases)) raw.push({ code: c, productId: o, via: "alias" });
+      for (const o of aliasOwners) raw.push({ code: c, productId: o, via: "alias" });
       // Rows that CARRY the code without ever claiming it (pre-index products,
       // backfills) — the same indexed query the resolver's collision scan uses.
-      for (const p of await findProductsByStyleCode(db, c)) raw.push({ code: c, productId: p.id, via: "stamped" });
+      for (const p of stamped) raw.push({ code: c, productId: p.id, via: "stamped" });
     }
     // Follow merge pointers ONCE per distinct id, then collapse to distinct
     // LIVE products — first hit keeps the token that found it, so the caller
     // can say "matched 352890-625".
-    const liveById = new Map();
-    for (const [id] of Object.entries(Object.fromEntries(raw.map((o) => [o.productId, true])))) {
-      liveById.set(id, await resolveProductId(db, id));
+    const liveById = new Map(await Promise.all(
+      [...new Set(raw.map((o) => o.productId))].map(async (id) => [id, await resolveProductId(db, id)]),
+    ));
+    // ONE code whose alias records disagree on the owner is the write race
+    // codeAliasOwnersAll documents — codeLookup files it for a human, and so
+    // does this path (review, PR #354): returning both owners for the picker
+    // is fail-closed for THIS scan, but without the queue entry the race
+    // re-runs on every future scan and is never resolved. Cross-code owner
+    // splits are NOT filed here: two tokens naming two products is label
+    // ambiguity for the picker, not a same-code race.
+    for (const { c, aliasOwners } of perCode) {
+      const disputed = [...new Set(aliasOwners.map((o) => liveById.get(o)).filter(Boolean))].sort();
+      if (disputed.length > 1) {
+        const [anchor, ...restIds] = disputed;
+        for (const other of restIds) {
+          await flagDuplicates(db, c,
+            [{ pairId: duplicatePairId(anchor, other), productIdA: anchor, productIdB: other }], actor, nowMs);
+        }
+      }
     }
     const owners = [];
     const seen = new Set();
