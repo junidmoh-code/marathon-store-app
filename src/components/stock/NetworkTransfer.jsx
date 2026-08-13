@@ -402,10 +402,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", justifyContent: "flex-end" }}>
           {selectMode ? (
             <>
-              <span style={{ fontSize: 11.5, color: GRAY, marginRight: "auto" }}>{selectedPids.length} selected — tap cards to add</span>
+              <span style={{ fontSize: 11.5, color: GRAY, marginRight: "auto" }}>{selectedPids.length} marked — tap cards to mark</span>
               <button onClick={() => setSelected(Object.fromEntries(cards.map((c) => [c.pid, true])))}
                       style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-                Select all ({cards.length})
+                Mark all ({cards.length})
               </button>
               <button onClick={exitSelect}
                       style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.5)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
@@ -415,7 +415,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           ) : (
             <button onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }}
                     style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
-              Select
+              Mark &amp; hide
             </button>
           )}
         </div>
@@ -529,7 +529,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
               </div>
               {canAct && (
                 <button onClick={() => { setHidePid(hOpen ? null : card.pid); setSolvePid(null); setOpenPid(null); }}
-                        style={{ background: "none", border: "none", color: "rgba(255,255,255,.35)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "1px 2px", fontFamily: FONT }}>
+                        /* dim but not small: the visual is a text link, the
+                           HIT AREA is button-sized (CodeRabbit, PR #359 — a
+                           1px-padded target on a warehouse tablet is a miss) */
+                        style={{ background: "none", border: "none", color: "rgba(255,255,255,.35)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "8px 6px 4px", margin: "-6px -4px 0", minHeight: 28, fontFamily: FONT }}>
                   {hOpen ? "Cancel" : "Hide from list"}
                 </button>
               )}
@@ -648,16 +651,20 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       })}
       {selectMode && selectedPids.length > 0 && (
         <div style={{ ...GLASS, position: "sticky", bottom: 8, padding: "10px 12px", marginTop: 10, background: "rgba(20,22,30,.97)" }}>
-          <div style={{ fontSize: 11.5, color: GRAY, marginBottom: 8 }}>
-            Hide <b style={{ color: "#fff" }}>{selectedPids.length}</b> product{selectedPids.length === 1 ? "" : "s"} from this list — reason is optional, stock and refills carry on as normal.
+          {/* ONE primary action: hide everything marked, no reason attached —
+              the owner's stated flow (2026-08-13). The two reason tags stay
+              as secondary chips for the batches that want one. */}
+          <button onClick={() => bulkHide()} disabled={bulkBusy}
+                  style={{ ...bGreen, width: "100%", padding: "12px", fontSize: 13 }}>
+            {bulkBusy ? "Hiding…" : `Hide ${selectedPids.length} marked`}
+          </button>
+          <div style={{ fontSize: 11, color: GRAY, margin: "8px 0 6px" }}>
+            Hides from this list only — stock and refills carry on as normal. Or tag the batch with a reason:
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {HIDE_REASONS.map((r) => (
               <button key={r.key} onClick={() => bulkHide(r.key)} disabled={bulkBusy} style={destChip(false)}>{r.label}</button>
             ))}
-            <button onClick={() => bulkHide()} disabled={bulkBusy} style={destChip(false)}>
-              {bulkBusy ? "Hiding…" : "Hide without a reason"}
-            </button>
           </div>
           {bulkErr && <div style={{ fontSize: 11.5, color: RED, marginTop: 8 }}>{bulkErr}</div>}
         </div>
