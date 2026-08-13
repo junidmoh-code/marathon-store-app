@@ -42,6 +42,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
 import { perSizeAutoCandidate } from "../../utils/perSizeStyleCode";
+import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
@@ -450,6 +451,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       const openLink = () => setPanel({
         mode: "link", kind: "code", display, normalised,
         allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+        // The label's printed model line, when the OCR carried one — the
+        // panel's second-strongest suggestion source (linkSuggestions.js).
+        modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
       });
       const p = perSizeAutoCandidate(normalised, products);
       if (p) {
@@ -496,9 +500,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   // MID shows the candidate LARGE and asks (a yes files the reading as another
   // alias, so the next scan of it is silent); LOW is the calm never-registered
   // path. A network failure is an error, never a false never-registered.
-  const [aliasConfirm, setAliasConfirm] = useState(null);  // { tokens, candidates:[product], index }
-  const handleAliasTokens = useCallback(async (tokens) => {
+  const [aliasConfirm, setAliasConfirm] = useState(null);  // { tokens, candidates:[product], index, modelName }
+  const handleAliasTokens = useCallback(async (tokens, meta = null) => {
     if (!hub) return;
+    // A code-less read still often prints the MODEL NAME — it rides the meta
+    // and feeds the link panel's name tier (CodeRabbit, PR #349).
+    const modelName = meta && typeof meta.modelName === "string" ? meta.modelName : null;
     setBusy(true);
     try {
       let match;
@@ -522,13 +529,17 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           const p = await resolveCandidate(c.productId);
           if (p) candidates.push(p);
         }
-        if (candidates.length) { setAliasConfirm({ tokens, candidates, index: 0 }); return; }
+        if (candidates.length) { setAliasConfirm({ tokens, candidates, index: 0, modelName }); return; }
       }
       // A reading nothing matches NEVER dead-ends (same rule as the
       // style-number path): offer the link panel — the pick files this reading
-      // as a token alias, so the next read of this label resolves.
+      // as a token alias, so the next read of this label resolves. The match
+      // call's own candidates ride along: below-band scores were previously
+      // DISCARDED here, which is how the panel opened blank on the floor —
+      // now they seed the suggestion list (linkSuggestions.js, alias tier).
       const preview = `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}`;
-      setPanel({ mode: "link", kind: "tokens", tokens, preview });
+      setPanel({ mode: "link", kind: "tokens", tokens, preview, modelName,
+                 aliasCandidates: match && Array.isArray(match.candidates) ? match.candidates : null });
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
@@ -1138,10 +1149,15 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                     if (next < aliasConfirm.candidates.length) setAliasConfirm({ ...aliasConfirm, index: next });
                     else {
                       // Every candidate said no — same rule as everywhere else:
-                      // never a dead end. The link panel takes over.
-                      const { tokens } = aliasConfirm;
+                      // never a dead end. The link panel takes over. The
+                      // rejected candidates must NOT resurface as suggestions:
+                      // the operator just said, one by one, that none of them
+                      // is this shoe.
+                      const { tokens, candidates, modelName } = aliasConfirm;
                       setAliasConfirm(null);
-                      setPanel({ mode: "link", kind: "tokens", tokens, preview: `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}` });
+                      setPanel({ mode: "link", kind: "tokens", tokens, modelName: modelName || null,
+                                 preview: `reading (${tokens.length} tokens): ${tokens.slice(0, 5).join(" ")}`,
+                                 excludeIds: candidates.map((p) => p.id) });
                     }
                   }}
                   style={{ ...bGray, flex: 1, minHeight: 52, fontSize: 14 }}>
@@ -1188,6 +1204,23 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   useEffect(() => { setLinkShown(LINK_PAGE); }, [q]);
   const hits = useMemo(() => (q.trim() ? searchProducts(products, q, { limit: Infinity }) : []), [products, q]);
   const shown = panel.kind === "code" ? (formatStyleCodeForDisplay(panel.normalised) || panel.display) : null;
+
+  // ── RANKED SUGGESTIONS — the panel must never open BLANK (owner spec
+  // 2026-08-13) ── an empty search box sent the operator hunting BY NAME,
+  // the exact duplicate-creating behaviour the style-code system removes.
+  // buildLinkSuggestions ranks the in-memory catalogue against everything
+  // this label gave us — code family, near-miss codes, the printed model
+  // name, the alias store's own candidates — with zero extra reads. Tapping
+  // one goes through the SAME onPick as a search hit: the operator decides,
+  // nothing auto-links.
+  const suggestions = useMemo(() => buildLinkSuggestions({
+    kind: panel.kind, normalised: panel.normalised, modelName: panel.modelName,
+    tokens: panel.tokens, aliasCandidates: panel.aliasCandidates,
+    excludeIds: panel.excludeIds, products,
+  }), [panel, products]);
+  const SUGGEST_PAGE = 4;
+  const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);
+
   return (
     <Panel title="Nothing owns this label — link it" onClose={onClose}>
       <div style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.5, marginBottom: 6 }}>
@@ -1196,10 +1229,61 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
       </div>
       <div style={{ fontSize: 12.5, color: GRAY, lineHeight: 1.55, marginBottom: 14 }}>
         Some brands print a different code on every size of the same shoe. If this is a shoe
-        we already have, find it below and link it — the next scan of this label will resolve
-        by itself.
+        we already have, link it — the next scan of this label will resolve by itself.
       </div>
-      <input value={q} onChange={(e) => setQ(e.target.value)} autoFocus
+
+      {suggestions.length > 0 ? (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase",
+                        color: "rgba(233,238,255,.55)", marginBottom: 8 }}>
+            Is it one of these? Compare the shoe in your hand to the photo.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {suggestions.slice(0, suggestShown).map((s) => (
+              <button key={s.product.id} type="button" disabled={busy} onClick={() => onPick(s.product)}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 12px", textAlign: "left",
+                         cursor: "pointer", background: "rgba(74,127,255,.08)",
+                         border: "1px solid rgba(120,150,255,.35)", borderRadius: 13 }}>
+                <Photo url={s.product.photoUrl} size={72} radius={12} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.product.name}</div>
+                  {s.code && (
+                    <div style={{ fontSize: 11.5, color: GRAY, fontVariantNumeric: "tabular-nums" }}>
+                      {formatStyleCodeForDisplay(s.code)}{s.field === "pending" ? " (pending)" : ""}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11.5, color: "#AFC6FF", lineHeight: 1.45, marginTop: 3 }}>
+                    {s.reasons.join(" · ")}
+                  </div>
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L, flexShrink: 0 }}>Link →</span>
+              </button>
+            ))}
+          </div>
+          {suggestions.length > suggestShown && (
+            <button type="button" onClick={() => setSuggestShown((n) => n + SUGGEST_PAGE)}
+              style={{ width: "100%", marginTop: 8, background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.14)",
+                       color: "rgba(233,238,255,.75)", borderRadius: 12, minHeight: 44, fontSize: 13, fontWeight: 700,
+                       cursor: "pointer", fontFamily: FONT }}>
+              Show {suggestions.length - suggestShown} more suggestion{suggestions.length - suggestShown === 1 ? "" : "s"}
+            </button>
+          )}
+        </div>
+      ) : (
+        // NOTHING scored — say so plainly (never dress a weak match up as a
+        // suggestion) and hand over to search as the honest fallback.
+        <div style={{ fontSize: 12.5, color: AMBER, lineHeight: 1.5, marginBottom: 14,
+                      background: "rgba(251,191,36,.06)", border: "1px solid rgba(251,191,36,.22)",
+                      borderRadius: 10, padding: "8px 11px" }}>
+          No registered code or label reading is close to this one — no suggestions to offer.
+          If the shoe is in the catalogue, find it by name below.
+        </div>
+      )}
+
+      <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", margin: "0 0 6px" }}>
+        {suggestions.length > 0 ? "Not one of these? Search by name — the last resort:" : "Search by name:"}
+      </div>
+      <input value={q} onChange={(e) => setQ(e.target.value)} autoFocus={suggestions.length === 0}
              placeholder="This is the same shoe as…"
              style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 54, fontSize: 16, fontWeight: 600 }} />
       {hits.length > 0 && (
