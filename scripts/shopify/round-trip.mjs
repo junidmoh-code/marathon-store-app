@@ -20,6 +20,7 @@ import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey } from "../../src/utils/sizeKey.js";
 import { sortSizes } from "./sizeOrder.mjs";
+import { shopifyTitle } from "./nameRewrite.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -58,8 +59,18 @@ if (problems.length) {
 const sizeName = (s) => (s === "_" ? "One Size" : String(s));
 const price = Number(product.retailPrice).toFixed(2);
 
+// Listing title = brand-stripped name; a guard violation ships the ORIGINAL
+// name and is called out loudly so the operator knows this one needs manual
+// naming (see shopifyTitle in nameRewrite.mjs).
+const named = shopifyTitle(product.name);
+if (named.flagged) {
+  console.error(
+    `⚠ title guard: ${named.reason} — pushing the ORIGINAL name unchanged: "${named.title}"`
+  );
+}
+
 const input = {
-  title: String(product.name).trim(),
+  title: named.title,
   status: "DRAFT", // never storefront-visible in this slice
   productOptions: [
     { name: "Size", position: 1, values: sizes.map((s) => ({ name: sizeName(s) })) },

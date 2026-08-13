@@ -1,6 +1,12 @@
 // ── Brand-strip name rewriting for the Shopify push ──────────────────────────
-// Shopify listing titles must carry NO brand word — the brand is removed
-// entirely, leaving colourway and model detail. Pure functions, no I/O.
+// Shopify listing titles carry no PARENT-brand word — the maker's mark (Nike,
+// adidas, Hugo Boss, Calvin Klein, …) is removed, leaving colourway and model
+// detail. LINE marks are kept (owner decision, 2026-08-13): a product-line name
+// that functions as the model's identity survives the strip — "Air Jordan 1
+// Retro Low OG …" keeps "Air Jordan", the Drake NOCTA collab keeps "NOCTA",
+// even while "Nike" in the same title is stripped. The kept line marks live in
+// the LINE MARKS note below; extending that list is a data decision, not code.
+// Pure functions, no I/O.
 //
 // How the brand list was derived (2026-08-13, read-only):
 //   1. Seeded from the app's own curated brand lexicon, BRAND_ALIASES in
@@ -24,11 +30,18 @@
 //   • "On" (On Running) is only stripped as the LEADING word of a Cloud*/
 //     Running name — a bare \bon\b rule would shred ordinary names.
 //
+// LINE MARKS (kept, never stripped — deliberately ABSENT from the list below):
+//   • "Air Jordan" / "Jordan" — Nike's line brand; on this catalogue's Jordan
+//     records the mark IS the model identity ("Air Jordan 1 Retro Low OG …",
+//     "Jordan backpack white").
+//   • "NOCTA" — the Nike × Drake line; same reasoning.
+// Adding a mark here means REMOVING its pattern from BRAND_PATTERNS; the tests
+// pin both directions.
+//
 // Ordered longest-phrase-first; each pattern removes every occurrence.
 const P = (s) => new RegExp(`\\b(?:${s})\\b`, "gi");
 export const BRAND_PATTERNS = [
   // multi-word phrases and their fragments/misspellings first
-  P("air jordan|jordan"),
   P("new balance"),
   P("new era"),
   P("hugo boss|boss|hugo"),
@@ -87,7 +100,6 @@ export const BRAND_PATTERNS = [
   P("chanel"),
   P("swarovski"),
   P("hoka"),
-  P("nocta"),
   P("rhude"),
   P("iceberg"),
   P("represent"),
@@ -128,6 +140,28 @@ export function stripBrandFromName(name) {
   s = s.replace(ON_LEADING, "");
   for (const re of BRAND_PATTERNS) s = s.replace(re, " ");
   return tidy(s);
+}
+
+// ── Title guards: never ship a broken title ──────────────────────────────────
+// The strip can gut a name whose identity WAS the brand ("Louis Vuitton " → "")
+// or leave a fragment that reads wrong as a listing ("New balance 9060 creem"
+// → "9060 creem", digit-leading). A violating rewrite is not repaired — the
+// ORIGINAL name ships unchanged (whitespace-trimmed only) and the product is
+// flagged for manual naming via the report list.
+//
+// This is the one entry point the Shopify push uses; stripBrandFromName stays
+// exported for tests/reporting but callers building payloads go through here.
+export function shopifyTitle(name) {
+  const original = String(name ?? "").trim();
+  const stripped = stripBrandFromName(original);
+  const reason =
+    stripped === "" ? "empty after strip"
+    : /^\d/.test(stripped) ? "digit-leading after strip"
+    : stripped.length < 3 ? "shorter than 3 chars after strip"
+    : null;
+  return reason
+    ? { title: original, flagged: true, reason }
+    : { title: stripped, flagged: false, reason: null };
 }
 
 // The brand words present in a name (canonical spelling of each match) —
