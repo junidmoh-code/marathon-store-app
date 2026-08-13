@@ -194,8 +194,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       const candidates = Array.isArray(data.candidates) ? data.candidates : [];
       // Whatever else this label printed. Server-validated; null means the
       // label simply doesn't print it (most don't).
-      if (data.colorway || data.upc || data.modelName) {
-        setLabelExtras({ colorway: data.colorway || null, upc: data.upc || null, modelName: data.modelName || null });
+      if (data.colorway || data.upc || data.modelName || (Array.isArray(data.tokens) && data.tokens.length)) {
+        setLabelExtras({
+          colorway: data.colorway || null, upc: data.upc || null, modelName: data.modelName || null,
+          // The label's stable word set (owner spec 2026-08-13) — evidence
+          // from the same photo, feeds the pre-duplicate ranking's name tier.
+          tokens: Array.isArray(data.tokens) && data.tokens.length ? data.tokens : null,
+        });
       }
 
       if (candidates.length === 1) {
@@ -212,15 +217,22 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       } else if (candidates.length > 1) {
         setLabelAllCodes(candidates);
         // A learned layout rule answers this question when a human already has
-        // (server autoPick, owner spec 2026-08-08). Fail closed: the pick must
-        // be one of THIS read's candidates or the chips ask as before.
-        if (typeof data.autoPick === "string" && candidates.includes(data.autoPick)) {
-          setTyped(formatStyleCodeForDisplay(data.autoPick));
-          setPhotoForCode(data.autoPick);
+        // (server autoPick, owner spec 2026-08-08); tier 2's own read
+        // (`preferred`, owner spec 2026-08-13) answers next — the full token
+        // set stays in labelAllCodes and files as identities either way. Fail
+        // closed: the pick must be one of THIS read's candidates or the chips
+        // ask as before.
+        const pick = typeof data.autoPick === "string" && candidates.includes(data.autoPick) ? data.autoPick
+          : (typeof data.preferred === "string" && candidates.includes(data.preferred) ? data.preferred : null);
+        if (pick) {
+          setTyped(formatStyleCodeForDisplay(pick));
+          setPhotoForCode(pick);
           setReadNote({
             tone: "good",
-            text: `The label shows ${candidates.length} code-shaped numbers — picked ${formatStyleCodeForDisplay(data.autoPick)} as the style number (learned from earlier labels). Wrong one? Tap the other:`,
-            options: candidates.filter((c) => c !== data.autoPick),
+            text: pick === data.autoPick
+              ? `The label shows ${candidates.length} code-shaped numbers — picked ${formatStyleCodeForDisplay(pick)} as the style number (learned from earlier labels). Wrong one? Tap the other:`
+              : `The label shows ${candidates.length} code-shaped numbers — read ${formatStyleCodeForDisplay(pick)} as the style number; the others are saved with it. Wrong one? Tap the other:`,
+            options: candidates.filter((c) => c !== pick),
           });
         } else {
           setReadNote({
@@ -286,6 +298,12 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       const similar = buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
+        // EVERY token the label printed asks the duplicate question too (owner
+        // spec 2026-08-13): the shoe may be registered under its production
+        // line while the operator holds the article code. Photo-evidence-bound
+        // like everything read off the label.
+        allCodes: (photoMatchesCode && labelAllCodes) || null,
+        tokens: (photoMatchesCode && labelExtras && labelExtras.tokens) || null,
         products,
       }).filter((s) => !s.weak);
       if (similar.length) {
@@ -310,6 +328,10 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       suggestions: buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
+        // Same pooling as the capture path — the list must carry the same
+        // meaning on both roads (owner spec 2026-08-13).
+        allCodes: (photoMatchesCode && labelAllCodes) || null,
+        tokens: (photoMatchesCode && labelExtras && labelExtras.tokens) || null,
         products,
       }).filter((s) => !s.weak),
     });

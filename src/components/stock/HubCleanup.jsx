@@ -55,7 +55,7 @@ import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
-  answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes, unresolvedScanKey,
+  answerStyleCodeSibling, lookupCodeAlias, resolveAnyCodes, recordLabelCodes, unresolvedScanKey,
   fetchColourwayAnswers, recordColourwayAnswer,
 } from "./hubCleanupStore";
 import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
@@ -439,6 +439,48 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // p is genuinely gone (alias points at nothing live) — fall through
         // to the link offer; the operator decides what this code is.
       }
+      // ── ANY-TOKEN RESOLUTION (owner spec 2026-08-13) ────────────────────────
+      // The tapped token resolved to nothing — but the label printed OTHERS,
+      // and the very same shoe may be registered under one of THEM (the OCR
+      // used to keep one line, and which line varied between registrations:
+      // "Lacoster white" holds its production line, not its article code). One
+      // round trip checks every other token against the index, the alias store
+      // and the stamped-products index. One owner resolves; several ask; a
+      // failed call degrades to the link panel, never to a false
+      // never-registered note.
+      const alternates = (meta && Array.isArray(meta.allCodes) ? meta.allCodes : [])
+        .map(normaliseStyleCode).filter((c) => c && c !== normalised);
+      if (alternates.length) {
+        let anyTok = null;
+        try { anyTok = await resolveAnyCodes(alternates); } catch { /* degrade to the panel below */ }
+        if (anyTok && anyTok.resolved) {
+          let p = products.find((x) => x && x.id === anyTok.resolved && !isMergedAway(x)) || null;
+          if (!p) p = await fetchProductFollowingMerge(anyTok.resolved).catch(() => null);
+          const cp = p ? countPanelFor(p) : null;
+          if (cp) {
+            const matched = anyTok.owners[0] && anyTok.owners[0].code;
+            flash("ok", `${display} isn't registered, but another number on this label (${formatStyleCodeForDisplay(matched) || matched}) is — “${p.name}”. Linked; the next scan resolves by itself.`, 6500);
+            fileAllCodes(p.id);
+            setPanel(cp);
+            return;
+          }
+        } else if (anyTok && anyTok.owners.length > 1) {
+          // Two tokens, two owners — the human decides, never a coin-flip.
+          const claimants = [];
+          for (const o of anyTok.owners) {
+            const p = products.find((x) => x && x.id === o.productId && !isMergedAway(x))
+              || await fetchProductFollowingMerge(o.productId).catch(() => null);
+            if (p && !claimants.some((c) => c.id === p.id)) claimants.push(p);
+          }
+          if (claimants.length > 1) {
+            setPanel({
+              mode: "choose", code: display, claimants, siblings: false, unloadedIds: [],
+              allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+            });
+            return;
+          }
+        }
+      }
       // THE PER-SIZE RULE (owner spec 2026-08-12, utils/perSizeStyleCode.js):
       // Lacoste prints a different article reference per SIZE — same prefix,
       // same colourway suffix, one article digit moved. When exactly ONE
@@ -454,6 +496,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // The label's printed model line, when the OCR carried one — the
         // panel's second-strongest suggestion source (linkSuggestions.js).
         modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
+        // The label's stable word set (owner spec 2026-08-13) — feeds the
+        // panel's name tier even on a code-ful read.
+        tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
       });
       const p = perSizeAutoCandidate(normalised, products);
       if (p) {
@@ -1221,6 +1266,10 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   const suggestions = useMemo(() => buildLinkSuggestions({
     kind: panel.kind, normalised: panel.normalised, modelName: panel.modelName,
     tokens: panel.tokens, aliasCandidates: panel.aliasCandidates,
+    // EVERY code-shaped token the label printed pools into this one ranked
+    // list (owner spec 2026-08-13) — each row's reason names which token
+    // found it, and the operator picks by photo.
+    allCodes: panel.allCodes,
     excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
   }), [panel, products]);
   const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);

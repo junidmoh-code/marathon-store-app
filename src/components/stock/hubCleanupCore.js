@@ -142,11 +142,19 @@ export function chooseFromLabelRead(data) {
     ? data.displayCandidates : candidates;
   if (candidates.length === 1) return { kind: "chosen", code: display[0], allCandidates: candidates };
   if (candidates.length > 1) {
+    // TWO servers picks can decide a multi-candidate read, in strict order:
+    //   autoPick   — a LAYOUT RULE a human taught ("learned" wording);
+    //   preferred  — tier 2's own read of the label (owner spec 2026-08-13:
+    //                tier 2 prefers, it no longer erases — the full candidate
+    //                set rides `allCandidates` and files as identities).
+    // Either pick must name one of THIS read's candidates — anything else (a
+    // stale rule, a mismatched response) falls back to asking. Fail closed.
     const autoPick = typeof (data && data.autoPick) === "string" ? data.autoPick : null;
     const i = autoPick ? candidates.indexOf(autoPick) : -1;
-    // The pick must name one of THIS read's candidates — anything else (a
-    // stale rule, a mismatched response) falls back to asking. Fail closed.
-    if (i >= 0) return { kind: "chosen", code: display[i], auto: true, allCandidates: candidates };
+    if (i >= 0) return { kind: "chosen", code: display[i], auto: true, autoSource: "layout", allCandidates: candidates };
+    const preferred = typeof (data && data.preferred) === "string" ? data.preferred : null;
+    const j = preferred ? candidates.indexOf(preferred) : -1;
+    if (j >= 0) return { kind: "chosen", code: display[j], auto: true, autoSource: "read", allCandidates: candidates };
     return { kind: "options", options: display, candidates };
   }
   const tokens = Array.isArray(data && data.tokens) ? data.tokens.filter(Boolean) : [];

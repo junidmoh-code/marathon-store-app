@@ -33,6 +33,21 @@ const STYLE_CODE_FORMATS = [
   // normalise DIFFERENTLY — both are accepted; our own system always reads the
   // label, so identities stay consistent within it.
   { name: "lacoste-ref", re: /^7?\d{2}(?!(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d)[A-Z]{3}\d{4}(?:[A-Z0-9]{2,3})?$/ },
+  // ── LABEL SERIAL — the multi-token-label widening (owner spec 2026-08-13) ──
+  // Some labels print code tokens no brand list catalogues: Timberland prints
+  // A6CWNEN3 and A8425 side by side, Lacoste adds a long production-order
+  // serial (TTJJ21FB00001). These are letter/digit INTERLEAVED runs — at least
+  // two letter→digit alternations, 6-16 chars — which no boilerplate word or
+  // address fragment produces (OR97005 has one alternation and is refused).
+  // APPENDED LAST deliberately: styleCodeFormat returns the FIRST match, so
+  // every code that already had a brand name keeps it; this only widens what
+  // counts as code-shaped. It is matching/alias vocabulary — the brands above
+  // stay the canonical shapes staff are taught to look for.
+  // The leading lookahead refuses strings composed ENTIRELY of size-system
+  // markers + digits ("US10UK9", "EUR42CM27") — the one non-code shape that
+  // also interleaves. The OCR path masks size lines before extraction; this
+  // guard covers the paths that validate a bare string (tier-2 output, typed).
+  { name: "label-serial", re: /^(?!(?:(?:US|UK|EU|EUR|FR|JP|JPN|CM|BR|MX|CN|KR|AU|SIZE)\d+)+$)(?=[A-Z0-9]{6,16}$)(?:[A-Z]+\d+){2,}[A-Z]{0,8}$/ },
 ];
 
 // Brand family implied by a code's shape. OBSERVABILITY ONLY — it feeds the
@@ -47,6 +62,8 @@ const BRAND_FAMILY_BY_FORMAT = {
   "new-balance": "New Balance",
   "adidas-block": "adidas",
   "lacoste-ref": "Lacoste",
+  // label-serial is brand-agnostic by construction — deliberately absent here,
+  // so brandFamilyForStyleCode reports "unknown" for it.
 };
 
 /** Best-guess brand family from shape, or "unknown". Observability only. */

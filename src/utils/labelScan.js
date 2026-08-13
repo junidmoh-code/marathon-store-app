@@ -14,7 +14,7 @@
 //
 // Pure and deterministic; the camera glue lives in the reader component.
 
-import { normaliseStyleCode, isKnownStyleCodeFormat, formatStyleCodeForDisplay, styleCodeFormat } from "./styleCode.js";
+import { normaliseStyleCode, formatStyleCodeForDisplay, styleCodeFormat } from "./styleCode.js";
 
 // Formats whose printed-label form and web/QR form are the SAME string. The
 // Lacoste reference is deliberately NOT here: the tongue label prints
@@ -63,7 +63,14 @@ export function interpretLabelScan(decodedText) {
   if (qrUsable(raw)) {
     return { kind: "code", code: formatStyleCodeForDisplay(raw), raw };
   }
-  if (isKnownStyleCodeFormat(raw)) return { kind: "ignore", reason: "brand_form_varies", raw };
+  // Brand shapes whose printed and QR forms differ are ignored here. The
+  // generic label-serial shape is EXCLUDED from this early exit on purpose:
+  // a composite payload ("ART:CT8527-016;SZ:9") normalises into a serial-like
+  // interleaved run, and bailing on it would skip the token hunt below that
+  // finds the real embedded code. A genuinely bare serial still ends at
+  // "unknown_stability" — QR serials stay non-authoritative either way.
+  const rawFormat = styleCodeFormat(raw);
+  if (rawFormat && rawFormat !== "label-serial") return { kind: "ignore", reason: "brand_form_varies", raw };
 
   // Composite payloads ("ART:CT8527-016;SZ:9"): any embedded shaped token.
   const tokens = raw.toUpperCase().split(/[^A-Z0-9-]+/).filter(Boolean);

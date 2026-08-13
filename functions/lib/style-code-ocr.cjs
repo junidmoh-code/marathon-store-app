@@ -92,6 +92,22 @@ const EXTRACTION_PATTERNS = [
   // letters+digits run that is followed by a separator and more digits, because
   // that run is the head of a longer code, not a code.
   { format: "adidas-block", re: /(?<![A-Z0-9])[A-Z]{1,2}\d{4,6}(?![A-Z0-9])(?![-\s]?\d)/g },
+  // ── MULTI-TOKEN WIDENING (owner spec 2026-08-13) — appended LAST on purpose:
+  // span consumption means these can only claim characters no brand pattern
+  // wanted, so every extraction that worked before produces the identical
+  // candidates it always did; these ADD tokens, never change one.
+  //
+  // SPLIT NUMERIC — a production line printed as two digit groups. The Lacoste
+  // label prints "35289 0625"; the article-code shapes above cannot see it
+  // (their separator sits after 6 digits, this one after 4-6), yet the run-
+  // together form 352890625 is exactly the code some products already hold.
+  // format:null → the candidate gate below names it by what it NORMALISES to
+  // (numeric-6-3 / puma-6-2) and drops any total length that matches nothing.
+  { format: null, re: /(?<![A-Z0-9])\d{4,6}[-\s]\d{2,5}(?![A-Z0-9])(?![-\s]?\d)/g },
+  // LABEL SERIAL — letter/digit interleaved runs (Timberland A6CWNEN3, the
+  // Lacoste production-order TTJJ21FB00001). Two letter→digit alternations
+  // minimum; the trailing guard is the same substring trap every shape carries.
+  { format: "label-serial", re: /(?<![A-Z0-9])(?:[A-Z]+\d+){2,}[A-Z]{0,8}(?![A-Z0-9])(?![-\s]?\d)/g },
 ];
 
 const MAX_CANDIDATES = 8; // a label has one code; more than a handful means noise
@@ -129,7 +145,9 @@ function extractStyleCodeCandidates(text) {
       consumed.push([start, end]);
       if (seen.has(normalised)) continue;
       seen.add(normalised);
-      found.push({ raw, normalised, format });
+      // A format:null pattern (the split-numeric widening) is named by what
+      // its match NORMALISES to — the gate above already proved it is one.
+      found.push({ raw, normalised, format: format || styleCodeFormat(normalised) });
     }
   }
   return found.slice(0, MAX_CANDIDATES);
@@ -389,7 +407,7 @@ function imageHash(buffer) {
  * The ONLY shape written to /style_code_ocr_cache. Deliberately tiny, and
  * constructed rather than spread, so a fat payload cannot leak in by accident.
  */
-function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, tokens = null, extras = null }) {
+function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_MS, tokens = null, extras = null, preferred = null }) {
   const codes = (Array.isArray(candidates) ? candidates : [])
     .map((c) => (typeof c === "string" ? normaliseStyleCode(c) : normaliseStyleCode(c && c.normalised)))
     .filter(Boolean)
@@ -407,6 +425,12 @@ function buildOcrCacheRecord({ candidates, source, nowMs, ttlMs = OCR_CACHE_TTL_
     // deliberately STALE under v2 so they upgrade to tokens on one re-read.
     fpv: 2,
   };
+  // Tier 2's pick (`pk`) rides the cache so a retake of a settled multi-token
+  // label resolves in one step without re-billing tier 2. Stored only when it
+  // names one of the row's own candidates — a stray pick must not survive.
+  if (typeof preferred === "string" && rec.candidates.includes(normaliseStyleCode(preferred))) {
+    rec.pk = normaliseStyleCode(preferred);
+  }
   // The stable TOKEN SET rides the cache (a small map, no payload) so a retake
   // of the same no-format label re-bills nothing and still matches aliases.
   if (Array.isArray(tokens) && tokens.length) {
