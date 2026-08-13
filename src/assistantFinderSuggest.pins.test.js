@@ -27,8 +27,20 @@ describe("the assistant finder's suggestion wiring", () => {
   });
 
   it("the code dead-end ranks the catalogue before giving up", () => {
-    expect(finder).toMatch(/kind: "code", normalised: normaliseStyleCode\(display\)/);
+    expect(finder).toMatch(/kind: "code", normalised: scanNorm/);
     expect(finder).toContain("suggestions: close");
+  });
+
+  it("the till tries the label's OTHER tokens before the dead-end, read-only (review, PR #354)", () => {
+    // Any-token resolution — the same door the count flow uses. A resolved
+    // owner finishes the sale; several owners ask; the call is read-only.
+    expect(finder).toMatch(/resolveAnyCodes\(tillAlternates\)/);
+    expect(finder).toMatch(/anyTok\.resolved/);
+    expect(finder).toContain("match more than one product — tap the right one");
+  });
+
+  it("the code dead-end POOLS every token and the label's words (review, PR #354)", () => {
+    expect(finder).toMatch(/allCodes: meta && Array\.isArray\(meta\.allCodes\) \? meta\.allCodes : null,\s*\n\s*tokens: meta && Array\.isArray\(meta\.tokens\)/);
   });
 
   it("the tokens dead-end ranks too, seeded with the match call's own candidates", () => {

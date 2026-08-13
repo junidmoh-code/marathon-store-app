@@ -40,6 +40,7 @@ const { GoogleAuth } = require("google-auth-library");
 
 const {
   labelTokens,
+  MAX_CANDIDATES,
   OCR_CACHE_PATH,
   extractStyleCodeCandidates,
   extractLabelExtras,
@@ -100,6 +101,12 @@ const TIER2_PROMPT = [
   "If you cannot read a style code, return an empty string for styleCode with",
   "confidence 0 — never a guess, never a placeholder.",
   "",
+  "Some labels print MORE THAN ONE code-shaped token (an article code, a",
+  "production number, a serial). Put the manufacturer style code in styleCode,",
+  "and list EVERY OTHER code-shaped token printed on the label in otherCodes,",
+  "each exactly as printed. Never invent one; an empty list means the label",
+  "prints only the one code.",
+  "",
   "SOME labels also print, as separate lines: a MODEL NAME (e.g. \"DUNK GENESIS\"),",
   "and under it a COLOURWAY of slash-separated colour words (e.g.",
   "\"WOLF GREY/PHOTO BLUE\"). Most labels print NEITHER. Return each one only",
@@ -114,6 +121,7 @@ const TIER2_SCHEMA = {
   type: "OBJECT",
   properties: {
     styleCode: { type: "STRING" },
+    otherCodes: { type: "ARRAY", items: { type: "STRING" } },
     brand: { type: "STRING" },
     size: { type: "STRING" },
     modelName: { type: "STRING" },
@@ -194,6 +202,14 @@ async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
   // manual entry (tier 4) is the fallback, and it always works.
   const raw = typeof parsed.styleCode === "string" ? parsed.styleCode.trim() : "";
   const code = raw && isKnownStyleCodeFormat(raw) ? normaliseStyleCode(raw) : null;
+  // Every OTHER code-shaped token the model saw (multi-token labels, owner
+  // spec 2026-08-13). Validated one by one through the same shape gate as the
+  // code itself; anything unrecognisable is dropped, never passed downstream.
+  const otherCodes = [...new Set((Array.isArray(parsed.otherCodes) ? parsed.otherCodes : [])
+    .filter((c) => typeof c === "string" && isKnownStyleCodeFormat(c.trim()))
+    .map((c) => normaliseStyleCode(c.trim())))]
+    .filter((c) => c && c !== code)
+    .slice(0, 8);
   let confidence = Number(parsed.styleCodeConfidence);
   if (!Number.isFinite(confidence)) confidence = 0;
   // Extras are validated the same way the code is — a value that does not look
@@ -206,6 +222,7 @@ async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
   const mnRaw = typeof parsed.modelName === "string" ? parsed.modelName.trim() : "";
   return {
     code,
+    otherCodes,
     rejectedRead: raw && !code ? raw : null, // surfaced for logging, never used
     brand: typeof parsed.brand === "string" && parsed.brand.trim() ? parsed.brand.trim() : null,
     size: typeof parsed.size === "string" && parsed.size.trim() ? parsed.size.trim() : null,
@@ -214,6 +231,14 @@ async function runGeminiRead(base64, mimeType, apiKey, { fetchImpl } = {}) {
     modelName: mnRaw && /^[A-Za-z]/.test(mnRaw) ? mnRaw.slice(0, 64) : null,
     confidence: Math.max(0, Math.min(1, confidence)),
   };
+}
+
+// A candidate that is a strict PREFIX of another candidate is a truncation of
+// it, not a second code — the collapse this whole feature forbids (CT8527-016
+// and CT8527-700 both reduce to "CT8527"). Order is preserved; the longer
+// read always wins. Used on the tier-2 union in both branches.
+function dropStrictPrefixes(codes) {
+  return codes.filter((c) => c && !codes.some((t) => t && t !== c && t.startsWith(c)));
 }
 
 // ── TIER 2.5 — THE LEARNED LAYOUT RULE (owner spec 2026-08-08) ───────────────
@@ -269,12 +294,18 @@ async function runLabelRead(db, {
     // RTDB drops an empty candidates array — default it back.
     const cachedCandidates = Array.isArray(cachedRow.candidates) ? cachedRow.candidates : [];
     const layout = await consultLayoutRule(db, cachedCandidates);
+    // Tier 2's pick rides the cache under `pk` — honoured only when it still
+    // names one of the row's own candidates (fail closed on a malformed row).
+    const cachedPreferred = typeof cachedRow.pk === "string" && cachedCandidates.includes(cachedRow.pk)
+      ? cachedRow.pk : null;
     return {
       candidates: cachedCandidates,
       displayCandidates: cachedCandidates.map(formatStyleCodeForDisplay),
       autoPick: layout.autoPick,
       autoPickDisplay: layout.autoPick ? formatStyleCodeForDisplay(layout.autoPick) : null,
       layoutKey: layout.layoutKey,
+      preferred: cachedPreferred,
+      preferredDisplay: cachedPreferred ? formatStyleCodeForDisplay(cachedPreferred) : null,
       tokens: cachedRow.tk && typeof cachedRow.tk === "object" ? Object.keys(cachedRow.tk).sort() : [],
       // Label extras ride the cache under short keys (cw/upc/mn) — see
       // buildOcrCacheRecord. Older rows simply have none, which reads as null.
@@ -315,9 +346,15 @@ async function runLabelRead(db, {
   let modelName = null;
 
   // ── TIER 2 — ONLY on the residual: zero candidates, or an ambiguous many ──
+  // A learned LAYOUT RULE is consulted FIRST (owner spec 2026-08-13): when a
+  // human has already answered "which token is the style number" for this
+  // layout, the ambiguity is settled for free and tier 2 is skipped — the
+  // rule's pick rides `autoPick` exactly as before.
   let brand = null, size = null, confidence = null, tier2Used = false;
   let source = "vision";
-  if (candidates.length !== 1) {
+  let preferred = null; // tier 2's pick — the FULL candidate set survives beside it
+  let layout = candidates.length > 1 ? await consultLayoutRule(db, candidates) : { autoPick: null, layoutKey: null };
+  if (candidates.length !== 1 && !layout.autoPick) {
     tier2Used = true;
     try {
       const g = await runGeminiRead(base64, mimeType, geminiKey, { fetchImpl: geminiFetch });
@@ -330,14 +367,54 @@ async function runLabelRead(db, {
       // Nike code returns something that looks perfectly valid. What DOES catch
       // it is context — if tier 1 read a longer code and tier 2's answer is a
       // strict prefix of it, tier 2 truncated and tier 1 is right.
+      // A code-less-OR-truncated primary must not take its otherCodes down
+      // with it (architect review, PR #354): those extra tokens are
+      // independently validated reads with nothing to do with the primary's
+      // fate. One merge helper, used by both non-primary branches below.
+      const mergeOtherCodes = () => {
+        if (!Array.isArray(g.otherCodes) || !g.otherCodes.length) return;
+        const hadNone = candidates.length === 0;
+        candidates = dropStrictPrefixes([...new Set([...candidates, ...g.otherCodes])]).slice(0, MAX_CANDIDATES);
+        if (hadNone && candidates.length) source = "gemini";
+      };
       const truncates = g.code && candidates.some((c) => c !== g.code && c.startsWith(g.code));
       if (truncates) {
         console.warn(`readStyleCodeLabel: tier 2 returned ${g.code}, a prefix of a tier-1 candidate — discarded as a truncation`);
+        mergeOtherCodes();
       } else if (g.code) {
-        // Tier 2 disambiguates: its single read wins over tier 1's ambiguity.
-        candidates = [g.code];
+        // ── TIER 2 PREFERS, IT NO LONGER ERASES (owner root cause 2026-08-13:
+        // the OCR captured ONE line and WHICH line varied between
+        // registrations — everything downstream inherited that mistake). Its
+        // pick leads the list and rides `preferred` so the client still
+        // resolves in one step, but EVERY code-shaped token tier 1 read — and
+        // every extra token tier 2 itself saw — stays a candidate, gets filed
+        // as an identity, and can match an existing product.
+        // THE GUARD CUTS BOTH WAYS (review, PR #354): tier 1 can be the
+        // truncator too — a blurred label reads "CT8527" beside a second
+        // token, tier 2 reads the full CT8527-016. Keeping the prefix would
+        // file it as a permanent alias and a later blurred scan of the -700
+        // colourway would silently resolve to the wrong product. So the
+        // union drops every candidate that is a strict prefix of another
+        // kept candidate, whichever tier produced it.
+        candidates = dropStrictPrefixes([g.code,
+          ...[...new Set([...(g.otherCodes || []), ...candidates])].filter((c) => c !== g.code),
+        ]).slice(0, MAX_CANDIDATES);
+        // The guard can strip g.code ITSELF — a tier-2 otherCode may be the
+        // fuller spelling of a primary the model truncated (A8425 beside
+        // A84251). A dropped pick confers no preference: crowning it would
+        // pre-fill and file the truncated identity, and the cache's pk gate
+        // would void it on every retake anyway (Kimi review, PR #354).
+        preferred = candidates.includes(g.code) ? g.code : null;
         source = "gemini";
         brand = g.brand; size = g.size; confidence = g.confidence;
+      } else {
+        // No trusted PRIMARY code — but the validated extra tokens are still
+        // real tokens off a real label; dropping them re-created the one-line
+        // loss one branch over (CodeRabbit, PR #354). No `preferred` is set:
+        // nothing here says which token is the style number, so a
+        // multi-candidate result still asks. The same both-ways prefix guard
+        // applies inside the merge helper.
+        mergeOtherCodes();
       }
       // Extras: tier 2 only FILLS GAPS tier 1 left. Both were validated
       // through the same gates (lexicon line / digit run), and a code-less
@@ -361,19 +438,27 @@ async function runLabelRead(db, {
   // because every later read of the same photo hits the fresh-cache branch and
   // returns before tier 2 is ever retried. A transient Gemini outage would
   // permanently pin an unresolved label. (CodeRabbit, PR #312.)
-  // ── TOKEN FALLBACK — never reject a label that produced readable text ──
-  // Only when NO candidate matched a known format: the label's stable TOKEN
-  // SET rides the response for the alias store to match by overlap (owner
-  // design fix 2026-08-06 — identity is assigned at registration and looked
-  // up fuzzily, never re-derived and compared for equality).
-  const tokens = candidates.length === 0 ? labelTokens(visionText) : [];
+  // ── THE TOKEN SET ALWAYS RIDES (owner spec 2026-08-13) ──
+  // Previously computed only when NO candidate matched a known format — which
+  // threw away the model-name line ("LGUARD BRKR CTT", "GRIPSHOT MID") on
+  // every label that DID print a code. The stable token set is now extracted
+  // on every read: the code-less flow consumes it exactly as before, and the
+  // link panel's name tier gets the label's wording even when codes exist.
+  const tokens = labelTokens(visionText);
 
   const tier2Failed = tier2Used && errors.some((e) => e.tier === "gemini");
-  const settled = !tier2Failed && (!errors.length || candidates.length === 1);
+  // A tier-2 pick SETTLES a multi-candidate read — the ambiguity is decided,
+  // not frozen, and the pick rides the cache as `pk`. Without the `preferred`
+  // clause a vision-tier error beside a successful tier-2 read (which now
+  // keeps the full token set, so candidates.length > 1) would make the photo
+  // permanently uncacheable and re-bill BOTH tiers on every retake for the
+  // 90-day TTL (review, PR #354). The unsettled case stays exactly what it
+  // was: an error left the funnel undecided, so nothing is cached.
+  const settled = !tier2Failed && (!errors.length || candidates.length === 1 || preferred !== null);
   if (settled) {
     try {
       await cacheRef.set(buildOcrCacheRecord({
-        candidates, source, nowMs, tokens,
+        candidates, source, nowMs, tokens, preferred,
         extras: { colourway: colorway, upc, modelName },
       }));
     } catch (err) {
@@ -381,13 +466,21 @@ async function runLabelRead(db, {
     }
   }
 
-  const layout = await consultLayoutRule(db, candidates);
+  // Tier 2's union can CHANGE the candidate set, so the rule consulted before
+  // tier 2 may no longer key this layout — re-consult only in that case.
+  if (candidates.length > 1 && !layout.autoPick && tier2Used) {
+    layout = await consultLayoutRule(db, candidates);
+  }
   return {
     candidates,
     displayCandidates: candidates.map(formatStyleCodeForDisplay),
     autoPick: layout.autoPick,
     autoPickDisplay: layout.autoPick ? formatStyleCodeForDisplay(layout.autoPick) : null,
     layoutKey: layout.layoutKey,
+    // Tier 2's pick, when it fired — the client resolves with it exactly as it
+    // does with autoPick, but the wording can say "read", not "learned".
+    preferred,
+    preferredDisplay: preferred ? formatStyleCodeForDisplay(preferred) : null,
     tokens,
     colorway, upc, modelName,
     source, fromCache: false, brand, size, confidence, tier2Used, errors,

@@ -452,10 +452,12 @@ two people photographing the same label — never re-bills the OCR.
 
 | Field | Type | Notes |
 |---|---|---|
-| `candidates` | string[] | The extracted **normalised style codes**, capped at 8. An empty array is a valid, useful answer: an unreadable photo must not re-bill on every retry either. |
+| `candidates` | string[] | The extracted **normalised style codes**, capped at 8. An empty array is a valid, useful answer: an unreadable photo must not re-bill on every retry either. Since 2026-08-13 this is EVERY code-shaped token the label printed (article code, split production line, interleaved serial) — tier 2 prefers, it no longer erases. |
 | `source` | `"vision"` \| `"gemini"` | Which tier produced them. |
 | `at` | number (epoch ms) | |
 | `expiresAt` | number (epoch ms) | `at + 90 days`. |
+| `pk` | string (optional) | Tier 2's **preferred** candidate — the token it read as the style number. Stored only when it names one of the row's own `candidates`; a retake resolves in one step without re-billing tier 2. |
+| `tk` | `{ TOKEN: true }` (optional) | The label's stable token set (≤40 keys, ≤24 chars) — rides EVERY read since 2026-08-13 (previously only code-less ones), so the model-name line survives a code-ful read. |
 
 ### This node stores candidates ONLY — never the Vision payload
 
@@ -464,7 +466,8 @@ bounding boxes. Multiplied by every photo taken in every shop, and re-downloaded
 on every read, that is exactly the node shape that has already cost this project
 real money in RTDB download bandwidth. `buildOcrCacheRecord` **constructs** the
 row field by field rather than spreading anything into it, so a fat payload
-cannot leak in by accident, and a test asserts one row stays under 200 bytes.
+cannot leak in by accident, and a test asserts one row stays under 400 bytes
+(raised from 200 when the bounded `tk` token map started riding every row).
 
 The client also downscales every label photo to **1024px** before upload, for the
 same reason — see `src/utils/labelPhoto.js`.
@@ -549,6 +552,12 @@ registration.
 
 Near-identical readings for the same product (containment ≥0.9) de-duplicate
 instead of piling up. Logic in `functions/lib/label-alias.cjs` (node-tested).
+
+Code-alias records share this node (`c` map instead of `t`, exact lookup only,
+`src: "multi_code_label"`). The callable's `resolveAnyCode` action (2026-08-13)
+answers "does ANY of these tokens identify a product?" in one read-only round
+trip — index claim + code aliases + stamped-products index per token; exactly
+one distinct live owner resolves, several return for the human to pick.
 
 ---
 

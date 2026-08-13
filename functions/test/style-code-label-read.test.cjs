@@ -113,7 +113,12 @@ test("tier 2 fires on ZERO tier-1 candidates", async () => {
   assert.strictEqual(out.confidence, 0.9);
 });
 
-test("tier 2 fires on MORE THAN ONE tier-1 candidate, and disambiguates", async () => {
+test("tier 2 fires on MORE THAN ONE tier-1 candidate, and PREFERS — it no longer erases", async () => {
+  // The 2026-08-13 root cause: tier 2 used to REPLACE the candidate list with
+  // its single pick, so which line the model favoured decided the product's
+  // whole identity and every other printed token was lost. Now its pick leads
+  // the list and rides `preferred` (the client still resolves in one step),
+  // while EVERY token stays a candidate to be filed and matched.
   const db = fakeDb({});
   const out = await runLabelRead(db, base({
     visionFetch: visionOk("CT8527-016\nIE3437"),
@@ -121,7 +126,9 @@ test("tier 2 fires on MORE THAN ONE tier-1 candidate, and disambiguates", async 
   }));
 
   assert.strictEqual(out.tier2Used, true);
-  assert.deepStrictEqual(out.candidates, ["CT8527016"], "the ambiguity is resolved to one code");
+  assert.deepStrictEqual(out.candidates, ["CT8527016", "IE3437"], "every printed token survives tier 2");
+  assert.strictEqual(out.preferred, "CT8527016", "tier 2's pick is preferred, not exclusive");
+  assert.strictEqual(out.preferredDisplay, "CT8527-016");
 });
 
 test("VALIDATION: a hallucinated code is discarded, never passed downstream", async () => {
@@ -188,14 +195,17 @@ test("a retake of the same photo is served from cache and re-bills nothing", asy
   assert.deepStrictEqual(second.candidates, ["CT8527016"]);
 });
 
-test("THE CACHE NODE HOLDS CODES ONLY — never the Vision payload", async () => {
+test("THE CACHE NODE HOLDS CODES + BOUNDED TOKENS ONLY — never the Vision payload", async () => {
   const db = fakeDb({});
   await runLabelRead(db, base({ visionFetch: visionOk(NIKE_LABEL), geminiFetch: geminiOk({}) }));
   const row = db.data[OCR_CACHE_PATH][HASH];
-  assert.deepStrictEqual(Object.keys(row).sort(), ["at", "candidates", "expiresAt", "fpv", "source"]);
+  // `tk` (the stable token set, ≤40 keys of ≤24 chars) now rides EVERY row —
+  // owner spec 2026-08-13, the model-name line must survive a code-ful read.
+  // Still no payload: candidates, tokens, provenance, expiry. Nothing else.
+  assert.deepStrictEqual(Object.keys(row).sort(), ["at", "candidates", "expiresAt", "fpv", "source", "tk"]);
   assert.deepStrictEqual(row.candidates, ["CT8527016"]);
   assert.strictEqual(row.expiresAt - row.at, OCR_CACHE_TTL_MS);
-  assert.ok(JSON.stringify(row).length < 200, "one row must stay tiny — this node is a bandwidth risk");
+  assert.ok(JSON.stringify(row).length < 400, "one row must stay tiny — this node is a bandwidth risk");
 });
 
 test("an unreadable photo is cached too, so retries do not re-bill", async () => {
@@ -299,8 +309,11 @@ test("the same photo gets a REAL second chance once Gemini recovers", async () =
     geminiFetch: geminiOk({ styleCode: "CT8527-016", styleCodeConfidence: 0.95 }),
   }));
   assert.strictEqual(retry.fromCache, false, "the outage must not have pinned the earlier answer");
-  assert.deepStrictEqual(retry.candidates, ["CT8527016"]);
-  assert.ok(db.data[OCR_CACHE_PATH][HASH], "now it is settled, so now it caches");
+  assert.deepStrictEqual(retry.candidates, ["CT8527016", "IE3437"], "settled by preference, nothing erased");
+  assert.strictEqual(retry.preferred, "CT8527016");
+  const row = db.data[OCR_CACHE_PATH][HASH];
+  assert.ok(row, "now it is settled, so now it caches");
+  assert.strictEqual(row.pk, "CT8527016", "the pick survives the cache so a retake re-bills nothing");
 });
 
 test("a SETTLED single-candidate read still caches", async () => {
@@ -495,14 +508,20 @@ test("the TOKEN SET is CACHED — a retake of the same no-format label re-bills 
     "the token set survives the cache round-trip — stored as a MAP, because real RTDB drops empty/array children");
 });
 
-test("a format-valid candidate SUPPRESSES the token fallback — verified codes always win", async () => {
+test("the token set RIDES BESIDE a format-valid candidate — the code still leads", async () => {
+  // Before 2026-08-13 a code-ful read returned tokens: [] — which threw away
+  // the model-name line ("POWERCOURT") on every label that printed a code, so
+  // the link panel's name tier went hungry exactly when it was most useful.
+  // The code path still wins resolution (candidates lead; the client's token
+  // flow only runs on ZERO candidates — pinned in hubCleanupCore tests); the
+  // tokens are additive evidence, never a competing identity.
   const db = fakeDb({});
   const out = await runLabelRead(db, base({
     visionFetch: visionOk("LACOSTE\nPOWERCOURT 0520 1 SWA\n7-43SMA0033 1R5\nUK 8 US 9"),
     geminiFetch: geminiOk({}),
   }));
-  assert.deepStrictEqual(out.candidates, ["743SMA00331R5"]);
-  assert.deepStrictEqual(out.tokens, []);
+  assert.deepStrictEqual(out.candidates, ["743SMA00331R5"], "the verified code still leads");
+  assert.ok(out.tokens.includes("POWERCOURT"), "…and the label's wording survives beside it");
 });
 
 test("PRE-token cache rows (legacy AND fpv:1 fingerprint-era) upgrade on the next read", async () => {

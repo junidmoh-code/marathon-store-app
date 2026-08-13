@@ -55,7 +55,7 @@ import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
-  answerStyleCodeSibling, lookupCodeAlias, recordLabelCodes, unresolvedScanKey,
+  answerStyleCodeSibling, lookupCodeAlias, resolveAnyCodes, recordLabelCodes, unresolvedScanKey,
   fetchColourwayAnswers, recordColourwayAnswer,
 } from "./hubCleanupStore";
 import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
@@ -439,6 +439,91 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // p is genuinely gone (alias points at nothing live) — fall through
         // to the link offer; the operator decides what this code is.
       }
+      // ── ANY-TOKEN RESOLUTION (owner spec 2026-08-13) ────────────────────────
+      // The tapped token resolved to nothing — but the label printed OTHERS,
+      // and the very same shoe may be registered under one of THEM (the OCR
+      // used to keep one line, and which line varied between registrations:
+      // "Lacoster white" holds its production line, not its article code). One
+      // round trip checks every other token against the index, the alias store
+      // and the stamped-products index. One owner resolves; several ask; a
+      // failed call degrades to the link panel, never to a false
+      // never-registered note.
+      const alternates = (meta && Array.isArray(meta.allCodes) ? meta.allCodes : [])
+        .map(normaliseStyleCode).filter((c) => c && c !== normalised);
+      if (alternates.length) {
+        let anyTok = null;
+        try { anyTok = await resolveAnyCodes(alternates); } catch { /* degrade to the panel below */ }
+        if (anyTok && anyTok.resolved) {
+          let p = products.find((x) => x && x.id === anyTok.resolved && !isMergedAway(x)) || null;
+          if (!p) {
+            try {
+              p = await fetchProductFollowingMerge(anyTok.resolved);
+            } catch (err) {
+              // A FAILED read is not a ghost — the server just PROVED an owner
+              // exists; falling through to the link panel would invite the
+              // operator to mint a duplicate or a false never-registered note
+              // (review, PR #354; same rule as the claim and alias branches).
+              flash("err", `Another number on this label matches a registered product, but it couldn't be loaded (${err?.message || err}) — try again.`);
+              return;
+            }
+          }
+          const cp = p ? countPanelFor(p) : null;
+          if (cp) {
+            const matched = anyTok.owners[0] && anyTok.owners[0].code;
+            flash("ok", `${display} isn't registered, but another number on this label (${formatStyleCodeForDisplay(matched) || matched}) is — “${p.name}”. Linked; the next scan resolves by itself.`, 6500);
+            fileAllCodes(p.id);
+            setPanel(cp);
+            return;
+          }
+        } else if (anyTok && anyTok.owners.length > 1) {
+          // Two tokens, two owners — the human decides, never a coin-flip.
+          // An owner whose record cannot be loaded is NOT silently dropped
+          // (architect review, PR #354): it rides `unloadedIds`, which the
+          // panel surfaces as "N more products own this … reload before
+          // trusting this list" and which forces the collision framing — a
+          // hidden third owner behind a sibling picker could invite a merge
+          // of the wrong pair. All owners unloadable = an error, never the
+          // link panel: the server just proved owners exist.
+          const claimants = [];
+          const anyTokUnloaded = [];
+          for (const o of anyTok.owners) {
+            const p = products.find((x) => x && x.id === o.productId && !isMergedAway(x))
+              || await fetchProductFollowingMerge(o.productId).catch(() => null);
+            if (p && !claimants.some((c) => c.id === p.id)) claimants.push(p);
+            else if (!p) anyTokUnloaded.push(o.productId);
+          }
+          if (!claimants.length) {
+            flash("err", "This label's numbers match registered products, but none could be loaded — try again.");
+            return;
+          }
+          if (claimants.length + anyTokUnloaded.length > 1) {
+            // SIBLINGS, NOT COLLISION, when every owner rode ONE code and the
+            // index registers them as that code's colourway set (review,
+            // PR #354): the collision framing offers the live Merge
+            // affordance, and merging two legitimate colourways destroys
+            // stock history. Cross-code owners keep the collision framing —
+            // one label naming two products IS the duplicate question.
+            const ownerCodes = [...new Set(anyTok.owners.map((o) => normaliseStyleCode(o.code)).filter(Boolean))];
+            let siblingSet = false;
+            // An unloaded owner also blocks the sibling framing — the claim
+            // may vouch for the VISIBLE ones while the hidden one is the
+            // genuine collision (same rule as resolveStyleNumber's
+            // `!unloadedIds.length`).
+            if (ownerCodes.length === 1 && !anyTokUnloaded.length) {
+              try {
+                const sharedClaim = await lookupStyleClaim(ownerCodes[0]);
+                siblingSet = allRegisteredSiblings(sharedClaim, claimants.map((c) => c.id));
+              } catch { /* unknown stays collision framing — fail closed on merge, not on ask */ }
+            }
+            setPanel({
+              mode: "choose", code: ownerCodes.length === 1 ? (formatStyleCodeForDisplay(ownerCodes[0]) || display) : display,
+              claimants, siblings: siblingSet, unloadedIds: anyTokUnloaded,
+              allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+            });
+            return;
+          }
+        }
+      }
       // THE PER-SIZE RULE (owner spec 2026-08-12, utils/perSizeStyleCode.js):
       // Lacoste prints a different article reference per SIZE — same prefix,
       // same colourway suffix, one article digit moved. When exactly ONE
@@ -448,12 +533,18 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // link panel — never a guess. A DIFFERENT colourway suffix never gets
       // here (the rule refuses it), because same fit in another colour is a
       // different product.
-      const openLink = () => setPanel({
+      const openLink = (aliasCandidates = null) => setPanel({
         mode: "link", kind: "code", display, normalised,
         allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
         // The label's printed model line, when the OCR carried one — the
         // panel's second-strongest suggestion source (linkSuggestions.js).
         modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
+        // The label's stable word set (owner spec 2026-08-13) — feeds the
+        // panel's name tier even on a code-ful read.
+        tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
+        // The alias store's own candidates, when the token fallback below ran
+        // — they surface through the panel's alias tier.
+        aliasCandidates,
       });
       const p = perSizeAutoCandidate(normalised, products);
       if (p) {
@@ -483,6 +574,33 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         setPanel(countPanelFor(p));
         return;
       }
+      // ── THE TOKEN-OVERLAP FALLBACK (review, PR #354) ───────────────────────
+      // Labels registered BEFORE the widening as code-less token readings
+      // (t-map aliases) can now extract their serial as a single candidate —
+      // which lands here instead of the token flow, and without this step the
+      // alias store's HIGH-band answer would never be consulted: registered
+      // stock would read as unrecognised until a human re-linked every label.
+      // Same bands as handleAliasTokens: HIGH resolves silently; anything
+      // else rides the panel's alias tier as candidates.
+      let aliasCandidates = null;
+      const fallbackTokens = meta && Array.isArray(meta.tokens) ? meta.tokens.filter(Boolean) : [];
+      if (fallbackTokens.length >= 2) {
+        try {
+          const match = await matchLabelAlias(fallbackTokens);
+          if (match.band === "high" && match.candidates[0]) {
+            const p2 = products.find((x) => x && x.id === match.candidates[0].productId && !isMergedAway(x))
+              || await fetchProductFollowingMerge(match.candidates[0].productId).catch(() => null);
+            const cp2 = p2 ? countPanelFor(p2) : null;
+            if (cp2) {
+              flash("ok", `${display} isn't registered as a number, but this label's wording is — “${p2.name}”.`, 6000);
+              fileAllCodes(p2.id);
+              setPanel(cp2);
+              return;
+            }
+          }
+          if (Array.isArray(match.candidates) && match.candidates.length) aliasCandidates = match.candidates;
+        } catch { /* the panel below is the degrade path — never a dead end */ }
+      }
       // A clean read nothing owns NEVER dead-ends (the Lacoste labels blocked
       // a live count exactly here). The operator is holding a real shoe —
       // offer "this is the same shoe as…" with a product search; the pick
@@ -490,7 +608,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // scan of this size resolves silently. "Note as never registered"
       // survives inside the panel as the deliberate answer, not the automatic
       // one.
-      openLink();
+      openLink(aliasCandidates);
     } finally { setBusy(false); }
   }, [hub, products, flash]);
 
@@ -1221,6 +1339,10 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   const suggestions = useMemo(() => buildLinkSuggestions({
     kind: panel.kind, normalised: panel.normalised, modelName: panel.modelName,
     tokens: panel.tokens, aliasCandidates: panel.aliasCandidates,
+    // EVERY code-shaped token the label printed pools into this one ranked
+    // list (owner spec 2026-08-13) — each row's reason names which token
+    // found it, and the operator picks by photo.
+    allCodes: panel.allCodes,
     excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
   }), [panel, products]);
   const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);

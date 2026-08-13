@@ -218,6 +218,9 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
             source: "label", labelPhoto: frame,
             allCodes: out.allCandidates || null, auto: !!out.auto,
             modelName: typeof data.modelName === "string" ? data.modelName : null,
+            // The label's stable word set (owner spec 2026-08-13) — rides to
+            // the link panel's name tier even when the read carried codes.
+            tokens: Array.isArray(data.tokens) ? data.tokens : null,
           });
           // A learned-layout pick must never be INVISIBLE (Sonnet review,
           // PR #334): the flow proceeds, but the pick is announced with the
@@ -228,16 +231,27 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           // correcting answer a wrong rule needs.
           if (out.auto && Array.isArray(out.allCandidates) && out.allCandidates.length > 1) {
             setReadNote({
-              text: `Read ${formattedChosen} as the style number — learned from earlier labels like this one. Wrong? Tap the right one:`,
+              // Honest provenance: a layout rule was LEARNED from earlier
+              // answers; tier 2's preference was READ off this very label.
+              text: out.autoSource === "read"
+                ? `Read ${formattedChosen} as the style number — the label's other number(s) are saved with it. Wrong? Tap the right one:`
+                : `Read ${formattedChosen} as the style number — learned from earlier labels like this one. Wrong? Tap the right one:`,
               options: out.allCandidates.filter((c) => formatStyleCodeForDisplay(c) !== formattedChosen).map(formatStyleCodeForDisplay),
               candidates: out.allCandidates,
               labelPhoto: frame,
               modelName: typeof data.modelName === "string" ? data.modelName : null,
+              tokens: Array.isArray(data.tokens) ? data.tokens : null,
             });
           }
           return;
         }
-        if (out.kind === "options" && !sawOptions) sawOptions = { out, frame, modelName: typeof data.modelName === "string" ? data.modelName : null };
+        if (out.kind === "options" && !sawOptions) {
+          sawOptions = {
+            out, frame,
+            modelName: typeof data.modelName === "string" ? data.modelName : null,
+            tokens: Array.isArray(data.tokens) ? data.tokens : null,
+          };
+        }
         if (out.kind === "tokens") frameTokens.push(out.tokens);
       }
       if (sawOptions) {
@@ -250,6 +264,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           candidates: sawOptions.out.candidates || null,
           labelPhoto: sawOptions.frame,
           modelName: sawOptions.modelName,
+          tokens: sawOptions.tokens,
         });
         return;
       }
@@ -337,6 +352,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
                       source: "label", labelPhoto: readNote.labelPhoto || null,
                       allCodes: readNote.candidates || null,
                       modelName: readNote.modelName || null,
+                      tokens: readNote.tokens || null,
                     });
                   }}
                   style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>

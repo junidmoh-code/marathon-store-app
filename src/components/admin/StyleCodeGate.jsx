@@ -51,6 +51,10 @@ import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
+// Read-only any-token ownership — the pre-duplicate step's server half
+// (review, PR #354): alias-only owners never stamp a product row, so the
+// local ranking alone cannot see them.
+const labelAliasFn = httpsCallable(functions, "labelAlias");
 
 const BLUE = "#4A7FFF";
 const AMBER = "#FBBF24";
@@ -194,8 +198,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       const candidates = Array.isArray(data.candidates) ? data.candidates : [];
       // Whatever else this label printed. Server-validated; null means the
       // label simply doesn't print it (most don't).
-      if (data.colorway || data.upc || data.modelName) {
-        setLabelExtras({ colorway: data.colorway || null, upc: data.upc || null, modelName: data.modelName || null });
+      if (data.colorway || data.upc || data.modelName || (Array.isArray(data.tokens) && data.tokens.length)) {
+        setLabelExtras({
+          colorway: data.colorway || null, upc: data.upc || null, modelName: data.modelName || null,
+          // The label's stable word set (owner spec 2026-08-13) — evidence
+          // from the same photo, feeds the pre-duplicate ranking's name tier.
+          tokens: Array.isArray(data.tokens) && data.tokens.length ? data.tokens : null,
+        });
       }
 
       if (candidates.length === 1) {
@@ -212,15 +221,22 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       } else if (candidates.length > 1) {
         setLabelAllCodes(candidates);
         // A learned layout rule answers this question when a human already has
-        // (server autoPick, owner spec 2026-08-08). Fail closed: the pick must
-        // be one of THIS read's candidates or the chips ask as before.
-        if (typeof data.autoPick === "string" && candidates.includes(data.autoPick)) {
-          setTyped(formatStyleCodeForDisplay(data.autoPick));
-          setPhotoForCode(data.autoPick);
+        // (server autoPick, owner spec 2026-08-08); tier 2's own read
+        // (`preferred`, owner spec 2026-08-13) answers next — the full token
+        // set stays in labelAllCodes and files as identities either way. Fail
+        // closed: the pick must be one of THIS read's candidates or the chips
+        // ask as before.
+        const pick = typeof data.autoPick === "string" && candidates.includes(data.autoPick) ? data.autoPick
+          : (typeof data.preferred === "string" && candidates.includes(data.preferred) ? data.preferred : null);
+        if (pick) {
+          setTyped(formatStyleCodeForDisplay(pick));
+          setPhotoForCode(pick);
           setReadNote({
             tone: "good",
-            text: `The label shows ${candidates.length} code-shaped numbers — picked ${formatStyleCodeForDisplay(data.autoPick)} as the style number (learned from earlier labels). Wrong one? Tap the other:`,
-            options: candidates.filter((c) => c !== data.autoPick),
+            text: pick === data.autoPick
+              ? `The label shows ${candidates.length} code-shaped numbers — picked ${formatStyleCodeForDisplay(pick)} as the style number (learned from earlier labels). Wrong one? Tap the other:`
+              : `The label shows ${candidates.length} code-shaped numbers — read ${formatStyleCodeForDisplay(pick)} as the style number; the others are saved with it. Wrong one? Tap the other:`,
+            options: candidates.filter((c) => c !== pick),
           });
         } else {
           setReadNote({
@@ -239,6 +255,30 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     } finally {
       setBusy(null);
     }
+  }
+
+  // Server half of the pre-duplicate question (review, PR #354): alias-only
+  // owners never stamp a product row, so the local ranking cannot see them.
+  // Mutates the given suggestion list in place; a failed call leaves it
+  // standing. Shared by the capture-only and enforced roads.
+  async function addServerOwners(list) {
+    try {
+      const { data } = await labelAliasFn({
+        action: "resolveAnyCode",
+        codes: [normalised, ...((photoMatchesCode && labelAllCodes) || [])],
+      });
+      for (const o of (data && Array.isArray(data.owners) ? data.owners : [])) {
+        const p = products.find((x) => x && x.id === o.productId);
+        if (p && !list.some((s) => s.product.id === p.id)) {
+          list.unshift({
+            product: p, code: normaliseStyleCode(o.code) || null, field: "confirmed",
+            tier: "exact", score: 105,
+            reasons: ["a number on this label already identifies this product"],
+          });
+        }
+      }
+    } catch { /* the local ranking still stands */ }
+    return list;
   }
 
   // ── Look the code up ──────────────────────────────────────────────────────
@@ -286,8 +326,24 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       const similar = buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
+        // EVERY token the label printed asks the duplicate question too (owner
+        // spec 2026-08-13): the shoe may be registered under its production
+        // line while the operator holds the article code. Photo-evidence-bound
+        // like everything read off the label.
+        allCodes: (photoMatchesCode && labelAllCodes) || null,
+        tokens: (photoMatchesCode && labelExtras && labelExtras.tokens) || null,
         products,
       }).filter((s) => !s.weak);
+      // ── ALIAS-ONLY OWNERSHIP IS INVISIBLE TO THE LOCAL SCAN (review,
+      // PR #354) ── the count flow files code aliases that never stamp a
+      // product row, so the in-memory ranking above cannot see them. One
+      // any-token round trip asks the server; a known owner blocks HERE,
+      // photo-first, instead of surfacing post-hoc as a duplicate pair after
+      // the record exists. Runs on BOTH roads (capture-only and enforced —
+      // architect review: fixing only one would re-open the gap the day the
+      // lookup flag flips). Best-effort: a failed call leaves the local
+      // ranking standing.
+      await addServerOwners(similar);
       if (similar.length) {
         setSimilarStep({ payload, suggestions: similar });
         setStep("similar");
@@ -307,11 +363,17 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
       payload: null,
       // Same weak-row filter as the capture path — this list renders inside
       // the resolver's own steps and must carry the same meaning there.
-      suggestions: buildLinkSuggestions({
+      // addServerOwners runs here too (architect review, PR #354): the
+      // alias-only gap must not re-open the day the lookup flag flips on.
+      suggestions: await addServerOwners(buildLinkSuggestions({
         kind: "code", normalised, includeExact: true,
         modelName: (photoMatchesCode && labelExtras && labelExtras.modelName) || null,
+        // Same pooling as the capture path — the list must carry the same
+        // meaning on both roads (owner spec 2026-08-13).
+        allCodes: (photoMatchesCode && labelAllCodes) || null,
+        tokens: (photoMatchesCode && labelExtras && labelExtras.tokens) || null,
         products,
-      }).filter((s) => !s.weak),
+      }).filter((s) => !s.weak)),
     });
     try {
       // confusableRetry is on ONLY when the code came off a photo — a human who

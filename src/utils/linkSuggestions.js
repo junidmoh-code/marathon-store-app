@@ -456,7 +456,14 @@ export function closestCandidates({ normalised, labelWords, products, excludeIds
 /**
  * THE entry point: everything the link panel knows about this label, ranked.
  *
- *   kind "code":   normalised (+ modelName when the OCR carried one)
+ *   kind "code":   normalised (+ modelName when the OCR carried one, and
+ *                  allCodes — EVERY code-shaped token the label printed;
+ *                  each contributes candidates to this ONE merged list.
+ *                  Owner spec 2026-08-13: the Timberland's A6CWNEN3 and
+ *                  A8425 both feed the same list, the operator picks by
+ *                  photo. `tokens` — the label's stable word set — feeds the
+ *                  name tier here too, so a code-ful read still surfaces
+ *                  "GRIPSHOT"-style wording matches.)
  *   kind "tokens": tokens (+ aliasCandidates from the match call, and
  *                  excludeIds for candidates the operator already rejected)
  *
@@ -469,11 +476,40 @@ export function closestCandidates({ normalised, labelWords, products, excludeIds
  * worded) so the COUNT panel is never empty — a filler never outranks a real
  * tier, and the row's reason never dresses it up as one.
  */
-export function buildLinkSuggestions({ kind, normalised, modelName, tokens, aliasCandidates, excludeIds, products, includeExact = false, fillToMin = 0 }) {
+export function buildLinkSuggestions({ kind, normalised, modelName, tokens, allCodes, aliasCandidates, excludeIds, products, includeExact = false, fillToMin = 0 }) {
   let hits = [];
   if (kind === "code") {
     hits = hits.concat(codeSuggestions(normalised, products, { includeExact }));
+    // POOL THE OTHER TOKENS (owner spec 2026-08-13). Every further code-shaped
+    // token the label printed ranks the catalogue exactly as the primary does,
+    // into this one list — each row's reason names WHICH token found it, so
+    // "matched A8425" and "matched A6CWNEN3" sit side by side and the photo
+    // decides. Additive only: with no allCodes the list is byte-identical to
+    // what it always was.
+    const primary = normaliseStyleCode(normalised);
+    const pooled = [...new Set((Array.isArray(allCodes) ? allCodes : [])
+      .map(normaliseStyleCode).filter((c) => c && c !== primary))];
+    // includeExact is ALWAYS on for the pooled tokens: the caller's "exact
+    // owners resolved before the panel" rationale covers the PRIMARY code's
+    // resolution path, but an alternate token's owner is found by the
+    // any-token round trip — and when that call failed or was degraded, this
+    // row is the one honest recovery the operator gets. Suggest, never
+    // decide: the row is still a button.
+    for (const extra of pooled) {
+      for (const h of codeSuggestions(extra, products, { includeExact: true })) {
+        hits.push({ ...h, reason: `${h.reason} (via the label's other token ${formatStyleCodeForDisplay(extra)})` });
+      }
+    }
     if (modelName) hits = hits.concat(modelNameSuggestions(modelName, products));
+    // The label's word set (model-name line included) — same name tier the
+    // token flow uses; DF caps silence brand words, the dedupe folds overlap.
+    if (Array.isArray(tokens) && tokens.length) hits = hits.concat(modelNameSuggestions(tokens, products));
+    // The alias store's candidates ride the CODE panel too (review, PR #354):
+    // a label registered pre-widening as a token reading now extracts a code,
+    // lands in this panel — and its own HIGH/MID alias match must not vanish.
+    if (Array.isArray(aliasCandidates) && aliasCandidates.length) {
+      hits = hits.concat(aliasSuggestions(aliasCandidates, products, excludeIds));
+    }
   } else if (kind === "tokens") {
     hits = hits.concat(modelNameSuggestions(tokens, products));
     // A code-less read may still carry a clean model-name line the merged
