@@ -48,25 +48,51 @@ export async function requireSingleLocation(graphql) {
 
 // Set absolute available quantities at the single location.
 // items: [{ inventoryItemId, quantity }]. Absolute set (not delta), so a
-// re-run converges instead of double-counting.
+// re-run converges instead of double-counting. The 2026-07 API makes the set
+// a compare-and-set (changeFromQuantity is required), so the current
+// quantities are read first; a concurrent change makes the mutation error
+// rather than silently clobber — the caller re-runs.
 export async function setAvailable(graphql, locationId, items) {
   if (!items.length) return { set: 0 };
+  const current = await graphql(
+    `query ($ids: [ID!]!, $loc: ID!) {
+      nodes(ids: $ids) {
+        ... on InventoryItem {
+          id
+          inventoryLevel(locationId: $loc) {
+            quantities(names: ["available"]) { name quantity }
+          }
+        }
+      }
+    }`,
+    { ids: items.map((i) => i.inventoryItemId), loc: locationId }
+  );
+  const currentById = new Map();
+  for (const n of current.nodes ?? []) {
+    if (!n?.id) continue;
+    const q = n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0;
+    currentById.set(n.id, q);
+  }
+  // 2026-07 requires @idempotent on this mutation. The key is minted once per
+  // call, so the client's own retry of the same request replays, not doubles.
+  const { randomUUID } = await import("crypto");
   const data = await graphql(
-    `mutation ($input: InventorySetQuantitiesInput!) {
-      inventorySetQuantities(input: $input) {
+    `mutation ($input: InventorySetQuantitiesInput!, $key: String!) {
+      inventorySetQuantities(input: $input) @idempotent(key: $key) {
         inventoryAdjustmentGroup { reason }
         userErrors { field message }
       }
     }`,
     {
+      key: randomUUID(),
       input: {
         name: "available",
         reason: "correction",
-        ignoreCompareQuantity: true,
         quantities: items.map(({ inventoryItemId, quantity }) => ({
           inventoryItemId,
           locationId,
           quantity,
+          changeFromQuantity: currentById.get(inventoryItemId) ?? 0,
         })),
       },
     },

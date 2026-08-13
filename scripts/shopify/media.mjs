@@ -84,7 +84,7 @@ export async function attachMedia(graphql, shopifyProductId, mediaPlan) {
     const back = await graphql(
       `query ($id: ID!) {
         product(id: $id) {
-          media(first: 50) { nodes { id status: fileStatus alt } }
+          media(first: 50) { nodes { id status alt } }
         }
       }`,
       { id: shopifyProductId }
