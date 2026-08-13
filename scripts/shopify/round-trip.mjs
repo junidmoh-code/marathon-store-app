@@ -19,6 +19,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey } from "../../src/utils/sizeKey.js";
+import { sortSizes } from "./sizeOrder.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -43,7 +44,10 @@ if (!product) {
 const problems = [];
 if (!product.id || !product.name) problems.push("record lacks inner id/name (invisible in the app)");
 if (!(Number(product.retailPrice) > 0)) problems.push("no retailPrice > 0");
-const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : null;
+// Sorted for the storefront dropdown — Shopify renders productOptions in the
+// order given, and raw catalogue order is tap order (see sizeOrder.mjs).
+const sizes =
+  Array.isArray(product.sizes) && product.sizes.length ? sortSizes(product.sizes) : null;
 if (!sizes) problems.push("no sizes array");
 if (problems.length) {
   console.error(`Refusing to map ${productId}: ${problems.join("; ")}`);
