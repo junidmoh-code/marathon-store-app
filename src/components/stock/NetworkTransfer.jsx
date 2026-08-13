@@ -105,11 +105,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [selected, setSelected] = useState({});   // pid → true
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState(null);
-  // Reconciled against the LIVE card list: a selected card that resolves out
-  // mid-select (another operator transfers it, a sale lands) must neither
-  // inflate the "N selected" count nor ride into the bulk write.
-  const cardPidSet = useMemo(() => new Set((allCards || []).map((c) => c.pid)), [allCards]);
-  const selectedPids = Object.keys(selected).filter((k) => selected[k] && cardPidSet.has(k));
   const exitSelect = () => { setSelectMode(false); setSelected({}); setBulkErr(null); };
   // A selection is a statement about the cards the operator was LOOKING AT.
   // Switching chips swaps the list under the checkboxes, so carrying the
@@ -203,6 +198,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const all = allCards || computeMissingProducts({ allStock, products });
     return category && category !== "all" ? all.filter((c) => c.group === category) : all;
   }, [allCards, allStock, products, category]);
+  // Selection reconciled against the RENDERED list (`cards`, not the allCards
+  // prop): a selected card that resolves out mid-select — or that the
+  // standalone-fallback path computed locally, where allCards is null — must
+  // neither inflate the "N selected" count nor ride into the bulk write.
+  // Deriving from the prop broke select mode entirely on the fallback path
+  // (empty set → nothing ever counted). (Kimi + Sonnet substitute pair,
+  // PR #356.)
+  const cardPidSet = useMemo(() => new Set(cards.map((c) => c.pid)), [cards]);
+  const selectedPids = Object.keys(selected).filter((k) => selected[k] && cardPidSet.has(k));
 
   // Catalog sizes to seed. The one-size "_" sentinel is KEPT (it used to be
   // dropped here): it is a real, seedable cell key for a one-size product, and

@@ -85,8 +85,25 @@ test("the plan is byte-for-byte identical whether or not products are hidden", (
 // Every string literal in a source, so path checks see child()-based and
 // ref(db, ...)-based construction alike — not just the db.ref("...") form.
 // (CodeRabbit, PR #356: the earlier pin only matched ref("settings…").)
+// Backtick literals may span lines and are captured whole (Kimi + Sonnet
+// substitute pair: the first cut excluded \n everywhere and a template
+// string spanning lines slipped the net); quote/apostrophe literals stay
+// single-line, as the language requires — letting THEM span lines glues a
+// comment's apostrophe ("the engine's run") to the next one and manufactures
+// phantom literals. The filters below match SUBSTRINGS deliberately — an
+// unrelated future literal containing "settings" will fail loudly and force
+// this allowlist to be extended by hand, which is the strictness this
+// contract wants.
 const stringLiterals = (src) =>
-  (src.match(/(["'`])(?:(?!\1)[^\\\n]|\\.)*\1/g) || []).map((s) => s.slice(1, -1));
+  (src.match(/(["'])(?:(?!\1)[^\\\n]|\\.)*\1|`(?:[^\\`]|\\[\s\S])*`/g) || []).map((s) => s.slice(1, -1));
+
+test("the literal scanner itself sees multi-line template literals", () => {
+  // A test of the pin's own net: if the regex regresses to single-line
+  // capture, the fragment below vanishes from the scan and this fails.
+  const caught = stringLiterals("const p = `settings/\nmissingProductsHidden`;");
+  assert.equal(caught.length, 1);
+  assert.match(caught[0], /missingProductsHidden/);
+});
 
 test("neither the scan nor the engine references the hidden path — in any fragment", () => {
   // "missingProducts" rather than the full node name, so a fragmented

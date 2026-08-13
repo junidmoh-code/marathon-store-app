@@ -107,8 +107,21 @@ describe("select mode — a mis-tap can only toggle selection", () => {
   });
   it("the selection reconciles against the live card list before counting or writing", () => {
     // A selected card that resolves out mid-select must neither inflate the
-    // "N selected" count nor ride into the bulk write.
+    // "N selected" count nor ride into the bulk write — and the set derives
+    // from `cards` (the fallback-aware RENDERED list), not the allCards prop,
+    // which is null on the standalone path and would dead-end select mode.
+    // (Kimi + Sonnet substitute pair, PR #356.)
     expect(NETWORK).toMatch(/selected\[k\] && cardPidSet\.has\(k\)/);
+    expect(NETWORK).toMatch(/cardPidSet = useMemo\(\(\) => new Set\(cards\.map\(\(c\) => c\.pid\)\), \[cards\]\)/);
+  });
+  it("the viewing-only banner renders on the EMPTY hidden tab too", () => {
+    // The banner must be computed above the empty-state early return and
+    // rendered inside it. (Kimi substitute review, PR #356.)
+    const bannerAt = HIDDEN.indexOf("const banner = !canAct");
+    const emptyReturnAt = HIDDEN.indexOf("if (!rows.length)");
+    expect(bannerAt).toBeGreaterThan(-1);
+    expect(bannerAt).toBeLessThan(emptyReturnAt);
+    expect(HIDDEN).toMatch(/return <>\{banner\}<div/);
   });
   it("a selection never survives a chip switch", () => {
     expect(NETWORK).toMatch(/useEffect\(\(\) => \{ exitSelect\(\); \}, \[category\]\)/);

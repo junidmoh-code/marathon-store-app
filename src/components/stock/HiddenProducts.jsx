@@ -68,8 +68,12 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
     setBusyPid(null);
   };
 
+  // The viewing-only banner renders in BOTH branches — the empty state
+  // included — matching the main list, where the banner is unconditional.
+  const banner = !canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to unhide — viewing only.</div>;
+
   if (!rows.length) {
-    return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>Nothing hidden — every stranded product is showing in the main list.</div>;
+    return <>{banner}<div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>Nothing hidden — every stranded product is showing in the main list.</div></>;
   }
 
   const pill = (on) => ({
@@ -81,7 +85,7 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
 
   return (
     <>
-      {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to unhide — viewing only.</div>}
+      {banner}
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
         {[["all", "All"], ...HIDE_REASONS.map((r) => [r.key, r.label]), ["none", "No reason"]].map(([key, label]) => (
           <button key={key} onClick={() => setReasonFilter(key)} style={pill(reasonFilter === key)}>{label}</button>
