@@ -19,7 +19,7 @@ import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
-import { shopifyTitle } from "./nameRewrite.mjs";
+import { cleanTitleFor, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
@@ -65,18 +65,34 @@ if (problems.length) {
 const sizeName = displaySizeName;
 const price = Number(product.retailPrice).toFixed(2);
 
-// Listing title = brand-stripped name; a guard violation ships the ORIGINAL
-// name and is called out loudly so the operator knows this one needs manual
-// naming (see shopifyTitle in nameRewrite.mjs).
-const named = shopifyTitle(product.name);
-if (named.flagged) {
-  console.error(
-    `⚠ title guard: ${named.reason} — pushing the ORIGINAL name unchanged: "${named.title}"`
-  );
+// Listing title, in authority order (trigger engine v2, owner spec 2026-08-13):
+//   1. a human/AI cleanName already cached on /shopify_publish — but ONLY if
+//      it still passes the trigger check (the lexicon may have grown since it
+//      was written);
+//   2. the deterministic lexicon rebuild (cleanTitleFor).
+// A name neither path can clean REFUSES — the ORIGINAL name never ships for a
+// triggered product any more (that v1 contract is gone: the gateway
+// keyword-flags brand terms and one hit triggers a documentation review).
+const publishNode = (await admin.database().ref(`shopify_publish/${productId}`).get()).val();
+let title = null;
+if (publishNode?.cleanName && isTriggerFree(publishNode.cleanName)) {
+  title = String(publishNode.cleanName).trim();
+} else {
+  const named = cleanTitleFor(product);
+  if (named.needsAI) {
+    console.error(
+      `Refusing to push ${productId}: name "${product.name}" cannot be cleaned by the ` +
+        `lexicon (${named.reason}) and /shopify_publish/${productId} has no usable ` +
+        `cleanName. Run the AI pass (scripts/shopify/ai-rename.mjs) or set a manual ` +
+        `clean name on the home-page Shopify card first.`
+    );
+    process.exit(1);
+  }
+  title = named.title;
 }
 
 const input = {
-  title: named.title,
+  title,
   status: "DRAFT", // never storefront-visible in this slice
   productOptions: [
     { name: "Size", position: 1, values: sizes.map((s) => ({ name: sizeName(s) })) },
