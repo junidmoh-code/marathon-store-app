@@ -17,7 +17,7 @@
 //                       until a human unhides it — never auto-purged, so a
 //                       seasonal product that re-strands comes back HIDDEN.
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
@@ -81,6 +81,7 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
 
   return (
     <>
+      {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to unhide — viewing only.</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
         {[["all", "All"], ...HIDE_REASONS.map((r) => [r.key, r.label]), ["none", "No reason"]].map(([key, label]) => (
           <button key={key} onClick={() => setReasonFilter(key)} style={pill(reasonFilter === key)}>{label}</button>
@@ -134,21 +135,22 @@ export default function HiddenProducts({ products = [], cards = [], hiddenMap = 
 // This is discretion, not access control: no password, no role gate, and the
 // tab it opens announces itself with a visible chip once open.
 export function HoldSpot({ onTrigger, holdMs = 600 }) {
-  const [pressed, setPressed] = useState(null); // {x, y, timer}
-  const cancel = () => setPressed((p) => { if (p) clearTimeout(p.timer); return null; });
+  // A ref, not state: the press is transient bookkeeping, and the timer must
+  // be clearable from the unmount cleanup — a hold in progress when the
+  // screen unmounts must never fire onTrigger into a dead tree.
+  const press = useRef(null); // {x, y, timer}
+  const cancel = () => { if (press.current) { clearTimeout(press.current.timer); press.current = null; } };
+  useEffect(() => cancel, []);
   return (
     <div
       onPointerDown={(e) => {
         cancel();
-        const timer = setTimeout(() => { setPressed(null); onTrigger(); }, holdMs);
-        setPressed({ x: e.clientX, y: e.clientY, timer });
+        const timer = setTimeout(() => { press.current = null; onTrigger(); }, holdMs);
+        press.current = { x: e.clientX, y: e.clientY, timer };
       }}
       onPointerMove={(e) => {
-        setPressed((p) => {
-          if (!p) return null;
-          if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 12) { clearTimeout(p.timer); return null; }
-          return p;
-        });
+        const p = press.current;
+        if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > 12) cancel();
       }}
       onPointerUp={cancel} onPointerLeave={cancel} onPointerCancel={cancel}
       style={{ flex: 1, alignSelf: "stretch", minWidth: 44, minHeight: 30, userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none", touchAction: "pan-y" }}

@@ -759,7 +759,13 @@ export default function HealthView({ products = [], onExit }) {
               <StatCard label="Missing Products" value={missingProducts == null ? "—" : missingProducts}
                         tone={missingProducts == null ? GRAY : missingProducts ? AMBER : GREEN}
                         sub={missingProducts == null ? "Loading live stock…" : "Stranded upstream — transfer from here"}
-                        onClick={() => setScreen("missingProducts")} />
+                        // A stale "hidden" selection must NOT survive leaving the
+                        // screen — HealthView never unmounts between drill-ins, so
+                        // without this, one hold gesture would leave the hidden tab
+                        // one PLAIN TAP away for the rest of the session, exactly
+                        // the over-the-counter exposure the HoldSpot exists to
+                        // prevent. Normal chip stickiness is untouched.
+                        onClick={() => { setMissingTab((t) => (t === "hidden" ? null : t)); setScreen("missingProducts"); }} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Recount Needed" value={count("recountNeeded")} tone={count("recountNeeded") ? RED : GREEN}

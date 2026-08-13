@@ -105,7 +105,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [selected, setSelected] = useState({});   // pid → true
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkErr, setBulkErr] = useState(null);
-  const selectedPids = Object.keys(selected).filter((k) => selected[k]);
+  // Reconciled against the LIVE card list: a selected card that resolves out
+  // mid-select (another operator transfers it, a sale lands) must neither
+  // inflate the "N selected" count nor ride into the bulk write.
+  const cardPidSet = useMemo(() => new Set((allCards || []).map((c) => c.pid)), [allCards]);
+  const selectedPids = Object.keys(selected).filter((k) => selected[k] && cardPidSet.has(k));
   const exitSelect = () => { setSelectMode(false); setSelected({}); setBulkErr(null); };
   // A selection is a statement about the cards the operator was LOOKING AT.
   // Switching chips swaps the list under the checkboxes, so carrying the
@@ -405,7 +409,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
               </button>
             </>
           ) : (
-            <button onClick={() => setSelectMode(true)}
+            <button onClick={() => { setSelectMode(true); setOpenPid(null); setSolvePid(null); setHidePid(null); }}
                     style={{ background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", color: "rgba(255,255,255,.4)", borderRadius: 10, padding: "7px 10px", fontWeight: 600, fontSize: 11.5, cursor: "pointer", fontFamily: FONT }}>
               Select
             </button>
@@ -417,8 +421,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // down so a mis-tap can only toggle selection, never move stock.
         if (selectMode) {
           const on = !!selected[card.pid];
+          const toggle = () => setSelected((s) => ({ ...s, [card.pid]: !s[card.pid] }));
           return (
-            <div key={card.pid} onClick={() => setSelected((s) => ({ ...s, [card.pid]: !s[card.pid] }))} style={{ cursor: "pointer" }}>
+            <div key={card.pid} role="checkbox" aria-checked={on} tabIndex={0} onClick={toggle}
+                 onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+                 style={{ cursor: "pointer" }}>
               <ProductCard
                 photo={card.photo} name={card.name}
                 badges={<>

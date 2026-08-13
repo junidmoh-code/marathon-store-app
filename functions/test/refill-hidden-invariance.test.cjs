@@ -82,19 +82,33 @@ test("the plan is byte-for-byte identical whether or not products are hidden", (
     "hiding is a view filter — the engine's plan must not change by a single byte");
 });
 
-test("neither the scan nor the engine references the hidden path", () => {
-  assert.doesNotMatch(SCAN_SRC, /missingProductsHidden/,
-    "refill-scan.cjs must never read the hidden set — hiding is app-side view state");
-  assert.doesNotMatch(ENGINE_SRC, /missingProductsHidden/,
-    "refill-engine.cjs must never read the hidden set — hiding is app-side view state");
+// Every string literal in a source, so path checks see child()-based and
+// ref(db, ...)-based construction alike — not just the db.ref("...") form.
+// (CodeRabbit, PR #356: the earlier pin only matched ref("settings…").)
+const stringLiterals = (src) =>
+  (src.match(/(["'`])(?:(?!\1)[^\\\n]|\\.)*\1/g) || []).map((s) => s.slice(1, -1));
+
+test("neither the scan nor the engine references the hidden path — in any fragment", () => {
+  // "missingProducts" rather than the full node name, so a fragmented
+  // "missingProducts" + "Hidden" construction is caught too. A determined
+  // evasion ("missing" + "ProductsHidden") is beyond static pinning — the
+  // byte-for-byte plan test above is the guarantee that survives it.
+  for (const [name, src] of [["refill-scan.cjs", SCAN_SRC], ["refill-engine.cjs", ENGINE_SRC]]) {
+    assert.doesNotMatch(src, /missingProductsHidden/, `${name} must never read the hidden set`);
+    const fragments = stringLiterals(src).filter((s) => /missingProducts/i.test(s));
+    assert.deepEqual(fragments, [], `${name} carries hidden-path fragments: ${JSON.stringify(fragments)}`);
+  }
 });
 
-test("the scan's only /settings read stays scoped to stockHold/held", () => {
+test("the scan's only settings-flavoured string is stockHold/held; the engine has none", () => {
   // The hidden node lives under /settings BECAUSE the functions side reads
-  // that subtree only through this one scoped child path. A broader read
-  // (db.ref("settings")) would silently pull the hidden set into the engine's
-  // inputs and invalidate the placement decision.
-  const settingsReads = SCAN_SRC.match(/ref\((["'`])settings[^"'`]*\1\)/g) || [];
-  assert.deepEqual(settingsReads, ['ref("settings/stockHold/held")'],
-    `unexpected /settings reads in refill-scan.cjs: ${JSON.stringify(settingsReads)}`);
+  // that subtree only through this one scoped child path. Checked over ALL
+  // string literals — db.ref(), ref(db, ...), .child(...) and concatenated
+  // path parts all have to spell "settings" in a literal somewhere.
+  const scanSettings = [...new Set(stringLiterals(SCAN_SRC).filter((s) => /settings/i.test(s)))];
+  assert.deepEqual(scanSettings, ["settings/stockHold/held"],
+    `unexpected settings literals in refill-scan.cjs: ${JSON.stringify(scanSettings)}`);
+  const engineSettings = stringLiterals(ENGINE_SRC).filter((s) => /settings/i.test(s));
+  assert.deepEqual(engineSettings, [],
+    `unexpected settings literals in refill-engine.cjs: ${JSON.stringify(engineSettings)}`);
 });

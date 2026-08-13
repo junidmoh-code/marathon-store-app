@@ -49,7 +49,12 @@ describe("HoldSpot — deliberate, invisible, accident-proof", () => {
   });
   it("requires a 600 ms hold — a stray tap can never open it", () => {
     expect(HIDDEN).toMatch(/holdMs = 600/);
-    expect(HIDDEN).toMatch(/setTimeout\(\(\) => \{ setPressed\(null\); onTrigger\(\); \}, holdMs\)/);
+    expect(HIDDEN).toMatch(/setTimeout\(\(\) => \{ press\.current = null; onTrigger\(\); \}, holdMs\)/);
+  });
+  it("a hold in progress dies with the component — unmount clears the timer", () => {
+    // Without this, unmounting mid-hold fires onTrigger into a dead tree.
+    // (Sonnet architect review, PR #356.)
+    expect(HIDDEN).toMatch(/useEffect\(\(\) => cancel, \[\]\);/);
   });
   it("cancels on movement — a scroll gesture over the spot cannot fire it", () => {
     expect(HIDDEN).toMatch(/Math\.hypot\(e\.clientX - p\.x, e\.clientY - p\.y\) > 12/);
@@ -58,6 +63,13 @@ describe("HoldSpot — deliberate, invisible, accident-proof", () => {
   it("is discretion, not security — no password, no role gate on viewing", () => {
     const holdSpot = HIDDEN.slice(HIDDEN.indexOf("export function HoldSpot"));
     expect(holdSpot).not.toMatch(/password|permRecord|isSuperAdmin|stockRole/i);
+  });
+  it("a stale 'hidden' selection does NOT survive leaving the screen", () => {
+    // HealthView never unmounts between drill-ins, so without this reset one
+    // hold gesture would leave the hidden tab a plain tap away for the rest
+    // of the session — the exact over-the-counter exposure the HoldSpot
+    // prevents. (Sonnet architect review, PR #356 — the MAJOR finding.)
+    expect(HEALTH).toMatch(/setMissingTab\(\(t\) => \(t === "hidden" \? null : t\)\); setScreen\("missingProducts"\)/);
   });
 });
 
@@ -89,5 +101,21 @@ describe("select mode — a mis-tap can only toggle selection", () => {
     const block = NETWORK.slice(start, NETWORK.indexOf("\n        }", start));
     expect(block).not.toMatch(/solve\(|transfer\(|hide\(|applyMovement|setSolvePid|setOpenPid/);
     expect(block).toMatch(/setSelected/);
+  });
+  it("entering select mode closes any open panel — nothing reopens stale on exit", () => {
+    expect(NETWORK).toMatch(/setSelectMode\(true\); setOpenPid\(null\); setSolvePid\(null\); setHidePid\(null\);/);
+  });
+  it("the selection reconciles against the live card list before counting or writing", () => {
+    // A selected card that resolves out mid-select must neither inflate the
+    // "N selected" count nor ride into the bulk write.
+    expect(NETWORK).toMatch(/selected\[k\] && cardPidSet\.has\(k\)/);
+  });
+  it("a selection never survives a chip switch", () => {
+    expect(NETWORK).toMatch(/useEffect\(\(\) => \{ exitSelect\(\); \}, \[category\]\)/);
+  });
+  it("selection cards are keyboard-operable checkboxes, not click-only divs", () => {
+    // (CodeRabbit, PR #356.)
+    expect(NETWORK).toMatch(/role="checkbox" aria-checked=\{on\} tabIndex=\{0\} onClick=\{toggle\}/);
+    expect(NETWORK).toMatch(/e\.key === "Enter" \|\| e\.key === " "/);
   });
 });
