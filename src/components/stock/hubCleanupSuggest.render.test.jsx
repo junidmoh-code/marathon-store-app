@@ -220,6 +220,20 @@ describe("the link panel's ranked suggestions", () => {
     expect(recordLabelCodes).toHaveBeenCalledWith({ productId: "pAud", chosenCode: "745SFA000521G", otherCodes: [] });
   });
 
+  it("weak rows are browsing, not matches: a prefix-cousin-only scan gets the honest heading", async () => {
+    // 742CFA0099-9Z9 shares the Gripshots' 742CFA00 lead but nothing else —
+    // every row is a weak brandSegment/filler, so the heading must say
+    // "closest we have", never "is it one of these" (substitute review,
+    // PR #353: weak rows must not be dressed up as matches).
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("742CFA0099-9Z9", null); });
+    const after = textOf(tr);
+    expect(after).toContain("link it");
+    expect(after).not.toContain("Is it one of these");
+    expect(after).toContain("Nothing matched closely");
+    expect(after).toContain("same code family — both start 742CFA00"); // the weak rows still render, honestly worded
+  });
+
   it("a code with no plausible relative STILL fills the panel — closest rows, honest heading — and the name search still works", async () => {
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("CT8527-999", null); });

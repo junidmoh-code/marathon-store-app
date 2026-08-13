@@ -189,11 +189,20 @@ describe("the SFA/SMA floor case (claim 10) — 2026-08-13, staff blocked mid-co
     expect(perSizeSiblingCodes("745SMA00421G", "745SFA000521G")).toBe(false);
     expect(perSizeAutoCandidate("745SMA00421G", [AUDYSOL])).toBe(null);
   });
-  it("colourCode needs a shared lead — the same colour code on an unrelated brand family is not a suggestion", () => {
-    // Two nike-format codes sharing only the trailing 002: no shared prefix,
-    // no tier (colour codes like -100 repeat across half the catalogue).
-    const out = codeSuggestions("ZQ1111002", [{ id: "nk", name: "Nike P-6000 White", styleCodeNormalised: "HF5509002" }]);
+  it("colourCode is LACOSTE-ONLY — two Nike bodies sharing a colour are two shoes, never a per-size pair", () => {
+    // DD1391-100 and DD1503-100 both end -100 (white) and share the DD1 lead,
+    // but Nike prints ONE code per shoe: a different body IS a different
+    // shoe. A non-weak hit here would reach StyleCodeGate's BLOCKING step on
+    // every common colourway (substitute review, PR #353).
+    const out = codeSuggestions("DD1391100", [{ id: "nk2", name: "Nike Dunk Low Panda", styleCodeNormalised: "DD1503100" }]);
+    expect(out).toEqual([]);
+  });
+  it("within Lacoste, colourCode still needs the shared lead — same colour without it is only a weak row", () => {
+    // 48SFA000521G shares the whole tail with 745SFA000521G but no lead —
+    // the substring tier may browse it, colourCode may not claim it.
+    const out = codeSuggestions("48SFA000521G", [{ id: "aud", name: "Lacoste Audysol White", styleCodeNormalised: "745SFA000521G" }]);
     expect(out.filter((s) => s.tier === "colourCode")).toEqual([]);
+    expect(out.every((s) => s.weak === true)).toBe(true);
   });
   it("colourCode sits below misread but above the name tier's base — one char off is still stronger evidence", () => {
     expect(TIER_SCORES.colourCode).toBeLessThan(TIER_SCORES.misread);
@@ -224,7 +233,10 @@ describe("the loose browsing tiers (claim 12) — shared lead, shared fragment",
   it("every real tier outranks every weak tier's cap — weak rows can never displace evidence", () => {
     // 29 is brandSegment's cap — measured on the live 2026-08-13 unresolved
     // list: a cap above the colourway tier let a prefix-cousin outrank a
-    // one-edit colour sibling on four real scans.
+    // one-edit colour sibling on four real scans. The alias tier (base 20)
+    // is deliberately absent: alias rows exist only for kind "tokens" and
+    // the weak code tiers only for kind "code" — they can never meet in one
+    // list (verified by the substitute pair, PR #353).
     for (const strong of ["family", "misread", "colourCode", "truncated", "name", "colourway"]) {
       expect(TIER_SCORES[strong]).toBeGreaterThan(29);
     }

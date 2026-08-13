@@ -64,12 +64,15 @@
 // so gender letters and length both differ and only the trailing colour code
 // survives. Hence three LOOSE tiers below the confident ones:
 //
-//   COLOUR-CODE    same format, identical printed colour segment, shared
-//                  leading segment (≥3 chars) — the SFA/SMA case. Strong
-//                  enough to sit just under misread; NOT flagged weak, so the
-//                  intake gate's pre-duplicate question fires on it too (this
-//                  is exactly the label that used to sail into the create
-//                  form and mint a duplicate).
+//   COLOUR-CODE    LACOSTE-REF codes only: identical printed colour segment,
+//                  shared leading segment (≥3 chars) — the SFA/SMA case.
+//                  Strong enough to sit just under misread (a heavy name
+//                  match at the 58 cap may still edge it — deliberate); NOT
+//                  flagged weak, so the intake gate's pre-duplicate question
+//                  fires on it too (this is exactly the label that used to
+//                  sail into the create form and mint a duplicate). Other
+//                  formats never enter: a Nike body sharing only a colour
+//                  segment is a different shoe, not a size-band sibling.
 //   BRAND-SEGMENT  same format, shared leading segment ≥4 chars. weak: true.
 //   SUBSTRING      longest common substring ≥6 anywhere in the code.
 //                  weak: true.
@@ -300,11 +303,19 @@ export function codeSuggestions(scanNormalised, products, { includeExact = false
       }
       // ── LOOSE TIERS from here down (see the header) — suggesting is cheap ──
       const prefixLen = commonPrefixLen(scan, code);
-      // COLOUR-CODE — the SFA/SMA case: same format, identical printed colour
-      // segment, shared lead. Lengths may DIFFER (745SFA000521G is 13 chars,
+      // COLOUR-CODE — the SFA/SMA case: identical printed colour segment,
+      // shared lead. Lengths may DIFFER (745SFA000521G is 13 chars,
       // 745SMA00421G is 12) — that mismatch is exactly why the family tier
-      // could never reach this pair.
-      if (ss.format && ss.format === sc.format && ss.colour && ss.colour === sc.colour
+      // could never reach this pair. LACOSTE-REF ONLY: that is the one
+      // catalogued brand that splits one shoe across article families (see
+      // perSizeStyleCode.js). On Nike/adidas/Puma-style bodies the colour
+      // segment repeats across genuinely different shoes (DD1391-100 and
+      // DD1503-100 are two shoes that both happen to be white), and because
+      // this tier is NOT weak, an open floor here would reach StyleCodeGate's
+      // BLOCKING step on every common colourway — the substitute pair's one
+      // shared blocker on PR #353. Extend per brand only with evidence.
+      if (ss.format === "lacoste-ref" && sc.format === "lacoste-ref"
+          && ss.colour && ss.colour === sc.colour
           && prefixLen >= COLOUR_PREFIX_MIN) {
         hits.push({ product: p, code, field, tier: "colourCode", score: TIER_SCORES.colourCode,
                     reason: `same colour code ${ss.colour} — its registered code is ${formatStyleCodeForDisplay(code)}, and some brands split one shoe across code families by size. Check the photo.` });
@@ -410,11 +421,11 @@ export function closestCandidates({ normalised, labelWords, products, excludeIds
   const rows = [];
   for (const p of products || []) {
     if (!p || !p.id || isMergedAway(p) || excluded.has(p.id)) continue;
-    let frag = "";
+    let frag = "", fragCode = null, fragField = null;
     if (scan) {
-      for (const { code } of productCodes(p)) {
+      for (const { code, field } of productCodes(p)) {
         const f = longestCommonSubstring(scan, code);
-        if (f.length > frag.length) frag = f;
+        if (f.length > frag.length) { frag = f; fragCode = code; fragField = field; }
       }
     }
     const nameSet = new Set(nameTokens(p.name));
@@ -423,9 +434,13 @@ export function closestCandidates({ normalised, labelWords, products, excludeIds
     const bits = [];
     if (frag.length >= 3) bits.push(`its code shares “${frag}”`);
     if (sharedWords.length) bits.push(`its name shares “${sharedWords.join(" ")}”`);
+    // The displayed code is the one the fragment actually came from — a
+    // pending code's fragment quoted against the confirmed code would show a
+    // code the fragment isn't in (Kimi, PR #353).
+    const rowCode = frag.length >= 3 ? fragCode : (normaliseStyleCode(p.styleCodeNormalised) || null);
     rows.push({
-      product: p, code: normaliseStyleCode(p.styleCodeNormalised) || null,
-      field: p.styleCodeNormalised ? "confirmed" : null,
+      product: p, code: rowCode,
+      field: frag.length >= 3 ? fragField : (p.styleCodeNormalised ? "confirmed" : null),
       tier: "closest", weak: true, raw,
       score: Math.min(TIER_SCORES.closest, raw),
       reason: bits.length
@@ -476,8 +491,13 @@ export function buildLinkSuggestions({ kind, normalised, modelName, tokens, alia
     const prev = byId.get(h.product.id);
     if (!prev) { byId.set(h.product.id, { ...h, reasons: [h.reason] }); continue; }
     if (!prev.reasons.includes(h.reason)) prev.reasons.push(h.reason);
-    // The best tier owns the row — including its weak/strong standing.
-    if (h.score > prev.score) { prev.score = h.score; prev.tier = h.tier; prev.code = h.code; prev.field = h.field; prev.weak = h.weak; }
+    // The best tier owns the row — including its weak/strong standing. On a
+    // dead-equal score, strong beats weak (no current tier values can tie
+    // across the divide, but the gate's weak filter must never lose real
+    // evidence to a future rescore — Kimi, PR #353).
+    if (h.score > prev.score || (h.score === prev.score && prev.weak && !h.weak)) {
+      prev.score = h.score; prev.tier = h.tier; prev.code = h.code; prev.field = h.field; prev.weak = h.weak;
+    }
   }
   const ranked = [...byId.values()].sort((a, b) => b.score - a.score);
   if (fillToMin > 0 && ranked.length < fillToMin) {

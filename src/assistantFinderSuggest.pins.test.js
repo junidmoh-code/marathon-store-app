@@ -42,6 +42,14 @@ describe("the assistant finder's suggestion wiring", () => {
     expect((finder.match(/modelName: meta && typeof meta\.modelName === "string"/g) || []).length).toBe(2);
   });
 
+  it("weak-only results never claim 'close' — both handlers switch to the honest 'closest we have' wording", () => {
+    // 2026-08-13 loosening: buildLinkSuggestions now returns weak browsing
+    // rows (brandSegment/substring). When they are ALL there is, the note
+    // must not dress them up as near-matches (substitute review, PR #353).
+    expect((finder.match(/close\.some\(\(s\) => !s\.weak\)/g) || []).length).toBe(2);
+    expect((finder.match(/nothing matched closely, but these are the closest we have/g) || []).length).toBe(2);
+  });
+
   it("suggestion rows show the reason and SELECT the product — they never file an alias", () => {
     expect(finder).toContain("{s.reasons.join(");
     expect(finder).toMatch(/note\.suggestions[\s\S]{0,400}onClick=\{\(\) => finish\(s\.product\)\}/);

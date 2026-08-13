@@ -1224,9 +1224,11 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
     excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
   }), [panel, products]);
   const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);
-  // When even the loose tiers found nothing, every row is a "closest" filler —
-  // the heading must say so instead of implying a match.
-  const anyRealMatch = suggestions.some((s) => s.tier !== "closest");
+  // weak rows are BROWSING evidence (linkSuggestions.js) — when they are all
+  // there is, the heading must say "closest we have", not claim a match
+  // (substitute review, PR #353: prefix-cousins under "is it one of these?"
+  // dressed weak rows up as suggestions).
+  const anyRealMatch = suggestions.some((s) => !s.weak);
 
   return (
     <Panel title="Nothing owns this label — link it" onClose={onClose}>
@@ -1279,8 +1281,9 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
           )}
         </div>
       ) : (
-        // Only reachable when the catalogue itself is empty (fillToMin pads
-        // from any non-empty catalogue) — kept as the honest last resort.
+        // Reachable when the catalogue is empty OR excludeIds/merges have
+        // exhausted it (closestCandidates honours both) — the honest last
+        // resort, not dead code.
         <div style={{ fontSize: 12.5, color: AMBER, lineHeight: 1.5, marginBottom: 14,
                       background: "rgba(251,191,36,.06)", border: "1px solid rgba(251,191,36,.22)",
                       borderRadius: 10, padding: "8px 11px" }}>
