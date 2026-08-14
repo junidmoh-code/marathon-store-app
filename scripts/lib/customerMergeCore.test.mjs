@@ -275,18 +275,33 @@ describe("extractLoserRefs — the drift-fingerprint slices", () => {
     expect(plan.refusals).toBeUndefined();
     expect(plan.updates["pos/sales/saleL1/customerId"]).toBe(S); // via the laybys leg
   });
-  it("matches by STRIPPED DIGITS, the census comparison — a '+27…'-stored layby still re-points", () => {
+  it("matches by STRIPPED DIGITS, the census comparison — a '+27…'-stored layby still re-points AS A LOSER REF", () => {
     const tree = fixtureTree();
     tree.laybys.saleL1.customerPhone = "+27619467420"; // digits == loser key, string !=
     const plan = planFromTree(tree);
     expect(plan.refusals).toBeUndefined();
     expect(plan.updates["laybys/saleL1/customerPhone"]).toBe(S);
+    // digit-equality classifies it as the loser's own ref, NOT third-dialect —
+    // pinned so the primary digits branch can't silently degrade to exact-
+    // string matching behind the canonical fallback.
+    expect(plan.checks.thirdDialectRepointed).toEqual([]);
   });
-  it("a record canonically in the group but matching NEITHER member key refuses the pair (never silently stranded)", () => {
+  it("a THIRD-DIALECT ref (in-group digits, neither member key) is re-pointed, never stranded — with exact-bytes preState", () => {
     const tree = fixtureTree();
     tree.laybys.saleL1.customerPhone = "619467420"; // bare-9: this group, neither key
     const plan = planFromTree(tree);
-    expect(plan.refusals.some((r) => r.why.includes("matching neither member key"))).toBe(true);
+    expect(plan.refusals).toBeUndefined();
+    expect(plan.updates["laybys/saleL1/customerPhone"]).toBe(S);
+    expect(plan.checks.thirdDialectRepointed).toEqual([{ kind: "layby", id: "saleL1", value: "619467420" }]);
+    // reversal recipe holds the ACTUAL stored bytes, not the loser key
+    expect(plan.preState["laybys/saleL1/customerPhone"]).toBe("619467420");
+  });
+  it("preState for a digit-matched order records the actual stored value, not the key", () => {
+    const tree = fixtureTree();
+    tree.orders.ord1.customerId = "+27619467420"; // dialect string, digits == loser key
+    const plan = planFromTree(tree);
+    expect(plan.updates["orders/ord1/customerId"]).toBe(S);
+    expect(plan.preState["orders/ord1/customerId"]).toBe("+27619467420");
   });
 });
 
@@ -374,6 +389,22 @@ describe("purity pins", () => {
   it("nameNorm folds case, punctuation and unicode", () => {
     expect(nameNorm(" Beverley ")).toBe(nameNorm("beverley"));
     expect(nameNorm("Thabo's")).toBe(nameNorm("thabo s"));
+    expect(nameNorm("Zoë")).toBe(nameNorm("zoe")); // accent folding via NFKD + combining-mark strip
+  });
+  it("buildMergePlan refuses survivor === loser (a same-key 'merge' would delete the credits)", () => {
+    const plan = planFromTree(fixtureTree(), { loserKey: S, loser: fixtureTree().customers[S] });
+    expect(plan.refusals.some((r) => r.why.includes("same key"))).toBe(true);
+  });
+  it("totalCreditAcross counts legacy scalar credits into the invariant total, itemised separately", () => {
+    const t = totalCreditAcross({
+      a: { storeCredit: { c1: { remainingAmount: 100 } } },
+      b: { storeCredit: 2500 },   // legacy scalar — merge refuses it, invariant must still see it
+      c: { storeCredit: 0 },      // POS create-default, not credit
+    });
+    expect(t.total).toBe(2600);
+    expect(t.credits).toBe(1);
+    expect(t.legacyTotal).toBe(2500);
+    expect(t.legacyCount).toBe(1);
   });
   it("formatClass labels every census dialect", () => {
     expect(formatClass("0813995333")).toBe("local-0");

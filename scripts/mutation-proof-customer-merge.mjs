@@ -119,10 +119,12 @@ const MUTATIONS = [
     to:   `      if (String(v?.[field] || "") === loserKey) { out[id] = v; continue; }`,
     tests: CORE_SUITE },
   { id: "M16",
-    guard: "a canonically-in-group record matching neither member key REFUSES the pair, never strands silently",
+    guard: "a third-dialect in-group ref is re-pointed with the survivor, never left stranded on a dead key",
     file: CORE,
-    from: `  for (const a of loserRefs.ambiguous || []) {`,
-    to:   `  for (const a of []) {`,
+    from: `      if (d !== survivorKey && canonical && canonicalSA(d) === canonical) {
+        out[id] = v;`,
+    to:   `      if (false) {
+        out[id] = v;`,
     tests: CORE_SUITE },
   { id: "M17",
     guard: "tombstones leave group membership — triples pair-merge down and re-runs stay clean",
@@ -159,15 +161,27 @@ function runSuite(tests) {
 const results = [];
 let failed = false;
 
+// A signal mid-mutation must restore the file before exiting, or the repo is
+// left carrying an injected bug (CodeRabbit, #364).
+let activeRestore = null;
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => { if (activeRestore) activeRestore(); process.exit(130); });
+}
+
 for (const m of MUTATIONS) {
   if (ONLY && !ONLY.has(m.id)) continue;
   const original = readFileSync(m.file, "utf8");
-  if (!original.includes(m.from)) {
-    console.error(`✗ ${m.id}: mutation anchor not found in ${m.file} — the guard may have moved. FAIL.`);
+  // The anchor must occur EXACTLY once — String.replace substitutes the first
+  // occurrence only, so an ambiguous anchor could mutate an unintended site
+  // and still report PROVEN for the wrong reason (CodeRabbit, #364).
+  const hits = original.split(m.from).length - 1;
+  if (hits !== 1) {
+    console.error(`✗ ${m.id}: mutation anchor ${hits === 0 ? "not found" : `matched ${hits} times`} in ${m.file} — exactly 1 required. FAIL.`);
     results.push({ id: m.id, guard: m.guard, outcome: "ANCHOR MISSING" });
     failed = true;
     continue;
   }
+  activeRestore = () => { try { writeFileSync(m.file, original); } catch { /* best effort */ } };
   let outcome;
   try {
     // M8 is special: the guard is a source-content pin, so the mutation embeds
@@ -182,6 +196,7 @@ for (const m of MUTATIONS) {
       : "SUITE STILL FAILING AFTER RESTORE";
   } finally {
     writeFileSync(m.file, original);
+    activeRestore = null;
   }
   if (outcome !== "PROVEN") failed = true;
   console.log(`${outcome === "PROVEN" ? "✓" : "✗"} ${m.id} ${outcome.padEnd(12)} ${m.guard}`);

@@ -48,6 +48,7 @@ import {
   totalCreditAcross, buildMergePlan, canonicalSA, extractLoserRefs,
 } from "./lib/customerMergeCore.mjs";
 import { readMapPaged, shallowKeys } from "./lib/rtdbPaged.mjs";
+import { stable } from "./lib/stableStringify.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -81,13 +82,6 @@ async function readAt(path) {
   return (await db.ref(path).once("value")).val();
 }
 
-// Deterministic stringify (sorted keys) — drift comparison must not depend on
-// RTDB's key iteration order.
-function stable(v) {
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return "[" + v.map(stable).join(",") + "]";
-  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stable(v[k])).join(",") + "}";
-}
 
 // Everything one group's plan rests on, freshly read. Also reused verbatim for
 // the pre-write drift check: same reads, same shape, compared by stable() — so
@@ -214,22 +208,54 @@ async function main() {
     return key;
   };
   for (const t of tombstones) {
+    const canonical = canonicalSA(t.key);
+    // --only scopes resweeps exactly like pairs — a scoped run must never
+    // execute unrelated merges or fail on unrelated dead chains.
+    if (ONLY && !ONLY.has(canonical)) continue;
     const bal = creditBalance(t.rec);
     const holdings = t.rec?.laybyHoldings && typeof t.rec.laybyHoldings === "object" ? Object.keys(t.rec.laybyHoldings).length : 0;
     const [ledger, idx] = await Promise.all([readAt(`pos/creditLedger/${t.key}`), readAt(`customer_index/sales/${t.key}`)]);
     const drifted = bal.total > 0 || bal.count > 0 || holdings > 0 || !!ledger || !!(idx && Object.keys(idx).length);
     if (!drifted) continue;
-    const canonical = canonicalSA(t.key) || `tombstone:${t.key}`;
+    // A tombstone whose key has no canonical SA identity should not exist
+    // (only our merges write mergedInto, on canonical keys) — refuse rather
+    // than plan on a sentinel identity (CodeRabbit, #364).
+    if (!canonical) {
+      refused.push({ canonical: `tombstone:${t.key}`, why: `drifted tombstone ${t.key} has no canonical SA identity — fix by hand` });
+      continue;
+    }
     const target = followChain(t.key);
     if (!target || target === t.key) {
       refused.push({ canonical, why: `tombstone ${t.key} drifted (credit R${(bal.total / 100).toFixed(2)}, ${holdings} holding(s)) but its mergedInto chain ends nowhere live — fix by hand` });
       continue;
     }
-    const inputs = await readGroupInputs(target, t.key, canonicalSA(t.key));
+    const inputs = await readGroupInputs(target, t.key, canonical);
+    // Names are RE-PROVED on the fresh reads. The original merge proved
+    // agreement at merge time; drift invalidates that proof — a recycled
+    // number means a DIFFERENT person may now be transacting on the tombstone
+    // key, and folding their money into the old survivor is exactly the merge
+    // the REVIEW system exists to block (delta review, PR #364).
+    const cls = classifyGroup([
+      { key: t.key, rec: inputs.loser }, { key: target, rec: inputs.survivor },
+    ]);
+    if (cls.classification !== "SAFE") {
+      refused.push({ canonical, why: `RESWEEP ${t.key}: names no longer agree with survivor ${target} (${cls.tag}) — owner must judge` });
+      continue;
+    }
     const mergeId = `${batchId}_resweep_${t.key}`;
+    // A marker at this mergeId means a same-minute run already applied this
+    // exact resweep — planning it again would overwrite that run's reversal
+    // recipe in customer_merges (delta review, PR #364).
+    if (await readAt(`customer_merges/${mergeId}`)) {
+      refused.push({ canonical, why: `RESWEEP ${t.key}: customer_merges/${mergeId} already exists (same-minute rerun) — wait a minute and re-run` });
+      continue;
+    }
+    // cls.classification passes through so the core's REVIEW refusal (the
+    // mutation-proven guard) also protects resweeps — the runner check above
+    // exists only for the clearer operator message.
     const plan = buildMergePlan({
       canonical, survivorKey: target, loserKey: t.key, ...inputs,
-      classification: "SAFE", resweep: true, nowIso, mergeId, batchId,
+      classification: cls.classification, resweep: true, nowIso, mergeId, batchId,
     });
     if (plan.refusals) { refused.push(...plan.refusals.map((r) => ({ ...r, why: `RESWEEP ${r.why}` }))); continue; }
     planned.push({ canonical, survivorKey: target, loserKey: t.key, mergeId, plan, inputsHash: stable(inputs), resweep: true });
@@ -366,7 +392,10 @@ async function main() {
   }
   console.log(`\n✓ money invariant holds: total credit identical to the cent.`);
   await release();
-  process.exit(report.aborted.length ? 1 : 0);
+  // Same exit contract as the dry run: refusals count as failures too —
+  // an execute run that silently skipped refused groups must not read as
+  // fully clean (CodeRabbit, #364).
+  process.exit(report.aborted.length || refused.length ? 1 : 0);
 }
 
 // Set once the execute-mode lock is acquired, so a thrown error releases it

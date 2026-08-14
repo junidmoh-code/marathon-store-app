@@ -133,6 +133,12 @@ describe("phoneKeyVariants", () => {
   it("leaves a non-SA international number at its typed key only", () => {
     expect(phoneKeyVariants("+14155550123")).toEqual(["14155550123"]);
   });
+
+  it("never pads a +-prefixed foreign 9-digit number into SA key probes", () => {
+    // "+123456789" must not probe "0123456789"/"27123456789" — that would
+    // bind an unrelated SA customer's record.
+    expect(phoneKeyVariants("+123456789")).toEqual(["123456789"]);
+  });
 });
 
 describe("customerWriteKey (key new /customers records are minted at)", () => {

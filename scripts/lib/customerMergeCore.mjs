@@ -97,7 +97,7 @@ export function nameNorm(name) {
   return (name == null ? "" : String(name))
     .toLowerCase()
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -184,14 +184,18 @@ export function creditBalance(rec) {
 }
 
 // Total credit across an entire { key → record } map — THE merge invariant:
-// this number must be byte-identical before and after any merge.
+// this number must be byte-identical before and after any merge. LEGACY
+// scalar credits (bare numbers) are counted into the total too — the merge
+// refuses to move them, but the invariant must still see them or a scalar
+// silently vanishing would go unnoticed. They're itemised separately.
 export function totalCreditAcross(customers) {
-  let total = 0, records = 0, credits = 0;
+  let total = 0, records = 0, credits = 0, legacyTotal = 0, legacyCount = 0;
   for (const rec of Object.values(customers || {})) {
     const b = creditBalance(rec);
+    if (b.legacyNumber !== undefined && b.total > 0) { legacyTotal += b.total; legacyCount += 1; total += b.total; continue; }
     if (b.count > 0) { records += 1; credits += b.count; total += b.total; }
   }
-  return { total, records, credits };
+  return { total, records, credits, legacyTotal, legacyCount };
 }
 
 // Apply a multi-path update map (the exact object handed to db.ref().update())
@@ -266,14 +270,21 @@ export function readTreePath(tree, path) {
 // Matching is on STRIPPED DIGITS, the same comparison the census uses — a
 // layby whose customerPhone is stored as "+27619467420" belongs to the
 // "27619467420" loser exactly as the census counted it (Fable review, #364).
-// A value that canonicalises into this GROUP but matches neither member's
-// digits (e.g. a bare-9 string when the pair is 0-form/27-form) lands in
-// `ambiguous`, and buildMergePlan refuses the pair rather than stranding a
-// layby on the tombstone silently.
+//
+// THIRD-DIALECT refs — a value that canonicalises into this GROUP but matches
+// neither member's digits (e.g. a bare-9 string when the pair is
+// 0-form/27-form) — are INCLUDED in the slice and re-pointed. In the runner
+// flow a live record at those digits is impossible here: it would have made
+// the group size 3, which is skipped before planning; so the value is either
+// a dangling dialect string (points at no live key forever) or a tombstoned
+// sibling (whose own resweep only fires when money sits on the record, which
+// a mere layby reference does not trigger). Re-pointing to the survivor is
+// the merge's purpose; refusing was a guaranteed false refusal (Kimi delta
+// review, #364). They are still itemised for the operator report.
 export function extractLoserRefs(loserKey, laybys = {}, laybyPulls = {}, orders = {}, opts = {}) {
   const { survivorKey = null, canonical = null } = opts;
   const digitsOf = (v) => String(v || "").replace(/\D/g, "");
-  const ambiguous = [];
+  const thirdDialect = [];
   const pick = (node, field, kind) => {
     const out = {};
     for (const [id, v] of Object.entries(node || {})) {
@@ -281,7 +292,8 @@ export function extractLoserRefs(loserKey, laybys = {}, laybyPulls = {}, orders 
       if (!d) continue;
       if (d === loserKey) { out[id] = v; continue; }
       if (d !== survivorKey && canonical && canonicalSA(d) === canonical) {
-        ambiguous.push({ kind, id, value: v?.[field] });
+        out[id] = v;
+        thirdDialect.push({ kind, id, value: v?.[field] });
       }
     }
     return out;
@@ -290,7 +302,7 @@ export function extractLoserRefs(loserKey, laybys = {}, laybyPulls = {}, orders 
     laybys: pick(laybys, "customerPhone", "layby"),
     pulls: pick(laybyPulls, "customerPhone", "laybyPull"),
     orders: pick(orders, "customerId", "order"),
-    ambiguous,
+    thirdDialect,
   };
 }
 
@@ -305,7 +317,7 @@ export function buildMergePlan(input) {
     survivorLedger, loserLedger, survivorIndex, loserIndex,
     loserSaleOwners = {},      // saleId → pos/sales/{id}/customerId (fresh)
     loserCreditOwners = {},    // creditId → pos/storeCredits/{id}/customerId (fresh)
-    loserRefs = { laybys: {}, pulls: {}, orders: {} }, // extractLoserRefs output
+    loserRefs = { laybys: {}, pulls: {}, orders: {}, thirdDialect: [] }, // extractLoserRefs output
     loserAudit = {},           // { issued, removed, onAccount, onAccountConfig }
     survivorAudit = {},        // same shape — destinations, collision-checked
     classification, nowIso, mergeId, batchId,
@@ -317,9 +329,7 @@ export function buildMergePlan(input) {
   const resweep = input.resweep === true;
 
   if (classification !== "SAFE") refuse(`classification is ${classification} — only SAFE groups merge`);
-  for (const a of loserRefs.ambiguous || []) {
-    refuse(`${a.kind} ${a.id} carries ${JSON.stringify(a.value)} — canonically this group but matching neither member key; fix the record by hand first`);
-  }
+  if (survivorKey === loserKey) refuse(`survivor and loser are the same key ${survivorKey}`);
   if (!survivor) refuse("survivor record missing on fresh read");
   if (!loser) refuse("loser record missing on fresh read");
   // resweep mode re-folds NEW accruals off an already-merged tombstone (the
@@ -514,9 +524,12 @@ export function buildMergePlan(input) {
     updates[`laybyPulls/${id}/customerPhone`] = survivorKey;
   }
 
-  // open store-app orders pointing at the loser
-  for (const [id] of Object.entries(loserRefs.orders)) {
-    touch(`orders/${id}/customerId`, loserKey);
+  // open store-app orders pointing at the loser. preState records the ACTUAL
+  // stored value — with digit matching it may be a dialect string, not the
+  // key, and the reversal recipe must restore the exact bytes (Kimi delta
+  // review, #364).
+  for (const [id, o] of Object.entries(loserRefs.orders)) {
+    touch(`orders/${id}/customerId`, o?.customerId ?? null);
     updates[`orders/${id}/customerId`] = survivorKey;
   }
 
@@ -557,7 +570,13 @@ export function buildMergePlan(input) {
     mergeId, batchId, canonical, survivor: survivorKey, loser: loserKey, at: nowIso,
     resweep, creditCentsMoved, ledgerCentsMoved,
     loserRecord: loser,                      // full pre-merge loser record
-    preState,                                // every path this merge changed, prior value
+    // preState as a LIST of {path, value}: RTDB keys cannot contain "/", so
+    // an object keyed by paths would make the execute run's first update()
+    // throw (CodeRabbit, #364 — dry runs never write, so only execute hit
+    // it). RTDB drops null values, so an entry without `value` reads as
+    // "path did not exist before the merge". The DISK snapshot keeps the
+    // object form and remains the rollback tool's source of truth.
+    preState: Object.entries(preState).map(([path, value]) => ({ path, value })),
   };
   updates[`pos/audit/customer_merge/${survivorKey}/${mergeId}`] = {
     action: "customer_merge", actingUserUid: "customer-merge-script",
@@ -577,6 +596,7 @@ export function buildMergePlan(input) {
       salesRepointed: salesToRepoint.size,
       indexPointersMoved: Object.keys(loserIdx).length,
       laybysRepointed: repointedLaybys,
+      thirdDialectRepointed: loserRefs.thirdDialect || [],
       expectedSurvivorCreditCents: sBal.total + lBal.total,
       expectedLoserCreditCents: 0,
     },

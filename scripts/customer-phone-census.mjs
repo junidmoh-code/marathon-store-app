@@ -135,6 +135,13 @@ async function main() {
   const groupReports = [];
   for (const [canon, members] of groups) {
     const cls = classifyGroup(members);
+    // Laybys canonically in this group whose stored digits match NO member
+    // key (third-dialect strings). The merge runner re-points these to the
+    // survivor; the census must show them, not silently exclude them.
+    const memberKeySet = new Set(members.map((m) => m.key));
+    const unattributedLaybys = (laybysByCanon.get(canon) || [])
+      .filter((l) => !memberKeySet.has(String(l.customerPhone || "").replace(/\D/g, "")))
+      .map((l) => ({ invoiceNo: l.invoiceNo, status: l.status, customerPhone: l.customerPhone }));
     const detail = members.map((m) => {
       const bal = creditBalance(m.rec);
       const led = ledgers[m.key];
@@ -164,7 +171,7 @@ async function main() {
       };
     });
     const { survivor } = pickSurvivor(members, saleCounts);
-    groupReports.push({ canonical: canon, size: members.length, ...cls, survivorKey: survivor.key, members: detail });
+    groupReports.push({ canonical: canon, size: members.length, ...cls, survivorKey: survivor.key, unattributedLaybys, members: detail });
   }
   groupReports.sort((a, b) => b.size - a.size || (a.canonical < b.canonical ? -1 : 1));
 
@@ -196,6 +203,9 @@ async function main() {
 
   const printGroup = (g) => {
     console.log(`\n  ${g.canonical}  [${g.classification}/${g.tag}]  survivor→${g.survivorKey}`);
+    for (const u of g.unattributedLaybys || []) {
+      console.log(`    ⚠ layby ${u.invoiceNo} (${u.status}) carries ${JSON.stringify(u.customerPhone)} — in this group, matches no member key (runner re-points it)`);
+    }
     for (const m of g.members) {
       const led = m.onAccount ? ` onAcct=${fmtR(m.onAccount.balance)}(${m.onAccount.accountType || "?"},${m.onAccount.txns}txn)` : "";
       console.log(

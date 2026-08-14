@@ -69,11 +69,15 @@ export function saSignificantDigits(raw) {
 // POS's phoneKeyVariants (which still lacks the bare-9 probe — tracked in the
 // phone-merge POS report).
 export function phoneKeyVariants(phone) {
-  const digits = (phone || "").replace(/\D/g, "");
+  const input = String(phone ?? "").trim();
+  const digits = input.replace(/\D/g, "");
   if (!digits) return [];
   let local = digits;
   if (digits.length === 11 && digits.startsWith("27")) local = "0" + digits.slice(2);
-  else if (digits.length === 9 && !digits.startsWith("0")) local = "0" + digits;
+  // Bare-9 padding must never apply to an EXPLICITLY international number:
+  // "+123456789" is a foreign number whose nine digits would otherwise probe
+  // (and bind to) an unrelated SA customer at "0123456789" (CodeRabbit, #364).
+  else if (!input.startsWith("+") && digits.length === 9 && !digits.startsWith("0")) local = "0" + digits;
   const out = [digits];
   if (!out.includes(local)) out.push(local);
   if (local.length === 10 && local.startsWith("0")) {

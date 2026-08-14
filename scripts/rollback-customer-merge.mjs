@@ -21,6 +21,7 @@ import { createRequire } from "module";
 import { readFileSync, writeFileSync } from "fs";
 import { hostname, tmpdir } from "os";
 import { join } from "path";
+import { stable } from "./lib/stableStringify.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -47,13 +48,11 @@ if (!snapshot.executed) {
   process.exit(1);
 }
 
-function stable(v) {
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return "[" + v.map(stable).join(",") + "]";
-  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stable(v[k])).join(",") + "}";
-}
-
 const LOCK = "_migrations/customerPhoneMerge/runLock";
+
+// Set once the execute-mode lock is acquired, so a thrown error releases it
+// (a stuck lock here blocks the RECOVERY tool exactly when it is needed).
+let releaseLockOnCrash = async () => {};
 
 async function main() {
   console.log(`CUSTOMER MERGE ROLLBACK — ${EXECUTE ? "EXECUTE" : "DRY RUN"} (snapshot batch ${snapshot.batchId})\n`);
@@ -86,6 +85,8 @@ async function main() {
     lockHeld = false;
     try { await db.ref(`${LOCK}/releasedAt`).set(new Date().toISOString()); } catch { /* best effort */ }
   };
+  releaseLockOnCrash = release;
+  process.on("exit", () => { if (lockHeld) console.error(`\n⚠ run lock still held — clear it: firebase database:remove /${LOCK} --project marathon-club`); });
   for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, async () => { await release(); process.exit(130); });
 
   let restoredMerges = 0, noopMerges = 0, refusedMerges = 0;
@@ -103,7 +104,27 @@ async function main() {
     // atomic update as the data, so a run killed mid-loop leaves markers for
     // exactly the pairs that landed.
     const marker = (await db.ref(`customer_merges/${m.mergeId}`).once("value")).val();
-    if (!marker) { console.log(`  SKIP   ${m.mergeId} (${m.canonical}) — no merge marker in RTDB, never applied`); noopMerges += 1; continue; }
+    if (!marker && !FORCE) {
+      // No marker USUALLY means "never applied" — but if live paths still
+      // match the planned merge outputs, the merge DID apply and someone
+      // removed the marker (manual cleanup). That state must refuse loudly,
+      // not silently skip as never-applied (Kimi delta review, #364).
+      let looksApplied = false;
+      for (const path of Object.keys(m.preState)) {
+        const out = m.updates[path];
+        if (out === undefined || out === null) continue;
+        const cur = (await db.ref(path).once("value")).val();
+        if (stable(cur) === stable(out)) { looksApplied = true; break; }
+      }
+      if (looksApplied) {
+        console.error(`  REFUSE ${m.mergeId} (${m.canonical}) — marker missing but live paths match the merge's outputs (applied, marker lost?). Re-run with --force to restore it.`);
+        refusedMerges += 1;
+        continue;
+      }
+      console.log(`  SKIP   ${m.mergeId} (${m.canonical}) — no merge marker in RTDB, never applied`);
+      noopMerges += 1;
+      continue;
+    }
 
     const paths = Object.keys(m.preState);
     const classes = {};
@@ -130,6 +151,11 @@ async function main() {
       if (classes[path] === "alreadyRestored") continue;
       restoreMap[path] = m.preState[path]; // null = path did not exist pre-merge
     }
+    // NOTE: no "rolledBackAt" stamp on the marker — preState always includes
+    // customer_merges/{mergeId}: null, so the restore DELETES the marker in
+    // this same update (stamping a child of a deleted ancestor would make
+    // update() throw). A missing marker IS the "reverted" signal; the full
+    // audit trail survives in the disk snapshot and rollback report.
     console.log(`  ${EXECUTE ? "RESTORE" : "would restore"} ${m.mergeId} (${m.canonical}) — ${Object.keys(restoreMap).length} path(s)${anyDiverged ? " INCLUDING FORCED DIVERGENCES" : ""}`);
     if (EXECUTE) {
       await db.ref().update(restoreMap);
@@ -154,4 +180,4 @@ async function main() {
   process.exit(refusedMerges ? 1 : 0);
 }
 
-main().catch(async (e) => { console.error("ROLLBACK FAILED:", e); process.exit(1); });
+main().catch(async (e) => { console.error("ROLLBACK FAILED:", e); await releaseLockOnCrash(); process.exit(1); });

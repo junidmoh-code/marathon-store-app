@@ -2037,7 +2037,7 @@ function CustomersView({ onExit }) {
     if (!drill) return null;
     const key = drill.key;
     const orders = insightsLog.filter(e => e.action === "placed" &&
-      (phoneGroupKey(e.customerPhone) === key || `name:${(e.customerName || "").toLowerCase()}` === key))
+      (phoneGroupKey(e.customerPhone) === key || `name:${(e.customerName || "").trim().toLowerCase()}` === key))
       .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
     const rets = returnsLog.filter(r => (r.customerName || "").trim().toLowerCase() === (drill.name || "").trim().toLowerCase());
     return { orders, rets };

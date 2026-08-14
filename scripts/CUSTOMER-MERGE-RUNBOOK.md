@@ -8,7 +8,7 @@ guarded and the merge itself never runs without the owner typing `--execute`.
 
 The classification and plan rules live in ONE module shared by every script:
 `scripts/lib/customerMergeCore.mjs` (pure, firebase-free, mutation-proven by
-`scripts/mutation-proof-customer-merge.mjs` — 14/14).
+`scripts/mutation-proof-customer-merge.mjs` — 19/19).
 
 ## Non-negotiables baked into the runner
 
@@ -85,6 +85,16 @@ The classification and plan rules live in ONE module shared by every script:
 
    Paths that changed AGAIN since the merge (a redemption, an instalment) are
    refused unless `--force` — read the divergence list before forcing.
+
+## Known benign behaviours
+
+- A resweep whose target survivor was itself touched earlier in the SAME run
+  (a pair merge or another resweep into the same survivor) will DRIFT-skip
+  and exit 1 — data-safe by design. Just re-run; the second pass plans from
+  the settled state.
+- A resweep whose tombstone's NAME no longer matches the survivor is refused
+  (recycled number = possibly a different person) — those are the owner's to
+  judge, like any REVIEW pair.
 
 ## After an execute run
 
