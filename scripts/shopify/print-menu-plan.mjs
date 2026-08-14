@@ -25,6 +25,7 @@
 //
 // Reads only. Touches nothing, on Shopify or in RTDB.
 import { createRequire } from "module";
+import { graphql } from "./client.mjs";
 import { COLLECTIONS, validateCollectionPayload } from "./collectionMap.mjs";
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
 import { readCollectionIds } from "./collections.mjs";
@@ -66,22 +67,41 @@ const tops = COLLECTIONS.filter((c) => c.parent === null && c.kind === "manual")
 const smart = COLLECTIONS.filter((c) => c.kind === "smart");
 const childrenOf = (key) => COLLECTIONS.filter((c) => c.parent === key);
 
+// How many products each collection actually holds right now. A row that is
+// empty today is a dead end for a shopper, so the plan SAYS SO rather than
+// letting Junid build a menu item that leads nowhere — best-effort, because a
+// missing count must not stop the plan from printing.
+const counts = {};
+try {
+  const d = await graphql(`query { collections(first: 100) { nodes { handle productsCount { count } } } }`);
+  for (const n of d.collections.nodes) counts[n.handle] = n.productsCount?.count ?? null;
+} catch (e) {
+  console.error(`  ⚠ could not read collection counts (${String(e?.message || e)}) — the plan below omits them\n`);
+}
+
 const rowFor = (c, depth) => {
   const id = recorded[c.key]?.shopifyCollectionId;
-  const exists = id ? "" : "  ⚠ NOT CREATED YET — run ensure-collections.mjs --commit";
   const indent = depth ? "    └─ " : "";
-  return `${indent}${c.title.padEnd(24 - indent.length)} → Collections › ${c.handle}${exists}`;
+  const head = `${indent}${c.title.padEnd(24 - indent.length)} → Collections › ${c.handle.padEnd(15)}`;
+  if (!id) return `${head}  ⚠ NOT CREATED YET — run ensure-collections.mjs --commit`;
+  const n = counts[c.handle];
+  if (n == null) return head;
+  return `${head}  ${n === 0 ? "— EMPTY today, add this row later" : `${n} product${n === 1 ? "" : "s"}`}`;
 };
 
 console.log("══ MAIN MENU — build this in the Shopify admin ══\n");
 // New In leads: it is the only collection that holds everything, so it is the
 // row that guarantees a path to any product, mapped or not.
-console.log(rowFor(smart.find((c) => c.key === "new-in"), 0));
+// New In leads WHEN IT EXISTS — the map is a supported data edit, so the key
+// may be renamed or dropped without anyone touching this script; guard rather
+// than throw a TypeError over a menu listing.
+const newIn = smart.find((c) => c.key === "new-in");
+if (newIn) console.log(rowFor(newIn, 0));
 for (const t of tops) {
   console.log(rowFor(t, 0));
   for (const kid of childrenOf(t.key)) console.log(rowFor(kid, 1));
 }
-for (const s of smart.filter((c) => c.key !== "new-in")) console.log(rowFor(s, 0));
+for (const s of smart.filter((c) => c !== newIn)) console.log(rowFor(s, 0));
 
 console.log(`\n══ EXACT STEPS ══
 

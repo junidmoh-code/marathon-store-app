@@ -945,3 +945,83 @@ test("the poll never rolls back a write that landed while its read was in flight
     expect(button(tree, "Publish")).toBeTruthy(); // still an awaiting product
   });
 });
+
+test("a pending live product's On switch is disabled until the reconciler answers", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { state: "live", liveState: "off", desiredState: "on", condition: COND, cleanName: "Plain tee black" } };
+    const tree = await mountOpen();
+    await openProductPage(tree, "Plain tee black");
+    // desiredState on + liveState off ⇒ pending. The switch must not offer a
+    // second write while the first is unapplied, and the page says why.
+    expect(texts(tree)).toContain("waiting for the reconciler run to update Shopify");
+    expect(button(tree, "On").props.disabled).toBe(true);
+    expect(button(tree, "Off").props.disabled).toBe(true);
+
+    await reconcilerConfirms("p1", { ...CONFIRMED_LIVE });
+
+    expect(texts(tree)).toContain("Went live");
+    expect(button(tree, "Off").props.disabled).toBe(false); // switchable again
+  });
+});
+
+// ─── THE CONFIRMATION'S STATE SNAPSHOT ───────────────────────────────────────
+// Tested against ShopifyProductPage DIRECTLY, by re-rendering it with a changed
+// `node` prop. That is the component's actual contract — "the page reflects the
+// node it is given" — and it is the honest level for this guard: no path in the
+// current parent delivers a node change under an OPEN publish dialog (the poll
+// only refreshes PENDING pids, and a product offering Publish is by definition
+// not pending). The guard is defence for the paths that do exist now and any
+// that arrive later; pinning it here says so without inventing a scenario the
+// list cannot produce.
+const { default: ShopifyProductPage } = await import("./ShopifyProductPage.jsx");
+const AWAITING_READY = { state: "awaiting", condition: COND, cleanName: "Plain tee black", nameApprovedAt: 5 };
+
+const renderProductPage = async (node) => {
+  let tree;
+  await act(() => {
+    tree = create(
+      <ShopifyProductPage product={PRODUCTS[0]} node={node} onBack={() => {}} onChanged={() => {}} />,
+      { createNodeMock: nodeMock });
+  });
+  await flush();
+  return tree;
+};
+
+test("the publish confirmation closes, and writes nothing, when the node changes under it", async () => {
+  const tree = await renderProductPage(AWAITING_READY);
+  await act(() => { button(tree, "Publish").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("public storefront"); // the dialog is up
+  calls.publish.length = 0;
+
+  // Only desiredState moves — state and live state are untouched, which is
+  // exactly the change a transition-by-transition check would have missed.
+  await act(() => {
+    tree.update(<ShopifyProductPage product={PRODUCTS[0]} node={{ ...AWAITING_READY, desiredState: "on" }}
+                                    onBack={() => {}} onChanged={() => {}} />);
+  });
+  await flush();
+
+  const out = texts(tree);
+  expect(out).not.toContain("public storefront");
+  expect(out).toContain("changed while the confirmation was open");
+  expect(calls.publish).toEqual([]); // nothing was sent
+});
+
+test("an unchanged node leaves the confirmation alone", async () => {
+  const tree = await renderProductPage(AWAITING_READY);
+  await act(() => { button(tree, "Publish").props.onClick(); });
+  await flush();
+
+  // A re-render with an EQUIVALENT node (new object, same publishing state) —
+  // the snapshot compares the state, not object identity, so the dialog stays.
+  await act(() => {
+    tree.update(<ShopifyProductPage product={PRODUCTS[0]} node={{ ...AWAITING_READY }}
+                                    onBack={() => {}} onChanged={() => {}} />);
+  });
+  await flush();
+
+  expect(texts(tree)).toContain("public storefront");
+  expect(texts(tree)).not.toContain("changed while the confirmation was open");
+});

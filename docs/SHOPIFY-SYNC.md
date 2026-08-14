@@ -290,9 +290,10 @@ Reachable from the home page and by direct URL. Nothing is stranded.
 ### 8.4 Compliance
 
 Collection titles, handles, descriptions, SEO fields and menu labels are
-catalogue fields and go through the SAME `src/utils/shopifyTriggers.js`
-validator the product push uses, before anything is created —
-`validateCollectionPayload`, plus a whole-run refusal in `ensureAllCollections`
+catalogue fields and go through the SAME brand-trigger engine
+(`triggersInText` in `src/utils/shopifyTriggers.js`) the product push uses,
+before anything is created — wrapped as `validateCollectionPayload` in
+`scripts/shopify/collectionMap.mjs`, plus a whole-run refusal in `ensureAllCollections`
 (a half-built navigation is worse than none). All 15 pass; nothing was refused.
 No brand is expressed as a tag, metafield, vendor or product type: the brand
 association stays in the app.

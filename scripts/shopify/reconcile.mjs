@@ -62,7 +62,7 @@ import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNod
 // collection mid-publish; that is ensure-collections.mjs's job.
 import {
   collectionGidsByKey, manualGidsFrom, planCollectionMembership,
-  readProductCollections, applyCollectionMembership,
+  readProductCollections, applyCollectionMembership, requireOnlineStorePublication,
 } from "./collections.mjs";
 import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
@@ -116,6 +116,9 @@ if (!worklist.length) { console.log("nothing to do."); process.exit(0); }
 // ── Dry run: the table of what WOULD happen, from RTDB alone ─────────────────
 // (No Shopify credentials touched: the action column needs only the ID map.)
 if (!COMMIT) {
+  // The recorded collection ids, so the table can distinguish "maps to X" from
+  // "maps to X, which does not exist on the shop yet".
+  const dryRunGids = await collectionGidsByKey(db);
   console.log("\npid              action            collection        title / note");
   for (const { pid, node, want } of worklist) {
     assertSafeSegment(pid, "productId");
@@ -127,10 +130,18 @@ if (!COMMIT) {
     // The collection is resolvable from RTDB alone, so the dry run shows it —
     // including the "none" answers, which are the ones worth seeing BEFORE a
     // publish rather than in the run log after it.
-    let collection = "—";
+    // An UNPUBLISH also fires collection LEAVES on the commit run — the dry run
+    // is meant to be a complete preview, so it says so instead of showing "—".
+    let collection = want === "off" ? "leaves collections" : "—";
     if (want === "on") {
       const r = resolveCollection((await db.ref(`products/${pid}`).get()).val());
-      collection = r.status === "mapped" ? COLLECTION_BY_KEY.get(r.collectionKey).title : `⚠ ${r.status}`;
+      // "mapped but no recorded id" is a NO-COLLECTION outcome too — the map
+      // names a collection that has never been created. Showing its title here
+      // would promise a home the publish cannot deliver, which is exactly the
+      // answer the dry run exists to surface.
+      if (r.status !== "mapped") collection = `⚠ ${r.status}`;
+      else if (!dryRunGids[r.collectionKey]) collection = "⚠ no id yet";
+      else collection = COLLECTION_BY_KEY.get(r.collectionKey).title;
     }
     console.log(`${pid.padEnd(16)} ${action.padEnd(17)} ${collection.padEnd(17)} "${title}"`);
   }
@@ -147,9 +158,16 @@ if (worklist.length > MAX_APPLY) {
 
 // The Online Store publication id — resolved once. Every publish/unpublish in
 // this script addresses ONLY this sales channel.
-const pubs = await graphql(`query { publications(first: 10) { nodes { id catalog { title } } } }`);
-const online = pubs.publications.nodes.find((n) => /online store/i.test(n.catalog?.title ?? ""));
-if (!online) { console.error("no Online Store publication found"); process.exit(1); }
+// Matched on the stable `online_store` CHANNEL HANDLE (collections.mjs owns the
+// one lookup): the catalog title is auto-generated and localisable, so a title
+// match could silently resolve nothing and publish to no channel.
+let online;
+try {
+  online = { id: await requireOnlineStorePublication(graphql) };
+} catch (e) {
+  console.error(String(e?.message || e));
+  process.exit(1);
+}
 
 // The collection gids, read ONCE. An empty map is not fatal: publishing must
 // still work on a shop where ensure-collections.mjs has never run — the
@@ -582,40 +600,6 @@ for (const { pid, want } of capped) {
       continue;
     }
 
-    // ── STOREFRONT COLLECTIONS ───────────────────────────────────────────────
-    // Applied on BOTH paths (create and reconcile) and planned from Shopify's
-    // CURRENT membership, so it is idempotent and self-healing: a product whose
-    // record was re-categorised while it sat off leaves the old collection and
-    // joins the new one here, before anything becomes visible. Smart
-    // collections are never touched — Shopify owns those.
-    //
-    // ORDER MATTERS, and this sits AFTER the compliance gate deliberately. Run
-    // earlier, a product that then failed the canonical validator would be left
-    // blocked-and-unpublished but still a member of a collection — and a
-    // blocked node never gets an OFF pass to strip it (markBlocked consumes
-    // desiredState, so the worklist skips it forever). Invisible to customers
-    // either way, since a collection only renders published products, but it
-    // would quietly inflate the admin's collection counts with products that
-    // were refused. After the gate, the only failures that can strand a
-    // membership are inventory and publish — and the next run re-plans it.
-    //
-    // A membership failure REFUSES: a product reaching the storefront filed
-    // under the wrong heading is a worse outcome than one that stays down and
-    // says why.
-    const desiredCollectionGid = desiredCollectionFor(pid, product);
-    try {
-      const plan = planCollectionMembership(
-        await readProductCollections(graphql, gid), desiredCollectionGid, managedGids);
-      if (plan.join.length || plan.leave.length) {
-        await applyCollectionMembership(graphql, gid, plan);
-        console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);
-      }
-    } catch (e) {
-      await failSafeUnpublish(gid);
-      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`);
-      continue;
-    }
-
     // Inventory at the moment it starts mattering to customers — from a FRESH
     // read of this product's cells (a sale mid-run must not be re-listed).
     const finalMap = (await db.ref(`shopify_sync/${pid}`).get()).val();
@@ -661,6 +645,43 @@ for (const { pid, want } of capped) {
     try { lastPlanFp = mediaFingerprint(buildMediaPlan(product, title, normalizePhotoList(lastCheck?.photos))); } catch { /* unbuildable ⇒ changed */ }
     if (lastPlanFp !== planFp) {
       results.push({ pid, ok: true, note: "photo set changed mid-run — left for the next run to apply the new set" });
+      continue;
+    }
+
+    // ── STOREFRONT COLLECTIONS ───────────────────────────────────────────────
+    // Applied on BOTH paths (create and reconcile) and planned from Shopify's
+    // CURRENT membership, so it is idempotent and self-healing: a product whose
+    // record was re-categorised while it sat off leaves the old collection and
+    // joins the new one here. Smart collections are never touched — Shopify
+    // owns those.
+    //
+    // ORDER MATTERS, and this is deliberately the LAST thing before the product
+    // becomes visible — after the canonical compliance gate, after the
+    // last-moment cancel check, after the photo-set check. Every one of those
+    // can abandon the run, and an earlier join would leave the product
+    // blocked-or-cancelled but still a member of a collection. That is not
+    // self-correcting: markBlocked consumes desiredState, so the reconciler's
+    // worklist skips a blocked node forever, and the UI's Off button is
+    // disabled on a product it already believes is off. Nothing a customer
+    // could see (a collection only renders PUBLISHED products), but it would
+    // quietly inflate the admin's collection counts with products that were
+    // refused. Here, the only thing that can still fail is the publish itself —
+    // and sync-collections.mjs sweeps that.
+    //
+    // A membership failure REFUSES: a product reaching the storefront filed
+    // under the wrong heading is a worse outcome than one that stays down and
+    // says why.
+    const desiredCollectionGid = desiredCollectionFor(pid, product);
+    try {
+      const plan = planCollectionMembership(
+        await readProductCollections(graphql, gid), desiredCollectionGid, managedGids);
+      if (plan.join.length || plan.leave.length) {
+        await applyCollectionMembership(graphql, gid, plan);
+        console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);
+      }
+    } catch (e) {
+      await failSafeUnpublish(gid);
+      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`);
       continue;
     }
 

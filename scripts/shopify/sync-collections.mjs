@@ -122,8 +122,12 @@ for (const [pid, node] of worklist) {
 }
 
 console.log("══ COLLECTION MEMBERSHIP ══");
+// "no-collection" is a DOCUMENTED outcome (a deliberately unmapped category
+// such as Price Products), not a failure — the exit code already ignores it,
+// and marking it ✗ made the report contradict the exit code.
+const BAD = new Set(["failed", "no-map", "no-record"]);
 for (const r of results) {
-  const icon = r.status === "failed" || r.status.startsWith("no-") ? "✗" : "✓";
+  const icon = BAD.has(r.status) ? "✗" : r.status === "no-collection" ? "⚠" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(16)} ${r.name}`);
   console.log(`    ${r.detail}`);
 }

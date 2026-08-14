@@ -208,12 +208,44 @@ export async function publishToOnlineStore(graphql, gid, onlinePublicationId) {
   if (errs?.length) throw new Error(`publishablePublish (collection) userErrors: ${JSON.stringify(errs)}`);
 }
 
-/** Resolve the Online Store publication id. Throws if the shop has none. */
+/**
+ * Resolve the Online Store publication id.
+ *
+ * Matched on the CHANNEL HANDLE "online_store", not on the catalog title: the
+ * title is auto-generated and localisable (this shop's reads back as "Channel
+ * Catalog 188560801941 for Online Store"), so a shop in another locale — or a
+ * Shopify rename — would silently match nothing and publish to no channel. The
+ * handle is stable. Title matching stays as a FALLBACK for the case where the
+ * channels field is unavailable, so this can only ever be more reliable than
+ * what it replaces. Paginated: a shop with many sales channels must not hide
+ * the online store behind a fixed page-1 cutoff.
+ */
 export async function requireOnlineStorePublication(graphql) {
-  const pubs = await graphql(`query { publications(first: 10) { nodes { id catalog { title } } } }`);
-  const online = pubs.publications.nodes.find((n) => /online store/i.test(n.catalog?.title ?? ""));
-  if (!online) throw new Error("no Online Store publication found on this shop");
-  return online.id;
+  let after = null;
+  const titleHits = [];
+  for (let page = 0; page < 10; page++) {
+    const d = await graphql(
+      `query ($after: String) {
+        publications(first: 50, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id catalog { title } channels(first: 5) { nodes { handle } } }
+        }
+      }`,
+      { after }
+    );
+    const conn = d.publications;
+    for (const n of conn.nodes) {
+      if (n.channels?.nodes?.some((c) => c.handle === "online_store")) return n.id;
+      if (/online store/i.test(n.catalog?.title ?? "")) titleHits.push(n.id);
+    }
+    if (!conn.pageInfo.hasNextPage) break;
+    after = conn.pageInfo.endCursor;
+  }
+  if (titleHits.length) {
+    console.error("  ⚠ no publication carries the online_store channel handle — falling back to a catalog-title match");
+    return titleHits[0];
+  }
+  throw new Error("no Online Store publication found on this shop");
 }
 
 // ── ensureCollection — the one idempotent unit of work ───────────────────────

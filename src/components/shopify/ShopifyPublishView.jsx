@@ -627,11 +627,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const hasPending = pendingPids.length > 0;
   // Read from the long-lived timer/listener closures so neither is re-created
   // on every node change (an interval rebuilt each render would never fire).
+  // Both are written in an EFFECT, not during render: React may replay or
+  // discard render work, and a ref written there can leak values from a render
+  // that never committed. An effect gives exactly the semantics both readers
+  // want anyway — the last COMMITTED state.
   const pendingPidsRef = useRef(pendingPids);
-  pendingPidsRef.current = pendingPids;
-  // The freshest nodes, readable from those same closures and from runBatch.
   const nodesRef = useRef(nodes);
-  nodesRef.current = nodes;
+  useEffect(() => {
+    pendingPidsRef.current = pendingPids;
+    nodesRef.current = nodes;
+  }, [pendingPids, nodes]);
 
   const refreshNodes = useCallback((pids) => {
     if (!pids.length) return;
