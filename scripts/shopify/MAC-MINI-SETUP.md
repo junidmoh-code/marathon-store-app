@@ -174,11 +174,14 @@ What the lines mean:
 | Line | Meaning |
 |---|---|
 | `tick — no unapplied intent` | healthy idle tick; nothing to publish. Zero Shopify calls were made. |
-| `── run start ── … ── run end: OK ──` | a real run; the reconciler's own output is indented inside |
+| `── run start ── … ── run end: OK ──` | a real run; the reconciler's own output is indented inside, streamed as it happens |
+| `── run end: completed, N product(s) REFUSED ──` | the run finished, but the apply-time validator refused N products. They are **blocked in the app with a reason** and their publish intent is cleared — retrying changes nothing until the cause is fixed there. Everything else in the run went live. Not an outage. |
 | `tick skipped — a reconcile run is still in progress` | single-flight held; the previous run is still going |
-| `✗✗ RUN FAILED (exit N)` | **Shopify was not updated.** Intent stays unapplied and the next tick retries |
+| `✗✗ RUN FAILED (exit N)` | the run stopped before finishing. Whatever it had already applied **is live**; the rest is untouched and the next tick picks it up |
 | `⚠⚠ N FAILED RUNS IN A ROW` | an outage, not a blip — check network and credentials before publishing again |
-| `⚠ WEDGED: run pid … has held the lock N min` | a run hung past 30 min; its lock was reclaimed |
+| `⚠ run pid … has been going N min` | a run has passed 30 minutes and is **still alive**, so this tick stood down rather than overlapping it. Nothing is reclaimed while a run lives; if it is genuinely stuck, kill the pid the line names |
+| `⚠ stale lock from pid … (owner gone) — reclaimed` | a previous run died without cleaning up (crash, power cut); its lock was taken over |
+| `── run end: STOPPED before finishing ──` | the runner was deliberately stopped mid-run (`launchctl unload`, reboot). Not counted as a failure |
 
 Logs rotate at 5 MB, keeping 5 generations (`…log.1` … `…log.5`), so the disk
 cannot fill. `logs/launchd.err.log` is the last-resort capture for anything the

@@ -231,6 +231,22 @@ test("tapping a row opens the product page; back restores the list, its open sec
   expect(scrollToCalls).toContainEqual([0, 333]);     // scroll restored
 });
 
+test("the row is keyboard-operable — Enter opens the product page", async () => {
+  // The page owns every editing action now, so a row that only answers to a
+  // mouse would put the whole flow out of a keyboard user's reach.
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const row = rowFor(tree, "Plain tee black");
+  expect(row.props.role).toBe("button");
+  expect(row.props.tabIndex).toBe(0);
+  await act(() => { row.props.onKeyDown({ key: "Enter", preventDefault: () => {} }); });
+  await flush();
+  expect(fakeWindow.location.hash).toBe("#shopify/p1");
+  expect(texts(tree)).toContain("SHOPIFY PRODUCT");
+});
+
 test("a hash change straight from one product to another does not carry the draft across", async () => {
   // Regression pin (reviewers, 2026-08-14): without key={detailPid} React
   // reconciles the page in place, so product A's unsaved name draft would sit

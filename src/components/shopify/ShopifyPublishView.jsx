@@ -213,7 +213,21 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           style={{ width: 16, height: 16, accentColor: BLUE_L, cursor: selection.blocker ? "not-allowed" : "pointer",
                    flexShrink: 0, alignSelf: "center", opacity: selection.blocker ? 0.4 : 1 }} />
       )}
+      {/* The row IS the way in. Since the product page took over the name, the
+          photos, Publish and the on/off switch, a row that only answers to a
+          mouse would put every editing action out of a keyboard user's reach —
+          so it carries button semantics and the Enter/Space handling a real
+          button would (reviewer finding, 2026-08-14). The checkbox and the
+          condition chips stop propagation, so they still act on their own. */}
       <div onClick={() => onOpen(product.id)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${effective.name || product.name || product.id}`}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+          e.preventDefault();
+          onOpen(product.id);
+        }}
         style={{ display: "flex", gap: 11, flex: 1, minWidth: 0, cursor: "pointer" }}>
         <Thumb p={product} node={node} />
         <div style={{ flex: 1, minWidth: 0 }}>

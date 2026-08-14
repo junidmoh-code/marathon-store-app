@@ -242,7 +242,16 @@ const release = () => { if (!released) { released = true; releaseLock(); } };
 // would hand every skipped tick a path to delete the live holder's lock.
 process.on("exit", () => {
   if (child && child.exitCode === null) {
+    // SIGKILL is a request, not a receipt: it cannot be waited for here (an
+    // exit listener may not go async), so the child may still be mid-syscall
+    // against Shopify when this returns. DO NOT release the lock — leaving it
+    // in place is the safe direction, because it names the child, and the
+    // next tick decides properly: child dead ⇒ the lock is stale and gets
+    // reclaimed; child somehow alive ⇒ that tick stands down. Releasing here
+    // would be the one thing that could let two reconcilers overlap
+    // (reviewer finding, 2026-08-14).
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
+    return;
   }
   release();
 });
@@ -261,10 +270,12 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     // wait for it to actually die, and only then let go of the lock.
     try { log(`⚠ runner received ${sig} — stopping the in-flight reconcile (pid ${child.pid}); the next tick resumes`); } catch { /* log unavailable */ }
     try { child.kill("SIGTERM"); } catch { release(); process.exit(130); }
-    // A child that ignores SIGTERM must not hold the schedule hostage.
+    // A child that ignores SIGTERM must not hold the schedule hostage. Exit
+    // WITHOUT releasing: same reasoning as the exit handler — SIGKILL cannot
+    // be waited on here without racing the shutdown, and a lock left naming a
+    // dead child is reclaimed by the next tick anyway.
     const force = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* gone */ }
-      release();
       process.exit(130);
     }, 10_000);
     force.unref?.();
@@ -282,7 +293,13 @@ lockOwners.childPid = child.pid;
 try {
   writeLockAtomically();
 } catch (e) {
-  log(`⚠ could not record the reconcile pid in the lock: ${String(e?.message || e)}`);
+  // An UNRECORDED child is an untrackable run: if this runner then died, the
+  // next tick would see only a dead runner pid, call the lock stale and start
+  // a second reconciler alongside the live child. A run we cannot guarantee
+  // is single-flight is a run we do not take (reviewer finding, 2026-08-14).
+  log(`✗ could not record the reconcile pid in the lock (${String(e?.message || e)}) — stopping this run; the next tick retries`);
+  try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  process.exit(1);
 }
 
 // ── Output handling: buffer only long enough to classify the tick ────────────
@@ -413,10 +430,17 @@ child.on("close", (code) => {
     writeState({ consecutiveFailures: 0, lastOkAt: Date.now() });
   } else {
     const failures = (state.consecutiveFailures || 0) + 1;
-    log(`✗✗ RUN FAILED (exit ${code}) — the run did not complete; Shopify was NOT updated.`);
-    log(`   Intent stays unapplied and the next tick retries — except for any product`);
-    log(`   shown REFUSED above, which is already blocked and needs fixing in the app.`);
-    log(`   Consecutive failures: ${failures}.`);
+    // Deliberately NOT "Shopify was not updated": the run mutates Shopify
+    // product by product, so a crash partway through leaves the products it
+    // already finished applied and the rest untouched. Claiming nothing
+    // happened would be a comfortable lie (reviewer finding, 2026-08-14).
+    // Recovery needs no bookkeeping: the reconciler re-reads each node's
+    // confirmed state and skips anything already where it should be, so the
+    // next tick resumes exactly at the products it never reached.
+    log(`✗✗ RUN FAILED (exit ${code}) — the run stopped before finishing.`);
+    log(`   Products it had already applied ARE live; the rest are untouched and the`);
+    log(`   next tick picks them up — except any shown REFUSED above, which are blocked`);
+    log(`   and need fixing in the app. Consecutive failures: ${failures}.`);
     if (failures >= 5) {
       log(`   ⚠⚠ ${failures} FAILED RUNS IN A ROW — this is an outage, not a blip. ` +
           `Check network/credentials on this machine before pressing Publish again.`);
