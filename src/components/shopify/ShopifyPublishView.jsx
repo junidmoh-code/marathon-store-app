@@ -294,7 +294,7 @@ function PhotoStrip({ product, node, locked, onChanged }) {
           <CleanBackgroundAction
             productId={product.id} originalUrl={photos[sel]}
             busy={busy || uploading} setErr={setErr}
-            onReplace={(url) => write(photos.map((u, k) => (k === sel ? url : u)))} />
+            onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))} />
         </div>
       )}
       {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}
@@ -315,13 +315,22 @@ function PhotoStrip({ product, node, locked, onChanged }) {
 function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace }) {
   const available = isCleanBackgroundAvailable();
   const [generating, setGenerating] = useState(false);
-  const [candidate, setCandidate] = useState(null); // { blob, previewUrl, metrics }
+  const [candidate, setCandidate] = useState(null); // { blob, previewUrl, metrics, sourceUrl }
   const [saving, setSaving] = useState(false);
 
   const discardCandidate = () => {
-    if (candidate) URL.revokeObjectURL(candidate.previewUrl);
-    setCandidate(null);
+    setCandidate((cur) => {
+      if (cur) URL.revokeObjectURL(cur.previewUrl);
+      return null;
+    });
   };
+
+  // A candidate belongs to ONE source photo. If the selection moves under an
+  // open candidate, drop it — accepting a cleaned copy of photo A into photo
+  // B's slot would be exactly the mix-up the side-by-side exists to prevent.
+  useEffect(() => {
+    if (candidate && candidate.sourceUrl !== originalUrl) discardCandidate();
+  }, [originalUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const generate = async () => {
     if (generating || busy) return;
@@ -332,7 +341,7 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
         setErr(`The generated image changed the product and was discarded (${res.reason}). The original stays as it is — you can try again.`);
         return;
       }
-      setCandidate(res);
+      setCandidate({ ...res, sourceUrl: originalUrl });
     } catch (e) {
       setErr(String(e?.message || e));
     } finally {
@@ -344,8 +353,8 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
     if (!candidate || saving) return;
     setSaving(true); setErr(null);
     try {
-      const url = await uploadPublishPhoto(productId, candidate.blob, { kind: "gen", derivedFrom: originalUrl });
-      await onReplace(url);
+      const url = await uploadPublishPhoto(productId, candidate.blob, { kind: "gen", derivedFrom: candidate.sourceUrl });
+      await onReplace(url, candidate.sourceUrl);
       discardCandidate();
     } catch (e) {
       setErr(String(e?.message || e));
@@ -372,7 +381,7 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
           <div style={{ display: "flex", gap: 8 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 3 }}>Original</div>
-              <img src={originalUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
+              <img src={candidate.sourceUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 3 }}>Cleaned background</div>
