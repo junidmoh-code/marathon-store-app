@@ -25,6 +25,43 @@ export const RECONCILE_MAX_APPLY = 25;
 // product far inside that while being more angles than any listing needs.
 export const MAX_PUBLISH_PHOTOS = 20;
 
+// ─── THE DESCRIPTION TEMPLATE — ONE SOURCE ───────────────────────────────────
+// The product page previews the description "exactly as it will appear on
+// Shopify", so the template must live where BOTH the browser and the
+// reconciler read it — a copied template would let the preview drift from the
+// push. compliance.mjs re-exports these for the scripts; shopifyPublishCore
+// re-exports CONDITIONS for the page. (Until 2026-08-14 the two sides held
+// deliberate twins pinned equal by tests; the pins remain and now hold
+// trivially.)
+
+// Condition values, exactly these three (owner spec 2026-08-13). NO default:
+// a product with condition unset is state=blocked and cannot be pushed —
+// buildDescriptionHtml throws rather than invents one.
+export const CONDITIONS = [
+  "Excellent — no visible wear",
+  "Very good — light cosmetic marks",
+  "Good — visible wear, priced accordingly",
+];
+
+const escapeHtml = (s) =>
+  String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// The one description template. {condition} is the only substitution.
+export function buildDescriptionHtml(condition) {
+  if (!CONDITIONS.includes(condition)) {
+    throw new Error(
+      `condition must be one of the three fixed values, got: ${JSON.stringify(condition)}. ` +
+        `There is NO default — an unset condition blocks the push.`
+    );
+  }
+  return (
+    `<p>Curated by Marathon Club. Sourced from clearance, factory surplus and pre-loved stock — each piece is limited and rarely restocked.</p>\n` +
+    `<p><strong>Condition:</strong> ${escapeHtml(condition)}</p>\n` +
+    `<p>Every item is checked by hand before listing. Original packaging isn't always included.</p>\n` +
+    `<p>14-day exchange on anything faulty. Full detail on our <a href="/pages/returns-and-condition">Returns &amp; Condition</a> page.</p>`
+  );
+}
+
 // /shopify_publish/{pid}/photos → a clean ordered URL list, or null when the
 // node has no usable custom set (callers then fall back to the record's
 // photoUrl + gallery). RTDB stores arrays as 0..n children and hands them

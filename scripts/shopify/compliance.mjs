@@ -10,37 +10,15 @@
 // field. Every push path calls it LAST, after all builders — nothing reaches
 // the Shopify client without a pass. Pure functions, no I/O.
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
+// CONDITIONS and the description template moved to publishShared.js
+// (2026-08-14): the product page previews the description exactly as pushed,
+// so browser and scripts must read ONE template. Re-exported here so every
+// script keeps its import path.
+import { CONDITIONS, buildDescriptionHtml } from "../../src/components/shopify/publishShared.js";
+export { CONDITIONS, buildDescriptionHtml };
 
 // Vendor is a FIXED string — never a brand, never derived from the record.
 export const VENDOR = "Marathon Club";
-
-// Condition values, exactly these three (owner spec). Condition has NO
-// default: a product with condition unset is state=blocked and cannot be
-// pushed — buildDescriptionHtml throws rather than invents one.
-export const CONDITIONS = [
-  "Excellent — no visible wear",
-  "Very good — light cosmetic marks",
-  "Good — visible wear, priced accordingly",
-];
-
-const escapeHtml = (s) =>
-  String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-// The one description template. {condition} is the only substitution.
-export function buildDescriptionHtml(condition) {
-  if (!CONDITIONS.includes(condition)) {
-    throw new Error(
-      `condition must be one of the three fixed values, got: ${JSON.stringify(condition)}. ` +
-        `There is NO default — an unset condition blocks the push.`
-    );
-  }
-  return (
-    `<p>Curated by Marathon Club. Sourced from clearance, factory surplus and pre-loved stock — each piece is limited and rarely restocked.</p>\n` +
-    `<p><strong>Condition:</strong> ${escapeHtml(condition)}</p>\n` +
-    `<p>Every item is checked by hand before listing. Original packaging isn't always included.</p>\n` +
-    `<p>14-day exchange on anything faulty. Full detail on our <a href="/pages/returns-and-condition">Returns &amp; Condition</a> page.</p>`
-  );
-}
 
 // Handle derives from the CLEANED title only — set explicitly so Shopify can
 // never derive it from a dirty source. Lowercase alnum + single hyphens.
