@@ -12,6 +12,7 @@
 // the I/O. productCreateMedia is asynchronous on Shopify's side, so
 // attachMedia polls the read-back until every file is READY (or fails loudly
 // on FAILED) — "created" alone does not prove the image landed.
+import { createHash } from "node:crypto";
 
 // → [{ originalSource, alt, mediaContentType: "IMAGE" }] — the publishing set
 // in its reviewed order when given, else hero first then gallery angles,
@@ -75,6 +76,16 @@ export async function preflightPhotoUrls(urls) {
   if (failures.length) {
     throw new Error(`photo preflight failed (${failures.length}):\n  ${failures.join("\n  ")}`);
   }
+}
+
+// Fingerprint of a media plan's ordered source URLs. Stored on
+// /shopify_sync/{pid} at attach time so a later run can VERIFY that what
+// Shopify holds is exactly the reviewed set — Shopify rehosts files, so the
+// read-back URLs can never be compared directly.
+export function mediaFingerprint(mediaPlan) {
+  return createHash("sha1")
+    .update(JSON.stringify(mediaPlan.map((m) => m.originalSource)))
+    .digest("hex");
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -1,6 +1,6 @@
 // ─── Photos + inventory, pure parts pinned ───────────────────────────────────
 import { describe, it, expect } from "vitest";
-import { buildMediaPlan } from "./media.mjs";
+import { buildMediaPlan, mediaFingerprint } from "./media.mjs";
 import { networkTotals } from "./inventory.mjs";
 
 describe("buildMediaPlan", () => {
@@ -47,6 +47,13 @@ describe("buildMediaPlan", () => {
   it("the publishing set passes the same host allowlist as record photos", () => {
     expect(() => buildMediaPlan(product, "Sneaker black", ["https://evil.example.com/x.jpg"]))
       .toThrow(/not the app's Firebase Storage/);
+  });
+  it("mediaFingerprint: stable for the same ordered sources, different when order changes", () => {
+    const a = buildMediaPlan(product, "Sneaker black");
+    const b = buildMediaPlan(product, "Sneaker black");
+    expect(mediaFingerprint(a)).toBe(mediaFingerprint(b));
+    const reordered = [...a].reverse();
+    expect(mediaFingerprint(reordered)).not.toBe(mediaFingerprint(a));
   });
 });
 

@@ -43,7 +43,7 @@ import {
   VENDOR, CONDITIONS, buildDescriptionHtml, buildHandle, buildSeo, buildTags,
   validatePayload,
 } from "./compliance.mjs";
-import { buildMediaPlan, preflightPhotoUrls, attachMedia } from "./media.mjs";
+import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } from "./media.mjs";
 import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNode.mjs";
@@ -394,17 +394,33 @@ for (const { pid, want } of capped) {
     }
     if (bp.media?.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — cannot verify the photo set"); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
+    // Shopify rehosts files, so what it holds can't be compared to the plan
+    // by URL — the fingerprint recorded at attach time is the only proof that
+    // its media IS the reviewed set. Deleting-and-reattaching automatically is
+    // deliberately off the table (a crashed half-state must not be papered
+    // over), so a mismatch is a refusal with the fix spelled out.
+    const planFp = mediaFingerprint(mediaPlan);
     if (mediaCount === 0) {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
       const { count } = await attachMedia(graphql, gid, mediaPlan);
+      await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
       console.log(`  media READY: ${count}`);
-    } else if (mediaCount < mediaPlan.length) {
-      // A partial set (earlier crash mid-attach, or an admin deletion) must
-      // not ship quietly missing photos — and re-attaching the whole plan
-      // would duplicate what's there. Human decision.
+    } else if (mapNode?.mediaFingerprint === planFp) {
+      // Verified: Shopify's media is exactly this plan, attached by us.
+    } else if (normalizePhotoList(fresh.photos) || mediaCount !== mediaPlan.length) {
+      // The reviewed set changed since this product's media was pushed (or a
+      // crash/admin edit left a partial set) — shipping the OLD media while
+      // the page shows a new set would make the page lie. Human step: clear
+      // the product's media in the Shopify admin, re-run, and the reviewed
+      // set re-attaches in order.
       await failSafeUnpublish(gid);
-      await refuse(pid, `Shopify holds ${mediaCount} of ${mediaPlan.length} planned photos — fix the media in admin (or clear it) and re-run`);
+      await refuse(pid, `Shopify holds ${mediaCount} photo(s) that can't be verified against the reviewed set of ${mediaPlan.length} — clear the product's media in the Shopify admin and re-run to attach the reviewed set`);
       continue;
+    } else {
+      // Legacy pre-fingerprint product with no custom set and matching count:
+      // today's media is the same record-derived plan — record the
+      // fingerprint so the NEXT edit is verifiable.
+      await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
     }
 
     // ── FAIL-CLOSED GATE: the FULL validator against the CANONICAL object ────
