@@ -12,7 +12,7 @@ import { test, expect, vi, beforeEach } from "vitest";
 import React from "react";
 import { create, act } from "react-test-renderer";
 
-const calls = { approve: [], publish: [], desired: [], nodesFor: [] };
+const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [] };
 let keys = new Set();
 let pipeline = {};
 let bodies = {};
@@ -44,6 +44,17 @@ vi.mock("./shopifyPublishStore", () => ({
     return Promise.resolve({ ok: true, node: { ...(node || {}), state: node?.state || "awaiting", desiredState: want } });
   },
   setCondition: (pid, node, condition) => Promise.resolve({ ok: true, node: { ...(node || {}), condition, state: node?.state || "awaiting" } }),
+  setPublishPhotos: (pid, node, photos) => {
+    calls.photos.push({ pid, photos });
+    return Promise.resolve({ ok: true, node: { ...(node || {}), state: node?.state || "awaiting", photos } });
+  },
+}));
+// photoTools reaches firebase storage — mock it out entirely (uploads are
+// exercised by their own unit layer, not the render tests).
+vi.mock("./photoTools", () => ({
+  uploadFileProblem: () => null,
+  compressImageFile: () => Promise.resolve(new Blob()),
+  uploadPublishPhoto: () => Promise.resolve("https://firebasestorage.googleapis.com/up.jpg"),
 }));
 
 const { default: ShopifyPublishView } = await import("./ShopifyPublishView.jsx");
@@ -51,8 +62,8 @@ const { default: ShopifyPublishView } = await import("./ShopifyPublishView.jsx")
 const COND = "Very good — light cosmetic marks";
 const PRODUCTS = [
   { id: "p1", name: "Plain tee black", category: "Clothing", subcategory: "Tees", retailPrice: 199, photoUrl: "https://x/p1.jpg" },
-  { id: "p2", name: "Plain tee white", category: "Clothing", subcategory: "Tees" },
-  { id: "p3", name: "Court sneaker grey", category: "Footwear", subcategory: "Sneakers", retailPrice: 899 },
+  { id: "p2", name: "Plain tee white", category: "Clothing", subcategory: "Tees", photoUrl: "https://x/p2.jpg" },
+  { id: "p3", name: "Court sneaker grey", category: "Footwear", subcategory: "Sneakers", retailPrice: 899, photoUrl: "https://x/p3.jpg" },
 ];
 
 const flush = async () => { await act(() => Promise.resolve()); await act(() => Promise.resolve()); };
@@ -90,6 +101,7 @@ beforeEach(() => {
   calls.publish.length = 0;
   calls.desired.length = 0;
   calls.nodesFor.length = 0;
+  calls.photos.length = 0;
   focused.length = 0;
   keys = new Set();
   pipeline = {};
@@ -140,7 +152,7 @@ test("Enter approves through the store and focus advances to the next unreviewed
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
   await flush();
   await openClothing(tree);
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
   await act(() => { inputs[0].props.onKeyDown({ key: "Enter", preventDefault: () => {} }); });
   await flush();
   expect(calls.approve).toEqual([{ pid: "p1", name: "Plain tee black" }]);
@@ -154,7 +166,7 @@ test("a refused write surfaces its message in the row", async () => {
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
   await flush();
   await openClothing(tree);
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
   await act(() => { inputs[0].props.onKeyDown({ key: "Enter", preventDefault: () => {} }); });
   await flush();
   expect(texts(tree)).toContain("the database refused this write");
@@ -267,7 +279,7 @@ test("an ON row locks its name input; a dirty live-off row refuses the switch un
     await act(() => { header.parent.props.onClick(); });
     await flush();
   }
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
   const onInput = inputs.find((n) => n.props.value === "Basic tee black");
   const offInput = inputs.find((n) => n.props.value === "Court low grey");
   expect(onInput.props.disabled).toBe(true);   // ON — customers see this name; locked
@@ -284,7 +296,7 @@ test("an ON row locks its name input; a dirty live-off row refuses the switch un
   expect(calls.desired.length).toBe(0);
 });
 
-test("a pending publish shows Cancel, which writes desiredState off", async () => {
+test("a pending publish says it waits for the reconciler and shows Cancel, which writes desiredState off", async () => {
   keys = new Set(["p1"]);
   bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND, desiredState: "on" };
   let tree;
@@ -292,7 +304,172 @@ test("a pending publish shows Cancel, which writes desiredState off", async () =
   await flush();
   await openClothing(tree);
   expect(texts(tree)).toContain("PUBLISHING");
+  // Not just a chip: the row states in words that a reconciler run is what
+  // it's waiting on (owner feedback — the pending marker alone didn't tell
+  // Junid that a separate script has to run).
+  expect(texts(tree)).toContain("waiting for the reconciler run");
   await act(() => { button(tree, "Cancel").props.onClick(); });
   await flush();
   expect(calls.desired).toEqual([{ pid: "p1", want: "off" }]);
+});
+
+test("a live row shows when it went live and its Shopify admin link", async () => {
+  keys = new Set(["p1"]);
+  const liveAt = new Date("2026-08-10T09:00:00Z").getTime();
+  pipeline = {
+    p1: { state: "live", liveState: "on", desiredState: "on", cleanName: "Basic tee black",
+          condition: COND, liveAt, adminUrl: "https://admin.shopify.com/store/nu3ei8-0p/products/123" },
+  };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Live").props.onClick(); });
+  await flush();
+  const onHeader = tree.root.findAll((n) => n.type === "div" && n.children.includes("On — visible to customers"))[0];
+  await act(() => { onHeader.parent.props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain(`Went live ${new Date(liveAt).toLocaleDateString()}`);
+  const link = tree.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("https://admin.shopify.com/store/nu3ei8-0p/products/123");
+});
+
+const COND2 = "Excellent — no visible wear";
+const checkboxes = (tree) => tree.root.findAll((n) => n.type === "input" && n.props.type === "checkbox");
+
+test("batch: a condition-unset row cannot be selected and says why inline", async () => {
+  keys = new Set(["p2"]);
+  bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const boxes = checkboxes(tree);
+  expect(boxes.length).toBe(2); // both awaiting rows offer the checkbox
+  const disabled = boxes.filter((b) => b.props.disabled);
+  expect(disabled.length).toBe(1); // p1 has no condition — unselectable, not silently skipped
+  expect(texts(tree)).toContain("Can't batch-select");
+  expect(texts(tree)).toContain("set a condition grade first");
+});
+
+test("batch: select-all, the shared confirmation lists every cleaned name, confirm writes one intent per product", async () => {
+  keys = new Set(["p1", "p2"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
+  bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND2 };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await act(() => { button(tree, "Select all").props.onClick({ stopPropagation: () => {} }); });
+  await flush();
+  let out = texts(tree);
+  expect(out).toContain('"2"," of ","25"," selected"'); // running count + the stated cap (JSX splits text nodes)
+  await act(() => { button(tree, "Publish selected…").props.onClick(); });
+  await flush();
+  out = texts(tree);
+  expect(out).toContain("public storefront");
+  expect(out).toContain("Basic tee black");   // every product about to go live, by cleaned name
+  expect(out).toContain("Basic tee white");
+  expect(focused).toContain("cancel-button"); // cancel is the default focus, same as single publish
+  await act(() => { button(tree, "Put 2 live").props.onClick(); });
+  await flush();
+  expect(calls.publish).toEqual([
+    { pid: "p1", name: "Basic tee black" },
+    { pid: "p2", name: "Basic tee white" },
+  ]);
+  out = texts(tree);
+  expect(out).toContain("PUBLISHING");                      // rows now pending
+  expect(out).toContain("until the reconciler runs");       // the notice says what happens next
+  expect(out).not.toContain("Publish selected…");           // intents saved ⇒ selection emptied, bar gone
+});
+
+test("batch: cancel in the confirmation writes nothing and keeps the selection", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const box = checkboxes(tree).find((b) => !b.props.disabled);
+  await act(() => { box.props.onChange(); });
+  await flush();
+  await act(() => { button(tree, "Publish selected…").props.onClick(); });
+  await flush();
+  await act(() => { button(tree, "Cancel").props.onClick(); });
+  await flush();
+  expect(calls.publish.length).toBe(0);
+  expect(texts(tree)).toContain("Publish selected…"); // still selected, bar still up
+});
+
+test("photo strip: opens on demand, reorder writes the full ordered list, last photo cannot be removed", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND,
+                photos: ["https://firebasestorage.googleapis.com/a.jpg", "https://firebasestorage.googleapis.com/b.jpg"] };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  // strip is on demand — its thumbs don't exist until the chip is tapped
+  expect(tree.root.findAll((n) => n.type === "img" && n.props.src === "https://firebasestorage.googleapis.com/b.jpg").length).toBe(0);
+  const photosChip = tree.root.findAll((n) => n.type === "button" && JSON.stringify(n.children).includes("Photos"))[0];
+  await act(() => { photosChip.props.onClick(); });
+  await flush();
+  const thumbs = tree.root.findAll((n) => n.type === "img" && n.props.src === "https://firebasestorage.googleapis.com/b.jpg");
+  expect(thumbs.length).toBe(1);
+  expect(thumbs[0].props.loading).toBe("lazy");
+  expect(texts(tree)).toContain("PRIMARY");
+  // select the second thumb, move it left — the WHOLE ordered list is written
+  await act(() => { thumbs[0].props.onClick(); });
+  await flush();
+  await act(() => { button(tree, "‹ Move").props.onClick(); });
+  await flush();
+  expect(calls.photos).toEqual([{ pid: "p1", photos: [
+    "https://firebasestorage.googleapis.com/b.jpg",
+    "https://firebasestorage.googleapis.com/a.jpg",
+  ] }]);
+  // now try to strip it to nothing: remove twice — the last one refuses.
+  // The moved thumb keeps its selection after the write, so Remove is already
+  // offered. (stripThumb filters to STRIP thumbs — the row's Thumb shares the
+  // primary's src but has no onClick.)
+  const stripThumb = (src) => tree.root.findAll((n) =>
+    n.type === "img" && n.props.src === src && typeof n.props.onClick === "function")[0];
+  await act(() => { button(tree, "Remove from publish set").props.onClick(); });
+  await flush();
+  expect(calls.photos[1].photos).toEqual(["https://firebasestorage.googleapis.com/a.jpg"]);
+  await act(() => { stripThumb("https://firebasestorage.googleapis.com/a.jpg").props.onClick(); });
+  await flush();
+  await act(() => { button(tree, "Remove from publish set").props.onClick(); });
+  await flush();
+  expect(calls.photos.length).toBe(2); // refused locally — no third write
+  expect(texts(tree)).toContain("never ships imageless");
+});
+
+test("photo strip: locked read-only while the listing is ON", async () => {
+  keys = new Set(["p1"]);
+  pipeline = { p1: { state: "live", liveState: "on", desiredState: "on", cleanName: "Basic tee black", condition: COND } };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Live").props.onClick(); });
+  await flush();
+  const onHeader = tree.root.findAll((n) => n.type === "div" && n.children.includes("On — visible to customers"))[0];
+  await act(() => { onHeader.parent.props.onClick(); });
+  await flush();
+  const photosChip = tree.root.findAll((n) => n.type === "button" && JSON.stringify(n.children).includes("Photos"))[0];
+  await act(() => { photosChip.props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("switch it off to change photos");
+  expect(tree.root.findAll((n) => n.type === "button" && n.children.includes("Remove from publish set")).length).toBe(0);
+});
+
+test("home badge counts only never-seen products — live and blocked are excluded", async () => {
+  // The badge prices "awaiting review" as key ABSENCE: any product with a
+  // /shopify_publish node (live, blocked, or merely seen) is out of the count.
+  const { useShopifyAwaitingCount } = await import("./ShopifyPublishView.jsx");
+  keys = new Set(["p1", "p3"]); // p1 live, p3 blocked — both have nodes
+  let seen = null;
+  function Probe() { seen = useShopifyAwaitingCount(PRODUCTS, true); return null; }
+  await act(() => { create(<Probe />); });
+  await flush();
+  expect(seen).toBe(1); // only p2 has never been reviewed
 });

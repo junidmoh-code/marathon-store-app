@@ -34,11 +34,15 @@ import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as in
 import { cleanTitleFor } from "../../utils/shopifyTriggers";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
-  normalizedState, isOn, isPendingSwitch, canGoLive,
+  normalizedState, isOn, isPendingSwitch, canGoLive, batchSelectBlocker, effectivePhotoList,
 } from "./shopifyPublishCore";
+import { RECONCILE_MAX_APPLY, MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, approveName, publishProduct, setDesiredState, setCondition,
+  setPublishPhotos,
 } from "./shopifyPublishStore";
+import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
+import { isCleanBackgroundAvailable, cleanBackground } from "./geminiClean";
 
 const UNCAT = "Uncategorised";
 
@@ -76,9 +80,13 @@ function StateChip({ chip }) {
 
 // Same thumbnail treatment as LabelPrintView, plus lazy loading — rows exist
 // by the hundred per section and must not fetch a photo until scrolled to.
-function Thumb({ p }) {
-  if (p?.photoUrl) {
-    return <img src={p.photoUrl} alt="" loading="lazy"
+// Shows the PUBLISHING primary (first of the effective photo set), so a
+// custom-ordered set changes what the row leads with — the thumb never lies
+// about what the storefront would lead with.
+function Thumb({ p, node }) {
+  const primary = effectivePhotoList(p, node).photos[0];
+  if (primary) {
+    return <img src={primary} alt="" loading="lazy"
                 style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 10, flexShrink: 0 }}
                 onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   }
@@ -96,17 +104,15 @@ function effectiveNameFor(product, node) {
 }
 
 // What the storefront would show — the facts the confirmation dialog states.
+// The photo count prices the EFFECTIVE publishing set (custom list when one
+// exists, else the record's photos) — the same set the reconciler pushes.
 function publicFacts(product, node, name) {
-  const photos = new Set(
-    [product?.photoUrl, ...(Array.isArray(product?.gallery) ? product.gallery : [])]
-      .filter((u) => typeof u === "string" && u.trim() !== "")
-  );
   const price = Number(product?.retailPrice);
   return {
     name,
     condition: node?.condition || null,
     price: price > 0 ? `R ${price.toFixed(2)}` : "no price set",
-    photoCount: photos.size,
+    photoCount: effectivePhotoList(product, node).photos.length,
   };
 }
 
@@ -154,21 +160,333 @@ function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
   );
 }
 
+// ─── PHOTO STRIP ─────────────────────────────────────────────────────────────
+// The row's publishing photo set, opened on demand. Interaction pattern is
+// the repo's own: the thumbnail strip (52px thumbs, white active border,
+// dimmed rest) is GalleryLightbox's strip from App.jsx; tap a thumb to
+// select it, then act on it with chips — the tap-to-act chip treatment of
+// the AI Studio Style Kit reference grid. Reordering is the lightbox's ‹ ›
+// glyph pair on the SELECTED thumb (no drag interaction exists anywhere in
+// the repo to match). First photo is primary, marked.
+//
+// Every action writes the full ordered list to /shopify_publish/{pid}/photos
+// through the store's transaction — NEVER to /products, never a blind set().
+// Removing only removes from the publishing set (the product record and
+// Storage keep the file); the last photo cannot be removed (imageless never
+// ships). Locked while the listing is ON, like the name and condition.
+function PhotoStrip({ product, node, locked, onChanged }) {
+  const { photos, custom } = effectivePhotoList(product, node);
+  const [sel, setSel] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+
+  // → true iff the list committed (callers that consume a resource on
+  // success — the accept flow discarding its candidate — must not do so on a
+  // refused write).
+  const write = async (nextList, after) => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await setPublishPhotos(product.id, node, nextList);
+      if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
+      onChanged(product.id, res.node);
+      after?.();
+      return true;
+    } catch (e) {
+      setErr(String(e?.message || e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= photos.length) return;
+    const next = [...photos];
+    [next[i], next[j]] = [next[j], next[i]];
+    write(next, () => setSel(j));
+  };
+  const makePrimary = (i) => {
+    const next = [photos[i], ...photos.filter((_, k) => k !== i)];
+    write(next, () => setSel(0));
+  };
+  const removeAt = (i) => {
+    if (photos.length === 1) {
+      setErr("A product never ships imageless — add another photo before removing this one.");
+      return;
+    }
+    write(photos.filter((_, k) => k !== i), () => setSel(null));
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const problem = uploadFileProblem(file);
+    if (problem) { setErr(problem); return; }
+    if (photos.length >= MAX_PUBLISH_PHOTOS) { setErr(`At most ${MAX_PUBLISH_PHOTOS} photos per product.`); return; }
+    setUploading(true); setErr(null);
+    try {
+      const blob = await compressImageFile(file);
+      const url = await uploadPublishPhoto(product.id, blob);
+      await write([...photos, url]);
+    } catch (ex) {
+      setErr(String(ex?.message || ex));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const chip = (label, onClick, disabled = false) => (
+    <button key={label} disabled={busy || uploading || disabled} onClick={onClick}
+      style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem" }}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ marginTop: 8, padding: "8px 0 2px", borderTop: "1px solid rgba(255,255,255,.04)" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+        {photos.map((u, i) => (
+          <div key={u} style={{ position: "relative" }}>
+            <img src={u} alt="" loading="lazy"
+              onClick={() => !locked && setSel(sel === i ? null : i)}
+              style={{ width: 52, height: 52, objectFit: "cover", borderRadius: 9,
+                       cursor: locked ? "default" : "pointer", background: "rgba(255,255,255,.08)",
+                       border: sel === i ? "2px solid #fff" : "2px solid transparent",
+                       opacity: sel === null || sel === i ? 1 : 0.55 }} />
+            {i === 0 && (
+              <div style={{ position: "absolute", left: 2, bottom: 2, fontSize: 8, fontWeight: 800,
+                            color: GREEN, background: "rgba(0,0,0,.62)", borderRadius: 5, padding: "1px 4px" }}>
+                PRIMARY
+              </div>
+            )}
+          </div>
+        ))}
+        {!locked && (
+          <>
+            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp"
+              onChange={handleFile} style={{ display: "none" }} />
+            <button disabled={busy || uploading} onClick={() => fileRef.current?.click()}
+              style={{ width: 52, height: 52, borderRadius: 9, cursor: "pointer", fontFamily: FONT,
+                       background: "rgba(255,255,255,.03)", border: "1px dashed rgba(255,255,255,.18)",
+                       color: GRAY, fontSize: 20 }}>
+              {uploading ? "…" : "＋"}
+            </button>
+          </>
+        )}
+      </div>
+      {locked && (
+        <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
+          Listing is ON — switch it off to change photos. The reconciler re-syncs them at the next turn-on.
+        </div>
+      )}
+      {!locked && (
+        <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
+          {custom
+            ? "Custom publishing set — the product record's own photos are untouched."
+            : "Showing the product record's photos. Any change saves a publishing copy; the record is never edited."}
+        </div>
+      )}
+      {!locked && sel !== null && photos[sel] && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
+          {chip("‹ Move", () => move(sel, -1), sel === 0)}
+          {chip("Move ›", () => move(sel, 1), sel === photos.length - 1)}
+          {chip("Make primary", () => makePrimary(sel), sel === 0)}
+          {chip("Remove from publish set", () => removeAt(sel))}
+          <CleanBackgroundAction
+            productId={product.id} originalUrl={photos[sel]}
+            busy={busy || uploading} setErr={setErr}
+            onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))} />
+        </div>
+      )}
+      {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}
+    </div>
+  );
+}
+
+// ─── CLEAN BACKGROUND (Gemini) ───────────────────────────────────────────────
+// One photo at a time, no bulk generate. The flow the truthfulness rule
+// demands (see geminiClean.js): generate → AUTOMATIC subject-preservation
+// gate (a result whose product region changed is discarded with a logged
+// reason and never shown) → side-by-side against the original → EXPLICIT
+// accept. Accepting uploads a NEW Storage object beside the original
+// (derivedFrom recorded) and swaps only this slot of the publishing set —
+// the original photo survives in the record, in Storage, everywhere.
+// Without GEMINI_API_KEY at build time the chip is disabled with a plain
+// message and the rest of the strip works untouched.
+function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace }) {
+  const available = isCleanBackgroundAvailable();
+  const [generating, setGenerating] = useState(false);
+  const [candidate, setCandidate] = useState(null); // { blob, previewUrl, metrics, sourceUrl }
+  const [saving, setSaving] = useState(false);
+
+  const discardCandidate = () => {
+    setCandidate((cur) => {
+      if (cur) URL.revokeObjectURL(cur.previewUrl);
+      return null;
+    });
+  };
+
+  // A candidate belongs to ONE source photo. If the selection moves under an
+  // open candidate, drop it — accepting a cleaned copy of photo A into photo
+  // B's slot would be exactly the mix-up the side-by-side exists to prevent.
+  useEffect(() => {
+    if (candidate && candidate.sourceUrl !== originalUrl) discardCandidate();
+  }, [originalUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Unmount revokes an un-actioned candidate's object URL (state updaters
+  // don't run after unmount, so track the URL in a ref).
+  const previewRef = useRef(null);
+  previewRef.current = candidate?.previewUrl || null;
+  useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current); }, []);
+
+  const generate = async () => {
+    if (generating || busy) return;
+    setGenerating(true); setErr(null);
+    try {
+      const res = await cleanBackground(originalUrl);
+      if (!res.ok) {
+        setErr(`The generated image changed the product and was discarded (${res.reason}). The original stays as it is — you can try again.`);
+        return;
+      }
+      // A regenerate replaces any open candidate — revoke its URL first.
+      setCandidate((prev) => {
+        if (prev) URL.revokeObjectURL(prev.previewUrl);
+        return { ...res, sourceUrl: originalUrl };
+      });
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const accept = async () => {
+    if (!candidate || saving) return;
+    setSaving(true); setErr(null);
+    try {
+      const url = await uploadPublishPhoto(productId, candidate.blob, { kind: "gen", derivedFrom: candidate.sourceUrl });
+      // Only a COMMITTED list write consumes the candidate — a refused write
+      // shows its error and keeps the side-by-side up for a retry.
+      if (await onReplace(url, candidate.sourceUrl)) discardCandidate();
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <button disabled={!available || busy || generating}
+        onClick={generate}
+        title={available ? undefined : "GEMINI_API_KEY was not set when this app was built — the action is disabled."}
+        style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem", opacity: available ? 1 : 0.4 }}>
+        {generating ? "Generating…" : "Clean background"}
+      </button>
+      {!available && (
+        <span style={{ fontSize: 10, color: GRAY, alignSelf: "center" }}>
+          background cleanup off — no GEMINI_API_KEY at build
+        </span>
+      )}
+      {candidate && (
+        <div style={{ width: "100%", marginTop: 7 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 3 }}>Original</div>
+              <img src={candidate.sourceUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 3 }}>Cleaned background</div>
+              <img src={candidate.previewUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
+            The product region matched the original (checked automatically). Look once more — accept only if the item is untouched.
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <button disabled={saving} onClick={discardCandidate} style={{ ...bGray, padding: "7px 11px", fontSize: "0.72rem" }}>Discard</button>
+            <button disabled={saving} onClick={accept} style={{ ...bBlue, padding: "7px 11px", fontSize: "0.72rem" }}>
+              {saving ? "Saving…" : "Use cleaned photo"}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
+// The SAME going-live confirmation as the single publish — same overlay, same
+// Cancel-default-focus, same "public storefront" statement — listing every
+// product about to go on, each under its cleaned name (every one is a
+// compliance decision; the list is the last look). A batch of N is N
+// independent publish intents: the reconciler validates each product on its
+// own and any one can be refused (blocked) without touching the others.
+function BatchPublishConfirmDialog({ items, busy, onCancel, onConfirm }) {
+  const cancelRef = useRef(null);
+  useEffect(() => { cancelRef.current?.focus(); }, []);
+  return (
+    <div onClick={onCancel}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)",
+               backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)",
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ ...GLASS_SOLID, width: "100%", maxWidth: 460, padding: "22px 20px", fontFamily: FONT }}>
+        <div style={{ fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700 }}>
+          Put {items.length} product{items.length === 1 ? "" : "s"} on the public storefront?
+        </div>
+        <div style={{ maxHeight: "42vh", overflowY: "auto", marginTop: 12 }}>
+          {items.map((it) => (
+            <div key={it.pid} style={{ padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", lineHeight: 1.3, overflowWrap: "break-word" }}>
+                {it.name}
+              </div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,.75)", marginTop: 2 }}>
+                {it.condition} · {it.price}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11.5, color: GRAY, marginTop: 12, lineHeight: 1.45 }}>
+          Every product above becomes publicly visible on the online store, under exactly the
+          name shown. Check each name once more — the names are what the compliance rules protect.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+          <button ref={cancelRef} onClick={onCancel} disabled={busy} style={{ ...bGray, flex: 1 }}>Cancel</button>
+          <button onClick={onConfirm} disabled={busy} style={{ ...bGreen, flex: 1 }}>
+            {busy ? "Saving…" : `Put ${items.length} live`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // One product's review row. Everything is inline: the cleaned name is a live
 // input with the trigger check on every keystroke, condition is three chips,
 // the primary action is PUBLISH (behind the page's one confirmation dialog).
 // Live rows carry the on/off switch instead — off writes intent immediately,
 // on re-confirms with the same dialog.
-function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputRef }) {
+// `selection` (optional) is the batch-publish hook: { selected, blocker,
+// atCap, onToggle }. blocker non-null ⇒ the checkbox is disabled and the row
+// says why inline (never a silent skip). Checkbox styling matches the
+// SpecialsTab batch rows (PR #355) — the repo's existing select-for-batch
+// interaction.
+function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputRef, selection }) {
   const effective = useMemo(() => effectiveNameFor(product, node), [product, node]);
   const [draft, setDraft] = useState(effective.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [confirming, setConfirming] = useState(null); // "publish" | "switch-on"
+  const [showPhotos, setShowPhotos] = useState(false); // the row's photo strip, opened on demand
 
   const state = reviewStateFor(node);
   const on = isOn(node);
   const pending = isPendingSwitch(node);
+  const photoList = useMemo(() => effectivePhotoList(product, node), [product, node]);
   const verdict = checkCleanName(draft); // the LIVE trigger check
   const blocked = blockedReason(node);
   const isLiveRow = state === "live";
@@ -220,6 +538,12 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
       setError("Pick a condition grade first — a product cannot go live without one.");
       return;
     }
+    // Same gate the reconciler enforces, surfaced NOW instead of as a
+    // blocked row minutes after a script run: imageless never ships.
+    if (effectivePhotoList(product, node).photos.length === 0) {
+      setError("No photos — open the photo strip and add one; an imageless product cannot go live.");
+      return;
+    }
     setConfirming("publish");
   };
 
@@ -235,7 +559,18 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
 
   return (
     <div style={{ display: "flex", gap: 11, padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
-      <Thumb p={product} />
+      {selection && (
+        <input type="checkbox"
+          checked={selection.selected}
+          disabled={busy || !!selection.blocker || (selection.atCap && !selection.selected)}
+          onChange={selection.onToggle}
+          aria-label={`Select ${product.name || product.id} for batch publish`}
+          title={selection.blocker || (selection.atCap && !selection.selected
+            ? `Selection is capped at ${RECONCILE_MAX_APPLY} per batch` : undefined)}
+          style={{ width: 16, height: 16, accentColor: BLUE_L, cursor: selection.blocker ? "not-allowed" : "pointer",
+                   flexShrink: 0, alignSelf: "center", opacity: selection.blocker ? 0.4 : 1 }} />
+      )}
+      <Thumb p={product} node={node} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: "rgba(255,255,255,.3)",
@@ -272,6 +607,11 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
               {c.split(" — ")[0]}
             </button>
           ))}
+          <button disabled={busy}
+            onClick={() => setShowPhotos((v) => !v)}
+            style={{ ...(showPhotos ? tabOn : tabOff), padding: "4px 9px", fontSize: "0.68rem" }}>
+            Photos · {photoList.photos.length}
+          </button>
           <div style={{ flex: 1 }} />
           {isLiveRow ? (
             // The on/off switch. OFF is instant intent — reversible, reduces
@@ -279,11 +619,19 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             // Publish. While pending, the switch waits for the reconciler.
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
               {pending && (
-                <span style={{ fontSize: 10.5, color: BLUE_L }}>waiting for the reconciler…</span>
+                <span style={{ fontSize: 10.5, color: BLUE_L }}>
+                  Saved — waiting for the reconciler run to update Shopify.
+                </span>
               )}
               <button disabled={busy || pending || on}
                 onClick={() => {
                   if (dirty) { setError("Save the edited name first (press Enter in the name field)."); return; }
+                  // Same gate as Publish — an emptied photo set must surface
+                  // here, not as a blocked row after the next script run.
+                  if (photoList.photos.length === 0) {
+                    setError("No photos — open the photo strip and add one; an imageless product cannot go live.");
+                    return;
+                  }
                   setConfirming("switch-on");
                 }}
                 style={{ ...(on ? tabOn : tabOff), padding: "4px 11px", fontSize: "0.68rem" }}>
@@ -297,13 +645,21 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             </div>
           ) : pending ? (
             // A publish intent the reconciler hasn't applied yet — cancellable
-            // without a dialog (cancelling only reduces exposure).
-            <button disabled={busy}
-              onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
-              style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
-                       fontSize: "0.72rem", fontWeight: 700, color: GRAY, padding: "7px 4px" }}>
-              Cancel
-            </button>
+            // without a dialog (cancelling only reduces exposure). The plain
+            // sentence is deliberate (owner feedback 2026-08-14): the chip
+            // alone read as "in progress", and Junid didn't know a separate
+            // reconciler run had to happen before anything reached Shopify.
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ fontSize: 10.5, color: BLUE_L }}>
+                Saved — waiting for the reconciler run to send it to Shopify.
+              </span>
+              <button disabled={busy}
+                onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
+                style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
+                         fontSize: "0.72rem", fontWeight: 700, color: GRAY, padding: "7px 4px" }}>
+                Cancel
+              </button>
+            </div>
           ) : (
             <button disabled={busy || !verdict.ok}
               onClick={requestPublish}
@@ -312,8 +668,35 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             </button>
           )}
         </div>
+        {showPhotos && (
+          <PhotoStrip product={product} node={node} locked={isLiveRow && on} onChanged={onChanged} />
+        )}
+        {selection?.blocker && (
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
+            Can't batch-select — {selection.blocker}.
+          </div>
+        )}
         {node?.condition && (
           <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>{node.condition}</div>
+        )}
+        {isLiveRow && (
+          // The live row's provenance line: when it went ON (the reconciler's
+          // liveAt stamp) and the direct Shopify admin link. Both are stamped
+          // at confirm time — a row confirmed before this shipped shows
+          // neither, honestly, until its next reconcile.
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
+            {on
+              ? (node?.liveAt ? `Went live ${new Date(node.liveAt).toLocaleDateString()}` : "Live")
+              : "On Shopify, not published"}
+            {node?.adminUrl && (
+              <>
+                {" · "}
+                <a href={node.adminUrl} target="_blank" rel="noreferrer" style={{ color: BLUE_L }}>
+                  Shopify admin ↗
+                </a>
+              </>
+            )}
+          </div>
         )}
         {blocked && (
           <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>⛔ {blocked}</div>
@@ -367,6 +750,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   }, [query]);
   const [keys, setKeys] = useState(null);          // Set<pid> — pids with ANY node
   const [pipeline, setPipeline] = useState(null);  // {pid: node} for live/blocked (+legacy)
+  // Batch publish (owner spec 2026-08-14): selection lives at page level so it
+  // survives collapsing a section; capped at the reconciler's per-run cap.
+  const [selected, setSelected] = useState(() => new Set());
+  const [batchNotice, setBatchNotice] = useState(null);
+  const [batchConfirm, setBatchConfirm] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
   const [nodes, setNodes] = useState({});          // every node body this session has loaded
   const [open, setOpen] = useState(() => new Set());
   const [loadError, setLoadError] = useState(null);       // mount reads failed — page unusable
@@ -601,6 +990,151 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     }
   };
 
+  // ─── Batch-publish selection ───────────────────────────────────────────────
+  // Only awaiting-review rows in the CATEGORY sections are selectable — every
+  // name is a compliance decision and the category boundary is the review
+  // unit, so there is no cross-category select-all and no batch in the Live
+  // view. A row that fails the same gates the publish write enforces
+  // (condition unset, no valid name) gets a disabled checkbox with the reason
+  // inline — never a silent skip.
+  const selectionEligible = (node) => {
+    const st = reviewStateFor(node);
+    return (st === "awaiting" || st === "approved") && !isPendingSwitch(node);
+  };
+  // Prune the selection whenever ANY node update disqualifies a selected row
+  // — local writes and external ones alike (the window-focus refetch can pull
+  // in a reconciler-side block; publishing that stale selection would clear
+  // the validator's refusal and re-queue the very product it refused).
+  useEffect(() => {
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      for (const pid of prev) {
+        const node = nodes[pid];
+        if (node !== undefined && !selectionEligible(node)) next.delete(pid);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The freshest nodes, readable from inside runBatch's long-lived closure.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const capNotice = () =>
+    setBatchNotice(`Selection is capped at ${RECONCILE_MAX_APPLY} — the reconciler applies at most ${RECONCILE_MAX_APPLY} products per run.`);
+  const toggleSelect = (pid, blocker) => {
+    if (selected.has(pid)) {
+      const next = new Set(selected);
+      next.delete(pid);
+      setSelected(next);
+      return;
+    }
+    if (blocker) return;
+    if (selected.size >= RECONCILE_MAX_APPLY) { capNotice(); return; }
+    setSelected(new Set(selected).add(pid));
+  };
+  // Per-render cache: the blocker needs the lexicon (effectiveNameFor) and
+  // the photo list, and both selectionFor and the section select-all walk the
+  // same rows — compute each pid once per render, not twice.
+  const blockerCache = new Map();
+  const blockerFor = (p) => {
+    if (!blockerCache.has(p.id)) {
+      const node = nodes[p.id] || null;
+      blockerCache.set(p.id, batchSelectBlocker(
+        node, effectiveNameFor(p, node).name, effectivePhotoList(p, node).photos.length));
+    }
+    return blockerCache.get(p.id);
+  };
+  const selectionFor = (p) => {
+    if (filter === "live") return undefined;
+    const node = nodes[p.id] || null;
+    if (!selectionEligible(node)) return undefined;
+    const blocker = blockerFor(p);
+    return {
+      selected: selected.has(p.id),
+      blocker,
+      atCap: selected.size >= RECONCILE_MAX_APPLY,
+      onToggle: () => toggleSelect(p.id, blocker),
+    };
+  };
+  // The per-category select-all: adds this section's currently-selectable
+  // rows (blocked/ineligible ones stay out and keep their inline reason)
+  // until the cap says stop.
+  const selectAllIn = (pids) => {
+    const next = new Set(selected);
+    let capped = false;
+    for (const pid of pids) {
+      if (next.size >= RECONCILE_MAX_APPLY) { capped = true; break; }
+      next.add(pid);
+    }
+    setSelected(next);
+    if (capped) capNotice();
+  };
+
+  const productById = useMemo(() => {
+    const m = new Map();
+    for (const p of products) if (p?.id) m.set(p.id, p);
+    return m;
+  }, [products]);
+  // What the batch dialog states, per product: the cleaned name that will
+  // ship (saved name or lexicon — never an unsaved row draft), condition,
+  // price. Built from the same effectiveNameFor the rows use.
+  const batchItems = useMemo(() => {
+    return [...selected].map((pid) => {
+      const p = productById.get(pid);
+      if (!p) return null;
+      const node = nodes[pid] || null;
+      const eff = effectiveNameFor(p, node);
+      const price = Number(p.retailPrice);
+      return {
+        pid, node, name: eff.name, source: eff.source,
+        condition: node?.condition || "— no condition set —",
+        price: price > 0 ? `R ${price.toFixed(2)}` : "no price set",
+      };
+    }).filter(Boolean);
+  }, [selected, nodes, productById]);
+
+  // Sequential on purpose: each publishProduct is its own transaction with
+  // its own server-side refusals, and a failure only skips ITS product — the
+  // batch is N independent intents, exactly like the reconciler treats them.
+  const runBatch = async () => {
+    if (batchBusy) return;
+    setBatchBusy(true);
+    const failures = [];
+    let okCount = 0;
+    try {
+      for (const it of batchItems) {
+        // Re-check against the FRESHEST node before each write: a row the
+        // reconciler blocked (or another session published) since the dialog
+        // opened must be skipped, not silently re-queued with its refusal
+        // reason wiped.
+        const freshest = nodesRef.current[it.pid] === undefined ? it.node : nodesRef.current[it.pid];
+        if (!selectionEligible(freshest)) {
+          failures.push(`${it.name || it.pid} — its state changed since selection, skipped`);
+          continue;
+        }
+        try {
+          const res = await publishProduct(it.pid, freshest, it.name, it.source); // eslint-disable-line no-await-in-loop
+          if (res?.ok) { okCount += 1; applyWrite(it.pid, res.node); }
+          else failures.push(`${it.name || it.pid} — ${res?.message || "not saved"}`);
+        } catch (e) {
+          // A rejection is one product's failure, never the batch's — and the
+          // flags must reset regardless (a dialog stuck disabled forces a
+          // reload).
+          failures.push(`${it.name || it.pid} — ${String(e?.message || e)}`);
+        }
+      }
+    } finally {
+      setBatchBusy(false);
+      setBatchConfirm(false);
+    }
+    setBatchNotice(
+      [
+        okCount ? `${okCount} publish intent${okCount === 1 ? "" : "s"} saved — nothing reaches Shopify until the reconciler runs.` : "",
+        failures.length ? `${failures.length} not saved: ${failures.join("; ")}` : "",
+      ].filter(Boolean).join(" ")
+    );
+  };
+
   // Enter's advance: focus the next awaiting row after the approved one; when
   // the open sections are exhausted, open the next category that still has
   // unreviewed products and focus its first row once its bodies load.
@@ -676,11 +1210,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // One section/group header row — the home list's row treatment (RoleCard):
   // name, right-aligned count badge, chevron. Shared by the category sections
   // and the Live view's On/Off groups.
-  const sectionHeader = (key, label, count, opened) => (
+  const sectionHeader = (key, label, count, opened, extra = null) => (
     <div onClick={() => toggle(key)}
       style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 2px",
                cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
       <div style={{ flex: 1, fontSize: 15, fontWeight: 500, color: "rgba(255,255,255,.9)" }}>{label}</div>
+      {extra}
       {count != null && count !== 0 && (
         <div style={{ minWidth: 28, height: 28, padding: "0 8px", boxSizing: "border-box", borderRadius: 999,
                       display: "flex", alignItems: "center", justifyContent: "center",
@@ -783,9 +1318,27 @@ export default function ShopifyPublishView({ products = [], onExit }) {
 
         {keys && pipeline && !liveGroups && viewSections.map(({ cat, matched, count, pending }) => {
           const opened = isOpen(cat);
+          // The category's select-all: only rows that would render under the
+          // current filter, are awaiting review, and pass the batch gates.
+          // Appears once the section's bodies are in — eligibility needs them.
+          const selectable = opened && pending === 0
+            ? matched.filter((p) => {
+                const node = nodes[p.id] || null;
+                return matchesStateFilter(filter, reviewStateFor(node)) &&
+                       selectionEligible(node) &&
+                       !blockerFor(p);
+              })
+            : [];
+          const unselected = selectable.filter((p) => !selected.has(p.id));
+          const selectAllBtn = unselected.length > 0 ? (
+            <button onClick={(e) => { e.stopPropagation(); selectAllIn(unselected.map((p) => p.id)); }}
+              style={{ ...tabOff, padding: "4px 10px", fontSize: "0.66rem" }}>
+              Select all
+            </button>
+          ) : null;
           return (
             <div key={cat}>
-              {sectionHeader(cat, cat, count, opened)}
+              {sectionHeader(cat, cat, count, opened, selectAllBtn)}
 
               {opened && pending !== 0 && (
                 <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Loading section…</div>
@@ -815,6 +1368,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                         onChanged={applyWrite}
                         onSkip={advanceFrom}
                         inputRef={refFor(p.id)}
+                        selection={selectionFor(p)}
                       />
                     </React.Fragment>
                   );
@@ -823,7 +1377,47 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             </div>
           );
         })}
+
+        {batchNotice && (
+          <div style={{ fontSize: 12, color: BLUE_L, fontWeight: 700, padding: "12px 2px", overflowWrap: "break-word" }}>
+            {batchNotice}
+            <button onClick={() => setBatchNotice(null)}
+              style={{ background: "none", border: "none", color: GRAY, cursor: "pointer",
+                       fontFamily: FONT, fontSize: 11, marginLeft: 8 }}>✕</button>
+          </div>
+        )}
       </div>
+
+      {/* BATCH BAR — sticky while anything is selected: the running count,
+          the cap (stated, and shared with the reconciler so the two cannot
+          disagree), and the one Publish Selected action behind the same
+          going-live confirmation as a single publish. */}
+      {selected.size > 0 && (
+        <div style={{ position: "sticky", bottom: 10, zIndex: 30, ...GLASS_SOLID, margin: "14px 14px 0",
+                      padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>
+            {selected.size} of {RECONCILE_MAX_APPLY} selected
+          </span>
+          <span style={{ fontSize: 10.5, color: GRAY }}>
+            cap {RECONCILE_MAX_APPLY} — matches the reconciler's per-run cap
+          </span>
+          <div style={{ flex: 1 }} />
+          <button onClick={() => setSelected(new Set())} disabled={batchBusy}
+            style={{ ...bGray, padding: "8px 12px", fontSize: "0.76rem" }}>Clear</button>
+          <button onClick={() => setBatchConfirm(true)} disabled={batchBusy || batchItems.length === 0}
+            style={{ ...bGreen, padding: "8px 12px", fontSize: "0.76rem" }}>
+            Publish selected…
+          </button>
+        </div>
+      )}
+      {batchConfirm && (
+        <BatchPublishConfirmDialog
+          items={batchItems}
+          busy={batchBusy}
+          onCancel={() => setBatchConfirm(false)}
+          onConfirm={runBatch}
+        />
+      )}
     </div>
   );
 }

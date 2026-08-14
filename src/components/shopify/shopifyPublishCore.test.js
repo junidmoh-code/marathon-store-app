@@ -6,8 +6,9 @@ import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
   normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason,
-  STATE_FILTERS, reviewStateFor, matchesStateFilter,
+  STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker, effectivePhotoList,
 } from "./shopifyPublishCore";
+import { RECONCILE_MAX_APPLY, normalizePhotoList } from "./publishShared";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
 import { PUBLISH_STATES as SCRIPT_STATES } from "../../../scripts/shopify/publishNode.mjs";
 
@@ -88,6 +89,45 @@ describe("on/off + pending — intent vs confirmed", () => {
     expect(isPendingSwitch({ state: "awaiting" })).toBe(false);                       // no intent expressed
     expect(isPendingSwitch({ state: "awaiting", desiredState: "off" })).toBe(false);  // cancelled publish
     expect(isPendingSwitch(null)).toBe(false);
+  });
+});
+
+describe("batch selection — cap and eligibility", () => {
+  it("the batch cap is the reconciler's per-run cap — one constant, both read it", () => {
+    // The UI states this cap and reconcile.mjs imports the same value; a
+    // regression here means the page can promise a batch one run won't take.
+    expect(RECONCILE_MAX_APPLY).toBe(25);
+  });
+  it("batchSelectBlocker mirrors the publish gates and says why", () => {
+    const node = { state: "awaiting", condition: CONDITIONS[0] };
+    expect(batchSelectBlocker(node, "Low-top sneaker black", 1)).toBeNull();
+    expect(batchSelectBlocker({ state: "awaiting" }, "Low-top sneaker black", 1)).toMatch(/condition/);
+    expect(batchSelectBlocker(node, "", 1)).toMatch(/name/);
+    expect(batchSelectBlocker(node, "Nike Air Force 1", 1)).toMatch(/name/); // trigger ⇒ not a valid name
+    expect(batchSelectBlocker(null, "Low-top sneaker black", 1)).toMatch(/condition/);
+    // imageless never ships — surfaced at selection, not as a blocked row
+    // minutes after a script run
+    expect(batchSelectBlocker(node, "Low-top sneaker black", 0)).toMatch(/photo/);
+  });
+});
+
+describe("publishing photos — the effective set", () => {
+  it("normalizePhotoList accepts array and object shapes, ordered numerically, deduped", () => {
+    expect(normalizePhotoList(["https://a", "https://b", "https://a", "", null])).toEqual(["https://a", "https://b"]);
+    // RTDB hands back an object when the 0..n keys stopped being contiguous
+    expect(normalizePhotoList({ 0: "https://a", 2: "https://c", 10: "https://k" }))
+      .toEqual(["https://a", "https://c", "https://k"]);
+    expect(normalizePhotoList(null)).toBeNull();
+    expect(normalizePhotoList([])).toBeNull();
+    expect(normalizePhotoList(["", null])).toBeNull();
+    expect(normalizePhotoList("https://a")).toBeNull(); // scalar garbage is not a set
+  });
+  it("effectivePhotoList: custom set wins whole; else photoUrl + gallery in push order", () => {
+    const p = { photoUrl: "https://hero", gallery: ["https://g1", "https://hero", "https://g2"] };
+    expect(effectivePhotoList(p, null)).toEqual({ photos: ["https://hero", "https://g1", "https://g2"], custom: false });
+    expect(effectivePhotoList(p, { photos: ["https://g2", "https://hero"] }))
+      .toEqual({ photos: ["https://g2", "https://hero"], custom: true });
+    expect(effectivePhotoList({}, null)).toEqual({ photos: [], custom: false });
   });
 });
 

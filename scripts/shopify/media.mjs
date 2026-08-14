@@ -1,39 +1,50 @@
 // ── Product photos for the Shopify push ──────────────────────────────────────
-// Photos come from the record's own fields: photoUrl (the hero) plus gallery
-// (extra angles, AI photo studio) — public HTTPS Firebase Storage URLs, no
-// signing. Alt text is the CLEANED name (the original may carry triggers and
-// alt text is a pushed field). A product with no usable photo, or with any
-// URL that does not answer 2xx, FAILS LOUDLY before any Shopify write — an
-// imageless product never ships.
+// The reviewed PUBLISHING set (/shopify_publish/{pid}/photos, ordered, first
+// = primary) wins when present; otherwise photos come from the record's own
+// fields: photoUrl (the hero) plus gallery (extra angles, AI photo studio).
+// Either way: public HTTPS Firebase Storage URLs, no signing. Alt text is the
+// CLEANED name (the original may carry triggers and alt text is a pushed
+// field). A product with no usable photo, or with any URL that does not
+// answer 2xx, FAILS LOUDLY before any Shopify write — an imageless product
+// never ships.
 //
 // buildMediaPlan is pure (unit-tested); preflightPhotoUrls and attachMedia do
 // the I/O. productCreateMedia is asynchronous on Shopify's side, so
 // attachMedia polls the read-back until every file is READY (or fails loudly
 // on FAILED) — "created" alone does not prove the image landed.
+import { createHash } from "node:crypto";
 
-// → [{ originalSource, alt, mediaContentType: "IMAGE" }] — hero first, then
-// gallery angles, de-duplicated. Throws when the record has no photoUrl.
-export function buildMediaPlan(product, cleanTitle) {
+// → [{ originalSource, alt, mediaContentType: "IMAGE" }] — the publishing set
+// in its reviewed order when given, else hero first then gallery angles,
+// de-duplicated. Throws when no usable photo exists.
+export function buildMediaPlan(product, cleanTitle, publishPhotos = null) {
   const urls = [];
   const push = (u) => {
     if (typeof u === "string" && u.trim() !== "" && !urls.includes(u)) urls.push(u);
   };
-  push(product?.photoUrl);
-  for (const u of Array.isArray(product?.gallery) ? product.gallery : []) push(u);
+  if (Array.isArray(publishPhotos) && publishPhotos.length) {
+    // The reviewed set REPLACES the record's photos wholesale — a removal in
+    // the page must actually remove from the push, so no fallback mixing.
+    for (const u of publishPhotos) push(u);
+  } else {
+    push(product?.photoUrl);
+    for (const u of Array.isArray(product?.gallery) ? product.gallery : []) push(u);
+  }
   if (urls.length === 0) {
     throw new Error("product has no photoUrl — an imageless product is never pushed");
   }
+  // /products and /shopify_publish are client-writable; this privileged
+  // script must not be a fetch-anything proxy (and Shopify must not be handed
+  // arbitrary sources). Product photos live in THE APP'S Firebase Storage
+  // bucket, full stop — host alone is not enough, since every Firebase
+  // project shares firebasestorage.googleapis.com.
+  const APP_STORAGE_PREFIX = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
   for (const u of urls) {
     if (!/^https:\/\//.test(u)) {
       throw new Error(`photo URL is not public HTTPS: ${u.slice(0, 80)}`);
     }
-    // /products is client-writable; this privileged script must not be a
-    // fetch-anything proxy (and Shopify must not be handed arbitrary hosts).
-    // Product photos live in the app's Firebase Storage bucket, full stop.
-    let host = "";
-    try { host = new URL(u).host; } catch { /* handled below */ }
-    if (host !== "firebasestorage.googleapis.com") {
-      throw new Error(`photo URL host "${host}" is not the app's Firebase Storage — refusing: ${u.slice(0, 80)}`);
+    if (!u.startsWith(APP_STORAGE_PREFIX)) {
+      throw new Error(`photo URL is not the app's Firebase Storage bucket — refusing: ${u.slice(0, 80)}`);
     }
   }
   const alt = String(cleanTitle ?? "").trim();
@@ -66,6 +77,16 @@ export async function preflightPhotoUrls(urls) {
   if (failures.length) {
     throw new Error(`photo preflight failed (${failures.length}):\n  ${failures.join("\n  ")}`);
   }
+}
+
+// Fingerprint of a media plan's ordered source URLs. Stored on
+// /shopify_sync/{pid} at attach time so a later run can VERIFY that what
+// Shopify holds is exactly the reviewed set — Shopify rehosts files, so the
+// read-back URLs can never be compared directly.
+export function mediaFingerprint(mediaPlan) {
+  return createHash("sha1")
+    .update(JSON.stringify(mediaPlan.map((m) => m.originalSource)))
+    .digest("hex");
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

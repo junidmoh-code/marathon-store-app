@@ -31,6 +31,13 @@ export default defineConfig({
   plugins: [react(), emitVersionJson()],
   define: {
     __BUILD_VERSION__: JSON.stringify(buildVersion),
+    // Shopify Publishing photo cleanup (geminiClean.js). Baked at BUILD time
+    // from the build machine's env: absent ⇒ empty string ⇒ the action ships
+    // DISABLED with a plain message (no stub, no fallback provider). NOTE the
+    // key lands in the public bundle and is extractable — referrer
+    // restrictions are advisory (Referer is forgeable), so use a dedicated
+    // key with a hard quota cap in the Google console, never a shared one.
+    __GEMINI_API_KEY__: JSON.stringify(process.env.GEMINI_API_KEY ?? ""),
   },
   build: {
     outDir: "dist",

@@ -5,6 +5,7 @@
 // from here; scripts/shopify/* has its own server-side twin of the condition
 // list (compliance.mjs) — the two are pinned equal by the tests.
 import { triggersInText } from "../../utils/shopifyTriggers";
+import { normalizePhotoList } from "./publishShared";
 
 // Condition values, exactly these three (owner spec 2026-08-13). NO default:
 // a product with condition unset is state=blocked and cannot be pushed.
@@ -103,6 +104,19 @@ export function checkCleanName(input) {
   return { ok: problems.length === 0, problems };
 }
 
+// Why an awaiting-review row cannot join a batch selection right now, or null
+// when it can. The gates mirror what the publish path refuses anyway
+// (condition unset; no valid cleaned name; no photo — the reconciler never
+// ships imageless) — surfaced inline on the row so an unselectable product is
+// never a silent skip, and never a surprise block minutes after a script run
+// (owner spec 2026-08-14).
+export function batchSelectBlocker(node, effectiveName, photoCount) {
+  if (!canGoLive(node)) return "set a condition grade first";
+  if (!checkCleanName(effectiveName).ok) return "needs a valid cleaned name first";
+  if (!(photoCount > 0)) return "needs at least one photo";
+  return null;
+}
+
 // Why a product cannot go live right now (the row shows this loudly), or
 // null when nothing blocks it. The condition gate wins over any recorded
 // reason — an unset condition is always the first thing to fix; a
@@ -111,6 +125,24 @@ export function blockedReason(node) {
   if (!node || normalizedState(node) !== "blocked") return null;
   if (!CONDITIONS.includes(node.condition)) return "Condition not set — pick one of the three grades to unblock";
   return node.blockedReason || null;
+}
+
+// ─── PUBLISHING PHOTOS ───────────────────────────────────────────────────────
+// The photos a publish would ship, in order, first = primary. Photos are a
+// PUBLISHING concern living at /shopify_publish/{pid}/photos — /products is
+// never written. Absent that node, the set is the record's own photoUrl +
+// gallery in the same order and de-duplication the push scripts use
+// (media.mjs) and the app's viewers use (productPhotos in App.jsx).
+export function effectivePhotoList(product, node) {
+  const custom = normalizePhotoList(node?.photos);
+  if (custom) return { photos: custom, custom: true };
+  const out = [];
+  const push = (u) => {
+    if (typeof u === "string" && u.trim() !== "" && !out.includes(u)) out.push(u);
+  };
+  push(product?.photoUrl);
+  for (const u of Array.isArray(product?.gallery) ? product.gallery : []) push(u);
+  return { photos: out, custom: false };
 }
 
 // ─── REVIEW-FLOW STATE (the full-page tab) ───────────────────────────────────

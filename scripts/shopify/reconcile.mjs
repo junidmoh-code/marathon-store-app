@@ -24,7 +24,7 @@
 // after a partial failure resumes exactly where it stopped.
 //
 //   node scripts/shopify/reconcile.mjs                     dry run (default) — a table of what it WOULD do
-//   node scripts/shopify/reconcile.mjs --commit            apply (hard cap 10 actions per run)
+//   node scripts/shopify/reconcile.mjs --commit            apply (hard cap RECONCILE_MAX_APPLY/run, shared with the page)
 //   node scripts/shopify/reconcile.mjs --commit --pids a,b only these records
 //
 // Boundaries (owner spec 2026-08-14):
@@ -43,12 +43,15 @@ import {
   VENDOR, CONDITIONS, buildDescriptionHtml, buildHandle, buildSeo, buildTags,
   validatePayload,
 } from "./compliance.mjs";
-import { buildMediaPlan, preflightPhotoUrls, attachMedia } from "./media.mjs";
+import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } from "./media.mjs";
 import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNode.mjs";
-
-const MAX_APPLY = 10;
+// The per-run cap is SHARED with the page's batch-selection cap — one place,
+// so the UI can never promise a batch this script won't take in one run.
+// Sizing rationale (measured against the live shop's rate limiter) lives on
+// the constant.
+import { RECONCILE_MAX_APPLY as MAX_APPLY, normalizePhotoList } from "../../src/components/shopify/publishShared.js";
 const UPDATED_BY = "script:reconcile";
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -167,9 +170,10 @@ for (const { pid, want } of capped) {
     if (want === "off") {
       // Channel unpublish ONLY. Status, handle, media, ID map all survive.
       if (!mapNode?.shopifyProductId) {
-        // Nothing of ours exists on Shopify — "off" is already the truth.
+        // Nothing of ours exists on Shopify — "off" is already the truth,
+        // and any admin link from an earlier life points at nothing.
         console.log("  no /shopify_sync mapping — nothing on Shopify to unpublish");
-        await confirmLiveState(db, pid, "off", UPDATED_BY);
+        await confirmLiveState(db, pid, "off", UPDATED_BY, { clearAdminUrl: true });
         results.push({ pid, ok: true, note: "confirmed off (no Shopify product)" });
         continue;
       }
@@ -182,7 +186,7 @@ for (const { pid, want } of capped) {
       );
       const errs = res.publishableUnpublish.userErrors;
       if (errs?.length) { results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` }); continue; }
-      await confirmLiveState(db, pid, "off", UPDATED_BY);
+      await confirmLiveState(db, pid, "off", UPDATED_BY, { gid: mapNode.shopifyProductId });
       results.push({ pid, ok: true, note: "unpublished from the Online Store channel" });
       continue;
     }
@@ -222,8 +226,11 @@ for (const { pid, want } of capped) {
     }
     if (problems.length) { await refuse(pid, problems.join("; ")); continue; }
 
+    // The reviewed publishing photo set (ordered, first = primary) wins over
+    // the record's photoUrl/gallery; buildMediaPlan re-applies the HTTPS +
+    // Storage-host guards to it, and preflight still 404-fails loudly.
     let mediaPlan;
-    try { mediaPlan = buildMediaPlan(product, title); }
+    try { mediaPlan = buildMediaPlan(product, title, normalizePhotoList(fresh.photos)); }
     catch (e) { await refuse(pid, String(e?.message || e)); continue; }
 
     const payload = {
@@ -388,17 +395,62 @@ for (const { pid, want } of capped) {
     }
     if (bp.media?.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — cannot verify the photo set"); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
-    if (mediaCount === 0) {
+    // Shopify rehosts files, so what it holds can't be compared to the plan
+    // by URL — the fingerprint recorded on /shopify_sync at attach time is
+    // the only proof its media IS the reviewed set. Anything else (an edited
+    // publishing set, a crashed half-attach, an admin upload, a legacy
+    // pre-fingerprint push) is RE-SYNCED: delete what's there, re-attach the
+    // reviewed plan. The page is the source of truth for publishing photos —
+    // certifying an unverified count match would let a stale or wrong photo
+    // ship "verified" forever (reviewer finding, 2026-08-14). This happens
+    // while the product is off the sales channel, invisible to customers.
+    const planFp = mediaFingerprint(mediaPlan);
+    if (mediaCount > 0 && mapNode?.mediaFingerprint === planFp && mediaCount === mediaPlan.length) {
+      // Verified: Shopify's media is exactly this plan, attached by us.
+    } else {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
-      const { count } = await attachMedia(graphql, gid, mediaPlan);
-      console.log(`  media READY: ${count}`);
-    } else if (mediaCount < mediaPlan.length) {
-      // A partial set (earlier crash mid-attach, or an admin deletion) must
-      // not ship quietly missing photos — and re-attaching the whole plan
-      // would duplicate what's there. Human decision.
-      await failSafeUnpublish(gid);
-      await refuse(pid, `Shopify holds ${mediaCount} of ${mediaPlan.length} planned photos — fix the media in admin (or clear it) and re-run`);
-      continue;
+      if (mediaCount > 0) {
+        // A drift-visible product (published in admin while confirmed off)
+        // must not show a half-deleted photo set — take it off the channel
+        // BEFORE touching media. Idempotent; the ON path re-publishes at the
+        // end anyway.
+        await failSafeUnpublish(gid);
+        const del = await graphql(
+          `mutation ($mediaIds: [ID!]!, $productId: ID!) {
+            productDeleteMedia(mediaIds: $mediaIds, productId: $productId) { mediaUserErrors { field message } }
+          }`,
+          { mediaIds: bp.media.nodes.map((n) => n.id), productId: gid },
+          { mutation: true }
+        );
+        const delErrs = del.productDeleteMedia.mediaUserErrors;
+        if (delErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `productDeleteMedia userErrors: ${JSON.stringify(delErrs)}`); continue; }
+        // Deletion is asynchronous on Shopify's side; attachMedia's READY
+        // poll counts nodes, so lingering old media could satisfy it
+        // spuriously. Wait for zero before attaching.
+        let cleared = false;
+        for (let i = 0; i < 10; i++) {
+          const now = await graphql(
+            `query ($id: ID!) { product(id: $id) { media(first: 50) { nodes { id } } } }`, { id: gid });
+          if ((now.product?.media?.nodes?.length ?? 0) === 0) { cleared = true; break; }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        if (!cleared) { await failSafeUnpublish(gid); await refuse(pid, "old media did not clear after productDeleteMedia — re-run to resume the re-sync"); continue; }
+      }
+      // attachMedia throws on userErrors/FAILED/poll-timeout. Letting that
+      // land in the outer catch would leave a media-less product with its
+      // intent still on and NO block recorded — worse after a re-sync, which
+      // just deleted the old set. Same treatment as the sibling media
+      // refusals: off the channel, blocked with the reason, resumable (the
+      // next run sees 0/partial media and re-attaches the reviewed set).
+      try {
+        const { count } = await attachMedia(graphql, gid, mediaPlan);
+        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
+        console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
+      } catch (e) {
+        await failSafeUnpublish(gid);
+        await refuse(pid, `media attach failed: ${String(e?.message || e)} — re-run re-attaches the reviewed set`);
+        continue;
+      }
     }
 
     // ── FAIL-CLOSED GATE: the FULL validator against the CANONICAL object ────
@@ -484,8 +536,18 @@ for (const { pid, want } of capped) {
       // Fail-safe here too: if drift left this product visible, a cancel
       // confirming "off" without an unpublish would strand it up for good.
       await failSafeUnpublish(gid);
-      await confirmLiveState(db, pid, "off", UPDATED_BY);
+      await confirmLiveState(db, pid, "off", UPDATED_BY, { gid });
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
+      continue;
+    }
+    // Photos are editable while a publish sits pending — a set saved after
+    // this run built its media plan must not go live under the OLD plan.
+    // Leave the intent unconsumed; the next run rebuilds the plan from the
+    // new set (and re-syncs the media by fingerprint).
+    let lastPlanFp = null;
+    try { lastPlanFp = mediaFingerprint(buildMediaPlan(product, title, normalizePhotoList(lastCheck?.photos))); } catch { /* unbuildable ⇒ changed */ }
+    if (lastPlanFp !== planFp) {
+      results.push({ pid, ok: true, note: "photo set changed mid-run — left for the next run to apply the new set" });
       continue;
     }
 
@@ -512,7 +574,7 @@ for (const { pid, want } of capped) {
       await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`);
       continue;
     }
-    await confirmLiveState(db, pid, "on", UPDATED_BY);
+    await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
     const numericId = gid.split("/").pop();
     results.push({
       pid, ok: true,

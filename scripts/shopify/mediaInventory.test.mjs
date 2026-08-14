@@ -1,14 +1,14 @@
 // ─── Photos + inventory, pure parts pinned ───────────────────────────────────
 import { describe, it, expect } from "vitest";
-import { buildMediaPlan } from "./media.mjs";
+import { buildMediaPlan, mediaFingerprint } from "./media.mjs";
 import { networkTotals } from "./inventory.mjs";
 
 describe("buildMediaPlan", () => {
   const product = {
-    photoUrl: "https://firebasestorage.googleapis.com/x/photo.jpg?alt=media&token=t",
+    photoUrl: "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/photo.jpg?alt=media&token=t",
     gallery: [
-      "https://firebasestorage.googleapis.com/x/angle1.jpg?alt=media",
-      "https://firebasestorage.googleapis.com/x/photo.jpg?alt=media&token=t", // dup of hero
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/angle1.jpg?alt=media",
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/photo.jpg?alt=media&token=t", // dup of hero
     ],
   };
   it("hero first, gallery after, duplicates dropped, alt = cleaned name", () => {
@@ -28,6 +28,32 @@ describe("buildMediaPlan", () => {
   it("refuses non-HTTPS sources and a missing cleaned title", () => {
     expect(() => buildMediaPlan({ photoUrl: "http://insecure/p.jpg" }, "Sneaker")).toThrow(/HTTPS/);
     expect(() => buildMediaPlan(product, "")).toThrow(/cleaned title/);
+  });
+  it("the reviewed publishing set replaces the record's photos wholesale, in its order", () => {
+    const publish = [
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/gen_clean.jpg?alt=media",
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/angle1.jpg?alt=media",
+    ];
+    const plan = buildMediaPlan(product, "Low-top sneaker black", publish);
+    // photo.jpg (the record's hero) is OUT — a removal in the page must
+    // actually remove from the push, so there is no fallback mixing.
+    expect(plan.map((m) => m.originalSource)).toEqual(publish);
+    expect(plan[0].alt).toBe("Low-top sneaker black");
+  });
+  it("a null/empty publishing set falls back to photoUrl + gallery", () => {
+    expect(buildMediaPlan(product, "Sneaker black", null)).toHaveLength(2);
+    expect(buildMediaPlan(product, "Sneaker black", [])).toHaveLength(2);
+  });
+  it("the publishing set passes the same host allowlist as record photos", () => {
+    expect(() => buildMediaPlan(product, "Sneaker black", ["https://evil.example.com/x.jpg"]))
+      .toThrow(/not the app's Firebase Storage/);
+  });
+  it("mediaFingerprint: stable for the same ordered sources, different when order changes", () => {
+    const a = buildMediaPlan(product, "Sneaker black");
+    const b = buildMediaPlan(product, "Sneaker black");
+    expect(mediaFingerprint(a)).toBe(mediaFingerprint(b));
+    const reordered = [...a].reverse();
+    expect(mediaFingerprint(reordered)).not.toBe(mediaFingerprint(a));
   });
 });
 
