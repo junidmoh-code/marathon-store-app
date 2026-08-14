@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildCollectionDescriptionHtml, buildConditionsSourceInput,
   desiredConditionsFingerprint, actualConditionsFingerprint, ensureCollection,
+  planCollectionMembership, manualGidsFrom, readProductCollections, applyCollectionMembership,
 } from "./collections.mjs";
 import { COLLECTION_BY_KEY } from "./collectionMap.mjs";
 
@@ -347,5 +348,117 @@ describe("ensureCollection", () => {
     await expect(ensureCollection(g.fn, fakeDb(), { ...SNEAKERS, title: "Nike Sneakers" }, { commit: true, recorded: {} }))
       .rejects.toThrow(/fails compliance/);
     expect(g.calls).toEqual([]);
+  });
+});
+
+// ── Membership ───────────────────────────────────────────────────────────────
+// The gids below stand for: SNEAK/CAPS/CLOTH = manual collections in the map,
+// NEWIN = a smart collection Shopify owns, HANDMADE = a merchandising
+// collection somebody built in the Shopify admin.
+const SNEAK = "gid://shopify/Collection/1";
+const CAPS = "gid://shopify/Collection/2";
+const CLOTH = "gid://shopify/Collection/3";
+const NEWIN = "gid://shopify/Collection/90";
+const HANDMADE = "gid://shopify/Collection/99";
+const MANAGED = [SNEAK, CAPS, CLOTH];
+
+describe("manualGidsFrom", () => {
+  it("keeps manual collections and drops the smart ones Shopify owns", () => {
+    const gids = { sneakers: SNEAK, "caps-hats": CAPS, "new-in": NEWIN, "under-r500": "gid://shopify/Collection/91" };
+    expect(manualGidsFrom(gids).sort()).toEqual([SNEAK, CAPS].sort());
+  });
+  it("ignores a key that is not in the map at all", () => {
+    expect(manualGidsFrom({ "some-old-key": "gid://shopify/Collection/5" })).toEqual([]);
+  });
+  it("survives an empty or absent record", () => {
+    expect(manualGidsFrom({})).toEqual([]);
+    expect(manualGidsFrom(undefined)).toEqual([]);
+  });
+});
+
+describe("planCollectionMembership", () => {
+  it("a product in nothing joins its collection", () => {
+    expect(planCollectionMembership([], SNEAK, MANAGED)).toEqual({ join: [SNEAK], leave: [] });
+  });
+
+  it("a product already in the right collection is a NO-OP — no mutation at all", () => {
+    expect(planCollectionMembership([SNEAK], SNEAK, MANAGED)).toEqual({ join: [], leave: [] });
+  });
+
+  it("a re-categorised product leaves the old collection and joins the new one", () => {
+    expect(planCollectionMembership([CAPS], SNEAK, MANAGED)).toEqual({ join: [SNEAK], leave: [CAPS] });
+  });
+
+  it("one internal category means ONE collection — extra managed memberships are stripped", () => {
+    const plan = planCollectionMembership([SNEAK, CAPS, CLOTH], SNEAK, MANAGED);
+    expect(plan.join).toEqual([]);
+    expect(plan.leave.sort()).toEqual([CAPS, CLOTH].sort());
+  });
+
+  it("NEVER touches a smart collection — Shopify owns those", () => {
+    const plan = planCollectionMembership([NEWIN, CAPS], SNEAK, MANAGED);
+    expect(plan.leave).toEqual([CAPS]);
+    expect(plan.leave).not.toContain(NEWIN);
+  });
+
+  it("NEVER empties a collection somebody built by hand in the admin", () => {
+    const plan = planCollectionMembership([HANDMADE, CAPS], SNEAK, MANAGED);
+    expect(plan.leave).toEqual([CAPS]);
+    expect(plan.leave).not.toContain(HANDMADE);
+  });
+
+  it("going OFF (desired null) leaves the managed collections and joins nothing", () => {
+    const plan = planCollectionMembership([SNEAK, HANDMADE, NEWIN], null, MANAGED);
+    expect(plan.join).toEqual([]);
+    expect(plan.leave).toEqual([SNEAK]);
+  });
+
+  it("an unmapped category behaves exactly like OFF for membership — it joins nothing", () => {
+    expect(planCollectionMembership([], null, MANAGED)).toEqual({ join: [], leave: [] });
+  });
+
+  it("with no collections recorded yet, nothing is joined and nothing is stripped", () => {
+    expect(planCollectionMembership([HANDMADE], null, [])).toEqual({ join: [], leave: [] });
+  });
+
+  it("tolerates absent inputs rather than throwing mid-publish", () => {
+    expect(planCollectionMembership(undefined, SNEAK, undefined)).toEqual({ join: [SNEAK], leave: [] });
+  });
+});
+
+describe("readProductCollections / applyCollectionMembership", () => {
+  it("reads the current gids", async () => {
+    const g = fakeGraphql([["collections(first: 100)", { product: { collections: { pageInfo: { hasNextPage: false }, nodes: [{ id: SNEAK }] } } }]]);
+    expect(await readProductCollections(g.fn, "gid://shopify/Product/1")).toEqual([SNEAK]);
+  });
+
+  it("refuses a partial read rather than stripping collections it could not see", async () => {
+    const g = fakeGraphql([["collections(first: 100)", { product: { collections: { pageInfo: { hasNextPage: true }, nodes: [] } } }]]);
+    await expect(readProductCollections(g.fn, "gid://shopify/Product/1")).rejects.toThrow(/partial read/);
+  });
+
+  it("a missing product throws instead of reading as 'in no collections'", async () => {
+    const g = fakeGraphql([["collections(first: 100)", { product: null }]]);
+    await expect(readProductCollections(g.fn, "gid://shopify/Product/1")).rejects.toThrow(/not found/);
+  });
+
+  it("an empty plan makes NO Shopify call", async () => {
+    const g = fakeGraphql([]);
+    await applyCollectionMembership(g.fn, "gid://shopify/Product/1", { join: [], leave: [] });
+    expect(g.calls).toEqual([]);
+  });
+
+  it("sends only the halves it has", async () => {
+    let sent = null;
+    const g = fakeGraphql([["productUpdate", (v) => { sent = v.input; return { productUpdate: { product: { id: "p" }, userErrors: [] } }; }]]);
+    await applyCollectionMembership(g.fn, "gid://shopify/Product/1", { join: [SNEAK], leave: [] });
+    expect(sent).toEqual({ id: "gid://shopify/Product/1", collectionsToJoin: [SNEAK] });
+    expect(sent.collectionsToLeave).toBeUndefined();
+  });
+
+  it("userErrors throw rather than silently reporting success", async () => {
+    const g = fakeGraphql([["productUpdate", { productUpdate: { product: null, userErrors: [{ field: ["id"], message: "nope" }] } }]]);
+    await expect(applyCollectionMembership(g.fn, "gid://shopify/Product/1", { join: [SNEAK], leave: [] }))
+      .rejects.toThrow(/collection membership userErrors/);
   });
 });

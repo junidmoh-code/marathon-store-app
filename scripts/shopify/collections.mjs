@@ -365,3 +365,71 @@ export async function collectionGidsByKey(db) {
   }
   return out;
 }
+
+/** Just the MANUAL collections' gids — the only membership anything may write. */
+export function manualGidsFrom(gidsByKey) {
+  return Object.entries(gidsByKey ?? {})
+    .filter(([key]) => COLLECTION_BY_KEY.get(key)?.kind === "manual")
+    .map(([, gid]) => gid);
+}
+
+// ── MEMBERSHIP ───────────────────────────────────────────────────────────────
+// Two hard rules, both enforced here rather than trusted to callers:
+//
+//   1. SMART COLLECTIONS ARE SHOPIFY'S. Nothing here ever joins or leaves one —
+//      `managedGids` is the manual set only. New In / Sale / Under R500
+//      re-evaluate themselves and a written membership would fight them.
+//   2. A COLLECTION WE DID NOT MAKE IS NOT OURS TO EMPTY. `leave` is filtered to
+//      collections in the map. A merchandising collection built by hand in the
+//      Shopify admin keeps its products through every reconciler run.
+//
+// One internal category lands in exactly one collection, so joining the desired
+// one means leaving every OTHER managed one — that is how a product follows its
+// category when the record is re-categorised.
+//
+// desiredGid null (unmapped/unknown category) means "leave the managed ones,
+// join nothing". The product stays published and stays in New In; it just has
+// no category home. The caller warns; this function does not decide policy.
+export function planCollectionMembership(currentGids, desiredGid, managedGids) {
+  const managed = new Set(managedGids ?? []);
+  const current = new Set(currentGids ?? []);
+  return {
+    join: desiredGid && !current.has(desiredGid) ? [desiredGid] : [],
+    leave: [...current].filter((gid) => managed.has(gid) && gid !== desiredGid),
+  };
+}
+
+/** The product's CURRENT collection gids. Refuses a >100 set rather than acting on a partial read. */
+export async function readProductCollections(graphql, productGid) {
+  const d = await graphql(
+    `query ($id: ID!) { product(id: $id) { collections(first: 100) { pageInfo { hasNextPage } nodes { id } } } }`,
+    { id: productGid }
+  );
+  const c = d.product?.collections;
+  if (!c) throw new Error(`product ${productGid} not found while reading its collections`);
+  if (c.pageInfo.hasNextPage) {
+    throw new Error(`product ${productGid} is in >100 collections — refusing to act on a partial read`);
+  }
+  return c.nodes.map((n) => n.id);
+}
+
+/** Apply a plan. A no-op plan makes NO Shopify call. Returns the plan it applied. */
+export async function applyCollectionMembership(graphql, productGid, plan) {
+  if (!plan.join.length && !plan.leave.length) return plan;
+  const res = await graphql(
+    `mutation ($input: ProductUpdateInput!) {
+      productUpdate(product: $input) { product { id } userErrors { field message } }
+    }`,
+    {
+      input: {
+        id: productGid,
+        ...(plan.join.length ? { collectionsToJoin: plan.join } : {}),
+        ...(plan.leave.length ? { collectionsToLeave: plan.leave } : {}),
+      },
+    },
+    { mutation: true }
+  );
+  const errs = res.productUpdate.userErrors;
+  if (errs?.length) throw new Error(`collection membership userErrors: ${JSON.stringify(errs)}`);
+  return plan;
+}
