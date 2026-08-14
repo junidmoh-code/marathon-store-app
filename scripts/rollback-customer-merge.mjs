@@ -18,7 +18,7 @@
 // needing to know which groups landed.
 
 import { createRequire } from "module";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, chmodSync } from "fs";
 import { hostname, tmpdir } from "os";
 import { join } from "path";
 import { stable } from "./lib/stableStringify.mjs";
@@ -173,7 +173,8 @@ async function main() {
   }
 
   const reportPath = join(tmpdir(), `customer-merge-rollback-report-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-  writeFileSync(reportPath, JSON.stringify({ snapshotPath, batchId: snapshot.batchId, mode: EXECUTE ? "execute" : "dry-run", restoredMerges, noopMerges, refusedMerges, divergences }, null, 2));
+  writeFileSync(reportPath, JSON.stringify({ snapshotPath, batchId: snapshot.batchId, mode: EXECUTE ? "execute" : "dry-run", restoredMerges, noopMerges, refusedMerges, divergences }, null, 2), { mode: 0o600 });
+  chmodSync(reportPath, 0o600);
   console.log(`\nrestored: ${restoredMerges}   already clean: ${noopMerges}   refused (diverged): ${refusedMerges}`);
   console.log(`report: ${reportPath}`);
   await release();

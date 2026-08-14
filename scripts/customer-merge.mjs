@@ -40,7 +40,7 @@
 // lock is exactly the "other run looks old" reasoning that double-applies.
 
 import { createRequire } from "module";
-import { writeFileSync, readFileSync } from "fs";
+import { writeFileSync, readFileSync, chmodSync } from "fs";
 import { hostname, tmpdir } from "os";
 import { join } from "path";
 import {
@@ -287,7 +287,7 @@ async function main() {
       preState: p.plan.preState, updates: p.plan.updates,
     })),
   };
-  writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2));
+  writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2), { mode: 0o600 }); chmodSync(SNAPSHOT_PATH, 0o600);
   const back = JSON.parse(readFileSync(SNAPSHOT_PATH, "utf8"));
   if (back.merges.length !== planned.length) {
     console.error("ABORT: snapshot read-back mismatch. Nothing has been written.");
@@ -304,7 +304,7 @@ async function main() {
 
   if (!EXECUTE) {
     report.expectedAfterTotal = expectedAfterTotal;
-    writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2));
+    writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2), { mode: 0o600 }); chmodSync(REPORT_JSON, 0o600);
     console.log(`DRY RUN complete — no writes. Report: ${REPORT_JSON}`);
     // Exit contract: a dry run that found refusals exits 1, because the
     // execute run it rehearses would refuse the same groups.
@@ -364,7 +364,7 @@ async function main() {
       console.error(`  VERIFY FAILED ${p.canonical} — survivor credit ${sBalAfter.total} (expected ${p.plan.checks.expectedSurvivorCreditCents}), loser credit ${lBalAfter.total}/${lBalAfter.count}, mergedInto=${lAfter?.mergedInto}`);
       console.error(`  STOP. Restore this batch:\n    node scripts/rollback-customer-merge.mjs ${SNAPSHOT_PATH} --execute`);
       report.aborted.push({ canonical: p.canonical, why: "post-write verify failed" });
-      writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2));
+      writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2), { mode: 0o600 }); chmodSync(REPORT_JSON, 0o600);
       await release();
       process.exit(1);
     }
@@ -380,8 +380,8 @@ async function main() {
   report.creditAfter = creditAfter;
 
   // snapshot rewritten with what actually applied
-  writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2));
-  writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2));
+  writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2), { mode: 0o600 }); chmodSync(SNAPSHOT_PATH, 0o600);
+  writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2), { mode: 0o600 }); chmodSync(REPORT_JSON, 0o600);
   console.log(`report: ${REPORT_JSON}`);
 
   if (creditAfter.total !== creditBefore.total || creditAfter.credits !== creditBefore.credits) {

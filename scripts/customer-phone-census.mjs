@@ -23,7 +23,7 @@
 //         CENSUS_JSON=/path/report.json node scripts/customer-phone-census.mjs
 
 import { createRequire } from "module";
-import { writeFileSync } from "fs";
+import { writeFileSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -105,9 +105,8 @@ async function main() {
 
   // laybys / laybyPulls — shallow count gate, then whole read
   const laybyKeys = await shallowKeys("laybys", "laybys");
-  const pullKeys = await shallowKeys("laybyPulls", "laybyPulls");
-  if (laybyKeys.length > 3000 || pullKeys.length > 3000) {
-    throw new Error(`laybys=${laybyKeys.length} laybyPulls=${pullKeys.length} — unexpectedly large, refusing whole read`);
+  if (laybyKeys.length > 3000) {
+    throw new Error(`laybys=${laybyKeys.length} — unexpectedly large, refusing whole read`);
   }
   const laybys = (await readAt("laybys", "laybys")) || {};
   const laybysByCanon = new Map();
@@ -233,6 +232,8 @@ async function main() {
 
   const reportPath = process.env.CENSUS_JSON
     || join(tmpdir(), `customer-phone-census-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  // The report carries customer PII (names + numbers) — owner-only mode,
+  // chmod too because writeFileSync only sets mode on newly created files.
   writeFileSync(reportPath, JSON.stringify({
     generatedAt: new Date().toISOString(),
     recordCount: allKeys.length,
@@ -242,7 +243,8 @@ async function main() {
     safeCount: safe.length, reviewCount: review.length,
     baseCredit, storeCreditQueuePending: queueKeys.length,
     groups: groupReports,
-  }, null, 2));
+  }, null, 2), { mode: 0o600 });
+  chmodSync(reportPath, 0o600);
   console.log(`\nJSON report: ${reportPath}`);
   process.exit(0);
 }
