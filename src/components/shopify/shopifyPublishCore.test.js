@@ -14,7 +14,19 @@ import { PUBLISH_STATES as SCRIPT_STATES } from "../../../scripts/shopify/publis
 
 describe("cross-surface contracts", () => {
   it("page and scripts agree on the condition values and states", () => {
-    expect(CONDITIONS).toEqual(SCRIPT_CONDITIONS);
+    // CONDITIONS is now SINGLE-SOURCED in publishShared.js and re-exported by
+    // both sides, so comparing the two exports to each other would compare an
+    // array with itself and pass no matter what. Pin the LITERAL VALUES
+    // instead — that still fails if anyone edits the list, and it is what the
+    // description template, the page's chips and the reconciler's apply-time
+    // gate all have to agree on (reviewer finding, 2026-08-14).
+    const EXPECTED = [
+      "Excellent — no visible wear",
+      "Very good — light cosmetic marks",
+      "Good — visible wear, priced accordingly",
+    ];
+    expect(CONDITIONS).toEqual(EXPECTED);
+    expect(SCRIPT_CONDITIONS).toEqual(EXPECTED);
     expect(PUBLISH_STATES).toEqual(SCRIPT_STATES);
     expect(PUBLISH_STATES).toEqual(["awaiting", "live", "blocked"]);
   });

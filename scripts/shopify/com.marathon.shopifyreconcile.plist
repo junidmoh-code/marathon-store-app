@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the Shopify publish reconciler (Mac mini, owner spec
+  2026-08-14). Deliberately the SAME mechanism as the machine's existing
+  marathon background job (com.marathon.photograbber): a user LaunchAgent in
+  ~/Library/LaunchAgents running node against a repo checkout, with its logs
+  under the repo. No second scheduling system is introduced.
+
+  Differences from photograbber, and why:
+    · StartInterval 120 instead of KeepAlive — this is a periodic TICK, not a
+      long-lived server. launchd starts it every 2 minutes; it does its work
+      and exits. KeepAlive here would restart it in a hot loop.
+    · RunAtLoad true — after a reboot the first tick happens immediately
+      rather than 2 minutes later.
+    · Single-flight is enforced by the runner's own lockfile, not by launchd
+      (see reconcile-runner.mjs) — so a manual run can never overlap a
+      scheduled one either.
+
+  INSTALL: see scripts/shopify/MAC-MINI-SETUP.md. Paths below assume the repo
+  is checked out at /Users/marathonclub/marathon-store-app — change BOTH the
+  ProgramArguments path and WorkingDirectory if it lives elsewhere.
+
+  CREDENTIALS: nothing secret belongs in this file (it is committed to the
+  repo). Shopify credentials are read from the git-ignored .env at the repo
+  root; Firebase Admin uses Application Default Credentials, pointed at by
+  GOOGLE_APPLICATION_CREDENTIALS below. Only PATHS appear here, never values.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.shopifyreconcile</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shopify/reconcile-runner.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <!-- Every 2 minutes (owner spec). A tick with nothing to do exits in under a
+       second having made zero Shopify calls. -->
+  <key>StartInterval</key><integer>120</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
+       not handle itself (node failing to start, a syntax error) lands here.
+       The readable per-run log is logs/shopify-reconcile.log, written and
+       rotated by the runner. -->
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd.err.log</string>
+</dict>
+</plist>

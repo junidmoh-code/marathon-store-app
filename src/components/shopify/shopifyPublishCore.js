@@ -4,16 +4,14 @@
 // engine with the owner-run scripts. The page and the client store import
 // from here; scripts/shopify/* has its own server-side twin of the condition
 // list (compliance.mjs) — the two are pinned equal by the tests.
-import { triggersInText } from "../../utils/shopifyTriggers";
-import { normalizePhotoList } from "./publishShared";
+import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers";
+import { normalizePhotoList, CONDITIONS } from "./publishShared";
 
 // Condition values, exactly these three (owner spec 2026-08-13). NO default:
 // a product with condition unset is state=blocked and cannot be pushed.
-export const CONDITIONS = [
-  "Excellent — no visible wear",
-  "Very good — light cosmetic marks",
-  "Good — visible wear, priced accordingly",
-];
+// Single-sourced from publishShared.js (with the description template the
+// values feed); re-exported so the page and store keep their import path.
+export { CONDITIONS };
 
 // ─── STATE MODEL (owner spec 2026-08-14) ─────────────────────────────────────
 // Three states only — the old Approve → Nominate → Live chain is collapsed to
@@ -88,7 +86,18 @@ export function canGoLive(node) {
   return CONDITIONS.includes(node?.condition);
 }
 
-// Live validation for the inline clean-name editor. Returns
+// The name a publish would ship for this product: an already-saved cleanName
+// wins, else the lexicon's automatic clean, else empty (needs typing on the
+// product page). Shared by the product page's editor, the list row's
+// read-only name line and the batch dialog — one answer everywhere.
+export function effectiveNameFor(product, node) {
+  if (node?.cleanName) return { name: node.cleanName, source: node.cleanNameSource || "manual" };
+  const lex = cleanTitleFor(product);
+  if (!lex.needsAI) return { name: lex.title, source: "lexicon" };
+  return { name: "", source: "manual", needsAI: true, reason: lex.reason };
+}
+
+// Live validation for the clean-name editor. Returns
 // { ok, problems: [] } — problems are shown beside the input as Junid types.
 export function checkCleanName(input) {
   const name = String(input ?? "").trim();
