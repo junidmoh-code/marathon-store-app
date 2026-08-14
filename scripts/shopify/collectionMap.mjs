@@ -268,9 +268,18 @@ export const COLLECTIONS = [
     // the app's specials start propagating to Shopify (specials currently
     // overwrite retailPrice and park the old one at /specials/{pid}/wasPrice —
     // see docs/SHOPIFY-SYNC.md §3). The rule is right; the data isn't there yet.
+    // ACTIVE is on every cross-cutting collection deliberately: the shop still
+    // holds 2,452 ARCHIVED products from the old catalogue, and a price-only
+    // condition sweeps every one of them into the collection. They are not
+    // published so no shopper sees them — but the admin count then reads as a
+    // number that means nothing, and a draft would qualify the moment it was
+    // published. Status-first keeps the collection honest at both ends.
     conditions: {
       matchType: "ALL",
-      all: [{ variantCompareAtPrice: { relation: "IS_SET" } }],
+      all: [
+        { productStatus: { relation: "EQUALS", values: ["ACTIVE"] } },
+        { variantCompareAtPrice: { relation: "IS_SET" } },
+      ],
     },
     description:
       "Items marked down from their earlier price. The previous price is shown " +
@@ -287,7 +296,10 @@ export const COLLECTIONS = [
     sortOrder: "PRICE_ASC",
     conditions: {
       matchType: "ALL",
-      all: [{ variantPrice: { relation: "LESS_THAN", amount: "500.00" } }],
+      all: [
+        { productStatus: { relation: "EQUALS", values: ["ACTIVE"] } },
+        { variantPrice: { relation: "LESS_THAN", amount: "500.00" } },
+      ],
     },
     description:
       "Everything priced under R500. Prices include VAT. A product appears here " +

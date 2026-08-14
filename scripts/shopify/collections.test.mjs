@@ -36,16 +36,26 @@ describe("buildConditionsSourceInput — the API 2026-07 shape", () => {
     });
   });
 
-  it("variant price carries the shop currency", () => {
+  it("variant price carries the shop currency, behind an ACTIVE gate", () => {
     expect(buildConditionsSourceInput(UNDER).inclusion.conditions).toEqual([
+      { productStatus: { relation: "EQUALS", values: ["ACTIVE"], matchType: "ANY" } },
       { variantPrice: { relation: "LESS_THAN", value: { amount: "500.00", currencyCode: "ZAR" } } },
     ]);
   });
 
   it("IS_SET is a presence test and carries NO money value", () => {
     expect(buildConditionsSourceInput(SALE).inclusion.conditions).toEqual([
+      { productStatus: { relation: "EQUALS", values: ["ACTIVE"], matchType: "ANY" } },
       { variantCompareAtPrice: { relation: "IS_SET" } },
     ]);
+  });
+
+  it("every cross-cutting collection gates on ACTIVE — the shop still holds 2,452 archived products", () => {
+    for (const spec of [NEW_IN, SALE, UNDER]) {
+      const statuses = spec.conditions.all.filter((c) => c.productStatus);
+      expect({ key: spec.key, gated: statuses.length }).toEqual({ key: spec.key, gated: 1 });
+      expect(statuses[0].productStatus).toEqual({ relation: "EQUALS", values: ["ACTIVE"] });
+    }
   });
 
   it("refuses a smart collection with no conditions", () => {
@@ -79,7 +89,21 @@ describe("drift fingerprints", () => {
   it("money compares numerically — Shopify's \"500.0\" is our \"500.00\"", () => {
     const actual = [{
       __typename: "CollectionConditionsSource", id: "s1",
-      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "500.0" } }] },
+      inclusion: { matchType: "ALL", conditions: [
+        { __typename: "CollectionSourceInclusionConditionProductStatus", relation: "EQUALS", values: ["ACTIVE"] },
+        { __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "500.0" } },
+      ] },
+    }];
+    expect(actualConditionsFingerprint(actual)).toBe(desiredConditionsFingerprint(UNDER));
+  });
+
+  it("condition ORDER is not drift — the fingerprint sorts", () => {
+    const actual = [{
+      __typename: "CollectionConditionsSource", id: "s1",
+      inclusion: { matchType: "ALL", conditions: [
+        { __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "500.00" } },
+        { __typename: "CollectionSourceInclusionConditionProductStatus", relation: "EQUALS", values: ["ACTIVE"] },
+      ] },
     }];
     expect(actualConditionsFingerprint(actual)).toBe(desiredConditionsFingerprint(UNDER));
   });
@@ -87,7 +111,18 @@ describe("drift fingerprints", () => {
   it("a changed threshold IS drift", () => {
     const actual = [{
       __typename: "CollectionConditionsSource", id: "s1",
-      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "300" } }] },
+      inclusion: { matchType: "ALL", conditions: [
+        { __typename: "CollectionSourceInclusionConditionProductStatus", relation: "EQUALS", values: ["ACTIVE"] },
+        { __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "300" } },
+      ] },
+    }];
+    expect(actualConditionsFingerprint(actual)).not.toBe(desiredConditionsFingerprint(UNDER));
+  });
+
+  it("a DROPPED condition is drift — an ACTIVE gate removed in the admin must be restored", () => {
+    const actual = [{
+      __typename: "CollectionConditionsSource", id: "s1",
+      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "500.00" } }] },
     }];
     expect(actualConditionsFingerprint(actual)).not.toBe(desiredConditionsFingerprint(UNDER));
   });
@@ -202,7 +237,9 @@ describe("ensureCollection", () => {
       ["collectionCreate", (v) => { created = v.input; return { collectionCreate: { collection: { id: "gid://shopify/Collection/9", handle: "under-r500" }, userErrors: [] } }; }],
     ]);
     await ensureCollection(g.fn, fakeDb(), UNDER, { commit: true, recorded: {} });
-    expect(created.sources[0].source.inclusion.conditions[0].variantPrice.value).toEqual({ amount: "500.00", currencyCode: "ZAR" });
+    const conds = created.sources[0].source.inclusion.conditions;
+    expect(conds.find((c) => c.variantPrice).variantPrice.value).toEqual({ amount: "500.00", currencyCode: "ZAR" });
+    expect(conds.find((c) => c.productStatus).productStatus.values).toEqual(["ACTIVE"]);
   });
 
   it("an unchanged collection is a noop — no update mutation, no duplicate", async () => {
@@ -267,7 +304,8 @@ describe("ensureCollection", () => {
     });
     expect(r.action).toBe("updated");
     expect(updated.sourcesToDelete).toEqual(["src-1"]);
-    expect(updated.sourcesToCreate[0].source.inclusion.conditions[0].variantPrice.value.amount).toBe("500.00");
+    const rebuilt = updated.sourcesToCreate[0].source.inclusion.conditions;
+    expect(rebuilt.find((c) => c.variantPrice).variantPrice.value.amount).toBe("500.00");
   });
 
   it("a recorded id that no longer resolves falls back to the handle and re-records", async () => {
