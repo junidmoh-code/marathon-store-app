@@ -105,12 +105,19 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
       : effective.source === "lexicon" && draft.trim() === effective.name ? "lexicon"
       : "manual";
 
+  // finally-reset: the store never throws today, but a row frozen for the
+  // session because a future caller broke that invariant is too costly.
   const run = async (fn, after) => {
     setBusy(true); setError(null);
-    const res = await fn();
-    setBusy(false);
-    if (!res.ok) { setError(res.message); return; }
-    after?.();
+    try {
+      const res = await fn();
+      if (!res?.ok) { setError(res?.message || "Not saved."); return; }
+      after?.();
+    } catch (e) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const approve = () => {
@@ -284,7 +291,15 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         : list;
       let count;
       if (filter === "all") count = matched.length;
-      else if (filter === "awaiting") count = keys ? matched.filter((p) => !keys.has(p.id)).length : null;
+      else if (filter === "awaiting") {
+        // Key absence, refined by any bodies already loaded: a node that
+        // exists but was never name-approved (condition-only, withdrawn
+        // nomination) still awaits review, and pricing it from keys alone
+        // would hide its whole section under this filter.
+        count = keys ? matched.filter((p) =>
+          !keys.has(p.id) ||
+          (nodes[p.id] !== undefined && reviewStateFor(nodes[p.id]) === "awaiting")).length : null;
+      }
       else count = pipeline ? matched.filter((p) => pipeline[p.id]?.state === filter).length : null;
       const pending = keys ? matched.filter((p) => keys.has(p.id) && nodes[p.id] === undefined).length : 0;
       return { cat, list, matched, count, pending };
@@ -317,15 +332,21 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (!want.length) continue;
       for (const pid of want) requestedPids.current.add(pid);
       loadNodesFor(want)
-        .then((got) => {
+        .then(({ nodes: got, failed }) => {
           setNodes((prev) => {
             const next = { ...prev };
-            for (const pid of want) next[pid] = got[pid] || null;
+            for (const pid of want) {
+              if (!failed.includes(pid)) next[pid] = got[pid] || null;
+            }
             return next;
           });
+          if (failed.length) {
+            for (const pid of failed) requestedPids.current.delete(pid); // let a re-open retry
+            setLoadError(`${failed.length} product record(s) didn't load — close and reopen the section to retry`);
+          }
         })
         .catch((e) => {
-          for (const pid of want) requestedPids.current.delete(pid); // let a re-open retry
+          for (const pid of want) requestedPids.current.delete(pid);
           setLoadError(String(e?.message || e));
         });
     }
@@ -348,7 +369,9 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const refreshPid = (pid) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
     loadNodesFor([pid])
-      .then((got) => setNodes((prev) => ({ ...prev, ...got })))
+      .then(({ nodes: got, failed }) => {
+        if (!failed.length) setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
+      })
       .catch(() => {});
   };
 

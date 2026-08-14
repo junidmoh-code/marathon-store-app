@@ -83,7 +83,12 @@ export async function loadPublishKeys({ fresh = false } = {}) {
   const token = await user.getIdToken();
   const base = database.app?.options?.databaseURL;
   if (!base) throw new Error("no databaseURL configured");
-  const res = await fetch(`${base}/shopify_publish.json?shallow=true&auth=${encodeURIComponent(token)}`);
+  // The ID token rides the documented `auth` query parameter — the RTDB REST
+  // API accepts Firebase ID tokens ONLY there (Authorization: Bearer is for
+  // OAuth2 access tokens). HTTPS covers it in transit and the URL is never
+  // logged here. Timeout so a stalled read fails visibly instead of hanging.
+  const res = await fetch(`${base}/shopify_publish.json?shallow=true&auth=${encodeURIComponent(token)}`,
+    typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { signal: AbortSignal.timeout(15000) } : {});
   if (!res.ok) throw new Error(`shallow key read failed: HTTP ${res.status}`);
   const val = await res.json();
   const keys = new Set(val && typeof val === "object" ? Object.keys(val) : []);
@@ -91,14 +96,28 @@ export async function loadPublishKeys({ fresh = false } = {}) {
   return keys;
 }
 
+// Bounded fan-out: a large category would otherwise fire hundreds of
+// concurrent get()s in one pass, and one rejection would sink them all.
+// A small worker pool keeps the pipe civil, and failures are returned per
+// pid so the caller keeps every body that DID load.
 export async function loadNodesFor(pids) {
-  const entries = await Promise.all((pids || []).map(async (pid) => {
-    const snap = await get(child(ref(database), `shopify_publish/${safeSeg(pid)}`));
-    return [pid, snap.val()];
-  }));
+  const list = [...(pids || [])];
   const out = {};
-  for (const [pid, node] of entries) if (node) out[pid] = node;
-  return out;
+  const failed = [];
+  let i = 0;
+  const worker = async () => {
+    while (i < list.length) {
+      const pid = list[i++];
+      try {
+        const snap = await get(child(ref(database), `shopify_publish/${safeSeg(pid)}`));
+        out[pid] = snap.val();
+      } catch {
+        failed.push(pid);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, list.length) }, worker));
+  return { nodes: out, failed };
 }
 
 // ─── WRITES — ALWAYS TRANSACTIONS ────────────────────────────────────────────
