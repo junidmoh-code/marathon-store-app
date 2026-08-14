@@ -128,8 +128,11 @@ describe("drift fingerprints", () => {
     expect(actualConditionsFingerprint(actual)).not.toBe(desiredConditionsFingerprint(UNDER));
   });
 
-  it("a manual collection that has grown a conditions source reads as drift", () => {
-    const actual = [{ __typename: "CollectionConditionsSource", id: "s1", inclusion: { matchType: "ALL", conditions: [] } }];
+  it("a manual collection that has grown a RULE reads as drift", () => {
+    const actual = [{
+      __typename: "CollectionConditionsSource", id: "s1",
+      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionProductType", relation: "EQUALS", values: ["Boots"] }] },
+    }];
     expect(actualConditionsFingerprint(actual)).not.toBe(desiredConditionsFingerprint(SNEAKERS));
   });
 
@@ -138,11 +141,12 @@ describe("drift fingerprints", () => {
     expect(actualConditionsFingerprint(undefined)).toBe("");
   });
 
-  it("more than one conditions source is never mistaken for agreement", () => {
-    const two = [
-      { __typename: "CollectionConditionsSource", id: "a", inclusion: { matchType: "ALL", conditions: [] } },
-      { __typename: "CollectionConditionsSource", id: "b", inclusion: { matchType: "ALL", conditions: [] } },
-    ];
+  it("more than one RULE-bearing source is never mistaken for agreement", () => {
+    const rule = (n) => ({
+      __typename: "CollectionConditionsSource", id: n,
+      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionProductStatus", relation: "EQUALS", values: ["ACTIVE"] }] },
+    });
+    const two = [rule("a"), rule("b")];
     expect(actualConditionsFingerprint(two)).toBe("MULTIPLE_SOURCES");
     expect(actualConditionsFingerprint(two)).not.toBe(desiredConditionsFingerprint(NEW_IN));
   });
@@ -276,11 +280,12 @@ describe("ensureCollection", () => {
     expect(updated.sourcesToCreate).toBeUndefined(); // manual: conditions untouched
   });
 
-  it("a manual collection that grew a conditions source has it deleted", async () => {
+  it("a manual collection that grew a RULE has it deleted", async () => {
     let updated = null;
     const g = fakeGraphql([
       ["collection(id:", { collection: collectionShape(SNEAKERS, {
-        sources: [{ __typename: "CollectionConditionsSource", id: "gid://shopify/CollectionConditionsSource/7", inclusion: { matchType: "ALL", conditions: [] } }],
+        sources: [{ __typename: "CollectionConditionsSource", id: "gid://shopify/CollectionConditionsSource/7",
+          inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionProductType", relation: "EQUALS", values: ["Boots"] }] } }],
       }) }],
       ["collectionUpdate", (v) => { updated = v.input; return { collectionUpdate: { collection: { id: "gid://shopify/Collection/111", handle: "sneakers" }, userErrors: [] } }; }],
     ]);
@@ -460,5 +465,86 @@ describe("readProductCollections / applyCollectionMembership", () => {
     const g = fakeGraphql([["productUpdate", { productUpdate: { product: null, userErrors: [{ field: ["id"], message: "nope" }] } }]]);
     await expect(applyCollectionMembership(g.fn, "gid://shopify/Product/1", { join: [SNEAK], leave: [] }))
       .rejects.toThrow(/collection membership userErrors/);
+  });
+});
+
+// ── The selection-only source ────────────────────────────────────────────────
+// API 2026-07 stores a MANUAL collection's membership in a CollectionConditions
+// Source with an EMPTY conditions list — the products sit in inclusion.selections.
+// Shopify creates it the first time a product joins via collectionsToJoin.
+// Mistaking it for a stray rule made a live run try to delete it, and Shopify
+// refused: "A condition based source must have at least one product selection
+// or condition". These pin the fix.
+const SELECTION_ONLY = {
+  __typename: "CollectionConditionsSource",
+  id: "gid://shopify/CollectionConditionsSource/members",
+  inclusion: { matchType: "ALL", conditions: [] },
+};
+
+describe("a selection-only source is MEMBERSHIP, not a rule", () => {
+  it("does not read as drift on a manual collection", () => {
+    expect(actualConditionsFingerprint([SELECTION_ONLY])).toBe(desiredConditionsFingerprint(SNEAKERS));
+  });
+
+  it("a populated manual collection is a NOOP — its membership source is never deleted", async () => {
+    const g = fakeGraphql([
+      ["collection(id:", { collection: collectionShape(SNEAKERS, { sources: [SELECTION_ONLY], productsCount: { count: 7 } }) }],
+      ["publishablePublish", { publishablePublish: { userErrors: [] } }],
+    ]);
+    const r = await ensureCollection(g.fn, fakeDb(), SNEAKERS, {
+      commit: true, recorded: { sneakers: { shopifyCollectionId: "gid://shopify/Collection/111" } },
+      onlinePublicationId: "gid://shopify/Publication/1",
+    });
+    expect(r.action).toBe("noop");
+    expect(g.calls.some((c) => c.query.includes("collectionUpdate"))).toBe(false);
+  });
+
+  it("a copy edit on a populated manual collection updates the copy and leaves the source alone", async () => {
+    let updated = null;
+    const g = fakeGraphql([
+      ["collection(id:", { collection: collectionShape(SNEAKERS, { sources: [SELECTION_ONLY], title: "Old" }) }],
+      ["collectionUpdate", (v) => { updated = v.input; return { collectionUpdate: { collection: { id: "gid://shopify/Collection/111", handle: "sneakers" }, userErrors: [] } }; }],
+    ]);
+    const r = await ensureCollection(g.fn, fakeDb(), SNEAKERS, {
+      commit: true, recorded: { sneakers: { shopifyCollectionId: "gid://shopify/Collection/111" } },
+    });
+    expect(r.action).toBe("updated");
+    expect(updated.title).toBe("Sneakers");
+    expect(updated.sourcesToDelete).toBeUndefined();
+  });
+
+  it("a SMART collection keeps its membership source and only its rule source is replaced", async () => {
+    let updated = null;
+    const stale = {
+      __typename: "CollectionConditionsSource", id: "rule-src",
+      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "300" } }] },
+    };
+    const g = fakeGraphql([
+      ["collection(id:", { collection: collectionShape(UNDER, { sources: [SELECTION_ONLY, stale] }) }],
+      ["collectionUpdate", (v) => { updated = v.input; return { collectionUpdate: { collection: { id: "gid://shopify/Collection/111", handle: "under-r500" }, userErrors: [] } }; }],
+    ]);
+    await ensureCollection(g.fn, fakeDb(), UNDER, {
+      commit: true, recorded: { "under-r500": { shopifyCollectionId: "gid://shopify/Collection/111" } },
+    });
+    expect(updated.sourcesToDelete).toEqual(["rule-src"]);
+    expect(updated.sourcesToDelete).not.toContain(SELECTION_ONLY.id);
+  });
+
+  it("a genuine hand-added RULE on a manual collection is still removed", async () => {
+    let updated = null;
+    const handRule = {
+      __typename: "CollectionConditionsSource", id: "hand-rule",
+      inclusion: { matchType: "ALL", conditions: [{ __typename: "CollectionSourceInclusionConditionProductType", relation: "EQUALS", values: ["Boots"] }] },
+    };
+    const g = fakeGraphql([
+      ["collection(id:", { collection: collectionShape(SNEAKERS, { sources: [SELECTION_ONLY, handRule] }) }],
+      ["collectionUpdate", (v) => { updated = v.input; return { collectionUpdate: { collection: { id: "gid://shopify/Collection/111", handle: "sneakers" }, userErrors: [] } }; }],
+    ]);
+    const r = await ensureCollection(g.fn, fakeDb(), SNEAKERS, {
+      commit: true, recorded: { sneakers: { shopifyCollectionId: "gid://shopify/Collection/111" } },
+    });
+    expect(r.action).toBe("updated");
+    expect(updated.sourcesToDelete).toEqual(["hand-rule"]);
+    expect(updated.sourcesToCreate).toBeUndefined();
   });
 });

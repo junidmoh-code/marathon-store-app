@@ -69,9 +69,9 @@ export const COLLECTIONS = [
     kind: "manual",
     sortOrder: "CREATED_DESC",
     description:
-      "Shoes on the shelf right now — sneakers, boots, soccer boots and slides. " +
-      "Every pair is checked by hand and graded before it is listed, and the grade " +
-      "is written on the product page. Sizes are limited to what is actually in stock.",
+      "Shoes — sneakers, boots, soccer boots and slides. Every pair is checked by " +
+      "hand and graded before it is listed, and the grade is written on the " +
+      "product page.",
     seoTitle: "Sneakers | Marathon Club",
     seoDescription:
       "Shoes in stock at Marathon Club — checked by hand, graded, and listed only in the sizes we hold.",
@@ -84,9 +84,9 @@ export const COLLECTIONS = [
     kind: "manual",
     sortOrder: "CREATED_DESC",
     description:
-      "Clothing that does not sit in one of the sections below it — jerseys, golf " +
-      "and polo shirts, underwear and socks, and pieces still being sorted. " +
-      "Each item carries a condition grade on its product page.",
+      "Jerseys, golf and polo shirts, underwear and socks, and pieces still being " +
+      "sorted. T-shirts, hoodies, tracksuits, jackets, shorts and pants have " +
+      "sections of their own. Each item carries a condition grade on its product page.",
     seoTitle: "Clothing | Marathon Club",
     seoDescription:
       "Jerseys, polo shirts, underwear and more at Marathon Club. Every piece graded by hand before listing.",
@@ -99,8 +99,8 @@ export const COLLECTIONS = [
     kind: "manual",
     sortOrder: "CREATED_DESC",
     description:
-      "Caps, fitted caps, beanies and visors. Fitted caps are listed in head sizes; " +
-      "everything else is one size. Condition is graded on each product page.",
+      "Caps, fitted caps, beanies and visors. Each listing shows the sizes it is " +
+      "actually available in. Condition is graded on each product page.",
     seoTitle: "Caps & Hats | Marathon Club",
     seoDescription:
       "Caps, fitted caps and beanies at Marathon Club — graded by hand, listed in the sizes we hold.",
@@ -181,8 +181,7 @@ export const COLLECTIONS = [
     kind: "manual",
     sortOrder: "CREATED_DESC",
     description:
-      "Tracksuits and two-piece sets. Sold as a set unless the product page says " +
-      "otherwise. Condition is graded on each product page.",
+      "Tracksuits and two-piece sets. Condition is graded on each product page.",
     seoTitle: "Tracksuits | Marathon Club",
     seoDescription: "Tracksuits and sets at Marathon Club, graded by hand before listing.",
   },
@@ -217,8 +216,7 @@ export const COLLECTIONS = [
     kind: "manual",
     sortOrder: "CREATED_DESC",
     description:
-      "Pants, cargos, joggers and denim. Waist sizes are listed as we hold them. " +
-      "Condition is graded on each product page.",
+      "Pants, cargos, joggers and denim. Condition is graded on each product page.",
     seoTitle: "Pants | Marathon Club",
     seoDescription: "Pants, cargos and denim at Marathon Club — graded by hand before listing.",
   },
@@ -248,9 +246,7 @@ export const COLLECTIONS = [
       matchType: "ALL",
       all: [{ productStatus: { relation: "EQUALS", values: ["ACTIVE"] } }],
     },
-    description:
-      "Everything on the store, newest first. What is listed here is what is in " +
-      "stock — items come off the store as they sell out.",
+    description: "Everything on the store, newest first.",
     seoTitle: "New In | Marathon Club",
     seoDescription: "The newest listings at Marathon Club, most recent first.",
   },

@@ -110,9 +110,29 @@ const TYPENAME_TO_NAME = {
   CollectionSourceInclusionConditionVariantCompareAtPrice: "variantCompareAtPrice",
 };
 
+// A conditions source that carries NO conditions is how API 2026-07 stores a
+// MANUAL collection's membership: the products sit in inclusion.selections and
+// the source exists only to hold them. Shopify creates it the first time a
+// product joins via collectionsToJoin.
+//
+// This cost a live run to learn. Treating a selection-only source as "a rule
+// that should not be here" made the reconciler try to delete it, and Shopify
+// refused with "A condition based source must have at least one product
+// selection or condition" — it was being asked to throw away the collection's
+// entire membership. So: RULE-BEARING sources are the only ones this module
+// compares or deletes. A selection-only source is the manual membership and is
+// never touched here; membership is written from the product side.
+const isRuleBearing = (s) =>
+  s?.__typename === "CollectionConditionsSource" && (s.inclusion?.conditions?.length ?? 0) > 0;
+
+/** The rule-bearing sources on a collection — the only ones we compare or delete. */
+export function ruleBearingSources(sources) {
+  return (sources ?? []).filter(isRuleBearing);
+}
+
 /** The same fingerprint, computed from a Collection.sources read-back. */
 export function actualConditionsFingerprint(sources) {
-  const conditionSources = (sources ?? []).filter((s) => s?.__typename === "CollectionConditionsSource");
+  const conditionSources = ruleBearingSources(sources);
   if (conditionSources.length !== 1) return conditionSources.length === 0 ? "" : "MULTIPLE_SOURCES";
   const inc = conditionSources[0].inclusion;
   const parts = (inc?.conditions ?? []).map((c) => {
@@ -257,9 +277,9 @@ export async function ensureCollection(graphql, db, spec, { commit = false, reco
 
   // ── RECONCILE ──────────────────────────────────────────────────────────────
   const haveFp = actualConditionsFingerprint(existing.sources);
-  const conditionSourceIds = (existing.sources ?? [])
-    .filter((s) => s?.__typename === "CollectionConditionsSource")
-    .map((s) => s.id);
+  // Rule-bearing only. The selection-only source holding a manual collection's
+  // products must survive every run — deleting it would empty the collection.
+  const conditionSourceIds = ruleBearingSources(existing.sources).map((s) => s.id);
 
   const diffs = [];
   if (existing.title !== spec.title) diffs.push("title");
@@ -274,7 +294,7 @@ export async function ensureCollection(graphql, db, spec, { commit = false, reco
     notes.push(
       spec.kind === "smart"
         ? `conditions drift: shop holds ${JSON.stringify(haveFp)}, map wants ${JSON.stringify(wantFp)}`
-        : `a manual collection is carrying ${conditionSourceIds.length} conditions source(s) — removing`
+        : `a manual collection is carrying ${conditionSourceIds.length} RULE-bearing source(s) — removing (its membership source is untouched)`
     );
   }
 
