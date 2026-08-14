@@ -116,12 +116,21 @@ function Thumb({ p, node }) {
 function BatchPublishConfirmDialog({ items, busy, onCancel, onConfirm }) {
   const cancelRef = useRef(null);
   useEffect(() => { cancelRef.current?.focus(); }, []);
+  // Escape CANCELS, same as the single-publish dialog — every reflex key
+  // press does the safe thing.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onCancel]);
   return (
     <div onClick={onCancel}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)",
                backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)",
                display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()}
+        role="dialog" aria-modal="true" aria-label="Put products on the public storefront?"
         style={{ ...GLASS_SOLID, width: "100%", maxWidth: 460, padding: "22px 20px", fontFamily: FONT }}>
         <div style={{ fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700 }}>
           Put {items.length} product{items.length === 1 ? "" : "s"} on the public storefront?
@@ -352,6 +361,19 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const openProduct = (pid) => {
     listScrollRef.current = window.scrollY;
     window.location.hash = "shopify/" + pid;
+    // The document keeps its offset across the swap, so a row tapped far down
+    // the list would open the product already scrolled past its photos —
+    // which are its first section. Open at the top; the list's own position
+    // is remembered above and restored on the way back.
+    window.scrollTo(0, 0);
+  };
+  // Back to the list. A tab opened DIRECTLY on #shopify/{pid} (a shared link,
+  // a bookmark, a reload) has no earlier in-app entry to pop, so an
+  // unconditional history.back() would do nothing and strand the page with a
+  // dead Back button — clearing the hash always reaches the list.
+  const backToList = () => {
+    if (window.history.length > 1) window.history.back();
+    else window.location.hash = "";
   };
   const prevDetailPid = useRef(detailPid);
   useEffect(() => {
@@ -689,11 +711,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   }, [products]);
 
   // Product-page stale-hash guard: a hash pointing at a product that no
-  // longer exists (deleted in another tab) navigates back — same treatment as
-  // AdminView's detailProduct guard.
+  // longer exists (deleted in another tab, or a mistyped link) returns to the
+  // list — same treatment as AdminView's detailProduct guard, except the hash
+  // is CLEARED rather than popped. There may be nothing to pop (a tab opened
+  // straight onto the bad link), and a no-op back() would leave the page
+  // stuck on "Loading product…" with no way out.
   useEffect(() => {
     if (detailPid && products.length > 0 && !productById.get(detailPid)) {
-      window.history.back();
+      window.location.hash = "";
     }
   }, [detailPid, products.length, productById]);
 
@@ -788,32 +813,46 @@ export default function ShopifyPublishView({ products = [], onExit }) {
 
   // ── THE PRODUCT PAGE — renders INSTEAD of the list while the hash points at
   // a product. All list state (open sections, filter, search, selection)
-  // survives underneath; Back is window.history.back(), which pops the hash
-  // and drops us into the scroll-restore effect above.
+  // survives underneath; Back pops the hash and drops us into the
+  // scroll-restore effect above.
   if (detailPid) {
     const detailProduct = productById.get(detailPid);
     const nodeReady = keys && detailProduct &&
       (!keys.has(detailPid) || nodes[detailPid] !== undefined);
     if (!nodeReady) {
+      // A failed MOUNT read leaves `keys` null forever, so this gate would sit
+      // on "Loading product…" indefinitely — the load error has to be shown
+      // HERE too, not only on the list route (reviewer finding, 2026-08-14).
+      const problem = loadError
+        ? `Couldn't load the publishing pipeline: ${loadError}`
+        : sectionError;
       return (
         <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", paddingBottom: 40 }}>
           <div style={{ display: "flex", alignItems: "center", padding: "50px 14px 12px" }}>
-            <div onClick={() => window.history.back()}
+            <div onClick={backToList}
               style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", cursor: "pointer" }}>
               <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Publishing</span>
             </div>
           </div>
-          <div style={{ fontSize: 12, color: GRAY, padding: "12px 16px" }}>
-            {sectionError || "Loading product…"}
+          <div style={{ fontSize: 12, color: problem ? RED : GRAY, fontWeight: problem ? 700 : 400, padding: "12px 16px" }}>
+            {problem || "Loading product…"}
           </div>
         </div>
       );
     }
     return (
+      // KEYED BY PID — load-bearing, not decoration. detailPid can go straight
+      // from one product to another without the list rendering in between (a
+      // pasted #shopify/{pid} link, forward/back across two product hashes).
+      // Without the key React reconciles in place and the page keeps its
+      // useState — so product A's unsaved name draft would sit under product
+      // B's data, and saving would write A's text onto B's listing name
+      // (reviewer finding, 2026-08-14).
       <ShopifyProductPage
+        key={detailPid}
         product={detailProduct}
         node={nodes[detailPid] || null}
-        onBack={() => window.history.back()}
+        onBack={backToList}
         onChanged={applyWrite}
       />
     );

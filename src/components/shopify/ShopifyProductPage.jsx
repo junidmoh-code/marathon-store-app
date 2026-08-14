@@ -60,12 +60,22 @@ function publicFacts(product, node, name) {
 export function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
   const cancelRef = useRef(null);
   useEffect(() => { cancelRef.current?.focus(); }, []);
+  // Escape CANCELS — it can never confirm. Together with Cancel holding
+  // default focus, every reflex key press (Escape, Enter, Space) does the
+  // safe thing: nothing goes public without a deliberate click.
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onCancel]);
   return (
     <div onClick={onCancel}
       style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)",
                backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)",
                display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div onClick={(e) => e.stopPropagation()}
+        role="dialog" aria-modal="true" aria-label="Put on the public storefront?"
         style={{ ...GLASS_SOLID, width: "100%", maxWidth: 420, padding: "22px 20px", fontFamily: FONT }}>
         <div style={SECTION_LABEL}>
           Put on the public storefront?

@@ -19,6 +19,9 @@ import { create, act } from "react-test-renderer";
 const hashListeners = new Set();
 const scrollToCalls = [];
 let hashValue = "";
+// Drives window.history.length: 1 = a tab opened directly on the URL (nothing
+// to pop), >1 = navigated here in-app.
+let historyLength = 2;
 const fakeLocation = {};
 Object.defineProperty(fakeLocation, "hash", {
   get: () => hashValue,
@@ -31,7 +34,7 @@ const fakeWindow = {
   addEventListener: (ev, fn) => { if (ev === "hashchange") hashListeners.add(fn); },
   removeEventListener: (ev, fn) => { hashListeners.delete(fn); },
   location: fakeLocation,
-  history: { back: () => { fakeLocation.hash = ""; } },
+  history: { back: () => { fakeLocation.hash = ""; }, get length() { return historyLength; } },
   scrollY: 0,
   scrollTo: (...args) => scrollToCalls.push(args),
 };
@@ -156,6 +159,7 @@ beforeEach(() => {
   focused.length = 0;
   scrollToCalls.length = 0;
   hashValue = "";
+  historyLength = 2;
   hashListeners.clear();
   fakeWindow.scrollY = 0;
   keys = new Set();
@@ -225,6 +229,56 @@ test("tapping a row opens the product page; back restores the list, its open sec
   expect(out).toContain("SHOPIFY PUBLISHING");        // the list again
   expect(out).toContain("Plain tee black");           // Clothing still open — section state survived
   expect(scrollToCalls).toContainEqual([0, 333]);     // scroll restored
+});
+
+test("a hash change straight from one product to another does not carry the draft across", async () => {
+  // Regression pin (reviewers, 2026-08-14): without key={detailPid} React
+  // reconciles the page in place, so product A's unsaved name draft would sit
+  // under product B's data — and saving would write A's text as B's public
+  // listing name. Reachable without the list ever rendering in between: a
+  // pasted #shopify/{pid} link, or forward/back across two product hashes.
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { fakeWindow.location.hash = "shopify/p1"; });
+  await flush();
+  const input = pageNameInput(tree);
+  expect(input.props.value).toBe("Plain tee black");
+  await act(() => { input.props.onChange({ target: { value: "TYPED FOR P1 ONLY" } }); });
+  await flush();
+  // Straight to another product — no list render in between.
+  await act(() => { fakeWindow.location.hash = "shopify/p3"; });
+  await flush();
+  expect(pageNameInput(tree).props.value).toBe("Court sneaker grey"); // p3's own name, not p1's draft
+  await act(() => { button(tree, "Save name").props.onClick(); });
+  await flush();
+  expect(calls.approve).toEqual([{ pid: "p3", name: "Court sneaker grey" }]);
+});
+
+test("Back works on a direct landing, where there is no history entry to pop", async () => {
+  // A tab opened straight on #shopify/{pid} (shared link, bookmark, reload)
+  // has nothing to pop; an unconditional history.back() would leave the user
+  // stranded on the product with a dead Back button.
+  hashValue = "#shopify/p1";
+  historyLength = 1; // fresh tab: history.back() would do nothing
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  expect(texts(tree)).toContain("SHOPIFY PRODUCT");
+  const back = tree.root.findAll((n) => n.type === "span" && n.children.includes("← Publishing"))[0];
+  await act(() => { back.parent.props.onClick(); });
+  await flush();
+  expect(fakeWindow.location.hash).toBe("");
+  expect(texts(tree)).toContain("SHOPIFY PUBLISHING"); // back on the list
+});
+
+test("a hash pointing at a product that no longer exists returns to the list", async () => {
+  hashValue = "#shopify/pGONE";
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  expect(fakeWindow.location.hash).toBe("");
+  expect(texts(tree)).toContain("SHOPIFY PUBLISHING");
 });
 
 test("page: Save name writes through the store; Enter saves too and NEVER publishes", async () => {

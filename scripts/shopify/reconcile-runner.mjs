@@ -120,22 +120,48 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; }
 }
 
+// What the lockfile holds: this runner, and (once spawned) the reconcile it
+// is supervising. Either being alive means a run is in flight.
+const lockOwners = { pid: process.pid, childPid: null, startedAt: Date.now() };
+
 function acquireLock() {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = openSync(LOCK_FILE, "wx");
-      writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+      writeSync(fd, JSON.stringify(lockOwners));
       closeSync(fd);
       return true;
     } catch (e) {
       if (e?.code !== "EEXIST") throw e;
       let held = null;
-      try { held = JSON.parse(readFileSync(LOCK_FILE, "utf8")); } catch { /* unreadable ⇒ stale */ }
-      const age = held?.startedAt ? Date.now() - held.startedAt : Infinity;
-      if (held?.pid && processAlive(held.pid) && age < STALE_LOCK_MS) return false; // genuinely running
-      log(held?.pid && processAlive(held.pid)
-        ? `⚠ WEDGED: run pid ${held.pid} has held the lock ${Math.round(age / 60000)} min — reclaiming; check the log above for where it stopped`
-        : `⚠ stale lock from pid ${held?.pid ?? "unknown"} (owner gone) — reclaiming`);
+      try { held = JSON.parse(readFileSync(LOCK_FILE, "utf8")); } catch { /* unreadable ⇒ owner unknown */ }
+      // A LIVE owner ALWAYS wins, however long it has been running. Age is a
+      // reason to shout, never a reason to reclaim: a slow run is exactly what
+      // this schedule exists to survive (25 products × preflight HEADs at a
+      // 15 s timeout + media READY polling + throttle waits can genuinely
+      // exceed the stale threshold), and starting a second reconciler against
+      // the same product would make the first one's freshly-created product
+      // look like a duplicate handle to the second — which BLOCKS the product
+      // and consumes the intent. Overlap is the one thing this lock exists to
+      // prevent (reviewer finding, 2026-08-14).
+      //
+      // BOTH pids are checked. If the runner is SIGKILLed its handlers never
+      // run, so the reconcile it spawned keeps going as an orphan STILL
+      // pushing to Shopify — a lock that only tracked the dead parent would be
+      // reclaimed and the next tick would overlap that orphan.
+      const owner = held?.pid && processAlive(held.pid) ? held.pid
+        : held?.childPid && processAlive(held.childPid) ? held.childPid
+        : null;
+      if (owner) {
+        const age = held.startedAt ? Date.now() - held.startedAt : null;
+        if (age !== null && age > STALE_LOCK_MS) {
+          log(`⚠ run pid ${owner} has been going ${Math.round(age / 60000)} min — still alive, so this tick stands down. ` +
+              `If it is genuinely stuck, kill it: kill ${owner}`);
+        }
+        return false;
+      }
+      // Owner gone (crash, kill -9, power cut) — its lock is meaningless.
+      log(`⚠ stale lock from pid ${held?.pid ?? "unknown"} (owner gone) — reclaiming`);
       try { unlinkSync(LOCK_FILE); } catch { /* another tick got there first */ }
     }
   }
@@ -151,28 +177,114 @@ function releaseLock() {
 }
 
 // ── The run ──────────────────────────────────────────────────────────────────
-if (!acquireLock()) {
-  log("tick skipped — a reconcile run is still in progress (single-flight)");
-  process.exit(0);
+// Anything that throws out here (an unwritable logs/ — full disk, bad
+// permissions) must still reach a human. It cannot reach the rotated log by
+// definition, so it goes to stderr, which the plist captures in
+// logs/launchd.err.log, and the exit code is non-zero so the failure is not
+// mistaken for a quiet tick.
+let child = null;
+try {
+  if (!acquireLock()) {
+    log("tick skipped — a reconcile run is still in progress (single-flight)");
+    process.exit(0);
+  }
+} catch (e) {
+  console.error(`[shopify-reconcile] cannot take the run lock in ${LOG_DIR}: ${String(e?.message || e)}`);
+  process.exit(1);
 }
 
 let released = false;
 const release = () => { if (!released) { released = true; releaseLock(); } };
-// A killed runner must not strand the lock for STALE_LOCK_MS.
+// A killed runner must not strand the lock — nor leave its child running
+// unsupervised with the lock now free, which would let the next tick overlap
+// it (reviewer finding, 2026-08-14). Kill the child FIRST, then release.
 process.on("exit", release);
+let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-  process.on(sig, () => { release(); process.exit(130); });
+  process.on(sig, () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (!child || child.exitCode !== null) { release(); process.exit(130); }
+    // Releasing the lock while the child is still alive would orphan a
+    // reconcile that keeps pushing to Shopify unsupervised — and the next
+    // tick, finding the lock free, would start a SECOND one. So: kill it,
+    // wait for it to actually die, and only then let go of the lock.
+    try { log(`⚠ runner received ${sig} — stopping the in-flight reconcile (pid ${child.pid}); the next tick resumes`); } catch { /* log unavailable */ }
+    const finish = () => { release(); process.exit(130); };
+    child.once("close", finish);
+    try { child.kill("SIGTERM"); } catch { finish(); }
+    // A child that ignores SIGTERM must not hold the schedule hostage.
+    const force = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* gone */ }
+      finish();
+    }, 10_000);
+    force.unref?.();
+  });
 }
 
-const child = spawn(process.execPath, [join(HERE, "reconcile.mjs"), "--commit"], {
+child = spawn(process.execPath, [join(HERE, "reconcile.mjs"), "--commit"], {
   cwd: REPO,
   env: process.env,
   stdio: ["ignore", "pipe", "pipe"],
 });
+// Record the child in the lock, so a tick that finds this runner dead can
+// still see that the reconcile it started is alive and stand down.
+lockOwners.childPid = child.pid;
+try {
+  writeFileSync(LOCK_FILE, JSON.stringify(lockOwners));
+} catch (e) {
+  log(`⚠ could not record the reconcile pid in the lock: ${String(e?.message || e)}`);
+}
 
-const out = [];
-child.stdout.on("data", (b) => out.push(["out", b.toString()]));
-child.stderr.on("data", (b) => out.push(["err", b.toString()]));
+// ── Output handling: buffer only long enough to classify the tick ────────────
+// An idle tick must stay ONE line (720 of them a day would otherwise bury the
+// runs that matter), but a REAL run must stream — so `tail -f` shows it as it
+// happens, and so a run killed mid-flight (reboot, launchctl unload) still
+// leaves a record of how far it got instead of vanishing with the buffer
+// (reviewer finding, 2026-08-14).
+//
+// reconcile.mjs announces the worklist size up front, so the first stdout
+// chunk settles it. ANY stderr also settles it: that is where the
+// pre-migration "run migrate-live-state.mjs first" warnings go, and a tick
+// that skipped every node for that reason is not idle — it needs a human.
+let live = false;      // streaming yet?
+let buffered = "";     // pre-decision output
+let sawStderr = false;
+let carry = "";        // partial trailing line between chunks
+// A bounded copy of everything the child said, kept only to classify the exit
+// (did it reach its report, or die before it?). Capped so a pathological run
+// cannot grow the runner's memory without bound.
+let reportText = "";
+const REPORT_KEEP = 64 * 1024;
+
+const emitLines = (text) => {
+  const parts = (carry + text).split("\n");
+  carry = parts.pop() ?? "";
+  for (const l of parts) if (l.trim() !== "") log(`   ${l.trimEnd()}`);
+};
+
+const goLive = () => {
+  if (live) return;
+  live = true;
+  log("── run start ──");
+  const pending = buffered;
+  buffered = "";
+  emitLines(pending);
+};
+
+const onChunk = (text, isErr) => {
+  if (isErr) sawStderr = true;
+  reportText += text;
+  if (reportText.length > REPORT_KEEP) reportText = reportText.slice(-REPORT_KEEP);
+  if (live) { emitLines(text); return; }
+  buffered += text;
+  // "nodes with unapplied intent: N" — N > 0 means there is real work.
+  const m = buffered.match(/nodes with unapplied intent:\s*(\d+)/);
+  if (isErr || (m && Number(m[1]) > 0)) goLive();
+};
+
+child.stdout.on("data", (b) => onChunk(b.toString(), false));
+child.stderr.on("data", (b) => onChunk(b.toString(), true));
 
 child.on("error", (e) => {
   log(`✗ FAILED to start reconcile.mjs: ${String(e?.message || e)}`);
@@ -181,9 +293,7 @@ child.on("error", (e) => {
 });
 
 child.on("close", (code) => {
-  const text = out.map(([, s]) => s).join("");
-  const lines = text.split("\n").map((l) => l.trimEnd()).filter((l) => l !== "");
-  const idle = code === 0 && /nothing to do\./.test(text);
+  const idle = !live && !sawStderr && code === 0 && /nothing to do\./.test(buffered);
   const state = readState();
 
   if (idle) {
@@ -191,16 +301,48 @@ child.on("close", (code) => {
     // runs that did something.
     log("tick — no unapplied intent");
     writeState({ consecutiveFailures: 0, lastOkAt: Date.now() });
-  } else if (code === 0) {
-    log("── run start ──");
-    for (const l of lines) log(`   ${l}`);
+    release();
+    process.exit(0);
+  }
+
+  goLive();                       // a short/failed run may never have streamed
+  if (carry.trim() !== "") log(`   ${carry.trimEnd()}`);
+  carry = "";
+
+  if (code === 0) {
     log("── run end: OK ──");
+    writeState({ consecutiveFailures: 0, lastOkAt: Date.now() });
+    release();
+    process.exit(0);
+  }
+
+  // A non-zero exit means TWO very different things, and saying the wrong one
+  // is worse than saying nothing (reviewer finding, 2026-08-14):
+  //
+  //   · the run COMPLETED and refused one or more products — the apply-time
+  //     validator doing its job. reconcile.mjs prints its report and exits 1.
+  //     Those products are now BLOCKED with a reason, and markBlocked has
+  //     cleared their intent, so "intent stays unapplied, the next tick
+  //     retries" would be a lie: they need a human in the app, and no amount
+  //     of retrying will move them.
+  //   · the run CRASHED or could not reach Shopify — it never got to a
+  //     report. Nothing was consumed; the next tick genuinely does retry.
+  //
+  // The report banner is the discriminator: it is printed only after the loop
+  // has run to completion.
+  const completed = /══ RECONCILE REPORT ══/.test(reportText);
+  if (completed) {
+    const refused = (reportText.match(/^✗ /gm) || []).length;
+    log(`── run end: completed, ${refused || "some"} product(s) REFUSED ──`);
+    log(`   Refused products are marked blocked in the app with the reason above, and their`);
+    log(`   publish intent is cleared — retrying changes nothing until the cause is fixed there.`);
+    log(`   Everything else in this run was applied normally.`);
+    // NOT an outage: the schedule is healthy, so the consecutive-failure
+    // counter must not climb toward a false alarm.
     writeState({ consecutiveFailures: 0, lastOkAt: Date.now() });
   } else {
     const failures = (state.consecutiveFailures || 0) + 1;
-    log(`── run start ──`);
-    for (const l of lines) log(`   ${l}`);
-    log(`✗✗ RUN FAILED (exit ${code}) — Shopify was NOT updated for at least one product.`);
+    log(`✗✗ RUN FAILED (exit ${code}) — the run did not complete; Shopify was NOT updated.`);
     log(`   Intent stays unapplied; the next tick retries. Consecutive failures: ${failures}.`);
     if (failures >= 5) {
       log(`   ⚠⚠ ${failures} FAILED RUNS IN A ROW — this is an outage, not a blip. ` +
@@ -209,5 +351,5 @@ child.on("close", (code) => {
     writeState({ consecutiveFailures: failures, lastFailAt: Date.now() });
   }
   release();
-  process.exit(code === 0 ? 0 : 1);
+  process.exit(1);
 });

@@ -129,6 +129,11 @@ Database access).
 ssh marathonclub@100.64.186.78
 cd ~/marathon-store-app
 
+# launchd does NOT create the parent directory of StandardOutPath /
+# StandardErrorPath — if logs/ is missing the job fails to start, before the
+# runner (which would have created it) ever gets to run. Make it first.
+mkdir -p logs
+
 cp scripts/shopify/com.marathon.shopifyreconcile.plist ~/Library/LaunchAgents/
 plutil -lint ~/Library/LaunchAgents/com.marathon.shopifyreconcile.plist   # expect: OK
 
@@ -187,8 +192,10 @@ The queued cap **`p1782730181929`** already carries an unapplied publish
 intent. Leave that intent in place and let the schedule pick it up.
 
 ```sh
-# 1. Confirm the intent is still queued (dry run touches no credentials
-#    and writes nothing)
+# 1. Confirm the intent is still queued. The dry run writes nothing and makes
+#    no Shopify call (it never mints a token) — but it DOES read
+#    /shopify_publish and /shopify_sync, so §3b's Firebase credentials must
+#    already be in place for it to work.
 ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && node scripts/shopify/reconcile.mjs --pids p1782730181929'
 #    expect a table row: CREATE+PUBLISH or PUBLISH
 
