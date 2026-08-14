@@ -123,6 +123,28 @@ const online = pubs.publications.nodes.find((n) => /online store/i.test(n.catalo
 if (!online) { console.error("no Online Store publication found"); process.exit(1); }
 
 const results = [];
+// Best-effort channel unpublish for fail-safe paths: a refusal or cancel on a
+// product that has somehow drifted to publicly-visible must take it down
+// BEFORE the intent is consumed. Idempotent — unpublishing an unpublished
+// product is a no-op. userErrors are the normal Shopify failure channel, so
+// they warn just like a thrown error would.
+const failSafeUnpublish = async (gid) => {
+  if (!gid) return;
+  try {
+    const res = await graphql(
+      `mutation ($id: ID!, $input: [PublicationInput!]!) {
+        publishableUnpublish(id: $id, input: $input) { userErrors { field message } }
+      }`,
+      { id: gid, input: [{ publicationId: online.id }] },
+      { mutation: true }
+    );
+    const errs = res.publishableUnpublish.userErrors;
+    if (errs?.length) console.error(`  ⚠ fail-safe unpublish userErrors: ${JSON.stringify(errs)} — check ${gid} in admin`);
+    else console.log("  fail-safe: unpublished from the Online Store channel");
+  } catch (e) {
+    console.error(`  ⚠ fail-safe unpublish failed (${String(e?.message || e)}) — check ${gid} in admin`);
+  }
+};
 const refuse = async (pid, why) => {
   console.error(`  🛑 ${pid} REFUSED: ${why}`);
   await markBlocked(db, pid, why, UPDATED_BY);
@@ -252,11 +274,25 @@ for (const { pid, want } of capped) {
       // and the slug charset ([a-z0-9-]) has no quoting hazards. Refusing
       // (not auto-claiming) is deliberate: a product with no /shopify_sync
       // entry is not ours to adopt without a human.
-      const dupeHandle = await graphql(
-        `query ($q: String!) { products(first: 25, query: $q) { nodes { id title handle } } }`,
-        { q: `handle:'${payload.handle}'` }
-      );
-      const handleHit = dupeHandle.products.nodes.find((n) => n.handle === payload.handle);
+      let handleHit = null;
+      try {
+        // Direct lookup — exact by construction and NOT behind the search
+        // index, so an orphan from a run that crashed seconds ago still shows.
+        const byId = await graphql(
+          `query ($h: String!) { productByIdentifier(identifier: { handle: $h }) { id title handle } }`,
+          { h: payload.handle }
+        );
+        handleHit = byId.productByIdentifier;
+      } catch {
+        // Field unavailable on this API version — fall back to the search
+        // probe (weaker: index lag), still filtered to the exact handle.
+        console.error("  ⚠ productByIdentifier unavailable — falling back to search-index handle probe");
+        const dupeHandle = await graphql(
+          `query ($q: String!) { products(first: 25, query: $q) { nodes { id title handle } } }`,
+          { q: `handle:'${payload.handle}'` }
+        );
+        handleHit = dupeHandle.products.nodes.find((n) => n.handle === payload.handle) || null;
+      }
       if (handleHit) {
         await refuse(pid, `Shopify product ${handleHit.id} already owns handle "${payload.handle}" (an orphan from a crashed run, or a legacy/twin product) — adopt it via round-trip.mjs or remove it, then re-publish`);
         continue;
@@ -310,7 +346,7 @@ for (const { pid, want } of capped) {
       `query ($id: ID!) {
         product(id: $id) {
           id
-          media(first: 5) { nodes { id } }
+          media(first: 50) { pageInfo { hasNextPage } nodes { id } }
           variants(first: 100) { pageInfo { hasNextPage } nodes { id title inventoryItem { id } } }
         }
       }`,
@@ -329,6 +365,7 @@ for (const { pid, want } of capped) {
     // sell an incomplete run. Structural change needs a human.
     const missingSizes = sizes.filter((sTok) => !rows.some((r) => r.size === sTok));
     if (missingSizes.length) {
+      await failSafeUnpublish(gid);
       await refuse(pid, `catalogue sizes with no Shopify variant: ${missingSizes.join(", ")} — the size set changed while off; fix the Shopify product (or the record) first`);
       continue;
     }
@@ -346,9 +383,10 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const priceErrs = priced.productVariantsBulkUpdate.userErrors;
-      if (priceErrs?.length) { await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`); continue; }
+      if (priceErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`); continue; }
       console.log(`  variant prices set to ${priceNow}`);
     }
+    if (bp.media?.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — cannot verify the photo set"); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
     if (mediaCount === 0) {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
@@ -358,6 +396,7 @@ for (const { pid, want } of capped) {
       // A partial set (earlier crash mid-attach, or an admin deletion) must
       // not ship quietly missing photos — and re-attaching the whole plan
       // would duplicate what's there. Human decision.
+      await failSafeUnpublish(gid);
       await refuse(pid, `Shopify holds ${mediaCount} of ${mediaPlan.length} planned photos — fix the media in admin (or clear it) and re-run`);
       continue;
     }
@@ -379,7 +418,7 @@ for (const { pid, want } of capped) {
       { id: gid }
     );
     const cp = canon.product;
-    if (!cp) { results.push({ pid, ok: false, why: `${gid} not found on the shop` }); continue; }
+    if (!cp) { await refuse(pid, `${gid} not found on the shop — deleted in admin mid-run?`); continue; }
     if (cp.media.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — the FULL validator cannot see them all"); continue; }
     const verdict = validatePayload({
       title: cp.title, handle: cp.handle, vendor: cp.vendor, productType: cp.productType,
@@ -406,18 +445,7 @@ for (const { pid, want } of capped) {
       // non-compliant content on the storefront with no remaining intent to
       // take it down — markBlocked consumes desiredState. Unpublish first;
       // on an unpublished product this is a no-op.
-      try {
-        await graphql(
-          `mutation ($id: ID!, $input: [PublicationInput!]!) {
-            publishableUnpublish(id: $id, input: $input) { userErrors { field message } }
-          }`,
-          { id: gid, input: [{ publicationId: online.id }] },
-          { mutation: true }
-        );
-        console.log("  fail-safe: unpublished from the Online Store channel before recording the refusal");
-      } catch (e) {
-        console.error(`  ⚠ fail-safe unpublish failed (${String(e?.message || e)}) — check ${gid} in admin`);
-      }
+      await failSafeUnpublish(gid);
       await refuse(pid, "canonical Shopify object fails compliance: " +
         verdict.violations.map((v) => `${v.field}: ${v.problem}`).join("; "));
       continue;
@@ -453,6 +481,9 @@ for (const { pid, want } of capped) {
     // the operator asked for.
     const lastCheck = (await db.ref(`shopify_publish/${pid}`).get()).val();
     if (lastCheck?.desiredState !== "on") {
+      // Fail-safe here too: if drift left this product visible, a cancel
+      // confirming "off" without an unpublish would strand it up for good.
+      await failSafeUnpublish(gid);
       await confirmLiveState(db, pid, "off", UPDATED_BY);
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
       continue;
