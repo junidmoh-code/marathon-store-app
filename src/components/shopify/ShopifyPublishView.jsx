@@ -171,12 +171,16 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
   const pending = isPendingSwitch(node);
   const verdict = checkCleanName(draft); // the LIVE trigger check
   const blocked = blockedReason(node);
+  const isLiveRow = state === "live";
   // An edit after approval un-approves in the UI: Enter returns to approving
   // until the new text is signed off, so Publish can never ship a name the
   // reviewer hasn't actually confirmed (the dialog shows the draft verbatim).
-  const dirty = state === "approved" && draft.trim() !== String(node?.cleanName || "");
+  // A live-OFF row's name is editable too (the reconciler re-syncs it at
+  // turn-on) — Enter is its save path, and the switch refuses to go On while
+  // an edit sits unsaved (the dialog must show the name that will ship).
+  const editable = state === "approved" || (isLiveRow && !on);
+  const dirty = editable && draft.trim() !== String(node?.cleanName || "");
   const enterApproves = state === "awaiting" || dirty;
-  const isLiveRow = state === "live";
 
   // The source recorded on approval: an untouched saved name keeps its
   // provenance, an untouched lexicon suggestion records "lexicon", any edit
@@ -278,7 +282,10 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
                 <span style={{ fontSize: 10.5, color: BLUE_L }}>waiting for the reconciler…</span>
               )}
               <button disabled={busy || pending || on}
-                onClick={() => setConfirming("switch-on")}
+                onClick={() => {
+                  if (dirty) { setError("Save the edited name first (press Enter in the name field)."); return; }
+                  setConfirming("switch-on");
+                }}
                 style={{ ...(on ? tabOn : tabOff), padding: "4px 11px", fontSize: "0.68rem" }}>
                 On
               </button>
@@ -559,6 +566,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // the open sections are exhausted, open the next category that still has
   // unreviewed products and focus its first row once its bodies load.
   const advanceFrom = (pid) => {
+    if (filter === "live") return; // the On/Off groups have no review walk
     const awaiting = visibleRows.filter((r) => r.state === "awaiting" && r.pid !== pid);
     const idx = visibleRows.findIndex((r) => r.pid === pid);
     const next = awaiting.find((r) => visibleRows.findIndex((v) => v.pid === r.pid) > idx) || awaiting[0];
