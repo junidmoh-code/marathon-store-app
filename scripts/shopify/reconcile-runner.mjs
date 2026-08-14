@@ -230,7 +230,19 @@ const release = () => { if (!released) { released = true; releaseLock(); } };
 // A killed runner must not strand the lock — nor leave its child running
 // unsupervised with the lock now free, which would let the next tick overlap
 // it (reviewer finding, 2026-08-14). Kill the child FIRST, then release.
-process.on("exit", release);
+// LAST LINE OF DEFENCE. Node runs `exit` listeners after an uncaught
+// exception, and this runner logs on EVERY chunk of child output — so a
+// failing appendFileSync (a full disk on an always-on machine, a logs/ that
+// lost its permissions) throws at any moment during a run. Releasing the lock
+// there while the reconcile keeps running would orphan it AND let the next
+// tick overlap it. Kill the child first; kill() is synchronous, so it is
+// legal here where anything async is not (reviewer finding, 2026-08-14).
+process.on("exit", () => {
+  if (child && child.exitCode === null) {
+    try { child.kill("SIGKILL"); } catch { /* already gone */ }
+  }
+  release();
+});
 let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(sig, () => {
@@ -285,11 +297,22 @@ let live = false;      // streaming yet?
 let buffered = "";     // pre-decision output
 let sawStderr = false;
 let carry = "";        // partial trailing line between chunks
-// A bounded copy of everything the child said, kept only to classify the exit
-// (did it reach its report, or die before it?). Capped so a pathological run
-// cannot grow the runner's memory without bound.
-let reportText = "";
-const REPORT_KEEP = 64 * 1024;
+// How the exit gets classified. Facts are recorded as the lines ARRIVE, never
+// re-derived from a buffer at the end: any bounded buffer can slice off the
+// report banner when a run is chatty after it, and the runner would then call
+// a completed run a crash — raising a false outage banner (reviewer finding,
+// 2026-08-14). Line-based, so a banner split across two chunks still counts.
+let sawReportBanner = false;
+let refusedCount = 0;
+let scanCarry = "";
+const scan = (text) => {
+  const parts = (scanCarry + text).split("\n");
+  scanCarry = parts.pop() ?? "";
+  for (const l of parts) {
+    if (l.includes("══ RECONCILE REPORT ══")) sawReportBanner = true;
+    if (/^✗ /.test(l)) refusedCount += 1;
+  }
+};
 
 const emitLines = (text) => {
   const parts = (carry + text).split("\n");
@@ -308,8 +331,7 @@ const goLive = () => {
 
 const onChunk = (text, isErr) => {
   if (isErr) sawStderr = true;
-  reportText += text;
-  if (reportText.length > REPORT_KEEP) reportText = reportText.slice(-REPORT_KEEP);
+  scan(text);
   if (live) { emitLines(text); return; }
   buffered += text;
   // "nodes with unapplied intent: N" — N > 0 means there is real work.
@@ -321,8 +343,10 @@ child.stdout.on("data", (b) => onChunk(b.toString(), false));
 child.stderr.on("data", (b) => onChunk(b.toString(), true));
 
 child.on("error", (e) => {
-  log(`✗ FAILED to start reconcile.mjs: ${String(e?.message || e)}`);
-  release();
+  // "error" is not only a failed spawn — a failed kill() lands here too, and
+  // in that case the child is still alive. process.exit runs the exit handler
+  // above, which kills it before the lock is freed.
+  log(`✗ FAILED to run reconcile.mjs: ${String(e?.message || e)}`);
   process.exit(1);
 });
 
@@ -350,6 +374,7 @@ child.on("close", (code) => {
     process.exit(0);
   }
 
+  scan("\n");                     // settle the scanner's trailing partial line
   goLive();                       // a short/failed run may never have streamed
   if (carry.trim() !== "") log(`   ${carry.trimEnd()}`);
   carry = "";
@@ -375,10 +400,8 @@ child.on("close", (code) => {
   //
   // The report banner is the discriminator: it is printed only after the loop
   // has run to completion.
-  const completed = /══ RECONCILE REPORT ══/.test(reportText);
-  if (completed) {
-    const refused = (reportText.match(/^✗ /gm) || []).length;
-    log(`── run end: completed, ${refused || "some"} product(s) REFUSED ──`);
+  if (sawReportBanner) {
+    log(`── run end: completed, ${refusedCount || "some"} product(s) REFUSED ──`);
     log(`   Refused products are marked blocked in the app with the reason above, and their`);
     log(`   publish intent is cleared — retrying changes nothing until the cause is fixed there.`);
     log(`   Everything else in this run was applied normally.`);
