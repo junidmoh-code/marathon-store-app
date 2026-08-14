@@ -247,6 +247,23 @@ test("the row is keyboard-operable — Enter opens the product page", async () =
   expect(texts(tree)).toContain("SHOPIFY PRODUCT");
 });
 
+test("the row opens on SPACE too, and swallows the page-scroll default", async () => {
+  // A div with role="button" gets no native activation, so Space has to be
+  // handled explicitly — and its default (scroll the page) suppressed.
+  // Pinned separately from Enter so an edit cannot quietly drop it.
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const row = rowFor(tree, "Plain tee black");
+  let prevented = false;
+  await act(() => { row.props.onKeyDown({ key: " ", preventDefault: () => { prevented = true; } }); });
+  await flush();
+  expect(prevented).toBe(true);
+  expect(fakeWindow.location.hash).toBe("#shopify/p1");
+  expect(texts(tree)).toContain("SHOPIFY PRODUCT");
+});
+
 test("the navigable element contains NO other control", async () => {
   // Structural pin (reviewers, 2026-08-14). An element with role="button"
   // makes its descendants presentational to assistive technology, and a
