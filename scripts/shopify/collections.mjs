@@ -220,10 +220,13 @@ export async function publishToOnlineStore(graphql, gid, onlinePublicationId) {
  * what it replaces. Paginated: a shop with many sales channels must not hide
  * the online store behind a fixed page-1 cutoff.
  */
+const PUBLICATION_PAGES = 10; // × 50 = 500 publications; a runaway-loop backstop
+
 export async function requireOnlineStorePublication(graphql) {
   let after = null;
+  let truncated = false;
   const titleHits = [];
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < PUBLICATION_PAGES; page++) {
     const d = await graphql(
       `query ($after: String) {
         publications(first: 50, after: $after) {
@@ -239,13 +242,20 @@ export async function requireOnlineStorePublication(graphql) {
       if (/online store/i.test(n.catalog?.title ?? "")) titleHits.push(n.id);
     }
     if (!conn.pageInfo.hasNextPage) break;
+    if (page === PUBLICATION_PAGES - 1) { truncated = true; break; }
     after = conn.pageInfo.endCursor;
   }
   if (titleHits.length) {
     console.error("  ⚠ no publication carries the online_store channel handle — falling back to a catalog-title match");
     return titleHits[0];
   }
-  throw new Error("no Online Store publication found on this shop");
+  // Never silently report "not found" when the walk was cut short: the two
+  // have different cures, and guessing wrong sends someone hunting the wrong bug.
+  throw new Error(
+    truncated
+      ? `no Online Store publication in the first ${PUBLICATION_PAGES * 50} publications — the walk was TRUNCATED, so it may exist further on; raise PUBLICATION_PAGES in scripts/shopify/collections.mjs`
+      : "no Online Store publication found on this shop"
+  );
 }
 
 // ── ensureCollection — the one idempotent unit of work ───────────────────────
