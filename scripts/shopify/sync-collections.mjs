@@ -10,10 +10,18 @@
 //   node scripts/shopify/sync-collections.mjs --commit    apply
 //   node scripts/shopify/sync-collections.mjs --commit --pids a,b   only these
 //
-// Worklist: every /shopify_publish node CONFIRMED on (state "live", liveState
-// "on"). Products that are off are skipped — the reconciler already stripped
-// their membership when it took them down, and re-adding it here would put an
-// unpublished product back in the aisles.
+// Worklist: EVERY product with a /shopify_sync mapping — i.e. everything that
+// is ours on Shopify — and the desired membership follows its confirmed state:
+//
+//   confirmed ON (state "live", liveState "on") → joins its mapped collection
+//   anything else (live-off, blocked, awaiting)  → leaves every managed one
+//
+// The off/blocked half is not busywork. The reconciler strips membership on the
+// OFF path, but only when an intent CHANGES — a product taken down before
+// collections existed, or one left blocked by a refusal (markBlocked consumes
+// desiredState, so the worklist never revisits it), keeps whatever membership
+// it had. This is the pass that notices. Re-adding is impossible: an unmapped
+// or non-live product is planned against `null`, which only ever leaves.
 //
 // Writes: Shopify collection membership ONLY (productUpdate collectionsToJoin /
 // collectionsToLeave). No RTDB writes at all — not /shopify_publish, not
@@ -54,39 +62,52 @@ if (!managedGids.length) {
 console.log(`${managedGids.length} manual collections recorded`);
 
 const all = await readAllPublishNodes(db);
-const live = Object.entries(all).filter(
-  ([pid, n]) => (!ONLY || ONLY.has(pid)) && n?.state === "live" && n?.liveState === "on"
-);
-console.log(`${live.length} products confirmed ON the storefront`);
+const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
+const worklist = Object.entries(all).filter(([pid]) => !ONLY || ONLY.has(pid));
+console.log(`${worklist.length} publishing nodes · ${worklist.filter(([, n]) => confirmedOn(n)).length} confirmed ON the storefront`);
 console.log(COMMIT ? "MODE: commit\n" : "MODE: dry run — nothing written\n");
 
 const results = [];
-for (const [pid, node] of live) {
+for (const [pid, node] of worklist) {
   assertSafeSegment(pid, "productId");
   const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
   const gid = mapNode?.shopifyProductId;
   const name = node.cleanName || pid;
   if (!gid) {
-    results.push({ pid, name, status: "no-map", detail: "confirmed live but has no /shopify_sync entry — reconcile it first" });
-    continue;
-  }
-  const product = (await db.ref(`products/${pid}`).get()).val();
-  if (!product) {
-    results.push({ pid, name, status: "no-record", detail: "no /products record" });
+    // Nothing of ours exists on Shopify for this record, so there is no
+    // membership to hold. Only worth saying out loud when it claims to be live.
+    if (confirmedOn(node)) {
+      results.push({ pid, name, status: "no-map", detail: "confirmed live but has no /shopify_sync entry — reconcile it first" });
+    }
     continue;
   }
 
-  const r = resolveCollection(product);
-  const desired = r.status === "mapped" ? (collectionGids[r.collectionKey] ?? null) : null;
-  const label =
-    r.status !== "mapped" ? `⚠ ${r.status}: ${r.reason}`
-    : desired ? COLLECTION_BY_KEY.get(r.collectionKey).title
-    : `⚠ "${r.collectionKey}" has no recorded id`;
+  // A product that is not confirmed ON belongs in NO managed collection,
+  // whatever its record says — desired null only ever leaves.
+  let desired = null;
+  let label = `not on the storefront (state ${node?.state}/${node?.liveState ?? "—"}) — leaves every managed collection`;
+  if (confirmedOn(node)) {
+    const product = (await db.ref(`products/${pid}`).get()).val();
+    if (!product) {
+      results.push({ pid, name, status: "no-record", detail: "confirmed live but no /products record" });
+      continue;
+    }
+    const r = resolveCollection(product);
+    desired = r.status === "mapped" ? (collectionGids[r.collectionKey] ?? null) : null;
+    label =
+      r.status !== "mapped" ? `⚠ ${r.status}: ${r.reason}`
+      : desired ? COLLECTION_BY_KEY.get(r.collectionKey).title
+      : `⚠ "${r.collectionKey}" has no recorded id`;
+  }
 
   try {
     const plan = planCollectionMembership(await readProductCollections(graphql, gid), desired, managedGids);
     if (!plan.join.length && !plan.leave.length) {
-      results.push({ pid, name, status: r.status === "mapped" && desired ? "already-correct" : "no-collection", detail: label });
+      // Silent for the vast majority: an off product in no collection is the
+      // normal resting state and printing it would bury the real rows.
+      if (confirmedOn(node)) {
+        results.push({ pid, name, status: desired ? "already-correct" : "no-collection", detail: label });
+      }
       continue;
     }
     if (COMMIT) await applyCollectionMembership(graphql, gid, plan);

@@ -456,28 +456,6 @@ for (const { pid, want } of capped) {
     }
     await writeIdMap(db, pid, buildMapping(gid, rows));
 
-    // ── STOREFRONT COLLECTIONS ───────────────────────────────────────────────
-    // Applied on BOTH paths (create and reconcile) from Shopify's current
-    // membership, so it is idempotent and self-healing: a product whose record
-    // was re-categorised while it sat off leaves the old collection and joins
-    // the new one here, before anything becomes visible. Smart collections are
-    // never touched — Shopify owns those. A refusal is deliberate: a product
-    // reaching the storefront with the WRONG collection is a worse outcome
-    // than one that stays down and says why.
-    const desiredCollectionGid = desiredCollectionFor(pid, product);
-    try {
-      const plan = planCollectionMembership(
-        await readProductCollections(graphql, gid), desiredCollectionGid, managedGids);
-      if (plan.join.length || plan.leave.length) {
-        await applyCollectionMembership(graphql, gid, plan);
-        console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);
-      }
-    } catch (e) {
-      await failSafeUnpublish(gid);
-      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`);
-      continue;
-    }
-
     if (!createdNow) {
       // The create path prices every variant at creation; the mapped path must
       // push the CURRENT retailPrice too — a price correction made while the
@@ -601,6 +579,40 @@ for (const { pid, want } of capped) {
       await failSafeUnpublish(gid);
       await refuse(pid, "canonical Shopify object fails compliance: " +
         verdict.violations.map((v) => `${v.field}: ${v.problem}`).join("; "));
+      continue;
+    }
+
+    // ── STOREFRONT COLLECTIONS ───────────────────────────────────────────────
+    // Applied on BOTH paths (create and reconcile) and planned from Shopify's
+    // CURRENT membership, so it is idempotent and self-healing: a product whose
+    // record was re-categorised while it sat off leaves the old collection and
+    // joins the new one here, before anything becomes visible. Smart
+    // collections are never touched — Shopify owns those.
+    //
+    // ORDER MATTERS, and this sits AFTER the compliance gate deliberately. Run
+    // earlier, a product that then failed the canonical validator would be left
+    // blocked-and-unpublished but still a member of a collection — and a
+    // blocked node never gets an OFF pass to strip it (markBlocked consumes
+    // desiredState, so the worklist skips it forever). Invisible to customers
+    // either way, since a collection only renders published products, but it
+    // would quietly inflate the admin's collection counts with products that
+    // were refused. After the gate, the only failures that can strand a
+    // membership are inventory and publish — and the next run re-plans it.
+    //
+    // A membership failure REFUSES: a product reaching the storefront filed
+    // under the wrong heading is a worse outcome than one that stays down and
+    // says why.
+    const desiredCollectionGid = desiredCollectionFor(pid, product);
+    try {
+      const plan = planCollectionMembership(
+        await readProductCollections(graphql, gid), desiredCollectionGid, managedGids);
+      if (plan.join.length || plan.leave.length) {
+        await applyCollectionMembership(graphql, gid, plan);
+        console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);
+      }
+    } catch (e) {
+      await failSafeUnpublish(gid);
+      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`);
       continue;
     }
 

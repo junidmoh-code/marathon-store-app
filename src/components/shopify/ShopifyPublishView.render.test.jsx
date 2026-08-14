@@ -46,15 +46,24 @@ let keys = new Set();
 let pipeline = {};
 let bodies = {};
 let approveResult = { ok: true };
+// Read-in-flight control — see loadNodesFor below.
+let holdNodesFor = false;
+const heldReads = [];
 
 vi.mock("./shopifyPublishStore", () => ({
   loadPublishKeys: () => Promise.resolve(keys),
   loadPipelineNodes: () => Promise.resolve(pipeline),
   loadNodesFor: (pids) => {
     calls.nodesFor.push([...pids]);
+    // The result is snapshotted at CALL time, exactly like a real read: what
+    // the server hands back is what it held when the request went out.
     const nodes = {};
     for (const pid of pids) if (bodies[pid]) nodes[pid] = bodies[pid];
-    return Promise.resolve({ nodes, failed: [] });
+    const result = { nodes, failed: [] };
+    // `holdNodesFor` lets a test keep a read in flight while something else
+    // happens — the only way to exercise a genuine read-vs-write race.
+    if (!holdNodesFor) return Promise.resolve(result);
+    return new Promise((resolve) => heldReads.push(() => resolve(result)));
   },
   // The real store's writes return the committed node on success — the view
   // folds it straight into state instead of refetching. Mirror that contract.
@@ -166,6 +175,8 @@ beforeEach(() => {
   pipeline = {};
   bodies = {};
   approveResult = { ok: true };
+  holdNodesFor = false;
+  heldReads.length = 0;
 });
 
 test("mounts with sections collapsed — no rows, no body fetches", async () => {
@@ -901,5 +912,36 @@ test("sitting on the product's OWN page, a confirmation swaps Publish for the li
     expect(out).toContain("Listing is ON");
     expect(button(tree, "Publish")).toBeUndefined();
     expect(button(tree, "Off")).toBeTruthy();
+  });
+});
+
+test("the poll never rolls back a write that landed while its read was in flight", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { ...AWAITING_PENDING } };
+    const tree = await mountOpen();
+    await openProductPage(tree, "Plain tee black");
+    expect(texts(tree)).toContain("waiting for the reconciler run to send it to Shopify");
+
+    // The tick fires and its read goes out holding the OLD (still pending)
+    // node — and is HELD there, in flight.
+    holdNodesFor = true;
+    await act(() => { vi.advanceTimersByTime(20000); });
+    expect(heldReads).toHaveLength(1);
+
+    // While it hangs, the operator hits Cancel. That write is NEWER than
+    // anything the in-flight read can return.
+    await act(() => { button(tree, "Cancel").props.onClick(); });
+    await flush();
+    expect(calls.desired).toEqual([{ pid: "p1", want: "off" }]);
+    expect(texts(tree)).not.toContain("waiting for the reconciler run to send it to Shopify");
+
+    // Now the stale read lands. It must be DISCARDED — applying it would put
+    // the row back to pending and make the Cancel look undone.
+    await act(async () => { heldReads.forEach((release) => release()); });
+    await flush();
+
+    expect(texts(tree)).not.toContain("waiting for the reconciler run to send it to Shopify");
+    expect(button(tree, "Publish")).toBeTruthy(); // still an awaiting product
   });
 });

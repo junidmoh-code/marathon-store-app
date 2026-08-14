@@ -629,14 +629,28 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // on every node change (an interval rebuilt each render would never fire).
   const pendingPidsRef = useRef(pendingPids);
   pendingPidsRef.current = pendingPids;
+  // The freshest nodes, readable from those same closures and from runBatch.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
 
   const refreshNodes = useCallback((pids) => {
     if (!pids.length) return;
+    // The node each pid held when this read went OUT. The section fetch has a
+    // FILL-never-overwrite rule for the same reason; this one has to overwrite
+    // (replacing a stale node IS its job), so it needs the sharper test: apply
+    // only where nothing has changed underneath in the meantime. Without it, a
+    // Cancel clicked while a read was in flight would be silently rolled back
+    // by the older server value and the row would jump back to pending.
+    const before = {};
+    for (const pid of pids) before[pid] = nodesRef.current[pid];
     loadNodesFor(pids)
       .then(({ nodes: got, failed }) => {
+        const apply = pids.filter(
+          (pid) => !failed.includes(pid) && nodesRef.current[pid] === before[pid]);
+        if (!apply.length) return;
         setNodes((prev) => {
           const next = { ...prev };
-          for (const pid of pids) if (!failed.includes(pid)) next[pid] = got[pid] || null;
+          for (const pid of apply) next[pid] = got[pid] || null;
           return next;
         });
         // The pipeline map prices the Live and Blocked filter counts; letting
@@ -644,8 +658,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         setPipeline((prev) => {
           if (!prev) return prev;
           const next = { ...prev };
-          for (const pid of pids) {
-            if (failed.includes(pid)) continue;
+          for (const pid of apply) {
             const n = got[pid];
             if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
           }
@@ -726,9 +739,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       return next.size === prev.size ? prev : next;
     });
   }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The freshest nodes, readable from inside runBatch's long-lived closure.
-  const nodesRef = useRef(nodes);
-  nodesRef.current = nodes;
+  // (nodesRef — the freshest nodes for runBatch's long-lived closure — is
+  // declared with the pending refresh above, which needs the same thing.)
   const capNotice = () =>
     setBatchNotice(`Selection is capped at ${RECONCILE_MAX_APPLY} — the reconciler applies at most ${RECONCILE_MAX_APPLY} products per run.`);
   const toggleSelect = (pid, blocker) => {
