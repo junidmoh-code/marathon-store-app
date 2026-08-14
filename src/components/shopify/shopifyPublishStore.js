@@ -151,11 +151,22 @@ export async function approveName(productId, node, name, source = "manual") {
   const verdict = checkCleanName(name);
   if (!verdict.ok) return { ok: false, message: verdict.problems.join("; ") };
   const cleanName = String(name).trim();
-  return writeNode(productId, (cur) => {
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
+    if (base.state === "live") {
+      // A LIVE listing shows its name to customers — a rename here would
+      // silently diverge from the storefront. Live edits are the update
+      // slice's job, same rule as setCondition. Draft stays editable: the
+      // next publish run reconciles it.
+      refusal = "Listing is LIVE — name changes for live products aren't wired yet.";
+      return undefined;
+    }
     return { ...base, state: base.state || "none", cleanName, cleanNameSource: source,
              nameApprovedAt: serverNowMs(), ...stamp() };
   });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
 }
 
 /**
@@ -164,12 +175,21 @@ export async function approveName(productId, node, name, source = "manual") {
  * default and a blocked product cannot be pushed.
  */
 export async function nominateProduct(productId, existingNode, condition = undefined) {
+  let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || existingNode || {};
+    if (base.state === "draft" || base.state === "live") {
+      // The publish script took this product while the row sat stale —
+      // nominating now would overwrite the script's state. Checked against
+      // the SERVER's value; re-queuing a draft is setCondition's job.
+      refusal = "Already with the publish script — refresh the page to see its current state.";
+      return undefined;
+    }
     const cond = condition !== undefined ? condition : base.condition;
     return { ...base, ...(condition !== undefined ? { condition } : {}),
              state: nominationState(cond), ...stamp() };
   });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res.ok ? { ok: true, state: res.node?.state, node: res.node } : res;
 }
 

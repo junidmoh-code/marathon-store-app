@@ -343,7 +343,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           });
           if (failed.length) {
             for (const pid of failed) requestedPids.current.delete(pid); // let a re-open retry
-            setLoadError(`${failed.length} product record(s) didn't load — close and reopen the section to retry`);
+            setLoadError(`${failed.length} product record(s) didn't load — reopen the section or adjust the search to retry`);
           }
         })
         .catch((e) => {
@@ -374,6 +374,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // the Enter flow's focus) until a refetch landed.
   const applyWrite = (pid, node) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
+    // Keep the pipeline map (which prices the four state-filter counts) in
+    // step with the write — otherwise a fresh nomination is invisible to the
+    // Nominated filter, and a withdrawal leaves a phantom count behind.
+    setPipeline((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      if (node && ["nominated", "draft", "live", "blocked"].includes(node.state)) next[pid] = node;
+      else delete next[pid];
+      return next;
+    });
     if (node !== undefined) {
       setNodes((prev) => ({ ...prev, [pid]: node || null }));
     } else {
@@ -439,8 +449,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     let cb = refCallbacks.current.get(pid);
     if (!cb) {
       cb = (el) => {
-        if (el) inputRefs.current.set(pid, el);
-        else inputRefs.current.delete(pid);
+        if (el) {
+          inputRefs.current.set(pid, el);
+        } else {
+          inputRefs.current.delete(pid);
+          refCallbacks.current.delete(pid); // unmount frees the closure too
+        }
       };
       refCallbacks.current.set(pid, cb);
     }
