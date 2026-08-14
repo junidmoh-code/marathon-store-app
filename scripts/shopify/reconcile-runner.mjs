@@ -227,16 +227,19 @@ try {
 
 let released = false;
 const release = () => { if (!released) { released = true; releaseLock(); } };
-// A killed runner must not strand the lock — nor leave its child running
-// unsupervised with the lock now free, which would let the next tick overlap
-// it (reviewer finding, 2026-08-14). Kill the child FIRST, then release.
-// LAST LINE OF DEFENCE. Node runs `exit` listeners after an uncaught
-// exception, and this runner logs on EVERY chunk of child output — so a
-// failing appendFileSync (a full disk on an always-on machine, a logs/ that
-// lost its permissions) throws at any moment during a run. Releasing the lock
-// there while the reconcile keeps running would orphan it AND let the next
-// tick overlap it. Kill the child first; kill() is synchronous, so it is
-// legal here where anything async is not (reviewer finding, 2026-08-14).
+// LAST LINE OF DEFENCE, and it must stay BELOW the acquire block above.
+// Node runs `exit` listeners after an uncaught exception, and this runner
+// logs on EVERY chunk of child output — so a failing appendFileSync (a full
+// disk on an always-on machine, a logs/ that lost its permissions) throws at
+// any moment during a run. Releasing the lock there while the reconcile keeps
+// running would orphan it AND let the next tick overlap it, so the child is
+// killed first; kill() is synchronous, which is what makes it legal here
+// where anything async is not (reviewer findings, 2026-08-14).
+//
+// THE POSITION IS LOAD-BEARING: a tick that did NOT get the lock exits inside
+// that block, before this handler exists, so it can never run releaseLock()
+// against the lock a DIFFERENT run is holding. Registering this any earlier
+// would hand every skipped tick a path to delete the live holder's lock.
 process.on("exit", () => {
   if (child && child.exitCode === null) {
     try { child.kill("SIGKILL"); } catch { /* already gone */ }
