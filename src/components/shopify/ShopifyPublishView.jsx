@@ -640,7 +640,15 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // Bumped by applyWrite, per pid. Written in the write path (not during
   // render), so it is current the instant the write commits — which is what a
   // read resolving moments later has to compare against.
-  const writeGenRef = useRef({});
+  const writeGenRef = useRef(Object.create(null));
+  // Read ORDER, which the write generation deliberately does not track. Two
+  // refreshes can be in flight at once (the interval plus a window-focus one)
+  // and they can land out of order; without this, a LATER read that landed
+  // FIRST would be overwritten by the earlier, staler one and the row would
+  // revert for a whole tick. Object.create(null) on both: a pid is a key, and
+  // an inherited "constructor" would silently wedge that pid forever.
+  const readSeqRef = useRef(0);
+  const appliedSeqRef = useRef(Object.create(null));
 
   const refreshNodes = useCallback((pids) => {
     if (!pids.length) return;
@@ -656,13 +664,17 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     // the first read's own apply look like a change — so the SECOND, fresher
     // result was discarded and the row sat stale for another whole tick. Only
     // a local write bumps the generation, which is exactly what must invalidate.
-    const before = {};
+    const before = Object.create(null);
     for (const pid of pids) before[pid] = writeGenRef.current[pid] ?? 0;
+    const seq = ++readSeqRef.current;
     loadNodesFor(pids)
       .then(({ nodes: got, failed }) => {
         const apply = pids.filter(
-          (pid) => !failed.includes(pid) && (writeGenRef.current[pid] ?? 0) === before[pid]);
+          (pid) => !failed.includes(pid)
+            && (writeGenRef.current[pid] ?? 0) === before[pid]   // no local write landed
+            && seq > (appliedSeqRef.current[pid] ?? 0));          // and nothing NEWER already did
         if (!apply.length) return;
+        for (const pid of apply) appliedSeqRef.current[pid] = seq;
         setNodes((prev) => {
           const next = { ...prev };
           for (const pid of apply) next[pid] = got[pid] || null;
@@ -721,10 +733,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     if (node !== undefined) {
       setNodes((prev) => ({ ...prev, [pid]: node || null }));
     } else {
-      // A store result without a node (shouldn't happen) — refetch to stay honest.
+      // A store result without a node (shouldn't happen) — refetch to stay
+      // honest. Guarded like every other read: a write landing while this is in
+      // flight is NEWER than what comes back, and applying the older value
+      // would be the very rollback the generation exists to prevent.
+      const gen = writeGenRef.current[pid] ?? 0;
       loadNodesFor([pid])
         .then(({ nodes: got, failed }) => {
-          if (!failed.length) setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
+          if (failed.length) return;
+          if ((writeGenRef.current[pid] ?? 0) !== gen) return;
+          setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
         })
         .catch(() => {});
     }

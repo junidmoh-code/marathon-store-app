@@ -10,18 +10,23 @@
 //   node scripts/shopify/sync-collections.mjs --commit    apply
 //   node scripts/shopify/sync-collections.mjs --commit --pids a,b   only these
 //
-// Worklist: EVERY product with a /shopify_sync mapping — i.e. everything that
-// is ours on Shopify — and the desired membership follows its confirmed state:
+// Worklist: the UNION of /shopify_publish nodes and /shopify_sync product
+// entries — every product this program has ever reviewed or put on Shopify.
+// (Not "everything on Shopify": it never asks Shopify what exists. A product
+// created outside this program is invisible here, deliberately — it is not
+// ours to touch.)
 //
-//   confirmed ON (state "live", liveState "on") → joins its mapped collection
-//   anything else (live-off, blocked, awaiting)  → leaves every managed one
+// What happens to each is sweepIntent's call, not this file's — see
+// collections.mjs. In short: confirmed-ON joins its mapped collection;
+// a publish in flight is LEFT ALONE; a product Shopify holds ACTIVE with no
+// matching record is reported as drift and never stripped; everything else
+// leaves every managed collection.
 //
-// The off/blocked half is not busywork. The reconciler strips membership on the
-// OFF path, but only when an intent CHANGES — a product taken down before
+// The leave half is not busywork. The reconciler strips membership on the OFF
+// path, but only when an intent CHANGES — a product taken down before
 // collections existed, or one left blocked by a refusal (markBlocked consumes
 // desiredState, so the worklist never revisits it), keeps whatever membership
-// it had. This is the pass that notices. Re-adding is impossible: an unmapped
-// or non-live product is planned against `null`, which only ever leaves.
+// it had. This is the pass that notices.
 //
 // Writes: Shopify collection membership ONLY (productUpdate collectionsToJoin /
 // collectionsToLeave). No RTDB writes at all — not /shopify_publish, not
@@ -32,7 +37,7 @@ import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 import {
   collectionGidsByKey, manualGidsFrom, planCollectionMembership,
-  readProductCollections, applyCollectionMembership,
+  readProductCollections, applyCollectionMembership, sweepIntent,
 } from "./collections.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
 
@@ -44,7 +49,7 @@ if (pidIdx !== -1 && (!pidArg || pidArg.startsWith("--"))) {
   console.error("--pids needs a comma-separated productId list");
   process.exit(2);
 }
-const ONLY = pidArg ? new Set(pidArg.split(",")) : null;
+const ONLY = pidArg ? new Set(pidArg.split(",").map((x) => x.trim()).filter(Boolean)) : null;
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -77,25 +82,22 @@ const pids = [...new Set([
   ...Object.keys(publishNodes),
   ...Object.keys(syncNodes).filter((k) => k !== "_collections"),
 ])].filter((pid) => !ONLY || ONLY.has(pid)).sort();
-if (ONLY) {
-  for (const pid of ONLY) {
-    if (!pids.includes(pid)) console.error(`  ⚠ ${pid}: no /shopify_publish node and no /shopify_sync mapping — nothing of ours on Shopify, skipped`);
-  }
-}
-console.log(`${pids.length} products known to Shopify · ${pids.filter((pid) => confirmedOn(publishNodes[pid])).length} confirmed ON the storefront`);
+// A named pid this program has never heard of is almost always a typo, and a
+// typo that exits 0 is the false success this script exists to stop producing.
+const unknownPids = ONLY ? [...ONLY].filter((pid) => !pids.includes(pid)) : [];
+console.log(`${pids.length} products in scope · ${pids.filter((pid) => confirmedOn(publishNodes[pid])).length} confirmed ON the storefront`);
 console.log(COMMIT ? "MODE: commit\n" : "MODE: dry run — nothing written\n");
 
 const results = [];
 for (const pid of pids) {
   assertSafeSegment(pid, "productId");
 
-  // RE-READ the publish node, per product, at the moment it is judged. The
-  // snapshot above is only a worklist. The reconciler runs independently (and
-  // on a schedule), so a product it confirms live WHILE this sweep is walking
-  // would otherwise be judged "not on the storefront" from a stale read and
-  // STRIPPED out of the collection it had just been published into — publicly
-  // live, in no collection, reported as a success. reconcile.mjs re-reads at
-  // its own point of no return for exactly this reason; so does this.
+  // RE-READ the publish node, per product, at the moment it is judged — the
+  // snapshot above is only a worklist. Freshness alone is NOT enough, though:
+  // the reconciler joins the collection, publishes and goes ACTIVE before it
+  // writes confirmLiveState, so a perfectly fresh read can correctly say
+  // "awaiting" about a product that is already live and already in its
+  // collection. sweepIntent is what closes that; see collections.mjs.
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
   const live = confirmedOn(node);
   const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
@@ -137,7 +139,18 @@ for (const pid of pids) {
   }
 
   try {
-    const plan = planCollectionMembership(await readProductCollections(graphql, gid), desired, managedGids);
+    const { collections, status: shopifyStatus } = await readProductCollections(graphql, gid);
+    const intent = sweepIntent(node, shopifyStatus);
+    if (intent.action === "hold" || intent.action === "drift") {
+      // Never plans a leave, so it can never strip a listing it does not
+      // understand. "hold" is routine and quiet unless named; "drift" means
+      // something is genuinely wrong and always speaks up.
+      if (intent.action === "drift" || ONLY) {
+        results.push({ pid, name, status: intent.action === "drift" ? "live-drift" : "publish-in-flight", detail: intent.reason });
+      }
+      continue;
+    }
+    const plan = planCollectionMembership(collections, desired, managedGids);
     if (!plan.join.length && !plan.leave.length) {
       // Silent for the vast majority: an off product in no collection is the
       // normal resting state and printing it would bury the real rows. But an
@@ -163,6 +176,10 @@ for (const pid of pids) {
   }
 }
 
+for (const pid of unknownPids) {
+  results.push({ pid, name: pid, status: "unknown-pid", detail: "no /shopify_publish node and no /shopify_sync entry — this program has never seen this product id" });
+}
+
 console.log("══ COLLECTION MEMBERSHIP ══");
 // The icon and the exit code must agree. "no-collection" is a DOCUMENTED
 // outcome (a deliberately unmapped category such as Price Products) — a notice,
@@ -170,9 +187,9 @@ console.log("══ COLLECTION MEMBERSHIP ══");
 // ISN'T ours, or has no record at all: those are broken, ✗, and they now fail
 // the run. Marking them ✗ while exiting 0 was the same contradiction demoting
 // no-collection was supposed to remove.
-const BAD = new Set(["failed", "no-map", "no-record"]);
+const BAD = new Set(["failed", "no-map", "no-record", "unknown-pid", "live-drift"]);
 for (const r of results) {
-  const icon = BAD.has(r.status) ? "✗" : r.status === "no-collection" ? "⚠" : "✓";
+  const icon = BAD.has(r.status) ? "✗" : (r.status === "no-collection" || r.status === "publish-in-flight") ? "⚠" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(16)} ${r.name}`);
   console.log(`    ${r.detail}`);
 }

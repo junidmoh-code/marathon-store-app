@@ -268,8 +268,8 @@ for (const { pid, want } of capped) {
       // hand in the admin is not ours and is left alone (planCollectionMembership).
       let leftNote = "";
       try {
-        const plan = planCollectionMembership(
-          await readProductCollections(graphql, mapNode.shopifyProductId), null, managedGids);
+        const { collections } = await readProductCollections(graphql, mapNode.shopifyProductId);
+        const plan = planCollectionMembership(collections, null, managedGids);
         if (plan.leave.length) {
           await applyCollectionMembership(graphql, mapNode.shopifyProductId, plan);
           leftNote = `, left ${plan.leave.length} collection(s)`;
@@ -673,8 +673,8 @@ for (const { pid, want } of capped) {
     // says why.
     const desiredCollectionGid = desiredCollectionFor(pid, product);
     try {
-      const plan = planCollectionMembership(
-        await readProductCollections(graphql, gid), desiredCollectionGid, managedGids);
+      const { collections } = await readProductCollections(graphql, gid);
+      const plan = planCollectionMembership(collections, desiredCollectionGid, managedGids);
       if (plan.join.length || plan.leave.length) {
         await applyCollectionMembership(graphql, gid, plan);
         console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);

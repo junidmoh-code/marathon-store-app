@@ -8,7 +8,7 @@ import {
   buildCollectionDescriptionHtml, buildConditionsSourceInput,
   desiredConditionsFingerprint, actualConditionsFingerprint, ensureCollection,
   planCollectionMembership, manualGidsFrom, readProductCollections, applyCollectionMembership,
-  requireOnlineStorePublication,
+  requireOnlineStorePublication, sweepIntent,
 } from "./collections.mjs";
 import { COLLECTION_BY_KEY } from "./collectionMap.mjs";
 
@@ -433,13 +433,16 @@ describe("planCollectionMembership", () => {
 });
 
 describe("readProductCollections / applyCollectionMembership", () => {
-  it("reads the current gids", async () => {
-    const g = fakeGraphql([["collections(first: 100)", { product: { collections: { pageInfo: { hasNextPage: false }, nodes: [{ id: SNEAK }] } } }]]);
-    expect(await readProductCollections(g.fn, "gid://shopify/Product/1")).toEqual([SNEAK]);
+  it("reads the current gids AND the Shopify status", async () => {
+    // The status rides along because sweepIntent has to know what Shopify
+    // thinks before anything strips a membership.
+    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", collections: { pageInfo: { hasNextPage: false }, nodes: [{ id: SNEAK }] } } }]]);
+    expect(await readProductCollections(g.fn, "gid://shopify/Product/1"))
+      .toEqual({ collections: [SNEAK], status: "ACTIVE" });
   });
 
   it("refuses a partial read rather than stripping collections it could not see", async () => {
-    const g = fakeGraphql([["collections(first: 100)", { product: { collections: { pageInfo: { hasNextPage: true }, nodes: [] } } }]]);
+    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", collections: { pageInfo: { hasNextPage: true }, nodes: [] } } }]]);
     await expect(readProductCollections(g.fn, "gid://shopify/Product/1")).rejects.toThrow(/partial read/);
   });
 
@@ -625,5 +628,68 @@ describe("requireOnlineStorePublication", () => {
       pub("gid://shopify/Publication/2", { handle: "online_store" }),
     ])]]);
     expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/2");
+  });
+});
+
+// ── sweepIntent — the decision that can strip a PUBLIC listing ───────────────
+// reconcile.mjs joins the collection, publishes, and goes ACTIVE, and only THEN
+// writes confirmLiveState. So a perfectly fresh read of /shopify_publish says
+// "awaiting" for the whole tail of a publish while Shopify already holds the
+// membership and, at the end, a live listing. These pin the two guards that
+// stop the sweep undoing it.
+describe("sweepIntent", () => {
+  const LIVE_ON = { state: "live", liveState: "on", desiredState: "on" };
+
+  it("a confirmed-ON product is assigned its collection", () => {
+    expect(sweepIntent(LIVE_ON, "ACTIVE")).toMatchObject({ action: "assign" });
+  });
+
+  it("HOLDS a publish in flight — the node is behind, not wrong", () => {
+    // Exactly the window: intent on, not yet confirmed. Whatever Shopify says.
+    for (const status of ["DRAFT", "ACTIVE"]) {
+      const v = sweepIntent({ state: "awaiting", desiredState: "on" }, status);
+      expect({ status, action: v.action }).toEqual({ status, action: "hold" });
+      expect(v.reason).toMatch(/in flight/);
+    }
+  });
+
+  it("HOLDS a live-OFF product being switched back on", () => {
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "on" }, "DRAFT").action).toBe("hold");
+  });
+
+  it("refuses to strip a product Shopify holds ACTIVE with no intent to explain it", () => {
+    // A reconciler killed between productUpdate(ACTIVE) and confirmLiveState
+    // leaves this state permanently. Stripping is the wrong repair.
+    const v = sweepIntent({ state: "awaiting" }, "ACTIVE");
+    expect(v.action).toBe("drift");
+    expect(v.reason).toMatch(/refusing to strip a live listing/);
+  });
+
+  it("reports drift for a mapped product with no publish node at all", () => {
+    expect(sweepIntent(null, "ACTIVE")).toMatchObject({ action: "drift" });
+    expect(sweepIntent(null, "ACTIVE").reason).toMatch(/no node/);
+  });
+
+  it("STRIPS the genuinely-off cases, and only those", () => {
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, "DRAFT").action).toBe("strip");
+    expect(sweepIntent({ state: "blocked", desiredState: "off" }, "DRAFT").action).toBe("strip");
+    expect(sweepIntent({ state: "awaiting" }, "DRAFT").action).toBe("strip");
+    expect(sweepIntent(null, "DRAFT").action).toBe("strip");
+    expect(sweepIntent(null, "ARCHIVED").action).toBe("strip");
+  });
+
+  it("a blocked product is stripped, not held — markBlocked sets desiredState off", () => {
+    expect(sweepIntent({ state: "blocked", blockedReason: "x", desiredState: "off" }, "DRAFT").action).toBe("strip");
+  });
+});
+
+describe("planCollectionMembership — a join is filtered by the managed set too", () => {
+  const SMART = "gid://shopify/Collection/90";
+  it("refuses to write membership into a collection it does not manage", () => {
+    expect(planCollectionMembership([], SMART, ["gid://shopify/Collection/1"]))
+      .toEqual({ join: [], leave: [] });
+  });
+  it("still joins when no managed set is supplied (callers that do not manage membership)", () => {
+    expect(planCollectionMembership([], SMART, []).join).toEqual([SMART]);
   });
 });

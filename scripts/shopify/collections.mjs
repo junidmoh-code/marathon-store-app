@@ -462,24 +462,81 @@ export function manualGidsFrom(gidsByKey) {
 export function planCollectionMembership(currentGids, desiredGid, managedGids) {
   const managed = new Set(managedGids ?? []);
   const current = new Set(currentGids ?? []);
+  // A join is filtered by `managed` exactly as a leave is. Nothing should ever
+  // hand this a smart collection's gid — CATEGORY_MAP rows are pinned to manual
+  // keys by test — but membership written into a Shopify-owned collection is
+  // the kind of mistake that is invisible until it fights the rule engine, and
+  // the symmetry costs nothing. Only enforced when a managed set was supplied.
+  const joinable = !managedGids?.length || managed.has(desiredGid);
   return {
-    join: desiredGid && !current.has(desiredGid) ? [desiredGid] : [],
+    join: desiredGid && joinable && !current.has(desiredGid) ? [desiredGid] : [],
     leave: [...current].filter((gid) => managed.has(gid) && gid !== desiredGid),
   };
 }
 
-/** The product's CURRENT collection gids. Refuses a >100 set rather than acting on a partial read. */
+/**
+ * The product's CURRENT collection gids AND its Shopify status.
+ * → { collections: [gid], status: "ACTIVE"|"DRAFT"|"ARCHIVED" }
+ * Refuses a >100 collection set rather than acting on a partial read.
+ *
+ * The status rides along because the sweep has to know what SHOPIFY thinks
+ * before it strips anything — see sweepIntent.
+ */
 export async function readProductCollections(graphql, productGid) {
   const d = await graphql(
-    `query ($id: ID!) { product(id: $id) { collections(first: 100) { pageInfo { hasNextPage } nodes { id } } } }`,
+    `query ($id: ID!) {
+      product(id: $id) { status collections(first: 100) { pageInfo { hasNextPage } nodes { id } } }
+    }`,
     { id: productGid }
   );
-  const c = d.product?.collections;
-  if (!c) throw new Error(`product ${productGid} not found while reading its collections`);
-  if (c.pageInfo.hasNextPage) {
+  const p = d.product;
+  if (!p?.collections) throw new Error(`product ${productGid} not found while reading its collections`);
+  if (p.collections.pageInfo.hasNextPage) {
     throw new Error(`product ${productGid} is in >100 collections — refusing to act on a partial read`);
   }
-  return c.nodes.map((n) => n.id);
+  return { collections: p.collections.nodes.map((n) => n.id), status: p.status };
+}
+
+// ── WHAT THE SWEEP MAY DO TO ONE PRODUCT ─────────────────────────────────────
+// Pure, so the decision that can strip a public listing is testable without a
+// shop. `node` is /shopify_publish/{pid} (may be null); `shopifyStatus` is what
+// Shopify holds RIGHT NOW.
+//
+// THE RACE THIS EXISTS FOR. reconcile.mjs joins the collection, publishes, and
+// makes the product ACTIVE — and only THEN writes confirmLiveState. So for the
+// whole tail of a publish, a perfectly FRESH read of /shopify_publish says
+// "awaiting" while Shopify already holds the membership and, at the end, a
+// public listing. Re-reading the node does not help: the node is correct and
+// simply behind. A sweep that judged on the node alone would strip a product
+// out of the collection it had just been published into, and call it a success.
+//
+// Two independent guards, because they cover different failures:
+//   "hold"  — desiredState "on" without confirmation means a publish is IN
+//             FLIGHT. confirmLiveState deliberately leaves desiredState alone
+//             and markBlocked sets it to "off", so this condition is exactly
+//             "the reconciler is mid-publish" and nothing else.
+//   "drift" — Shopify says ACTIVE while the record says not-live, with no
+//             intent to explain it. That is DURABLE divergence: a reconciler
+//             killed between productUpdate(ACTIVE) and confirmLiveState leaves
+//             a publicly live product on an awaiting node forever. Stripping it
+//             would be the wrong repair, so the sweep refuses and says so.
+export function sweepIntent(node, shopifyStatus) {
+  if (node?.state === "live" && node?.liveState === "on") {
+    return { action: "assign", reason: null };
+  }
+  if (node?.desiredState === "on") {
+    return {
+      action: "hold",
+      reason: "a publish is in flight — the reconciler joins collections and publishes BEFORE it confirms; leave this to it",
+    };
+  }
+  if (shopifyStatus === "ACTIVE") {
+    return {
+      action: "drift",
+      reason: `Shopify holds this product ACTIVE but /shopify_publish says ${node ? `${node.state}/${node.liveState ?? "—"}` : "nothing (no node)"} with no intent — refusing to strip a live listing; reconcile it or fix the node first`,
+    };
+  }
+  return { action: "strip", reason: null };
 }
 
 /** Apply a plan. A no-op plan makes NO Shopify call. Returns the plan it applied. */

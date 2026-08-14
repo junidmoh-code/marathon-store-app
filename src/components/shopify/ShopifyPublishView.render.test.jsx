@@ -1026,7 +1026,7 @@ test("an unchanged node leaves the confirmation alone", async () => {
   expect(texts(tree)).not.toContain("changed while the confirmation was open");
 });
 
-test("two overlapping reads: the LATER answer wins — an earlier apply is not mistaken for a write", async () => {
+test("two overlapping reads, IN order: the fresher answer sticks", async () => {
   await withFakeTimers(async () => {
     keys = new Set(["p1"]);
     bodies = { p1: { ...AWAITING_PENDING } };
@@ -1049,6 +1049,36 @@ test("two overlapping reads: the LATER answer wins — an earlier apply is not m
     await act(async () => { heldReads[0](); });
     await flush();
     await act(async () => { heldReads[1](); });
+    await flush();
+
+    expect(texts(tree)).toContain("ON — LIVE");
+    expect(texts(tree)).not.toContain("PUBLISHING…");
+  });
+});
+
+test("two overlapping reads landing OUT of order: the older answer never overwrites the newer", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { ...AWAITING_PENDING } };
+    const tree = await mountOpen();
+
+    // R1 goes out holding the still-pending node, and is held.
+    holdNodesFor = true;
+    await act(() => { vi.advanceTimersByTime(20000); });
+    // The reconciler confirms; R2 goes out holding the LIVE node, also held.
+    bodies.p1 = { ...CONFIRMED_LIVE };
+    await act(() => { vi.advanceTimersByTime(20000); });
+    expect(heldReads).toHaveLength(2);
+
+    // R2 (newer) lands FIRST, then R1 (older). Tracking local writes alone
+    // cannot tell these apart — neither is a write — so without a read
+    // sequence the stale R1 wins and the row reverts to pending for a
+    // whole tick.
+    await act(async () => { heldReads[1](); });
+    await flush();
+    expect(texts(tree)).toContain("ON — LIVE");
+
+    await act(async () => { heldReads[0](); });
     await flush();
 
     expect(texts(tree)).toContain("ON — LIVE");
