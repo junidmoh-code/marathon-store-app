@@ -1,17 +1,21 @@
 // ─── Shopify Publishing — core contracts pinned ──────────────────────────────
+// The 2026-08-14 state model: awaiting | live | blocked, on/off for live
+// products, desiredState intent + pending derivation. The page and the
+// owner-run scripts must never disagree on these.
 import { describe, it, expect } from "vitest";
 import {
-  CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, nominationState,
-  checkCleanName, blockedReason, pipelineCounts,
+  CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
+  isOn, isPendingSwitch, checkCleanName, blockedReason,
   STATE_FILTERS, reviewStateFor, matchesStateFilter,
 } from "./shopifyPublishCore";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
 import { PUBLISH_STATES as SCRIPT_STATES } from "../../../scripts/shopify/publishNode.mjs";
 
 describe("cross-surface contracts", () => {
-  it("card and push scripts agree on the condition values and states", () => {
+  it("page and scripts agree on the condition values and states", () => {
     expect(CONDITIONS).toEqual(SCRIPT_CONDITIONS);
     expect(PUBLISH_STATES).toEqual(SCRIPT_STATES);
+    expect(PUBLISH_STATES).toEqual(["awaiting", "live", "blocked"]);
   });
 });
 
@@ -25,18 +29,55 @@ describe("gate — mirrors the console write rule", () => {
   });
 });
 
-describe("nomination state — condition has NO default", () => {
-  it("condition set → nominated; unset/invalid → blocked", () => {
-    for (const c of CONDITIONS) expect(nominationState(c)).toBe("nominated");
-    expect(nominationState(undefined)).toBe("blocked");
-    expect(nominationState("Mint")).toBe("blocked");
+describe("the condition gate — NO default, live is unreachable without one", () => {
+  it("canGoLive only with one of the three grades", () => {
+    for (const c of CONDITIONS) expect(canGoLive({ condition: c })).toBe(true);
+    expect(canGoLive({})).toBe(false);
+    expect(canGoLive({ condition: "Mint" })).toBe(false);
+    expect(canGoLive(null)).toBe(false);
   });
-  it("blockedReason says why a nomination cannot push", () => {
+  it("blockedReason: condition gate wins, then the reconciler's recorded reason", () => {
     expect(blockedReason({ state: "blocked" })).toMatch(/Condition not set/);
-    expect(blockedReason({ state: "nominated" })).toMatch(/Condition not set/);
-    expect(blockedReason({ state: "nominated", condition: CONDITIONS[0] })).toBeNull();
-    expect(blockedReason({ state: "draft" })).toBeNull();
+    expect(blockedReason({ state: "blocked", condition: CONDITIONS[0], blockedReason: "validator: brand trigger in tags[0]" }))
+      .toBe("validator: brand trigger in tags[0]");
+    expect(blockedReason({ state: "blocked", condition: CONDITIONS[0] })).toBeNull();
+    expect(blockedReason({ state: "awaiting" })).toBeNull();
+    expect(blockedReason({ state: "live", liveState: "off" })).toBeNull();
     expect(blockedReason(null)).toBeNull();
+  });
+});
+
+describe("legacy state tolerance — pre-migration nodes still read correctly", () => {
+  it("none/nominated → awaiting, draft → live (off), live → live (on)", () => {
+    expect(normalizedState({ state: "none" })).toBe("awaiting");
+    expect(normalizedState({ state: "nominated" })).toBe("awaiting");
+    expect(normalizedState({ state: "draft" })).toBe("live");
+    expect(normalizedState({ state: "live" })).toBe("live");
+    expect(normalizedState({ state: "blocked" })).toBe("blocked");
+    expect(normalizedState(null)).toBe("awaiting");
+    // legacy draft existed on Shopify but was never published
+    expect(isOn({ state: "draft" })).toBe(false);
+    expect(isOn({ state: "live" })).toBe(true);
+  });
+});
+
+describe("on/off + pending — intent vs confirmed", () => {
+  it("isOn is confirmed channel state, live products only", () => {
+    expect(isOn({ state: "live", liveState: "on" })).toBe(true);
+    expect(isOn({ state: "live", liveState: "off" })).toBe(false);
+    expect(isOn({ state: "awaiting", desiredState: "on" })).toBe(false); // intent is not confirmation
+    expect(isOn({ state: "blocked", liveState: "on" })).toBe(false);
+    expect(isOn(null)).toBe(false);
+  });
+  it("pending exactly while desiredState disagrees with the confirmed state", () => {
+    expect(isPendingSwitch({ state: "awaiting", desiredState: "on" })).toBe(true);   // publish requested
+    expect(isPendingSwitch({ state: "live", liveState: "off", desiredState: "on" })).toBe(true);
+    expect(isPendingSwitch({ state: "live", liveState: "on", desiredState: "off" })).toBe(true);
+    expect(isPendingSwitch({ state: "live", liveState: "on", desiredState: "on" })).toBe(false);
+    expect(isPendingSwitch({ state: "live", liveState: "off", desiredState: "off" })).toBe(false);
+    expect(isPendingSwitch({ state: "awaiting" })).toBe(false);                       // no intent expressed
+    expect(isPendingSwitch({ state: "awaiting", desiredState: "off" })).toBe(false);  // cancelled publish
+    expect(isPendingSwitch(null)).toBe(false);
   });
 });
 
@@ -58,23 +99,25 @@ describe("checkCleanName — the LIVE input trigger check", () => {
 });
 
 describe("reviewStateFor — the page's row/filter state", () => {
-  it("no node, or an unapproved state-none node, is awaiting review", () => {
+  it("no node, or an unapproved awaiting node, is awaiting review", () => {
     expect(reviewStateFor(null)).toBe("awaiting");
     expect(reviewStateFor(undefined)).toBe("awaiting");
-    expect(reviewStateFor({ state: "none" })).toBe("awaiting");
-    // withdrawn nomination / grade-only node: the name was never signed off
-    expect(reviewStateFor({ state: "none", condition: CONDITIONS[0] })).toBe("awaiting");
+    expect(reviewStateFor({ state: "awaiting" })).toBe("awaiting");
+    // grade-only node: the name was never signed off
+    expect(reviewStateFor({ state: "awaiting", condition: CONDITIONS[0] })).toBe("awaiting");
   });
-  it("an approval stamp on a state-none node reads approved", () => {
+  it("an approval stamp on an awaiting node reads approved", () => {
+    expect(reviewStateFor({ state: "awaiting", nameApprovedAt: 1755000000000 })).toBe("approved");
+    // legacy pre-migration shape
     expect(reviewStateFor({ state: "none", nameApprovedAt: 1755000000000 })).toBe("approved");
   });
-  it("pipeline states pass through", () => {
-    for (const s of ["nominated", "draft", "live", "blocked"]) {
-      expect(reviewStateFor({ state: s })).toBe(s);
-    }
+  it("live and blocked pass through", () => {
+    expect(reviewStateFor({ state: "live", liveState: "on" })).toBe("live");
+    expect(reviewStateFor({ state: "live", liveState: "off" })).toBe("live");
+    expect(reviewStateFor({ state: "blocked" })).toBe("blocked");
   });
   it("every non-all filter key is a reachable review state", () => {
-    const reachable = new Set(["awaiting", "approved", "nominated", "draft", "live", "blocked"]);
+    const reachable = new Set(["awaiting", "approved", "live", "blocked"]);
     for (const { key } of STATE_FILTERS) {
       if (key !== "all") expect(reachable.has(key)).toBe(true);
     }
@@ -85,16 +128,6 @@ describe("reviewStateFor — the page's row/filter state", () => {
     expect(matchesStateFilter("awaiting", "awaiting")).toBe(true);
     expect(matchesStateFilter("awaiting", "approved")).toBe(false);
     expect(matchesStateFilter("blocked", "blocked")).toBe(true);
-    expect(matchesStateFilter("nominated", "draft")).toBe(false);
-  });
-});
-
-describe("pipelineCounts", () => {
-  it("counts only real pipeline states", () => {
-    expect(pipelineCounts({
-      a: { state: "nominated" }, b: { state: "draft" }, c: { state: "draft" },
-      d: { state: "blocked" }, e: { state: "none" }, f: null,
-    })).toEqual({ nominated: 1, draft: 2, live: 0, blocked: 1 });
-    expect(pipelineCounts(null)).toEqual({ nominated: 0, draft: 0, live: 0, blocked: 0 });
+    expect(matchesStateFilter("live", "awaiting")).toBe(false);
   });
 });

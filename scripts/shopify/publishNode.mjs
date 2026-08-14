@@ -1,30 +1,40 @@
 // ── /shopify_publish/{productId} — the publishing-state node ─────────────────
 // One node per product (owner decision 2026-08-13), SEPARATE from the
 // /shopify_sync ID map: sync records WHAT exists on Shopify, publish records
-// WHERE a product is in the human pipeline:
+// WHERE a product is in the human pipeline. State model of 2026-08-14 — the
+// old none/nominated/draft chain is collapsed:
 //
 //   /shopify_publish/{productId} = {
-//     state:            "none" | "nominated" | "draft" | "live" | "blocked",
+//     state:            "awaiting" | "live" | "blocked",
+//     liveState:        "on" | "off",            // CONFIRMED channel state, live products only
+//     desiredState:     "on" | "off",            // INTENT written by the page; reconciler applies
+//     blockedReason:    string,                  // reconciler's apply-time refusal, blocked only
 //     cleanName:        string,                  // the compliant listing title
 //     cleanNameSource:  "lexicon" | "ai" | "manual",
+//     nameApprovedAt:   epoch ms,                // name signed off in the review page
 //     condition:        one of CONDITIONS (compliance.mjs) — NO default,
 //     updatedAt:        epoch ms,
 //     updatedBy:        uid or "script:<name>",
 //   }
 //
-// Console rules (already pasted by the owner, NOT in database.rules.json):
-// read = any non-anonymous user; write = Junid or stockRole admin. Admin SDK
-// scripts bypass rules but keep to the same field set so the card and the
-// scripts always agree on shape.
+// The page writes desiredState ONLY (plus name/condition fields); state and
+// liveState are written back by scripts/shopify/reconcile.mjs once Shopify
+// confirms. desiredState ≠ confirmed ⇒ the row shows pending. The browser
+// NEVER calls Shopify — it cannot hold the client secret.
+//
+// Console rules (pasted by the owner, NOT in database.rules.json): read = any
+// non-anonymous user; write = Junid or stockRole admin. Admin SDK scripts
+// bypass rules but keep to the same field set so the page and the scripts
+// always agree on shape.
 //
 // WRITE DISCIPLINE: every write here is a MERGE (update()), never set() — a
-// script caching a cleanName must not clobber a condition Junid just set from
-// the card, and vice versa. cachePublishName never overwrites an existing
+// script confirming a liveState must not clobber a condition Junid just set
+// from the page, and vice versa. cachePublishName never overwrites an existing
 // cleanName: a name is generated once and never regenerated (AI is
 // non-deterministic; a re-run must not silently change a reviewed title).
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 
-export const PUBLISH_STATES = ["none", "nominated", "draft", "live", "blocked"];
+export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
 
 export async function readPublishNode(db, productId) {
   assertSafeSegment(productId, "productId");
@@ -37,7 +47,7 @@ export async function readAllPublishNodes(db) {
 
 // Cache a generated/typed clean name. Returns "cached" | "kept-existing".
 // The never-overwrite guarantee is a TRANSACTION on the cleanName child — a
-// read-then-update here would let an AI run and a card save both observe
+// read-then-update here would let an AI run and a page save both observe
 // "no name" and the later write clobber the earlier reviewed one.
 export async function cachePublishName(db, productId, { cleanName, source, updatedBy }) {
   assertSafeSegment(productId, "productId");
@@ -54,11 +64,32 @@ export async function cachePublishName(db, productId, { cleanName, source, updat
   return "cached";
 }
 
-export async function setPublishState(db, productId, state, updatedBy) {
+// The reconciler's confirmation write: Shopify now agrees the product is
+// on/off, so record it and let the page's pending marker clear. desiredState
+// is deliberately NOT touched — it is the page's field; leaving it in place
+// keeps the write idempotent (desired == confirmed ⇒ no diff next run).
+export async function confirmLiveState(db, productId, liveState, updatedBy) {
   assertSafeSegment(productId, "productId");
-  if (!PUBLISH_STATES.includes(state)) throw new Error(`invalid publish state: ${state}`);
+  if (liveState !== "on" && liveState !== "off") throw new Error(`invalid liveState: ${liveState}`);
   await db.ref(`shopify_publish/${productId}`).update({
-    state,
+    state: "live",
+    liveState,
+    blockedReason: null,
+    updatedAt: Date.now(),
+    updatedBy,
+  });
+}
+
+// The reconciler's refusal write: the apply-time validator said no. The
+// intent is cleared back to "off" so the refusal doesn't retry forever —
+// after fixing the cause, the page re-expresses it (blocked → awaiting via
+// the condition chips, or Publish again).
+export async function markBlocked(db, productId, reason, updatedBy) {
+  assertSafeSegment(productId, "productId");
+  await db.ref(`shopify_publish/${productId}`).update({
+    state: "blocked",
+    blockedReason: String(reason),
+    desiredState: "off",
     updatedAt: Date.now(),
     updatedBy,
   });

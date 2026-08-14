@@ -15,7 +15,7 @@
 import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { CONDITIONS, nominationState, checkCleanName } from "./shopifyPublishCore";
+import { CONDITIONS, checkCleanName } from "./shopifyPublishCore";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -187,7 +187,7 @@ export async function nominateProduct(productId, existingNode, condition = undef
     }
     const cond = condition !== undefined ? condition : base.condition;
     return { ...base, ...(condition !== undefined ? { condition } : {}),
-             state: nominationState(cond), ...stamp() };
+             state: CONDITIONS.includes(cond) ? "nominated" : "blocked", ...stamp() };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res.ok ? { ok: true, state: res.node?.state, node: res.node } : res;
