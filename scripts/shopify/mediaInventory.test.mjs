@@ -29,6 +29,25 @@ describe("buildMediaPlan", () => {
     expect(() => buildMediaPlan({ photoUrl: "http://insecure/p.jpg" }, "Sneaker")).toThrow(/HTTPS/);
     expect(() => buildMediaPlan(product, "")).toThrow(/cleaned title/);
   });
+  it("the reviewed publishing set replaces the record's photos wholesale, in its order", () => {
+    const publish = [
+      "https://firebasestorage.googleapis.com/x/gen_clean.jpg?alt=media",
+      "https://firebasestorage.googleapis.com/x/angle1.jpg?alt=media",
+    ];
+    const plan = buildMediaPlan(product, "Low-top sneaker black", publish);
+    // photo.jpg (the record's hero) is OUT — a removal in the page must
+    // actually remove from the push, so there is no fallback mixing.
+    expect(plan.map((m) => m.originalSource)).toEqual(publish);
+    expect(plan[0].alt).toBe("Low-top sneaker black");
+  });
+  it("a null/empty publishing set falls back to photoUrl + gallery", () => {
+    expect(buildMediaPlan(product, "Sneaker black", null)).toHaveLength(2);
+    expect(buildMediaPlan(product, "Sneaker black", [])).toHaveLength(2);
+  });
+  it("the publishing set passes the same host allowlist as record photos", () => {
+    expect(() => buildMediaPlan(product, "Sneaker black", ["https://evil.example.com/x.jpg"]))
+      .toThrow(/not the app's Firebase Storage/);
+  });
 });
 
 describe("networkTotals — one sellable pool", () => {

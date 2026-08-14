@@ -1,25 +1,34 @@
 // ── Product photos for the Shopify push ──────────────────────────────────────
-// Photos come from the record's own fields: photoUrl (the hero) plus gallery
-// (extra angles, AI photo studio) — public HTTPS Firebase Storage URLs, no
-// signing. Alt text is the CLEANED name (the original may carry triggers and
-// alt text is a pushed field). A product with no usable photo, or with any
-// URL that does not answer 2xx, FAILS LOUDLY before any Shopify write — an
-// imageless product never ships.
+// The reviewed PUBLISHING set (/shopify_publish/{pid}/photos, ordered, first
+// = primary) wins when present; otherwise photos come from the record's own
+// fields: photoUrl (the hero) plus gallery (extra angles, AI photo studio).
+// Either way: public HTTPS Firebase Storage URLs, no signing. Alt text is the
+// CLEANED name (the original may carry triggers and alt text is a pushed
+// field). A product with no usable photo, or with any URL that does not
+// answer 2xx, FAILS LOUDLY before any Shopify write — an imageless product
+// never ships.
 //
 // buildMediaPlan is pure (unit-tested); preflightPhotoUrls and attachMedia do
 // the I/O. productCreateMedia is asynchronous on Shopify's side, so
 // attachMedia polls the read-back until every file is READY (or fails loudly
 // on FAILED) — "created" alone does not prove the image landed.
 
-// → [{ originalSource, alt, mediaContentType: "IMAGE" }] — hero first, then
-// gallery angles, de-duplicated. Throws when the record has no photoUrl.
-export function buildMediaPlan(product, cleanTitle) {
+// → [{ originalSource, alt, mediaContentType: "IMAGE" }] — the publishing set
+// in its reviewed order when given, else hero first then gallery angles,
+// de-duplicated. Throws when no usable photo exists.
+export function buildMediaPlan(product, cleanTitle, publishPhotos = null) {
   const urls = [];
   const push = (u) => {
     if (typeof u === "string" && u.trim() !== "" && !urls.includes(u)) urls.push(u);
   };
-  push(product?.photoUrl);
-  for (const u of Array.isArray(product?.gallery) ? product.gallery : []) push(u);
+  if (Array.isArray(publishPhotos) && publishPhotos.length) {
+    // The reviewed set REPLACES the record's photos wholesale — a removal in
+    // the page must actually remove from the push, so no fallback mixing.
+    for (const u of publishPhotos) push(u);
+  } else {
+    push(product?.photoUrl);
+    for (const u of Array.isArray(product?.gallery) ? product.gallery : []) push(u);
+  }
   if (urls.length === 0) {
     throw new Error("product has no photoUrl — an imageless product is never pushed");
   }

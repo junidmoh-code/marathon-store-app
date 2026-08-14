@@ -51,7 +51,7 @@ import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNod
 // so the UI can never promise a batch this script won't take in one run.
 // Sizing rationale (measured against the live shop's rate limiter) lives on
 // the constant.
-import { RECONCILE_MAX_APPLY as MAX_APPLY } from "../../src/components/shopify/publishShared.js";
+import { RECONCILE_MAX_APPLY as MAX_APPLY, normalizePhotoList } from "../../src/components/shopify/publishShared.js";
 const UPDATED_BY = "script:reconcile";
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -225,8 +225,11 @@ for (const { pid, want } of capped) {
     }
     if (problems.length) { await refuse(pid, problems.join("; ")); continue; }
 
+    // The reviewed publishing photo set (ordered, first = primary) wins over
+    // the record's photoUrl/gallery; buildMediaPlan re-applies the HTTPS +
+    // Storage-host guards to it, and preflight still 404-fails loudly.
     let mediaPlan;
-    try { mediaPlan = buildMediaPlan(product, title); }
+    try { mediaPlan = buildMediaPlan(product, title, normalizePhotoList(fresh.photos)); }
     catch (e) { await refuse(pid, String(e?.message || e)); continue; }
 
     const payload = {
