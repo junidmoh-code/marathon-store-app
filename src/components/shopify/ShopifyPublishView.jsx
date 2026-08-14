@@ -358,8 +358,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+  // The pid THIS view pushed onto the history stack, if any. Back can only
+  // safely pop when the product on screen is the one we pushed.
+  const pushedPid = useRef(null);
   const openProduct = (pid) => {
     listScrollRef.current = window.scrollY;
+    pushedPid.current = pid;
     window.location.hash = "shopify/" + pid;
     // The document keeps its offset across the swap, so a row tapped far down
     // the list would open the product already scrolled past its photos —
@@ -367,13 +371,21 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     // is remembered above and restored on the way back.
     window.scrollTo(0, 0);
   };
-  // Back to the list. A tab opened DIRECTLY on #shopify/{pid} (a shared link,
-  // a bookmark, a reload) has no earlier in-app entry to pop, so an
-  // unconditional history.back() would do nothing and strand the page with a
-  // dead Back button — clearing the hash always reaches the list.
+  // Back to the list. Pop the history entry only when it is OURS — i.e. this
+  // product is the one a row tap pushed. Anything else (a tab opened straight
+  // onto a shared #shopify/{pid} link, a hand-edited address bar) has no
+  // in-app entry to pop: history.back() would either do nothing, stranding
+  // the page with a dead Back button, or leave the app entirely for whatever
+  // the tab was showing before. Clearing the hash always lands on the list.
+  // (window.history.length can't answer this — it counts the whole tab's
+  // history, including pages from other sites.)
   const backToList = () => {
-    if (window.history.length > 1) window.history.back();
-    else window.location.hash = "";
+    if (pushedPid.current && pushedPid.current === detailPid) {
+      pushedPid.current = null;
+      window.history.back();
+    } else {
+      window.location.hash = "";
+    }
   };
   const prevDetailPid = useRef(detailPid);
   useEffect(() => {

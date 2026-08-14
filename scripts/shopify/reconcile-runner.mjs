@@ -149,6 +149,15 @@ function acquireLock() {
       // run, so the reconcile it spawned keeps going as an orphan STILL
       // pushing to Shopify — a lock that only tracked the dead parent would be
       // reclaimed and the next tick would overlap that orphan.
+      // An UNREADABLE lock is not proof of a dead owner. The holder rewrites
+      // this file once (to record its child), and a reader landing inside that
+      // rewrite would see a truncated file — treating that as "stale" would
+      // unlink a LIVE run's lock and start a second reconciler. Re-read once
+      // before believing it; the rewrite is atomic now (rename), so a second
+      // failure means the file really is corrupt.
+      if (held === null) {
+        try { held = JSON.parse(readFileSync(LOCK_FILE, "utf8")); } catch { /* genuinely unreadable */ }
+      }
       const owner = held?.pid && processAlive(held.pid) ? held.pid
         : held?.childPid && processAlive(held.childPid) ? held.childPid
         : null;
@@ -161,11 +170,34 @@ function acquireLock() {
         return false;
       }
       // Owner gone (crash, kill -9, power cut) — its lock is meaningless.
-      log(`⚠ stale lock from pid ${held?.pid ?? "unknown"} (owner gone) — reclaiming`);
-      try { unlinkSync(LOCK_FILE); } catch { /* another tick got there first */ }
+      // STEAL BY RENAME, never by unlink: unlink is check-then-act, so two
+      // ticks both judging the same lock stale would BOTH delete and both
+      // create — the second one deleting the first's brand-new lock. rename()
+      // is atomic, so exactly one racer can move the stale file out of the
+      // way; the loser's rename fails and it re-enters the loop, where it
+      // either creates the lock itself or finds the winner's and stands down.
+      // Either way exactly one run proceeds.
+      const stolen = `${LOCK_FILE}.stale.${process.pid}`;
+      try {
+        renameSync(LOCK_FILE, stolen);
+      } catch {
+        continue; // another tick took it — loop and re-evaluate
+      }
+      log(`⚠ stale lock from pid ${held?.pid ?? "unknown"} (owner gone) — reclaimed`);
+      try { unlinkSync(stolen); } catch { /* nothing to clean */ }
     }
   }
   return false;
+}
+
+// Rewrite the lock ATOMICALLY. A plain write truncates first, and a tick
+// reading in that window would see an empty file (reviewer finding,
+// 2026-08-14) — rename() swaps the contents in one step, so a reader sees
+// either the old lock or the new one, never half of one.
+function writeLockAtomically() {
+  const tmp = `${LOCK_FILE}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(lockOwners));
+  renameSync(tmp, LOCK_FILE);
 }
 
 function releaseLock() {
@@ -203,6 +235,9 @@ let shuttingDown = false;
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(sig, () => {
     if (shuttingDown) return;
+    // The close handler below checks this flag: a deliberate stop
+    // (launchctl unload, reboot) must NOT be logged as a crashed run or
+    // counted toward the outage banner (reviewer finding, 2026-08-14).
     shuttingDown = true;
     if (!child || child.exitCode !== null) { release(); process.exit(130); }
     // Releasing the lock while the child is still alive would orphan a
@@ -210,13 +245,12 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     // tick, finding the lock free, would start a SECOND one. So: kill it,
     // wait for it to actually die, and only then let go of the lock.
     try { log(`⚠ runner received ${sig} — stopping the in-flight reconcile (pid ${child.pid}); the next tick resumes`); } catch { /* log unavailable */ }
-    const finish = () => { release(); process.exit(130); };
-    child.once("close", finish);
-    try { child.kill("SIGTERM"); } catch { finish(); }
+    try { child.kill("SIGTERM"); } catch { release(); process.exit(130); }
     // A child that ignores SIGTERM must not hold the schedule hostage.
     const force = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch { /* gone */ }
-      finish();
+      release();
+      process.exit(130);
     }, 10_000);
     force.unref?.();
   });
@@ -231,7 +265,7 @@ child = spawn(process.execPath, [join(HERE, "reconcile.mjs"), "--commit"], {
 // still see that the reconcile it started is alive and stand down.
 lockOwners.childPid = child.pid;
 try {
-  writeFileSync(LOCK_FILE, JSON.stringify(lockOwners));
+  writeLockAtomically();
 } catch (e) {
   log(`⚠ could not record the reconcile pid in the lock: ${String(e?.message || e)}`);
 }
@@ -293,6 +327,17 @@ child.on("error", (e) => {
 });
 
 child.on("close", (code) => {
+  // A stop WE asked for is not a failed run. Flush what the run managed to
+  // say, leave the counters alone, and let the signal handler's exit stand.
+  if (shuttingDown) {
+    if (live) {
+      if (carry.trim() !== "") log(`   ${carry.trimEnd()}`);
+      log("── run end: STOPPED before finishing — the next tick starts it again ──");
+    }
+    release();
+    process.exit(130);
+  }
+
   const idle = !live && !sawStderr && code === 0 && /nothing to do\./.test(buffered);
   const state = readState();
 
@@ -343,7 +388,9 @@ child.on("close", (code) => {
   } else {
     const failures = (state.consecutiveFailures || 0) + 1;
     log(`✗✗ RUN FAILED (exit ${code}) — the run did not complete; Shopify was NOT updated.`);
-    log(`   Intent stays unapplied; the next tick retries. Consecutive failures: ${failures}.`);
+    log(`   Intent stays unapplied and the next tick retries — except for any product`);
+    log(`   shown REFUSED above, which is already blocked and needs fixing in the app.`);
+    log(`   Consecutive failures: ${failures}.`);
     if (failures >= 5) {
       log(`   ⚠⚠ ${failures} FAILED RUNS IN A ROW — this is an outage, not a blip. ` +
           `Check network/credentials on this machine before pressing Publish again.`);

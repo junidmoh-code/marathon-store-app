@@ -259,8 +259,7 @@ test("Back works on a direct landing, where there is no history entry to pop", a
   // A tab opened straight on #shopify/{pid} (shared link, bookmark, reload)
   // has nothing to pop; an unconditional history.back() would leave the user
   // stranded on the product with a dead Back button.
-  hashValue = "#shopify/p1";
-  historyLength = 1; // fresh tab: history.back() would do nothing
+  hashValue = "#shopify/p1"; // landed here directly — the view never pushed it
   let tree;
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
   await flush();
