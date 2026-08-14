@@ -42,6 +42,7 @@ import {
   setPublishPhotos,
 } from "./shopifyPublishStore";
 import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
+import { isCleanBackgroundAvailable, cleanBackground } from "./geminiClean";
 
 const UNCAT = "Uncategorised";
 
@@ -291,8 +292,9 @@ function PhotoStrip({ product, node, locked, onChanged }) {
           {chip("Make primary", () => makePrimary(sel), sel === 0)}
           {chip("Remove from publish set", () => removeAt(sel))}
           <CleanBackgroundAction
-            product={product} node={node} photos={photos} index={sel}
-            busy={busy || uploading} onChanged={onChanged} setErr={setErr} />
+            productId={product.id} originalUrl={photos[sel]}
+            busy={busy || uploading} setErr={setErr}
+            onReplace={(url) => write(photos.map((u, k) => (k === sel ? url : u)))} />
         </div>
       )}
       {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}
@@ -300,10 +302,96 @@ function PhotoStrip({ product, node, locked, onChanged }) {
   );
 }
 
-// Placeholder until the Gemini clean-background action lands (next commit):
-// keeps the strip's action row shape stable.
-function CleanBackgroundAction() {
-  return null;
+// ─── CLEAN BACKGROUND (Gemini) ───────────────────────────────────────────────
+// One photo at a time, no bulk generate. The flow the truthfulness rule
+// demands (see geminiClean.js): generate → AUTOMATIC subject-preservation
+// gate (a result whose product region changed is discarded with a logged
+// reason and never shown) → side-by-side against the original → EXPLICIT
+// accept. Accepting uploads a NEW Storage object beside the original
+// (derivedFrom recorded) and swaps only this slot of the publishing set —
+// the original photo survives in the record, in Storage, everywhere.
+// Without GEMINI_API_KEY at build time the chip is disabled with a plain
+// message and the rest of the strip works untouched.
+function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace }) {
+  const available = isCleanBackgroundAvailable();
+  const [generating, setGenerating] = useState(false);
+  const [candidate, setCandidate] = useState(null); // { blob, previewUrl, metrics }
+  const [saving, setSaving] = useState(false);
+
+  const discardCandidate = () => {
+    if (candidate) URL.revokeObjectURL(candidate.previewUrl);
+    setCandidate(null);
+  };
+
+  const generate = async () => {
+    if (generating || busy) return;
+    setGenerating(true); setErr(null);
+    try {
+      const res = await cleanBackground(originalUrl);
+      if (!res.ok) {
+        setErr(`The generated image changed the product and was discarded (${res.reason}). The original stays as it is — you can try again.`);
+        return;
+      }
+      setCandidate(res);
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const accept = async () => {
+    if (!candidate || saving) return;
+    setSaving(true); setErr(null);
+    try {
+      const url = await uploadPublishPhoto(productId, candidate.blob, { kind: "gen", derivedFrom: originalUrl });
+      await onReplace(url);
+      discardCandidate();
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <button disabled={!available || busy || generating}
+        onClick={generate}
+        title={available ? undefined : "GEMINI_API_KEY was not set when this app was built — the action is disabled."}
+        style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem", opacity: available ? 1 : 0.4 }}>
+        {generating ? "Generating…" : "Clean background"}
+      </button>
+      {!available && (
+        <span style={{ fontSize: 10, color: GRAY, alignSelf: "center" }}>
+          background cleanup off — no GEMINI_API_KEY at build
+        </span>
+      )}
+      {candidate && (
+        <div style={{ width: "100%", marginTop: 7 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 3 }}>Original</div>
+              <img src={originalUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 9.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, marginBottom: 3 }}>Cleaned background</div>
+              <img src={candidate.previewUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
+            The product region matched the original (checked automatically). Look once more — accept only if the item is untouched.
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <button disabled={saving} onClick={discardCandidate} style={{ ...bGray, padding: "7px 11px", fontSize: "0.72rem" }}>Discard</button>
+            <button disabled={saving} onClick={accept} style={{ ...bBlue, padding: "7px 11px", fontSize: "0.72rem" }}>
+              {saving ? "Saving…" : "Use cleaned photo"}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 }
 
 // ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
