@@ -19,3 +19,28 @@
 // mutation-safe). The binding constraint on run size is operator attention,
 // not the API.
 export const RECONCILE_MAX_APPLY = 25;
+
+// The most photos one publishing set may hold. Shopify's media read-back in
+// reconcile.mjs pages at 50 and refuses an unpaginated set — 20 keeps every
+// product far inside that while being more angles than any listing needs.
+export const MAX_PUBLISH_PHOTOS = 20;
+
+// /shopify_publish/{pid}/photos → a clean ordered URL list, or null when the
+// node has no usable custom set (callers then fall back to the record's
+// photoUrl + gallery). RTDB stores arrays as 0..n children and hands them
+// back as arrays only when contiguous — a set that lost an index mid-edit
+// arrives as an object, so both shapes are accepted, keyed numerically,
+// de-duplicated, blanks dropped.
+export function normalizePhotoList(val) {
+  if (val == null) return null;
+  const arr = Array.isArray(val)
+    ? val
+    : typeof val === "object"
+      ? Object.keys(val).sort((a, b) => Number(a) - Number(b)).map((k) => val[k])
+      : [];
+  const out = [];
+  for (const u of arr) {
+    if (typeof u === "string" && u.trim() !== "" && !out.includes(u)) out.push(u);
+  }
+  return out.length ? out : null;
+}

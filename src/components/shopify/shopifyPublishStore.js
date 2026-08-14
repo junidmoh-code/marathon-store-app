@@ -19,6 +19,7 @@ import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "f
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields } from "./shopifyPublishCore";
+import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -221,6 +222,55 @@ export async function setDesiredState(productId, node, want) {
     }
     return { ...base, ...normalizedFields(base), desiredState: want,
              ...(want === "on" ? { blockedReason: null } : {}), ...stamp() };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
+// What a publishing photo list may contain — the client-side mirror of the
+// media.mjs guards (public HTTPS, the app's Firebase Storage host only): a
+// URL the page accepts here but the reconciler would refuse at push time
+// would be a delayed, confusing failure. Exported for tests.
+export function publishPhotoListProblem(photos) {
+  if (!Array.isArray(photos) || photos.length === 0) {
+    return "The photo set can't be empty — a product never ships imageless.";
+  }
+  if (photos.length > MAX_PUBLISH_PHOTOS) {
+    return `At most ${MAX_PUBLISH_PHOTOS} photos per product.`;
+  }
+  if (new Set(photos).size !== photos.length) return "The photo set has a duplicate.";
+  for (const u of photos) {
+    if (typeof u !== "string" || u.trim() === "") return "The photo set has an empty entry.";
+    let host = "";
+    try { host = new URL(u).host; } catch { return "The photo set has an invalid URL."; }
+    if (!u.startsWith("https://") || host !== "firebasestorage.googleapis.com") {
+      return "Photos must be the app's own Firebase Storage URLs.";
+    }
+  }
+  return null;
+}
+
+/**
+ * Set the PUBLISHING photo list — ordered, first = primary, stored at
+ * /shopify_publish/{pid}/photos and NOWHERE else (/products and Storage are
+ * never touched; removing a photo here only removes it from what a publish
+ * would ship). `photos === null` clears the custom set back to the record's
+ * own photoUrl + gallery. Refused while the listing is ON — customers are
+ * looking at the current set; the reconciler re-syncs media at turn-on.
+ */
+export async function setPublishPhotos(productId, node, photos) {
+  if (photos !== null) {
+    const problem = publishPhotoListProblem(photos);
+    if (problem) return { ok: false, message: problem };
+  }
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    if (isOn(base)) {
+      refusal = "Listing is ON the storefront — switch it off before changing its photos.";
+      return undefined;
+    }
+    return { ...base, ...normalizedFields(base), photos: photos === null ? null : [...photos], ...stamp() };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;

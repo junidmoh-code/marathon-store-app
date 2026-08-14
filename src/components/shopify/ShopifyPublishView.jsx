@@ -34,12 +34,14 @@ import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as in
 import { cleanTitleFor } from "../../utils/shopifyTriggers";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
-  normalizedState, isOn, isPendingSwitch, canGoLive, batchSelectBlocker,
+  normalizedState, isOn, isPendingSwitch, canGoLive, batchSelectBlocker, effectivePhotoList,
 } from "./shopifyPublishCore";
-import { RECONCILE_MAX_APPLY } from "./publishShared";
+import { RECONCILE_MAX_APPLY, MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, approveName, publishProduct, setDesiredState, setCondition,
+  setPublishPhotos,
 } from "./shopifyPublishStore";
+import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
 
 const UNCAT = "Uncategorised";
 
@@ -77,9 +79,13 @@ function StateChip({ chip }) {
 
 // Same thumbnail treatment as LabelPrintView, plus lazy loading — rows exist
 // by the hundred per section and must not fetch a photo until scrolled to.
-function Thumb({ p }) {
-  if (p?.photoUrl) {
-    return <img src={p.photoUrl} alt="" loading="lazy"
+// Shows the PUBLISHING primary (first of the effective photo set), so a
+// custom-ordered set changes what the row leads with — the thumb never lies
+// about what the storefront would lead with.
+function Thumb({ p, node }) {
+  const primary = effectivePhotoList(p, node).photos[0];
+  if (primary) {
+    return <img src={primary} alt="" loading="lazy"
                 style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 10, flexShrink: 0 }}
                 onError={(e) => { e.currentTarget.style.display = "none"; }} />;
   }
@@ -97,17 +103,15 @@ function effectiveNameFor(product, node) {
 }
 
 // What the storefront would show — the facts the confirmation dialog states.
+// The photo count prices the EFFECTIVE publishing set (custom list when one
+// exists, else the record's photos) — the same set the reconciler pushes.
 function publicFacts(product, node, name) {
-  const photos = new Set(
-    [product?.photoUrl, ...(Array.isArray(product?.gallery) ? product.gallery : [])]
-      .filter((u) => typeof u === "string" && u.trim() !== "")
-  );
   const price = Number(product?.retailPrice);
   return {
     name,
     condition: node?.condition || null,
     price: price > 0 ? `R ${price.toFixed(2)}` : "no price set",
-    photoCount: photos.size,
+    photoCount: effectivePhotoList(product, node).photos.length,
   };
 }
 
@@ -153,6 +157,153 @@ function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
       </div>
     </div>
   );
+}
+
+// ─── PHOTO STRIP ─────────────────────────────────────────────────────────────
+// The row's publishing photo set, opened on demand. Interaction pattern is
+// the repo's own: the thumbnail strip (52px thumbs, white active border,
+// dimmed rest) is GalleryLightbox's strip from App.jsx; tap a thumb to
+// select it, then act on it with chips — the tap-to-act chip treatment of
+// the AI Studio Style Kit reference grid. Reordering is the lightbox's ‹ ›
+// glyph pair on the SELECTED thumb (no drag interaction exists anywhere in
+// the repo to match). First photo is primary, marked.
+//
+// Every action writes the full ordered list to /shopify_publish/{pid}/photos
+// through the store's transaction — NEVER to /products, never a blind set().
+// Removing only removes from the publishing set (the product record and
+// Storage keep the file); the last photo cannot be removed (imageless never
+// ships). Locked while the listing is ON, like the name and condition.
+function PhotoStrip({ product, node, locked, onChanged }) {
+  const { photos, custom } = effectivePhotoList(product, node);
+  const [sel, setSel] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+
+  const write = async (nextList, after) => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await setPublishPhotos(product.id, node, nextList);
+      if (!res?.ok) { setErr(res?.message || "Not saved."); return; }
+      onChanged(product.id, res.node);
+      after?.();
+    } catch (e) {
+      setErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= photos.length) return;
+    const next = [...photos];
+    [next[i], next[j]] = [next[j], next[i]];
+    write(next, () => setSel(j));
+  };
+  const makePrimary = (i) => {
+    const next = [photos[i], ...photos.filter((_, k) => k !== i)];
+    write(next, () => setSel(0));
+  };
+  const removeAt = (i) => {
+    if (photos.length === 1) {
+      setErr("A product never ships imageless — add another photo before removing this one.");
+      return;
+    }
+    write(photos.filter((_, k) => k !== i), () => setSel(null));
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const problem = uploadFileProblem(file);
+    if (problem) { setErr(problem); return; }
+    if (photos.length >= MAX_PUBLISH_PHOTOS) { setErr(`At most ${MAX_PUBLISH_PHOTOS} photos per product.`); return; }
+    setUploading(true); setErr(null);
+    try {
+      const blob = await compressImageFile(file);
+      const url = await uploadPublishPhoto(product.id, blob);
+      await write([...photos, url]);
+    } catch (ex) {
+      setErr(String(ex?.message || ex));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const chip = (label, onClick, disabled = false) => (
+    <button key={label} disabled={busy || uploading || disabled} onClick={onClick}
+      style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem" }}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ marginTop: 8, padding: "8px 0 2px", borderTop: "1px solid rgba(255,255,255,.04)" }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+        {photos.map((u, i) => (
+          <div key={u} style={{ position: "relative" }}>
+            <img src={u} alt="" loading="lazy"
+              onClick={() => !locked && setSel(sel === i ? null : i)}
+              style={{ width: 52, height: 52, objectFit: "cover", borderRadius: 9,
+                       cursor: locked ? "default" : "pointer", background: "rgba(255,255,255,.08)",
+                       border: sel === i ? "2px solid #fff" : "2px solid transparent",
+                       opacity: sel === null || sel === i ? 1 : 0.55 }} />
+            {i === 0 && (
+              <div style={{ position: "absolute", left: 2, bottom: 2, fontSize: 8, fontWeight: 800,
+                            color: GREEN, background: "rgba(0,0,0,.62)", borderRadius: 5, padding: "1px 4px" }}>
+                PRIMARY
+              </div>
+            )}
+          </div>
+        ))}
+        {!locked && (
+          <>
+            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp"
+              onChange={handleFile} style={{ display: "none" }} />
+            <button disabled={busy || uploading} onClick={() => fileRef.current?.click()}
+              style={{ width: 52, height: 52, borderRadius: 9, cursor: "pointer", fontFamily: FONT,
+                       background: "rgba(255,255,255,.03)", border: "1px dashed rgba(255,255,255,.18)",
+                       color: GRAY, fontSize: 20 }}>
+              {uploading ? "…" : "＋"}
+            </button>
+          </>
+        )}
+      </div>
+      {locked && (
+        <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
+          Listing is ON — switch it off to change photos. The reconciler re-syncs them at the next turn-on.
+        </div>
+      )}
+      {!locked && (
+        <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
+          {custom
+            ? "Custom publishing set — the product record's own photos are untouched."
+            : "Showing the product record's photos. Any change saves a publishing copy; the record is never edited."}
+        </div>
+      )}
+      {!locked && sel !== null && photos[sel] && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
+          {chip("‹ Move", () => move(sel, -1), sel === 0)}
+          {chip("Move ›", () => move(sel, 1), sel === photos.length - 1)}
+          {chip("Make primary", () => makePrimary(sel), sel === 0)}
+          {chip("Remove from publish set", () => removeAt(sel))}
+          <CleanBackgroundAction
+            product={product} node={node} photos={photos} index={sel}
+            busy={busy || uploading} onChanged={onChanged} setErr={setErr} />
+        </div>
+      )}
+      {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}
+    </div>
+  );
+}
+
+// Placeholder until the Gemini clean-background action lands (next commit):
+// keeps the strip's action row shape stable.
+function CleanBackgroundAction() {
+  return null;
 }
 
 // ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
@@ -218,6 +369,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [confirming, setConfirming] = useState(null); // "publish" | "switch-on"
+  const [showPhotos, setShowPhotos] = useState(false); // the row's photo strip, opened on demand
 
   const state = reviewStateFor(node);
   const on = isOn(node);
@@ -299,7 +451,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
           style={{ width: 16, height: 16, accentColor: BLUE_L, cursor: selection.blocker ? "not-allowed" : "pointer",
                    flexShrink: 0, alignSelf: "center", opacity: selection.blocker ? 0.4 : 1 }} />
       )}
-      <Thumb p={product} />
+      <Thumb p={product} node={node} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: "rgba(255,255,255,.3)",
@@ -336,6 +488,11 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
               {c.split(" — ")[0]}
             </button>
           ))}
+          <button disabled={busy}
+            onClick={() => setShowPhotos((v) => !v)}
+            style={{ ...(showPhotos ? tabOn : tabOff), padding: "4px 9px", fontSize: "0.68rem" }}>
+            Photos · {effectivePhotoList(product, node).photos.length}
+          </button>
           <div style={{ flex: 1 }} />
           {isLiveRow ? (
             // The on/off switch. OFF is instant intent — reversible, reduces
@@ -386,6 +543,9 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             </button>
           )}
         </div>
+        {showPhotos && (
+          <PhotoStrip product={product} node={node} locked={isLiveRow && on} onChanged={onChanged} />
+        )}
         {selection?.blocker && (
           <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
             Can't batch-select — {selection.blocker}.

@@ -6,9 +6,9 @@ import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
   normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason,
-  STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker,
+  STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker, effectivePhotoList,
 } from "./shopifyPublishCore";
-import { RECONCILE_MAX_APPLY } from "./publishShared";
+import { RECONCILE_MAX_APPLY, normalizePhotoList } from "./publishShared";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
 import { PUBLISH_STATES as SCRIPT_STATES } from "../../../scripts/shopify/publishNode.mjs";
 
@@ -105,6 +105,26 @@ describe("batch selection — cap and eligibility", () => {
     expect(batchSelectBlocker(node, "")).toMatch(/name/);
     expect(batchSelectBlocker(node, "Nike Air Force 1")).toMatch(/name/); // trigger ⇒ not a valid name
     expect(batchSelectBlocker(null, "Low-top sneaker black")).toMatch(/condition/);
+  });
+});
+
+describe("publishing photos — the effective set", () => {
+  it("normalizePhotoList accepts array and object shapes, ordered numerically, deduped", () => {
+    expect(normalizePhotoList(["https://a", "https://b", "https://a", "", null])).toEqual(["https://a", "https://b"]);
+    // RTDB hands back an object when the 0..n keys stopped being contiguous
+    expect(normalizePhotoList({ 0: "https://a", 2: "https://c", 10: "https://k" }))
+      .toEqual(["https://a", "https://c", "https://k"]);
+    expect(normalizePhotoList(null)).toBeNull();
+    expect(normalizePhotoList([])).toBeNull();
+    expect(normalizePhotoList(["", null])).toBeNull();
+    expect(normalizePhotoList("https://a")).toBeNull(); // scalar garbage is not a set
+  });
+  it("effectivePhotoList: custom set wins whole; else photoUrl + gallery in push order", () => {
+    const p = { photoUrl: "https://hero", gallery: ["https://g1", "https://hero", "https://g2"] };
+    expect(effectivePhotoList(p, null)).toEqual({ photos: ["https://hero", "https://g1", "https://g2"], custom: false });
+    expect(effectivePhotoList(p, { photos: ["https://g2", "https://hero"] }))
+      .toEqual({ photos: ["https://g2", "https://hero"], custom: true });
+    expect(effectivePhotoList({}, null)).toEqual({ photos: [], custom: false });
   });
 });
 

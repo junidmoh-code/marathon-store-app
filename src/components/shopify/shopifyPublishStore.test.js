@@ -30,10 +30,11 @@ vi.mock("../../firebase", () => ({
 }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => 1755000000000 }));
 
-const { approveName, publishProduct, setDesiredState, setCondition } =
+const { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos, publishPhotoListProblem } =
   await import("./shopifyPublishStore");
 const { CONDITIONS } = await import("./shopifyPublishCore");
 const COND = CONDITIONS[0];
+const FS = (n) => `https://firebasestorage.googleapis.com/v0/b/x/o/products%2Fp1%2Fshopify%2F${n}.jpg?alt=media`;
 
 beforeEach(() => { serverNode = null; });
 
@@ -99,6 +100,36 @@ describe("approveName — bulk review write", () => {
     const res = await approveName("p1", serverNode, "Court low grey");
     expect(res.ok).toBe(true);
     expect(res.node).toMatchObject({ state: "live", liveState: "off", cleanName: "Court low grey" });
+  });
+});
+
+describe("setPublishPhotos — the publishing photo set", () => {
+  it("writes the ordered list through the node transaction, state fields intact", async () => {
+    serverNode = { state: "awaiting", condition: COND };
+    const res = await setPublishPhotos("p1", serverNode, [FS("a"), FS("b")]);
+    expect(res.ok).toBe(true);
+    expect(res.node).toMatchObject({ state: "awaiting", photos: [FS("a"), FS("b")], updatedBy: "u1" });
+  });
+  it("null clears the custom set back to the record's photos", async () => {
+    serverNode = { state: "awaiting", condition: COND, photos: [FS("a")] };
+    const res = await setPublishPhotos("p1", serverNode, null);
+    expect(res.ok).toBe(true);
+    expect(res.node.photos).toBeNull();
+  });
+  it("refuses while the listing is ON — customers see the current set", async () => {
+    serverNode = { state: "live", liveState: "on", condition: COND };
+    const res = await setPublishPhotos("p1", serverNode, [FS("a")]);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/switch it off/);
+  });
+  it("publishPhotoListProblem mirrors the media.mjs push guards", () => {
+    expect(publishPhotoListProblem([FS("a")])).toBeNull();
+    expect(publishPhotoListProblem([])).toMatch(/imageless/);          // empty never ships
+    expect(publishPhotoListProblem([FS("a"), FS("a")])).toMatch(/duplicate/);
+    expect(publishPhotoListProblem(["http://firebasestorage.googleapis.com/x.jpg"])).toMatch(/Firebase Storage/); // not https
+    expect(publishPhotoListProblem(["https://evil.example.com/x.jpg"])).toMatch(/Firebase Storage/); // wrong host
+    expect(publishPhotoListProblem(["not a url"])).toMatch(/invalid URL/);
+    expect(publishPhotoListProblem(Array.from({ length: 21 }, (_, i) => FS(String(i))))).toMatch(/At most 20/);
   });
 });
 
