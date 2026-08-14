@@ -1,8 +1,9 @@
-// ─── Shopify Publishing card — core contracts pinned ─────────────────────────
+// ─── Shopify Publishing — core contracts pinned ──────────────────────────────
 import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, nominationState,
   checkCleanName, blockedReason, pipelineCounts,
+  STATE_FILTERS, reviewStateFor, matchesStateFilter,
 } from "./shopifyPublishCore";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
 import { PUBLISH_STATES as SCRIPT_STATES } from "../../../scripts/shopify/publishNode.mjs";
@@ -53,6 +54,38 @@ describe("checkCleanName — the LIVE input trigger check", () => {
     expect(checkCleanName("").ok).toBe(false);
     expect(checkCleanName("9060 grey").ok).toBe(false);
     expect(checkCleanName("ab").ok).toBe(false);
+  });
+});
+
+describe("reviewStateFor — the page's row/filter state", () => {
+  it("no node, or an unapproved state-none node, is awaiting review", () => {
+    expect(reviewStateFor(null)).toBe("awaiting");
+    expect(reviewStateFor(undefined)).toBe("awaiting");
+    expect(reviewStateFor({ state: "none" })).toBe("awaiting");
+    // withdrawn nomination / grade-only node: the name was never signed off
+    expect(reviewStateFor({ state: "none", condition: CONDITIONS[0] })).toBe("awaiting");
+  });
+  it("an approval stamp on a state-none node reads approved", () => {
+    expect(reviewStateFor({ state: "none", nameApprovedAt: 1755000000000 })).toBe("approved");
+  });
+  it("pipeline states pass through", () => {
+    for (const s of ["nominated", "draft", "live", "blocked"]) {
+      expect(reviewStateFor({ state: s })).toBe(s);
+    }
+  });
+  it("every non-all filter key is a reachable review state", () => {
+    const reachable = new Set(["awaiting", "approved", "nominated", "draft", "live", "blocked"]);
+    for (const { key } of STATE_FILTERS) {
+      if (key !== "all") expect(reachable.has(key)).toBe(true);
+    }
+  });
+  it("matchesStateFilter — all matches everything, others match exactly", () => {
+    expect(matchesStateFilter("all", "awaiting")).toBe(true);
+    expect(matchesStateFilter("all", "live")).toBe(true);
+    expect(matchesStateFilter("awaiting", "awaiting")).toBe(true);
+    expect(matchesStateFilter("awaiting", "approved")).toBe(false);
+    expect(matchesStateFilter("blocked", "blocked")).toBe(true);
+    expect(matchesStateFilter("nominated", "draft")).toBe(false);
   });
 });
 

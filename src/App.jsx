@@ -50,7 +50,7 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 // route render nothing once STOCK_HOLD_ENABLED is off.
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
-import ShopifyPublishCard from "./components/shopify/ShopifyPublishCard";
+import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
@@ -304,7 +304,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2515,6 +2515,15 @@ const RoleIcons = {
       <path d="M5 14l.6 1.9L7.5 16.5l-1.9.6L5 19l-.6-1.9L2.5 16.5l1.9-.6L5 14z"/>
     </svg>
   ),
+  shopify_publish: (
+    // lucide-style "shopping-bag" — the online-store push. Same stroke/weight
+    // as every other tile icon.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/>
+      <line x1="3" y1="6" x2="21" y2="6"/>
+      <path d="M16 10a4 4 0 0 1-8 0"/>
+    </svg>
+  ),
 };
 
 // Section header svg icons
@@ -2563,9 +2572,9 @@ function RoleCard({ icon, name, desc, badge, onClick, last }) {
       <div style={{ display:"flex", alignItems:"center", gap:6 }}>
         {badge != null && badge !== 0 && (
           <div style={{
-            width:28, height:28, borderRadius:"50%",
+            minWidth:28, height:28, padding:"0 8px", boxSizing:"border-box", borderRadius:999,
             display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:11, fontWeight:600,
+            fontSize:11, fontWeight:600, fontVariantNumeric:"tabular-nums",
             background:"rgba(60,110,255,.18)", color:"#6A9FFF",
             boxShadow:"0 0 8px rgba(60,110,255,.3),inset 0 0 6px rgba(60,110,255,.15)",
           }}>{badge}</div>
@@ -2618,14 +2627,17 @@ function HomeTile({ icon, name, desc, badge, onClick }) {
     </button>
   );
 }
-function MiniTile({ icon, name, desc, onClick }) {
+function MiniTile({ icon, name, desc, badge, onClick }) {
   return (
     <button className="hm-mini" onClick={onClick}>
       <span className="hm-mic">{icon}</span>
-      <span style={{ minWidth: 0 }}>
+      <span style={{ minWidth: 0, flex: 1 }}>
         <span className="hm-mnm">{name}</span>
         <span className="hm-mds">{desc}</span>
       </span>
+      {badge > 0 && (
+        <span style={{ flexShrink:0, fontSize:12, fontWeight:800, color:"#9DBCFF", background:"rgba(74,127,255,.2)", borderRadius:999, padding:"2px 10px", fontVariantNumeric:"tabular-nums" }}>{badge}</span>
+      )}
     </button>
   );
 }
@@ -2684,18 +2696,14 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
                      onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
     : null;
   // Shopify Publishing — the online-store push pipeline (clean names,
-  // condition grades, nominations). Gated here (super-admin or stockRole
-  // admin, mirroring the console write rule on /shopify_publish) so the
-  // desktop wrapper div doesn't render an empty gap for everyone else; the
-  // component ALSO gates itself as defence in depth. Writes only
-  // /shopify_publish.
+  // condition grades, nominations). An ordinary row in the Administration
+  // group now (owner spec 2026-08-14 — the oversized home card is gone),
+  // opening the full-page review tab. Gated super-admin or stockRole admin,
+  // mirroring the console write rule on /shopify_publish; the route below
+  // re-checks the same gate. The badge is how many products have never been
+  // reviewed — a session-cached shallow key read, no node bodies.
   const shopifyVisible = isSuperAdmin || homePerm?.stockRole === "admin";
-  const shopifyCard = shopifyVisible ? (
-    <ShopifyPublishCard
-      viewer={{ isSuperAdmin, stockRole: isSuperAdmin ? "admin" : (homePerm?.stockRole || null) }}
-      products={products}
-    />
-  ) : null;
+  const shopifyBadge = useShopifyAwaitingCount(products, shopifyVisible);
 
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
@@ -2738,6 +2746,9 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // (Marketing / Display). Picking happens on the Attention grid; this card
       // is where you review what was picked.
       canAccessStock                                           && { key:"marketing", icon:RoleIcons.insights, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
+      // Shopify Publishing — the online-store review queue. Badge = products
+      // whose names have never been reviewed (null while loading → no badge).
+      shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · nominate", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // The Display Register tile is GONE (owner spec 2026-08-06): displays are
       // hub stock now, and the register merged into the Hub Count & Displays
       // card above (HubCleanupCard). We no longer track what is on display.
@@ -2849,7 +2860,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               for an admin with no other tiles. */}
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
           {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
-          {shopifyCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{shopifyCard}</div>}
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
@@ -2867,7 +2877,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
                 <div key={g.label} className="hm-r" style={{ animationDelay: `${.3 + gi * .06}s` }}>
                   <div style={{ fontSize:11, letterSpacing:".22em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", fontWeight:700, margin:"0 2px 14px" }}>{g.label}</div>
                   <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(224px, 1fr))", gap:12, marginBottom:30 }}>
-                    {g.cards.map(c => <MiniTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} onClick={c.onClick} />)}
+                    {g.cards.map(c => <MiniTile key={c.key} icon={c.icon} name={c.name} desc={c.desc} badge={c.badge} onClick={c.onClick} />)}
                   </div>
                 </div>
               ))}
@@ -2912,7 +2922,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
         {/* TEMPORARY — hub sneaker stock-take (see the desktop branch above). */}
         {hubCountCard}
         {stockHoldCard}
-        {shopifyCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -17170,6 +17179,9 @@ function AppInner() {
   // owner/delegate gate against the live config (it needs the config loaded
   // anyway) and shows a plain refusal to anyone else.
   const stockHoldRouteOpen = STOCK_HOLD_ENABLED && !!authUser;
+  // Shopify Publishing route — same identities the /shopify_publish console
+  // write rule accepts (Junid via super-admin, or a stockRole admin).
+  const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
   const canMint = isSuperAdmin || !!permRecord?.stockRole || hasPermission("barcode");
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
@@ -17222,9 +17234,12 @@ function AppInner() {
     if (role === ROLES.HUB_SNEAKER_COUNT && !hubCountRouteOpen) { setRole(null); return; }
     // The temporary Shipment Release surface obeys the same rule.
     if (role === ROLES.STOCK_HOLD && !stockHoldRouteOpen) { setRole(null); return; }
+    // Shopify Publishing mirrors the console write rule on /shopify_publish
+    // (super-admin or stockRole admin) — a stale persisted role drops home.
+    if (role === ROLES.SHOPIFY_PUBLISH && !shopifyRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -17488,6 +17503,11 @@ function AppInner() {
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
   // The Display Register route is GONE (2026-08-06): displays are hub stock and
   // the register merged into HubCleanup behind ROLES.HUB_SNEAKER_COUNT above.
+  // Shopify Publishing — the full-page review tab. Reads /shopify_publish in
+  // partial slices only; writes only /shopify_publish (store-enforced).
+  else if (role === ROLES.SHOPIFY_PUBLISH) view = shopifyRouteOpen
+    ? <ShopifyPublishView products={products} onExit={() => setRole(null)} />
+    : null;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);

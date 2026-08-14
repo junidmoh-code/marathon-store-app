@@ -54,6 +54,41 @@ export function blockedReason(node) {
   return null;
 }
 
+// ─── REVIEW-FLOW STATE (the full-page tab) ───────────────────────────────────
+// The page's row chip and header filter speak in REVIEW terms, which are one
+// step finer than the push pipeline's `state` enum: a /shopify_publish node's
+// EXISTENCE means the product has been seen at least once, and an approved
+// name that hasn't been nominated stays state "none" with `nameApprovedAt`
+// stamped on the node (the console rules' $other clause admits the extra
+// field — the state enum itself is frozen in the live rules and gains no
+// "approved" value without a console edit).
+
+export const STATE_FILTERS = [
+  { key: "all",       label: "All" },
+  { key: "awaiting",  label: "Awaiting review" },
+  { key: "nominated", label: "Nominated" },
+  { key: "draft",     label: "Draft" },
+  { key: "live",      label: "Live" },
+  { key: "blocked",   label: "Blocked" },
+];
+
+// Where a product sits in the review flow. A node with state "none" and no
+// approval stamp (a withdrawn nomination, or a grade set before any name
+// decision) still reads "awaiting" — the name has not been signed off.
+export function reviewStateFor(node) {
+  if (!node || !node.state || node.state === "none") {
+    return node?.nameApprovedAt ? "approved" : "awaiting";
+  }
+  return node.state; // nominated | draft | live | blocked
+}
+
+// Does a review state pass the header filter? "approved" products appear
+// under All only — they are done reviewing and not yet in the pipeline.
+export function matchesStateFilter(filterKey, reviewState) {
+  if (filterKey === "all") return true;
+  return reviewState === filterKey;
+}
+
 // Counts for the collapsed card summary: { nominated, draft, live, blocked }.
 export function pipelineCounts(nodes) {
   const counts = { nominated: 0, draft: 0, live: 0, blocked: 0 };
