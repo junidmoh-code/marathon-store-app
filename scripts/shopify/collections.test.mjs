@@ -8,6 +8,7 @@ import {
   buildCollectionDescriptionHtml, buildConditionsSourceInput,
   desiredConditionsFingerprint, actualConditionsFingerprint, ensureCollection,
   planCollectionMembership, manualGidsFrom, readProductCollections, applyCollectionMembership,
+  requireOnlineStorePublication,
 } from "./collections.mjs";
 import { COLLECTION_BY_KEY } from "./collectionMap.mjs";
 
@@ -546,5 +547,83 @@ describe("a selection-only source is MEMBERSHIP, not a rule", () => {
     expect(r.action).toBe("updated");
     expect(updated.sourcesToDelete).toEqual(["hand-rule"]);
     expect(updated.sourcesToCreate).toBeUndefined();
+  });
+});
+
+// ── requireOnlineStorePublication ────────────────────────────────────────────
+// The catalog title is auto-generated and localisable — this shop's reads back
+// as "Channel Catalog 188560801941 for Online Store" — so the handle is the
+// only stable identifier. Verified against the live shop (it resolves
+// gid://shopify/Publication/188560801941 via the handle); these pin the
+// branching a live check cannot exercise: pagination, the fallback, and the
+// two different failure messages.
+const pubPage = (nodes, hasNextPage = false, endCursor = null) => ({
+  publications: { pageInfo: { hasNextPage, endCursor }, nodes },
+});
+const pub = (id, { handle = null, title = null } = {}) => ({
+  id, catalog: title ? { title } : null,
+  channels: handle ? { nodes: [{ handle }] } : { nodes: [] },
+});
+
+describe("requireOnlineStorePublication", () => {
+  it("matches the stable online_store CHANNEL HANDLE, not the catalog title", async () => {
+    const g = fakeGraphql([["publications(first: 50", pubPage([
+      pub("gid://shopify/Publication/1", { title: "Online Store" }),          // title decoy
+      pub("gid://shopify/Publication/2", { handle: "online_store", title: "Channel Catalog 999 for Online Store" }),
+    ])]]);
+    expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/2");
+  });
+
+  it("walks past a full page to find it", async () => {
+    let call = 0;
+    const g = fakeGraphql([["publications(first: 50", () => {
+      call += 1;
+      return call === 1
+        ? pubPage([pub("gid://shopify/Publication/1", { handle: "pos" })], true, "CUR")
+        : pubPage([pub("gid://shopify/Publication/9", { handle: "online_store" })]);
+    }]]);
+    expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/9");
+    expect(g.calls[1].variables.after).toBe("CUR"); // the cursor was actually used
+  });
+
+  it("falls back to a catalog-title match when NO channel carries the handle", async () => {
+    const g = fakeGraphql([["publications(first: 50", pubPage([
+      pub("gid://shopify/Publication/1", { handle: "pos", title: "Point of Sale" }),
+      pub("gid://shopify/Publication/7", { handle: "something-else", title: "Channel Catalog 5 for Online Store" }),
+    ])]]);
+    expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/7");
+  });
+
+  it("prefers the handle over a title match that appears on an EARLIER page", async () => {
+    let call = 0;
+    const g = fakeGraphql([["publications(first: 50", () => {
+      call += 1;
+      return call === 1
+        ? pubPage([pub("gid://shopify/Publication/1", { title: "Online Store" })], true, "CUR")
+        : pubPage([pub("gid://shopify/Publication/2", { handle: "online_store" })]);
+    }]]);
+    expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/2");
+  });
+
+  it("throws plainly when the shop genuinely has no online store", async () => {
+    const g = fakeGraphql([["publications(first: 50", pubPage([pub("gid://shopify/Publication/1", { handle: "pos" })])]]);
+    await expect(requireOnlineStorePublication(g.fn)).rejects.toThrow(/no Online Store publication found on this shop/);
+  });
+
+  it("says TRUNCATED — not 'not found' — when the page cap is hit", async () => {
+    // Always another page: the walk is cut short rather than exhaustive, and
+    // the two cases have different cures.
+    const g = fakeGraphql([["publications(first: 50",
+      () => pubPage([pub("gid://shopify/Publication/1", { handle: "pos" })], true, "CUR")]]);
+    await expect(requireOnlineStorePublication(g.fn)).rejects.toThrow(/TRUNCATED/);
+    expect(g.calls.length).toBe(10); // the backstop held
+  });
+
+  it("tolerates a publication with no channels and no catalog", async () => {
+    const g = fakeGraphql([["publications(first: 50", pubPage([
+      { id: "gid://shopify/Publication/1", catalog: null, channels: null },
+      pub("gid://shopify/Publication/2", { handle: "online_store" }),
+    ])]]);
+    expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/2");
   });
 });
