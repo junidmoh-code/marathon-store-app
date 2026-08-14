@@ -433,22 +433,35 @@ describe("planCollectionMembership", () => {
 });
 
 describe("readProductCollections / applyCollectionMembership", () => {
-  it("reads the current gids AND the Shopify status", async () => {
-    // The status rides along because sweepIntent has to know what Shopify
-    // thinks before anything strips a membership.
-    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", collections: { pageInfo: { hasNextPage: false }, nodes: [{ id: SNEAK }] } } }]]);
-    expect(await readProductCollections(g.fn, "gid://shopify/Product/1"))
-      .toEqual({ collections: [SNEAK], status: "ACTIVE" });
+  it("reads the gids, the status, and whether it is ON THE STOREFRONT", async () => {
+    // `published` is the channel fact sweepIntent judges on. `status` is
+    // reporting only — in this program it is NOT a visibility signal.
+    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", publishedOnPublication: true, collections: { pageInfo: { hasNextPage: false }, nodes: [{ id: SNEAK }] } } }]]);
+    expect(await readProductCollections(g.fn, "gid://shopify/Product/1", "gid://shopify/Publication/1"))
+      .toEqual({ collections: [SNEAK], status: "ACTIVE", published: true });
+  });
+
+  it("an ACTIVE product that is NOT published reads as not-on-the-storefront", async () => {
+    // The state every switched-off product lands in: the reconciler's OFF path
+    // is a channel unpublish only, and nothing ever sets DRAFT back.
+    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", publishedOnPublication: false, collections: { pageInfo: { hasNextPage: false }, nodes: [] } } }]]);
+    expect(await readProductCollections(g.fn, "gid://shopify/Product/1", "gid://shopify/Publication/1"))
+      .toMatchObject({ status: "ACTIVE", published: false });
+  });
+
+  it("refuses to read visibility without a publication id", async () => {
+    await expect(readProductCollections(fakeGraphql([]).fn, "gid://shopify/Product/1"))
+      .rejects.toThrow(/publication id/);
   });
 
   it("refuses a partial read rather than stripping collections it could not see", async () => {
-    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", collections: { pageInfo: { hasNextPage: true }, nodes: [] } } }]]);
-    await expect(readProductCollections(g.fn, "gid://shopify/Product/1")).rejects.toThrow(/partial read/);
+    const g = fakeGraphql([["collections(first: 100)", { product: { status: "ACTIVE", publishedOnPublication: true, collections: { pageInfo: { hasNextPage: true }, nodes: [] } } }]]);
+    await expect(readProductCollections(g.fn, "gid://shopify/Product/1", "gid://shopify/Publication/1")).rejects.toThrow(/partial read/);
   });
 
   it("a missing product throws instead of reading as 'in no collections'", async () => {
     const g = fakeGraphql([["collections(first: 100)", { product: null }]]);
-    await expect(readProductCollections(g.fn, "gid://shopify/Product/1")).rejects.toThrow(/not found/);
+    await expect(readProductCollections(g.fn, "gid://shopify/Product/1", "gid://shopify/Publication/1")).rejects.toThrow(/not found/);
   });
 
   it("an empty plan makes NO Shopify call", async () => {
@@ -641,45 +654,56 @@ describe("sweepIntent", () => {
   const LIVE_ON = { state: "live", liveState: "on", desiredState: "on" };
 
   it("a confirmed-ON product is assigned its collection", () => {
-    expect(sweepIntent(LIVE_ON, "ACTIVE")).toMatchObject({ action: "assign" });
+    expect(sweepIntent(LIVE_ON, true)).toMatchObject({ action: "assign" });
   });
 
   it("HOLDS a publish in flight — the node is behind, not wrong", () => {
-    // Exactly the window: intent on, not yet confirmed. Whatever Shopify says.
-    for (const status of ["DRAFT", "ACTIVE"]) {
-      const v = sweepIntent({ state: "awaiting", desiredState: "on" }, status);
-      expect({ status, action: v.action }).toEqual({ status, action: "hold" });
-      expect(v.reason).toMatch(/in flight/);
+    for (const published of [false, true]) {
+      const v = sweepIntent({ state: "awaiting", desiredState: "on" }, published);
+      expect({ published, action: v.action }).toEqual({ published, action: "hold" });
+      expect(v.reason).toMatch(/publish is in flight/);
     }
   });
 
   it("HOLDS a live-OFF product being switched back on", () => {
-    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "on" }, "DRAFT").action).toBe("hold");
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "on" }, false).action).toBe("hold");
   });
 
-  it("refuses to strip a product Shopify holds ACTIVE with no intent to explain it", () => {
-    // A reconciler killed between productUpdate(ACTIVE) and confirmLiveState
-    // leaves this state permanently. Stripping is the wrong repair.
-    const v = sweepIntent({ state: "awaiting" }, "ACTIVE");
+  it("HOLDS an UNPUBLISH in flight — the mirror guard", () => {
+    // Without it the sweep re-joins a product the reconciler is taking down.
+    const v = sweepIntent({ state: "live", liveState: "on", desiredState: "off" }, true);
+    expect(v.action).toBe("hold");
+    expect(v.reason).toMatch(/unpublish is in flight/);
+  });
+
+  it("THE REGRESSION THAT MATTERS: a switched-off product is STRIPPED, not called drift", () => {
+    // The reconciler's OFF path is a channel unpublish ONLY — status stays
+    // ACTIVE forever. Judging on status would call this a live listing, refuse
+    // to clear its membership, and fail the run on every future pass.
+    const v = sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, false);
+    expect(v.action).toBe("strip");
+  });
+
+  it("refuses to strip a product Shopify PUBLISHES with no intent to explain it", () => {
+    const v = sweepIntent({ state: "awaiting" }, true);
     expect(v.action).toBe("drift");
     expect(v.reason).toMatch(/refusing to strip a live listing/);
   });
 
   it("reports drift for a mapped product with no publish node at all", () => {
-    expect(sweepIntent(null, "ACTIVE")).toMatchObject({ action: "drift" });
-    expect(sweepIntent(null, "ACTIVE").reason).toMatch(/no node/);
+    expect(sweepIntent(null, true)).toMatchObject({ action: "drift" });
+    expect(sweepIntent(null, true).reason).toMatch(/no node/);
   });
 
   it("STRIPS the genuinely-off cases, and only those", () => {
-    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, "DRAFT").action).toBe("strip");
-    expect(sweepIntent({ state: "blocked", desiredState: "off" }, "DRAFT").action).toBe("strip");
-    expect(sweepIntent({ state: "awaiting" }, "DRAFT").action).toBe("strip");
-    expect(sweepIntent(null, "DRAFT").action).toBe("strip");
-    expect(sweepIntent(null, "ARCHIVED").action).toBe("strip");
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, false).action).toBe("strip");
+    expect(sweepIntent({ state: "blocked", desiredState: "off" }, false).action).toBe("strip");
+    expect(sweepIntent({ state: "awaiting" }, false).action).toBe("strip");
+    expect(sweepIntent(null, false).action).toBe("strip");
   });
 
   it("a blocked product is stripped, not held — markBlocked sets desiredState off", () => {
-    expect(sweepIntent({ state: "blocked", blockedReason: "x", desiredState: "off" }, "DRAFT").action).toBe("strip");
+    expect(sweepIntent({ state: "blocked", blockedReason: "x", desiredState: "off" }, false).action).toBe("strip");
   });
 });
 
@@ -707,26 +731,26 @@ describe("sweepIntent — exhaustive safety properties", () => {
     { state: "blocked" },
   ];
   const DESIRED = [undefined, "on", "off"];
-  const STATUSES = ["ACTIVE", "DRAFT", "ARCHIVED"];
+  const PUBLISHED = [true, false];
   const every = [];
   for (const base of NODES) {
     for (const desiredState of DESIRED) {
-      for (const status of STATUSES) {
+      for (const published of PUBLISHED) {
         const node = base === null ? null : (desiredState === undefined ? base : { ...base, desiredState });
-        every.push({ node, status, verdict: sweepIntent(node, status) });
+        every.push({ node, published, verdict: sweepIntent(node, published) });
       }
     }
   }
 
-  it("covers 45 combinations and returns only known actions", () => {
-    expect(every).toHaveLength(45);
+  it("covers 30 combinations and returns only known actions", () => {
+    expect(every).toHaveLength(30);
     for (const e of every) expect(["assign", "hold", "drift", "strip"]).toContain(e.verdict.action);
   });
 
-  it("NEVER strips a product Shopify is showing publicly", () => {
+  it("NEVER strips a product Shopify is PUBLISHING", () => {
     const violations = every
-      .filter((e) => e.status === "ACTIVE" && e.verdict.action === "strip")
-      .map((e) => ({ node: e.node, status: e.status }));
+      .filter((e) => e.published && e.verdict.action === "strip")
+      .map((e) => ({ node: e.node, published: e.published }));
     expect(violations).toEqual([]);
   });
 
@@ -734,7 +758,7 @@ describe("sweepIntent — exhaustive safety properties", () => {
     const violations = every
       .filter((e) => e.verdict.action === "assign")
       .filter((e) => !(e.node?.state === "live" && e.node?.liveState === "on"))
-      .map((e) => ({ node: e.node, status: e.status }));
+      .map((e) => ({ node: e.node, published: e.published }));
     expect(violations).toEqual([]);
   });
 

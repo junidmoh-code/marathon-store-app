@@ -38,6 +38,7 @@ import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 import {
   collectionGidsByKey, manualGidsFrom, planCollectionMembership,
   readProductCollections, applyCollectionMembership, sweepIntent,
+  requireOnlineStorePublication,
 } from "./collections.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
 
@@ -50,6 +51,12 @@ if (pidIdx !== -1 && (!pidArg || pidArg.startsWith("--"))) {
   process.exit(2);
 }
 const ONLY = pidArg ? new Set(pidArg.split(",").map((x) => x.trim()).filter(Boolean)) : null;
+if (ONLY && ONLY.size === 0) {
+  // A truthy but EMPTY set would filter the worklist to nothing and exit 0 —
+  // the same false success --pids validation exists to prevent.
+  console.error("--pids parsed to an empty list");
+  process.exit(2);
+}
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -58,6 +65,10 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+// Visibility is a CHANNEL fact, so the sweep needs the Online Store publication
+// before it can judge anything. Resolved once, from the same lookup the
+// reconciler uses.
+const onlinePublicationId = await requireOnlineStorePublication(graphql);
 const collectionGids = await collectionGidsByKey(db);
 const managedGids = manualGidsFrom(collectionGids);
 if (!managedGids.length) {
@@ -92,18 +103,14 @@ const results = [];
 for (const pid of pids) {
   assertSafeSegment(pid, "productId");
 
-  // RE-READ the publish node, per product, at the moment it is judged — the
-  // snapshot above is only a worklist. Freshness alone is NOT enough, though:
-  // the reconciler joins the collection, publishes and goes ACTIVE before it
-  // writes confirmLiveState, so a perfectly fresh read can correctly say
-  // "awaiting" about a product that is already live and already in its
-  // collection. sweepIntent is what closes that; see collections.mjs.
-  const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
-  const live = confirmedOn(node);
   const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
   const gid = mapNode?.shopifyProductId;
-  const name = node?.cleanName || pid;
+  // The publish node is read LATER, after Shopify — see the loop body. Only the
+  // no-mapping branch needs it early, and it re-reads for itself.
   if (!gid) {
+    const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const live = confirmedOn(node);
+    const name = node?.cleanName || pid;
     // Nothing of ours exists on Shopify for this record, so there is no
     // membership to hold. Worth saying out loud when it claims to be live —
     // or whenever the operator named this pid and is owed an answer.
@@ -118,38 +125,53 @@ for (const pid of pids) {
     continue;
   }
 
-  // A product that is not confirmed ON belongs in NO managed collection,
-  // whatever its record says — desired null only ever leaves.
-  let desired = null;
-  let label = node
-    ? `not on the storefront (state ${node.state}/${node.liveState ?? "—"}) — leaves every managed collection`
-    : "on Shopify but never reviewed (no /shopify_publish node) — leaves every managed collection";
-  if (live) {
-    const product = (await db.ref(`products/${pid}`).get()).val();
-    if (!product) {
-      results.push({ pid, name, status: "no-record", detail: "confirmed live but no /products record" });
-      continue;
-    }
-    const r = resolveCollection(product);
-    desired = r.status === "mapped" ? (collectionGids[r.collectionKey] ?? null) : null;
-    label =
-      r.status !== "mapped" ? `⚠ ${r.status}: ${r.reason}`
-      : desired ? COLLECTION_BY_KEY.get(r.collectionKey).title
-      : `⚠ "${r.collectionKey}" has no recorded id`;
-  }
-
   try {
-    const { collections, status: shopifyStatus } = await readProductCollections(graphql, gid);
-    const intent = sweepIntent(node, shopifyStatus);
+    // ORDER MATTERS. Shopify is read FIRST, then the publish node. The reverse
+    // leaves a window: the reconciler could join a collection and start
+    // publishing between the two reads, and a node fetched before that would
+    // say "awaiting" about a product whose membership the sweep is about to
+    // strip. Reading Shopify first means anything the reconciler did before it
+    // is visible in the membership; anything it does after cannot be in the
+    // `leave` list, because `leave` is computed from that same earlier read.
+    const { collections, published } = await readProductCollections(graphql, gid, onlinePublicationId);
+    const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    const live = confirmedOn(node);
+    const name = node?.cleanName || pid;
+
+    const intent = sweepIntent(node, published);
     if (intent.action === "hold" || intent.action === "drift") {
-      // Never plans a leave, so it can never strip a listing it does not
-      // understand. "hold" is routine and quiet unless named; "drift" means
-      // something is genuinely wrong and always speaks up.
-      if (intent.action === "drift" || ONLY) {
-        results.push({ pid, name, status: intent.action === "drift" ? "live-drift" : "publish-in-flight", detail: intent.reason });
-      }
+      // Neither plans a leave, so neither can strip a listing it does not
+      // understand. Both ALWAYS report: a held product that silently vanished
+      // from the report is how a whole batch mid-publish became invisible, and
+      // a tally that does not sum is its own kind of lie.
+      results.push({
+        pid, name,
+        status: intent.action === "drift" ? "live-drift" : "reconciler-busy",
+        detail: intent.reason,
+      });
       continue;
     }
+
+    // A product that is not confirmed ON belongs in NO managed collection,
+    // whatever its record says — desired null only ever leaves.
+    let desired = null;
+    let label = node
+      ? `not on the storefront (state ${node.state}/${node.liveState ?? "—"}) — leaves every managed collection`
+      : "on Shopify but never reviewed (no /shopify_publish node) — leaves every managed collection";
+    if (live) {
+      const product = (await db.ref(`products/${pid}`).get()).val();
+      if (!product) {
+        results.push({ pid, name, status: "no-record", detail: "confirmed live but no /products record" });
+        continue;
+      }
+      const r = resolveCollection(product);
+      desired = r.status === "mapped" ? (collectionGids[r.collectionKey] ?? null) : null;
+      label =
+        r.status !== "mapped" ? `⚠ ${r.status}: ${r.reason}`
+        : desired ? COLLECTION_BY_KEY.get(r.collectionKey).title
+        : `⚠ "${r.collectionKey}" has no recorded id`;
+    }
+
     const plan = planCollectionMembership(collections, desired, managedGids);
     if (!plan.join.length && !plan.leave.length) {
       // Silent for the vast majority: an off product in no collection is the
@@ -172,7 +194,7 @@ for (const pid of pids) {
       detail: `${label} · join ${plan.join.length}, leave ${plan.leave.length}`,
     });
   } catch (e) {
-    results.push({ pid, name, status: "failed", detail: String(e?.message || e) });
+    results.push({ pid, name: pid, status: "failed", detail: String(e?.message || e) });
   }
 }
 
@@ -189,7 +211,7 @@ console.log("══ COLLECTION MEMBERSHIP ══");
 // no-collection was supposed to remove.
 const BAD = new Set(["failed", "no-map", "no-record", "unknown-pid", "live-drift"]);
 for (const r of results) {
-  const icon = BAD.has(r.status) ? "✗" : (r.status === "no-collection" || r.status === "publish-in-flight") ? "⚠" : "✓";
+  const icon = BAD.has(r.status) ? "✗" : (r.status === "no-collection" || r.status === "reconciler-busy") ? "⚠" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(16)} ${r.name}`);
   console.log(`    ${r.detail}`);
 }

@@ -35,7 +35,7 @@
 // digits (src/App.jsx), and idMap.mjs's claim transaction only ever inspects a
 // child's `shopifyProductId`, which this subtree does not have at its top level.
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { COLLECTIONS, COLLECTION_BY_KEY, validateCollectionPayload, CURRENCY } from "./collectionMap.mjs";
+import { COLLECTIONS, COLLECTION_BY_KEY, CATEGORY_MAP, validateCollectionPayload, CURRENCY } from "./collectionMap.mjs";
 
 export const COLLECTIONS_NODE = "shopify_sync/_collections";
 
@@ -432,6 +432,16 @@ export async function collectionGidsByKey(db) {
   for (const [key, node] of Object.entries(recorded)) {
     if (COLLECTION_BY_KEY.has(key) && node?.shopifyCollectionId) out[key] = node.shopifyCollectionId;
   }
+  // A CATEGORY_MAP row aimed at a SMART collection would send the reconciler to
+  // write membership Shopify owns. planCollectionMembership refuses it — but
+  // SILENTLY, and the run would then report a healthy-looking "joined 0" for a
+  // product that landed nowhere. Defence in depth that reports success is the
+  // wrong shape, so the refusal is announced here, once, at the source.
+  for (const [row, target] of Object.entries(CATEGORY_MAP)) {
+    if (target && COLLECTION_BY_KEY.get(target)?.kind !== "manual") {
+      console.error(`  ⚠⚠ CATEGORY_MAP row "${row}" targets "${target}", which is not a MANUAL collection — products in that category will join NOTHING. Fix scripts/shopify/collectionMap.mjs.`);
+    }
+  }
   return out;
 }
 
@@ -475,65 +485,89 @@ export function planCollectionMembership(currentGids, desiredGid, managedGids) {
 }
 
 /**
- * The product's CURRENT collection gids AND its Shopify status.
- * → { collections: [gid], status: "ACTIVE"|"DRAFT"|"ARCHIVED" }
+ * The product's CURRENT collection gids and whether it is ON THE STOREFRONT.
+ * → { collections: [gid], status, published }
  * Refuses a >100 collection set rather than acting on a partial read.
  *
- * The status rides along because the sweep has to know what SHOPIFY thinks
- * before it strips anything — see sweepIntent.
+ * `published` is the channel publication, NOT `status`. In this program status
+ * is not a visibility signal at all: the reconciler's OFF path is a channel
+ * unpublish ONLY ("Status, handle, media, ID map all survive"), and nothing
+ * anywhere sets a product back to DRAFT. So a product that has ever been live
+ * stays ACTIVE for good, published or not — reading ACTIVE as "on the
+ * storefront" would call every switched-off product a live listing. `status` is
+ * returned for reporting; `published` is what any decision must use.
  */
-export async function readProductCollections(graphql, productGid) {
+export async function readProductCollections(graphql, productGid, onlinePublicationId) {
+  if (!onlinePublicationId) {
+    throw new Error("readProductCollections needs the Online Store publication id — visibility is a channel fact, not a status");
+  }
   const d = await graphql(
-    `query ($id: ID!) {
-      product(id: $id) { status collections(first: 100) { pageInfo { hasNextPage } nodes { id } } }
+    `query ($id: ID!, $pub: ID!) {
+      product(id: $id) {
+        status
+        publishedOnPublication(publicationId: $pub)
+        collections(first: 100) { pageInfo { hasNextPage } nodes { id } }
+      }
     }`,
-    { id: productGid }
+    { id: productGid, pub: onlinePublicationId }
   );
   const p = d.product;
   if (!p?.collections) throw new Error(`product ${productGid} not found while reading its collections`);
   if (p.collections.pageInfo.hasNextPage) {
     throw new Error(`product ${productGid} is in >100 collections — refusing to act on a partial read`);
   }
-  return { collections: p.collections.nodes.map((n) => n.id), status: p.status };
+  return {
+    collections: p.collections.nodes.map((n) => n.id),
+    status: p.status,
+    published: p.publishedOnPublication === true,
+  };
 }
 
 // ── WHAT THE SWEEP MAY DO TO ONE PRODUCT ─────────────────────────────────────
 // Pure, so the decision that can strip a public listing is testable without a
-// shop. `node` is /shopify_publish/{pid} (may be null); `shopifyStatus` is what
-// Shopify holds RIGHT NOW.
+// shop. `node` is /shopify_publish/{pid} (may be null); `publishedOnStorefront`
+// is whether Shopify currently publishes it to the Online Store channel — the
+// ONLY honest visibility signal here (see readProductCollections on why status
+// is not one).
 //
 // THE RACE THIS EXISTS FOR. reconcile.mjs joins the collection, publishes, and
 // makes the product ACTIVE — and only THEN writes confirmLiveState. So for the
 // whole tail of a publish, a perfectly FRESH read of /shopify_publish says
 // "awaiting" while Shopify already holds the membership and, at the end, a
 // public listing. Re-reading the node does not help: the node is correct and
-// simply behind. A sweep that judged on the node alone would strip a product
-// out of the collection it had just been published into, and call it a success.
+// simply behind.
 //
-// Two independent guards, because they cover different failures:
-//   "hold"  — desiredState "on" without confirmation means a publish is IN
-//             FLIGHT. confirmLiveState deliberately leaves desiredState alone
-//             and markBlocked sets it to "off", so this condition is exactly
-//             "the reconciler is mid-publish" and nothing else.
-//   "drift" — Shopify says ACTIVE while the record says not-live, with no
-//             intent to explain it. That is DURABLE divergence: a reconciler
-//             killed between productUpdate(ACTIVE) and confirmLiveState leaves
-//             a publicly live product on an awaiting node forever. Stripping it
-//             would be the wrong repair, so the sweep refuses and says so.
-export function sweepIntent(node, shopifyStatus) {
-  if (node?.state === "live" && node?.liveState === "on") {
-    return { action: "assign", reason: null };
-  }
-  if (node?.desiredState === "on") {
+// THE INTENT GUARDS COME FIRST, AND BOTH DIRECTIONS. An unapplied intent means
+// the reconciler owns this product right now; it changes membership AND
+// visibility together, and a sweep reaching in between undoes half of that:
+//   publish in flight, stripped   → live, in no collection
+//   unpublish in flight, joined   → off the channel, back in a collection
+// Holding costs one skipped product on one run. The next run sees a settled
+// state and does the right thing.
+//
+// DRIFT is what is left: Shopify publishes it, the record does not say live,
+// and no intent explains the gap. That is durable divergence — a reconciler
+// killed after publishablePublish but before confirmLiveState, or a hand-publish
+// in the admin. Stripping is the wrong repair, so it refuses and says so.
+export function sweepIntent(node, publishedOnStorefront) {
+  const confirmedOn = node?.state === "live" && node?.liveState === "on";
+  if (node?.desiredState === "on" && !confirmedOn) {
     return {
       action: "hold",
       reason: "a publish is in flight — the reconciler joins collections and publishes BEFORE it confirms; leave this to it",
     };
   }
-  if (shopifyStatus === "ACTIVE") {
+  if (node?.desiredState === "off" && confirmedOn) {
+    return {
+      action: "hold",
+      reason: "an unpublish is in flight — the reconciler leaves collections as it takes the product down; leave this to it",
+    };
+  }
+  if (confirmedOn) return { action: "assign", reason: null };
+  if (publishedOnStorefront) {
     return {
       action: "drift",
-      reason: `Shopify holds this product ACTIVE but /shopify_publish says ${node ? `${node.state}/${node.liveState ?? "—"}` : "nothing (no node)"} with no intent — refusing to strip a live listing; reconcile it or fix the node first`,
+      reason: `Shopify PUBLISHES this product to the Online Store but /shopify_publish says ${node ? `${node.state}/${node.liveState ?? "—"}` : "nothing (no node)"} with no intent to explain it — refusing to strip a live listing; reconcile it or fix the node first`,
     };
   }
   return { action: "strip", reason: null };
