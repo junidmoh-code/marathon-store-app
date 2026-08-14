@@ -137,9 +137,12 @@ async function main() {
     // Laybys canonically in this group whose stored digits match NO member
     // key (third-dialect strings). The merge runner re-points these to the
     // survivor; the census must show them, not silently exclude them.
-    const memberKeySet = new Set(members.map((m) => m.key));
+    // Both sides digit-normalised: member keys are digit strings today, but a
+    // "+"-bearing key would otherwise mislabel its own laybys as unattributed.
+    const digitsOf = (v) => String(v || "").replace(/\D/g, "");
+    const memberKeySet = new Set(members.map((m) => digitsOf(m.key)));
     const unattributedLaybys = (laybysByCanon.get(canon) || [])
-      .filter((l) => !memberKeySet.has(String(l.customerPhone || "").replace(/\D/g, "")))
+      .filter((l) => !memberKeySet.has(digitsOf(l.customerPhone)))
       .map((l) => ({ invoiceNo: l.invoiceNo, status: l.status, customerPhone: l.customerPhone }));
     const detail = members.map((m) => {
       const bal = creditBalance(m.rec);
@@ -147,7 +150,7 @@ async function main() {
       const holdings = m.rec?.laybyHoldings && typeof m.rec.laybyHoldings === "object"
         ? Object.keys(m.rec.laybyHoldings).length : 0;
       const openLaybys = (laybysByCanon.get(canon) || [])
-        .filter((l) => OPEN_LAYBY_STATUSES.has(l.status) && String(l.customerPhone || "").replace(/\D/g, "") === m.key);
+        .filter((l) => OPEN_LAYBY_STATUSES.has(l.status) && digitsOf(l.customerPhone) === digitsOf(m.key));
       return {
         key: m.key,
         name: m.rec?.name || "",
