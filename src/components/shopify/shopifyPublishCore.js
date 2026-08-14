@@ -1,7 +1,7 @@
 // ─── SHOPIFY PUBLISHING — PURE CORE ──────────────────────────────────────────
-// The decision logic behind the home-page Shopify Publishing card, kept free
-// of firebase imports so it is unit-testable and shares nothing but the
-// trigger engine with the push scripts. The card and the client store import
+// The decision logic behind the Shopify Publishing page, kept free of
+// firebase imports so it is unit-testable and shares nothing but the trigger
+// engine with the owner-run scripts. The page and the client store import
 // from here; scripts/shopify/* has its own server-side twin of the condition
 // list (compliance.mjs) — the two are pinned equal by the tests.
 import { triggersInText } from "../../utils/shopifyTriggers";
@@ -14,7 +14,64 @@ export const CONDITIONS = [
   "Good — visible wear, priced accordingly",
 ];
 
-export const PUBLISH_STATES = ["none", "nominated", "draft", "live", "blocked"];
+// ─── STATE MODEL (owner spec 2026-08-14) ─────────────────────────────────────
+// Three states only — the old Approve → Nominate → Live chain is collapsed to
+// a single Publish action:
+//   awaiting — under review; the default for any touched product
+//   live     — the product EXISTS on Shopify; `liveState` says whether it is
+//              ON (published to the Online Store channel) or OFF (unpublished,
+//              but never archived or deleted — it can be switched back on)
+//   blocked  — cannot go live: condition unset, or the reconciler's apply-time
+//              validator refused (its reason lands in `blockedReason`)
+//
+// The browser NEVER talks to Shopify. The page writes INTENT only — a
+// `desiredState` ("on"|"off") field — and the owner-run reconciler
+// (scripts/shopify/reconcile.mjs) applies it with credentials, then writes the
+// confirmed `state`/`liveState` back. A row whose desiredState differs from
+// its confirmed state shows as pending until the reconciler catches up.
+export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
+
+// Pre-migration values still readable in old nodes (migrate-live-state.mjs
+// rewrites them; the UI tolerates them in the meantime): a draft existed on
+// Shopify unpublished — exactly what live+off now means.
+const LEGACY_STATE_MAP = { none: "awaiting", nominated: "awaiting", draft: "live", live: "live", blocked: "blocked" };
+
+export function normalizedState(node) {
+  const s = node?.state;
+  if (PUBLISH_STATES.includes(s)) return s;
+  return LEGACY_STATE_MAP[s] || "awaiting";
+}
+
+// Is the product CONFIRMED on the public storefront right now? Legacy "draft"
+// normalises to live but was never published → off; legacy "live" was → on.
+export function isOn(node) {
+  if (!node || normalizedState(node) !== "live") return false;
+  if (node.liveState === "on" || node.liveState === "off") return node.liveState === "on";
+  return node.state === "live"; // legacy node without liveState
+}
+
+// The state fields a WRITE must carry for this node. Writing normalizedState
+// alone would be a trap for legacy nodes: "draft" normalises to "live", and a
+// live node without liveState reads as ON (the legacy-live fallback in isOn) —
+// so a write that upgrades the state string must pin liveState from the
+// LEGACY value at the same time (draft was never published → off).
+export function normalizedFields(node) {
+  const state = normalizedState(node);
+  if (state !== "live") return { state };
+  const liveState = node?.liveState === "on" || node?.liveState === "off"
+    ? node.liveState
+    : (node?.state === "live" ? "on" : "off");
+  return { state, liveState };
+}
+
+// Pending = an intent the reconciler hasn't applied yet. desiredState is the
+// UI's write; state/liveState are the reconciler's — the row shows pending
+// exactly while they disagree.
+export function isPendingSwitch(node) {
+  const d = node?.desiredState;
+  if (d !== "on" && d !== "off") return false;
+  return (d === "on") !== isOn(node);
+}
 
 // Who may use the card — mirrors the console write rule on /shopify_publish
 // (Junid, i.e. super-admin, or stockRole admin). The card renders null for
@@ -23,10 +80,11 @@ export function canUseShopifyPublish(viewer) {
   return !!viewer && (viewer.isSuperAdmin === true || viewer.stockRole === "admin");
 }
 
-// The state a nomination lands in: nominated when a condition is set,
-// blocked otherwise (condition has NO default — owner spec).
-export function nominationState(condition) {
-  return CONDITIONS.includes(condition) ? "nominated" : "blocked";
+// Can this node's product be published (or switched on) right now? The one
+// hard gate that survives every redesign: condition has NO default, and a
+// product cannot reach the storefront without one (owner spec).
+export function canGoLive(node) {
+  return CONDITIONS.includes(node?.condition);
 }
 
 // Live validation for the inline clean-name editor. Returns
@@ -45,55 +103,44 @@ export function checkCleanName(input) {
   return { ok: problems.length === 0, problems };
 }
 
-// Why a product cannot be pushed right now (the card shows this loudly),
-// or null when it is pushable. node = the /shopify_publish value (or null).
+// Why a product cannot go live right now (the row shows this loudly), or
+// null when nothing blocks it. The condition gate wins over any recorded
+// reason — an unset condition is always the first thing to fix; a
+// reconciler-refused product carries the validator's words in blockedReason.
 export function blockedReason(node) {
-  if (!node || !node.state || node.state === "none") return null;
-  if (node.state === "draft" || node.state === "live") return null;
+  if (!node || normalizedState(node) !== "blocked") return null;
   if (!CONDITIONS.includes(node.condition)) return "Condition not set — pick one of the three grades to unblock";
-  return null;
+  return node.blockedReason || null;
 }
 
 // ─── REVIEW-FLOW STATE (the full-page tab) ───────────────────────────────────
-// The page's row chip and header filter speak in REVIEW terms, which are one
-// step finer than the push pipeline's `state` enum: a /shopify_publish node's
-// EXISTENCE means the product has been seen at least once, and an approved
-// name that hasn't been nominated stays state "none" with `nameApprovedAt`
-// stamped on the node (the console rules' $other clause admits the extra
-// field — the state enum itself is frozen in the live rules and gains no
-// "approved" value without a console edit).
+// The page's row chip and header filter speak in REVIEW terms, one step finer
+// than the stored `state`: a /shopify_publish node's EXISTENCE means the
+// product has been seen at least once, and an approved name that hasn't been
+// published stays state "awaiting" with `nameApprovedAt` stamped on the node
+// (the console rules' $other clause admits the extra field).
 
 export const STATE_FILTERS = [
-  { key: "all",       label: "All" },
-  { key: "awaiting",  label: "Awaiting review" },
-  { key: "nominated", label: "Nominated" },
-  { key: "draft",     label: "Draft" },
-  { key: "live",      label: "Live" },
-  { key: "blocked",   label: "Blocked" },
+  { key: "all",      label: "All" },
+  { key: "awaiting", label: "Awaiting review" },
+  { key: "live",     label: "Live" },
+  { key: "blocked",  label: "Blocked" },
 ];
 
-// Where a product sits in the review flow. A node with state "none" and no
-// approval stamp (a withdrawn nomination, or a grade set before any name
-// decision) still reads "awaiting" — the name has not been signed off.
+// Where a product sits in the review flow. An awaiting node with no approval
+// stamp (a grade set before any name decision) still reads "awaiting" — the
+// name has not been signed off; with the stamp it reads "approved" (shown
+// under All only, same as before the redesign).
 export function reviewStateFor(node) {
-  if (!node || !node.state || node.state === "none") {
-    return node?.nameApprovedAt ? "approved" : "awaiting";
-  }
-  return node.state; // nominated | draft | live | blocked
+  if (!node) return "awaiting";
+  const s = normalizedState(node);
+  if (s === "awaiting") return node.nameApprovedAt ? "approved" : "awaiting";
+  return s; // live | blocked
 }
 
 // Does a review state pass the header filter? "approved" products appear
-// under All only — they are done reviewing and not yet in the pipeline.
+// under All only — their names are done and they are not yet on Shopify.
 export function matchesStateFilter(filterKey, reviewState) {
   if (filterKey === "all") return true;
   return reviewState === filterKey;
-}
-
-// Counts for the collapsed card summary: { nominated, draft, live, blocked }.
-export function pipelineCounts(nodes) {
-  const counts = { nominated: 0, draft: 0, live: 0, blocked: 0 };
-  for (const node of Object.values(nodes || {})) {
-    if (node && counts[node.state] !== undefined) counts[node.state] += 1;
-  }
-  return counts;
 }

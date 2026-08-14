@@ -35,8 +35,12 @@ from `functions/node_modules`.
 | `round-trip.mjs <productId> --commit` — create that product ONCE (as DRAFT), read it back, print IDs, persist the ID map | **one Shopify product + `/shopify_sync/<productId>`** (no other RTDB path, ever) | `node scripts/shopify/round-trip.mjs p1234567890123 --commit` |
 | `clean-report.mjs [--residue] [--json <f>]` — trigger-engine census: how many names clean automatically, 40 deterministic before/after pairs, and the residue worklist for the AI pass | nothing | `node scripts/shopify/clean-report.mjs` |
 | `ai-rename.mjs [--dry-run] [--limit N]` — AI names for the lexicon residue only; every output re-checked by the trigger engine, cached once, never regenerated. Hard-stops without `ANTHROPIC_API_KEY` | **`/shopify_publish/{pid}` (cleanName cache)** | `node scripts/shopify/ai-rename.mjs --dry-run` |
-| `publish-run.mjs [--commit] [--pids a,b]` — push nominated products as **DRAFT** with description, SEO, tags, photos and one-pool inventory; full-field validator gates every payload; a re-run reconciles fields/media/inventory onto the existing product; hard cap 10/run | **Shopify DRAFTs + `/shopify_sync` + `/shopify_publish`** | `node scripts/shopify/publish-run.mjs` |
-| `publish-run.mjs --publish <pid>` — **owner-run only**, standalone (never pushes the worklist): re-validates the CANONICAL Shopify object field-by-field, re-syncs inventory, then makes that ONE draft storefront-visible | **one Shopify product live + `/shopify_publish` state** | owner runs it, deliberately |
+| `migrate-live-state.mjs [--commit]` — one-time rewrite of `/shopify_publish` into the 2026-08-14 state model (`awaiting\|live\|blocked` + on/off); idempotent, prints before/after counts per state | **`/shopify_publish` states** | `node scripts/shopify/migrate-live-state.mjs` (dry run) |
+| `reconcile.mjs [--commit] [--pids a,b]` — **owner-run only**: applies the page's `desiredState` intents. Turning ON creates/reconciles the product, runs the FULL compliance validator against the CANONICAL Shopify object at that moment, re-syncs inventory, publishes to the Online Store channel (refusals mark the node blocked). Turning OFF unpublishes from that channel ONLY — never archives, never deletes, never touches the ID map. Hard cap 10 actions/run | **Shopify products/channel + `/shopify_sync` + `/shopify_publish`** | `node scripts/shopify/reconcile.mjs` (dry run — a table of what it would do) |
+
+`publish-run.mjs` (the nominated-worklist DRAFT pusher and its `--publish`
+path) is RETIRED — the nominate step no longer exists; `reconcile.mjs` covers
+both creation and publication, driven by the page's Publish action.
 
 Pure modules, tested via the normal `npm test`:
 

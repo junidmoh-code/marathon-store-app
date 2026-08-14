@@ -1,16 +1,20 @@
 // ─── SHOPIFY PUBLISHING — THE FULL-PAGE TAB ──────────────────────────────────
-// Junid's review surface for the one-way Shopify push, replacing the old home
-// card (owner spec 2026-08-14): a home-row entry opens THIS page, where the
-// whole catalogue is reviewable one name at a time. Layout is one column —
-// a sticky header (search + state filter) over the catalogue grouped into
-// collapsible category sections, all collapsed until opened.
+// Junid's review surface for the one-way Shopify push (owner spec 2026-08-14):
+// a home-row entry opens THIS page, where the whole catalogue is reviewable
+// one name at a time. Layout is one column — a sticky header (search + state
+// filter) over the catalogue grouped into collapsible category sections, all
+// collapsed until opened.
 //
-// The primary path is the KEYBOARD: Enter approves the product under the
-// cursor and moves focus to the next unreviewed one — thousands of names get
-// through on Enter alone. Approving stamps `nameApprovedAt` on the product's
-// /shopify_publish node (state stays "none"; the live rules' state enum has
-// no "approved" value); nominating is the separate, deliberate step that
-// queues a product for the owner-run publish script.
+// The primary path is the KEYBOARD: Enter approves the name under the cursor
+// and moves focus to the next unreviewed one — thousands of names get through
+// on Enter alone. The row's button is the single PUBLISH action (the old
+// Approve → Nominate → Live chain is collapsed): it opens the one confirmation
+// dialog this page allows and then writes desiredState INTENT only. The
+// owner-run reconciler (scripts/shopify/reconcile.mjs) is what actually talks
+// to Shopify — the browser cannot hold the client secret and NEVER calls
+// Shopify — and the row shows pending until it confirms. The Live filter
+// splits into On and Off groups; each live row carries an on/off switch
+// (off is instant intent, on re-confirms like Publish).
 //
 // LOAD DISCIPLINE (hard requirement — this is the read pattern that keeps the
 // Firebase bill flat): nothing whole-node, nothing eager.
@@ -26,30 +30,42 @@
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { FONT, GRAY, GREEN, RED, BLUE_L, tabOn, tabOff, input as inputStyle, bBlue } from "../stock/ui";
+import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import { cleanTitleFor } from "../../utils/shopifyTriggers";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
+  normalizedState, isOn, isPendingSwitch, canGoLive,
 } from "./shopifyPublishCore";
 import {
-  loadPipelineNodes, loadPublishKeys, loadNodesFor, approveName, nominateProduct, withdrawNomination, setCondition,
+  loadPipelineNodes, loadPublishKeys, loadNodesFor, approveName, publishProduct, setDesiredState, setCondition,
 } from "./shopifyPublishStore";
 
 const UNCAT = "Uncategorised";
 
-// Row state chips — the pipeline chips keep the old card's colours; the two
-// review-flow states use the neutral text tones from stock/ui's buttons.
+// Row state chips — live/blocked keep the old pipeline colours; the review
+// states use the neutral text tones from stock/ui's buttons. "publishing" and
+// "switching" are the pending marker: an intent written, the reconciler not
+// yet run.
 const STATE_BADGE = {
-  awaiting:  { label: "awaiting review", color: GRAY,    border: "rgba(255,255,255,.18)" },
-  approved:  { label: "approved",        color: "#dfe7ff", border: "rgba(255,255,255,.3)" },
-  nominated: { label: "nominated",       color: BLUE_L,  border: "rgba(74,127,255,.5)" },
-  draft:     { label: "draft on shop",   color: GREEN,   border: "rgba(74,222,128,.5)" },
-  live:      { label: "LIVE",            color: GREEN,   border: "rgba(74,222,128,.8)" },
-  blocked:   { label: "blocked",         color: RED,     border: "rgba(248,113,113,.55)" },
+  awaiting:   { label: "awaiting review", color: GRAY,    border: "rgba(255,255,255,.18)" },
+  approved:   { label: "approved",        color: "#dfe7ff", border: "rgba(255,255,255,.3)" },
+  publishing: { label: "publishing…",     color: BLUE_L,  border: "rgba(74,127,255,.5)" },
+  switching:  { label: "switching…",      color: BLUE_L,  border: "rgba(74,127,255,.5)" },
+  on:         { label: "ON — LIVE",       color: GREEN,   border: "rgba(74,222,128,.8)" },
+  off:        { label: "off",             color: GRAY,    border: "rgba(255,255,255,.18)" },
+  blocked:    { label: "blocked",         color: RED,     border: "rgba(248,113,113,.55)" },
 };
 
-function StateChip({ state }) {
-  const b = STATE_BADGE[state] || STATE_BADGE.awaiting;
+// The chip a node shows: pending intent wins (that's what Junid is waiting
+// on), then on/off for live products, then the review state.
+function chipFor(state, node) {
+  if (isPendingSwitch(node)) return state === "live" ? "switching" : "publishing";
+  if (state === "live") return isOn(node) ? "on" : "off";
+  return state;
+}
+
+function StateChip({ chip }) {
+  const b = STATE_BADGE[chip] || STATE_BADGE.awaiting;
   return (
     <span style={{ fontSize: 9.5, fontWeight: 800, color: b.color, border: `1px solid ${b.border}`,
                    borderRadius: 8, padding: "3px 7px", whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -79,23 +95,92 @@ function effectiveNameFor(product, node) {
   return { name: "", source: "manual", needsAI: true, reason: lex.reason };
 }
 
+// What the storefront would show — the facts the confirmation dialog states.
+function publicFacts(product, node, name) {
+  const photos = new Set(
+    [product?.photoUrl, ...(Array.isArray(product?.gallery) ? product.gallery : [])]
+      .filter((u) => typeof u === "string" && u.trim() !== "")
+  );
+  const price = Number(product?.retailPrice);
+  return {
+    name,
+    condition: node?.condition || null,
+    price: price > 0 ? `R ${price.toFixed(2)}` : "no price set",
+    photoCount: photos.size,
+  };
+}
+
+// ─── THE ONE CONFIRMATION DIALOG ─────────────────────────────────────────────
+// This page's rule is NO MODALS — with one deliberate exception (owner spec
+// 2026-08-14): going live. Publishing puts a name on the PUBLIC storefront
+// and the name is the compliance-critical field, so it is the most prominent
+// thing here and the reviewer confirms it one last time. Nothing else on the
+// page may grow a dialog; switching OFF never asks (it only reduces
+// exposure). Cancel is the default focus — Enter must never publish blind.
+function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
+  const cancelRef = useRef(null);
+  useEffect(() => { cancelRef.current?.focus(); }, []);
+  return (
+    <div onClick={onCancel}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)",
+               backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)",
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ ...GLASS_SOLID, width: "100%", maxWidth: 420, padding: "22px 20px", fontFamily: FONT }}>
+        <div style={{ fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700 }}>
+          Put on the public storefront?
+        </div>
+        <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", marginTop: 10, lineHeight: 1.3, overflowWrap: "break-word" }}>
+          {facts.name}
+        </div>
+        <div style={{ fontSize: 12.5, color: "rgba(255,255,255,.75)", marginTop: 12 }}>
+          {facts.condition || "— no condition set —"}
+        </div>
+        <div style={{ fontSize: 12.5, color: "rgba(255,255,255,.75)", marginTop: 4 }}>
+          {facts.price} · {facts.photoCount} photo{facts.photoCount === 1 ? "" : "s"}
+        </div>
+        <div style={{ fontSize: 11.5, color: GRAY, marginTop: 12, lineHeight: 1.45 }}>
+          This makes the product publicly visible on the online store, under exactly the
+          name above. Check the name once more — it is what the compliance rules protect.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+          <button ref={cancelRef} onClick={onCancel} disabled={busy} style={{ ...bGray, flex: 1 }}>Cancel</button>
+          <button onClick={onConfirm} disabled={busy} style={{ ...bGreen, flex: 1 }}>
+            {busy ? "Saving…" : "Put it live"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // One product's review row. Everything is inline: the cleaned name is a live
 // input with the trigger check on every keystroke, condition is three chips,
-// the primary action follows the review state. No modals anywhere.
+// the primary action is PUBLISH (behind the page's one confirmation dialog).
+// Live rows carry the on/off switch instead — off writes intent immediately,
+// on re-confirms with the same dialog.
 function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputRef }) {
   const effective = useMemo(() => effectiveNameFor(product, node), [product, node]);
   const [draft, setDraft] = useState(effective.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [confirming, setConfirming] = useState(null); // "publish" | "switch-on"
 
   const state = reviewStateFor(node);
+  const on = isOn(node);
+  const pending = isPendingSwitch(node);
   const verdict = checkCleanName(draft); // the LIVE trigger check
   const blocked = blockedReason(node);
-  // An edit after approval un-approves in the UI: the primary action returns
-  // to Approve until the new text is signed off, so Nominate can never queue
-  // a name the reviewer hasn't actually approved.
-  const dirty = state === "approved" && draft.trim() !== String(node?.cleanName || "");
-  const primaryIsApprove = state === "awaiting" || dirty;
+  const isLiveRow = state === "live";
+  // An edit after approval un-approves in the UI: Enter returns to approving
+  // until the new text is signed off, so Publish can never ship a name the
+  // reviewer hasn't actually confirmed (the dialog shows the draft verbatim).
+  // A live-OFF row's name is editable too (the reconciler re-syncs it at
+  // turn-on) — Enter is its save path, and the switch refuses to go On while
+  // an edit sits unsaved (the dialog must show the name that will ship).
+  const editable = state === "approved" || (isLiveRow && !on);
+  const dirty = editable && draft.trim() !== String(node?.cleanName || "");
+  const enterApproves = state === "awaiting" || dirty;
 
   // The source recorded on approval: an untouched saved name keeps its
   // provenance, an untouched lexicon suggestion records "lexicon", any edit
@@ -121,10 +206,32 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
   };
 
   const approve = () => {
-    if (busy || !verdict.ok || !primaryIsApprove) return;
+    if (busy || !verdict.ok || !enterApproves) return;
     run(() => approveName(product.id, node, draft, sourceForDraft()),
         (res) => onApproved(product.id, res.node));
   };
+
+  // Publish click: the condition gate is checked BEFORE the dialog opens — a
+  // dialog stating "no condition" would be confirming a write the store
+  // refuses anyway. The dialog is the only thing between here and intent.
+  const requestPublish = () => {
+    if (busy || !verdict.ok) return;
+    if (!canGoLive(node)) {
+      setError("Pick a condition grade first — a product cannot go live without one.");
+      return;
+    }
+    setConfirming("publish");
+  };
+
+  const confirmGoLive = () => {
+    const write = confirming === "publish"
+      ? () => publishProduct(product.id, node, draft, sourceForDraft())
+      : () => setDesiredState(product.id, node, "on");
+    run(write, (res) => onChanged(product.id, res.node));
+    setConfirming(null);
+  };
+
+  const dialogName = confirming === "switch-on" ? (node?.cleanName || draft.trim()) : draft.trim();
 
   return (
     <div style={{ display: "flex", gap: 11, padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
@@ -135,19 +242,20 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
                         whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {product.name}
           </div>
-          <StateChip state={state} />
+          <StateChip chip={chipFor(state, node)} />
         </div>
         <input
           ref={inputRef}
           value={draft}
-          disabled={busy}
+          disabled={busy || (isLiveRow && on)}
           onChange={(e) => { setDraft(e.target.value); if (error) setError(null); }}
           onKeyDown={(e) => {
             if (e.key !== "Enter") return;
             e.preventDefault();
             // Enter approves; on a row already approved and untouched it just
-            // advances, so walking a mixed list never stalls the flow.
-            if (primaryIsApprove) approve(); else onSkip(product.id);
+            // advances, so walking a mixed list never stalls the flow. Enter
+            // NEVER publishes — that path always goes through the dialog.
+            if (enterApproves) approve(); else onSkip(product.id);
           }}
           placeholder={effective.needsAI ? `needs a name — ${effective.reason}` : "Cleaned listing name…"}
           style={{ ...inputStyle, width: "100%", boxSizing: "border-box", marginTop: 6,
@@ -165,20 +273,42 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             </button>
           ))}
           <div style={{ flex: 1 }} />
-          {(state === "awaiting" || state === "approved") && (
-            <button disabled={busy || !verdict.ok}
-              onClick={primaryIsApprove ? approve
-                : () => run(() => nominateProduct(product.id, node), (res) => onChanged(product.id, res.node))}
-              style={{ ...bBlue, padding: "7px 12px", fontSize: "0.76rem", opacity: verdict.ok ? 1 : 0.4 }}>
-              {primaryIsApprove ? "Approve" : "Nominate →"}
-            </button>
-          )}
-          {state === "nominated" && (
+          {isLiveRow ? (
+            // The on/off switch. OFF is instant intent — reversible, reduces
+            // exposure, no dialog. ON re-confirms with the same dialog as
+            // Publish. While pending, the switch waits for the reconciler.
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              {pending && (
+                <span style={{ fontSize: 10.5, color: BLUE_L }}>waiting for the reconciler…</span>
+              )}
+              <button disabled={busy || pending || on}
+                onClick={() => {
+                  if (dirty) { setError("Save the edited name first (press Enter in the name field)."); return; }
+                  setConfirming("switch-on");
+                }}
+                style={{ ...(on ? tabOn : tabOff), padding: "4px 11px", fontSize: "0.68rem" }}>
+                On
+              </button>
+              <button disabled={busy || pending || !on}
+                onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
+                style={{ ...(!on ? tabOn : tabOff), padding: "4px 11px", fontSize: "0.68rem" }}>
+                Off
+              </button>
+            </div>
+          ) : pending ? (
+            // A publish intent the reconciler hasn't applied yet — cancellable
+            // without a dialog (cancelling only reduces exposure).
             <button disabled={busy}
-              onClick={() => run(() => withdrawNomination(product.id, node), (res) => onChanged(product.id, res.node))}
+              onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
               style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
                        fontSize: "0.72rem", fontWeight: 700, color: GRAY, padding: "7px 4px" }}>
-              Withdraw
+              Cancel
+            </button>
+          ) : (
+            <button disabled={busy || !verdict.ok}
+              onClick={requestPublish}
+              style={{ ...bBlue, padding: "7px 12px", fontSize: "0.76rem", opacity: verdict.ok ? 1 : 0.4 }}>
+              Publish
             </button>
           )}
         </div>
@@ -190,6 +320,14 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
         )}
         {error && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{error}</div>}
       </div>
+      {confirming && (
+        <PublishConfirmDialog
+          facts={publicFacts(product, node, dialogName)}
+          busy={busy}
+          onCancel={() => setConfirming(null)}
+          onConfirm={confirmGoLive}
+        />
+      )}
     </div>
   );
 }
@@ -228,16 +366,17 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return () => clearTimeout(t);
   }, [query]);
   const [keys, setKeys] = useState(null);          // Set<pid> — pids with ANY node
-  const [pipeline, setPipeline] = useState(null);  // {pid: node} for the 4 pipeline states
+  const [pipeline, setPipeline] = useState(null);  // {pid: node} for live/blocked (+legacy)
   const [nodes, setNodes] = useState({});          // every node body this session has loaded
   const [open, setOpen] = useState(() => new Set());
-  const [loadError, setLoadError] = useState(null);
+  const [loadError, setLoadError] = useState(null);       // mount reads failed — page unusable
+  const [sectionError, setSectionError] = useState(null); // a body batch failed — clears on the next good batch
   const inputRefs = useRef(new Map());             // pid -> input element
   const refCallbacks = useRef(new Map());          // pid -> STABLE ref callback (see refFor)
   const requestedPids = useRef(new Set());         // in-flight/done per-pid body fetches
   const autoFocusCat = useRef(null);               // focus first awaiting row once this category loads
 
-  // Mount reads: shallow keys + the four indexed pipeline queries. Both are
+  // Mount reads: shallow keys + the indexed pipeline queries. Both are
   // partial by design — never get(/shopify_publish).
   useEffect(() => {
     let on = true;
@@ -274,11 +413,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
 
   // Per-section view data under the current search + filter. Counts come from
   // cheap sources only: key ABSENCE prices "awaiting", the pipeline queries
-  // price their four states, "all" is the catalogue itself. (A node holding
-  // only a condition or a withdrawn nomination counts as seen here even
-  // though its row still says "awaiting" once its body loads — the honest
-  // number needs bodies, and bodies are strictly on-expand. The count is an
-  // approximation; the ROWS are always judged from real fields.)
+  // price live/blocked, "all" is the catalogue itself. (A node holding only a
+  // condition counts as seen here even though its row still says "awaiting"
+  // once its body loads — the honest number needs bodies, and bodies are
+  // strictly on-expand. The count is an approximation; the ROWS are always
+  // judged from real fields.)
   // `pending` = displayed pids whose body is still unfetched — the section
   // renders rows only once it hits zero, so a row never mounts with a node it
   // doesn't have yet (its editable draft is seeded from the node at mount).
@@ -294,19 +433,47 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (filter === "all") count = matched.length;
       else if (filter === "awaiting") {
         // Key absence, refined by any bodies already loaded: a node that
-        // exists but was never name-approved (condition-only, withdrawn
-        // nomination) still awaits review, and pricing it from keys alone
-        // would hide its whole section under this filter.
+        // exists but was never name-approved (condition-only) still awaits
+        // review, and pricing it from keys alone would hide its whole
+        // section under this filter.
         count = keys ? matched.filter((p) =>
           !keys.has(p.id) ||
           (nodes[p.id] !== undefined && reviewStateFor(nodes[p.id]) === "awaiting")).length : null;
       }
-      else count = pipeline ? matched.filter((p) => pipeline[p.id]?.state === filter).length : null;
+      else count = pipeline ? matched.filter((p) => pipeline[p.id] && reviewStateFor(pipeline[p.id]) === filter).length : null;
       const pending = keys ? matched.filter((p) => keys.has(p.id) && nodes[p.id] === undefined).length : 0;
       return { cat, list, matched, count, pending };
     }).filter((s) => (q ? s.matched.length > 0 : true))
       .filter((s) => (filter === "all" ? true : s.count !== 0));
   }, [sections, q, filter, keys, pipeline, nodes]);
+
+  // The Live filter abandons category sections for the owner's real question
+  // — what is ON the storefront and what is OFF — as two collapsible groups
+  // (same header treatment as the category sections). Bodies are already in
+  // hand: the pipeline query loads every live node at mount. Pending rows
+  // group under their CONFIRMED side — the truthful one until the reconciler
+  // says otherwise.
+  const liveGroups = useMemo(() => {
+    if (filter !== "live") return null;
+    const byId = new Map();
+    for (const p of products) if (p?.id) byId.set(p.id, p);
+    const on = [];
+    const off = [];
+    for (const [pid, n] of Object.entries(nodes)) {
+      if (!n || normalizedState(n) !== "live") continue;
+      const p = byId.get(pid);
+      if (!p) continue;
+      if (q && !(String(p.name || "").toLowerCase().includes(q) ||
+                 String(n.cleanName || "").toLowerCase().includes(q))) continue;
+      (isOn(n) ? on : off).push(p);
+    }
+    const cmp = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" });
+    on.sort(cmp); off.sort(cmp);
+    return [
+      { key: "__liveOn",  label: "On — visible to customers", list: on },
+      { key: "__liveOff", label: "Off — on Shopify, not published", list: off },
+    ];
+  }, [filter, products, nodes, q]);
 
   // A section is effectively open when toggled open, or when a search has
   // narrowed the page far enough that showing the matches outright is cheap.
@@ -343,15 +510,53 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           });
           if (failed.length) {
             for (const pid of failed) requestedPids.current.delete(pid); // let a re-open retry
-            setLoadError(`${failed.length} product record(s) didn't load — reopen the section or adjust the search to retry`);
+            setSectionError(`${failed.length} product record(s) didn't load — reopen the section or adjust the search to retry`);
+          } else {
+            setSectionError(null); // a clean batch clears the stale banner
           }
         })
         .catch((e) => {
           for (const pid of want) requestedPids.current.delete(pid);
-          setLoadError(String(e?.message || e));
+          setSectionError(String(e?.message || e));
         });
     }
   }, [viewSections, keys, open, q]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The reconciler runs in Junid's terminal, outside this session — without a
+  // listener (deliberately: reads stay one-shot and partial) the pending
+  // marker would only ever clear on a full reload. Window focus is the
+  // natural "I ran the script, back to the page" moment: refetch ONLY the
+  // pids currently pending (a handful of bodies, never the node).
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onFocus = () => {
+      const pendingPids = Object.entries(nodes)
+        .filter(([, n]) => isPendingSwitch(n))
+        .map(([pid]) => pid);
+      if (!pendingPids.length) return;
+      loadNodesFor(pendingPids)
+        .then(({ nodes: got, failed }) => {
+          setNodes((prev) => {
+            const next = { ...prev };
+            for (const pid of pendingPids) if (!failed.includes(pid)) next[pid] = got[pid] || null;
+            return next;
+          });
+          setPipeline((prev) => {
+            if (!prev) return prev;
+            const next = { ...prev };
+            for (const pid of pendingPids) {
+              if (failed.includes(pid)) continue;
+              const n = got[pid];
+              if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
+            }
+            return next;
+          });
+        })
+        .catch(() => {}); // a failed refresh just keeps showing pending
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [nodes]);
 
   // Ordered pids of rows currently on screen whose state is "awaiting" — the
   // Enter key walks this list.
@@ -374,13 +579,13 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // the Enter flow's focus) until a refetch landed.
   const applyWrite = (pid, node) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
-    // Keep the pipeline map (which prices the four state-filter counts) in
-    // step with the write — otherwise a fresh nomination is invisible to the
-    // Nominated filter, and a withdrawal leaves a phantom count behind.
+    // Keep the pipeline map (which prices the live/blocked filter counts) in
+    // step with the write — otherwise a fresh block is invisible to the
+    // Blocked filter, and an unblock leaves a phantom count behind.
     setPipeline((prev) => {
       if (!prev) return prev;
       const next = { ...prev };
-      if (node && ["nominated", "draft", "live", "blocked"].includes(node.state)) next[pid] = node;
+      if (node && normalizedState(node) !== "awaiting") next[pid] = node;
       else delete next[pid];
       return next;
     });
@@ -400,6 +605,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // the open sections are exhausted, open the next category that still has
   // unreviewed products and focus its first row once its bodies load.
   const advanceFrom = (pid) => {
+    if (filter === "live") return; // the On/Off groups have no review walk
     const awaiting = visibleRows.filter((r) => r.state === "awaiting" && r.pid !== pid);
     const idx = visibleRows.findIndex((r) => r.pid === pid);
     const next = awaiting.find((r) => visibleRows.findIndex((v) => v.pid === r.pid) > idx) || awaiting[0];
@@ -412,7 +618,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       // node key), or whose LOADED bodies still read awaiting. Unloaded
       // node-bearing pids are approximated as reviewed — the honest answer
       // needs their bodies, which are strictly on-expand; a category that is
-      // wholly withdrawn-nominations would be skipped here and reached by a
+      // wholly condition-only nodes would be skipped here and reached by a
       // manual expand instead.
       const openCats = new Set([...open]);
       const candidate = viewSections.find(({ cat, matched }) =>
@@ -467,6 +673,28 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return next;
   });
 
+  // One section/group header row — the home list's row treatment (RoleCard):
+  // name, right-aligned count badge, chevron. Shared by the category sections
+  // and the Live view's On/Off groups.
+  const sectionHeader = (key, label, count, opened) => (
+    <div onClick={() => toggle(key)}
+      style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 2px",
+               cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+      <div style={{ flex: 1, fontSize: 15, fontWeight: 500, color: "rgba(255,255,255,.9)" }}>{label}</div>
+      {count != null && count !== 0 && (
+        <div style={{ minWidth: 28, height: 28, padding: "0 8px", boxSizing: "border-box", borderRadius: 999,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11, fontWeight: 600, fontVariantNumeric: "tabular-nums",
+                      background: "rgba(60,110,255,.18)", color: "#6A9FFF",
+                      boxShadow: "0 0 8px rgba(60,110,255,.3),inset 0 0 6px rgba(60,110,255,.15)" }}>
+          {count}
+        </div>
+      )}
+      <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14,
+                     transform: opened ? "rotate(90deg)" : "none", transition: "transform .15s" }}>›</span>
+    </div>
+  );
+
   return (
     <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
       {/* TOP BAR — same shape as the other full-page views (LabelPrintView) */}
@@ -506,38 +734,58 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             Couldn't load the publishing pipeline: {loadError}
           </div>
         )}
+        {sectionError && (
+          <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
+            {sectionError}
+          </div>
+        )}
         {!loadError && (!keys || !pipeline) && (
           <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading pipeline…</div>
         )}
 
-        {keys && pipeline && viewSections.length === 0 && (
+        {/* LIVE FILTER — the On / Off groups replace the category sections */}
+        {keys && pipeline && liveGroups && (
+          liveGroups.every((g) => g.list.length === 0) ? (
+            <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>
+              {q ? "No live products match." : "Nothing on Shopify yet."}
+            </div>
+          ) : (
+            liveGroups.map(({ key, label, list }) => {
+              const opened = isOpen(key);
+              return (
+                <div key={key}>
+                  {sectionHeader(key, label, list.length, opened)}
+                  {opened && list.length === 0 && (
+                    <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Nothing here.</div>
+                  )}
+                  {opened && list.map((p) => (
+                    <ProductReviewRow
+                      key={p.id}
+                      product={p}
+                      node={nodes[p.id] || null}
+                      onApproved={onApproved}
+                      onChanged={applyWrite}
+                      onSkip={advanceFrom}
+                      inputRef={refFor(p.id)}
+                    />
+                  ))}
+                </div>
+              );
+            })
+          )
+        )}
+
+        {keys && pipeline && !liveGroups && viewSections.length === 0 && (
           <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>
             {q ? "No products match." : "Nothing to show under this filter."}
           </div>
         )}
 
-        {keys && pipeline && viewSections.map(({ cat, matched, count, pending }) => {
+        {keys && pipeline && !liveGroups && viewSections.map(({ cat, matched, count, pending }) => {
           const opened = isOpen(cat);
           return (
             <div key={cat}>
-              {/* Section header row — the home list's row treatment (RoleCard):
-                  name, right-aligned count badge, chevron. */}
-              <div onClick={() => toggle(cat)}
-                style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 2px",
-                         cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
-                <div style={{ flex: 1, fontSize: 15, fontWeight: 500, color: "rgba(255,255,255,.9)" }}>{cat}</div>
-                {count != null && count !== 0 && (
-                  <div style={{ minWidth: 28, height: 28, padding: "0 8px", boxSizing: "border-box", borderRadius: 999,
-                                display: "flex", alignItems: "center", justifyContent: "center",
-                                fontSize: 11, fontWeight: 600, fontVariantNumeric: "tabular-nums",
-                                background: "rgba(60,110,255,.18)", color: "#6A9FFF",
-                                boxShadow: "0 0 8px rgba(60,110,255,.3),inset 0 0 6px rgba(60,110,255,.15)" }}>
-                    {count}
-                  </div>
-                )}
-                <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14,
-                               transform: opened ? "rotate(90deg)" : "none", transition: "transform .15s" }}>›</span>
-              </div>
+              {sectionHeader(cat, cat, count, opened)}
 
               {opened && pending !== 0 && (
                 <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Loading section…</div>
