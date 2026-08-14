@@ -3,6 +3,10 @@ dist
 .firebase
 .DS_Store
 *.log
+# The scheduled reconciler's working directory on the Mac mini: rotated logs,
+# its single-flight lockfile and its failure-counter state. Machine-local by
+# definition — never committed (scripts/shopify/MAC-MINI-SETUP.md).
+logs/
 .env
 .env.local
 .env.*.local
