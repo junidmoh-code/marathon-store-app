@@ -2748,7 +2748,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       canAccessStock                                           && { key:"marketing", icon:RoleIcons.insights, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
       // Shopify Publishing — the online-store review queue. Badge = products
       // whose names have never been reviewed (null while loading → no badge).
-      shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · nominate", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
+      shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // The Display Register tile is GONE (owner spec 2026-08-06): displays are
       // hub stock now, and the register merged into the Hub Count & Displays
       // card above (HubCleanupCard). We no longer track what is on display.

@@ -50,6 +50,20 @@ export function isOn(node) {
   return node.state === "live"; // legacy node without liveState
 }
 
+// The state fields a WRITE must carry for this node. Writing normalizedState
+// alone would be a trap for legacy nodes: "draft" normalises to "live", and a
+// live node without liveState reads as ON (the legacy-live fallback in isOn) —
+// so a write that upgrades the state string must pin liveState from the
+// LEGACY value at the same time (draft was never published → off).
+export function normalizedFields(node) {
+  const state = normalizedState(node);
+  if (state !== "live") return { state };
+  const liveState = node?.liveState === "on" || node?.liveState === "off"
+    ? node.liveState
+    : (node?.state === "live" ? "on" : "off");
+  return { state, liveState };
+}
+
 // Pending = an intent the reconciler hasn't applied yet. desiredState is the
 // UI's write; state/liveState are the reconciler's — the row shows pending
 // exactly while they disagree.

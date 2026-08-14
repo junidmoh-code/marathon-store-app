@@ -10,12 +10,15 @@
 // returned as { ok:false, message } and shown — never swallowed.
 //
 // Node shape (scripts/shopify/publishNode.mjs is the Admin-SDK twin):
-//   state (none|nominated|draft|live|blocked), cleanName,
-//   cleanNameSource (lexicon|ai|manual), condition, updatedAt, updatedBy
+//   state (awaiting|live|blocked), liveState (on|off, reconciler-confirmed),
+//   desiredState (on|off, the page's INTENT — the ONLY publish-related field
+//   this file writes; the browser never calls Shopify), blockedReason,
+//   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
+//   condition, updatedAt, updatedBy
 import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { CONDITIONS, checkCleanName } from "./shopifyPublishCore";
+import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields } from "./shopifyPublishCore";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -48,9 +51,9 @@ function writeError(err) {
 // catalogue) in one read — the review record grows toward one node per product,
 // and eager loads here are the class of read that spiked the Firebase
 // bandwidth bill. Three complementary partial reads cover every screen state:
-//   1. loadPipelineNodes() — four server-filtered queries on the published
-//      `state` index (nominated/draft/live/blocked). These sets stay small:
-//      they are the products actually headed to (or on) the shop.
+//   1. loadPipelineNodes() — server-filtered queries on the published
+//      `state` index (live/blocked, plus the legacy values until migration).
+//      These sets stay small: they are the products actually on the shop.
 //   2. loadPublishKeys()   — a REST ?shallow=true read: the KEY LIST only, no
 //      bodies (~10 bytes per reviewed product). A node's existence means the
 //      product has been seen; absence is what "awaiting review" means, so
@@ -59,7 +62,10 @@ function writeError(err) {
 //      is about to display, fetched when that section expands.
 
 export async function loadPipelineNodes() {
-  const states = ["nominated", "draft", "live", "blocked"];
+  // The four legacy states ride along until every node is migrated — an
+  // unmigrated draft/nominated node must not vanish from the page. Each is
+  // one cheap indexed query returning at most a handful of rows.
+  const states = ["live", "blocked", "nominated", "draft"];
   const snaps = await Promise.all(states.map((s) =>
     get(query(ref(database, "shopify_publish"), orderByChild("state"), equalTo(s)))));
   const merged = {};
@@ -142,10 +148,11 @@ async function writeNode(productId, mutate) {
 
 /**
  * Approve a product's cleaned name — the review flow's core write. Stamps
- * `nameApprovedAt` (state stays whatever it CURRENTLY is on the server,
- * "none" for a first-touch node: the live rules' state enum has no
- * "approved" value). The same trigger check that runs live on the input
- * runs again here.
+ * `nameApprovedAt` (state stays "awaiting"; "approved" is a review marker,
+ * not a stored state). The same trigger check that runs live on the input
+ * runs again here. Refused for a product that is ON the storefront — a
+ * rename there would silently diverge from what customers see; an OFF
+ * product stays editable, the reconciler re-syncs its fields at turn-on.
  */
 export async function approveName(productId, node, name, source = "manual") {
   const verdict = checkCleanName(name);
@@ -154,15 +161,11 @@ export async function approveName(productId, node, name, source = "manual") {
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
-    if (base.state === "live") {
-      // A LIVE listing shows its name to customers — a rename here would
-      // silently diverge from the storefront. Live edits are the update
-      // slice's job, same rule as setCondition. Draft stays editable: the
-      // next publish run reconciles it.
-      refusal = "Listing is LIVE — name changes for live products aren't wired yet.";
+    if (isOn(base)) {
+      refusal = "Listing is ON the storefront — switch it off before renaming.";
       return undefined;
     }
-    return { ...base, state: base.state || "none", cleanName, cleanNameSource: source,
+    return { ...base, ...normalizedFields(base), cleanName, cleanNameSource: source,
              nameApprovedAt: serverNowMs(), ...stamp() };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
@@ -170,66 +173,79 @@ export async function approveName(productId, node, name, source = "manual") {
 }
 
 /**
- * Nominate a product for the Shopify push. Lands in state "nominated" when a
- * condition is already set (or given), "blocked" otherwise — condition has NO
- * default and a blocked product cannot be pushed.
+ * THE publish action — the single step that used to be Approve → Nominate →
+ * Live. Records the reviewed name and the INTENT to go on the storefront
+ * (desiredState "on"); the owner-run reconciler creates/validates/publishes
+ * and confirms. The row shows pending until it does. Two refusals, both
+ * checked against the SERVER's node: already on, and the unbreakable
+ * condition gate (a product cannot reach live with condition unset).
  */
-export async function nominateProduct(productId, existingNode, condition = undefined) {
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || existingNode || {};
-    if (base.state === "draft" || base.state === "live") {
-      // The publish script took this product while the row sat stale —
-      // nominating now would overwrite the script's state. Checked against
-      // the SERVER's value; re-queuing a draft is setCondition's job.
-      refusal = "Already with the publish script — refresh the page to see its current state.";
-      return undefined;
-    }
-    const cond = condition !== undefined ? condition : base.condition;
-    return { ...base, ...(condition !== undefined ? { condition } : {}),
-             state: CONDITIONS.includes(cond) ? "nominated" : "blocked", ...stamp() };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res.ok ? { ok: true, state: res.node?.state, node: res.node } : res;
-}
-
-/** Withdraw a nomination (draft/live products keep their state — Shopify already has them). */
-export async function withdrawNomination(productId, node) {
+export async function publishProduct(productId, node, name, source = "manual") {
+  const verdict = checkCleanName(name);
+  if (!verdict.ok) return { ok: false, message: verdict.problems.join("; ") };
+  const cleanName = String(name).trim();
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
-    if (base.state === "draft" || base.state === "live") {
-      refusal = "Already pushed to Shopify — withdrawing here would lie about that.";
-      return undefined; // abort — checked against the SERVER's state, not the row's
+    if (isOn(base)) {
+      refusal = "Already ON the storefront — refresh the page to see its current state.";
+      return undefined;
     }
-    return { ...base, state: "none", ...stamp() };
+    if (!canGoLive(base)) {
+      refusal = "Condition not set — a product cannot go live without one of the three grades.";
+      return undefined;
+    }
+    // A blocked product re-publishing clears its recorded refusal — the
+    // reconciler re-validates everything at apply time anyway.
+    return { ...base, ...normalizedFields(base),
+             cleanName, cleanNameSource: source, nameApprovedAt: serverNowMs(),
+             desiredState: "on", blockedReason: null, ...stamp() };
   });
-  if (res.aborted) return { ok: false, message: refusal || "Nothing to withdraw." };
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;
 }
 
-/** Set the condition grade. Unblocks a blocked nomination (blocked → nominated). */
+/**
+ * The on/off switch (and the pending-publish cancel): write the INTENT only.
+ * "on" re-checks the condition gate; "off" is always allowed — it only
+ * reduces exposure. State stays whatever the reconciler last confirmed.
+ */
+export async function setDesiredState(productId, node, want) {
+  if (want !== "on" && want !== "off") return { ok: false, message: "Switch must be on or off." };
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    if (want === "on" && !canGoLive(base)) {
+      refusal = "Condition not set — a product cannot go live without one of the three grades.";
+      return undefined;
+    }
+    return { ...base, ...normalizedFields(base), desiredState: want,
+             ...(want === "on" ? { blockedReason: null } : {}), ...stamp() };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
+/** Set the condition grade. Unblocks a blocked product (blocked → awaiting). */
 export async function setCondition(productId, node, condition) {
   if (!CONDITIONS.includes(condition)) return { ok: false, message: "Not one of the three condition grades." };
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
-    if (base.state === "live") {
-      // A LIVE listing's description carries the old grade — changing it here
-      // would make the page lie about what customers see. Live edits are the
-      // update slice's job. Checked against the SERVER's state.
-      refusal = "Listing is LIVE — condition changes for live products aren't wired yet.";
+    if (isOn(base)) {
+      // The ON listing's description carries the old grade — changing it here
+      // would make the page lie about what customers see. Switch it off
+      // first; the reconciler re-syncs the description at the next turn-on.
+      refusal = "Listing is ON the storefront — switch it off before changing the condition.";
       return undefined;
     }
-    // blocked/nominated → nominated (unblocks); draft → nominated too, which
-    // RE-QUEUES the product so the next publish run reconciles the new grade
-    // onto the Shopify draft and returns it to state draft. Anything else
-    // keeps its state ("none" for a first-touch node — the $pid .validate
-    // requires hasChildren(['state']), so a grade-first write on an
-    // unreviewed product must still carry one).
-    const st = (base.state === "blocked" || base.state === "nominated" || base.state === "draft")
-      ? "nominated" : (base.state || "none");
-    return { ...base, condition, state: st, ...stamp() };
+    // blocked → awaiting (unblocks, refusal reason cleared); live-off and
+    // awaiting keep their state. Every write carries `state` — the $pid
+    // .validate requires hasChildren(['state']), so a grade-first write on an
+    // unreviewed product must still include one.
+    const unblocking = normalizedState(base) === "blocked";
+    return { ...base, ...normalizedFields(base), condition,
+             ...(unblocking ? { state: "awaiting", blockedReason: null } : {}), ...stamp() };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;
