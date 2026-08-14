@@ -693,3 +693,57 @@ describe("planCollectionMembership — a join is filtered by the managed set too
     expect(planCollectionMembership([], SMART, []).join).toEqual([SMART]);
   });
 });
+
+// The two safety properties, over the WHOLE input space rather than examples.
+// This is the function that can remove a public listing from its collection;
+// an example-based test proves the cases I thought of, which is exactly the
+// class of reasoning that produced the bug this function exists to fix.
+describe("sweepIntent — exhaustive safety properties", () => {
+  const NODES = [
+    null,
+    { state: "awaiting" },
+    { state: "live", liveState: "on" },
+    { state: "live", liveState: "off" },
+    { state: "blocked" },
+  ];
+  const DESIRED = [undefined, "on", "off"];
+  const STATUSES = ["ACTIVE", "DRAFT", "ARCHIVED"];
+  const every = [];
+  for (const base of NODES) {
+    for (const desiredState of DESIRED) {
+      for (const status of STATUSES) {
+        const node = base === null ? null : (desiredState === undefined ? base : { ...base, desiredState });
+        every.push({ node, status, verdict: sweepIntent(node, status) });
+      }
+    }
+  }
+
+  it("covers 45 combinations and returns only known actions", () => {
+    expect(every).toHaveLength(45);
+    for (const e of every) expect(["assign", "hold", "drift", "strip"]).toContain(e.verdict.action);
+  });
+
+  it("NEVER strips a product Shopify is showing publicly", () => {
+    const violations = every
+      .filter((e) => e.status === "ACTIVE" && e.verdict.action === "strip")
+      .map((e) => ({ node: e.node, status: e.status }));
+    expect(violations).toEqual([]);
+  });
+
+  it("NEVER assigns a collection to anything but a CONFIRMED-on product", () => {
+    const violations = every
+      .filter((e) => e.verdict.action === "assign")
+      .filter((e) => !(e.node?.state === "live" && e.node?.liveState === "on"))
+      .map((e) => ({ node: e.node, status: e.status }));
+    expect(violations).toEqual([]);
+  });
+
+  it("every non-assign verdict carries a reason a human can act on", () => {
+    for (const e of every) {
+      if (e.verdict.action === "hold" || e.verdict.action === "drift") {
+        expect(typeof e.verdict.reason).toBe("string");
+        expect(e.verdict.reason.length).toBeGreaterThan(20);
+      }
+    }
+  });
+});
