@@ -284,7 +284,7 @@ test("an ON row locks its name input; a dirty live-off row refuses the switch un
   expect(calls.desired.length).toBe(0);
 });
 
-test("a pending publish shows Cancel, which writes desiredState off", async () => {
+test("a pending publish says it waits for the reconciler and shows Cancel, which writes desiredState off", async () => {
   keys = new Set(["p1"]);
   bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND, desiredState: "on" };
   let tree;
@@ -292,7 +292,44 @@ test("a pending publish shows Cancel, which writes desiredState off", async () =
   await flush();
   await openClothing(tree);
   expect(texts(tree)).toContain("PUBLISHING");
+  // Not just a chip: the row states in words that a reconciler run is what
+  // it's waiting on (owner feedback — the pending marker alone didn't tell
+  // Junid that a separate script has to run).
+  expect(texts(tree)).toContain("waiting for the reconciler run");
   await act(() => { button(tree, "Cancel").props.onClick(); });
   await flush();
   expect(calls.desired).toEqual([{ pid: "p1", want: "off" }]);
+});
+
+test("a live row shows when it went live and its Shopify admin link", async () => {
+  keys = new Set(["p1"]);
+  const liveAt = new Date("2026-08-10T09:00:00Z").getTime();
+  pipeline = {
+    p1: { state: "live", liveState: "on", desiredState: "on", cleanName: "Basic tee black",
+          condition: COND, liveAt, adminUrl: "https://admin.shopify.com/store/nu3ei8-0p/products/123" },
+  };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Live").props.onClick(); });
+  await flush();
+  const onHeader = tree.root.findAll((n) => n.type === "div" && n.children.includes("On — visible to customers"))[0];
+  await act(() => { onHeader.parent.props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain(`Went live ${new Date(liveAt).toLocaleDateString()}`);
+  const link = tree.root.findAll((n) => n.type === "a")[0];
+  expect(link.props.href).toBe("https://admin.shopify.com/store/nu3ei8-0p/products/123");
+});
+
+test("home badge counts only never-seen products — live and blocked are excluded", async () => {
+  // The badge prices "awaiting review" as key ABSENCE: any product with a
+  // /shopify_publish node (live, blocked, or merely seen) is out of the count.
+  const { useShopifyAwaitingCount } = await import("./ShopifyPublishView.jsx");
+  keys = new Set(["p1", "p3"]); // p1 live, p3 blocked — both have nodes
+  let seen = null;
+  function Probe() { seen = useShopifyAwaitingCount(PRODUCTS, true); return null; }
+  await act(() => { create(<Probe />); });
+  await flush();
+  expect(seen).toBe(1); // only p2 has never been reviewed
 });

@@ -13,6 +13,12 @@
 //     cleanNameSource:  "lexicon" | "ai" | "manual",
 //     nameApprovedAt:   epoch ms,                // name signed off in the review page
 //     condition:        one of CONDITIONS (compliance.mjs) — NO default,
+//     photos:           [url, …],                // PUBLISHING photo set, ordered, first = primary.
+//                                                // Optional — absent means "use the record's
+//                                                // photoUrl + gallery". Photos are a publishing
+//                                                // concern: NEVER written to /products.
+//     liveAt:           epoch ms,                // when the product last went ON (reconciler stamp)
+//     adminUrl:         string,                  // Shopify admin link (reconciler stamp)
 //     updatedAt:        epoch ms,
 //     updatedBy:        uid or "script:<name>",
 //   }
@@ -68,13 +74,22 @@ export async function cachePublishName(db, productId, { cleanName, source, updat
 // on/off, so record it and let the page's pending marker clear. desiredState
 // is deliberately NOT touched — it is the page's field; leaving it in place
 // keeps the write idempotent (desired == confirmed ⇒ no diff next run).
-export async function confirmLiveState(db, productId, liveState, updatedBy) {
+//
+// The optional gid lets the page show the row's Shopify admin link without a
+// /shopify_sync read (adminUrl rides the node's $other clause); liveAt stamps
+// the moment the product last WENT ON — the fact Junid asked the Live view to
+// show. Both are best-effort extras: an older caller without them still
+// confirms correctly, the row just shows no link/date yet.
+export async function confirmLiveState(db, productId, liveState, updatedBy, { gid = null } = {}) {
   assertSafeSegment(productId, "productId");
   if (liveState !== "on" && liveState !== "off") throw new Error(`invalid liveState: ${liveState}`);
+  const numericId = gid ? String(gid).split("/").pop() : null;
   await db.ref(`shopify_publish/${productId}`).update({
     state: "live",
     liveState,
     blockedReason: null,
+    ...(numericId ? { adminUrl: `https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}` } : {}),
+    ...(liveState === "on" ? { liveAt: Date.now() } : {}),
     updatedAt: Date.now(),
     updatedBy,
   });

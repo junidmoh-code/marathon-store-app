@@ -182,7 +182,7 @@ for (const { pid, want } of capped) {
       );
       const errs = res.publishableUnpublish.userErrors;
       if (errs?.length) { results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` }); continue; }
-      await confirmLiveState(db, pid, "off", UPDATED_BY);
+      await confirmLiveState(db, pid, "off", UPDATED_BY, { gid: mapNode.shopifyProductId });
       results.push({ pid, ok: true, note: "unpublished from the Online Store channel" });
       continue;
     }
@@ -484,7 +484,7 @@ for (const { pid, want } of capped) {
       // Fail-safe here too: if drift left this product visible, a cancel
       // confirming "off" without an unpublish would strand it up for good.
       await failSafeUnpublish(gid);
-      await confirmLiveState(db, pid, "off", UPDATED_BY);
+      await confirmLiveState(db, pid, "off", UPDATED_BY, { gid });
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
       continue;
     }
@@ -512,7 +512,7 @@ for (const { pid, want } of capped) {
       await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`);
       continue;
     }
-    await confirmLiveState(db, pid, "on", UPDATED_BY);
+    await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
     const numericId = gid.split("/").pop();
     results.push({
       pid, ok: true,

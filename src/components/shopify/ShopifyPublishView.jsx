@@ -279,7 +279,9 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             // Publish. While pending, the switch waits for the reconciler.
             <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
               {pending && (
-                <span style={{ fontSize: 10.5, color: BLUE_L }}>waiting for the reconciler…</span>
+                <span style={{ fontSize: 10.5, color: BLUE_L }}>
+                  Saved — waiting for the reconciler run to update Shopify.
+                </span>
               )}
               <button disabled={busy || pending || on}
                 onClick={() => {
@@ -297,13 +299,21 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             </div>
           ) : pending ? (
             // A publish intent the reconciler hasn't applied yet — cancellable
-            // without a dialog (cancelling only reduces exposure).
-            <button disabled={busy}
-              onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
-              style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
-                       fontSize: "0.72rem", fontWeight: 700, color: GRAY, padding: "7px 4px" }}>
-              Cancel
-            </button>
+            // without a dialog (cancelling only reduces exposure). The plain
+            // sentence is deliberate (owner feedback 2026-08-14): the chip
+            // alone read as "in progress", and Junid didn't know a separate
+            // reconciler run had to happen before anything reached Shopify.
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ fontSize: 10.5, color: BLUE_L }}>
+                Saved — waiting for the reconciler run to send it to Shopify.
+              </span>
+              <button disabled={busy}
+                onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
+                style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
+                         fontSize: "0.72rem", fontWeight: 700, color: GRAY, padding: "7px 4px" }}>
+                Cancel
+              </button>
+            </div>
           ) : (
             <button disabled={busy || !verdict.ok}
               onClick={requestPublish}
@@ -314,6 +324,25 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
         </div>
         {node?.condition && (
           <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>{node.condition}</div>
+        )}
+        {isLiveRow && (
+          // The live row's provenance line: when it went ON (the reconciler's
+          // liveAt stamp) and the direct Shopify admin link. Both are stamped
+          // at confirm time — a row confirmed before this shipped shows
+          // neither, honestly, until its next reconcile.
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
+            {on
+              ? (node?.liveAt ? `Went live ${new Date(node.liveAt).toLocaleDateString()}` : "Live")
+              : "On Shopify, not published"}
+            {node?.adminUrl && (
+              <>
+                {" · "}
+                <a href={node.adminUrl} target="_blank" rel="noreferrer" style={{ color: BLUE_L }}>
+                  Shopify admin ↗
+                </a>
+              </>
+            )}
+          </div>
         )}
         {blocked && (
           <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>⛔ {blocked}</div>
