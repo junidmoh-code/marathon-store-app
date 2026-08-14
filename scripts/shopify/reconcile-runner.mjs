@@ -44,7 +44,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import {
-  openSync, closeSync, writeSync, writeFileSync, readFileSync, unlinkSync,
+  writeFileSync, readFileSync, unlinkSync, linkSync,
   mkdirSync, statSync, renameSync, appendFileSync,
 } from "node:fs";
 
@@ -55,9 +55,11 @@ const LOG_FILE = join(LOG_DIR, "shopify-reconcile.log");
 const LOCK_FILE = join(LOG_DIR, "shopify-reconcile.lock");
 const STATE_FILE = join(LOG_DIR, "shopify-reconcile.state.json");
 
-// A run that has not finished in this long is treated as WEDGED: its lock is
-// reclaimed and a banner says so. Sized well above a full cap-25 commit run
-// (media polling dominates: ~15 polls × 2 s per product, plus throttle waits).
+// How long a run may go before the log starts SAYING SO on every tick. It is
+// not a reclaim threshold — a live run is never interrupted, however slow —
+// only the point at which silence would be worse than noise. Sized well above
+// a full cap-25 commit run (media polling dominates: ~15 polls × 2 s per
+// product, plus throttle waits).
 const STALE_LOCK_MS = 30 * 60 * 1000;
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const LOG_GENERATIONS = 5;
@@ -111,10 +113,12 @@ function writeState(state) {
 }
 
 // ── Single-flight lock ───────────────────────────────────────────────────────
-// "wx" is an atomic create-or-fail: two processes racing here cannot both
-// win. The pid inside is what lets a crashed run's lock be reclaimed — an
-// empty or unparseable lock is treated as stale rather than deadlocking the
-// schedule forever.
+// The lock is created by link()ing a fully-written temp file into place:
+// link fails if the target exists, so two processes racing cannot both win,
+// and the file is never observable half-written. It names both the runner and
+// the reconcile it spawned — either being alive means a run is in flight, and
+// only a lock whose owners are BOTH gone is reclaimed (by rename, so two
+// ticks reclaiming at once still yield exactly one winner).
 function processAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try { process.kill(pid, 0); return true; } catch (e) { return e?.code === "EPERM"; }
@@ -127,9 +131,20 @@ const lockOwners = { pid: process.pid, childPid: null, startedAt: Date.now() };
 function acquireLock() {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const fd = openSync(LOCK_FILE, "wx");
-      writeSync(fd, JSON.stringify(lockOwners));
-      closeSync(fd);
+      // Create the lock ALREADY POPULATED. An open("wx")-then-write is two
+      // steps, and a tick reading in between finds an empty file, calls the
+      // lock stale and steals it while the writer — still holding its fd —
+      // believes it holds the lock: both then run (reviewer finding,
+      // 2026-08-14). Writing a temp file and link()ing it into place is
+      // atomic in both senses: link fails outright if the target exists, and
+      // the file is complete the instant it appears.
+      const tmp = `${LOCK_FILE}.new.${process.pid}`;
+      writeFileSync(tmp, JSON.stringify(lockOwners));
+      try {
+        linkSync(tmp, LOCK_FILE);
+      } finally {
+        try { unlinkSync(tmp); } catch { /* linked or never created */ }
+      }
       return true;
     } catch (e) {
       if (e?.code !== "EEXIST") throw e;
@@ -316,7 +331,6 @@ try {
 let live = false;      // streaming yet?
 let buffered = "";     // pre-decision output
 let sawStderr = false;
-let carry = "";        // partial trailing line between chunks
 // How the exit gets classified. Facts are recorded as the lines ARRIVE, never
 // re-derived from a buffer at the end: any bounded buffer can slice off the
 // report banner when a run is chatty after it, and the runner would then call
@@ -324,20 +338,39 @@ let carry = "";        // partial trailing line between chunks
 // 2026-08-14). Line-based, so a banner split across two chunks still counts.
 let sawReportBanner = false;
 let refusedCount = 0;
-let scanCarry = "";
-const scan = (text) => {
-  const parts = (scanCarry + text).split("\n");
-  scanCarry = parts.pop() ?? "";
+
+// PER-STREAM line assembly. stdout and stderr are separate pipes that
+// interleave freely, so a single shared carry could glue the tail of one
+// stream onto the head of the other — inventing lines that were never
+// printed, and splitting a banner so it matches nothing (reviewer finding,
+// 2026-08-14). Each stream carries its own partial line.
+const streams = {
+  out: { scanCarry: "", emitCarry: "" },
+  err: { scanCarry: "", emitCarry: "" },
+};
+
+const scan = (s, text) => {
+  const parts = (s.scanCarry + text).split("\n");
+  s.scanCarry = parts.pop() ?? "";
   for (const l of parts) {
     if (l.includes("══ RECONCILE REPORT ══")) sawReportBanner = true;
     if (/^✗ /.test(l)) refusedCount += 1;
   }
 };
 
-const emitLines = (text) => {
-  const parts = (carry + text).split("\n");
-  carry = parts.pop() ?? "";
+const emitLines = (s, text) => {
+  const parts = (s.emitCarry + text).split("\n");
+  s.emitCarry = parts.pop() ?? "";
   for (const l of parts) if (l.trim() !== "") log(`   ${l.trimEnd()}`);
+};
+
+// Flush whatever partial lines are still held, at end of run.
+const flushCarries = () => {
+  for (const s of Object.values(streams)) {
+    scan(s, "\n");
+    if (s.emitCarry.trim() !== "") log(`   ${s.emitCarry.trimEnd()}`);
+    s.emitCarry = "";
+  }
 };
 
 const goLive = () => {
@@ -346,13 +379,17 @@ const goLive = () => {
   log("── run start ──");
   const pending = buffered;
   buffered = "";
-  emitLines(pending);
+  // Everything buffered so far arrived before the decision; it is replayed
+  // through the stdout stream's carry, which is where it came from (the
+  // stderr path forces goLive immediately, so nothing of stderr's is held).
+  emitLines(streams.out, pending);
 };
 
 const onChunk = (text, isErr) => {
+  const s = isErr ? streams.err : streams.out;
   if (isErr) sawStderr = true;
-  scan(text);
-  if (live) { emitLines(text); return; }
+  scan(s, text);
+  if (live) { emitLines(s, text); return; }
   buffered += text;
   // "nodes with unapplied intent: N" — N > 0 means there is real work.
   const m = buffered.match(/nodes with unapplied intent:\s*(\d+)/);
@@ -375,7 +412,7 @@ child.on("close", (code) => {
   // say, leave the counters alone, and let the signal handler's exit stand.
   if (shuttingDown) {
     if (live) {
-      if (carry.trim() !== "") log(`   ${carry.trimEnd()}`);
+      flushCarries();
       log("── run end: STOPPED before finishing — the next tick starts it again ──");
     }
     release();
@@ -394,10 +431,8 @@ child.on("close", (code) => {
     process.exit(0);
   }
 
-  scan("\n");                     // settle the scanner's trailing partial line
   goLive();                       // a short/failed run may never have streamed
-  if (carry.trim() !== "") log(`   ${carry.trimEnd()}`);
-  carry = "";
+  flushCarries();                 // settle both streams' trailing partial lines
 
   if (code === 0) {
     log("── run end: OK ──");

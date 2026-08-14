@@ -247,6 +247,32 @@ test("the row is keyboard-operable — Enter opens the product page", async () =
   expect(texts(tree)).toContain("SHOPIFY PRODUCT");
 });
 
+test("the navigable element contains NO other control", async () => {
+  // Structural pin (reviewers, 2026-08-14). An element with role="button"
+  // makes its descendants presentational to assistive technology, and a
+  // keydown from a nested button bubbles to the row — where preventDefault
+  // would cancel that button's own activation and navigate instead. So the
+  // condition chips and the Shopify admin link must stay SIBLINGS of the
+  // navigable element, never children of it.
+  keys = new Set(["p1"]);
+  pipeline = {
+    p1: { state: "live", liveState: "off", desiredState: "off", cleanName: "Basic tee black",
+          condition: COND, adminUrl: "https://admin.shopify.com/store/nu3ei8-0p/products/123" },
+  };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const row = rowFor(tree, "Plain tee black");
+  expect(row.props.role).toBe("button");
+  // Condition chips and the admin link both render on the page...
+  expect(tree.root.findAll((n) => n.type === "button" && n.children.includes("Excellent")).length).toBeGreaterThan(0);
+  expect(tree.root.findAll((n) => n.type === "a").length).toBe(1);
+  // ...and neither is inside the navigable element.
+  expect(row.findAll((n) => n.type === "button", { deep: true }).length).toBe(0);
+  expect(row.findAll((n) => n.type === "a", { deep: true }).length).toBe(0);
+});
+
 test("a hash change straight from one product to another does not carry the draft across", async () => {
   // Regression pin (reviewers, 2026-08-14): without key={detailPid} React
   // reconciles the page in place, so product A's unsaved name draft would sit

@@ -213,51 +213,63 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           style={{ width: 16, height: 16, accentColor: BLUE_L, cursor: selection.blocker ? "not-allowed" : "pointer",
                    flexShrink: 0, alignSelf: "center", opacity: selection.blocker ? 0.4 : 1 }} />
       )}
-      {/* The row IS the way in. Since the product page took over the name, the
-          photos, Publish and the on/off switch, a row that only answers to a
-          mouse would put every editing action out of a keyboard user's reach —
-          so it carries button semantics and the Enter/Space handling a real
-          button would (reviewer finding, 2026-08-14). The checkbox and the
-          condition chips stop propagation, so they still act on their own. */}
-      <div onClick={() => onOpen(product.id)}
-        role="button"
-        tabIndex={0}
-        aria-label={`Open ${effective.name || product.name || product.id}`}
-        onKeyDown={(e) => {
-          if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
-          e.preventDefault();
-          onOpen(product.id);
-        }}
-        style={{ display: "flex", gap: 11, flex: 1, minWidth: 0, cursor: "pointer" }}>
-        <Thumb p={product} node={node} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: "rgba(255,255,255,.3)",
-                          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {product.name}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {/* THE NAVIGABLE PART, and only it. Since the product page took over
+            the name, the photos, Publish and the on/off switch, a row that
+            only answered to a mouse would put every editing action out of a
+            keyboard user's reach — so this carries real button semantics.
+            It deliberately holds NO other control: an element with
+            role="button" makes its descendants presentational to assistive
+            technology, and a keydown from a nested button bubbles here, where
+            preventDefault would cancel that button's own activation. The
+            condition chips and the admin link are therefore SIBLINGS below,
+            not children (reviewer findings, 2026-08-14). */}
+        <div onClick={() => onOpen(product.id)}
+          role="button"
+          tabIndex={0}
+          aria-label={`Open ${effective.name || product.name || product.id}`}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+            e.preventDefault();
+            onOpen(product.id);
+          }}
+          style={{ display: "flex", gap: 11, minWidth: 0, cursor: "pointer" }}>
+          <Thumb p={product} node={node} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 11, color: "rgba(255,255,255,.3)",
+                            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {product.name}
+              </div>
+              <StateChip chip={chipFor(state, node)} />
             </div>
-            <StateChip chip={chipFor(state, node)} />
+            {/* The name a publish would ship — read-only here; the page edits it. */}
+            {effective.name ? (
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 5, lineHeight: 1.3,
+                            overflowWrap: "break-word" }}>
+                {effective.name}
+                {!nameVerdict.ok && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: RED, marginLeft: 7 }}>
+                    {nameVerdict.problems.join(" · ")}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12.5, color: GRAY, marginTop: 5 }}>
+                needs a name{effective.reason ? ` — ${effective.reason}` : ""} — tap to fix
+              </div>
+            )}
           </div>
-          {/* The name a publish would ship — read-only here; the page edits it. */}
-          {effective.name ? (
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", marginTop: 5, lineHeight: 1.3,
-                          overflowWrap: "break-word" }}>
-              {effective.name}
-              {!nameVerdict.ok && (
-                <span style={{ fontSize: 10, fontWeight: 700, color: RED, marginLeft: 7 }}>
-                  {nameVerdict.problems.join(" · ")}
-                </span>
-              )}
-            </div>
-          ) : (
-            <div style={{ fontSize: 12.5, color: GRAY, marginTop: 5 }}>
-              needs a name{effective.reason ? ` — ${effective.reason}` : ""} — tap to fix
-            </div>
-          )}
+          <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14, alignSelf: "center", flexShrink: 0 }}>›</span>
+        </div>
+
+        {/* Everything below sits OUTSIDE the navigable element, indented to
+            the thumbnail's width so the column still reads as one row. */}
+        <div style={{ marginLeft: 55 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, marginTop: 7 }}>
             {!(state === "live" && on) && CONDITIONS.map((c) => (
               <button key={c} disabled={busy}
-                onClick={(e) => { e.stopPropagation(); setGrade(c); }}
+                onClick={() => setGrade(c)}
                 style={{ ...(node?.condition === c ? tabOn : tabOff), padding: "4px 9px", fontSize: "0.68rem" }}>
                 {c.split(" — ")[0]}
               </button>
@@ -293,8 +305,7 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
               {node?.adminUrl && (
                 <>
                   {" · "}
-                  <a href={node.adminUrl} target="_blank" rel="noreferrer"
-                    onClick={(e) => e.stopPropagation()} style={{ color: BLUE_L }}>
+                  <a href={node.adminUrl} target="_blank" rel="noreferrer" style={{ color: BLUE_L }}>
                     Shopify admin ↗
                   </a>
                 </>
@@ -306,7 +317,6 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           )}
           {error && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{error}</div>}
         </div>
-        <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14, alignSelf: "center", flexShrink: 0 }}>›</span>
       </div>
     </div>
   );
@@ -855,10 +865,10 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       return (
         <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", paddingBottom: 40 }}>
           <div style={{ display: "flex", alignItems: "center", padding: "50px 14px 12px" }}>
-            <div onClick={backToList}
-              style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", cursor: "pointer" }}>
+            <button onClick={backToList} type="button"
+              style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", cursor: "pointer", fontFamily: FONT }}>
               <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Publishing</span>
-            </div>
+            </button>
           </div>
           <div style={{ fontSize: 12, color: problem ? RED : GRAY, fontWeight: problem ? 700 : 400, padding: "12px 16px" }}>
             {problem || "Loading product…"}

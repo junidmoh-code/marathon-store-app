@@ -442,6 +442,19 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
   const requestSwitchOn = () => {
     if (busy) return;
     if (needsSave) { setError("Save the edited name first."); return; }
+    // The name that would ship must be a real, valid one BEFORE the dialog
+    // opens. A legacy node (pre-migration "draft") can reach this switch with
+    // no cleanName at all, and if the lexicon can't clean its title either
+    // the draft is empty — the dialog would then ask Junid to confirm putting
+    // a blank name on the storefront. The dialog is exactly where the
+    // compliance-critical field gets signed off; it must never be blank
+    // (reviewer finding, 2026-08-14).
+    const shipping = node?.cleanName || draft.trim();
+    const shippingVerdict = checkCleanName(shipping);
+    if (!shippingVerdict.ok) {
+      setError(`Give this product a listing name first — ${shippingVerdict.problems.join(" · ")}.`);
+      return;
+    }
     if (photoList.photos.length === 0) {
       setError("No photos — add one above; an imageless product cannot go live.");
       return;
@@ -477,10 +490,14 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
     <div style={{ minHeight: "100vh", background: "#000", color: "#fff", fontFamily: FONT, maxWidth: 880, margin: "0 auto", overflowX: "hidden", paddingBottom: 40 }}>
       {/* TOP BAR — same shape as the list page's (LabelPrintView treatment) */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "50px 14px 12px" }}>
-        <div onClick={onBack}
-          style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+        {/* A real button, not a clickable div: this is the way back out of a
+            page that owns every editing action (reviewer finding,
+            2026-08-14). Styled to match the other full-page views' back
+            control exactly — same tokens, no new values. */}
+        <button onClick={onBack} type="button"
+          style={{ background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 10, padding: "8px 14px", display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontFamily: FONT }}>
           <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>← Publishing</span>
-        </div>
+        </button>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: "0.5px" }}>Viewing as:</div>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#4A7FFF", letterSpacing: "0.5px" }}>SHOPIFY PRODUCT</div>
