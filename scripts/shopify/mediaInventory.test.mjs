@@ -5,10 +5,10 @@ import { networkTotals } from "./inventory.mjs";
 
 describe("buildMediaPlan", () => {
   const product = {
-    photoUrl: "https://firebasestorage.googleapis.com/x/photo.jpg?alt=media&token=t",
+    photoUrl: "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/photo.jpg?alt=media&token=t",
     gallery: [
-      "https://firebasestorage.googleapis.com/x/angle1.jpg?alt=media",
-      "https://firebasestorage.googleapis.com/x/photo.jpg?alt=media&token=t", // dup of hero
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/angle1.jpg?alt=media",
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/photo.jpg?alt=media&token=t", // dup of hero
     ],
   };
   it("hero first, gallery after, duplicates dropped, alt = cleaned name", () => {
@@ -31,8 +31,8 @@ describe("buildMediaPlan", () => {
   });
   it("the reviewed publishing set replaces the record's photos wholesale, in its order", () => {
     const publish = [
-      "https://firebasestorage.googleapis.com/x/gen_clean.jpg?alt=media",
-      "https://firebasestorage.googleapis.com/x/angle1.jpg?alt=media",
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/gen_clean.jpg?alt=media",
+      "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/angle1.jpg?alt=media",
     ];
     const plan = buildMediaPlan(product, "Low-top sneaker black", publish);
     // photo.jpg (the record's hero) is OUT — a removal in the page must

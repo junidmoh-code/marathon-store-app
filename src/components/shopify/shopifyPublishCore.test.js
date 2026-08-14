@@ -100,11 +100,14 @@ describe("batch selection — cap and eligibility", () => {
   });
   it("batchSelectBlocker mirrors the publish gates and says why", () => {
     const node = { state: "awaiting", condition: CONDITIONS[0] };
-    expect(batchSelectBlocker(node, "Low-top sneaker black")).toBeNull();
-    expect(batchSelectBlocker({ state: "awaiting" }, "Low-top sneaker black")).toMatch(/condition/);
-    expect(batchSelectBlocker(node, "")).toMatch(/name/);
-    expect(batchSelectBlocker(node, "Nike Air Force 1")).toMatch(/name/); // trigger ⇒ not a valid name
-    expect(batchSelectBlocker(null, "Low-top sneaker black")).toMatch(/condition/);
+    expect(batchSelectBlocker(node, "Low-top sneaker black", 1)).toBeNull();
+    expect(batchSelectBlocker({ state: "awaiting" }, "Low-top sneaker black", 1)).toMatch(/condition/);
+    expect(batchSelectBlocker(node, "", 1)).toMatch(/name/);
+    expect(batchSelectBlocker(node, "Nike Air Force 1", 1)).toMatch(/name/); // trigger ⇒ not a valid name
+    expect(batchSelectBlocker(null, "Low-top sneaker black", 1)).toMatch(/condition/);
+    // imageless never ships — surfaced at selection, not as a blocked row
+    // minutes after a script run
+    expect(batchSelectBlocker(node, "Low-top sneaker black", 0)).toMatch(/photo/);
   });
 });
 

@@ -59,7 +59,13 @@ export function compressImageFile(file, maxDim = 1600, maxBytes = 800 * 1024) {
         const canvas = document.createElement("canvas");
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        const ctx = canvas.getContext("2d");
+        // JPEG has no alpha — without this, a transparent PNG/WebP cutout
+        // gains a BLACK backdrop (the canvas default) on re-encode. White is
+        // the truthful stand-in for "no background".
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         let dataUrl = canvas.toDataURL("image/jpeg", 0.05); // worst-case fallback
         for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
           const candidate = canvas.toDataURL("image/jpeg", q);
@@ -80,6 +86,11 @@ export function compressImageFile(file, maxDim = 1600, maxBytes = 800 * 1024) {
  * Immutable cache headers — every object is write-once by construction.
  */
 export async function uploadPublishPhoto(productId, blob, { kind = "upload", derivedFrom = null } = {}) {
+  // REJECT, never repair — same discipline as the store's safeSeg: a mangled
+  // id must not address another product's folder. Real ids are "p<digits>".
+  if (!/^[A-Za-z0-9_-]+$/.test(String(productId ?? ""))) {
+    throw new Error(`illegal product id for a Storage path: "${productId}"`);
+  }
   const id = `${kind}_${serverNowMs()}_${Math.random().toString(36).slice(2, 7)}`;
   const sRef = storageRef(storage, `products/${productId}/shopify/${id}.jpg`);
   await uploadBytes(sRef, blob, {

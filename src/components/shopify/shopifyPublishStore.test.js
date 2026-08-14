@@ -34,7 +34,7 @@ const { approveName, publishProduct, setDesiredState, setCondition, setPublishPh
   await import("./shopifyPublishStore");
 const { CONDITIONS } = await import("./shopifyPublishCore");
 const COND = CONDITIONS[0];
-const FS = (n) => `https://firebasestorage.googleapis.com/v0/b/x/o/products%2Fp1%2Fshopify%2F${n}.jpg?alt=media`;
+const FS = (n) => `https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/products%2Fp1%2Fshopify%2F${n}.jpg?alt=media`;
 
 beforeEach(() => { serverNode = null; });
 
@@ -126,10 +126,24 @@ describe("setPublishPhotos — the publishing photo set", () => {
     expect(publishPhotoListProblem([FS("a")])).toBeNull();
     expect(publishPhotoListProblem([])).toMatch(/imageless/);          // empty never ships
     expect(publishPhotoListProblem([FS("a"), FS("a")])).toMatch(/duplicate/);
+    expect(publishPhotoListProblem([FS("a"), ` ${FS("a")}`])).toMatch(/duplicate/); // trim before dedupe
     expect(publishPhotoListProblem(["http://firebasestorage.googleapis.com/x.jpg"])).toMatch(/Firebase Storage/); // not https
     expect(publishPhotoListProblem(["https://evil.example.com/x.jpg"])).toMatch(/Firebase Storage/); // wrong host
+    // right host, WRONG bucket — another project's public URL must not ride the push
+    expect(publishPhotoListProblem(["https://firebasestorage.googleapis.com/v0/b/strangers-app.appspot.com/o/x.jpg"])).toMatch(/Firebase Storage/);
     expect(publishPhotoListProblem(["not a url"])).toMatch(/invalid URL/);
     expect(publishPhotoListProblem(Array.from({ length: 21 }, (_, i) => FS(String(i))))).toMatch(/At most 20/);
+  });
+  it("refuses when the server's photo set differs from the basis this edit was computed from", async () => {
+    // Two sessions: the server already holds a 3-photo set; this edit was
+    // computed over a stale 2-photo snapshot. Committing it would silently
+    // drop the third photo — refuse instead.
+    serverNode = { state: "awaiting", condition: COND, photos: [FS("a"), FS("b"), FS("c")] };
+    const staleSnapshot = { state: "awaiting", condition: COND, photos: [FS("a"), FS("b")] };
+    const res = await setPublishPhotos("p1", staleSnapshot, [FS("b"), FS("a")]);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/another session/);
+    expect(serverNode.photos).toEqual([FS("a"), FS("b"), FS("c")]); // untouched
   });
 });
 

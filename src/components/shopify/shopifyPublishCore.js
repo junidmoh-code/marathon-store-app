@@ -105,13 +105,15 @@ export function checkCleanName(input) {
 }
 
 // Why an awaiting-review row cannot join a batch selection right now, or null
-// when it can. The two gates mirror exactly what the publish write would
-// refuse anyway (condition unset; no valid cleaned name) — surfaced inline on
-// the row so an unselectable product is never a silent skip (owner spec
-// 2026-08-14).
-export function batchSelectBlocker(node, effectiveName) {
+// when it can. The gates mirror what the publish path refuses anyway
+// (condition unset; no valid cleaned name; no photo — the reconciler never
+// ships imageless) — surfaced inline on the row so an unselectable product is
+// never a silent skip, and never a surprise block minutes after a script run
+// (owner spec 2026-08-14).
+export function batchSelectBlocker(node, effectiveName, photoCount) {
   if (!canGoLive(node)) return "set a condition grade first";
   if (!checkCleanName(effectiveName).ok) return "needs a valid cleaned name first";
+  if (!(photoCount > 0)) return "needs at least one photo";
   return null;
 }
 

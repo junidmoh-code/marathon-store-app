@@ -19,7 +19,7 @@ import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "f
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields } from "./shopifyPublishCore";
-import { MAX_PUBLISH_PHOTOS } from "./publishShared";
+import { MAX_PUBLISH_PHOTOS, normalizePhotoList } from "./publishShared";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -228,9 +228,12 @@ export async function setDesiredState(productId, node, want) {
 }
 
 // What a publishing photo list may contain — the client-side mirror of the
-// media.mjs guards (public HTTPS, the app's Firebase Storage host only): a
-// URL the page accepts here but the reconciler would refuse at push time
-// would be a delayed, confusing failure. Exported for tests.
+// media.mjs guards: a URL the page accepts here but the reconciler would
+// refuse at push time would be a delayed, confusing failure. Pinned to THIS
+// app's bucket, not just the Firebase Storage host — any-bucket acceptance
+// would let a pasted URL from a stranger's project ride the push. Exported
+// for tests.
+export const APP_STORAGE_PREFIX = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
 export function publishPhotoListProblem(photos) {
   if (!Array.isArray(photos) || photos.length === 0) {
     return "The photo set can't be empty — a product never ships imageless.";
@@ -238,13 +241,13 @@ export function publishPhotoListProblem(photos) {
   if (photos.length > MAX_PUBLISH_PHOTOS) {
     return `At most ${MAX_PUBLISH_PHOTOS} photos per product.`;
   }
-  if (new Set(photos).size !== photos.length) return "The photo set has a duplicate.";
-  for (const u of photos) {
-    if (typeof u !== "string" || u.trim() === "") return "The photo set has an empty entry.";
-    let host = "";
-    try { host = new URL(u).host; } catch { return "The photo set has an invalid URL."; }
-    if (!u.startsWith("https://") || host !== "firebasestorage.googleapis.com") {
-      return "Photos must be the app's own Firebase Storage URLs.";
+  const trimmed = photos.map((u) => (typeof u === "string" ? u.trim() : u));
+  if (new Set(trimmed).size !== trimmed.length) return "The photo set has a duplicate.";
+  for (const u of trimmed) {
+    if (typeof u !== "string" || u === "") return "The photo set has an empty entry.";
+    try { new URL(u); } catch { return "The photo set has an invalid URL."; }
+    if (!u.startsWith(APP_STORAGE_PREFIX)) {
+      return "Photos must be this app's own Firebase Storage URLs.";
     }
   }
   return null;
@@ -257,17 +260,29 @@ export function publishPhotoListProblem(photos) {
  * would ship). `photos === null` clears the custom set back to the record's
  * own photoUrl + gallery. Refused while the listing is ON — customers are
  * looking at the current set; the reconciler re-syncs media at turn-on.
+ *
+ * The list write is OPTIMISTICALLY CONCURRENT, not last-write-wins: `node` is
+ * the snapshot this edit was computed FROM, and the mutator refuses when the
+ * server's current photos differ from that basis — two sessions editing the
+ * same strip must not silently drop each other's changes (a reorder computed
+ * over a stale 2-item list would otherwise erase a 3rd photo the other
+ * session just added).
  */
 export async function setPublishPhotos(productId, node, photos) {
   if (photos !== null) {
     const problem = publishPhotoListProblem(photos);
     if (problem) return { ok: false, message: problem };
   }
+  const basis = JSON.stringify(normalizePhotoList(node?.photos));
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
     if (isOn(base)) {
       refusal = "Listing is ON the storefront — switch it off before changing its photos.";
+      return undefined;
+    }
+    if (JSON.stringify(normalizePhotoList(base.photos)) !== basis) {
+      refusal = "The photo set changed in another session — reopen the strip and redo the edit.";
       return undefined;
     }
     return { ...base, ...normalizedFields(base), photos: photos === null ? null : [...photos], ...stamp() };

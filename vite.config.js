@@ -34,8 +34,9 @@ export default defineConfig({
     // Shopify Publishing photo cleanup (geminiClean.js). Baked at BUILD time
     // from the build machine's env: absent ⇒ empty string ⇒ the action ships
     // DISABLED with a plain message (no stub, no fallback provider). NOTE the
-    // key lands in the public bundle — use a key restricted to this app's
-    // HTTP referrers in the Google Cloud console, never an open one.
+    // key lands in the public bundle and is extractable — referrer
+    // restrictions are advisory (Referer is forgeable), so use a dedicated
+    // key with a hard quota cap in the Google console, never a shared one.
     __GEMINI_API_KEY__: JSON.stringify(process.env.GEMINI_API_KEY ?? ""),
   },
   build: {

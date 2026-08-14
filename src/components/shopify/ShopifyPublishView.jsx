@@ -331,6 +331,11 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
   useEffect(() => {
     if (candidate && candidate.sourceUrl !== originalUrl) discardCandidate();
   }, [originalUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Unmount revokes an un-actioned candidate's object URL (state updaters
+  // don't run after unmount, so track the URL in a ref).
+  const previewRef = useRef(null);
+  previewRef.current = candidate?.previewUrl || null;
+  useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current); }, []);
 
   const generate = async () => {
     if (generating || busy) return;
@@ -471,6 +476,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
   const state = reviewStateFor(node);
   const on = isOn(node);
   const pending = isPendingSwitch(node);
+  const photoList = useMemo(() => effectivePhotoList(product, node), [product, node]);
   const verdict = checkCleanName(draft); // the LIVE trigger check
   const blocked = blockedReason(node);
   const isLiveRow = state === "live";
@@ -520,6 +526,12 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
     if (busy || !verdict.ok) return;
     if (!canGoLive(node)) {
       setError("Pick a condition grade first — a product cannot go live without one.");
+      return;
+    }
+    // Same gate the reconciler enforces, surfaced NOW instead of as a
+    // blocked row minutes after a script run: imageless never ships.
+    if (effectivePhotoList(product, node).photos.length === 0) {
+      setError("No photos — open the photo strip and add one; an imageless product cannot go live.");
       return;
     }
     setConfirming("publish");
@@ -588,7 +600,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
           <button disabled={busy}
             onClick={() => setShowPhotos((v) => !v)}
             style={{ ...(showPhotos ? tabOn : tabOff), padding: "4px 9px", fontSize: "0.68rem" }}>
-            Photos · {effectivePhotoList(product, node).photos.length}
+            Photos · {photoList.photos.length}
           </button>
           <div style={{ flex: 1 }} />
           {isLiveRow ? (
@@ -940,18 +952,6 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // the Enter flow's focus) until a refetch landed.
   const applyWrite = (pid, node) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
-    // A write that moves a row past awaiting review (publish intent, block,
-    // live confirm) drops it from the batch selection — the checkbox is only
-    // offered on awaiting rows, so a selected pid must never linger once its
-    // row stops qualifying.
-    setSelected((prev) => {
-      if (!prev.has(pid)) return prev;
-      const st = reviewStateFor(node);
-      if ((st === "awaiting" || st === "approved") && !isPendingSwitch(node)) return prev;
-      const next = new Set(prev);
-      next.delete(pid);
-      return next;
-    });
     // Keep the pipeline map (which prices the live/blocked filter counts) in
     // step with the write — otherwise a fresh block is invisible to the
     // Blocked filter, and an unblock leaves a phantom count behind.
@@ -985,6 +985,24 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const st = reviewStateFor(node);
     return (st === "awaiting" || st === "approved") && !isPendingSwitch(node);
   };
+  // Prune the selection whenever ANY node update disqualifies a selected row
+  // — local writes and external ones alike (the window-focus refetch can pull
+  // in a reconciler-side block; publishing that stale selection would clear
+  // the validator's refusal and re-queue the very product it refused).
+  useEffect(() => {
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set(prev);
+      for (const pid of prev) {
+        const node = nodes[pid];
+        if (node !== undefined && !selectionEligible(node)) next.delete(pid);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+  }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The freshest nodes, readable from inside runBatch's long-lived closure.
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
   const capNotice = () =>
     setBatchNotice(`Selection is capped at ${RECONCILE_MAX_APPLY} — the reconciler applies at most ${RECONCILE_MAX_APPLY} products per run.`);
   const toggleSelect = (pid, blocker) => {
@@ -998,11 +1016,23 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     if (selected.size >= RECONCILE_MAX_APPLY) { capNotice(); return; }
     setSelected(new Set(selected).add(pid));
   };
+  // Per-render cache: the blocker needs the lexicon (effectiveNameFor) and
+  // the photo list, and both selectionFor and the section select-all walk the
+  // same rows — compute each pid once per render, not twice.
+  const blockerCache = new Map();
+  const blockerFor = (p) => {
+    if (!blockerCache.has(p.id)) {
+      const node = nodes[p.id] || null;
+      blockerCache.set(p.id, batchSelectBlocker(
+        node, effectiveNameFor(p, node).name, effectivePhotoList(p, node).photos.length));
+    }
+    return blockerCache.get(p.id);
+  };
   const selectionFor = (p) => {
     if (filter === "live") return undefined;
     const node = nodes[p.id] || null;
     if (!selectionEligible(node)) return undefined;
-    const blocker = batchSelectBlocker(node, effectiveNameFor(p, node).name);
+    const blocker = blockerFor(p);
     return {
       selected: selected.has(p.id),
       blocker,
@@ -1056,7 +1086,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const failures = [];
     let okCount = 0;
     for (const it of batchItems) {
-      const res = await publishProduct(it.pid, it.node, it.name, it.source); // eslint-disable-line no-await-in-loop
+      // Re-check against the FRESHEST node before each write: a row the
+      // reconciler blocked (or another session published) since the dialog
+      // opened must be skipped, not silently re-queued with its refusal
+      // reason wiped.
+      const freshest = nodesRef.current[it.pid] === undefined ? it.node : nodesRef.current[it.pid];
+      if (!selectionEligible(freshest)) {
+        failures.push(`${it.name || it.pid} — its state changed since selection, skipped`);
+        continue;
+      }
+      const res = await publishProduct(it.pid, freshest, it.name, it.source); // eslint-disable-line no-await-in-loop
       if (res?.ok) { okCount += 1; applyWrite(it.pid, res.node); }
       else failures.push(`${it.name || it.pid} — ${res?.message || "not saved"}`);
     }
@@ -1261,7 +1300,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                 const node = nodes[p.id] || null;
                 return matchesStateFilter(filter, reviewStateFor(node)) &&
                        selectionEligible(node) &&
-                       !batchSelectBlocker(node, effectiveNameFor(p, node).name);
+                       !blockerFor(p);
               })
             : [];
           const unselected = selectable.filter((p) => !selected.has(p.id));
@@ -1334,7 +1373,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             {selected.size} of {RECONCILE_MAX_APPLY} selected
           </span>
           <span style={{ fontSize: 10.5, color: GRAY }}>
-            cap {RECONCILE_MAX_APPLY} — one reconciler run
+            cap {RECONCILE_MAX_APPLY} — matches the reconciler's per-run cap
           </span>
           <div style={{ flex: 1 }} />
           <button onClick={() => setSelected(new Set())} disabled={batchBusy}

@@ -22,8 +22,11 @@
 // API key: __GEMINI_API_KEY__ is baked at build time from env GEMINI_API_KEY
 // (vite.config.js). Absent ⇒ the action is disabled with a plain message and
 // everything else works — no stub, no silent no-op, no fallback provider.
-// The baked key is publicly visible in the bundle: it must be a key
-// restricted to this app's HTTP referrers.
+// The baked key is publicly visible in the bundle and MUST be treated as
+// spendable by anyone who extracts it: an HTTP-referrer allowlist helps
+// against casual reuse but Referer is client-supplied and forgeable, so the
+// real containment is a hard QUOTA CAP on the key in the Google console. Do
+// not put an uncapped or shared key in GEMINI_API_KEY.
 //
 // Cost per image (Gemini 2.5 Flash Image pricing, 2026-08): output is a flat
 // 1290 tokens/image at $30/1M ⇒ ~$0.039 (~R0.70); the input image + prompt
@@ -105,9 +108,16 @@ export function assessSubjectPreservation(orig, cand) {
     return { pass: false, reason: "no clear subject found against the new background", metrics: { areaFrac } };
   }
 
-  // Pixel difference over the subject interior, candidate vs ORIGINAL.
+  // Pixel difference over the subject interior, candidate vs ORIGINAL. Three
+  // gates, because each has a blind spot the others cover: mean catches
+  // global drift, p95 catches broad tails — and BOTH would let a small
+  // concentrated edit hide in the tail (a logo or scuff erased over ~3% of
+  // the subject moves the mean by units and sits inside p95's 5% allowance;
+  // reviewer finding 2026-08-14). changedFrac closes that hole: at most 0.5%
+  // of subject pixels may differ beyond the re-encode noise floor.
   const diffs = [];
   let sum = 0;
+  let changed = 0;
   for (let p = 0; p < w * h; p++) {
     if (!eroded[p]) continue;
     const i = p * 4;
@@ -116,13 +126,20 @@ export function assessSubjectPreservation(orig, cand) {
                Math.abs(cand.data[i + 2] - orig.data[i + 2])) / 3;
     diffs.push(d);
     sum += d;
+    if (d > 30) changed += 1;
   }
   diffs.sort((a, b) => a - b);
   const mean = sum / diffs.length;
   const p95 = diffs[Math.min(diffs.length - 1, Math.floor(diffs.length * 0.95))];
-  const metrics = { areaFrac: Number(areaFrac.toFixed(4)), mean: Number(mean.toFixed(2)), p95 };
-  if (mean > 10 || p95 > 48) {
-    return { pass: false, reason: `product pixels changed (mean diff ${metrics.mean}, p95 ${p95} — the subject did not survive intact)`, metrics };
+  const changedFrac = changed / diffs.length;
+  const metrics = {
+    areaFrac: Number(areaFrac.toFixed(4)),
+    mean: Number(mean.toFixed(2)),
+    p95,
+    changedFrac: Number(changedFrac.toFixed(4)),
+  };
+  if (mean > 10 || p95 > 48 || changedFrac > 0.005) {
+    return { pass: false, reason: `product pixels changed (mean diff ${metrics.mean}, p95 ${p95}, ${(changedFrac * 100).toFixed(2)}% of the subject beyond noise — the subject did not survive intact)`, metrics };
   }
   return { pass: true, reason: null, metrics };
 }
@@ -189,7 +206,8 @@ async function callGemini(base64, mimeType) {
  */
 export async function cleanBackground(originalUrl) {
   if (!isCleanBackgroundAvailable()) throw new Error("GEMINI_API_KEY was not set at build time — the action is disabled.");
-  const srcRes = await fetch(originalUrl);
+  const srcRes = await fetch(originalUrl,
+    typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { signal: AbortSignal.timeout(20000) } : {});
   if (!srcRes.ok) throw new Error(`could not fetch the original photo (HTTP ${srcRes.status})`);
   const srcBlob = await srcRes.blob();
   const srcDataUrl = await blobToDataURL(srcBlob);

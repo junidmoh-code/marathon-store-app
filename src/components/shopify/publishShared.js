@@ -40,7 +40,9 @@ export function normalizePhotoList(val) {
       : [];
   const out = [];
   for (const u of arr) {
-    if (typeof u === "string" && u.trim() !== "" && !out.includes(u)) out.push(u);
+    if (typeof u !== "string") continue;
+    const t = u.trim(); // trim BEFORE dedupe — " url" and "url" are one photo
+    if (t !== "" && !out.includes(t)) out.push(t);
   }
   return out.length ? out : null;
 }

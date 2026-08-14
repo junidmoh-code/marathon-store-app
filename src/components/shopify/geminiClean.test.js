@@ -60,6 +60,22 @@ describe("assessSubjectPreservation", () => {
     const v = assessSubjectPreservation(productOn(CLUTTER), productOn(STUDIO, { mark: false }));
     expect(v.pass).toBe(false);
   });
+  it("fails when even a TINY mark was cleaned off — the changed-area gate closes the p95 tail hole", () => {
+    // A 4×4 scuff on the body (~1% of the subject): erasing it barely moves
+    // the mean and hides entirely inside p95's 5% allowance — only the
+    // changed-pixel-area gate catches it (reviewer finding 2026-08-14).
+    const scuff = (img) => drawRect(img, 60, 34, 64, 38, [40, 20, 20]);
+    const orig = productOn(CLUTTER);
+    scuff(orig);
+    const cand = productOn(STUDIO);
+    scuff(cand);
+    expect(assessSubjectPreservation(orig, cand).pass).toBe(true); // sanity: scuff kept ⇒ passes
+    const erased = productOn(STUDIO); // same candidate WITHOUT the scuff
+    const v = assessSubjectPreservation(orig, erased);
+    expect(v.pass).toBe(false);
+    expect(v.metrics.mean).toBeLessThanOrEqual(10);   // mean alone would have passed it
+    expect(v.metrics.changedFrac).toBeGreaterThan(0.005);
+  });
   it("fails when no subject stands out of the new background", () => {
     const v = assessSubjectPreservation(productOn(CLUTTER), frame(STUDIO));
     expect(v.pass).toBe(false);

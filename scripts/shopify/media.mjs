@@ -33,17 +33,18 @@ export function buildMediaPlan(product, cleanTitle, publishPhotos = null) {
   if (urls.length === 0) {
     throw new Error("product has no photoUrl — an imageless product is never pushed");
   }
+  // /products and /shopify_publish are client-writable; this privileged
+  // script must not be a fetch-anything proxy (and Shopify must not be handed
+  // arbitrary sources). Product photos live in THE APP'S Firebase Storage
+  // bucket, full stop — host alone is not enough, since every Firebase
+  // project shares firebasestorage.googleapis.com.
+  const APP_STORAGE_PREFIX = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
   for (const u of urls) {
     if (!/^https:\/\//.test(u)) {
       throw new Error(`photo URL is not public HTTPS: ${u.slice(0, 80)}`);
     }
-    // /products is client-writable; this privileged script must not be a
-    // fetch-anything proxy (and Shopify must not be handed arbitrary hosts).
-    // Product photos live in the app's Firebase Storage bucket, full stop.
-    let host = "";
-    try { host = new URL(u).host; } catch { /* handled below */ }
-    if (host !== "firebasestorage.googleapis.com") {
-      throw new Error(`photo URL host "${host}" is not the app's Firebase Storage — refusing: ${u.slice(0, 80)}`);
+    if (!u.startsWith(APP_STORAGE_PREFIX)) {
+      throw new Error(`photo URL is not the app's Firebase Storage bucket — refusing: ${u.slice(0, 80)}`);
     }
   }
   const alt = String(cleanTitle ?? "").trim();

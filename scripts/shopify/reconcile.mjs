@@ -24,7 +24,7 @@
 // after a partial failure resumes exactly where it stopped.
 //
 //   node scripts/shopify/reconcile.mjs                     dry run (default) — a table of what it WOULD do
-//   node scripts/shopify/reconcile.mjs --commit            apply (hard cap 10 actions per run)
+//   node scripts/shopify/reconcile.mjs --commit            apply (hard cap RECONCILE_MAX_APPLY/run, shared with the page)
 //   node scripts/shopify/reconcile.mjs --commit --pids a,b only these records
 //
 // Boundaries (owner spec 2026-08-14):
@@ -395,32 +395,44 @@ for (const { pid, want } of capped) {
     if (bp.media?.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — cannot verify the photo set"); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
     // Shopify rehosts files, so what it holds can't be compared to the plan
-    // by URL — the fingerprint recorded at attach time is the only proof that
-    // its media IS the reviewed set. Deleting-and-reattaching automatically is
-    // deliberately off the table (a crashed half-state must not be papered
-    // over), so a mismatch is a refusal with the fix spelled out.
+    // by URL — the fingerprint recorded on /shopify_sync at attach time is
+    // the only proof its media IS the reviewed set. Anything else (an edited
+    // publishing set, a crashed half-attach, an admin upload, a legacy
+    // pre-fingerprint push) is RE-SYNCED: delete what's there, re-attach the
+    // reviewed plan. The page is the source of truth for publishing photos —
+    // certifying an unverified count match would let a stale or wrong photo
+    // ship "verified" forever (reviewer finding, 2026-08-14). This happens
+    // while the product is off the sales channel, invisible to customers.
     const planFp = mediaFingerprint(mediaPlan);
-    if (mediaCount === 0) {
+    if (mediaCount > 0 && mapNode?.mediaFingerprint === planFp && mediaCount === mediaPlan.length) {
+      // Verified: Shopify's media is exactly this plan, attached by us.
+    } else {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
+      if (mediaCount > 0) {
+        const del = await graphql(
+          `mutation ($mediaIds: [ID!]!, $productId: ID!) {
+            productDeleteMedia(mediaIds: $mediaIds, productId: $productId) { mediaUserErrors { field message } }
+          }`,
+          { mediaIds: bp.media.nodes.map((n) => n.id), productId: gid },
+          { mutation: true }
+        );
+        const delErrs = del.productDeleteMedia.mediaUserErrors;
+        if (delErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `productDeleteMedia userErrors: ${JSON.stringify(delErrs)}`); continue; }
+        // Deletion is asynchronous on Shopify's side; attachMedia's READY
+        // poll counts nodes, so lingering old media could satisfy it
+        // spuriously. Wait for zero before attaching.
+        let cleared = false;
+        for (let i = 0; i < 10; i++) {
+          const now = await graphql(
+            `query ($id: ID!) { product(id: $id) { media(first: 50) { nodes { id } } } }`, { id: gid });
+          if ((now.product?.media?.nodes?.length ?? 0) === 0) { cleared = true; break; }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        if (!cleared) { await failSafeUnpublish(gid); await refuse(pid, "old media did not clear after productDeleteMedia — re-run to resume the re-sync"); continue; }
+      }
       const { count } = await attachMedia(graphql, gid, mediaPlan);
       await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
-      console.log(`  media READY: ${count}`);
-    } else if (mapNode?.mediaFingerprint === planFp) {
-      // Verified: Shopify's media is exactly this plan, attached by us.
-    } else if (normalizePhotoList(fresh.photos) || mediaCount !== mediaPlan.length) {
-      // The reviewed set changed since this product's media was pushed (or a
-      // crash/admin edit left a partial set) — shipping the OLD media while
-      // the page shows a new set would make the page lie. Human step: clear
-      // the product's media in the Shopify admin, re-run, and the reviewed
-      // set re-attaches in order.
-      await failSafeUnpublish(gid);
-      await refuse(pid, `Shopify holds ${mediaCount} photo(s) that can't be verified against the reviewed set of ${mediaPlan.length} — clear the product's media in the Shopify admin and re-run to attach the reviewed set`);
-      continue;
-    } else {
-      // Legacy pre-fingerprint product with no custom set and matching count:
-      // today's media is the same record-derived plan — record the
-      // fingerprint so the NEXT edit is verifiable.
-      await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
+      console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
     }
 
     // ── FAIL-CLOSED GATE: the FULL validator against the CANONICAL object ────
@@ -508,6 +520,16 @@ for (const { pid, want } of capped) {
       await failSafeUnpublish(gid);
       await confirmLiveState(db, pid, "off", UPDATED_BY, { gid });
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
+      continue;
+    }
+    // Photos are editable while a publish sits pending — a set saved after
+    // this run built its media plan must not go live under the OLD plan.
+    // Leave the intent unconsumed; the next run rebuilds the plan from the
+    // new set (and re-syncs the media by fingerprint).
+    let lastPlanFp = null;
+    try { lastPlanFp = mediaFingerprint(buildMediaPlan(product, title, normalizePhotoList(lastCheck?.photos))); } catch { /* unbuildable ⇒ changed */ }
+    if (lastPlanFp !== planFp) {
+      results.push({ pid, ok: true, note: "photo set changed mid-run — left for the next run to apply the new set" });
       continue;
     }
 
