@@ -410,6 +410,11 @@ for (const { pid, want } of capped) {
     } else {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
       if (mediaCount > 0) {
+        // A drift-visible product (published in admin while confirmed off)
+        // must not show a half-deleted photo set — take it off the channel
+        // BEFORE touching media. Idempotent; the ON path re-publishes at the
+        // end anyway.
+        await failSafeUnpublish(gid);
         const del = await graphql(
           `mutation ($mediaIds: [ID!]!, $productId: ID!) {
             productDeleteMedia(mediaIds: $mediaIds, productId: $productId) { mediaUserErrors { field message } }
@@ -431,9 +436,21 @@ for (const { pid, want } of capped) {
         }
         if (!cleared) { await failSafeUnpublish(gid); await refuse(pid, "old media did not clear after productDeleteMedia — re-run to resume the re-sync"); continue; }
       }
-      const { count } = await attachMedia(graphql, gid, mediaPlan);
-      await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
-      console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
+      // attachMedia throws on userErrors/FAILED/poll-timeout. Letting that
+      // land in the outer catch would leave a media-less product with its
+      // intent still on and NO block recorded — worse after a re-sync, which
+      // just deleted the old set. Same treatment as the sibling media
+      // refusals: off the channel, blocked with the reason, resumable (the
+      // next run sees 0/partial media and re-attaches the reviewed set).
+      try {
+        const { count } = await attachMedia(graphql, gid, mediaPlan);
+        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
+        console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
+      } catch (e) {
+        await failSafeUnpublish(gid);
+        await refuse(pid, `media attach failed: ${String(e?.message || e)} — re-run re-attaches the reviewed set`);
+        continue;
+      }
     }
 
     // ── FAIL-CLOSED GATE: the FULL validator against the CANONICAL object ────

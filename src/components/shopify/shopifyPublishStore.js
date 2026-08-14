@@ -269,8 +269,13 @@ export function publishPhotoListProblem(photos) {
  * session just added).
  */
 export async function setPublishPhotos(productId, node, photos) {
-  if (photos !== null) {
-    const problem = publishPhotoListProblem(photos);
+  // Validate AND store the trimmed form — the validator working on trimmed
+  // copies while the write stored the originals would let a padded URL pass
+  // here and fail at push time, the exact delayed failure this mirror
+  // prevents.
+  const clean = photos === null ? null : photos.map((u) => (typeof u === "string" ? u.trim() : u));
+  if (clean !== null) {
+    const problem = publishPhotoListProblem(clean);
     if (problem) return { ok: false, message: problem };
   }
   const basis = JSON.stringify(normalizePhotoList(node?.photos));
@@ -285,7 +290,7 @@ export async function setPublishPhotos(productId, node, photos) {
       refusal = "The photo set changed in another session — reopen the strip and redo the edit.";
       return undefined;
     }
-    return { ...base, ...normalizedFields(base), photos: photos === null ? null : [...photos], ...stamp() };
+    return { ...base, ...normalizedFields(base), photos: clean, ...stamp() };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;
