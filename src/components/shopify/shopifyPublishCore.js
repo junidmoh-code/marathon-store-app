@@ -103,6 +103,17 @@ export function checkCleanName(input) {
   return { ok: problems.length === 0, problems };
 }
 
+// Why an awaiting-review row cannot join a batch selection right now, or null
+// when it can. The two gates mirror exactly what the publish write would
+// refuse anyway (condition unset; no valid cleaned name) — surfaced inline on
+// the row so an unselectable product is never a silent skip (owner spec
+// 2026-08-14).
+export function batchSelectBlocker(node, effectiveName) {
+  if (!canGoLive(node)) return "set a condition grade first";
+  if (!checkCleanName(effectiveName).ok) return "needs a valid cleaned name first";
+  return null;
+}
+
 // Why a product cannot go live right now (the row shows this loudly), or
 // null when nothing blocks it. The condition gate wins over any recorded
 // reason — an unset condition is always the first thing to fix; a

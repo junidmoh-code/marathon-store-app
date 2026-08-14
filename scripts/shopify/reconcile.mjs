@@ -47,8 +47,11 @@ import { buildMediaPlan, preflightPhotoUrls, attachMedia } from "./media.mjs";
 import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNode.mjs";
-
-const MAX_APPLY = 10;
+// The per-run cap is SHARED with the page's batch-selection cap — one place,
+// so the UI can never promise a batch this script won't take in one run.
+// Sizing rationale (measured against the live shop's rate limiter) lives on
+// the constant.
+import { RECONCILE_MAX_APPLY as MAX_APPLY } from "../../src/components/shopify/publishShared.js";
 const UPDATED_BY = "script:reconcile";
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");

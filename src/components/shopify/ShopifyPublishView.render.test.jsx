@@ -140,7 +140,7 @@ test("Enter approves through the store and focus advances to the next unreviewed
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
   await flush();
   await openClothing(tree);
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
   await act(() => { inputs[0].props.onKeyDown({ key: "Enter", preventDefault: () => {} }); });
   await flush();
   expect(calls.approve).toEqual([{ pid: "p1", name: "Plain tee black" }]);
@@ -154,7 +154,7 @@ test("a refused write surfaces its message in the row", async () => {
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
   await flush();
   await openClothing(tree);
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
   await act(() => { inputs[0].props.onKeyDown({ key: "Enter", preventDefault: () => {} }); });
   await flush();
   expect(texts(tree)).toContain("the database refused this write");
@@ -267,7 +267,7 @@ test("an ON row locks its name input; a dirty live-off row refuses the switch un
     await act(() => { header.parent.props.onClick(); });
     await flush();
   }
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
   const onInput = inputs.find((n) => n.props.value === "Basic tee black");
   const offInput = inputs.find((n) => n.props.value === "Court low grey");
   expect(onInput.props.disabled).toBe(true);   // ON — customers see this name; locked
@@ -320,6 +320,73 @@ test("a live row shows when it went live and its Shopify admin link", async () =
   expect(out).toContain(`Went live ${new Date(liveAt).toLocaleDateString()}`);
   const link = tree.root.findAll((n) => n.type === "a")[0];
   expect(link.props.href).toBe("https://admin.shopify.com/store/nu3ei8-0p/products/123");
+});
+
+const COND2 = "Excellent — no visible wear";
+const checkboxes = (tree) => tree.root.findAll((n) => n.type === "input" && n.props.type === "checkbox");
+
+test("batch: a condition-unset row cannot be selected and says why inline", async () => {
+  keys = new Set(["p2"]);
+  bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const boxes = checkboxes(tree);
+  expect(boxes.length).toBe(2); // both awaiting rows offer the checkbox
+  const disabled = boxes.filter((b) => b.props.disabled);
+  expect(disabled.length).toBe(1); // p1 has no condition — unselectable, not silently skipped
+  expect(texts(tree)).toContain("Can't batch-select");
+  expect(texts(tree)).toContain("set a condition grade first");
+});
+
+test("batch: select-all, the shared confirmation lists every cleaned name, confirm writes one intent per product", async () => {
+  keys = new Set(["p1", "p2"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
+  bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND2 };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await act(() => { button(tree, "Select all").props.onClick({ stopPropagation: () => {} }); });
+  await flush();
+  let out = texts(tree);
+  expect(out).toContain('"2"," of ","25"," selected"'); // running count + the stated cap (JSX splits text nodes)
+  await act(() => { button(tree, "Publish selected…").props.onClick(); });
+  await flush();
+  out = texts(tree);
+  expect(out).toContain("public storefront");
+  expect(out).toContain("Basic tee black");   // every product about to go live, by cleaned name
+  expect(out).toContain("Basic tee white");
+  expect(focused).toContain("cancel-button"); // cancel is the default focus, same as single publish
+  await act(() => { button(tree, "Put 2 live").props.onClick(); });
+  await flush();
+  expect(calls.publish).toEqual([
+    { pid: "p1", name: "Basic tee black" },
+    { pid: "p2", name: "Basic tee white" },
+  ]);
+  out = texts(tree);
+  expect(out).toContain("PUBLISHING");                      // rows now pending
+  expect(out).toContain("until the reconciler runs");       // the notice says what happens next
+  expect(out).not.toContain("Publish selected…");           // intents saved ⇒ selection emptied, bar gone
+});
+
+test("batch: cancel in the confirmation writes nothing and keeps the selection", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  const box = checkboxes(tree).find((b) => !b.props.disabled);
+  await act(() => { box.props.onChange(); });
+  await flush();
+  await act(() => { button(tree, "Publish selected…").props.onClick(); });
+  await flush();
+  await act(() => { button(tree, "Cancel").props.onClick(); });
+  await flush();
+  expect(calls.publish.length).toBe(0);
+  expect(texts(tree)).toContain("Publish selected…"); // still selected, bar still up
 });
 
 test("home badge counts only never-seen products — live and blocked are excluded", async () => {

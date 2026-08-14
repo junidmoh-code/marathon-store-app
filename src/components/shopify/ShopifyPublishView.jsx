@@ -34,8 +34,9 @@ import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as in
 import { cleanTitleFor } from "../../utils/shopifyTriggers";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
-  normalizedState, isOn, isPendingSwitch, canGoLive,
+  normalizedState, isOn, isPendingSwitch, canGoLive, batchSelectBlocker,
 } from "./shopifyPublishCore";
+import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, approveName, publishProduct, setDesiredState, setCondition,
 } from "./shopifyPublishStore";
@@ -154,12 +155,64 @@ function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
   );
 }
 
+// ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
+// The SAME going-live confirmation as the single publish — same overlay, same
+// Cancel-default-focus, same "public storefront" statement — listing every
+// product about to go on, each under its cleaned name (every one is a
+// compliance decision; the list is the last look). A batch of N is N
+// independent publish intents: the reconciler validates each product on its
+// own and any one can be refused (blocked) without touching the others.
+function BatchPublishConfirmDialog({ items, busy, onCancel, onConfirm }) {
+  const cancelRef = useRef(null);
+  useEffect(() => { cancelRef.current?.focus(); }, []);
+  return (
+    <div onClick={onCancel}
+      style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.62)",
+               backdropFilter: "blur(5px)", WebkitBackdropFilter: "blur(5px)",
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ ...GLASS_SOLID, width: "100%", maxWidth: 460, padding: "22px 20px", fontFamily: FONT }}>
+        <div style={{ fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700 }}>
+          Put {items.length} product{items.length === 1 ? "" : "s"} on the public storefront?
+        </div>
+        <div style={{ maxHeight: "42vh", overflowY: "auto", marginTop: 12 }}>
+          {items.map((it) => (
+            <div key={it.pid} style={{ padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#fff", lineHeight: 1.3, overflowWrap: "break-word" }}>
+                {it.name}
+              </div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,.75)", marginTop: 2 }}>
+                {it.condition} · {it.price}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11.5, color: GRAY, marginTop: 12, lineHeight: 1.45 }}>
+          Every product above becomes publicly visible on the online store, under exactly the
+          name shown. Check each name once more — the names are what the compliance rules protect.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+          <button ref={cancelRef} onClick={onCancel} disabled={busy} style={{ ...bGray, flex: 1 }}>Cancel</button>
+          <button onClick={onConfirm} disabled={busy} style={{ ...bGreen, flex: 1 }}>
+            {busy ? "Saving…" : `Put ${items.length} live`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // One product's review row. Everything is inline: the cleaned name is a live
 // input with the trigger check on every keystroke, condition is three chips,
 // the primary action is PUBLISH (behind the page's one confirmation dialog).
 // Live rows carry the on/off switch instead — off writes intent immediately,
 // on re-confirms with the same dialog.
-function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputRef }) {
+// `selection` (optional) is the batch-publish hook: { selected, blocker,
+// atCap, onToggle }. blocker non-null ⇒ the checkbox is disabled and the row
+// says why inline (never a silent skip). Checkbox styling matches the
+// SpecialsTab batch rows (PR #355) — the repo's existing select-for-batch
+// interaction.
+function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputRef, selection }) {
   const effective = useMemo(() => effectiveNameFor(product, node), [product, node]);
   const [draft, setDraft] = useState(effective.name);
   const [busy, setBusy] = useState(false);
@@ -235,6 +288,17 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
 
   return (
     <div style={{ display: "flex", gap: 11, padding: "12px 2px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+      {selection && (
+        <input type="checkbox"
+          checked={selection.selected}
+          disabled={busy || !!selection.blocker || (selection.atCap && !selection.selected)}
+          onChange={selection.onToggle}
+          aria-label={`Select ${product.name || product.id} for batch publish`}
+          title={selection.blocker || (selection.atCap && !selection.selected
+            ? `Selection is capped at ${RECONCILE_MAX_APPLY} per batch` : undefined)}
+          style={{ width: 16, height: 16, accentColor: BLUE_L, cursor: selection.blocker ? "not-allowed" : "pointer",
+                   flexShrink: 0, alignSelf: "center", opacity: selection.blocker ? 0.4 : 1 }} />
+      )}
       <Thumb p={product} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -322,6 +386,11 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
             </button>
           )}
         </div>
+        {selection?.blocker && (
+          <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
+            Can't batch-select — {selection.blocker}.
+          </div>
+        )}
         {node?.condition && (
           <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>{node.condition}</div>
         )}
@@ -396,6 +465,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   }, [query]);
   const [keys, setKeys] = useState(null);          // Set<pid> — pids with ANY node
   const [pipeline, setPipeline] = useState(null);  // {pid: node} for live/blocked (+legacy)
+  // Batch publish (owner spec 2026-08-14): selection lives at page level so it
+  // survives collapsing a section; capped at the reconciler's per-run cap.
+  const [selected, setSelected] = useState(() => new Set());
+  const [batchNotice, setBatchNotice] = useState(null);
+  const [batchConfirm, setBatchConfirm] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
   const [nodes, setNodes] = useState({});          // every node body this session has loaded
   const [open, setOpen] = useState(() => new Set());
   const [loadError, setLoadError] = useState(null);       // mount reads failed — page unusable
@@ -608,6 +683,18 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // the Enter flow's focus) until a refetch landed.
   const applyWrite = (pid, node) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
+    // A write that moves a row past awaiting review (publish intent, block,
+    // live confirm) drops it from the batch selection — the checkbox is only
+    // offered on awaiting rows, so a selected pid must never linger once its
+    // row stops qualifying.
+    setSelected((prev) => {
+      if (!prev.has(pid)) return prev;
+      const st = reviewStateFor(node);
+      if ((st === "awaiting" || st === "approved") && !isPendingSwitch(node)) return prev;
+      const next = new Set(prev);
+      next.delete(pid);
+      return next;
+    });
     // Keep the pipeline map (which prices the live/blocked filter counts) in
     // step with the write — otherwise a fresh block is invisible to the
     // Blocked filter, and an unblock leaves a phantom count behind.
@@ -628,6 +715,102 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         })
         .catch(() => {});
     }
+  };
+
+  // ─── Batch-publish selection ───────────────────────────────────────────────
+  // Only awaiting-review rows in the CATEGORY sections are selectable — every
+  // name is a compliance decision and the category boundary is the review
+  // unit, so there is no cross-category select-all and no batch in the Live
+  // view. A row that fails the same gates the publish write enforces
+  // (condition unset, no valid name) gets a disabled checkbox with the reason
+  // inline — never a silent skip.
+  const selectionEligible = (node) => {
+    const st = reviewStateFor(node);
+    return (st === "awaiting" || st === "approved") && !isPendingSwitch(node);
+  };
+  const capNotice = () =>
+    setBatchNotice(`Selection is capped at ${RECONCILE_MAX_APPLY} — the reconciler applies at most ${RECONCILE_MAX_APPLY} products per run.`);
+  const toggleSelect = (pid, blocker) => {
+    if (selected.has(pid)) {
+      const next = new Set(selected);
+      next.delete(pid);
+      setSelected(next);
+      return;
+    }
+    if (blocker) return;
+    if (selected.size >= RECONCILE_MAX_APPLY) { capNotice(); return; }
+    setSelected(new Set(selected).add(pid));
+  };
+  const selectionFor = (p) => {
+    if (filter === "live") return undefined;
+    const node = nodes[p.id] || null;
+    if (!selectionEligible(node)) return undefined;
+    const blocker = batchSelectBlocker(node, effectiveNameFor(p, node).name);
+    return {
+      selected: selected.has(p.id),
+      blocker,
+      atCap: selected.size >= RECONCILE_MAX_APPLY,
+      onToggle: () => toggleSelect(p.id, blocker),
+    };
+  };
+  // The per-category select-all: adds this section's currently-selectable
+  // rows (blocked/ineligible ones stay out and keep their inline reason)
+  // until the cap says stop.
+  const selectAllIn = (pids) => {
+    const next = new Set(selected);
+    let capped = false;
+    for (const pid of pids) {
+      if (next.size >= RECONCILE_MAX_APPLY) { capped = true; break; }
+      next.add(pid);
+    }
+    setSelected(next);
+    if (capped) capNotice();
+  };
+
+  const productById = useMemo(() => {
+    const m = new Map();
+    for (const p of products) if (p?.id) m.set(p.id, p);
+    return m;
+  }, [products]);
+  // What the batch dialog states, per product: the cleaned name that will
+  // ship (saved name or lexicon — never an unsaved row draft), condition,
+  // price. Built from the same effectiveNameFor the rows use.
+  const batchItems = useMemo(() => {
+    return [...selected].map((pid) => {
+      const p = productById.get(pid);
+      if (!p) return null;
+      const node = nodes[pid] || null;
+      const eff = effectiveNameFor(p, node);
+      const price = Number(p.retailPrice);
+      return {
+        pid, node, name: eff.name, source: eff.source,
+        condition: node?.condition || "— no condition set —",
+        price: price > 0 ? `R ${price.toFixed(2)}` : "no price set",
+      };
+    }).filter(Boolean);
+  }, [selected, nodes, productById]);
+
+  // Sequential on purpose: each publishProduct is its own transaction with
+  // its own server-side refusals, and a failure only skips ITS product — the
+  // batch is N independent intents, exactly like the reconciler treats them.
+  const runBatch = async () => {
+    if (batchBusy) return;
+    setBatchBusy(true);
+    const failures = [];
+    let okCount = 0;
+    for (const it of batchItems) {
+      const res = await publishProduct(it.pid, it.node, it.name, it.source); // eslint-disable-line no-await-in-loop
+      if (res?.ok) { okCount += 1; applyWrite(it.pid, res.node); }
+      else failures.push(`${it.name || it.pid} — ${res?.message || "not saved"}`);
+    }
+    setBatchBusy(false);
+    setBatchConfirm(false);
+    setBatchNotice(
+      [
+        okCount ? `${okCount} publish intent${okCount === 1 ? "" : "s"} saved — nothing reaches Shopify until the reconciler runs.` : "",
+        failures.length ? `${failures.length} not saved: ${failures.join("; ")}` : "",
+      ].filter(Boolean).join(" ")
+    );
   };
 
   // Enter's advance: focus the next awaiting row after the approved one; when
@@ -705,11 +888,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // One section/group header row — the home list's row treatment (RoleCard):
   // name, right-aligned count badge, chevron. Shared by the category sections
   // and the Live view's On/Off groups.
-  const sectionHeader = (key, label, count, opened) => (
+  const sectionHeader = (key, label, count, opened, extra = null) => (
     <div onClick={() => toggle(key)}
       style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 2px",
                cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
       <div style={{ flex: 1, fontSize: 15, fontWeight: 500, color: "rgba(255,255,255,.9)" }}>{label}</div>
+      {extra}
       {count != null && count !== 0 && (
         <div style={{ minWidth: 28, height: 28, padding: "0 8px", boxSizing: "border-box", borderRadius: 999,
                       display: "flex", alignItems: "center", justifyContent: "center",
@@ -812,9 +996,27 @@ export default function ShopifyPublishView({ products = [], onExit }) {
 
         {keys && pipeline && !liveGroups && viewSections.map(({ cat, matched, count, pending }) => {
           const opened = isOpen(cat);
+          // The category's select-all: only rows that would render under the
+          // current filter, are awaiting review, and pass the batch gates.
+          // Appears once the section's bodies are in — eligibility needs them.
+          const selectable = opened && pending === 0
+            ? matched.filter((p) => {
+                const node = nodes[p.id] || null;
+                return matchesStateFilter(filter, reviewStateFor(node)) &&
+                       selectionEligible(node) &&
+                       !batchSelectBlocker(node, effectiveNameFor(p, node).name);
+              })
+            : [];
+          const unselected = selectable.filter((p) => !selected.has(p.id));
+          const selectAllBtn = unselected.length > 0 ? (
+            <button onClick={(e) => { e.stopPropagation(); selectAllIn(unselected.map((p) => p.id)); }}
+              style={{ ...tabOff, padding: "4px 10px", fontSize: "0.66rem" }}>
+              Select all
+            </button>
+          ) : null;
           return (
             <div key={cat}>
-              {sectionHeader(cat, cat, count, opened)}
+              {sectionHeader(cat, cat, count, opened, selectAllBtn)}
 
               {opened && pending !== 0 && (
                 <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Loading section…</div>
@@ -844,6 +1046,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                         onChanged={applyWrite}
                         onSkip={advanceFrom}
                         inputRef={refFor(p.id)}
+                        selection={selectionFor(p)}
                       />
                     </React.Fragment>
                   );
@@ -852,7 +1055,47 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             </div>
           );
         })}
+
+        {batchNotice && (
+          <div style={{ fontSize: 12, color: BLUE_L, fontWeight: 700, padding: "12px 2px", overflowWrap: "break-word" }}>
+            {batchNotice}
+            <button onClick={() => setBatchNotice(null)}
+              style={{ background: "none", border: "none", color: GRAY, cursor: "pointer",
+                       fontFamily: FONT, fontSize: 11, marginLeft: 8 }}>✕</button>
+          </div>
+        )}
       </div>
+
+      {/* BATCH BAR — sticky while anything is selected: the running count,
+          the cap (stated, and shared with the reconciler so the two cannot
+          disagree), and the one Publish Selected action behind the same
+          going-live confirmation as a single publish. */}
+      {selected.size > 0 && (
+        <div style={{ position: "sticky", bottom: 10, zIndex: 30, ...GLASS_SOLID, margin: "14px 14px 0",
+                      padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: "#fff" }}>
+            {selected.size} of {RECONCILE_MAX_APPLY} selected
+          </span>
+          <span style={{ fontSize: 10.5, color: GRAY }}>
+            cap {RECONCILE_MAX_APPLY} — one reconciler run
+          </span>
+          <div style={{ flex: 1 }} />
+          <button onClick={() => setSelected(new Set())} disabled={batchBusy}
+            style={{ ...bGray, padding: "8px 12px", fontSize: "0.76rem" }}>Clear</button>
+          <button onClick={() => setBatchConfirm(true)} disabled={batchBusy || batchItems.length === 0}
+            style={{ ...bGreen, padding: "8px 12px", fontSize: "0.76rem" }}>
+            Publish selected…
+          </button>
+        </div>
+      )}
+      {batchConfirm && (
+        <BatchPublishConfirmDialog
+          items={batchItems}
+          busy={batchBusy}
+          onCancel={() => setBatchConfirm(false)}
+          onConfirm={runBatch}
+        />
+      )}
     </div>
   );
 }

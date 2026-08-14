@@ -6,8 +6,9 @@ import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
   normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason,
-  STATE_FILTERS, reviewStateFor, matchesStateFilter,
+  STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker,
 } from "./shopifyPublishCore";
+import { RECONCILE_MAX_APPLY } from "./publishShared";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
 import { PUBLISH_STATES as SCRIPT_STATES } from "../../../scripts/shopify/publishNode.mjs";
 
@@ -88,6 +89,22 @@ describe("on/off + pending — intent vs confirmed", () => {
     expect(isPendingSwitch({ state: "awaiting" })).toBe(false);                       // no intent expressed
     expect(isPendingSwitch({ state: "awaiting", desiredState: "off" })).toBe(false);  // cancelled publish
     expect(isPendingSwitch(null)).toBe(false);
+  });
+});
+
+describe("batch selection — cap and eligibility", () => {
+  it("the batch cap is the reconciler's per-run cap — one constant, both read it", () => {
+    // The UI states this cap and reconcile.mjs imports the same value; a
+    // regression here means the page can promise a batch one run won't take.
+    expect(RECONCILE_MAX_APPLY).toBe(25);
+  });
+  it("batchSelectBlocker mirrors the publish gates and says why", () => {
+    const node = { state: "awaiting", condition: CONDITIONS[0] };
+    expect(batchSelectBlocker(node, "Low-top sneaker black")).toBeNull();
+    expect(batchSelectBlocker({ state: "awaiting" }, "Low-top sneaker black")).toMatch(/condition/);
+    expect(batchSelectBlocker(node, "")).toMatch(/name/);
+    expect(batchSelectBlocker(node, "Nike Air Force 1")).toMatch(/name/); // trigger ⇒ not a valid name
+    expect(batchSelectBlocker(null, "Low-top sneaker black")).toMatch(/condition/);
   });
 });
 
