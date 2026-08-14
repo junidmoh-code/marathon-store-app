@@ -35,7 +35,7 @@
 // Thumb follow LabelPrintView.jsx, rows use the home list's separator
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bGray, bGreen } from "../stock/ui";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
@@ -48,6 +48,12 @@ import {
 import ShopifyProductPage from "./ShopifyProductPage";
 
 const UNCAT = "Uncategorised";
+
+// How often the page re-asks whether a pending intent has been applied. Only
+// ticks while something IS pending, and only for those pids — see the pending
+// refresh below. 20s is the reconciler's own granularity: a run takes tens of
+// seconds per product, so anything faster just re-reads the same answer.
+const PENDING_POLL_MS = 20000;
 
 // `#shopify/{pid}` is the product-page route — the publishing twin of the
 // admin catalogue's #product/{id}. Returns null when the hash is anything
@@ -595,41 +601,75 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       });
   }, [detailPid, keys, nodes]);
 
-  // The reconciler runs outside this session — without a listener
-  // (deliberately: reads stay one-shot and partial) the pending marker would
-  // only ever clear on a full reload. Window focus is the natural "back to
-  // the page" moment: refetch ONLY the pids currently pending (a handful of
-  // bodies, never the node).
+  // ─── KEEPING UP WITH THE RECONCILER ────────────────────────────────────────
+  // The reconciler runs OUTSIDE this session, and this page deliberately holds
+  // no RTDB listener (reads stay one-shot and partial — that is what keeps the
+  // bill flat). So the only way a row learns its intent was applied is to ask.
+  //
+  // Window focus used to be the ONLY moment it asked, which got the common
+  // case exactly backwards: the operator who publishes a batch and then WATCHES
+  // — tab focused, never clicking away — is the one who never saw the update.
+  // Their rows sat on "publishing…" and stayed in Awaiting review until they
+  // clicked to another window and back, or reloaded. Worse on a product page,
+  // where a product that had gone live still offered Publish.
+  //
+  // Now it asks on focus AND on a slow tick, under three limits that keep it
+  // inside the page's load discipline:
+  //   · ONLY the pending pids — per-pid bodies, never get(/shopify_publish),
+  //     and the set is bounded by the batch cap.
+  //   · ONLY while something is pending. Nothing pending ⇒ no timer at all ⇒
+  //     an idle page makes zero requests, which is the steady state.
+  //   · NOT while the tab is hidden — the focus handler covers coming back.
+  const pendingPids = useMemo(
+    () => Object.entries(nodes).filter(([, n]) => isPendingSwitch(n)).map(([pid]) => pid),
+    [nodes]
+  );
+  const hasPending = pendingPids.length > 0;
+  // Read from the long-lived timer/listener closures so neither is re-created
+  // on every node change (an interval rebuilt each render would never fire).
+  const pendingPidsRef = useRef(pendingPids);
+  pendingPidsRef.current = pendingPids;
+
+  const refreshNodes = useCallback((pids) => {
+    if (!pids.length) return;
+    loadNodesFor(pids)
+      .then(({ nodes: got, failed }) => {
+        setNodes((prev) => {
+          const next = { ...prev };
+          for (const pid of pids) if (!failed.includes(pid)) next[pid] = got[pid] || null;
+          return next;
+        });
+        // The pipeline map prices the Live and Blocked filter counts; letting
+        // it drift would leave a phantom count behind a row that has moved on.
+        setPipeline((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev };
+          for (const pid of pids) {
+            if (failed.includes(pid)) continue;
+            const n = got[pid];
+            if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
+          }
+          return next;
+        });
+      })
+      .catch(() => {}); // a failed refresh just keeps showing pending
+  }, []);
+
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const onFocus = () => {
-      const pendingPids = Object.entries(nodes)
-        .filter(([, n]) => isPendingSwitch(n))
-        .map(([pid]) => pid);
-      if (!pendingPids.length) return;
-      loadNodesFor(pendingPids)
-        .then(({ nodes: got, failed }) => {
-          setNodes((prev) => {
-            const next = { ...prev };
-            for (const pid of pendingPids) if (!failed.includes(pid)) next[pid] = got[pid] || null;
-            return next;
-          });
-          setPipeline((prev) => {
-            if (!prev) return prev;
-            const next = { ...prev };
-            for (const pid of pendingPids) {
-              if (failed.includes(pid)) continue;
-              const n = got[pid];
-              if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
-            }
-            return next;
-          });
-        })
-        .catch(() => {}); // a failed refresh just keeps showing pending
-    };
+    const onFocus = () => refreshNodes(pendingPidsRef.current);
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [nodes]);
+  }, [refreshNodes]);
+
+  useEffect(() => {
+    if (!hasPending || typeof window === "undefined") return undefined;
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      refreshNodes(pendingPidsRef.current);
+    }, PENDING_POLL_MS);
+    return () => clearInterval(id);
+  }, [hasPending, refreshNodes]);
 
   // Fold a completed write straight into local state. The store's
   // transactions return the committed node, so no refetch is needed — and

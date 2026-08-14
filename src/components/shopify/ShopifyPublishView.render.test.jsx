@@ -689,3 +689,217 @@ test("home badge counts only never-seen products — live and blocked are exclud
   await flush();
   expect(seen).toBe(1); // only p2 has never been reviewed
 });
+
+// ─── KEEPING UP WITH THE RECONCILER ──────────────────────────────────────────
+// The reconciler runs OUTSIDE the browser. Until now the page only re-asked on
+// window focus, so the operator who publishes and then WATCHES — tab focused,
+// never clicking away — was the one who never saw the answer: rows sat on
+// "publishing…" and stayed in Awaiting review until a reload. These pin the
+// pending poll and everything that has to stay correct as a row vanishes.
+
+// A publish intent the reconciler has not applied. `nameApprovedAt` is what
+// Publish stamps, so this reads as review state "approved".
+const AWAITING_PENDING = {
+  state: "awaiting", condition: COND, cleanName: "Plain tee black",
+  nameApprovedAt: 1, desiredState: "on",
+};
+// The same intent on a node whose name was never signed off — a legacy node,
+// or a grade set and the switch thrown without an approval. Review state
+// "awaiting", so THIS is the shape that actually sits under the Awaiting
+// review filter while pending.
+const AWAITING_PENDING_UNAPPROVED = {
+  state: "awaiting", condition: COND, cleanName: "Plain tee black", desiredState: "on",
+};
+const CONFIRMED_LIVE = {
+  state: "live", liveState: "on", condition: COND, cleanName: "Plain tee black",
+  desiredState: "on", liveAt: 1700000000000,
+};
+
+// Run body with fake timers, always restoring real ones.
+const withFakeTimers = async (body) => {
+  vi.useFakeTimers();
+  try { await body(); } finally { vi.useRealTimers(); }
+};
+
+const openSection = async (tree, label) => {
+  const header = tree.root.findAll((n) => n.type === "div" && n.children.includes(label))[0];
+  await act(() => { header.parent.props.onClick(); });
+  await flush();
+};
+
+const mountOpen = async (label = "Clothing") => {
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  // Open under All: a section's bodies load only on expand, and the Awaiting
+  // filter cannot price a section whose bodies it has never seen.
+  await openSection(tree, label);
+  return tree;
+};
+
+const setFilter = async (tree, label) => {
+  await act(() => { button(tree, label).props.onClick(); });
+  await flush();
+};
+
+// The reconciler lands its confirmation, then the page's own tick fires.
+const reconcilerConfirms = async (pid, node) => {
+  bodies[pid] = node;
+  await act(async () => { vi.advanceTimersByTime(20000); });
+  await flush();
+};
+
+test("a pending row reflects the reconciler's confirmation with no user action at all", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { ...AWAITING_PENDING } };
+    const tree = await mountOpen();
+    expect(texts(tree)).toContain("PUBLISHING…");
+
+    await reconcilerConfirms("p1", { ...CONFIRMED_LIVE });
+
+    // No click, no focus event, no reload — the row simply tells the truth.
+    expect(texts(tree)).toContain("ON — LIVE");
+    expect(texts(tree)).not.toContain("PUBLISHING…");
+  });
+});
+
+test("a product that reaches live DISAPPEARS from the awaiting-review list", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { ...AWAITING_PENDING_UNAPPROVED } };
+    const tree = await mountOpen();
+    await setFilter(tree, "Awaiting review");
+    expect(texts(tree)).toContain("Plain tee black");
+
+    await reconcilerConfirms("p1", { ...CONFIRMED_LIVE });
+
+    const out = texts(tree);
+    expect(out).not.toContain("Plain tee black");
+    expect(out).toContain("Plain tee white"); // the still-awaiting sibling stays
+  });
+});
+
+test("the section count drops with the row, and an emptied section goes with it", async () => {
+  await withFakeTimers(async () => {
+    // Footwear holds exactly one product, and it is the pending one — so the
+    // whole section must vanish from Awaiting review when it goes live.
+    keys = new Set(["p3"]);
+    bodies = { p3: { ...AWAITING_PENDING_UNAPPROVED, cleanName: "Court sneaker grey" } };
+    const tree = await mountOpen("Footwear");
+    await setFilter(tree, "Awaiting review");
+    expect(texts(tree)).toContain("Footwear");
+
+    await reconcilerConfirms("p3", { ...CONFIRMED_LIVE, cleanName: "Court sneaker grey" });
+
+    expect(texts(tree)).not.toContain("Footwear");
+    expect(texts(tree)).toContain("Clothing"); // the other section is untouched
+  });
+});
+
+test("batch → pending → confirmed: the selection empties and STAYS empty as the rows go live", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1", "p2"]);
+    bodies = {
+      p1: { state: "awaiting", condition: COND, cleanName: "Plain tee black", nameApprovedAt: 5 },
+      p2: { state: "awaiting", condition: COND, cleanName: "Plain tee white", nameApprovedAt: 5 },
+    };
+    const tree = await mountOpen();
+    await act(() => { button(tree, "Select all").props.onClick({ stopPropagation: () => {} }); });
+    await flush();
+    expect(button(tree, "Publish selected…")).toBeTruthy();
+
+    await act(() => { button(tree, "Publish selected…").props.onClick(); });
+    await flush();
+    await act(() => { button(tree, "Put 2 live").props.onClick(); });
+    await flush();
+    // Intents saved ⇒ both rows pending, selection emptied, bar gone.
+    // NB the ellipsis: bare "PUBLISHING" also matches the page header.
+    expect(button(tree, "Publish selected…")).toBeUndefined();
+    expect(texts(tree)).toContain("PUBLISHING…");
+
+    // Now the reconciler applies them, out of band, while the operator watches.
+    bodies.p1 = { ...CONFIRMED_LIVE };
+    bodies.p2 = { ...CONFIRMED_LIVE, cleanName: "Plain tee white" };
+    await act(async () => { vi.advanceTimersByTime(20000); });
+    await flush();
+
+    const out = texts(tree);
+    expect(out).toContain("ON — LIVE");
+    expect(out).not.toContain("PUBLISHING…");
+    // The bar must not come back: a live product can never re-enter a batch.
+    expect(button(tree, "Publish selected…")).toBeUndefined();
+    expect(button(tree, "Select all")).toBeUndefined();
+  });
+});
+
+test("the Live view picks the confirmed row up in its On group, with no reload", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    pipeline = {};
+    bodies = { p1: { ...AWAITING_PENDING } };
+    const tree = await mountOpen();
+    await setFilter(tree, "Live");
+    // Nothing is on Shopify yet, so the Live view has nothing to group.
+    expect(texts(tree)).toContain("Nothing on Shopify yet.");
+
+    await reconcilerConfirms("p1", { ...CONFIRMED_LIVE });
+
+    const out = texts(tree);
+    expect(out).not.toContain("Nothing on Shopify yet.");
+    expect(out).toContain("On — visible to customers");
+  });
+});
+
+test("with nothing pending the page never polls — an idle page makes no requests", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { state: "awaiting", condition: COND, cleanName: "Plain tee black", nameApprovedAt: 1 } };
+    const tree = await mountOpen();
+    const afterOpen = calls.nodesFor.length;
+
+    await act(async () => { vi.advanceTimersByTime(20000 * 10); });
+    await flush();
+
+    expect(calls.nodesFor.length).toBe(afterOpen);
+    expect(texts(tree)).toContain("Plain tee black");
+  });
+});
+
+test("the poll asks for the PENDING pids only, never the whole node", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1", "p2"]);
+    bodies = {
+      p1: { ...AWAITING_PENDING },
+      p2: { state: "awaiting", condition: COND, cleanName: "Plain tee white", nameApprovedAt: 1 },
+    };
+    const tree = await mountOpen();
+    calls.nodesFor.length = 0;
+
+    await act(async () => { vi.advanceTimersByTime(20000); });
+    await flush();
+
+    expect(calls.nodesFor).toEqual([["p1"]]);
+    expect(texts(tree)).toContain("Plain tee white");
+  });
+});
+
+test("sitting on the product's OWN page, a confirmation swaps Publish for the live switch", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { ...AWAITING_PENDING } };
+    const tree = await mountOpen();
+    await openProductPage(tree, "Plain tee black");
+    expect(texts(tree)).toContain("waiting for the reconciler run to send it to Shopify");
+
+    await reconcilerConfirms("p1", { ...CONFIRMED_LIVE });
+
+    const out = texts(tree);
+    // Not stranded on the awaiting view: the page is now the live workbench.
+    expect(out).not.toContain("waiting for the reconciler run to send it to Shopify");
+    expect(out).toContain("Went live");
+    expect(out).toContain("Listing is ON");
+    expect(button(tree, "Publish")).toBeUndefined();
+    expect(button(tree, "Off")).toBeTruthy();
+  });
+});

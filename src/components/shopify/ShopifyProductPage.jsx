@@ -472,6 +472,24 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
 
   const dialogName = confirming === "switch-on" ? (node?.cleanName || draft.trim()) : draft.trim();
 
+  // ─── THE CONFIRMATION CANNOT OUTLIVE ITS FACTS ─────────────────────────────
+  // The node changes UNDER this page: the reconciler runs outside the session
+  // and the list refreshes pending nodes on a tick while the user sits here.
+  // A dialog that opened against an awaiting product and is still on screen
+  // after that product went live is stating facts that are no longer true, and
+  // confirming it would fire a write the store refuses anyway. Each dialog
+  // knows the state it assumed; when that stops holding, it closes and the
+  // page shows what is actually there.
+  const staleConfirm =
+    confirming === "publish" ? (isLive || pending)
+    : confirming === "switch-on" ? (!isLive || on || pending)
+    : false;
+  useEffect(() => {
+    if (!staleConfirm) return;
+    setConfirming(null);
+    setError("This product's publishing state changed while the confirmation was open — nothing was sent. The page below now shows where it actually is.");
+  }, [staleConfirm]);
+
   // The description preview — the EXACT html the reconciler pushes, or the
   // plain reason there is none yet. buildDescriptionHtml throws on an unset
   // condition (NO default), so gate before calling.
