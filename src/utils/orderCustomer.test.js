@@ -45,7 +45,7 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../firebase.js", () => ({ database: {} }));
 
-const { ensureOrderCustomer, resolveOrderCustomer } = await import("./orderCustomer.js");
+const { ensureOrderCustomer, resolveOrderCustomer, resolveCustomerKey } = await import("./orderCustomer.js");
 
 beforeEach(() => {
   db = {};
@@ -183,5 +183,53 @@ describe("resolveOrderCustomer — the never-blocking wrapper", () => {
     // The code was claimed, so the order carries the real identity — not pending.
     expect(res).toEqual({ customerId: KEY, customerCode: "C-1001" });
     expect(db.customers[KEY].code).toBe("C-1001"); // claim landed; bookkeeping can self-heal next order
+  });
+});
+
+// A merged-away record (customer-merge runner tombstone) must never re-accrue
+// bookkeeping: resolution follows mergedInto to the survivor, so the order
+// carries the survivor's identity and the tombstone stays empty.
+describe("resolveCustomerKey — merge tombstones", () => {
+  it("follows mergedInto from the first-probed dialect to the survivor", async () => {
+    db = {
+      customers: {
+        "27656996104": { name: "", phone: "+27656996104", mergedInto: "0656996104" }, // tombstone, probed FIRST for a 27-typed phone
+        "0656996104": { name: "Musa", phone: "0656996104", code: "C-1042", orderCount: 3 },
+      },
+    };
+    const { key, existing } = await resolveCustomerKey("27656996104");
+    expect(key).toBe("0656996104");
+    expect(existing.name).toBe("Musa");
+  });
+
+  it("an order for the tombstone's number books onto the survivor, never the tombstone", async () => {
+    db = {
+      customers: {
+        "27656996104": { name: "", phone: "+27656996104", mergedInto: "0656996104" },
+        "0656996104": { name: "Musa", phone: "0656996104", code: "C-1042", orderCount: 3 },
+      },
+    };
+    const res = await ensureOrderCustomer("+27656996104", "Musa", "2026-08-13T20:00:00.000Z", false);
+    expect(res).toEqual({ customerId: "0656996104", customerCode: "C-1042" });
+    expect(db.customers["0656996104"].orderCount).toBe(4);
+    expect(db.customers["27656996104"].orderCount).toBeUndefined(); // tombstone untouched
+  });
+
+  it("a mergedInto cycle cannot loop — resolution terminates on the cycle edge", async () => {
+    db = {
+      customers: {
+        "27656996104": { mergedInto: "0656996104" },
+        "0656996104": { mergedInto: "27656996104" }, // corrupt: A↔B
+      },
+    };
+    const { key } = await resolveCustomerKey("27656996104");
+    expect(["27656996104", "0656996104"]).toContain(key); // terminated, either end acceptable
+  });
+
+  it("a dangling mergedInto pointer stays on the tombstone instead of dropping the customer", async () => {
+    db = { customers: { "27656996104": { name: "Ghost", mergedInto: "0999999999" } } };
+    const { key, existing } = await resolveCustomerKey("27656996104");
+    expect(key).toBe("27656996104");
+    expect(existing.name).toBe("Ghost");
   });
 });

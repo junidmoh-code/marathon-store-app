@@ -22,7 +22,8 @@ import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
 import { toAuthPassword } from "./utils/auth-utils";
-import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants } from "./utils/phone";
+import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
+import { filterCustomerList } from "./utils/customerSearch";
 import { resolveCustomerKey, resolveOrderCustomer } from "./utils/orderCustomer";
 import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
@@ -1877,7 +1878,10 @@ function CustomersView({ onExit }) {
     const byPhone = {};
     insightsLog.filter(e => e.action === "placed").forEach(e => {
       const phone = e.customerPhone || "";
-      const key   = phoneToKey(phone) || "unknown";
+      // Group by canonical identity (phoneGroupKey), not raw digits — the log
+      // holds the same person as "0813…", "27813…" and "+27813…" across eras,
+      // and raw-digit grouping shows them as three customers.
+      const key   = phoneGroupKey(phone);
       if (!byPhone[key]) {
         byPhone[key] = { phone, name: e.customerName || "Unknown", firstOrderAt: e.timestamp, lastOrderAt: e.timestamp, orderCount: 0 };
       } else {
@@ -1888,10 +1892,13 @@ function CustomersView({ onExit }) {
     });
     // Merge Firebase opt-in status. Records may live under the local "0…" key
     // (new canonical form) or the legacy international "27…" key — probe every
-    // shape, same as resolveCustomerKey, so opt-in follows the record.
+    // shape, same as resolveCustomerKey, so opt-in follows the record. Merge
+    // tombstones are skipped: a later survivor-side opt-in never reaches the
+    // tombstone, so reading it would silently drop the customer from the
+    // broadcast list.
     return Object.values(byPhone)
       .map(c => {
-        const fb = phoneKeyVariants(c.phone).map(k => customersDb[k]).find(Boolean) || {};
+        const fb = phoneKeyVariants(c.phone).map(k => customersDb[k]).find(v => v && !v.mergedInto) || {};
         return { ...c, optedIn: fb.optedIn || false };
       })
       .sort((a, b) => tsMs(b.lastOrderAt) - tsMs(a.lastOrderAt));
@@ -1935,13 +1942,9 @@ function CustomersView({ onExit }) {
 
   // ── Search ──
   const [search, setSearch] = useState("");
-  const displayList = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return customerList;
-    return customerList.filter(c =>
-      (c.name || "").toLowerCase().includes(q) || (c.phone || "").includes(q)
-    );
-  }, [customerList, search]);
+  // Phone matching is on national significant digits (filterCustomerList), so
+  // "081…", "27 81…" and "+2781…" all find a record stored in any dialect.
+  const displayList = useMemo(() => filterCustomerList(customerList, search), [customerList, search]);
 
   const fmt = iso => iso ? new Date(iso).toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" }) : "—";
   const handleExit = () => onExit();
@@ -1951,7 +1954,9 @@ function CustomersView({ onExit }) {
   const stats = useMemo(() => {
     const monthStart = new Date(serverNowMs()); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
     const startMs = period === "month" ? monthStart.getTime() : 0;
-    const custKeyOf = (phone, name) => phoneToKey(phone) !== "unknown" ? phoneToKey(phone) : `name:${(name || "").trim().toLowerCase()}`;
+    // Canonical grouping (phoneGroupKey) so one person's 0/27/+27 dialects
+    // aggregate as one customer in every stat below.
+    const custKeyOf = (phone, name) => phoneGroupKey(phone) !== "unknown" ? phoneGroupKey(phone) : `name:${(name || "").trim().toLowerCase()}`;
 
     // Aggregate orders per customer, DEDUPED by order identity (date::orderNumber)
     // so a double-fire checkout can't inflate a customer's count. Build an order
@@ -2033,7 +2038,7 @@ function CustomersView({ onExit }) {
     if (!drill) return null;
     const key = drill.key;
     const orders = insightsLog.filter(e => e.action === "placed" &&
-      (phoneToKey(e.customerPhone) === key || `name:${(e.customerName || "").toLowerCase()}` === key))
+      (phoneGroupKey(e.customerPhone) === key || `name:${(e.customerName || "").trim().toLowerCase()}` === key))
       .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
     const rets = returnsLog.filter(r => (r.customerName || "").trim().toLowerCase() === (drill.name || "").trim().toLowerCase());
     return { orders, rets };

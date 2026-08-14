@@ -62,8 +62,26 @@ async function runHoldRevealSweep({ db, enqueueWhatsApp, nowMs }) {
       await db.ref(`orders/${id}/readyNotifiedAt`).set(new Date().toISOString()).catch(() => {});
       sent++;
     } catch (e) {
-      // Enqueue failed AFTER we claimed — re-hold so a later sweep retries. If the
-      // re-hold ALSO fails the message is lost (rare double-failure) — log loudly.
+      // An unusable-recipient refusal is TERMINAL: enqueueWhatsApp rejects
+      // such phones outright (instead of mangling them into +27…), so
+      // retrying can never succeed — re-holding would loop this order through
+      // every sweep forever. Matched on details.unusableRecipient, NOT on
+      // invalid-argument broadly: a template-contract failure (e.g. a deploy
+      // changing param arity) must keep re-holding, or one bad deploy would
+      // silently drop every held notification. The failure is stamped on the
+      // order so staff can find and re-trigger it after fixing the number.
+      if (e && e.code === "invalid-argument" && e.details && e.details.unusableRecipient) {
+        console.error("dispatchHoldRevealSweep: unusable phone, order_ready NOT sent (terminal):", id, e.message);
+        await db.ref(`orders/${id}`).update({
+          readyNotifyFailedAt: new Date().toISOString(),
+          readyNotifyError: "unusable recipient phone",
+        }).catch(() => {});
+        cleared++;
+        continue;
+      }
+      // Transient enqueue failure AFTER we claimed — re-hold so a later sweep
+      // retries. If the re-hold ALSO fails the message is lost (rare
+      // double-failure) — log loudly.
       await db.ref(`orders/${id}/readyNotifyPending`).set(true)
         .catch(err => console.error("dispatchHoldRevealSweep: re-hold FAILED, order_ready may be lost:", id, err.message));
       console.warn("dispatchHoldRevealSweep: enqueue failed, re-holding:", id, e.message);
