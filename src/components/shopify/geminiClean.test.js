@@ -60,6 +60,18 @@ describe("assessSubjectPreservation", () => {
     const v = assessSubjectPreservation(productOn(CLUTTER), productOn(STUDIO, { mark: false }));
     expect(v.pass).toBe(false);
   });
+  it("fails when a mark was painted out WITH the background colour — the interior-hole gate", () => {
+    // The sneakiest erasure: the mark region becomes background-coloured, so
+    // it drops OUT of the candidate's subject mask and the pixel-diff never
+    // sees it (reviewer finding 2026-08-14). Flood fill from the border finds
+    // the background-coloured island trapped inside the product.
+    const orig = productOn(CLUTTER); // has the dark 10×10 mark
+    const cand = productOn(STUDIO);
+    drawRect(cand, 45, 45, 55, 55, STUDIO); // mark painted out with the studio backdrop
+    const v = assessSubjectPreservation(orig, cand);
+    expect(v.pass).toBe(false);
+    expect(v.reason).toMatch(/inside the product/);
+  });
   it("fails when even a TINY mark was cleaned off — the changed-area gate closes the p95 tail hole", () => {
     // A 4×4 scuff on the body (~1% of the subject): erasing it barely moves
     // the mean and hides entirely inside p95's 5% allowance — only the

@@ -170,9 +170,10 @@ for (const { pid, want } of capped) {
     if (want === "off") {
       // Channel unpublish ONLY. Status, handle, media, ID map all survive.
       if (!mapNode?.shopifyProductId) {
-        // Nothing of ours exists on Shopify — "off" is already the truth.
+        // Nothing of ours exists on Shopify — "off" is already the truth,
+        // and any admin link from an earlier life points at nothing.
         console.log("  no /shopify_sync mapping — nothing on Shopify to unpublish");
-        await confirmLiveState(db, pid, "off", UPDATED_BY);
+        await confirmLiveState(db, pid, "off", UPDATED_BY, { clearAdminUrl: true });
         results.push({ pid, ok: true, note: "confirmed off (no Shopify product)" });
         continue;
       }

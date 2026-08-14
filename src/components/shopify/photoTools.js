@@ -80,21 +80,28 @@ export function compressImageFile(file, maxDim = 1600, maxBytes = 800 * 1024) {
 }
 
 /**
- * Upload a JPEG blob as a publishing photo for this product and return its
- * public URL. `kind` prefixes the object name ("upload" | "gen");
- * `derivedFrom` records the source URL of a generated image in metadata.
- * Immutable cache headers — every object is write-once by construction.
+ * Upload an image blob as a publishing photo for this product and return its
+ * public URL. The stored extension and contentType follow the blob's ACTUAL
+ * type (a generated image often arrives as PNG — labelling its bytes
+ * image/jpeg would lie to every downstream consumer); anything outside the
+ * accepted set is rejected. `kind` prefixes the object name ("upload" |
+ * "gen"); `derivedFrom` records the source URL of a generated image in
+ * metadata. Immutable cache headers — every object is write-once by
+ * construction.
  */
+const EXT_BY_TYPE = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
 export async function uploadPublishPhoto(productId, blob, { kind = "upload", derivedFrom = null } = {}) {
   // REJECT, never repair — same discipline as the store's safeSeg: a mangled
   // id must not address another product's folder. Real ids are "p<digits>".
   if (!/^[A-Za-z0-9_-]+$/.test(String(productId ?? ""))) {
     throw new Error(`illegal product id for a Storage path: "${productId}"`);
   }
+  const ext = EXT_BY_TYPE[blob?.type];
+  if (!ext) throw new Error(`unsupported image type for upload: "${blob?.type || "unknown"}"`);
   const id = `${kind}_${serverNowMs()}_${Math.random().toString(36).slice(2, 7)}`;
-  const sRef = storageRef(storage, `products/${productId}/shopify/${id}.jpg`);
+  const sRef = storageRef(storage, `products/${productId}/shopify/${id}.${ext}`);
   await uploadBytes(sRef, blob, {
-    contentType: "image/jpeg",
+    contentType: blob.type,
     cacheControl: "public, max-age=31536000, immutable",
     ...(derivedFrom ? { customMetadata: { derivedFrom } } : {}),
   });

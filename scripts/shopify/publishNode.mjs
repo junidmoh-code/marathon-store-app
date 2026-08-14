@@ -80,7 +80,10 @@ export async function cachePublishName(db, productId, { cleanName, source, updat
 // the moment the product last WENT ON — the fact Junid asked the Live view to
 // show. Both are best-effort extras: an older caller without them still
 // confirms correctly, the row just shows no link/date yet.
-export async function confirmLiveState(db, productId, liveState, updatedBy, { gid = null } = {}) {
+// clearAdminUrl: the caller KNOWS no Shopify product exists (e.g. confirming
+// off with no /shopify_sync mapping) — a link stamped in an earlier life
+// would now point at nothing, so it is removed rather than preserved.
+export async function confirmLiveState(db, productId, liveState, updatedBy, { gid = null, clearAdminUrl = false } = {}) {
   assertSafeSegment(productId, "productId");
   if (liveState !== "on" && liveState !== "off") throw new Error(`invalid liveState: ${liveState}`);
   const numericId = gid ? String(gid).split("/").pop() : null;
@@ -89,6 +92,7 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
     liveState,
     blockedReason: null,
     ...(numericId ? { adminUrl: `https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}` } : {}),
+    ...(!numericId && clearAdminUrl ? { adminUrl: null } : {}),
     ...(liveState === "on" ? { liveAt: Date.now() } : {}),
     updatedAt: Date.now(),
     updatedBy,

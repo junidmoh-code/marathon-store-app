@@ -108,6 +108,41 @@ export function assessSubjectPreservation(orig, cand) {
     return { pass: false, reason: "no clear subject found against the new background", metrics: { areaFrac } };
   }
 
+  // INTERIOR-HOLE gate. The pixel-diff below only covers the candidate's
+  // subject mask — a mark erased by painting it WITH the background colour
+  // reads as background, drops out of the mask, and would never be compared
+  // (reviewer finding, 2026-08-14). Any background-coloured region trapped
+  // INSIDE the product silhouette (unreachable from the border by flood
+  // fill across background pixels) is treated as exactly that erasure and
+  // discards the candidate. Known cost: products with genuine closed
+  // see-through openings (a bag handle's loop) can be discarded falsely —
+  // acceptable by policy; a false pass ships misrepresentation.
+  const seen = new Uint8Array(w * h);
+  const queue = [];
+  for (let x = 0; x < w; x++) { queue.push(x, (h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { queue.push(y * w, y * w + (w - 1)); }
+  for (const p of queue) { if (!mask[p]) seen[p] = 1; }
+  while (queue.length) {
+    const p = queue.pop();
+    if (mask[p] || !seen[p]) continue;
+    const x = p % w, y = (p / w) | 0;
+    for (const q of [p - 1, p + 1, p - w, p + w]) {
+      if (q < 0 || q >= w * h) continue;
+      if ((q === p - 1 && x === 0) || (q === p + 1 && x === w - 1)) continue;
+      if (!mask[q] && !seen[q]) { seen[q] = 1; queue.push(q); }
+    }
+  }
+  let holeArea = 0;
+  for (let p = 0; p < w * h; p++) if (!mask[p] && !seen[p]) holeArea++;
+  const holeFrac = holeArea / subjectArea;
+  if (holeFrac > 0.005) {
+    return {
+      pass: false,
+      reason: `background-coloured region inside the product (${(holeFrac * 100).toFixed(2)}% of the subject — a mark may have been painted out)`,
+      metrics: { areaFrac: Number(areaFrac.toFixed(4)), holeFrac: Number(holeFrac.toFixed(4)) },
+    };
+  }
+
   // Pixel difference over the subject interior, candidate vs ORIGINAL. Three
   // gates, because each has a blind spot the others cover: mean catches
   // global drift, p95 catches broad tails — and BOTH would let a small
@@ -134,6 +169,7 @@ export function assessSubjectPreservation(orig, cand) {
   const changedFrac = changed / diffs.length;
   const metrics = {
     areaFrac: Number(areaFrac.toFixed(4)),
+    holeFrac: Number(holeFrac.toFixed(4)),
     mean: Number(mean.toFixed(2)),
     p95,
     changedFrac: Number(changedFrac.toFixed(4)),

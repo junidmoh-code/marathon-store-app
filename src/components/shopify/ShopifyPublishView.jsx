@@ -182,15 +182,20 @@ function PhotoStrip({ product, node, locked, onChanged }) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
 
+  // → true iff the list committed (callers that consume a resource on
+  // success — the accept flow discarding its candidate — must not do so on a
+  // refused write).
   const write = async (nextList, after) => {
     setBusy(true); setErr(null);
     try {
       const res = await setPublishPhotos(product.id, node, nextList);
-      if (!res?.ok) { setErr(res?.message || "Not saved."); return; }
+      if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
       onChanged(product.id, res.node);
       after?.();
+      return true;
     } catch (e) {
       setErr(String(e?.message || e));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -346,7 +351,11 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
         setErr(`The generated image changed the product and was discarded (${res.reason}). The original stays as it is — you can try again.`);
         return;
       }
-      setCandidate({ ...res, sourceUrl: originalUrl });
+      // A regenerate replaces any open candidate — revoke its URL first.
+      setCandidate((prev) => {
+        if (prev) URL.revokeObjectURL(prev.previewUrl);
+        return { ...res, sourceUrl: originalUrl };
+      });
     } catch (e) {
       setErr(String(e?.message || e));
     } finally {
@@ -359,8 +368,9 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
     setSaving(true); setErr(null);
     try {
       const url = await uploadPublishPhoto(productId, candidate.blob, { kind: "gen", derivedFrom: candidate.sourceUrl });
-      await onReplace(url, candidate.sourceUrl);
-      discardCandidate();
+      // Only a COMMITTED list write consumes the candidate — a refused write
+      // shows its error and keeps the side-by-side up for a retry.
+      if (await onReplace(url, candidate.sourceUrl)) discardCandidate();
     } catch (e) {
       setErr(String(e?.message || e));
     } finally {
@@ -1085,22 +1095,32 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     setBatchBusy(true);
     const failures = [];
     let okCount = 0;
-    for (const it of batchItems) {
-      // Re-check against the FRESHEST node before each write: a row the
-      // reconciler blocked (or another session published) since the dialog
-      // opened must be skipped, not silently re-queued with its refusal
-      // reason wiped.
-      const freshest = nodesRef.current[it.pid] === undefined ? it.node : nodesRef.current[it.pid];
-      if (!selectionEligible(freshest)) {
-        failures.push(`${it.name || it.pid} — its state changed since selection, skipped`);
-        continue;
+    try {
+      for (const it of batchItems) {
+        // Re-check against the FRESHEST node before each write: a row the
+        // reconciler blocked (or another session published) since the dialog
+        // opened must be skipped, not silently re-queued with its refusal
+        // reason wiped.
+        const freshest = nodesRef.current[it.pid] === undefined ? it.node : nodesRef.current[it.pid];
+        if (!selectionEligible(freshest)) {
+          failures.push(`${it.name || it.pid} — its state changed since selection, skipped`);
+          continue;
+        }
+        try {
+          const res = await publishProduct(it.pid, freshest, it.name, it.source); // eslint-disable-line no-await-in-loop
+          if (res?.ok) { okCount += 1; applyWrite(it.pid, res.node); }
+          else failures.push(`${it.name || it.pid} — ${res?.message || "not saved"}`);
+        } catch (e) {
+          // A rejection is one product's failure, never the batch's — and the
+          // flags must reset regardless (a dialog stuck disabled forces a
+          // reload).
+          failures.push(`${it.name || it.pid} — ${String(e?.message || e)}`);
+        }
       }
-      const res = await publishProduct(it.pid, freshest, it.name, it.source); // eslint-disable-line no-await-in-loop
-      if (res?.ok) { okCount += 1; applyWrite(it.pid, res.node); }
-      else failures.push(`${it.name || it.pid} — ${res?.message || "not saved"}`);
+    } finally {
+      setBatchBusy(false);
+      setBatchConfirm(false);
     }
-    setBatchBusy(false);
-    setBatchConfirm(false);
     setBatchNotice(
       [
         okCount ? `${okCount} publish intent${okCount === 1 ? "" : "s"} saved — nothing reaches Shopify until the reconciler runs.` : "",
