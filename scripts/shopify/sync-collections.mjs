@@ -61,23 +61,57 @@ if (!managedGids.length) {
 }
 console.log(`${managedGids.length} manual collections recorded`);
 
-const all = await readAllPublishNodes(db);
 const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
-const worklist = Object.entries(all).filter(([pid]) => !ONLY || ONLY.has(pid));
-console.log(`${worklist.length} publishing nodes · ${worklist.filter(([, n]) => confirmedOn(n)).length} confirmed ON the storefront`);
+
+// THE WORKLIST IS THE UNION of /shopify_publish and the /shopify_sync product
+// map. Walking only the publish nodes would silently miss a product that IS
+// ours on Shopify but has no publish node — the live census has exactly one
+// (a slice-1 round-trip draft), and it is precisely the class this sweep
+// exists for. Worse, `--pids` on such a product printed a clean report and
+// exited 0: a false success for a product the operator named explicitly.
+// A pid with no publish node reads as not-confirmed-ON, so it can only ever
+// LEAVE collections, never join one.
+const publishNodes = await readAllPublishNodes(db);
+const syncNodes = (await db.ref("shopify_sync").get()).val() || {};
+const pids = [...new Set([
+  ...Object.keys(publishNodes),
+  ...Object.keys(syncNodes).filter((k) => k !== "_collections"),
+])].filter((pid) => !ONLY || ONLY.has(pid)).sort();
+if (ONLY) {
+  for (const pid of ONLY) {
+    if (!pids.includes(pid)) console.error(`  ⚠ ${pid}: no /shopify_publish node and no /shopify_sync mapping — nothing of ours on Shopify, skipped`);
+  }
+}
+console.log(`${pids.length} products known to Shopify · ${pids.filter((pid) => confirmedOn(publishNodes[pid])).length} confirmed ON the storefront`);
 console.log(COMMIT ? "MODE: commit\n" : "MODE: dry run — nothing written\n");
 
 const results = [];
-for (const [pid, node] of worklist) {
+for (const pid of pids) {
   assertSafeSegment(pid, "productId");
+
+  // RE-READ the publish node, per product, at the moment it is judged. The
+  // snapshot above is only a worklist. The reconciler runs independently (and
+  // on a schedule), so a product it confirms live WHILE this sweep is walking
+  // would otherwise be judged "not on the storefront" from a stale read and
+  // STRIPPED out of the collection it had just been published into — publicly
+  // live, in no collection, reported as a success. reconcile.mjs re-reads at
+  // its own point of no return for exactly this reason; so does this.
+  const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+  const live = confirmedOn(node);
   const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
   const gid = mapNode?.shopifyProductId;
-  const name = node.cleanName || pid;
+  const name = node?.cleanName || pid;
   if (!gid) {
     // Nothing of ours exists on Shopify for this record, so there is no
-    // membership to hold. Only worth saying out loud when it claims to be live.
-    if (confirmedOn(node)) {
-      results.push({ pid, name, status: "no-map", detail: "confirmed live but has no /shopify_sync entry — reconcile it first" });
+    // membership to hold. Worth saying out loud when it claims to be live —
+    // or whenever the operator named this pid and is owed an answer.
+    if (live || ONLY) {
+      results.push({
+        pid, name,
+        status: live ? "no-map" : "nothing-to-do",
+        detail: live ? "confirmed live but has no /shopify_sync entry — reconcile it first"
+                     : "not live and nothing of ours on Shopify — nothing to do",
+      });
     }
     continue;
   }
@@ -85,8 +119,10 @@ for (const [pid, node] of worklist) {
   // A product that is not confirmed ON belongs in NO managed collection,
   // whatever its record says — desired null only ever leaves.
   let desired = null;
-  let label = `not on the storefront (state ${node?.state}/${node?.liveState ?? "—"}) — leaves every managed collection`;
-  if (confirmedOn(node)) {
+  let label = node
+    ? `not on the storefront (state ${node.state}/${node.liveState ?? "—"}) — leaves every managed collection`
+    : "on Shopify but never reviewed (no /shopify_publish node) — leaves every managed collection";
+  if (live) {
     const product = (await db.ref(`products/${pid}`).get()).val();
     if (!product) {
       results.push({ pid, name, status: "no-record", detail: "confirmed live but no /products record" });
@@ -104,9 +140,15 @@ for (const [pid, node] of worklist) {
     const plan = planCollectionMembership(await readProductCollections(graphql, gid), desired, managedGids);
     if (!plan.join.length && !plan.leave.length) {
       // Silent for the vast majority: an off product in no collection is the
-      // normal resting state and printing it would bury the real rows.
-      if (confirmedOn(node)) {
-        results.push({ pid, name, status: desired ? "already-correct" : "no-collection", detail: label });
+      // normal resting state and printing it would bury the real rows. But an
+      // EXPLICITLY NAMED pid is a question, and silence is not an answer —
+      // --pids always reports, whatever the outcome.
+      if (live || ONLY) {
+        results.push({
+          pid, name,
+          status: live ? (desired ? "already-correct" : "no-collection") : "nothing-to-do",
+          detail: label,
+        });
       }
       continue;
     }
@@ -122,9 +164,12 @@ for (const [pid, node] of worklist) {
 }
 
 console.log("══ COLLECTION MEMBERSHIP ══");
-// "no-collection" is a DOCUMENTED outcome (a deliberately unmapped category
-// such as Price Products), not a failure — the exit code already ignores it,
-// and marking it ✗ made the report contradict the exit code.
+// The icon and the exit code must agree. "no-collection" is a DOCUMENTED
+// outcome (a deliberately unmapped category such as Price Products) — a notice,
+// ⚠, exit 0. "no-map" and "no-record" mean a product claims to be live and
+// ISN'T ours, or has no record at all: those are broken, ✗, and they now fail
+// the run. Marking them ✗ while exiting 0 was the same contradiction demoting
+// no-collection was supposed to remove.
 const BAD = new Set(["failed", "no-map", "no-record"]);
 for (const r of results) {
   const icon = BAD.has(r.status) ? "✗" : r.status === "no-collection" ? "⚠" : "✓";
@@ -135,4 +180,4 @@ const tally = {};
 for (const r of results) tally[r.status] = (tally[r.status] ?? 0) + 1;
 console.log("\n" + Object.entries(tally).map(([k, n]) => `${k}: ${n}`).join("  ·  "));
 if (!COMMIT) console.log("\ndry run — Shopify untouched. Re-run with --commit to apply.");
-process.exit(results.some((r) => r.status === "failed") ? 1 : 0);
+process.exit(results.some((r) => BAD.has(r.status)) ? 1 : 0);

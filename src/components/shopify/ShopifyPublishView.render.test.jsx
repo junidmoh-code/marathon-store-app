@@ -1025,3 +1025,33 @@ test("an unchanged node leaves the confirmation alone", async () => {
   expect(texts(tree)).toContain("public storefront");
   expect(texts(tree)).not.toContain("changed while the confirmation was open");
 });
+
+test("two overlapping reads: the LATER answer wins — an earlier apply is not mistaken for a write", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p1"]);
+    bodies = { p1: { ...AWAITING_PENDING } };
+    const tree = await mountOpen();
+    expect(texts(tree)).toContain("PUBLISHING…");
+
+    // R1 goes out and is HELD, holding the still-pending node.
+    holdNodesFor = true;
+    await act(() => { vi.advanceTimersByTime(20000); });
+    expect(heldReads).toHaveLength(1);
+
+    // The reconciler confirms; R2 goes out and is held too, holding the LIVE node.
+    bodies.p1 = { ...CONFIRMED_LIVE };
+    await act(() => { vi.advanceTimersByTime(20000); });
+    expect(heldReads).toHaveLength(2);
+
+    // R1 lands first with the stale answer, then R2 with the fresh one. R1's
+    // own apply must NOT make R2 look stale — comparing node objects did
+    // exactly that, and the row sat on "publishing…" for another full tick.
+    await act(async () => { heldReads[0](); });
+    await flush();
+    await act(async () => { heldReads[1](); });
+    await flush();
+
+    expect(texts(tree)).toContain("ON — LIVE");
+    expect(texts(tree)).not.toContain("PUBLISHING…");
+  });
+});

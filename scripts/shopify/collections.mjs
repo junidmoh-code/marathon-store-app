@@ -215,10 +215,17 @@ export async function publishToOnlineStore(graphql, gid, onlinePublicationId) {
  * title is auto-generated and localisable (this shop's reads back as "Channel
  * Catalog 188560801941 for Online Store"), so a shop in another locale — or a
  * Shopify rename — would silently match nothing and publish to no channel. The
- * handle is stable. Title matching stays as a FALLBACK for the case where the
- * channels field is unavailable, so this can only ever be more reliable than
- * what it replaces. Paginated: a shop with many sales channels must not hide
+ * handle is stable. Paginated: a shop with many sales channels must not hide
  * the online store behind a fixed page-1 cutoff.
+ *
+ * The title match is kept as a fallback for a shop whose publications carry no
+ * `online_store` channel. It is NOT a safety net for the field disappearing: if
+ * `Publication.channels` were removed from the schema, the query fails
+ * validation and client.mjs throws before any fallback is reached — the
+ * reconciler would then exit(1) on every run, loudly, rather than degrade.
+ * That is the correct failure mode for a pinned API version, but it is a
+ * version bump to fix, not something this function absorbs. (`channels` is
+ * present on 2026-07; `App.handle` is the deprecated neighbour, not this.)
  */
 const PUBLICATION_PAGES = 10; // × 50 = 500 publications; a runaway-loop backstop
 

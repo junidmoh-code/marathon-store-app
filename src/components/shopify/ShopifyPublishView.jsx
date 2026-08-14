@@ -637,21 +637,31 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     pendingPidsRef.current = pendingPids;
     nodesRef.current = nodes;
   }, [pendingPids, nodes]);
+  // Bumped by applyWrite, per pid. Written in the write path (not during
+  // render), so it is current the instant the write commits — which is what a
+  // read resolving moments later has to compare against.
+  const writeGenRef = useRef({});
 
   const refreshNodes = useCallback((pids) => {
     if (!pids.length) return;
-    // The node each pid held when this read went OUT. The section fetch has a
-    // FILL-never-overwrite rule for the same reason; this one has to overwrite
-    // (replacing a stale node IS its job), so it needs the sharper test: apply
-    // only where nothing has changed underneath in the meantime. Without it, a
-    // Cancel clicked while a read was in flight would be silently rolled back
-    // by the older server value and the row would jump back to pending.
+    // The LOCAL-WRITE generation each pid was on when this read went OUT. The
+    // section fetch has a FILL-never-overwrite rule for the same reason; this
+    // one has to overwrite (replacing a stale node IS its job), so it needs a
+    // sharper test: apply only where no local write has landed underneath.
+    // Without it, a Cancel clicked while a read was in flight would be silently
+    // rolled back by the older server value and the row would jump to pending.
+    //
+    // A GENERATION, not the node object: two reads can be in flight at once
+    // (the interval plus a window-focus refresh), and comparing objects made
+    // the first read's own apply look like a change — so the SECOND, fresher
+    // result was discarded and the row sat stale for another whole tick. Only
+    // a local write bumps the generation, which is exactly what must invalidate.
     const before = {};
-    for (const pid of pids) before[pid] = nodesRef.current[pid];
+    for (const pid of pids) before[pid] = writeGenRef.current[pid] ?? 0;
     loadNodesFor(pids)
       .then(({ nodes: got, failed }) => {
         const apply = pids.filter(
-          (pid) => !failed.includes(pid) && nodesRef.current[pid] === before[pid]);
+          (pid) => !failed.includes(pid) && (writeGenRef.current[pid] ?? 0) === before[pid]);
         if (!apply.length) return;
         setNodes((prev) => {
           const next = { ...prev };
@@ -695,6 +705,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // update would flip the section's `pending` and unmount every row until a
   // refetch landed.
   const applyWrite = (pid, node) => {
+    // Any in-flight refresh for this pid now holds an OLDER answer than we do.
+    writeGenRef.current[pid] = (writeGenRef.current[pid] ?? 0) + 1;
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
     // Keep the pipeline map (which prices the live/blocked filter counts) in
     // step with the write — otherwise a fresh block is invisible to the

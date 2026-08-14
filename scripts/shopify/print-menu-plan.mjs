@@ -71,6 +71,12 @@ const childrenOf = (key) => COLLECTIONS.filter((c) => c.parent === key);
 // empty today is a dead end for a shopper, so the plan SAYS SO rather than
 // letting Junid build a menu item that leads nowhere — best-effort, because a
 // missing count must not stop the plan from printing.
+//
+// CAVEAT worth knowing before trusting a small number: productsCount counts
+// members of ANY status, so a DRAFT product (one joined by the reconciler whose
+// publish then failed) is included, while the storefront renders only ACTIVE
+// ones. A collection can therefore read "1 product" and still look empty to a
+// shopper. sync-collections.mjs is what clears those.
 const counts = {};
 try {
   const d = await graphql(`query { collections(first: 100) { nodes { handle productsCount { count } } } }`);
@@ -91,10 +97,9 @@ const rowFor = (c, depth) => {
 
 console.log("══ MAIN MENU — build this in the Shopify admin ══\n");
 // New In leads: it is the only collection that holds everything, so it is the
-// row that guarantees a path to any product, mapped or not.
-// New In leads WHEN IT EXISTS — the map is a supported data edit, so the key
-// may be renamed or dropped without anyone touching this script; guard rather
-// than throw a TypeError over a menu listing.
+// row that guarantees a path to any product, mapped or not. Guarded, because
+// the map is a supported data edit — the key may be renamed or dropped without
+// anyone touching this script, and that must not throw over a menu listing.
 const newIn = smart.find((c) => c.key === "new-in");
 if (newIn) console.log(rowFor(newIn, 0));
 for (const t of tops) {
