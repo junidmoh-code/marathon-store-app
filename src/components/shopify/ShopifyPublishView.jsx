@@ -626,6 +626,12 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
               <button disabled={busy || pending || on}
                 onClick={() => {
                   if (dirty) { setError("Save the edited name first (press Enter in the name field)."); return; }
+                  // Same gate as Publish — an emptied photo set must surface
+                  // here, not as a blocked row after the next script run.
+                  if (photoList.photos.length === 0) {
+                    setError("No photos — open the photo strip and add one; an imageless product cannot go live.");
+                    return;
+                  }
                   setConfirming("switch-on");
                 }}
                 style={{ ...(on ? tabOn : tabOff), padding: "4px 11px", fontSize: "0.68rem" }}>
