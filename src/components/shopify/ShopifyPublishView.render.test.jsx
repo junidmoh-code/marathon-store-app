@@ -251,6 +251,39 @@ test("Live filter splits into On and Off groups; OFF needs no dialog; ON re-conf
   expect(calls.desired).toEqual([{ pid: "p1", want: "off" }, { pid: "p3", want: "on" }]);
 });
 
+test("an ON row locks its name input; a dirty live-off row refuses the switch until saved", async () => {
+  keys = new Set(["p1", "p3"]);
+  pipeline = {
+    p1: { state: "live", liveState: "on",  desiredState: "on",  cleanName: "Basic tee black", condition: COND },
+    p3: { state: "live", liveState: "off", desiredState: "off", cleanName: "Court low grey",  condition: COND },
+  };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Live").props.onClick(); });
+  await flush();
+  for (const label of ["On — visible to customers", "Off — on Shopify, not published"]) {
+    const header = tree.root.findAll((n) => n.type === "div" && n.children.includes(label))[0];
+    await act(() => { header.parent.props.onClick(); });
+    await flush();
+  }
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.placeholder !== "Search products…");
+  const onInput = inputs.find((n) => n.props.value === "Basic tee black");
+  const offInput = inputs.find((n) => n.props.value === "Court low grey");
+  expect(onInput.props.disabled).toBe(true);   // ON — customers see this name; locked
+  expect(offInput.props.disabled).toBe(false); // OFF — still editable
+  // edit the off row's name, then try to switch it On without saving
+  await act(() => { offInput.props.onChange({ target: { value: "Court low grey v2" } }); });
+  await flush();
+  const onButtons = tree.root.findAll((n) => n.type === "button" && n.children.includes("On") && !n.props.disabled);
+  await act(() => { onButtons[0].props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain("Save the edited name first");
+  expect(out).not.toContain("Put on the public storefront?"); // no dialog on a dirty row
+  expect(calls.desired.length).toBe(0);
+});
+
 test("a pending publish shows Cancel, which writes desiredState off", async () => {
   keys = new Set(["p1"]);
   bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND, desiredState: "on" };

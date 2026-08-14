@@ -36,7 +36,7 @@
 //     loudly — run migrate-live-state.mjs first.
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
-import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { cleanTitleFor, isTriggerFree, triggersInText } from "../../src/utils/shopifyTriggers.js";
 import {
@@ -189,6 +189,15 @@ for (const { pid, want } of capped) {
     const sizes = Array.isArray(product.sizes) && product.sizes.length ? sortSizes(product.sizes) : null;
     if (!sizes) problems.push("no sizes array");
     if (sizes) problems.push(...findSizeCollisions(sizes));
+    // The ID map keys variants by encodeSizeKey; inventory totals key by
+    // stockSizeKey. For every token the catalogue actually uses they agree —
+    // but a literal "Free Size" (folds to "_" in stock, not in the map) would
+    // silently inventory the variant at 0. Refuse the mismatch outright.
+    for (const sTok of sizes || []) {
+      if (encodeSizeKey(sTok) !== stockSizeKey(sTok)) {
+        problems.push(`size token ${JSON.stringify(sTok)} keys differently in stock ("${stockSizeKey(sTok)}") and the ID map ("${encodeSizeKey(sTok)}") — normalise the record first`);
+      }
+    }
     if (problems.length) { await refuse(pid, problems.join("; ")); continue; }
 
     let mediaPlan;
@@ -213,6 +222,7 @@ for (const { pid, want } of capped) {
     }
 
     let gid = mapNode?.shopifyProductId ?? null;
+    const createdNow = !gid;
     if (gid) {
       // RECONCILE the mapped product's pushed fields from the CURRENT record —
       // a rename or condition change made while the product sat OFF must land
@@ -228,19 +238,35 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const uErrs = upd.productUpdate.userErrors;
-      if (uErrs?.length) { results.push({ pid, ok: false, why: `reconcile productUpdate userErrors: ${JSON.stringify(uErrs)}` }); continue; }
+      if (uErrs?.length) { await refuse(pid, `reconcile productUpdate userErrors: ${JSON.stringify(uErrs)}`); continue; }
     } else {
       // CREATE — the old publish-run's draft pipeline, inline: photos answer
       // first, exact-title duplicate guard (a legacy or twin product must be
       // adopted deliberately, never claimed by accident), DRAFT create, atomic
       // gid claim, read-back → ID map, media attach.
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
+      // TWO duplicate guards. The handle probe is the strong one: handles are
+      // unique per shop and buildHandle is deterministic, so a crashed earlier
+      // run (productSet applied, claim never written) or a twin-titled product
+      // surfaces here even when the search index hasn't caught the title yet —
+      // and the slug charset ([a-z0-9-]) has no quoting hazards. Refusing
+      // (not auto-claiming) is deliberate: a product with no /shopify_sync
+      // entry is not ours to adopt without a human.
+      const dupeHandle = await graphql(
+        `query ($q: String!) { products(first: 25, query: $q) { nodes { id title handle } } }`,
+        { q: `handle:'${payload.handle}'` }
+      );
+      const handleHit = dupeHandle.products.nodes.find((n) => n.handle === payload.handle);
+      if (handleHit) {
+        await refuse(pid, `Shopify product ${handleHit.id} already owns handle "${payload.handle}" (an orphan from a crashed run, or a legacy/twin product) — adopt it via round-trip.mjs or remove it, then re-publish`);
+        continue;
+      }
       const dupe = await graphql(
         `query ($q: String!) { products(first: 25, query: $q) { nodes { id title } } }`,
         { q: `title:'${payload.title.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'` }
       );
       if (dupe.products.nodes.some((n) => n.title === payload.title)) {
-        results.push({ pid, ok: false, why: "a product with this exact title already exists — adopt via round-trip.mjs first" });
+        await refuse(pid, "a product with this exact title already exists — adopt via round-trip.mjs first");
         continue;
       }
       const price = Number(product.retailPrice).toFixed(2);
@@ -272,9 +298,9 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const errs = created.productSet.userErrors;
-      if (errs?.length) { results.push({ pid, ok: false, why: `productSet userErrors: ${JSON.stringify(errs)}` }); continue; }
+      if (errs?.length) { await refuse(pid, `productSet userErrors: ${JSON.stringify(errs)}`); continue; }
       gid = created.productSet.product?.id;
-      if (!gid) { results.push({ pid, ok: false, why: "productSet returned no id" }); continue; }
+      if (!gid) { await refuse(pid, "productSet returned no id"); continue; }
       console.log(`  created ${gid}`);
       await claimShopifyProduct(db, pid, gid); // durable pointer before anything else can fail
     }
@@ -291,18 +317,49 @@ for (const { pid, want } of capped) {
       { id: gid }
     );
     const bp = back.product;
-    if (!bp) { results.push({ pid, ok: false, why: "read-back returned no product" }); continue; }
-    if (bp.variants.pageInfo.hasNextPage) { results.push({ pid, ok: false, why: ">100 variants unpaginated" }); continue; }
+    if (!bp) { await refuse(pid, "read-back returned no product — the ID map may point at a deleted product"); continue; }
+    if (bp.variants.pageInfo.hasNextPage) { await refuse(pid, ">100 variants unpaginated"); continue; }
     const sizeByDisplay = new Map(sizes.map((s) => [displaySizeName(s), s]));
     const rows = bp.variants.nodes
       .filter((v) => sizeByDisplay.has(v.title) && v.inventoryItem?.id)
       .map((v) => ({ size: sizeByDisplay.get(v.title), variantId: v.id, inventoryItemId: v.inventoryItem.id }));
-    if (!rows.length) { results.push({ pid, ok: false, why: "no read-back variant matches any catalogue size" }); continue; }
+    if (!rows.length) { await refuse(pid, "no read-back variant matches any catalogue size"); continue; }
+    // Every catalogue size must have a Shopify variant — a size added while
+    // the product sat OFF has none, and shipping without it would silently
+    // sell an incomplete run. Structural change needs a human.
+    const missingSizes = sizes.filter((sTok) => !rows.some((r) => r.size === sTok));
+    if (missingSizes.length) {
+      await refuse(pid, `catalogue sizes with no Shopify variant: ${missingSizes.join(", ")} — the size set changed while off; fix the Shopify product (or the record) first`);
+      continue;
+    }
     await writeIdMap(db, pid, buildMapping(gid, rows));
-    if ((bp.media?.nodes?.length ?? 0) === 0) {
+    if (!createdNow) {
+      // The create path prices every variant at creation; the mapped path must
+      // push the CURRENT retailPrice too — a price correction made while the
+      // product sat OFF would otherwise go live stale.
+      const priceNow = Number(product.retailPrice).toFixed(2);
+      const priced = await graphql(
+        `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
+        }`,
+        { productId: gid, variants: rows.map((r) => ({ id: r.variantId, price: priceNow })) },
+        { mutation: true }
+      );
+      const priceErrs = priced.productVariantsBulkUpdate.userErrors;
+      if (priceErrs?.length) { await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`); continue; }
+      console.log(`  variant prices set to ${priceNow}`);
+    }
+    const mediaCount = bp.media?.nodes?.length ?? 0;
+    if (mediaCount === 0) {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
       const { count } = await attachMedia(graphql, gid, mediaPlan);
       console.log(`  media READY: ${count}`);
+    } else if (mediaCount < mediaPlan.length) {
+      // A partial set (earlier crash mid-attach, or an admin deletion) must
+      // not ship quietly missing photos — and re-attaching the whole plan
+      // would duplicate what's there. Human decision.
+      await refuse(pid, `Shopify holds ${mediaCount} of ${mediaPlan.length} planned photos — fix the media in admin (or clear it) and re-run`);
+      continue;
     }
 
     // ── FAIL-CLOSED GATE: the FULL validator against the CANONICAL object ────
@@ -315,7 +372,7 @@ for (const { pid, want } of capped) {
           id title handle vendor productType tags descriptionHtml
           seo { title description }
           options { name optionValues { name } }
-          media(first: 50) { nodes { alt } }
+          media(first: 50) { pageInfo { hasNextPage } nodes { alt } }
           variants(first: 100) { nodes { sku } }
         }
       }`,
@@ -323,6 +380,7 @@ for (const { pid, want } of capped) {
     );
     const cp = canon.product;
     if (!cp) { results.push({ pid, ok: false, why: `${gid} not found on the shop` }); continue; }
+    if (cp.media.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — the FULL validator cannot see them all"); continue; }
     const verdict = validatePayload({
       title: cp.title, handle: cp.handle, vendor: cp.vendor, productType: cp.productType,
       tags: cp.tags, descriptionHtml: cp.descriptionHtml, seo: cp.seo,
@@ -342,6 +400,24 @@ for (const { pid, want } of capped) {
       verdict.violations.push({ field: "descriptionHtml", problem: `does not carry the reviewed condition ("${fresh.condition}")` });
     }
     if (!verdict.ok) {
+      // FAIL-SAFE: if the product is somehow already visible (a crash between
+      // an earlier run's publish and its confirm, or a manual publish in the
+      // Shopify admin), refusing while leaving it up would strand
+      // non-compliant content on the storefront with no remaining intent to
+      // take it down — markBlocked consumes desiredState. Unpublish first;
+      // on an unpublished product this is a no-op.
+      try {
+        await graphql(
+          `mutation ($id: ID!, $input: [PublicationInput!]!) {
+            publishableUnpublish(id: $id, input: $input) { userErrors { field message } }
+          }`,
+          { id: gid, input: [{ publicationId: online.id }] },
+          { mutation: true }
+        );
+        console.log("  fail-safe: unpublished from the Online Store channel before recording the refusal");
+      } catch (e) {
+        console.error(`  ⚠ fail-safe unpublish failed (${String(e?.message || e)}) — check ${gid} in admin`);
+      }
       await refuse(pid, "canonical Shopify object fails compliance: " +
         verdict.violations.map((v) => `${v.field}: ${v.problem}`).join("; "));
       continue;
@@ -368,6 +444,20 @@ for (const { pid, want } of capped) {
     );
     console.log(`  inventory set: ${JSON.stringify(totals)}`);
 
+    // LAST-MOMENT INTENT CHECK, at the point of no return: the page's Cancel
+    // button stays enabled the whole time this multi-step sequence runs, and a
+    // cancel that lands mid-run must win. Everything above (create/reconcile,
+    // ID map, media, inventory) is invisible to customers; publishablePublish
+    // is what goes public — so the intent is re-read right before it. On a
+    // cancel, the product stays created-but-unpublished, which IS the "off"
+    // the operator asked for.
+    const lastCheck = (await db.ref(`shopify_publish/${pid}`).get()).val();
+    if (lastCheck?.desiredState !== "on") {
+      await confirmLiveState(db, pid, "off", UPDATED_BY);
+      results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
+      continue;
+    }
+
     // Publish to the Online Store channel, then make the product ACTIVE.
     const pubRes = await graphql(
       `mutation ($id: ID!, $input: [PublicationInput!]!) {
@@ -377,7 +467,7 @@ for (const { pid, want } of capped) {
       { mutation: true }
     );
     const pubErrs = pubRes.publishablePublish.userErrors;
-    if (pubErrs?.length) { results.push({ pid, ok: false, why: `publishablePublish userErrors: ${JSON.stringify(pubErrs)}` }); continue; }
+    if (pubErrs?.length) { await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`); continue; }
     const act = await graphql(
       `mutation ($input: ProductUpdateInput!) {
         productUpdate(product: $input) { product { id status } userErrors { field message } }
@@ -386,9 +476,9 @@ for (const { pid, want } of capped) {
       { mutation: true }
     );
     const actErrs = act.productUpdate.userErrors;
-    if (actErrs?.length) { results.push({ pid, ok: false, why: `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on` }); continue; }
+    if (actErrs?.length) { await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`); continue; }
     if (act.productUpdate.product?.status !== "ACTIVE") {
-      results.push({ pid, ok: false, why: `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on` });
+      await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`);
       continue;
     }
     await confirmLiveState(db, pid, "on", UPDATED_BY);

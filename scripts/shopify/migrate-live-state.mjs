@@ -23,6 +23,7 @@
 // the new console rule block.
 import { createRequire } from "module";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { planMigration } from "./migrateLiveStatePlan.mjs";
 
 const COMMIT = process.argv.includes("--commit");
 
@@ -32,29 +33,6 @@ admin.initializeApp({
   databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
 });
 const db = admin.database();
-
-// → the merge to apply, or null when the node is already in the new model.
-export function planMigration(node) {
-  if (!node || typeof node !== "object") return null;
-  switch (node.state) {
-    case "none":
-    case "nominated":
-      return { state: "awaiting" };
-    case "draft":
-      return { state: "live", liveState: "off", desiredState: "off" };
-    case "live":
-      // Old-model live (no liveState) was storefront-visible; new-model live
-      // nodes already carry a confirmed liveState and are left alone.
-      if (node.liveState === "on" || node.liveState === "off") return null;
-      return { state: "live", liveState: "on", desiredState: "on" };
-    case "blocked":
-    case "awaiting":
-      return null;
-    default:
-      // Unknown state string — surface it, never guess.
-      throw new Error(`unrecognised state ${JSON.stringify(node.state)} — refusing to migrate this node`);
-  }
-}
 
 const all = (await db.ref("shopify_publish").get()).val() || {};
 const entries = Object.entries(all);
@@ -100,13 +78,20 @@ if (!COMMIT) {
   process.exit(0);
 }
 
-for (const { pid, merge } of plans) {
-  await db.ref(`shopify_publish/${pid}`).update({
-    ...merge,
-    updatedAt: Date.now(),
-    updatedBy: "script:migrate-live-state",
+// Apply as per-node TRANSACTIONS that re-derive the plan from the CURRENT
+// value — the survey read above is only the preview. A page write landing in
+// between (e.g. the new UI upgrading a legacy node itself, with a desiredState
+// the operator just set) must never be clobbered by a stale merge.
+let applied = 0;
+for (const { pid } of plans) {
+  const result = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
+    const merge = planMigration(cur);
+    if (!merge) return cur; // already migrated by the time we got here
+    return { ...cur, ...merge, updatedAt: Date.now(), updatedBy: "script:migrate-live-state" };
   });
+  if (!result.committed) { console.error(`✗ ${pid}: transaction did not commit`); continue; }
+  applied += 1;
   console.log(`✓ ${pid} migrated`);
 }
-console.log(`\nmigrated ${plans.length} node(s).`);
+console.log(`\nmigrated ${applied} node(s).`);
 process.exit(0);

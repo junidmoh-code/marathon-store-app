@@ -369,7 +369,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const [pipeline, setPipeline] = useState(null);  // {pid: node} for live/blocked (+legacy)
   const [nodes, setNodes] = useState({});          // every node body this session has loaded
   const [open, setOpen] = useState(() => new Set());
-  const [loadError, setLoadError] = useState(null);
+  const [loadError, setLoadError] = useState(null);       // mount reads failed — page unusable
+  const [sectionError, setSectionError] = useState(null); // a body batch failed — clears on the next good batch
   const inputRefs = useRef(new Map());             // pid -> input element
   const refCallbacks = useRef(new Map());          // pid -> STABLE ref callback (see refFor)
   const requestedPids = useRef(new Set());         // in-flight/done per-pid body fetches
@@ -509,15 +510,53 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           });
           if (failed.length) {
             for (const pid of failed) requestedPids.current.delete(pid); // let a re-open retry
-            setLoadError(`${failed.length} product record(s) didn't load — reopen the section or adjust the search to retry`);
+            setSectionError(`${failed.length} product record(s) didn't load — reopen the section or adjust the search to retry`);
+          } else {
+            setSectionError(null); // a clean batch clears the stale banner
           }
         })
         .catch((e) => {
           for (const pid of want) requestedPids.current.delete(pid);
-          setLoadError(String(e?.message || e));
+          setSectionError(String(e?.message || e));
         });
     }
   }, [viewSections, keys, open, q]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The reconciler runs in Junid's terminal, outside this session — without a
+  // listener (deliberately: reads stay one-shot and partial) the pending
+  // marker would only ever clear on a full reload. Window focus is the
+  // natural "I ran the script, back to the page" moment: refetch ONLY the
+  // pids currently pending (a handful of bodies, never the node).
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onFocus = () => {
+      const pendingPids = Object.entries(nodes)
+        .filter(([, n]) => isPendingSwitch(n))
+        .map(([pid]) => pid);
+      if (!pendingPids.length) return;
+      loadNodesFor(pendingPids)
+        .then(({ nodes: got, failed }) => {
+          setNodes((prev) => {
+            const next = { ...prev };
+            for (const pid of pendingPids) if (!failed.includes(pid)) next[pid] = got[pid] || null;
+            return next;
+          });
+          setPipeline((prev) => {
+            if (!prev) return prev;
+            const next = { ...prev };
+            for (const pid of pendingPids) {
+              if (failed.includes(pid)) continue;
+              const n = got[pid];
+              if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
+            }
+            return next;
+          });
+        })
+        .catch(() => {}); // a failed refresh just keeps showing pending
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [nodes]);
 
   // Ordered pids of rows currently on screen whose state is "awaiting" — the
   // Enter key walks this list.
@@ -693,6 +732,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         {loadError && (
           <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
             Couldn't load the publishing pipeline: {loadError}
+          </div>
+        )}
+        {sectionError && (
+          <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
+            {sectionError}
           </div>
         )}
         {!loadError && (!keys || !pipeline) && (

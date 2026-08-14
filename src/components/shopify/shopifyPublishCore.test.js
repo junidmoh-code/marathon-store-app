@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
-  isOn, isPendingSwitch, checkCleanName, blockedReason,
+  normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason,
   STATE_FILTERS, reviewStateFor, matchesStateFilter,
 } from "./shopifyPublishCore";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
@@ -58,6 +58,16 @@ describe("legacy state tolerance — pre-migration nodes still read correctly", 
     // legacy draft existed on Shopify but was never published
     expect(isOn({ state: "draft" })).toBe(false);
     expect(isOn({ state: "live" })).toBe(true);
+  });
+  it("normalizedFields pins liveState when a write upgrades a legacy state string", () => {
+    // "draft" → live must land with liveState OFF, or the legacy-live
+    // fallback in isOn would read the upgraded node as ON.
+    expect(normalizedFields({ state: "draft" })).toEqual({ state: "live", liveState: "off" });
+    expect(normalizedFields({ state: "live" })).toEqual({ state: "live", liveState: "on" });
+    expect(normalizedFields({ state: "live", liveState: "off" })).toEqual({ state: "live", liveState: "off" });
+    expect(normalizedFields({ state: "none" })).toEqual({ state: "awaiting" });
+    expect(normalizedFields({ state: "blocked" })).toEqual({ state: "blocked" });
+    expect(normalizedFields(null)).toEqual({ state: "awaiting" });
   });
 });
 
