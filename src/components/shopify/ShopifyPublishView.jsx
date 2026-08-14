@@ -82,7 +82,7 @@ function effectiveNameFor(product, node) {
 // One product's review row. Everything is inline: the cleaned name is a live
 // input with the trigger check on every keystroke, condition is three chips,
 // the primary action follows the review state. No modals anywhere.
-function ProductReviewRow({ product, node, onApproved, onChanged, inputRef }) {
+function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputRef }) {
   const effective = useMemo(() => effectiveNameFor(product, node), [product, node]);
   const [draft, setDraft] = useState(effective.name);
   const [busy, setBusy] = useState(false);
@@ -91,6 +91,11 @@ function ProductReviewRow({ product, node, onApproved, onChanged, inputRef }) {
   const state = reviewStateFor(node);
   const verdict = checkCleanName(draft); // the LIVE trigger check
   const blocked = blockedReason(node);
+  // An edit after approval un-approves in the UI: the primary action returns
+  // to Approve until the new text is signed off, so Nominate can never queue
+  // a name the reviewer hasn't actually approved.
+  const dirty = state === "approved" && draft.trim() !== String(node?.cleanName || "");
+  const primaryIsApprove = state === "awaiting" || dirty;
 
   // The source recorded on approval: an untouched saved name keeps its
   // provenance, an untouched lexicon suggestion records "lexicon", any edit
@@ -109,7 +114,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, inputRef }) {
   };
 
   const approve = () => {
-    if (busy || !verdict.ok) return;
+    if (busy || !verdict.ok || !primaryIsApprove) return;
     run(() => approveName(product.id, node, draft, sourceForDraft()),
         () => onApproved(product.id));
   };
@@ -130,7 +135,13 @@ function ProductReviewRow({ product, node, onApproved, onChanged, inputRef }) {
           value={draft}
           disabled={busy}
           onChange={(e) => { setDraft(e.target.value); if (error) setError(null); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); approve(); } }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            // Enter approves; on a row already approved and untouched it just
+            // advances, so walking a mixed list never stalls the flow.
+            if (primaryIsApprove) approve(); else onSkip(product.id);
+          }}
           placeholder={effective.needsAI ? `needs a name — ${effective.reason}` : "Cleaned listing name…"}
           style={{ ...inputStyle, width: "100%", boxSizing: "border-box", marginTop: 6,
                    border: !verdict.ok && draft !== "" ? "1px solid rgba(248,113,113,.6)" : inputStyle.border }}
@@ -149,10 +160,10 @@ function ProductReviewRow({ product, node, onApproved, onChanged, inputRef }) {
           <div style={{ flex: 1 }} />
           {(state === "awaiting" || state === "approved") && (
             <button disabled={busy || !verdict.ok}
-              onClick={state === "awaiting" ? approve
+              onClick={primaryIsApprove ? approve
                 : () => run(() => nominateProduct(product.id, node), () => onChanged(product.id))}
               style={{ ...bBlue, padding: "7px 12px", fontSize: "0.76rem", opacity: verdict.ok ? 1 : 0.4 }}>
-              {state === "awaiting" ? "Approve" : "Nominate →"}
+              {primaryIsApprove ? "Approve" : "Nominate →"}
             </button>
           )}
           {state === "nominated" && (
@@ -199,15 +210,23 @@ export function useShopifyAwaitingCount(products, enabled) {
 
 export default function ShopifyPublishView({ products = [], onExit }) {
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [filter, setFilter] = useState("all");
+
+  // The search drives section matching (and, when narrow enough, section
+  // auto-open + body fetches) — debounce it so a fast typist doesn't fan out
+  // work on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 250);
+    return () => clearTimeout(t);
+  }, [query]);
   const [keys, setKeys] = useState(null);          // Set<pid> — pids with ANY node
   const [pipeline, setPipeline] = useState(null);  // {pid: node} for the 4 pipeline states
   const [nodes, setNodes] = useState({});          // every node body this session has loaded
   const [open, setOpen] = useState(() => new Set());
-  const [loadedCats, setLoadedCats] = useState(() => new Set());
   const [loadError, setLoadError] = useState(null);
   const inputRefs = useRef(new Map());             // pid -> input element
-  const fetchedCats = useRef(new Set());           // fetch-once guard per category
+  const requestedPids = useRef(new Set());         // in-flight/done per-pid body fetches
   const autoFocusCat = useRef(null);               // focus first awaiting row once this category loads
 
   // Mount reads: shallow keys + the four indexed pipeline queries. Both are
@@ -249,9 +268,13 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // cheap sources only: key ABSENCE prices "awaiting", the pipeline queries
   // price their four states, "all" is the catalogue itself. (A node holding
   // only a condition or a withdrawn nomination counts as seen here even
-  // though its row still says "awaiting" once loaded — the honest number
-  // needs the body, and bodies are strictly on-expand.)
-  const q = query.trim().toLowerCase();
+  // though its row still says "awaiting" once its body loads — the honest
+  // number needs bodies, and bodies are strictly on-expand. The count is an
+  // approximation; the ROWS are always judged from real fields.)
+  // `pending` = displayed pids whose body is still unfetched — the section
+  // renders rows only once it hits zero, so a row never mounts with a node it
+  // doesn't have yet (its editable draft is seeded from the node at mount).
+  const q = debouncedQuery.trim().toLowerCase();
   const viewSections = useMemo(() => {
     return sections.map(({ cat, list }) => {
       const matched = q
@@ -263,30 +286,46 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (filter === "all") count = matched.length;
       else if (filter === "awaiting") count = keys ? matched.filter((p) => !keys.has(p.id)).length : null;
       else count = pipeline ? matched.filter((p) => pipeline[p.id]?.state === filter).length : null;
-      return { cat, list, matched, count };
+      const pending = keys ? matched.filter((p) => keys.has(p.id) && nodes[p.id] === undefined).length : 0;
+      return { cat, list, matched, count, pending };
     }).filter((s) => (q ? s.matched.length > 0 : true))
       .filter((s) => (filter === "all" ? true : s.count !== 0));
   }, [sections, q, filter, keys, pipeline, nodes]);
 
-  // A section is effectively open when toggled open, or when a search is
-  // narrowing the page (matches would be invisible inside collapsed sections).
-  const isOpen = (cat) => (q ? true : open.has(cat));
+  // A section is effectively open when toggled open, or when a search has
+  // narrowed the page far enough that showing the matches outright is cheap.
+  // A broad search (a one-letter query can match most of the catalogue)
+  // leaves sections collapsed — auto-opening them all would fan out a body
+  // fetch per reviewed match, exactly the eager load this page must not do.
+  const totalMatches = q ? viewSections.reduce((n, s) => n + s.matched.length, 0) : 0;
+  const searchExpands = q !== "" && totalMatches <= 60;
+  const isOpen = (cat) => searchExpands || open.has(cat);
 
-  // On-expand fetch: bodies for exactly this section's reviewed pids that we
-  // don't hold yet. Runs once per category (fetch-once guard) — later row
-  // updates refresh single pids through onRowChanged.
+  // On-expand fetch: bodies for exactly the pids a section is about to
+  // display that we don't hold yet. Tracked PER PID (not per category) so a
+  // search-narrowed fetch never masks the rest of the category, and a later
+  // full expand fetches only what's still missing. Missing bodies (deleted
+  // between the shallow read and the get) are recorded as null so `pending`
+  // can settle.
   useEffect(() => {
+    if (!keys) return;
     for (const { cat, matched } of viewSections) {
-      if (!isOpen(cat) || !keys || fetchedCats.current.has(cat)) continue;
-      fetchedCats.current.add(cat);
-      const want = matched.filter((p) => keys.has(p.id) && !nodes[p.id]).map((p) => p.id);
-      Promise.resolve(want.length ? loadNodesFor(want) : {})
+      if (!isOpen(cat)) continue;
+      const want = matched
+        .filter((p) => keys.has(p.id) && nodes[p.id] === undefined && !requestedPids.current.has(p.id))
+        .map((p) => p.id);
+      if (!want.length) continue;
+      for (const pid of want) requestedPids.current.add(pid);
+      loadNodesFor(want)
         .then((got) => {
-          setNodes((prev) => ({ ...prev, ...got }));
-          setLoadedCats((prev) => new Set(prev).add(cat));
+          setNodes((prev) => {
+            const next = { ...prev };
+            for (const pid of want) next[pid] = got[pid] || null;
+            return next;
+          });
         })
         .catch((e) => {
-          fetchedCats.current.delete(cat); // let a re-open retry
+          for (const pid of want) requestedPids.current.delete(pid); // let a re-open retry
           setLoadError(String(e?.message || e));
         });
     }
@@ -296,15 +335,15 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // Enter key walks this list.
   const visibleRows = useMemo(() => {
     const rows = [];
-    for (const { cat, matched } of viewSections) {
-      if (!isOpen(cat) || !loadedCats.has(cat)) continue;
+    for (const { cat, matched, pending } of viewSections) {
+      if (!isOpen(cat) || pending !== 0) continue;
       for (const p of matched) {
         const st = reviewStateFor(nodes[p.id]);
         if (matchesStateFilter(filter, st)) rows.push({ pid: p.id, cat, state: st });
       }
     }
     return rows;
-  }, [viewSections, open, q, loadedCats, nodes, filter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [viewSections, open, q, nodes, filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshPid = (pid) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
@@ -325,9 +364,17 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (el) { el.focus(); el.scrollIntoView({ block: "center" }); return; }
     }
     if (keys) {
+      // Next category to open: one that still has products never seen (no
+      // node key), or whose LOADED bodies still read awaiting. Unloaded
+      // node-bearing pids are approximated as reviewed — the honest answer
+      // needs their bodies, which are strictly on-expand; a category that is
+      // wholly withdrawn-nominations would be skipped here and reached by a
+      // manual expand instead.
       const openCats = new Set([...open]);
       const candidate = viewSections.find(({ cat, matched }) =>
-        !openCats.has(cat) && matched.some((p) => !keys.has(p.id)));
+        !openCats.has(cat) && matched.some((p) =>
+          !keys.has(p.id) ||
+          (nodes[p.id] !== undefined && reviewStateFor(nodes[p.id]) === "awaiting")));
       if (candidate) {
         autoFocusCat.current = candidate.cat;
         setOpen((prev) => new Set(prev).add(candidate.cat));
@@ -453,6 +500,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                         node={nodes[p.id] || null}
                         onApproved={onApproved}
                         onChanged={refreshPid}
+                        onSkip={advanceFrom}
                         inputRef={(el) => {
                           if (el) inputRefs.current.set(p.id, el);
                           else inputRefs.current.delete(p.id);

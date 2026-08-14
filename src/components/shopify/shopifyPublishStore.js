@@ -12,7 +12,7 @@
 // Node shape (scripts/shopify/publishNode.mjs is the Admin-SDK twin):
 //   state (none|nominated|draft|live|blocked), cleanName,
 //   cleanNameSource (lexicon|ai|manual), condition, updatedAt, updatedBy
-import { ref, child, get, update, query, orderByChild, equalTo } from "firebase/database";
+import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, nominationState, checkCleanName } from "./shopifyPublishCore";
@@ -30,13 +30,15 @@ const safeSeg = (s) => {
 };
 const stamp = () => ({ updatedAt: serverNowMs(), updatedBy: auth.currentUser ? auth.currentUser.uid : null });
 
-// A denied write must read as a permission problem, not a stack trace. The
-// live rule limits /shopify_publish writes to Junid or a stockRole admin —
-// say exactly that. Everything else keeps its raw message.
+// A refused write must read as a plain sentence, not a stack trace. RTDB
+// reports BOTH the identity gate and a .validate rejection as
+// PERMISSION_DENIED, so the copy covers both without claiming which —
+// blaming permissions alone would mislead the very admin the rule allows.
+// Everything else keeps its raw message.
 function writeError(err) {
   const msg = String(err?.message || err);
   if (/permission[_ ]denied/i.test(msg)) {
-    return { ok: false, message: "Not saved — Shopify publishing changes are limited to Junid or a stock admin." };
+    return { ok: false, message: "Not saved — the database refused this write. Shopify publishing changes are limited to Junid or a stock admin; if that's you, check you're still signed in and try again." };
   }
   return { ok: false, message: msg };
 }
@@ -99,28 +101,42 @@ export async function loadNodesFor(pids) {
   return out;
 }
 
+// ─── WRITES — ALWAYS TRANSACTIONS ────────────────────────────────────────────
+// Every write runs as a transaction that rebuilds the node from the CURRENT
+// server value: the owner-run publish script moves products to draft/live
+// while Junid reviews, and a plain update() computed from the row's snapshot
+// could stamp that stale state straight back over the script's. The mutator
+// receives the server value; on the first (cold-cache) attempt that value is
+// null even when the node exists, so mutators fall back to the row's snapshot
+// and let the server's compare-and-retry supply the real one — never abort on
+// a null `cur` (the classic RTDB transaction trap).
+async function writeNode(productId, mutate) {
+  try {
+    const result = await runTransaction(ref(database, `shopify_publish/${safeSeg(productId)}`), mutate);
+    if (!result.committed) return { ok: false, aborted: true };
+    markSeen(productId);
+    return { ok: true, node: result.snapshot.val() };
+  } catch (err) {
+    return writeError(err);
+  }
+}
+
 /**
  * Approve a product's cleaned name — the review flow's core write. Stamps
- * `nameApprovedAt` (state stays whatever it was, "none" for a first-touch
- * node: the live rules' state enum has no "approved" value). The same trigger
- * check that runs live on the input runs again here.
+ * `nameApprovedAt` (state stays whatever it CURRENTLY is on the server,
+ * "none" for a first-touch node: the live rules' state enum has no
+ * "approved" value). The same trigger check that runs live on the input
+ * runs again here.
  */
 export async function approveName(productId, node, name, source = "manual") {
   const verdict = checkCleanName(name);
   if (!verdict.ok) return { ok: false, message: verdict.problems.join("; ") };
-  try {
-    await update(ref(database, `shopify_publish/${safeSeg(productId)}`), {
-      state: node?.state || "none",
-      cleanName: String(name).trim(),
-      cleanNameSource: source,
-      nameApprovedAt: serverNowMs(),
-      ...stamp(),
-    });
-    markSeen(productId);
-    return { ok: true };
-  } catch (err) {
-    return writeError(err);
-  }
+  const cleanName = String(name).trim();
+  return writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    return { ...base, state: base.state || "none", cleanName, cleanNameSource: source,
+             nameApprovedAt: serverNowMs(), ...stamp() };
+  });
 }
 
 /**
@@ -129,56 +145,54 @@ export async function approveName(productId, node, name, source = "manual") {
  * default and a blocked product cannot be pushed.
  */
 export async function nominateProduct(productId, existingNode, condition = undefined) {
-  const cond = condition !== undefined ? condition : existingNode?.condition;
-  const patch = {
-    state: nominationState(cond),
-    ...(condition !== undefined ? { condition } : {}),
-    ...stamp(),
-  };
-  try {
-    await update(ref(database, `shopify_publish/${safeSeg(productId)}`), patch);
-    markSeen(productId);
-    return { ok: true, state: patch.state };
-  } catch (err) {
-    return writeError(err);
-  }
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || existingNode || {};
+    const cond = condition !== undefined ? condition : base.condition;
+    return { ...base, ...(condition !== undefined ? { condition } : {}),
+             state: nominationState(cond), ...stamp() };
+  });
+  return res.ok ? { ok: true, state: res.node?.state } : res;
 }
 
 /** Withdraw a nomination (draft/live products keep their state — Shopify already has them). */
 export async function withdrawNomination(productId, node) {
-  if (node?.state === "draft" || node?.state === "live") {
-    return { ok: false, message: "Already pushed to Shopify — withdrawing here would lie about that." };
-  }
-  try {
-    await update(ref(database, `shopify_publish/${safeSeg(productId)}`), { state: "none", ...stamp() });
-    return { ok: true };
-  } catch (err) {
-    return writeError(err);
-  }
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    if (base.state === "draft" || base.state === "live") {
+      refusal = "Already pushed to Shopify — withdrawing here would lie about that.";
+      return undefined; // abort — checked against the SERVER's state, not the row's
+    }
+    return { ...base, state: "none", ...stamp() };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Nothing to withdraw." };
+  return res;
 }
 
 /** Set the condition grade. Unblocks a blocked nomination (blocked → nominated). */
 export async function setCondition(productId, node, condition) {
   if (!CONDITIONS.includes(condition)) return { ok: false, message: "Not one of the three condition grades." };
-  if (node?.state === "live") {
-    // A LIVE listing's description carries the old grade — changing it here
-    // would make the card lie about what customers see. Live edits are the
-    // update slice's job.
-    return { ok: false, message: "Listing is LIVE — condition changes for live products aren't wired yet." };
-  }
-  const patch = { condition, ...stamp() };
-  // blocked/nominated → nominated (unblocks); draft → nominated too, which
-  // RE-QUEUES the product so the next publish run reconciles the new grade
-  // onto the Shopify draft and returns it to state draft.
-  if (node?.state === "blocked" || node?.state === "nominated" || node?.state === "draft") {
-    patch.state = "nominated";
-  }
-  try {
-    await update(ref(database, `shopify_publish/${safeSeg(productId)}`), patch);
-    markSeen(productId);
-    return { ok: true };
-  } catch (err) {
-    return writeError(err);
-  }
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    if (base.state === "live") {
+      // A LIVE listing's description carries the old grade — changing it here
+      // would make the page lie about what customers see. Live edits are the
+      // update slice's job. Checked against the SERVER's state.
+      refusal = "Listing is LIVE — condition changes for live products aren't wired yet.";
+      return undefined;
+    }
+    // blocked/nominated → nominated (unblocks); draft → nominated too, which
+    // RE-QUEUES the product so the next publish run reconciles the new grade
+    // onto the Shopify draft and returns it to state draft. Anything else
+    // keeps its state ("none" for a first-touch node — the $pid .validate
+    // requires hasChildren(['state']), so a grade-first write on an
+    // unreviewed product must still carry one).
+    const st = (base.state === "blocked" || base.state === "nominated" || base.state === "draft")
+      ? "nominated" : (base.state || "none");
+    return { ...base, condition, state: st, ...stamp() };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
 }
 
