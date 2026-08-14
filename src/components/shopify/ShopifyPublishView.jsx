@@ -112,7 +112,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
     try {
       const res = await fn();
       if (!res?.ok) { setError(res?.message || "Not saved."); return; }
-      after?.();
+      after?.(res);
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
@@ -123,7 +123,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
   const approve = () => {
     if (busy || !verdict.ok || !primaryIsApprove) return;
     run(() => approveName(product.id, node, draft, sourceForDraft()),
-        () => onApproved(product.id));
+        (res) => onApproved(product.id, res.node));
   };
 
   return (
@@ -159,7 +159,7 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 5, marginTop: 7 }}>
           {CONDITIONS.map((c) => (
             <button key={c} disabled={busy}
-              onClick={() => run(() => setCondition(product.id, node, c), () => onChanged(product.id))}
+              onClick={() => run(() => setCondition(product.id, node, c), (res) => onChanged(product.id, res.node))}
               style={{ ...(node?.condition === c ? tabOn : tabOff), padding: "4px 9px", fontSize: "0.68rem" }}>
               {c.split(" — ")[0]}
             </button>
@@ -168,14 +168,14 @@ function ProductReviewRow({ product, node, onApproved, onChanged, onSkip, inputR
           {(state === "awaiting" || state === "approved") && (
             <button disabled={busy || !verdict.ok}
               onClick={primaryIsApprove ? approve
-                : () => run(() => nominateProduct(product.id, node), () => onChanged(product.id))}
+                : () => run(() => nominateProduct(product.id, node), (res) => onChanged(product.id, res.node))}
               style={{ ...bBlue, padding: "7px 12px", fontSize: "0.76rem", opacity: verdict.ok ? 1 : 0.4 }}>
               {primaryIsApprove ? "Approve" : "Nominate →"}
             </button>
           )}
           {state === "nominated" && (
             <button disabled={busy}
-              onClick={() => run(() => withdrawNomination(product.id, node), () => onChanged(product.id))}
+              onClick={() => run(() => withdrawNomination(product.id, node), (res) => onChanged(product.id, res.node))}
               style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
                        fontSize: "0.72rem", fontWeight: 700, color: GRAY, padding: "7px 4px" }}>
               Withdraw
@@ -233,6 +233,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const [open, setOpen] = useState(() => new Set());
   const [loadError, setLoadError] = useState(null);
   const inputRefs = useRef(new Map());             // pid -> input element
+  const refCallbacks = useRef(new Map());          // pid -> STABLE ref callback (see refFor)
   const requestedPids = useRef(new Set());         // in-flight/done per-pid body fetches
   const autoFocusCat = useRef(null);               // focus first awaiting row once this category loads
 
@@ -366,13 +367,23 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return rows;
   }, [viewSections, open, q, nodes, filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const refreshPid = (pid) => {
+  // Fold a completed write straight into local state. The store's
+  // transactions return the committed node, so no refetch is needed — and
+  // none must happen: keys and nodes update in ONE batch, because a keys-only
+  // update would flip the section's `pending` and unmount every row (killing
+  // the Enter flow's focus) until a refetch landed.
+  const applyWrite = (pid, node) => {
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
-    loadNodesFor([pid])
-      .then(({ nodes: got, failed }) => {
-        if (!failed.length) setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
-      })
-      .catch(() => {});
+    if (node !== undefined) {
+      setNodes((prev) => ({ ...prev, [pid]: node || null }));
+    } else {
+      // A store result without a node (shouldn't happen) — refetch to stay honest.
+      loadNodesFor([pid])
+        .then(({ nodes: got, failed }) => {
+          if (!failed.length) setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
+        })
+        .catch(() => {});
+    }
   };
 
   // Enter's advance: focus the next awaiting row after the approved one; when
@@ -405,19 +416,36 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     }
   };
 
-  const onApproved = (pid) => { refreshPid(pid); advanceFrom(pid); };
+  const onApproved = (pid, node) => { applyWrite(pid, node); advanceFrom(pid); };
 
-  // Complete the section-hop: once the auto-opened category's bodies are in,
-  // put the cursor on its first unreviewed row.
+  // Complete the section-hop: once the auto-opened category's bodies are in
+  // (pending === 0), put the cursor on its first unreviewed row.
   useEffect(() => {
     const cat = autoFocusCat.current;
-    if (!cat || !loadedCats.has(cat) || !keys) return;
-    autoFocusCat.current = null;
+    if (!cat || !keys) return;
     const section = viewSections.find((s) => s.cat === cat);
-    const first = section?.matched.find((p) => reviewStateFor(nodes[p.id]) === "awaiting");
+    if (!section || section.pending !== 0) return;
+    autoFocusCat.current = null;
+    const first = section.matched.find((p) => reviewStateFor(nodes[p.id]) === "awaiting");
     const el = first && inputRefs.current.get(first.id);
     if (el) { el.focus(); el.scrollIntoView({ block: "center" }); }
-  }, [loadedCats, viewSections, nodes, keys]);
+  }, [viewSections, nodes, keys]);
+
+  // Ref callbacks must keep a stable identity per pid: a fresh arrow every
+  // render makes React detach (null) and re-attach every row ref on each
+  // re-render, and the approve continuation can observe the emptied Map in
+  // that window — Enter would approve but never advance.
+  const refFor = (pid) => {
+    let cb = refCallbacks.current.get(pid);
+    if (!cb) {
+      cb = (el) => {
+        if (el) inputRefs.current.set(pid, el);
+        else inputRefs.current.delete(pid);
+      };
+      refCallbacks.current.set(pid, cb);
+    }
+    return cb;
+  };
 
   const toggle = (cat) => setOpen((prev) => {
     const next = new Set(prev);
@@ -474,7 +502,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           </div>
         )}
 
-        {keys && pipeline && viewSections.map(({ cat, matched, count }) => {
+        {keys && pipeline && viewSections.map(({ cat, matched, count, pending }) => {
           const opened = isOpen(cat);
           return (
             <div key={cat}>
@@ -497,10 +525,10 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                                transform: opened ? "rotate(90deg)" : "none", transition: "transform .15s" }}>›</span>
               </div>
 
-              {opened && !loadedCats.has(cat) && (
+              {opened && pending !== 0 && (
                 <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Loading section…</div>
               )}
-              {opened && loadedCats.has(cat) && (() => {
+              {opened && pending === 0 && (() => {
                 const rows = matched.filter((p) => matchesStateFilter(filter, reviewStateFor(nodes[p.id])));
                 if (rows.length === 0) {
                   return <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Nothing here under this filter.</div>;
@@ -522,12 +550,9 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                         product={p}
                         node={nodes[p.id] || null}
                         onApproved={onApproved}
-                        onChanged={refreshPid}
+                        onChanged={applyWrite}
                         onSkip={advanceFrom}
-                        inputRef={(el) => {
-                          if (el) inputRefs.current.set(p.id, el);
-                          else inputRefs.current.delete(p.id);
-                        }}
+                        inputRef={refFor(p.id)}
                       />
                     </React.Fragment>
                   );

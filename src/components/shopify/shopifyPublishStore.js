@@ -170,7 +170,7 @@ export async function nominateProduct(productId, existingNode, condition = undef
     return { ...base, ...(condition !== undefined ? { condition } : {}),
              state: nominationState(cond), ...stamp() };
   });
-  return res.ok ? { ok: true, state: res.node?.state } : res;
+  return res.ok ? { ok: true, state: res.node?.state, node: res.node } : res;
 }
 
 /** Withdraw a nomination (draft/live products keep their state — Shopify already has them). */
