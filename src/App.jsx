@@ -106,6 +106,10 @@ import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
 // if the two ever disagree, stock is deducted in one app and never credited in the other.
 import { isFootwearLine, productIsFootwear } from "./utils/footwearLine";
+// May a customer-order dispatch drive the source hub negative? Allow-list, keyed
+// on the CATALOGUE — see utils/dispatchNegativeGate.js for why neither the order's
+// nor the catalogue's `productType` can be the key.
+import { dispatchAllowsNegative } from "./utils/dispatchNegativeGate";
 import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
@@ -10335,6 +10339,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     // so their movements stay separable from clothing_refill / clothing_cr.
     const movementId = `disp_${order.id}_${order.createdAt || ""}`.replace(/[.#$[\]/\s:]/g, "_");
     const isClothing = order.productType === "clothing";
+    // THE NEGATIVE FLOOR IS ON BY DEFAULT. `allowNegative` is an ALLOW-LIST keyed
+    // on the catalogue (utils/dispatchNegativeGate.js), not the old deny-list
+    // `!isClothing` — that deny-list handed the A1 sneaker exemption to every
+    // type nobody had thought about, and on 2026-07-27 it let four perfume
+    // dispatches drive hub1 to −4 out of a hub that has never held perfume.
+    // Footwear keeps the exemption unchanged; everything else gets the floor and
+    // returns insufficient_stock, which blocks the send below.
+    const allowNegative = dispatchAllowsNegative(orderProduct);
     try {
       const res = await applyMovement({
         type: "transfer_out",            // ledger's from→to type (−from, +to)
@@ -10356,19 +10368,27 @@ function WarehouseView({ products = [], orders, onExit }) {
         // the count team. CLOTHING is the opposite: the assistant could only
         // order sizes the hub showed stock for, so a zero at send time means
         // reality changed — the send is BLOCKED (insufficient_stock below)
-        // rather than driving the hub negative.
-        allowNegative: !isClothing,
+        // rather than driving the hub negative. Since the allow-list, every
+        // non-footwear type behaves like clothing here, not like a sneaker.
+        allowNegative,
       });
       if (res && res.ok === false) {
-        if (isClothing && res.reason === "insufficient_stock") {
-          // Clothing negative guard tripped — stock vanished between order and
-          // send. Do NOT mark Sent (blockSend); the picker resolves it via the
-          // Out of Stock action, which notifies the customer.
+        if (res.reason === "insufficient_stock") {
+          // The negative guard tripped — the hub does not have it. Was clothing
+          // only while the gate was a deny-list; now any non-footwear line can
+          // land here, and the response is the same one clothing has always had.
+          // Do NOT mark Sent (blockSend); the picker resolves it via the Out of
+          // Stock action, which notifies the customer.
+          //
+          // Unreachable for a footwear line: allowNegative bypasses the floor,
+          // and the floor is the only source of this reason. So this branch
+          // cannot change sneaker behaviour.
           setPrintToast({ kind: "err", text: `#${order.id} NOT sent — ${HUB_LABELS[fromHub] || fromHub} shows ${res.available ?? 0} on this size. Mark it Out of Stock instead.` });
           setTimeout(() => setPrintToast(null), 9000);
           return { moved: false, reason: "insufficient_stock", blockSend: true };
         }
-        // Sneakers (allowNegative): only a genuine write/auth failure lands here.
+        // Footwear (the only type that still carries allowNegative): the floor
+        // can't fire for it, so only a genuine write/auth failure lands here.
         setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "write failed"}). No label — route via Lightspeed.` });
         setTimeout(() => setPrintToast(null), 7000);
         return { moved: false, reason: res.reason || "write_failed" };
