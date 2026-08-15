@@ -286,11 +286,21 @@ describe("\"it's not one of these\" — the escape, and every fallback behind it
     expect(after).not.toContain("isn't registered to any product");
   });
 
-  it("the full list still holds the exact owners the picker had shown", async () => {
+  it("the full list still holds the exact owners the picker had shown, AS exact owners", async () => {
     const tr = await openTheFullList();
     const after = textOf(tr);
     expect(after).toContain("Timberland 6-Inch Wheat");
     expect(after).toContain("Timberland Euro Hiker Black");
+    // Not merely present as a padded "closest we have" filler — the panel's
+    // dead-end road drops confirmed exact owners on purpose (they resolve
+    // before it opens). Here they must be carried, and carried as what they
+    // are, or the escape is a NARROWER list than the picker it replaced.
+    const timberRow = rowFor(tr, "Timberland 6-Inch Wheat");
+    expect(textIn(timberRow)).toContain("already registered with exactly this code");
+    // Strongest evidence sorts first (exact scores above every other tier).
+    const rankedNames = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("Link →"))
+      .map((n) => textIn(n));
+    expect(rankedNames[0]).toContain("Timberland 6-Inch Wheat");
   });
 
   it("the pooled ranking names WHICH token found each row", async () => {
