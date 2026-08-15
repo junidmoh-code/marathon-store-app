@@ -229,7 +229,7 @@ export async function publishToOnlineStore(graphql, gid, onlinePublicationId) {
  */
 const PUBLICATION_PAGES = 10; // × 50 = 500 publications; a runaway-loop backstop
 
-export async function requireOnlineStorePublication(graphql) {
+export async function requireOnlineStorePublication(graphql, { strict = false } = {}) {
   let after = null;
   let truncated = false;
   const titleHits = [];
@@ -253,6 +253,16 @@ export async function requireOnlineStorePublication(graphql) {
     after = conn.pageInfo.endCursor;
   }
   if (titleHits.length) {
+    // The fallback is fine for publishing (a wrong pick just fails to publish).
+    // It is NOT fine for a caller that will STRIP membership from everything it
+    // reads as unpublished: the wrong publication would report the entire live
+    // catalogue as invisible and clear it out. Those callers pass strict.
+    if (strict) {
+      throw new Error(
+        "no publication carries the online_store channel handle, and a catalog-title guess is not safe for this operation — " +
+        "a wrong publication would read every live product as unpublished. Resolve the channel first."
+      );
+    }
     console.error("  ⚠ no publication carries the online_store channel handle — falling back to a catalog-title match");
     return titleHits[0];
   }
@@ -437,10 +447,15 @@ export async function collectionGidsByKey(db) {
   // SILENTLY, and the run would then report a healthy-looking "joined 0" for a
   // product that landed nowhere. Defence in depth that reports success is the
   // wrong shape, so the refusal is announced here, once, at the source.
+  const badTargets = new Map(); // target → the rows pointing at it
   for (const [row, target] of Object.entries(CATEGORY_MAP)) {
-    if (target && COLLECTION_BY_KEY.get(target)?.kind !== "manual") {
-      console.error(`  ⚠⚠ CATEGORY_MAP row "${row}" targets "${target}", which is not a MANUAL collection — products in that category will join NOTHING. Fix scripts/shopify/collectionMap.mjs.`);
-    }
+    if (!target || COLLECTION_BY_KEY.get(target)?.kind === "manual") continue;
+    if (!badTargets.has(target)) badTargets.set(target, []);
+    badTargets.get(target).push(row);
+  }
+  for (const [target, rows] of badTargets) {
+    const what = COLLECTION_BY_KEY.has(target) ? "is not a MANUAL collection" : "is not in COLLECTIONS at all";
+    console.error(`  ⚠⚠ CATEGORY_MAP targets "${target}", which ${what} — products in ${rows.length} categor${rows.length === 1 ? "y" : "ies"} (${rows.join(", ")}) will join NOTHING. Fix scripts/shopify/collectionMap.mjs.`);
   }
   return out;
 }
@@ -525,49 +540,70 @@ export async function readProductCollections(graphql, productGid, onlinePublicat
 
 // ── WHAT THE SWEEP MAY DO TO ONE PRODUCT ─────────────────────────────────────
 // Pure, so the decision that can strip a public listing is testable without a
-// shop. `node` is /shopify_publish/{pid} (may be null); `publishedOnStorefront`
-// is whether Shopify currently publishes it to the Online Store channel — the
-// ONLY honest visibility signal here (see readProductCollections on why status
-// is not one).
+// shop. `node` is /shopify_publish/{pid} (may be null); `shopify` is what the
+// shop holds right now: { published, status }.
+//
+// VISIBLE = published to the Online Store channel AND status ACTIVE. Neither
+// alone is the answer. `status` is not a visibility signal here at all — the
+// reconciler's OFF path is a channel unpublish only and nothing ever sets DRAFT
+// back, so a product that has ever been live stays ACTIVE for good. And a
+// published DRAFT (publishablePublish succeeded, the ACTIVE step failed)
+// renders nowhere, so treating it as live would strand its membership forever.
 //
 // THE RACE THIS EXISTS FOR. reconcile.mjs joins the collection, publishes, and
-// makes the product ACTIVE — and only THEN writes confirmLiveState. So for the
-// whole tail of a publish, a perfectly FRESH read of /shopify_publish says
-// "awaiting" while Shopify already holds the membership and, at the end, a
-// public listing. Re-reading the node does not help: the node is correct and
-// simply behind.
+// goes ACTIVE — and only THEN writes confirmLiveState. So for the whole tail of
+// a publish, a perfectly FRESH read of /shopify_publish says "awaiting" while
+// Shopify already holds the membership. Re-reading does not help: the node is
+// correct and simply behind.
 //
-// THE INTENT GUARDS COME FIRST, AND BOTH DIRECTIONS. An unapplied intent means
-// the reconciler owns this product right now; it changes membership AND
-// visibility together, and a sweep reaching in between undoes half of that:
+// THE INTENT GUARDS COME FIRST, BOTH DIRECTIONS. An unapplied intent means the
+// reconciler owns this product; it moves membership and visibility together,
+// and a sweep reaching in between undoes half of that:
 //   publish in flight, stripped   → live, in no collection
 //   unpublish in flight, joined   → off the channel, back in a collection
-// Holding costs one skipped product on one run. The next run sees a settled
-// state and does the right thing.
+// Holding costs one skipped product on one run.
 //
-// DRIFT is what is left: Shopify publishes it, the record does not say live,
-// and no intent explains the gap. That is durable divergence — a reconciler
-// killed after publishablePublish but before confirmLiveState, or a hand-publish
-// in the admin. Stripping is the wrong repair, so it refuses and says so.
-export function sweepIntent(node, publishedOnStorefront) {
+// DRIFT is durable divergence, and it runs BOTH ways — the record and the shop
+// disagree with no intent to explain it. Neither direction is safe to "fix" by
+// moving membership, so both refuse and report.
+export function sweepIntent(node, shopify) {
+  const published = shopify?.published === true;
+  const visible = published && shopify?.status === "ACTIVE";
   const confirmedOn = node?.state === "live" && node?.liveState === "on";
+  const where = node ? `${node.state}/${node.liveState ?? "—"}` : "nothing (no node)";
+
   if (node?.desiredState === "on" && !confirmedOn) {
     return {
       action: "hold",
-      reason: "a publish is in flight — the reconciler joins collections and publishes BEFORE it confirms; leave this to it",
+      reason: "an unapplied publish intent — reconcile.mjs owns this product and joins collections as it publishes; run it (or wait for the scheduled runner)",
     };
   }
   if (node?.desiredState === "off" && confirmedOn) {
     return {
       action: "hold",
-      reason: "an unpublish is in flight — the reconciler leaves collections as it takes the product down; leave this to it",
+      reason: "an unapplied unpublish intent — reconcile.mjs leaves collections as it takes the product down; run it (or wait for the scheduled runner)",
+    };
+  }
+  // Record says LIVE, shop does not show it. The mirror of the case below, and
+  // just as durable: desiredState equals the confirmed state, so the reconciler
+  // skips it forever and the page keeps showing it on. Joining a collection
+  // would make the tool that should notice affirm the lie instead.
+  if (confirmedOn && !visible) {
+    return {
+      action: "drift",
+      reason: `/shopify_publish says live/on but Shopify ${published ? `has this product ${shopify?.status}, not ACTIVE` : "does NOT publish it to the Online Store"} — unpublished or edited in the admin? switch it off and on to reconcile`,
     };
   }
   if (confirmedOn) return { action: "assign", reason: null };
-  if (publishedOnStorefront) {
+  // Shop shows it, record does not say live, no intent explains the gap.
+  // Reachable by: markBlocked consuming the intent AFTER a successful
+  // publishablePublish; a hand-publish in the Shopify admin; or a mapped
+  // product with no publish node at all. (NOT by a killed reconciler — that
+  // leaves desiredState "on", which holds above.)
+  if (visible) {
     return {
       action: "drift",
-      reason: `Shopify PUBLISHES this product to the Online Store but /shopify_publish says ${node ? `${node.state}/${node.liveState ?? "—"}` : "nothing (no node)"} with no intent to explain it — refusing to strip a live listing; reconcile it or fix the node first`,
+      reason: `Shopify shows this product on the Online Store but /shopify_publish says ${where} with no intent to explain it — refusing to strip a live listing; reconcile it or fix the node first`,
     };
   }
   return { action: "strip", reason: null };

@@ -17,10 +17,11 @@
 // ours to touch.)
 //
 // What happens to each is sweepIntent's call, not this file's — see
-// collections.mjs. In short: confirmed-ON joins its mapped collection;
-// a publish in flight is LEFT ALONE; a product Shopify holds ACTIVE with no
-// matching record is reported as drift and never stripped; everything else
-// leaves every managed collection.
+// collections.mjs. In short: a product with an unapplied intent (either
+// direction) is LEFT ALONE, because the reconciler owns it; a product where the
+// record and the shop disagree with no intent to explain it is reported as
+// DRIFT and never touched, in either direction; a settled live product joins
+// its mapped collection; everything else leaves every managed collection.
 //
 // The leave half is not busywork. The reconciler strips membership on the OFF
 // path, but only when an intent CHANGES — a product taken down before
@@ -68,7 +69,10 @@ const db = admin.database();
 // Visibility is a CHANNEL fact, so the sweep needs the Online Store publication
 // before it can judge anything. Resolved once, from the same lookup the
 // reconciler uses.
-const onlinePublicationId = await requireOnlineStorePublication(graphql);
+// STRICT: this script can LEAVE collections, so a wrong publication would read
+// the whole live catalogue as unpublished and clear it out. A title guess is
+// not good enough for that.
+const onlinePublicationId = await requireOnlineStorePublication(graphql, { strict: true });
 const collectionGids = await collectionGidsByKey(db);
 const managedGids = manualGidsFrom(collectionGids);
 if (!managedGids.length) {
@@ -105,12 +109,14 @@ for (const pid of pids) {
 
   const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
   const gid = mapNode?.shopifyProductId;
+  // Declared out here so a throw inside the try still reports a usable name.
+  let name = pid;
   // The publish node is read LATER, after Shopify — see the loop body. Only the
   // no-mapping branch needs it early, and it re-reads for itself.
   if (!gid) {
     const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
     const live = confirmedOn(node);
-    const name = node?.cleanName || pid;
+    name = node?.cleanName || pid;
     // Nothing of ours exists on Shopify for this record, so there is no
     // membership to hold. Worth saying out loud when it claims to be live —
     // or whenever the operator named this pid and is owed an answer.
@@ -133,12 +139,12 @@ for (const pid of pids) {
     // strip. Reading Shopify first means anything the reconciler did before it
     // is visible in the membership; anything it does after cannot be in the
     // `leave` list, because `leave` is computed from that same earlier read.
-    const { collections, published } = await readProductCollections(graphql, gid, onlinePublicationId);
+    const { collections, published, status } = await readProductCollections(graphql, gid, onlinePublicationId);
     const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
     const live = confirmedOn(node);
-    const name = node?.cleanName || pid;
+    name = node?.cleanName || pid;
 
-    const intent = sweepIntent(node, published);
+    const intent = sweepIntent(node, { published, status });
     if (intent.action === "hold" || intent.action === "drift") {
       // Neither plans a leave, so neither can strip a listing it does not
       // understand. Both ALWAYS report: a held product that silently vanished
@@ -194,7 +200,7 @@ for (const pid of pids) {
       detail: `${label} · join ${plan.join.length}, leave ${plan.leave.length}`,
     });
   } catch (e) {
-    results.push({ pid, name: pid, status: "failed", detail: String(e?.message || e) });
+    results.push({ pid, name, status: "failed", detail: String(e?.message || e) });
   }
 }
 
@@ -218,5 +224,10 @@ for (const r of results) {
 const tally = {};
 for (const r of results) tally[r.status] = (tally[r.status] ?? 0) + 1;
 console.log("\n" + Object.entries(tally).map(([k, n]) => `${k}: ${n}`).join("  ·  "));
+// Rows in the normal resting state (off, in no collection) are deliberately
+// quiet — but a tally that does not account for the worklist is its own kind of
+// lie, so the gap is stated rather than left for someone to notice.
+const quiet = pids.length - results.filter((r) => r.status !== "unknown-pid").length;
+if (quiet > 0) console.log(`reported ${pids.length - quiet} of ${pids.length} — ${quiet} settled and in no managed collection (nothing to say)`);
 if (!COMMIT) console.log("\ndry run — Shopify untouched. Re-run with --commit to apply.");
 process.exit(results.some((r) => BAD.has(r.status)) ? 1 : 0);

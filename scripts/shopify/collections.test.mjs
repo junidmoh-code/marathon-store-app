@@ -650,60 +650,64 @@ describe("requireOnlineStorePublication", () => {
 // "awaiting" for the whole tail of a publish while Shopify already holds the
 // membership and, at the end, a live listing. These pin the two guards that
 // stop the sweep undoing it.
+// VISIBLE means published to the channel AND status ACTIVE. SHOP(true) is the
+// shape of a product a customer can see; SHOP(false) is one they cannot.
+const SHOP = (visible) => (visible ? { published: true, status: "ACTIVE" } : { published: false, status: "ACTIVE" });
+
 describe("sweepIntent", () => {
   const LIVE_ON = { state: "live", liveState: "on", desiredState: "on" };
 
   it("a confirmed-ON product is assigned its collection", () => {
-    expect(sweepIntent(LIVE_ON, true)).toMatchObject({ action: "assign" });
+    expect(sweepIntent(LIVE_ON, SHOP(true))).toMatchObject({ action: "assign" });
   });
 
   it("HOLDS a publish in flight — the node is behind, not wrong", () => {
     for (const published of [false, true]) {
-      const v = sweepIntent({ state: "awaiting", desiredState: "on" }, published);
+      const v = sweepIntent({ state: "awaiting", desiredState: "on" }, SHOP(published));
       expect({ published, action: v.action }).toEqual({ published, action: "hold" });
-      expect(v.reason).toMatch(/publish is in flight/);
+      expect(v.reason).toMatch(/unapplied publish intent/);
     }
   });
 
   it("HOLDS a live-OFF product being switched back on", () => {
-    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "on" }, false).action).toBe("hold");
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "on" }, SHOP(false)).action).toBe("hold");
   });
 
   it("HOLDS an UNPUBLISH in flight — the mirror guard", () => {
     // Without it the sweep re-joins a product the reconciler is taking down.
-    const v = sweepIntent({ state: "live", liveState: "on", desiredState: "off" }, true);
+    const v = sweepIntent({ state: "live", liveState: "on", desiredState: "off" }, SHOP(true));
     expect(v.action).toBe("hold");
-    expect(v.reason).toMatch(/unpublish is in flight/);
+    expect(v.reason).toMatch(/unapplied unpublish intent/);
   });
 
   it("THE REGRESSION THAT MATTERS: a switched-off product is STRIPPED, not called drift", () => {
     // The reconciler's OFF path is a channel unpublish ONLY — status stays
     // ACTIVE forever. Judging on status would call this a live listing, refuse
     // to clear its membership, and fail the run on every future pass.
-    const v = sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, false);
+    const v = sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, SHOP(false));
     expect(v.action).toBe("strip");
   });
 
   it("refuses to strip a product Shopify PUBLISHES with no intent to explain it", () => {
-    const v = sweepIntent({ state: "awaiting" }, true);
+    const v = sweepIntent({ state: "awaiting" }, SHOP(true));
     expect(v.action).toBe("drift");
     expect(v.reason).toMatch(/refusing to strip a live listing/);
   });
 
   it("reports drift for a mapped product with no publish node at all", () => {
-    expect(sweepIntent(null, true)).toMatchObject({ action: "drift" });
-    expect(sweepIntent(null, true).reason).toMatch(/no node/);
+    expect(sweepIntent(null, SHOP(true))).toMatchObject({ action: "drift" });
+    expect(sweepIntent(null, SHOP(true)).reason).toMatch(/no node/);
   });
 
   it("STRIPS the genuinely-off cases, and only those", () => {
-    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, false).action).toBe("strip");
-    expect(sweepIntent({ state: "blocked", desiredState: "off" }, false).action).toBe("strip");
-    expect(sweepIntent({ state: "awaiting" }, false).action).toBe("strip");
-    expect(sweepIntent(null, false).action).toBe("strip");
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, SHOP(false)).action).toBe("strip");
+    expect(sweepIntent({ state: "blocked", desiredState: "off" }, SHOP(false)).action).toBe("strip");
+    expect(sweepIntent({ state: "awaiting" }, SHOP(false)).action).toBe("strip");
+    expect(sweepIntent(null, SHOP(false)).action).toBe("strip");
   });
 
   it("a blocked product is stripped, not held — markBlocked sets desiredState off", () => {
-    expect(sweepIntent({ state: "blocked", blockedReason: "x", desiredState: "off" }, false).action).toBe("strip");
+    expect(sweepIntent({ state: "blocked", blockedReason: "x", desiredState: "off" }, SHOP(false)).action).toBe("strip");
   });
 });
 
@@ -737,7 +741,7 @@ describe("sweepIntent — exhaustive safety properties", () => {
     for (const desiredState of DESIRED) {
       for (const published of PUBLISHED) {
         const node = base === null ? null : (desiredState === undefined ? base : { ...base, desiredState });
-        every.push({ node, published, verdict: sweepIntent(node, published) });
+        every.push({ node, published, verdict: sweepIntent(node, SHOP(published)) });
       }
     }
   }
@@ -762,6 +766,16 @@ describe("sweepIntent — exhaustive safety properties", () => {
     expect(violations).toEqual([]);
   });
 
+  it("NEVER assigns to a product the shop is not actually showing", () => {
+    // The mirror of the strip invariant. A record that says live while Shopify
+    // does not show it is DRIFT — joining it would make the one tool that
+    // should notice affirm the lie instead.
+    const violations = every
+      .filter((e) => e.verdict.action === "assign" && !e.published)
+      .map((e) => ({ node: e.node }));
+    expect(violations).toEqual([]);
+  });
+
   it("every non-assign verdict carries a reason a human can act on", () => {
     for (const e of every) {
       if (e.verdict.action === "hold" || e.verdict.action === "drift") {
@@ -769,5 +783,55 @@ describe("sweepIntent — exhaustive safety properties", () => {
         expect(e.verdict.reason.length).toBeGreaterThan(20);
       }
     }
+  });
+});
+
+describe("sweepIntent — the visibility signal is published AND active", () => {
+  it("a published DRAFT is NOT live: it renders nowhere, so its membership is cleared", () => {
+    // publishablePublish succeeded, the ACTIVE step failed. Treating it as a
+    // live listing would strand the membership forever behind a standing ✗.
+    expect(sweepIntent({ state: "awaiting" }, { published: true, status: "DRAFT" }).action).toBe("strip");
+  });
+
+  it("ACTIVE but unpublished is NOT live either — the state every switched-off product lands in", () => {
+    expect(sweepIntent({ state: "live", liveState: "off", desiredState: "off" }, { published: false, status: "ACTIVE" }).action)
+      .toBe("strip");
+  });
+
+  it("REVERSE DRIFT: the record says live, the shop does not show it", () => {
+    const v = sweepIntent({ state: "live", liveState: "on", desiredState: "on" }, { published: false, status: "ACTIVE" });
+    expect(v.action).toBe("drift");
+    expect(v.reason).toMatch(/does NOT publish it/);
+  });
+
+  it("reverse drift also covers published-but-not-ACTIVE", () => {
+    const v = sweepIntent({ state: "live", liveState: "on", desiredState: "on" }, { published: true, status: "DRAFT" });
+    expect(v.action).toBe("drift");
+    expect(v.reason).toMatch(/not ACTIVE/);
+  });
+
+  it("tolerates a missing shopify argument rather than throwing mid-sweep", () => {
+    expect(sweepIntent({ state: "awaiting" }, undefined).action).toBe("strip");
+    expect(sweepIntent({ state: "live", liveState: "on" }, undefined).action).toBe("drift");
+  });
+});
+
+describe("requireOnlineStorePublication — strict mode", () => {
+  it("refuses a title guess when the caller may strip membership", async () => {
+    const g = fakeGraphql([["publications(first: 50", {
+      publications: { pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ id: "gid://shopify/Publication/7", catalog: { title: "Online Store" }, channels: { nodes: [] } }] },
+    }]]);
+    await expect(requireOnlineStorePublication(g.fn, { strict: true })).rejects.toThrow(/not safe for this operation/);
+    // …and still accepts it for callers that only publish.
+    expect(await requireOnlineStorePublication(g.fn)).toBe("gid://shopify/Publication/7");
+  });
+
+  it("strict mode is irrelevant when the handle matches", async () => {
+    const g = fakeGraphql([["publications(first: 50", {
+      publications: { pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [{ id: "gid://shopify/Publication/9", catalog: null, channels: { nodes: [{ handle: "online_store" }] } }] },
+    }]]);
+    expect(await requireOnlineStorePublication(g.fn, { strict: true })).toBe("gid://shopify/Publication/9");
   });
 });

@@ -694,7 +694,9 @@ for (const { pid, want } of capped) {
       { mutation: true }
     );
     const pubErrs = pubRes.publishablePublish.userErrors;
-    if (pubErrs?.length) { await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`); continue; }
+    // A partial publish can still have made the product visible, and refuse()
+    // consumes the intent — so take it down before recording the refusal.
+    if (pubErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`); continue; }
     const act = await graphql(
       `mutation ($input: ProductUpdateInput!) {
         productUpdate(product: $input) { product { id status } userErrors { field message } }
@@ -702,9 +704,19 @@ for (const { pid, want } of capped) {
       { input: { id: gid, status: "ACTIVE" } },
       { mutation: true }
     );
+    // PRE-EXISTING HOLE, found in review of this PR and fixed here because it
+    // is one line and the alternative is knowingly leaving it: publishablePublish
+    // has ALREADY SUCCEEDED at this point, and a product that was live before
+    // (switched off via a channel unpublish, so still status ACTIVE) is
+    // publicly visible again the moment it lands. Refusing here without taking
+    // it down left the app saying "blocked/off" while the storefront sold it,
+    // permanently — markBlocked consumes desiredState, so the worklist never
+    // revisits it. Every sibling refusal already unpublishes first; these two
+    // were the only ones that did not.
     const actErrs = act.productUpdate.userErrors;
-    if (actErrs?.length) { await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`); continue; }
+    if (actErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`); continue; }
     if (act.productUpdate.product?.status !== "ACTIVE") {
+      await failSafeUnpublish(gid);
       await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`);
       continue;
     }
