@@ -285,6 +285,41 @@ describe("the pick, and what it files", () => {
     });
   });
 
+  it("the ALTERNATES picker files the whole identity too — one token set, every exit", async () => {
+    // The rarest exit: the full-set sweep FAILS, so the merged block declines
+    // to resolve; the pre-port chain's alternates retry then SUCCEEDS and
+    // opens its own picker. That panel had kept raw meta.allCodes while every
+    // other exit moved to the derived token set (Sonnet architect review,
+    // PR #371). With the read code absent from meta.allCodes and the owners
+    // sharing one code, `otherCodes` empties out and the `length > 1` guard
+    // skips recordLabelCodes entirely — the same partial-identity bug as the
+    // main picker, hiding on a path almost nothing reaches.
+    // BOTH owners are alias-only (no styleCodeNormalised), so the merged
+    // gather's local sweep finds nothing and cannot open its own picker —
+    // which is what leaves the alternates branch as the one that answers.
+    const TWIN2 = { id: "pTwin2", name: "Timberland Field Boot Black", styleCodeNormalised: null,
+                    sizes: { a: "8" }, photoUrl: "https://x/twin2.jpg" };
+    let call = 0;
+    resolveAnyCodes.mockImplementation(async () => {
+      call += 1;
+      if (call === 1) throw new Error("index unreachable");   // the full-set sweep
+      return { resolved: null, owners: [                      // the alternates retry
+        { productId: "pAliased", code: "A6CWNEN3", via: "alias" },
+        { productId: "pTwin2", code: "A6CWNEN3", via: "alias" },
+      ] };
+    });
+    const tr = await mountOnCountTab([ALIASED, TWIN2]);
+    await act(async () => {
+      await readerProps.onCode("ZZZ9999", { allCodes: ["A6CWNEN3"], auto: true, modelName: null, tokens: null });
+    });
+    expect(call).toBe(2);
+    expect(textOf(tr)).toContain("Timberland Field Boot Black");   // the alternates picker
+    await act(async () => { rowFor(tr, "Timberland Field Boot").props.onClick(); });
+    expect(recordLabelCodes).toHaveBeenCalledWith({
+      productId: "pAliased", chosenCode: "A6CWNEN3", otherCodes: ["ZZZ9999"],
+    });
+  });
+
   it("after the filing, the next scan of the same label resolves SILENTLY", async () => {
     // A label whose numbers nobody owns yet — the road that used to dead-end.
     const FRESH = { allCodes: ["ZZZ0001", "ZZZ0002"], auto: true, modelName: null, tokens: null };
@@ -424,6 +459,45 @@ describe("\"it's not one of these\" — the escape, and every fallback behind it
     expect(after).not.toContain("Count this size");     // NOT resolved silently
     expect(recordLabelCodes).not.toHaveBeenCalled();
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
+    // AND IT MUST NOT FORGET WHAT IT ALREADY KNEW (Sonnet architect review,
+    // PR #371). Declining to resolve silently is only half the answer — the
+    // gather had already PROVEN pEuro owns one of this label's numbers, and
+    // the chain it falls through cannot see that. The panel carries it across
+    // as a proven owner, not as a ranked guess.
+    expect(after).toContain("Timberland Euro Hiker Black");
+    // As a PROVEN owner, whichever of the two mechanisms names it — the pooled
+    // token's own exact tier, or the carried-across owners list. What it must
+    // never be is a "no code or name overlap" filler.
+    expect(textIn(rowFor(tr, "Timberland Euro Hiker Black")))
+      .toMatch(/already registered with exactly this code|already identifies this product/);
+  });
+
+  it("a KNOWN owner survives the failed-sweep fall-through even when it is invisible to the ranking", async () => {
+    // The sharpest form of the same bug: the owner is known ONLY from a
+    // secondary token's index claim — it carries no styleCodeNormalised at
+    // all, so buildLinkSuggestions (which ranks by code and by name) scores it
+    // nothing and would demote it to a "no code or name overlap" filler. If
+    // the proven owners are not carried onto the link panel, the operator is
+    // handed a list that has forgotten the one product the app was certain of.
+    resolveAnyCodes.mockImplementation(async () => { throw new Error("index unreachable"); });
+    lookupStyleClaim.mockImplementation(async (code) => (code === "A8425"
+      ? { productId: "pAliased", claimedAt: 1 } : null));
+    // pEuro is left OUT: it stamps A8425 locally, which would make the owner
+    // visible to the ranking and defeat the point of this case.
+    const tr = await mountOnCountTab([TIMBER, ALIASED]);
+    await act(async () => {
+      await readerProps.onCode("ZZZ9999", { allCodes: ["ZZZ9999", "A8425"], auto: true, modelName: null, tokens: null });
+    });
+    const after = textOf(tr);
+    expect(after).toContain("link it");
+    expect(after).toContain("Timberland Field Boot");
+    expect(textIn(rowFor(tr, "Timberland Field Boot")))
+      .toContain("a number on this label already identifies this product");
+    // And picking it still files the whole label identity.
+    await act(async () => { await rowFor(tr, "Timberland Field Boot").props.onClick(); });
+    expect(recordLabelCodes).toHaveBeenCalledWith({
+      productId: "pAliased", chosenCode: "ZZZ9999", otherCodes: ["A8425"],
+    });
   });
 
   it("a FAILED sweep still resolves the PRIMARY token's owner — but never silently", async () => {

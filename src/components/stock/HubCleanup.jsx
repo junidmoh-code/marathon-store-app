@@ -42,7 +42,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/styleCode";
 import { perSizeAutoCandidate } from "../../utils/perSizeStyleCode";
-import { buildLinkSuggestions, codeSuggestions } from "../../utils/linkSuggestions";
+import { buildLinkSuggestions, codeSuggestions, TIER_SCORES } from "../../utils/linkSuggestions";
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
@@ -408,6 +408,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // True once the any-token sweep has run over the WHOLE token set — the
       // later alternates block would then be asking the same question twice.
       let anyTokenSwept = false;
+      // Candidates the merged gather PROVED, hoisted so EVERY exit can carry
+      // them — including openLink() far below (Sonnet architect review,
+      // PR #371). Without this the sweep-failed road drops a known owner: the
+      // gather finds it via a secondary token's index claim, declines to
+      // resolve it silently, falls through a chain that cannot see it, and
+      // hands the operator a link panel that has forgotten it exists.
+      let knownOwners = null;
 
       if (multiToken) {
         // The server half — the ONLY way an alias-only owner is visible (a code
@@ -456,10 +463,15 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         const merged = mergeTokenCandidates({
           tokens: labelTokens, products, claims: claimByToken, serverOwners, resolved: resolvedById,
         });
-        // The link context every escape from the picker needs — the SAME
-        // payload openLink() builds below, so "show me everything" lands on the
-        // identical panel a never-owned code would have opened.
+        // The link context every escape from the picker needs. It is NOT
+        // byte-identical to openLink()'s payload — an earlier comment claimed
+        // it was, and that was wrong (Sonnet architect review, PR #371):
+        // openLink() also carries `aliasCandidates` from the token fallback,
+        // which does not exist here. What the two DO share is the part that
+        // matters — the token set and `owners` — so neither road can hand the
+        // operator a list that has forgotten a product.
         //
+        knownOwners = merged.candidates.map((c) => ({ product: c.product, codes: c.codes }));
         // `owners` is load-bearing (CodeRabbit, PR #371). buildLinkSuggestions
         // ranks the IN-MEMORY catalogue, so an alias-only owner — a product a
         // code identifies without ever being stamped on it — cannot appear
@@ -473,7 +485,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           allCodes: labelTokens,
           modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
           tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
-          owners: merged.candidates.map((c) => ({ product: c.product, codes: c.codes })),
+          owners: knownOwners,
         };
 
         if (!merged.candidates.length && merged.unloadedIds.length) {
@@ -601,7 +613,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         setPanel({
           mode: "choose", code: display, claimants: out.products,
           siblings: out.siblings, unloadedIds: out.unloadedIds || [],
-          allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+          // The FULL derived token set on every choose panel, not raw
+          // meta.allCodes — some panels getting the deduped set and some
+          // the raw one is exactly the inconsistency a later reader trips
+          // over (Sonnet architect review, PR #371).
+          allCodes: labelTokens,
         });
         return;
       }
@@ -719,7 +735,8 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             setPanel({
               mode: "choose", code: ownerCodes.length === 1 ? (formatStyleCodeForDisplay(ownerCodes[0]) || display) : display,
               claimants, siblings: siblingSet, unloadedIds: anyTokUnloaded,
-              allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+              // Same rule as the branch above — one token set everywhere.
+              allCodes: labelTokens,
             });
             return;
           }
@@ -749,6 +766,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // The alias store's own candidates, when the token fallback below ran
         // — they surface through the panel's alias tier.
         aliasCandidates,
+        // ANY OWNER THE MERGED GATHER ALREADY PROVED (Sonnet architect review,
+        // PR #371). This road is reached with a known candidate in hand when
+        // the sweep FAILED: the gather found an owner through a secondary
+        // token's index claim, declined to resolve it silently, and fell
+        // through a chain that cannot see it. buildLinkSuggestions ranks the
+        // catalogue by CODE and NAME, so an owner known only from an index
+        // claim scores nothing there and would be demoted to a filler row —
+        // the panel would have forgotten a product it was just told about.
+        // Null on the ordinary dead-end road, where nothing was ever proved.
+        owners: knownOwners,
       });
       const p = perSizeAutoCandidate(normalised, products);
       if (p) {
@@ -1594,14 +1621,14 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
       // the catalogue ranking inferred, so the weaker row is replaced (its own
       // reasons ride along); a row that already scored exact is left alone.
       const at = ranked.findIndex((s) => s.product.id === o.product.id);
-      if (at >= 0 && ranked[at].score >= 105) continue;
+      if (at >= 0 && ranked[at].score >= TIER_SCORES.exact) continue;
       const prior = at >= 0 ? ranked.splice(at, 1)[0] : null;
       const codes = (o.codes || []).filter(Boolean);
       ranked.unshift({
         product: o.product,
         code: codes.length === 1 ? codes[0] : (prior && prior.code) || null,
         field: codes.length === 1 ? "confirmed" : (prior && prior.field) || null,
-        tier: "exact", score: 105, weak: false,
+        tier: "exact", score: TIER_SCORES.exact, weak: false,
         reasons: [
           codes.length
             ? `a number on this label already identifies this product — matched ${codes.map((c) => formatStyleCodeForDisplay(c) || c).join(" · ")}`
