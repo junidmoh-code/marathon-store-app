@@ -10387,7 +10387,8 @@ function WarehouseView({ products = [], orders, onExit }) {
           setTimeout(() => setPrintToast(null), 9000);
           return { moved: false, reason: "insufficient_stock", blockSend: true };
         }
-        // Sneakers (allowNegative): only a genuine write/auth failure lands here.
+        // Footwear (the only type that still carries allowNegative): the floor
+        // can't fire for it, so only a genuine write/auth failure lands here.
         setPrintToast({ kind: "err", text: `Sent — but stock not deducted (${res.reason || "write failed"}). No label — route via Lightspeed.` });
         setTimeout(() => setPrintToast(null), 7000);
         return { moved: false, reason: res.reason || "write_failed" };
