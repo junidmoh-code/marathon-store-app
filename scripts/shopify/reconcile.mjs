@@ -8,16 +8,25 @@
 //   turning ON  — ensure the product exists on Shopify (create it as the old
 //                 publish-run did when there is no /shopify_sync map, else
 //                 reconcile the mapped product's fields from the current
-//                 record), then re-run the FULL compliance validator against
-//                 the CANONICAL Shopify object at that moment, re-sync
-//                 inventory, and publish to the Online Store sales channel.
-//                 ANY failure refuses and marks the node blocked — the
-//                 apply-time validator is the only thing between a mis-click
-//                 and a public listing.
-//   turning OFF — unpublish from the Online Store sales channel ONLY. Never
-//                 archive, never delete, never touch the ID map: the product,
-//                 its handle and its /shopify_sync entry all survive so the
-//                 switch can go back on.
+//                 record), JOIN THE STOREFRONT COLLECTION its category maps to,
+//                 then re-run the FULL compliance validator against the
+//                 CANONICAL Shopify object at that moment, re-sync inventory,
+//                 and publish to the Online Store sales channel. ANY failure
+//                 refuses and marks the node blocked — the apply-time validator
+//                 is the only thing between a mis-click and a public listing.
+//   turning OFF — unpublish from the Online Store sales channel and LEAVE every
+//                 managed collection. Never archive, never delete, never touch
+//                 the ID map: the product, its handle and its /shopify_sync
+//                 entry all survive so the switch can go back on, and turning
+//                 it on re-joins the collection from the map.
+//
+// COLLECTIONS. The category → collection map is repo data (collectionMap.mjs);
+// the collection ids come from /shopify_sync/_collections and are never guessed.
+// A product whose category has no mapping is a LOUD WARNING here, not a silent
+// skip and not a refusal: it goes live in no collection and stays reachable
+// through the New In smart collection and its own URL. Smart collections (New
+// In / Sale / Under R500) are Shopify's — nothing here writes their membership.
+// A collection built by hand in the admin is never emptied by this script.
 //
 // Confirmed state is written back (confirmLiveState) so the page's pending
 // marker clears. Idempotent: desired == confirmed is skipped, so a re-run
@@ -47,6 +56,15 @@ import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } fro
 import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNode.mjs";
+// Storefront collections. The map is repo data (collectionMap.mjs); the gids
+// are read from /shopify_sync/_collections and NEVER guessed — a product joins
+// a collection that already exists or joins none. Nothing here creates a
+// collection mid-publish; that is ensure-collections.mjs's job.
+import {
+  collectionGidsByKey, manualGidsFrom, planCollectionMembership,
+  readProductCollections, applyCollectionMembership, requireOnlineStorePublication,
+} from "./collections.mjs";
+import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
 // Sizing rationale (measured against the live shop's rate limiter) lives on
@@ -98,7 +116,10 @@ if (!worklist.length) { console.log("nothing to do."); process.exit(0); }
 // ── Dry run: the table of what WOULD happen, from RTDB alone ─────────────────
 // (No Shopify credentials touched: the action column needs only the ID map.)
 if (!COMMIT) {
-  console.log("\npid              action            title / note");
+  // The recorded collection ids, so the table can distinguish "maps to X" from
+  // "maps to X, which does not exist on the shop yet".
+  const dryRunGids = await collectionGidsByKey(db);
+  console.log("\npid              action            collection        title / note");
   for (const { pid, node, want } of worklist) {
     assertSafeSegment(pid, "productId");
     const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
@@ -106,7 +127,23 @@ if (!COMMIT) {
     if (want === "off") action = "UNPUBLISH";
     else action = mapNode?.shopifyProductId ? "PUBLISH" : "CREATE+PUBLISH";
     const title = node.cleanName || "(lexicon at apply time)";
-    console.log(`${pid.padEnd(16)} ${action.padEnd(17)} "${title}"`);
+    // The collection is resolvable from RTDB alone, so the dry run shows it —
+    // including the "none" answers, which are the ones worth seeing BEFORE a
+    // publish rather than in the run log after it.
+    // An UNPUBLISH also fires collection LEAVES on the commit run — the dry run
+    // is meant to be a complete preview, so it says so instead of showing "—".
+    let collection = want === "off" ? "leaves collections" : "—";
+    if (want === "on") {
+      const r = resolveCollection((await db.ref(`products/${pid}`).get()).val());
+      // "mapped but no recorded id" is a NO-COLLECTION outcome too — the map
+      // names a collection that has never been created. Showing its title here
+      // would promise a home the publish cannot deliver, which is exactly the
+      // answer the dry run exists to surface.
+      if (r.status !== "mapped") collection = `⚠ ${r.status}`;
+      else if (!dryRunGids[r.collectionKey]) collection = "⚠ no id yet";
+      else collection = COLLECTION_BY_KEY.get(r.collectionKey).title;
+    }
+    console.log(`${pid.padEnd(16)} ${action.padEnd(17)} ${collection.padEnd(17)} "${title}"`);
   }
   console.log(`\ndry run — nothing written, Shopify untouched. Re-run with --commit to apply (cap ${MAX_APPLY}/run).`);
   process.exit(0);
@@ -121,9 +158,33 @@ if (worklist.length > MAX_APPLY) {
 
 // The Online Store publication id — resolved once. Every publish/unpublish in
 // this script addresses ONLY this sales channel.
-const pubs = await graphql(`query { publications(first: 10) { nodes { id catalog { title } } } }`);
-const online = pubs.publications.nodes.find((n) => /online store/i.test(n.catalog?.title ?? ""));
-if (!online) { console.error("no Online Store publication found"); process.exit(1); }
+// Matched on the stable `online_store` CHANNEL HANDLE (collections.mjs owns the
+// one lookup): the catalog title is auto-generated and localisable, so a title
+// match could silently resolve nothing and publish to no channel.
+//
+// STRICT, like the sweep. I first reasoned that a wrong publication here would
+// "just fail to publish" — it would not. This script publishes to that id and
+// then writes confirmLiveState "on", so a wrong guess records a product as LIVE
+// while it sits on no channel, and the intent is consumed so the worklist never
+// revisits it. Refusing to guess is much cheaper than a durable false "live".
+let online;
+try {
+  online = { id: await requireOnlineStorePublication(graphql, { strict: true }) };
+} catch (e) {
+  console.error(String(e?.message || e));
+  process.exit(1);
+}
+
+// The collection gids, read ONCE. An empty map is not fatal: publishing must
+// still work on a shop where ensure-collections.mjs has never run — the
+// products just land in no collection, and the warning below says so on every
+// single product rather than once, because a storefront with no navigation is
+// exactly the failure this work exists to fix.
+const collectionGids = await collectionGidsByKey(db);
+const managedGids = manualGidsFrom(collectionGids);
+if (!managedGids.length) {
+  console.error("  ⚠ no storefront collections recorded at /shopify_sync/_collections — run `node scripts/shopify/ensure-collections.mjs --commit` first, or every product published here lands in no collection");
+}
 
 const results = [];
 // Best-effort channel unpublish for fail-safe paths: a refusal or cancel on a
@@ -152,6 +213,27 @@ const refuse = async (pid, why) => {
   console.error(`  🛑 ${pid} REFUSED: ${why}`);
   await markBlocked(db, pid, why, UPDATED_BY);
   results.push({ pid, ok: false, why: `blocked: ${why}` });
+};
+
+// Which storefront collection this record belongs in — and it SAYS SO, loudly,
+// when the answer is "none". A category with no mapping is a warning in the run
+// log, never a silent skip and never a refusal: the product still goes live and
+// is still reachable through the New In smart collection and its own URL. It
+// just has no heading in the navigation until collectionMap.mjs gains a row.
+const desiredCollectionFor = (pid, product) => {
+  const r = resolveCollection(product);
+  if (r.status !== "mapped") {
+    console.error(`  ⚠⚠ ${pid}: ${r.status.toUpperCase()} CATEGORY — ${r.reason}`);
+    console.error(`     going live in NO collection; reachable via New In and its direct URL only`);
+    return null;
+  }
+  const gid = collectionGids[r.collectionKey] ?? null;
+  if (!gid) {
+    console.error(`  ⚠⚠ ${pid}: category "${r.key}" maps to collection "${r.collectionKey}", but no id is recorded at /shopify_sync/_collections — run ensure-collections.mjs --commit; going live in NO collection`);
+    return null;
+  }
+  console.log(`  collection: "${COLLECTION_BY_KEY.get(r.collectionKey).title}" (from ${r.key})`);
+  return gid;
 };
 
 for (const { pid, want } of capped) {
@@ -186,8 +268,28 @@ for (const { pid, want } of capped) {
       );
       const errs = res.publishableUnpublish.userErrors;
       if (errs?.length) { results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` }); continue; }
+      // Off the shelf means out of the aisles: the product LEAVES every managed
+      // collection. It is not archived, not deleted, and its ID map survives —
+      // switching it back on re-joins it from the map. A collection built by
+      // hand in the admin is not ours and is left alone (planCollectionMembership).
+      let leftNote = "";
+      try {
+        const { collections } = await readProductCollections(graphql, mapNode.shopifyProductId, online.id);
+        const plan = planCollectionMembership(collections, null, managedGids);
+        if (plan.leave.length) {
+          await applyCollectionMembership(graphql, mapNode.shopifyProductId, plan);
+          leftNote = `, left ${plan.leave.length} collection(s)`;
+        }
+      } catch (e) {
+        // The unpublish already succeeded, so the product is invisible to
+        // customers — a collection-membership failure must not turn a
+        // successful take-down into a refusal. Warn and confirm off; the next
+        // run re-plans from Shopify's current state.
+        console.error(`  ⚠ ${pid}: unpublished, but leaving its collections failed (${String(e?.message || e)}) — re-run to clear the membership`);
+        leftNote = ", collection membership NOT cleared (see the warning above)";
+      }
       await confirmLiveState(db, pid, "off", UPDATED_BY, { gid: mapNode.shopifyProductId });
-      results.push({ pid, ok: true, note: "unpublished from the Online Store channel" });
+      results.push({ pid, ok: true, note: `unpublished from the Online Store channel${leftNote}` });
       continue;
     }
 
@@ -377,6 +479,7 @@ for (const { pid, want } of capped) {
       continue;
     }
     await writeIdMap(db, pid, buildMapping(gid, rows));
+
     if (!createdNow) {
       // The create path prices every variant at creation; the mapped path must
       // push the CURRENT retailPrice too — a price correction made while the
@@ -551,6 +654,43 @@ for (const { pid, want } of capped) {
       continue;
     }
 
+    // ── STOREFRONT COLLECTIONS ───────────────────────────────────────────────
+    // Applied on BOTH paths (create and reconcile) and planned from Shopify's
+    // CURRENT membership, so it is idempotent and self-healing: a product whose
+    // record was re-categorised while it sat off leaves the old collection and
+    // joins the new one here. Smart collections are never touched — Shopify
+    // owns those.
+    //
+    // ORDER MATTERS, and this is deliberately the LAST thing before the product
+    // becomes visible — after the canonical compliance gate, after the
+    // last-moment cancel check, after the photo-set check. Every one of those
+    // can abandon the run, and an earlier join would leave the product
+    // blocked-or-cancelled but still a member of a collection. That is not
+    // self-correcting: markBlocked consumes desiredState, so the reconciler's
+    // worklist skips a blocked node forever, and the UI's Off button is
+    // disabled on a product it already believes is off. Nothing a customer
+    // could see (a collection only renders PUBLISHED products), but it would
+    // quietly inflate the admin's collection counts with products that were
+    // refused. Here, the only thing that can still fail is the publish itself —
+    // and sync-collections.mjs sweeps that.
+    //
+    // A membership failure REFUSES: a product reaching the storefront filed
+    // under the wrong heading is a worse outcome than one that stays down and
+    // says why.
+    const desiredCollectionGid = desiredCollectionFor(pid, product);
+    try {
+      const { collections } = await readProductCollections(graphql, gid, online.id);
+      const plan = planCollectionMembership(collections, desiredCollectionGid, managedGids);
+      if (plan.join.length || plan.leave.length) {
+        await applyCollectionMembership(graphql, gid, plan);
+        console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);
+      }
+    } catch (e) {
+      await failSafeUnpublish(gid);
+      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`);
+      continue;
+    }
+
     // Publish to the Online Store channel, then make the product ACTIVE.
     const pubRes = await graphql(
       `mutation ($id: ID!, $input: [PublicationInput!]!) {
@@ -560,7 +700,9 @@ for (const { pid, want } of capped) {
       { mutation: true }
     );
     const pubErrs = pubRes.publishablePublish.userErrors;
-    if (pubErrs?.length) { await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`); continue; }
+    // A partial publish can still have made the product visible, and refuse()
+    // consumes the intent — so take it down before recording the refusal.
+    if (pubErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`); continue; }
     const act = await graphql(
       `mutation ($input: ProductUpdateInput!) {
         productUpdate(product: $input) { product { id status } userErrors { field message } }
@@ -568,9 +710,19 @@ for (const { pid, want } of capped) {
       { input: { id: gid, status: "ACTIVE" } },
       { mutation: true }
     );
+    // PRE-EXISTING HOLE, found in review of this PR and fixed here because it
+    // is one line and the alternative is knowingly leaving it: publishablePublish
+    // has ALREADY SUCCEEDED at this point, and a product that was live before
+    // (switched off via a channel unpublish, so still status ACTIVE) is
+    // publicly visible again the moment it lands. Refusing here without taking
+    // it down left the app saying "blocked/off" while the storefront sold it,
+    // permanently — markBlocked consumes desiredState, so the worklist never
+    // revisits it. Every sibling refusal already unpublishes first; these two
+    // were the only ones that did not.
     const actErrs = act.productUpdate.userErrors;
-    if (actErrs?.length) { await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`); continue; }
+    if (actErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`); continue; }
     if (act.productUpdate.product?.status !== "ACTIVE") {
+      await failSafeUnpublish(gid);
       await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`);
       continue;
     }

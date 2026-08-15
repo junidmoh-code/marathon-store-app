@@ -36,7 +36,10 @@ from `functions/node_modules`.
 | `clean-report.mjs [--residue] [--json <f>]` — trigger-engine census: how many names clean automatically, 40 deterministic before/after pairs, and the residue worklist for the AI pass | nothing | `node scripts/shopify/clean-report.mjs` |
 | `ai-rename.mjs [--dry-run] [--limit N]` — AI names for the lexicon residue only; every output re-checked by the trigger engine, cached once, never regenerated. Hard-stops without `ANTHROPIC_API_KEY` | **`/shopify_publish/{pid}` (cleanName cache)** | `node scripts/shopify/ai-rename.mjs --dry-run` |
 | `migrate-live-state.mjs [--commit]` — one-time rewrite of `/shopify_publish` into the 2026-08-14 state model (`awaiting\|live\|blocked` + on/off); idempotent, prints before/after counts per state | **`/shopify_publish` states** | `node scripts/shopify/migrate-live-state.mjs` (dry run) |
-| `reconcile.mjs [--commit] [--pids a,b]` — **owner-run only**: applies the page's `desiredState` intents. Turning ON creates/reconciles the product, runs the FULL compliance validator against the CANONICAL Shopify object at that moment, re-syncs inventory, publishes to the Online Store channel (refusals mark the node blocked). Turning OFF unpublishes from that channel ONLY — never archives, never deletes, never touches the ID map. Hard cap 10 actions/run | **Shopify products/channel + `/shopify_sync` + `/shopify_publish`** | `node scripts/shopify/reconcile.mjs` (dry run — a table of what it would do) |
+| `reconcile.mjs [--commit] [--pids a,b]` — **owner-run only**: applies the page's `desiredState` intents. Turning ON creates/reconciles the product, JOINS THE STOREFRONT COLLECTION its category maps to, runs the FULL compliance validator against the CANONICAL Shopify object at that moment, re-syncs inventory, publishes to the Online Store channel (refusals mark the node blocked). Turning OFF unpublishes from that channel and LEAVES every managed collection — never archives, never deletes, never touches the ID map. Hard cap `RECONCILE_MAX_APPLY` actions/run | **Shopify products/channel + `/shopify_sync` + `/shopify_publish`** | `node scripts/shopify/reconcile.mjs` (dry run — a table of what it would do) |
+| `ensure-collections.mjs [--commit]` — create/reconcile the 15 storefront collections from `collectionMap.mjs` and publish each to the Online Store channel. Idempotent: recognises by recorded id, then by handle, then creates. Refuses the WHOLE run if any collection's copy trips the brand-trigger validator | **Shopify collections + `/shopify_sync/_collections`** | `node scripts/shopify/ensure-collections.mjs` (dry run) |
+| `sync-collections.mjs [--commit] [--pids a,b]` — collection membership for every product this program has touched (the union of `/shopify_publish` and `/shopify_sync`), because the reconciler only acts when an intent CHANGES. A product confirmed ON joins its mapped collection; one that is **NOT** confirmed ON **LEAVES every managed collection** — that is the destructive half, so read the dry run before `--commit`. A product with an unapplied intent, or one whose record and the shop disagree, is reported and never touched. Re-plans from Shopify every run, so it doubles as the audit-and-repair pass | **Shopify collection membership only — no RTDB writes at all** | `node scripts/shopify/sync-collections.mjs` (dry run) |
+| `print-menu-plan.mjs` — prints the main-menu tree, every link target, the admin link and the exact steps. The Admin API **cannot** build menus for this app: `menuCreate` needs `write_online_store_navigation`, which is not granted (probed 2026-08-15) | nothing | `node scripts/shopify/print-menu-plan.mjs` |
 
 `publish-run.mjs` (the nominated-worklist DRAFT pusher and its `--publish`
 path) is RETIRED — the nominate step no longer exists; `reconcile.mjs` covers
@@ -53,6 +56,19 @@ Pure modules, tested via the normal `npm test`:
   triggered original name.
 - `sizeOrder.mjs` — storefront size ordering: numeric ascending (halves
   included), letter sizes in garment order, `"_"` sentinel last.
+- `collectionMap.mjs` — THE storefront taxonomy and the category join, as
+  DATA: `COLLECTIONS` (15 entries: titles, handles, customer-facing copy, SEO,
+  sort order, and the Shopify-evaluated conditions for the three smart ones)
+  and `CATEGORY_MAP` (internal `category|subcategory` → exactly ONE manual
+  collection). `resolveCollection()` answers mapped / unmapped / unknown, and
+  `validateCollectionPayload()` is the brand-trigger gate every collection
+  string passes before creation. Storefront collections are deliberately
+  SEPARATE from the app's stock categories — this file is the only join, and
+  changing the storefront's shape is an edit here, not a code change.
+- `collections.mjs` — the Shopify half: idempotent create/reconcile, the
+  API-2026-07 conditions-source shape, drift fingerprints, and the membership
+  planner (which never touches a smart collection, and never empties a
+  collection built by hand in the admin).
 - `idMap.mjs` — the `/shopify_sync/{productId}` mapping: `buildMapping`
   (variants keyed by the app's `encodeSizeKey` encoding, full `gid://` strings)
   and the idempotent `planIdMapWrite`/`writeIdMap` (create / noop / merge new

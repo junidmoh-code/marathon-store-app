@@ -223,3 +223,127 @@ field at all, 0 records missing the inner `id`.
   value `"One Size"`; `"5.5"` keeps its dot (Shopify option values are plain
   strings). `retailPrice` → variant price. Created as **DRAFT** so nothing
   reaches the storefront. Media, inventory and publication are later slices.
+
+---
+
+## 8. Storefront collections and navigation (2026-08-15)
+
+Four sections above describe how a product gets ONTO Shopify. This one is about
+where it then sits, because until now the answer was "nowhere": the reconciler
+created products, set inventory and stopped, and the theme's menus and home
+page are collection-driven — so a shopper had no path to any listing.
+
+### 8.1 Two taxonomies, one map
+
+Storefront collections are deliberately **separate** from the app's internal
+stock categories. The app's tree runs a warehouse (refill targets, Display
+Checks, POS browse, size runs) and renaming it to suit a storefront would
+change live automation behaviour. `scripts/shopify/collectionMap.mjs` is the
+only join, and it is data: change the storefront's shape by editing it, with no
+Shopify call and no touch to `/products`, `/stock` or
+`/settings/productTaxonomy`.
+
+**The internal categories, from the read-only census of 2026-08-15** (4,167
+records passing the app's own `id && name` filter, `mergedInto` excluded):
+
+| category | count | | subcategory | count |
+|---|---|---|---|---|
+| Clothing | 2,240 | | Sneakers | 1,224 |
+| Footwear | 1,402 | | Clothing — Uncategorized | 472 |
+| Accessories | 427 | | T-Shirts | 451 |
+| Perfume | 63 | | Caps & Hats | 339 |
+| Price Products | 35 | | Bags | 336 |
+
+The map keys on the `category|subcategory` PAIR (subcategory is present on
+4,163 of 4,167, and is already what the reconciler pushes as `productType` and
+as a tag), with a `category|*` row per category as the fallback. Resolving
+every visible record through it: **4,132 mapped · 35 unmapped · 0 unknown.**
+
+### 8.2 One category, one collection
+
+An internal category lands in exactly one collection. "Clothing" is therefore a
+sibling bucket — jerseys, polos, underwear, uncategorised — not a superset of
+its six children; the menu nests them, the collections do not. Jerseys and
+polos are deliberately NOT filed under "T-shirts": they are not t-shirts.
+
+**Where the agreed taxonomy under-covers the catalogue.** It has one footwear
+lane, "Sneakers". The catalogue also holds Boots (45), Soccer Boots (81) and
+Sandals & Slides (49), which map there because it is the only footwear
+destination available — and 7 of the 11 products live today are Boots. If that
+should be split it is a data edit: one `COLLECTIONS` entry plus three repointed
+`CATEGORY_MAP` rows.
+
+### 8.3 Unmapped vs unknown
+
+Two different things, kept apart on purpose:
+
+- **unmapped** — a `null` in `CATEGORY_MAP`; a recorded decision. Only "Price
+  Products" (35), which are internal price-carrier records, not goods.
+- **unknown** — the category is absent from the table entirely: somebody added
+  a category and did not update this file. A doubled warning in the reconciler
+  run log, never a silent skip and never a refusal.
+
+Both share ONE defined destination: no manual collection, so no menu heading —
+but still ACTIVE and published, so the "New In" smart collection picks it up.
+Reachable from the home page and by direct URL. Nothing is stranded.
+
+### 8.4 Compliance
+
+Collection titles, handles, descriptions, SEO fields and menu labels are
+catalogue fields and go through the SAME brand-trigger engine
+(`triggersInText` in `src/utils/shopifyTriggers.js`) the product push uses,
+before anything is created — wrapped as `validateCollectionPayload` in
+`scripts/shopify/collectionMap.mjs`, plus a whole-run refusal in `ensureAllCollections`
+(a half-built navigation is worse than none). All 15 pass; nothing was refused.
+No brand is expressed as a tag, metafield, vendor or product type: the brand
+association stays in the app.
+
+### 8.5 API 2026-07 gotchas (the old recipes do not work)
+
+- `ruleSet` is **deprecated** on `Collection` and absent from
+  `CollectionCreateInput`. Smart membership is a **conditions source**:
+  `sources[].source.inclusion { matchType, conditions }`.
+- `CollectionCreateInput` has **no `products` field**. Manual membership is
+  written from the product side — `productSet(collections:)` on create,
+  `productUpdate(collectionsToJoin/collectionsToLeave)` after.
+- A **manual collection's membership is itself a conditions source with an
+  EMPTY conditions list** — the products live in `inclusion.selections`, and
+  Shopify creates that source the first time a product joins. Deleting it
+  because it "looks like a stray rule" is refused with *"A condition based
+  source must have at least one product selection or condition"*: you are
+  asking Shopify to throw the membership away. Only RULE-bearing sources may be
+  compared or deleted.
+- A collection is **Publishable**. Creating it is not enough — unpublished, its
+  URL 404s and any menu link goes nowhere. `publishablePublish` runs on every
+  pass, including a noop.
+- Smart-collection conditions have **no created-at column** (the set is product
+  tag / title / category / type / vendor / status, variant title / price /
+  compare-at price / inventory / weight, and metafields). "Listed in the last N
+  days" is therefore not something Shopify can evaluate for itself.
+
+### 8.6 The three cross-cutting collections
+
+| Collection | Condition (all Shopify-evaluated) | Note |
+|---|---|---|
+| New In | status is ACTIVE, sorted `CREATED_DESC` | No date condition exists, so this is every listed product newest-first — self-maintaining, and the safety net that keeps an unmapped product reachable. |
+| Sale | status is ACTIVE **and** compare-at price IS_SET | The only cross-price test Shopify offers. EMPTY until specials propagate — nothing sets a compare-at price today. |
+| Under R500 | status is ACTIVE **and** variant price < 500.00 ZAR | |
+
+The ACTIVE gate is not decoration: the shop still holds 2,452 ARCHIVED products
+from the old catalogue, and a price-only condition swept 841 of them in.
+
+### 8.7 Navigation — Junid's to build
+
+The Admin API **cannot** build menus for this app. Probed against the live shop
+on 2026-08-15: `menus` → `ACCESS_DENIED, read_online_store_navigation`;
+`menuCreate` → `ACCESS_DENIED, write_online_store_navigation`. The mutations
+exist on 2026-07; the app simply is not granted those scopes.
+`scripts/shopify/print-menu-plan.mjs` prints the tree, every link target, the
+admin link and the exact steps — and what to change in the Dev Dashboard if the
+menu should be API-built later.
+
+Click paths verified in a browser on 2026-08-15, both already working from the
+theme's existing hero buttons:
+
+- Home → "Shop now" → Sneakers (7) → Boots Shell Green
+- Home → "View collection" → Collections → Caps & Hats (4) → Red Sox fitted cap

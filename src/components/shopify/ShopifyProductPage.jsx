@@ -24,7 +24,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
   CONDITIONS, checkCleanName, blockedReason, reviewStateFor, effectiveNameFor,
-  isOn, isPendingSwitch, canGoLive, effectivePhotoList,
+  isOn, isPendingSwitch, canGoLive, effectivePhotoList, normalizedState,
 } from "./shopifyPublishCore";
 import { MAX_PUBLISH_PHOTOS, buildDescriptionHtml } from "./publishShared";
 import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos } from "./shopifyPublishStore";
@@ -471,6 +471,30 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
   };
 
   const dialogName = confirming === "switch-on" ? (node?.cleanName || draft.trim()) : draft.trim();
+
+  // ─── THE CONFIRMATION CANNOT OUTLIVE ITS FACTS ─────────────────────────────
+  // The node changes UNDER this page: the reconciler runs outside the session
+  // and the list refreshes pending nodes on a tick while the user sits here. A
+  // dialog that opened against an awaiting product and is still on screen after
+  // that product went live is stating facts that are no longer true, and
+  // confirming it would fire a write the store refuses anyway.
+  //
+  // The test is a SNAPSHOT of the publishing state the dialog was raised
+  // against, compared field by field — not a hand-written list of the
+  // transitions I happened to think of. An intent flipped off in another
+  // session leaves `state` and the live state untouched, so a
+  // transition-by-transition check would have missed it and let the
+  // confirmation re-arm a publish the operator had just cancelled elsewhere.
+  const confirmBasis = useRef(null);
+  const stateNow = `${normalizedState(node)}|${node?.liveState ?? "-"}|${node?.desiredState ?? "-"}`;
+  useEffect(() => {
+    if (!confirming) { confirmBasis.current = null; return; }
+    if (confirmBasis.current === null) { confirmBasis.current = stateNow; return; }
+    if (confirmBasis.current === stateNow) return;
+    confirmBasis.current = null;
+    setConfirming(null);
+    setError("This product's publishing state changed while the confirmation was open — nothing was sent. The page below now shows where it actually is.");
+  }, [confirming, stateNow]);
 
   // The description preview — the EXACT html the reconciler pushes, or the
   // plain reason there is none yet. buildDescriptionHtml throws on an unset

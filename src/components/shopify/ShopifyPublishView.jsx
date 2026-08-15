@@ -35,7 +35,7 @@
 // Thumb follow LabelPrintView.jsx, rows use the home list's separator
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bGray, bGreen } from "../stock/ui";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
@@ -48,6 +48,12 @@ import {
 import ShopifyProductPage from "./ShopifyProductPage";
 
 const UNCAT = "Uncategorised";
+
+// How often the page re-asks whether a pending intent has been applied. Only
+// ticks while something IS pending, and only for those pids — see the pending
+// refresh below. 20s is the reconciler's own granularity: a run takes tens of
+// seconds per product, so anything faster just re-reads the same answer.
+const PENDING_POLL_MS = 20000;
 
 // `#shopify/{pid}` is the product-page route — the publishing twin of the
 // admin catalogue's #product/{id}. Returns null when the hash is anything
@@ -595,41 +601,115 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       });
   }, [detailPid, keys, nodes]);
 
-  // The reconciler runs outside this session — without a listener
-  // (deliberately: reads stay one-shot and partial) the pending marker would
-  // only ever clear on a full reload. Window focus is the natural "back to
-  // the page" moment: refetch ONLY the pids currently pending (a handful of
-  // bodies, never the node).
+  // ─── KEEPING UP WITH THE RECONCILER ────────────────────────────────────────
+  // The reconciler runs OUTSIDE this session, and this page deliberately holds
+  // no RTDB listener (reads stay one-shot and partial — that is what keeps the
+  // bill flat). So the only way a row learns its intent was applied is to ask.
+  //
+  // Window focus used to be the ONLY moment it asked, which got the common
+  // case exactly backwards: the operator who publishes a batch and then WATCHES
+  // — tab focused, never clicking away — is the one who never saw the update.
+  // Their rows sat on "publishing…" and stayed in Awaiting review until they
+  // clicked to another window and back, or reloaded. Worse on a product page,
+  // where a product that had gone live still offered Publish.
+  //
+  // Now it asks on focus AND on a slow tick, under three limits that keep it
+  // inside the page's load discipline:
+  //   · ONLY the pending pids — per-pid bodies, never get(/shopify_publish),
+  //     and the set is bounded by the batch cap.
+  //   · ONLY while something is pending. Nothing pending ⇒ no timer at all ⇒
+  //     an idle page makes zero requests, which is the steady state.
+  //   · NOT while the tab is hidden — the focus handler covers coming back.
+  const pendingPids = useMemo(
+    () => Object.entries(nodes).filter(([, n]) => isPendingSwitch(n)).map(([pid]) => pid),
+    [nodes]
+  );
+  const hasPending = pendingPids.length > 0;
+  // Read from the long-lived timer/listener closures so neither is re-created
+  // on every node change (an interval rebuilt each render would never fire).
+  // Both are written in an EFFECT, not during render: React may replay or
+  // discard render work, and a ref written there can leak values from a render
+  // that never committed. An effect gives exactly the semantics both readers
+  // want anyway — the last COMMITTED state.
+  const pendingPidsRef = useRef(pendingPids);
+  const nodesRef = useRef(nodes);
+  useEffect(() => {
+    pendingPidsRef.current = pendingPids;
+    nodesRef.current = nodes;
+  }, [pendingPids, nodes]);
+  // Bumped by applyWrite, per pid. Written in the write path (not during
+  // render), so it is current the instant the write commits — which is what a
+  // read resolving moments later has to compare against.
+  const writeGenRef = useRef(Object.create(null));
+  // Read ORDER, which the write generation deliberately does not track. Two
+  // refreshes can be in flight at once (the interval plus a window-focus one)
+  // and they can land out of order; without this, a LATER read that landed
+  // FIRST would be overwritten by the earlier, staler one and the row would
+  // revert for a whole tick. Object.create(null) on both: a pid is a key, and
+  // an inherited "constructor" would silently wedge that pid forever.
+  const readSeqRef = useRef(0);
+  const appliedSeqRef = useRef(Object.create(null));
+
+  const refreshNodes = useCallback((pids) => {
+    if (!pids.length) return;
+    // The LOCAL-WRITE generation each pid was on when this read went OUT. The
+    // section fetch has a FILL-never-overwrite rule for the same reason; this
+    // one has to overwrite (replacing a stale node IS its job), so it needs a
+    // sharper test: apply only where no local write has landed underneath.
+    // Without it, a Cancel clicked while a read was in flight would be silently
+    // rolled back by the older server value and the row would jump to pending.
+    //
+    // A GENERATION, not the node object: two reads can be in flight at once
+    // (the interval plus a window-focus refresh), and comparing objects made
+    // the first read's own apply look like a change — so the SECOND, fresher
+    // result was discarded and the row sat stale for another whole tick. Only
+    // a local write bumps the generation, which is exactly what must invalidate.
+    const before = Object.create(null);
+    for (const pid of pids) before[pid] = writeGenRef.current[pid] ?? 0;
+    const seq = ++readSeqRef.current;
+    loadNodesFor(pids)
+      .then(({ nodes: got, failed }) => {
+        const apply = pids.filter(
+          (pid) => !failed.includes(pid)
+            && (writeGenRef.current[pid] ?? 0) === before[pid]   // no local write landed
+            && seq > (appliedSeqRef.current[pid] ?? 0));          // and nothing NEWER already did
+        if (!apply.length) return;
+        for (const pid of apply) appliedSeqRef.current[pid] = seq;
+        setNodes((prev) => {
+          const next = { ...prev };
+          for (const pid of apply) next[pid] = got[pid] || null;
+          return next;
+        });
+        // The pipeline map prices the Live and Blocked filter counts; letting
+        // it drift would leave a phantom count behind a row that has moved on.
+        setPipeline((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev };
+          for (const pid of apply) {
+            const n = got[pid];
+            if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
+          }
+          return next;
+        });
+      })
+      .catch(() => {}); // a failed refresh just keeps showing pending
+  }, []);
+
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const onFocus = () => {
-      const pendingPids = Object.entries(nodes)
-        .filter(([, n]) => isPendingSwitch(n))
-        .map(([pid]) => pid);
-      if (!pendingPids.length) return;
-      loadNodesFor(pendingPids)
-        .then(({ nodes: got, failed }) => {
-          setNodes((prev) => {
-            const next = { ...prev };
-            for (const pid of pendingPids) if (!failed.includes(pid)) next[pid] = got[pid] || null;
-            return next;
-          });
-          setPipeline((prev) => {
-            if (!prev) return prev;
-            const next = { ...prev };
-            for (const pid of pendingPids) {
-              if (failed.includes(pid)) continue;
-              const n = got[pid];
-              if (n && normalizedState(n) !== "awaiting") next[pid] = n; else delete next[pid];
-            }
-            return next;
-          });
-        })
-        .catch(() => {}); // a failed refresh just keeps showing pending
-    };
+    const onFocus = () => refreshNodes(pendingPidsRef.current);
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [nodes]);
+  }, [refreshNodes]);
+
+  useEffect(() => {
+    if (!hasPending || typeof window === "undefined") return undefined;
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      refreshNodes(pendingPidsRef.current);
+    }, PENDING_POLL_MS);
+    return () => clearInterval(id);
+  }, [hasPending, refreshNodes]);
 
   // Fold a completed write straight into local state. The store's
   // transactions return the committed node, so no refetch is needed — and
@@ -637,6 +717,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // update would flip the section's `pending` and unmount every row until a
   // refetch landed.
   const applyWrite = (pid, node) => {
+    // Any in-flight refresh for this pid now holds an OLDER answer than we do.
+    writeGenRef.current[pid] = (writeGenRef.current[pid] ?? 0) + 1;
     setKeys((prev) => (prev ? new Set(prev).add(pid) : prev));
     // Keep the pipeline map (which prices the live/blocked filter counts) in
     // step with the write — otherwise a fresh block is invisible to the
@@ -651,10 +733,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     if (node !== undefined) {
       setNodes((prev) => ({ ...prev, [pid]: node || null }));
     } else {
-      // A store result without a node (shouldn't happen) — refetch to stay honest.
+      // A store result without a node (shouldn't happen) — refetch to stay
+      // honest. Guarded like every other read: a write landing while this is in
+      // flight is NEWER than what comes back, and applying the older value
+      // would be the very rollback the generation exists to prevent.
+      const gen = writeGenRef.current[pid] ?? 0;
       loadNodesFor([pid])
         .then(({ nodes: got, failed }) => {
-          if (!failed.length) setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
+          if (failed.length) return;
+          if ((writeGenRef.current[pid] ?? 0) !== gen) return;
+          setNodes((prev) => ({ ...prev, [pid]: got[pid] || null }));
         })
         .catch(() => {});
     }
@@ -686,9 +774,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       return next.size === prev.size ? prev : next;
     });
   }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The freshest nodes, readable from inside runBatch's long-lived closure.
-  const nodesRef = useRef(nodes);
-  nodesRef.current = nodes;
+  // (nodesRef — the freshest nodes for runBatch's long-lived closure — is
+  // declared with the pending refresh above, which needs the same thing.)
   const capNotice = () =>
     setBatchNotice(`Selection is capped at ${RECONCILE_MAX_APPLY} — the reconciler applies at most ${RECONCILE_MAX_APPLY} products per run.`);
   const toggleSelect = (pid, blocker) => {
