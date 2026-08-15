@@ -426,6 +426,23 @@ describe("\"it's not one of these\" — the escape, and every fallback behind it
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
   });
 
+  it("a FAILED sweep still resolves the PRIMARY token's owner — but never silently", async () => {
+    // CodeRabbit (PR #371) proposed routing every failed sweep straight to the
+    // link panel. That is not what happens, deliberately: with the index down,
+    // it would stop EVERY properly-registered multi-token label from resolving
+    // mid-count and skip the per-size and alias fallbacks on the way. A
+    // primary-token hit is direct evidence (the code is stamped on that
+    // product) and the count panel shows its name and photo. What is removed
+    // is the SILENCE — the operator is told what could not be checked.
+    resolveAnyCodes.mockImplementation(async () => { throw new Error("index unreachable"); });
+    const tr = await mountOnCountTab([TIMBER]);   // only the primary token's owner is loaded
+    await act(async () => { await readerProps.onCode("A6CWNEN3", TWO_TOKENS); });
+    const after = textOf(tr);
+    expect(after).toContain("Timberland 6-Inch Wheat");            // still resolves
+    expect(after).toContain("other numbers weren't checked");      // and says so
+    expect(after).not.toContain("link it");                        // not a dead end
+  });
+
   it("a FAILED sweep with TWO candidates still asks — and says the list may be incomplete", async () => {
     // Widening survives a failed sweep; only the silent narrowing is refused.
     resolveAnyCodes.mockImplementation(async () => { throw new Error("index unreachable"); });

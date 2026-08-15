@@ -539,9 +539,34 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           }
         }
 
-        // Nothing owns ANY of this label's numbers — every fallback below
-        // (alias lookup, the per-size rule, token overlap, the link panel)
-        // is untouched and still runs.
+        // Either nothing owns ANY of this label's numbers, or the sweep failed
+        // and the answer is not safe to give silently. Every fallback below
+        // (alias lookup, the per-size rule, token overlap, the link panel) is
+        // untouched and still runs.
+        //
+        // ── WHY THE FALL-THROUGH IS NOT SEALED OFF (CodeRabbit, PR #371) ─────
+        // The review is right that `sweepFailed` alone does not stop the chain
+        // below from resolving the PRIMARY token's single local owner — and
+        // proposed routing straight to the link panel instead. That fix is not
+        // taken, because it would break a working flow for the sake of a risk
+        // the operator can already see: with the index unreachable, EVERY
+        // multi-token scan whose primary token is properly registered would
+        // stop resolving and dump the operator into a browse list mid-count,
+        // and it would skip the per-size auto-link rule and the alias
+        // fallbacks on the way. This file's own doctrine is the opposite —
+        // "a gate whose failure mode is 'nobody can work' is worse than the
+        // duplicate it was guarding against" (StyleCodeGate.jsx), and a scan
+        // must never dead-end.
+        //
+        // A primary-token hit is also DIRECT evidence: the code is stamped on
+        // that product, and the count panel then shows its name and photo, so
+        // a wrong shoe is visible to the human holding it. The only thing we
+        // genuinely cannot vouch for is whether ANOTHER of this label's
+        // numbers owns something else. So the answer is kept and the silence
+        // is removed: say plainly what could not be checked.
+        if (sweepFailed) {
+          flash("warn", "The label-code index couldn't be reached, so this label's other numbers weren't checked — if this isn't the shoe in your hand, search by name.", 8000);
+        }
       }
 
       const out = resolveStyleNumber(display, { products, claim });
