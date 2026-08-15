@@ -167,7 +167,21 @@ the resolution chain.
 `labelAlias{action:"resolveAnyCode"}` reads `/label_aliases` whole-node
 (`functions/labelAlias/labelAlias.js:150`). Today the count calls it only when
 the picked token resolves to nothing. After the port it is called once per
-**multi-token** scan (single-token labels are untouched — zero new calls). The
-mitigation is a session-scoped memo keyed by the sorted token set, invalidated
-whenever an alias is filed. Net effect on the failure path is neutral: the call
-that used to happen at `:455` is the same call, moved earlier and reused.
+**multi-token** scan (single-token labels are untouched — zero new calls).
+
+**Two mitigations were considered and BOTH rejected; the call is unconditional.**
+
+* *A session-scoped memo keyed by the sorted token set.* Rejected: each scan is
+  a different label, so the memo would only ever hit on a re-scan of the same
+  one — and that is exactly the case where it must NOT hit, because the
+  operator has usually just filed an alias in between. The staleness risk
+  bought nothing.
+* *Skipping the sweep when the local gather already had two candidates.*
+  Rejected after it was written: it hid a **third** owner, and a hidden owner
+  turns the collision framing into the sibling framing — which offers a Merge
+  that would destroy a real colourway. The existing PR #354 architect test
+  caught it; mutation **M11** now re-introduces it and proves the test fails.
+
+What does hold the cost down: single-token labels make zero calls here, and the
+duplicate call the `alternates` block used to make is suppressed via
+`anyTokenSwept` — so the failure path costs exactly what it did before.

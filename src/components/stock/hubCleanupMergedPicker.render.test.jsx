@@ -117,10 +117,10 @@ const buttonWith = (tr, needle) =>
 const rowFor = (tr, name) =>
   tr.root.findAll((n) => (n.props?.role === "button" || n.type === "button") && textIn(n).includes(name))[0];
 
-async function mountOnCountTab() {
+async function mountOnCountTab(products = PRODUCTS) {
   let tr;
   await act(async () => {
-    tr = TestRenderer.create(<HubCleanup products={PRODUCTS} actorRole="warehouse" viewer={{}} />);
+    tr = TestRenderer.create(<HubCleanup products={products} actorRole="warehouse" viewer={{}} />);
   });
   const countTab = tr.root.findAll((n) => n.type === "button" && n.children.join("") === "Count")[0];
   await act(async () => { countTab.props.onClick(); });
@@ -263,6 +263,28 @@ describe("the pick, and what it files", () => {
     expect(textOf(tr)).toContain("Timberland 6-Inch Wheat");
   });
 
+  it("a picked row files the WHOLE label identity, including a read code the OCR never repeated", async () => {
+    // The picker's exits file through panel.allCodes. Storing raw
+    // meta.allCodes there loses `display` whenever the OCR did not repeat it —
+    // and when the candidates share ONE owner code, panel.code becomes that
+    // code, so `otherCodes` comes out EMPTY and the guard
+    // (`panel.allCodes.length > 1`) skips recordLabelCodes entirely. The read
+    // code is then never filed and the next scan asks again (CodeRabbit,
+    // PR #371).
+    const TWIN = { id: "pTwin", name: "Timberland 6-Inch Black", styleCodeNormalised: "A6CWNEN3",
+                   sizes: { a: "8" }, photoUrl: "https://x/twin.jpg" };
+    const tr = await mountOnCountTab([TIMBER, TWIN]);
+    await act(async () => {
+      // The read code owns nothing; the label's other number owns BOTH twins.
+      await readerProps.onCode("ZZZ9999", { allCodes: ["A6CWNEN3"], auto: true, modelName: null, tokens: null });
+    });
+    expect(textOf(tr)).toContain("Timberland 6-Inch Black");   // the picker, two rows
+    await act(async () => { rowFor(tr, "Timberland 6-Inch Wheat").props.onClick(); });
+    expect(recordLabelCodes).toHaveBeenCalledWith({
+      productId: "pTimber", chosenCode: "A6CWNEN3", otherCodes: ["ZZZ9999"],
+    });
+  });
+
   it("after the filing, the next scan of the same label resolves SILENTLY", async () => {
     // A label whose numbers nobody owns yet — the road that used to dead-end.
     const FRESH = { allCodes: ["ZZZ0001", "ZZZ0002"], auto: true, modelName: null, tokens: null };
@@ -357,6 +379,63 @@ describe("\"it's not one of these\" — the escape, and every fallback behind it
     expect(recordLabelCodes).toHaveBeenCalledWith({
       productId: "pEuro", chosenCode: "A6CWNEN3", otherCodes: ["A8425"],
     });
+  });
+
+  it("an ALIAS-ONLY owner survives the escape — the full list is never NARROWER than the picker", async () => {
+    // pAliased carries no styleCodeNormalised, so buildLinkSuggestions — which
+    // ranks the in-memory catalogue — cannot find it by any code tier. Only the
+    // server sweep knew it. If the picker's candidates are not carried across,
+    // the operator escapes a two-row list into a list that has LOST one of
+    // them (CodeRabbit, PR #371).
+    resolveAnyCodes.mockImplementation(async () => ({
+      resolved: null, owners: [{ productId: "pAliased", code: "A8425", via: "alias" }],
+    }));
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("A6CWNEN3", TWO_TOKENS); });
+    expect(textOf(tr)).toContain("Timberland Field Boot");     // in the picker
+    await act(async () => { buttonWith(tr, "show me everything").props.onClick(); });
+
+    const after = textOf(tr);
+    expect(after).toContain("Everything close to this label");
+    expect(after).toContain("Timberland Field Boot");          // still there
+    expect(textIn(rowFor(tr, "Timberland Field Boot")))
+      .toContain("a number on this label already identifies this product");
+    // And it can still be picked, filing the whole label identity.
+    await act(async () => { await rowFor(tr, "Timberland Field Boot").props.onClick(); });
+    expect(recordLabelCodes).toHaveBeenCalledWith({
+      productId: "pAliased", chosenCode: "A6CWNEN3", otherCodes: ["A8425"],
+    });
+  });
+
+  it("a FAILED ownership sweep never resolves a lone local candidate silently", async () => {
+    // A rejected sweep is UNKNOWN ownership, not "no other owner" — and an
+    // alias-only owner is invisible to the local gather by construction. One
+    // local candidate must NOT open its count panel on that evidence
+    // (CodeRabbit, PR #371); the flow degrades to the link panel exactly as it
+    // did before the port.
+    resolveAnyCodes.mockImplementation(async () => { throw new Error("index unreachable"); });
+    const tr = await mountOnCountTab();
+    await act(async () => {
+      // Only A8425 is locally owned (pEuro); the read code owns nothing.
+      await readerProps.onCode("ZZZ9999", { allCodes: ["ZZZ9999", "A8425"], auto: true, modelName: null, tokens: null });
+    });
+    const after = textOf(tr);
+    expect(after).toContain("link it");                 // the honest degrade
+    expect(after).not.toContain("Count this size");     // NOT resolved silently
+    expect(recordLabelCodes).not.toHaveBeenCalled();
+    expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
+  it("a FAILED sweep with TWO candidates still asks — and says the list may be incomplete", async () => {
+    // Widening survives a failed sweep; only the silent narrowing is refused.
+    resolveAnyCodes.mockImplementation(async () => { throw new Error("index unreachable"); });
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("A6CWNEN3", TWO_TOKENS); });
+    const after = textOf(tr);
+    expect(after).toContain("name more than one product");
+    expect(after).toContain("Timberland 6-Inch Wheat");
+    expect(after).toContain("Timberland Euro Hiker Black");
+    expect(after).toContain("label-code index couldn't be reached");
   });
 
   it("the OTHER answer survives beside it — \"it's a new colourway\" is still its own button", async () => {

@@ -427,6 +427,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         let sweep = null;
         try { sweep = await resolveAnyCodes(labelTokens); anyTokenSwept = true; } catch { sweep = null; }
         const serverOwners = sweep ? sweep.owners : [];
+        // A REJECTED sweep is not "no other owner" (CodeRabbit, PR #371). It
+        // means ownership is UNKNOWN, and an alias-only owner — one that never
+        // stamped a product row — is invisible to the local gather by
+        // construction. Resolving a single local candidate on that evidence
+        // would open the wrong count panel with no sign anything was missed.
+        // So a failed sweep may still WIDEN (2+ candidates still ask) but may
+        // never NARROW to a silent answer: one candidate falls through to the
+        // untouched pre-port chain below, which retries the sweep in the
+        // alternates block and degrades to the link panel exactly as it did.
+        const sweepFailed = !sweep;
         // Ids nothing local answers for — followed through their merge pointer
         // once each, exactly as the single-token branches below do. A failed
         // fetch leaves the id UNLOADED; it is never silently dropped.
@@ -449,11 +459,21 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         // The link context every escape from the picker needs — the SAME
         // payload openLink() builds below, so "show me everything" lands on the
         // identical panel a never-owned code would have opened.
+        //
+        // `owners` is load-bearing (CodeRabbit, PR #371). buildLinkSuggestions
+        // ranks the IN-MEMORY catalogue, so an alias-only owner — a product a
+        // code identifies without ever being stamped on it — cannot appear
+        // there. Without carrying the picker's own candidates across, "show me
+        // everything" would be a NARROWER list than the picker the operator
+        // escaped from, which is the one thing this whole change forbids. This
+        // is the admin gate's addServerOwners, ported (StyleCodeGate.jsx).
         const linkContext = {
           display, normalised,
-          allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+          // The FULL token set, not raw meta.allCodes — see fileAllCodes.
+          allCodes: labelTokens,
           modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
           tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
+          owners: merged.candidates.map((c) => ({ product: c.product, codes: c.codes })),
         };
 
         if (!merged.candidates.length && merged.unloadedIds.length) {
@@ -489,13 +509,21 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             siblings: !!single && !merged.unloadedIds.length
               && allRegisteredSiblings(claimByToken[single], merged.candidates.map((c) => c.product.id)),
             unloadedIds: merged.unloadedIds,
-            allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+            // THE FULL TOKEN SET (CodeRabbit, PR #371) — raw meta.allCodes can
+            // omit `display`, and every exit from this panel files through
+            // panel.allCodes. Storing the derived set is what makes a picked
+            // row record the WHOLE label identity, not the part the OCR
+            // happened to repeat.
+            allCodes: labelTokens,
+            // Ownership could not be fully checked — say so rather than let
+            // the list read as complete.
+            sweepFailed,
             link: linkContext,
           });
           return;
         }
 
-        if (merged.candidates.length === 1 && !merged.unloadedIds.length) {
+        if (merged.candidates.length === 1 && !merged.unloadedIds.length && !sweepFailed) {
           // EXACTLY ONE candidate across every token, unambiguous — it still
           // resolves in one step, as it always did.
           const only = merged.candidates[0];
@@ -683,7 +711,10 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // different product.
       const openLink = (aliasCandidates = null) => setPanel({
         mode: "link", kind: "code", display, normalised,
-        allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+        // The full derived token set, not raw meta.allCodes — a pick here files
+        // through panel.allCodes, and the read code belongs in that identity
+        // (CodeRabbit, PR #371; same reasoning as fileAllCodes).
+        allCodes: labelTokens,
         // The label's printed model line, when the OCR carried one — the
         // panel's second-strongest suggestion source (linkSuggestions.js).
         modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
@@ -1379,6 +1410,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                          allCodes: panel.allCodes || null,
                          modelName: (panel.link && panel.link.modelName) || null,
                          tokens: (panel.link && panel.link.tokens) || null,
+                         // Everything the picker had — including any owner the
+                         // catalogue ranking cannot see on its own.
+                         owners: (panel.link && panel.link.owners) || null,
                        });
                      } : null}
                      onClose={() => setPanel(null)} />
@@ -1503,7 +1537,8 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   // operator decides, nothing auto-links (the tight auto-link threshold lives
   // in perSizeStyleCode.js and is untouched by any of this).
   const SUGGEST_PAGE = 10; // the owner asked for at least 10 on screen
-  const suggestions = useMemo(() => buildLinkSuggestions({
+  const suggestions = useMemo(() => {
+    const ranked = buildLinkSuggestions({
     kind: panel.kind, normalised: panel.normalised, modelName: panel.modelName,
     tokens: panel.tokens, aliasCandidates: panel.aliasCandidates,
     // EVERY code-shaped token the label printed pools into this one ranked
@@ -1515,9 +1550,46 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
     // hides the rows they came from is a narrower answer than the one they
     // escaped (owner spec 2026-08-15). Off on the dead-end road, where exact
     // owners are by definition absent.
-    includeExact: !!panel.everything,
-    excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
-  }), [panel, products]);
+      includeExact: !!panel.everything,
+      excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
+    });
+    // ── OWNERS THE CATALOGUE RANKING CANNOT SEE (CodeRabbit, PR #371) ────────
+    // buildLinkSuggestions ranks the in-memory catalogue, so a product a label
+    // code identifies through the ALIAS store — never stamped on the product
+    // row — cannot appear above. When this panel is the picker's "show me
+    // everything" exit, dropping those owners would make the full list
+    // NARROWER than the short list it replaced. They go in FIRST, as what they
+    // are. This is the intake gate's addServerOwners, ported.
+    const ex = new Set(panel.excludeIds || []);
+    for (const o of [...(panel.owners || [])].reverse()) {
+      if (!o || !o.product || ex.has(o.product.id)) continue;
+      // It may ALREADY be here — but as a `fillToMin` filler reading "no code
+      // or name overlap", which is the opposite of the truth for a product one
+      // of these numbers actually identifies. A proven owner outranks anything
+      // the catalogue ranking inferred, so the weaker row is replaced (its own
+      // reasons ride along); a row that already scored exact is left alone.
+      const at = ranked.findIndex((s) => s.product.id === o.product.id);
+      if (at >= 0 && ranked[at].score >= 105) continue;
+      const prior = at >= 0 ? ranked.splice(at, 1)[0] : null;
+      const codes = (o.codes || []).filter(Boolean);
+      ranked.unshift({
+        product: o.product,
+        code: codes.length === 1 ? codes[0] : (prior && prior.code) || null,
+        field: codes.length === 1 ? "confirmed" : (prior && prior.field) || null,
+        tier: "exact", score: 105, weak: false,
+        reasons: [
+          codes.length
+            ? `a number on this label already identifies this product — matched ${codes.map((c) => formatStyleCodeForDisplay(c) || c).join(" · ")}`
+            : "a number on this label already identifies this product",
+          // Only a REAL prior tier is worth keeping; a filler's "no overlap"
+          // line beside "already identifies this product" reads as a
+          // contradiction.
+          ...(prior && !prior.weak ? prior.reasons : []),
+        ],
+      });
+    }
+    return ranked;
+  }, [panel, products]);
   const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);
   // weak rows are BROWSING evidence (linkSuggestions.js) — when they are all
   // there is, the heading must say "closest we have", not claim a match
@@ -1814,6 +1886,17 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onShowAll, onC
                         limit={rows.length} photoSize={120} cta="TAP"
                         highlightId={photoColours && rows[0] ? rows[0].product.id : null} />
       </div>
+
+      {/* Ownership could not be fully checked. The list still stands — every
+          candidate below is real — but it must not read as complete
+          (CodeRabbit, PR #371). */}
+      {panel.sweepFailed && (
+        <div style={{ fontSize: 12, color: AMBER, marginTop: 10, lineHeight: 1.5 }}>
+          The label-code index couldn't be reached, so a product registered only under one of
+          this label's other numbers may be missing here. Use “show me everything” if none of
+          these is the shoe.
+        </div>
+      )}
 
       {(panel.unloadedIds || []).length > 0 && (
         <div style={{ fontSize: 12, color: AMBER, marginTop: 10, lineHeight: 1.5 }}>

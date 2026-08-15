@@ -123,10 +123,13 @@ describe("mergeTokenCandidates — one list from every token", () => {
     expect(out.unloadedIds).toEqual([]);
   });
 
-  it("a FETCHED record that still reads merged-away is UNLOADED, never a countable candidate", () => {
-    // fetchProductFollowingMerge is supposed to hand back the survivor. If it
-    // hands back a merged-away record the chain is broken — counting into a
-    // dead product is silent stock corruption, so it is surfaced as unloaded.
+  it("INVARIANT: a resolved record that reads merged-away is UNLOADED, never a countable candidate", () => {
+    // Today's only caller (fetchProductFollowingMerge) cannot produce this —
+    // it returns a record only on its `!p.mergedInto` branch, so this is an
+    // invariant of the PURE function, not a live-bug regression test (Sonnet
+    // architect review, PR #371). It is pinned because a future caller that
+    // resolves ids some other way must not be able to turn a dead record into
+    // a countable row.
     const out = mergeTokenCandidates({
       tokens: ["A6CWNEN3", "A8425"], products: [TIMBER],
       serverOwners: [{ productId: "pBroken", code: "A8425", via: "index" }],

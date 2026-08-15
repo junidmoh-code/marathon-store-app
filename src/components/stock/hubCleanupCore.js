@@ -305,10 +305,14 @@ export function mergeTokenCandidates({ tokens = [], products = [], claims = {}, 
     // The claim (or an unrepointed alias row) still names a merged-away id;
     // its survivor answers for it now. Neither candidate nor unloaded.
     if (local && isMergedAway(local)) return;
-    // A FETCHED record is supposed to BE the survivor (fetchProductFollowingMerge
-    // walks the chain). If one still reads as merged-away the chain is broken —
-    // offering it as a candidate would let the operator count into a dead
-    // product, so it falls through to UNLOADED and says so on screen instead.
+    // INVARIANT GUARD, not a live-bug fix (Sonnet architect review, PR #371).
+    // The only production feed for `resolved` is fetchProductFollowingMerge,
+    // which returns a record ONLY on its `!p.mergedInto` branch — so today it
+    // cannot hand back a merged-away one, and this branch is unreachable
+    // through that call site. It is kept because this module is pure and must
+    // not depend on its caller for the invariant: if a future caller resolves
+    // ids some other way, a merged-away record must land in UNLOADED (visible,
+    // "reload before trusting this list") rather than become a countable row.
     const fetched = (resolved && resolved[id]) || null;
     const product = local || (fetched && !isMergedAway(fetched) ? fetched : null);
     if (product) {
