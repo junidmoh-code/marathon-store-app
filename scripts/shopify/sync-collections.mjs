@@ -72,7 +72,16 @@ const db = admin.database();
 // STRICT: this script can LEAVE collections, so a wrong publication would read
 // the whole live catalogue as unpublished and clear it out. A title guess is
 // not good enough for that.
-const onlinePublicationId = await requireOnlineStorePublication(graphql, { strict: true });
+// Strict mode THROWS by design (no online_store channel, no publication at all,
+// or a truncated walk). Those are expected refusals, not crashes — they get the
+// same treatment as reconcile.mjs gives them: the message, and exit 1.
+let onlinePublicationId;
+try {
+  onlinePublicationId = await requireOnlineStorePublication(graphql, { strict: true });
+} catch (e) {
+  console.error(String(e?.message || e));
+  process.exit(1);
+}
 const collectionGids = await collectionGidsByKey(db);
 const managedGids = manualGidsFrom(collectionGids);
 if (!managedGids.length) {
