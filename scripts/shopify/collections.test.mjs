@@ -8,7 +8,7 @@ import {
   buildCollectionDescriptionHtml, buildConditionsSourceInput,
   desiredConditionsFingerprint, actualConditionsFingerprint, ensureCollection,
   planCollectionMembership, manualGidsFrom, readProductCollections, applyCollectionMembership,
-  requireOnlineStorePublication, sweepIntent,
+  requireOnlineStorePublication, sweepIntent, ruleBearingSources, deletableRuleSources,
 } from "./collections.mjs";
 import { COLLECTION_BY_KEY } from "./collectionMap.mjs";
 
@@ -833,5 +833,64 @@ describe("requireOnlineStorePublication — strict mode", () => {
         nodes: [{ id: "gid://shopify/Publication/9", catalog: null, channels: { nodes: [{ handle: "online_store" }] } }] },
     }]]);
     expect(await requireOnlineStorePublication(g.fn, { strict: true })).toBe("gid://shopify/Publication/9");
+  });
+});
+
+// ── HYBRID SOURCES: a rule AND hand-picked products in one inclusion ─────────
+// The same destruction the selection-only rule prevents, in a shape that also
+// carries a rule. Deleting it to rewrite the rule would take somebody's manual
+// picks with it.
+const sel = (n) => ({ nodes: Array.from({ length: n }, (_, i) => ({ product: { id: `gid://shopify/Product/${i}` } })) });
+const RULE = { __typename: "CollectionSourceInclusionConditionVariantPrice", relation: "LESS_THAN", value: { amount: "500.00" } };
+
+describe("hybrid conditions sources are never deleted", () => {
+  const ruleOnly = { __typename: "CollectionConditionsSource", id: "rule-only",
+    inclusion: { matchType: "ALL", conditions: [RULE], selections: sel(0) } };
+  const hybrid = { __typename: "CollectionConditionsSource", id: "hybrid",
+    inclusion: { matchType: "ALL", conditions: [RULE], selections: sel(2) } };
+  const selectionOnly = { __typename: "CollectionConditionsSource", id: "members",
+    inclusion: { matchType: "ALL", conditions: [], selections: sel(7) } };
+
+  it("a hybrid still counts as RULE-bearing — the fingerprint must see its rule", () => {
+    expect(ruleBearingSources([hybrid]).map((s) => s.id)).toEqual(["hybrid"]);
+  });
+
+  it("…but is NOT deletable, while a rule-only source is", () => {
+    expect(deletableRuleSources([ruleOnly, hybrid, selectionOnly]).map((s) => s.id)).toEqual(["rule-only"]);
+  });
+
+  it("a source with absent selections (older read-back) is treated as holding none", () => {
+    const noField = { __typename: "CollectionConditionsSource", id: "x", inclusion: { matchType: "ALL", conditions: [RULE] } };
+    expect(deletableRuleSources([noField]).map((s) => s.id)).toEqual(["x"]);
+  });
+
+  it("ensureCollection REFUSES rather than rewriting a rule that would take products with it", async () => {
+    const g = fakeGraphql([
+      ["collection(id:", { collection: collectionShape(UNDER, { sources: [hybrid] }) }],
+      ["collectionUpdate", { collectionUpdate: { collection: { id: "gid://shopify/Collection/111", handle: "under-r500" }, userErrors: [] } }],
+    ]);
+    // UNDER's desired conditions differ from the hybrid's single price rule.
+    await expect(ensureCollection(g.fn, fakeDb(), UNDER, {
+      commit: true, recorded: { "under-r500": { shopifyCollectionId: "gid://shopify/Collection/111" } },
+    })).rejects.toThrow(/hand-picked products/);
+    expect(g.calls.some((c) => c.query.includes("collectionUpdate"))).toBe(false);
+  });
+
+  it("an UNCHANGED collection with a hybrid source is still a clean noop", async () => {
+    // Refusing only applies when the rule would have to be rewritten.
+    const matching = { __typename: "CollectionConditionsSource", id: "hybrid",
+      inclusion: { matchType: "ALL", conditions: [
+        { __typename: "CollectionSourceInclusionConditionProductStatus", relation: "EQUALS", values: ["ACTIVE"] },
+        RULE,
+      ], selections: sel(2) } };
+    const g = fakeGraphql([
+      ["collection(id:", { collection: collectionShape(UNDER, { sources: [matching] }) }],
+      ["publishablePublish", { publishablePublish: { userErrors: [] } }],
+    ]);
+    const r = await ensureCollection(g.fn, fakeDb(), UNDER, {
+      commit: true, recorded: { "under-r500": { shopifyCollectionId: "gid://shopify/Collection/111" } },
+      onlinePublicationId: "gid://shopify/Publication/1",
+    });
+    expect(r.action).toBe("noop");
   });
 });

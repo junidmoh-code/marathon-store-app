@@ -125,9 +125,22 @@ const TYPENAME_TO_NAME = {
 const isRuleBearing = (s) =>
   s?.__typename === "CollectionConditionsSource" && (s.inclusion?.conditions?.length ?? 0) > 0;
 
-/** The rule-bearing sources on a collection — the only ones we compare or delete. */
+// A source can be BOTH: conditions AND hand-picked selections in one
+// inclusion. Deleting such a source to rewrite its rule would take the
+// selections with it — the same destruction the selection-only rule above
+// prevents, in a shape that also carries a rule. So "compare it" and "delete
+// it" are separate questions, and only a source with NO selections may be
+// deleted.
+const hasSelections = (s) => (s?.inclusion?.selections?.nodes?.length ?? 0) > 0;
+
+/** Sources carrying a RULE — what the fingerprint compares. May include hybrids. */
 export function ruleBearingSources(sources) {
   return (sources ?? []).filter(isRuleBearing);
+}
+
+/** Sources that may be DELETED to rewrite a rule: rule-bearing and holding no products. */
+export function deletableRuleSources(sources) {
+  return (sources ?? []).filter((s) => isRuleBearing(s) && !hasSelections(s));
 }
 
 /** The same fingerprint, computed from a Collection.sources read-back. */
@@ -178,6 +191,9 @@ const COLLECTION_FIELDS = `
           ... on CollectionSourceInclusionConditionVariantPrice { relation value { amount } }
           ... on CollectionSourceInclusionConditionVariantCompareAtPrice { relation value { amount } }
         }
+        # Presence only. A source holding hand-picked products may never be
+        # deleted to rewrite its rule — see deletableRuleSources.
+        selections(first: 1) { nodes { product { id } } }
       }
     }
   }`;
@@ -336,9 +352,12 @@ export async function ensureCollection(graphql, db, spec, { commit = false, reco
 
   // ── RECONCILE ──────────────────────────────────────────────────────────────
   const haveFp = actualConditionsFingerprint(existing.sources);
-  // Rule-bearing only. The selection-only source holding a manual collection's
-  // products must survive every run — deleting it would empty the collection.
-  const conditionSourceIds = ruleBearingSources(existing.sources).map((s) => s.id);
+  // Only sources that carry a rule AND hold no hand-picked products may be
+  // deleted. A selection-only source is a manual collection's membership; a
+  // HYBRID (rule + selections) would lose those products if deleted to rewrite
+  // the rule. Both must survive every run.
+  const conditionSourceIds = deletableRuleSources(existing.sources).map((s) => s.id);
+  const undeletable = ruleBearingSources(existing.sources).filter((s) => !conditionSourceIds.includes(s.id));
 
   const diffs = [];
   if (existing.title !== spec.title) diffs.push("title");
@@ -348,6 +367,17 @@ export async function ensureCollection(graphql, db, spec, { commit = false, reco
   if (existing.seo?.description !== seo.description) diffs.push("seo.description");
   if (existing.sortOrder !== spec.sortOrder) diffs.push("sortOrder");
   const conditionsDiffer = haveFp !== wantFp;
+  // Refuse rather than half-apply: rewriting the rule means deleting the source
+  // that carries it, and that source is holding products somebody chose by
+  // hand. Losing them silently to a "reconcile" is not a trade this script gets
+  // to make — so the whole collection is left alone and the run says why.
+  if (conditionsDiffer && undeletable.length) {
+    throw new Error(
+      `collection "${spec.key}" carries ${undeletable.length} conditions source(s) that ALSO hold hand-picked products ` +
+      `(${undeletable.map((s) => s.id).join(", ")}). Rewriting the rule would delete those products from the collection. ` +
+      `Resolve it in the Shopify admin — move the picks out, or accept the rule as it stands — then re-run.`
+    );
+  }
   if (conditionsDiffer) {
     diffs.push("conditions");
     notes.push(
