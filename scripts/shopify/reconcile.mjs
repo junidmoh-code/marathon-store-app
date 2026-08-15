@@ -161,9 +161,15 @@ if (worklist.length > MAX_APPLY) {
 // Matched on the stable `online_store` CHANNEL HANDLE (collections.mjs owns the
 // one lookup): the catalog title is auto-generated and localisable, so a title
 // match could silently resolve nothing and publish to no channel.
+//
+// STRICT, like the sweep. I first reasoned that a wrong publication here would
+// "just fail to publish" — it would not. This script publishes to that id and
+// then writes confirmLiveState "on", so a wrong guess records a product as LIVE
+// while it sits on no channel, and the intent is consumed so the worklist never
+// revisits it. Refusing to guess is much cheaper than a durable false "live".
 let online;
 try {
-  online = { id: await requireOnlineStorePublication(graphql) };
+  online = { id: await requireOnlineStorePublication(graphql, { strict: true }) };
 } catch (e) {
   console.error(String(e?.message || e));
   process.exit(1);

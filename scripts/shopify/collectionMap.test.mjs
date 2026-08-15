@@ -185,6 +185,24 @@ describe("resolveCollection — the join, against the real catalogue", () => {
   });
 });
 
+// The sweep distinguishes three "no collection" outcomes and they must stay
+// distinguishable from the map's answer alone: a deliberate null, a category
+// nobody mapped, and a mapped collection that was never created on the shop.
+describe("the three no-collection outcomes are distinguishable", () => {
+  it("a deliberate null is 'unmapped'", () => {
+    expect(resolveCollection({ category: "Price Products", subcategory: "Price Products" }).status).toBe("unmapped");
+  });
+  it("a category nobody mapped is 'unknown'", () => {
+    expect(resolveCollection({ category: "Homeware", subcategory: "Mugs" }).status).toBe("unknown");
+  });
+  it("a MAPPED category still names a collection key — 'no recorded id' is a shop fact, not a map fact", () => {
+    // sync-collections reports this as `no-id` (fix it with ensure-collections
+    // --commit), never as the documented-normal `no-collection`.
+    const r = resolveCollection({ category: "Footwear", subcategory: "Boots" });
+    expect(r).toMatchObject({ status: "mapped", collectionKey: "sneakers" });
+  });
+});
+
 describe("CATEGORY_MAP integrity", () => {
   it("every non-null target names a MANUAL collection (smart ones are Shopify's to fill)", () => {
     for (const [key, target] of Object.entries(CATEGORY_MAP)) {

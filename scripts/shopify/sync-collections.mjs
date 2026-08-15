@@ -161,6 +161,7 @@ for (const pid of pids) {
     // A product that is not confirmed ON belongs in NO managed collection,
     // whatever its record says — desired null only ever leaves.
     let desired = null;
+    let missingId = false;
     let label = node
       ? `not on the storefront (state ${node.state}/${node.liveState ?? "—"}) — leaves every managed collection`
       : "on Shopify but never reviewed (no /shopify_publish node) — leaves every managed collection";
@@ -172,6 +173,12 @@ for (const pid of pids) {
       }
       const r = resolveCollection(product);
       desired = r.status === "mapped" ? (collectionGids[r.collectionKey] ?? null) : null;
+      // A mapped category whose collection was never CREATED is a different
+      // thing from one deliberately mapped nowhere, and it has a one-command
+      // cure (ensure-collections.mjs --commit). Reporting it as the documented
+      // no-collection outcome would hide a live product with no home behind a
+      // status that exits 0.
+      missingId = r.status === "mapped" && !desired;
       label =
         r.status !== "mapped" ? `⚠ ${r.status}: ${r.reason}`
         : desired ? COLLECTION_BY_KEY.get(r.collectionKey).title
@@ -187,7 +194,9 @@ for (const pid of pids) {
       if (live || ONLY) {
         results.push({
           pid, name,
-          status: live ? (desired ? "already-correct" : "no-collection") : "nothing-to-do",
+          status: live
+          ? (desired ? "already-correct" : missingId ? "no-id" : "no-collection")
+          : "nothing-to-do",
           detail: label,
         });
       }
@@ -215,7 +224,7 @@ console.log("══ COLLECTION MEMBERSHIP ══");
 // ISN'T ours, or has no record at all: those are broken, ✗, and they now fail
 // the run. Marking them ✗ while exiting 0 was the same contradiction demoting
 // no-collection was supposed to remove.
-const BAD = new Set(["failed", "no-map", "no-record", "unknown-pid", "live-drift"]);
+const BAD = new Set(["failed", "no-map", "no-record", "unknown-pid", "live-drift", "no-id"]);
 for (const r of results) {
   const icon = BAD.has(r.status) ? "✗" : (r.status === "no-collection" || r.status === "reconciler-busy") ? "⚠" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(16)} ${r.name}`);
