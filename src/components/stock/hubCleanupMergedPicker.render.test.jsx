@@ -166,8 +166,14 @@ describe("the count flow no longer auto-picks a token", () => {
     expect(after).toContain("Timberland Euro Hiker Black");
     expect(after).toContain("Timberland Sprint Trekker");
     expect(after).toContain("name more than one product");
-    // ONE list, not three panels: the header counts the whole set.
-    expect(after).toContain("3");
+    // ONE list, not three panels: the header counts the whole set. The phrase,
+    // not the bare digit — textOf serialises inline styles too, so "3" alone
+    // matches a font size and pins nothing (CodeRabbit, PR #371).
+    expect(after).toContain("\"3\",\" products\"");
+    // Each of the three numbers is named on its own row.
+    expect(after).toContain("matched A6CWNEN3");
+    expect(after).toContain("matched A8425");
+    expect(after).toContain("matched TB0A2Q1M");
   });
 
   it("EVERY row carries the photo, the name and the number that found it", async () => {
@@ -209,6 +215,24 @@ describe("the count flow no longer auto-picks a token", () => {
     expect(after).toContain("Timberland Euro Hiker Black");
     expect(after).not.toContain("name more than one product");
     expect(after).not.toContain("link it");
+    expect(recordLabelCodes).toHaveBeenCalledWith({
+      productId: "pEuro", chosenCode: "ZZZ9999", otherCodes: ["A8425"],
+    });
+  });
+
+  it("the \"Linked\" toast is never a claim nothing backs (CodeRabbit, PR #371)", async () => {
+    // A read whose `display` is ABSENT from meta.allCodes, with one code in
+    // it: the token SET still has two members, so the merged branch runs and
+    // resolves via the other number — and the toast says "Linked; the next
+    // scan resolves by itself". Gating the filing on meta.allCodes.length > 1
+    // made that a lie: nothing was recorded and the next scan asked again.
+    const tr = await mountOnCountTab();
+    await act(async () => {
+      await readerProps.onCode("ZZZ9999", { allCodes: ["A8425"], auto: true, modelName: null, tokens: null });
+    });
+    const after = textOf(tr);
+    expect(after).toContain("Timberland Euro Hiker Black");
+    expect(after).toContain("Linked; the next scan resolves by itself");
     expect(recordLabelCodes).toHaveBeenCalledWith({
       productId: "pEuro", chosenCode: "ZZZ9999", otherCodes: ["A8425"],
     });

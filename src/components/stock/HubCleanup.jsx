@@ -354,17 +354,26 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     setBusy(true);
     try {
       const normalised = normaliseStyleCode(display);
+      // EVERY code-shaped token this label carries, the read one FIRST. One
+      // set, used for the gather below, for the filing, and for the toast — so
+      // the three can never disagree about what "this label" means.
+      const labelTokens = labelTokenSet(display, meta && meta.allCodes);
+      const multiToken = labelTokens.length > 1;
       // The label printed MORE than one code-shaped token (tapped or
       // auto-picked). Once the shoe resolves, EVERY token files as an identity
       // of that product — a conflict (a token another product owns) surfaces
       // through the duplicate flow, never silently (owner spec 2026-08-08).
       const fileAllCodes = async (productId) => {
-        const all = meta && Array.isArray(meta.allCodes) && meta.allCodes.length > 1 ? meta.allCodes : null;
-        if (!all || !productId) return;
+        // GATED ON THE TOKEN SET, not on meta.allCodes (CodeRabbit, PR #371).
+        // labelTokens includes the read code itself, so a read whose `display`
+        // is absent from meta.allCodes still has other tokens worth filing —
+        // and the resolved branch's "Linked; the next scan resolves by itself"
+        // toast must never be a claim that nothing backs.
+        const others = labelTokens.filter((c) => c && c !== normalised);
+        if (!others.length || !productId || !normalised) return;
         try {
           const res = await recordLabelCodes({
-            productId, chosenCode: normalised,
-            otherCodes: all.filter((c) => normaliseStyleCode(c) !== normalised),
+            productId, chosenCode: normalised, otherCodes: others,
           });
           if (res && res.conflicts && res.conflicts.length) {
             const codes = res.conflicts.map((c) => formatStyleCodeForDisplay(c.code) || c.code).join(", ");
@@ -387,8 +396,8 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // (StyleCodeGate.jsx: buildLinkSuggestions with allCodes + one
       // resolveAnyCode over [primary, ...others]). This is that gather, ported.
       // One list, no auto-pick: more than one candidate ALWAYS asks.
-      const labelTokens = labelTokenSet(display, meta && meta.allCodes);
-      const multiToken = labelTokens.length > 1;
+      // (labelTokens / multiToken are built above, beside fileAllCodes.)
+      //
       // Every token's index claim — single-key /style_code_index reads, in
       // parallel. lookupStyleClaim already swallows its own errors (null), so
       // the primary token's semantics below are exactly what they always were.
@@ -426,11 +435,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           ...serverOwners.map((o) => o && o.productId),
           ...labelTokens.flatMap((t) => claimOwnerIds(claimByToken[t] || null)),
         ])].filter((id) => id && !localIds.has(id));
+        // In PARALLEL (CodeRabbit, PR #371): each fetch can follow up to five
+        // merge hops, and this sits in the operator's hot path between the
+        // shutter and the picker. Semantics are unchanged — every call already
+        // degrades to null on its own.
+        const fetchedList = await Promise.all(
+          wanted.map((id) => fetchProductFollowingMerge(id).catch(() => null)));
         const resolvedById = {};
-        for (const id of wanted) {
-          const fetchedProduct = await fetchProductFollowingMerge(id).catch(() => null);
-          if (fetchedProduct) resolvedById[id] = fetchedProduct;
-        }
+        wanted.forEach((id, i) => { if (fetchedList[i]) resolvedById[id] = fetchedList[i]; });
         const merged = mergeTokenCandidates({
           tokens: labelTokens, products, claims: claimByToken, serverOwners, resolved: resolvedById,
         });

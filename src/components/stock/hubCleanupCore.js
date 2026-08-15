@@ -305,7 +305,12 @@ export function mergeTokenCandidates({ tokens = [], products = [], claims = {}, 
     // The claim (or an unrepointed alias row) still names a merged-away id;
     // its survivor answers for it now. Neither candidate nor unloaded.
     if (local && isMergedAway(local)) return;
-    const product = local || (resolved && resolved[id]) || null;
+    // A FETCHED record is supposed to BE the survivor (fetchProductFollowingMerge
+    // walks the chain). If one still reads as merged-away the chain is broken —
+    // offering it as a candidate would let the operator count into a dead
+    // product, so it falls through to UNLOADED and says so on screen instead.
+    const fetched = (resolved && resolved[id]) || null;
+    const product = local || (fetched && !isMergedAway(fetched) ? fetched : null);
     if (product) {
       if (!byId.has(product.id)) byId.set(product.id, { product, codes: [] });
       const row = byId.get(product.id);

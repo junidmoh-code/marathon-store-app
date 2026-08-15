@@ -123,6 +123,19 @@ describe("mergeTokenCandidates — one list from every token", () => {
     expect(out.unloadedIds).toEqual([]);
   });
 
+  it("a FETCHED record that still reads merged-away is UNLOADED, never a countable candidate", () => {
+    // fetchProductFollowingMerge is supposed to hand back the survivor. If it
+    // hands back a merged-away record the chain is broken — counting into a
+    // dead product is silent stock corruption, so it is surfaced as unloaded.
+    const out = mergeTokenCandidates({
+      tokens: ["A6CWNEN3", "A8425"], products: [TIMBER],
+      serverOwners: [{ productId: "pBroken", code: "A8425", via: "index" }],
+      resolved: { pBroken: P("pBroken", "A8425", { mergedInto: "pSomewhereElse" }) },
+    });
+    expect(out.candidates.map((c) => c.product.id)).toEqual(["pTimber"]);
+    expect(out.unloadedIds).toEqual(["pBroken"]);
+  });
+
   it("ONE shared code across every owner is the colourway shape; two codes is the duplicate question", () => {
     const a = P("pA", "A6CWNEN3");
     const b = P("pB", "A6CWNEN3");

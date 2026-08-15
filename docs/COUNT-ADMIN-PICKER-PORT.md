@@ -71,7 +71,7 @@ pass itself).
 
 `hubCleanupCore.js:139–172` — `chooseFromLabelRead(data)`:
 
-```
+```text
 :154-156   autoPick  (a LAYOUT RULE a human taught)   → { kind: "chosen", auto: true }
 :157-159   preferred (tier 2's own read of the label) → { kind: "chosen", auto: true }
 :160       otherwise                                  → { kind: "options" }  (chips)
