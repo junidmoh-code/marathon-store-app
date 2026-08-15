@@ -256,6 +256,90 @@ export function resolveStyleNumber(code, { products = [], claim = null } = {}) {
   return { kind: "unresolved", normalised };
 }
 
+// ─── EVERY TOKEN ON THE LABEL, ONE LIST (owner spec 2026-08-15) ──────────────
+// THE DEFECT THIS REPLACES: the count read every code-shaped number a label
+// printed, auto-picked ONE of them (a learned layout rule, or tier 2's own
+// preference — chooseFromLabelRead above), and then ran the whole resolution
+// chain against that single token. Whatever the OTHER numbers owned was
+// invisible: a Timberland label printing A6CWNEN3 and A8425 showed only the
+// first token's products, and the shoe the operator was holding could be
+// sitting behind the second.
+//
+// The admin intake gate never had this problem, because its candidate list is
+// built from the token SET (buildLinkSuggestions with allCodes, plus one
+// resolveAnyCode round trip over [primary, ...others]) while the auto-pick only
+// decides what goes in the text field. This is that same gather, for the count.
+//
+// PURE. The caller does the reads and hands them in:
+//   tokens        every normalised code-shaped token, PRIMARY FIRST (the
+//                 ordering carries through to the picker, so the auto-picked
+//                 token's owners still lead the list — ordering, never filtering)
+//   claims        { [token]: /style_code_index row | null }
+//   serverOwners  labelAlias resolveAnyCode's owners — [{ productId, code }] —
+//                 which is the ONLY way an alias-only owner (a code filed
+//                 against a product that never stamped it) can be seen
+//   resolved      { [productId]: product } for ids not in `products`, already
+//                 followed through any merge pointer by the caller
+//
+// Returns candidates in insertion order with the tokens that found each, plus
+// the ids the index/server named that this device cannot show. A merged-away
+// product is NEITHER a candidate NOR unloaded — its survivor answers for it
+// (same rule as resolveStyleNumber).
+export function labelTokenSet(display, allCodes) {
+  const out = [];
+  for (const raw of [display, ...(Array.isArray(allCodes) ? allCodes : [])]) {
+    const n = normaliseStyleCode(raw);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+export function mergeTokenCandidates({ tokens = [], products = [], claims = {}, serverOwners = [], resolved = {} } = {}) {
+  const byId = new Map();      // productId → { product, codes: [] }
+  const unloaded = new Map();  // productId → [codes]
+  const known = (id) => (products || []).find((x) => x && x.id === id) || null;
+
+  const add = (id, code) => {
+    if (!id) return;
+    const local = known(id);
+    // The claim (or an unrepointed alias row) still names a merged-away id;
+    // its survivor answers for it now. Neither candidate nor unloaded.
+    if (local && isMergedAway(local)) return;
+    const product = local || (resolved && resolved[id]) || null;
+    if (product) {
+      if (!byId.has(product.id)) byId.set(product.id, { product, codes: [] });
+      const row = byId.get(product.id);
+      if (code && !row.codes.includes(code)) row.codes.push(code);
+      return;
+    }
+    if (!unloaded.has(id)) unloaded.set(id, []);
+    if (code && !unloaded.get(id).includes(code)) unloaded.get(id).push(code);
+  };
+
+  for (const token of tokens) {
+    // Products STAMPED with the token, and the ids the index names as owners
+    // (primary + registered colourway siblings). Neither alone sees everything.
+    for (const p of styleCodeOwners(token, products)) add(p.id, token);
+    for (const id of claimOwnerIds((claims && claims[token]) || null)) add(id, token);
+  }
+  for (const o of serverOwners || []) {
+    if (!o || !o.productId) continue;
+    add(o.productId, normaliseStyleCode(o.code) || null);
+  }
+
+  const candidates = [...byId.values()];
+  const unloadedIds = [...unloaded.keys()];
+  // Which of the label's numbers this candidate set answers to. ONE distinct
+  // code across every owner is the colourway-sibling shape; two or more means
+  // the label's own numbers name different products, which is the duplicate
+  // question and must never be dressed up as a colourway choice.
+  const ownerCodes = [...new Set([
+    ...candidates.flatMap((c) => c.codes),
+    ...[...unloaded.values()].flat(),
+  ].filter(Boolean))];
+  return { candidates, unloadedIds, ownerCodes };
+}
+
 // ── THE REGISTRATION COLLISION QUESTION (owner spec 2026-08-07) ──────────────
 // At registration the operator has ALREADY selected the product — a human has
 // vouched for the identity — so a code owned by a DIFFERENT product is a

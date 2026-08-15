@@ -48,6 +48,7 @@ import {
 } from "./styleCodeGateLogic";
 import { learnLabelLayout } from "../stock/hubCleanupStore";
 import { buildLinkSuggestions } from "../../utils/linkSuggestions";
+import CandidateCards from "../shared/CandidateCards";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
@@ -88,36 +89,15 @@ const meta = { fontSize: 12, color: "rgba(233,238,255,.45)", lineHeight: 1.5 };
 // reads, the label's printed model name. Shown wherever intake is about to
 // open the create form: tapping a card routes to ADD STOCK on that product
 // instead. Photo first — the operator is holding the shoe.
+//
+// THE RENDERER NOW LIVES IN shared/CandidateCards.jsx (2026-08-15). It was
+// lifted VERBATIM so the count flow shows the identical list instead of a
+// second implementation of the same question; the defaults there are exactly
+// what this call site used to pass inline (84px photo, "ADD STOCK →", 6 rows),
+// and styleCodeGateSimilar.render.test.jsx pins that this gate's output is
+// unchanged. This wrapper keeps the gate's own onAddStock(id) contract.
 function SimilarCards({ suggestions, onAddStock }) {
-  return (
-    <>
-      {suggestions.slice(0, 6).map((s) => (
-        <div key={s.product.id}
-          onClick={() => onAddStock(s.product.id)}
-          role="button" tabIndex={0}
-          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onAddStock(s.product.id); } }}
-          style={{ display: "flex", gap: 14, alignItems: "center", background: "rgba(255,255,255,.03)",
-                   border: "1px solid rgba(120,150,255,.16)", borderRadius: 14, padding: 12, cursor: "pointer" }}>
-          <div style={{ width: 84, height: 84, flexShrink: 0, borderRadius: 12, overflow: "hidden",
-                        background: "rgba(255,255,255,.05)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {s.product.photoUrl
-              ? <img src={s.product.photoUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              : <span style={{ ...meta, fontSize: 9 }}>NO IMAGE</span>}
-          </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 15.5, fontWeight: 750, color: "#fff", lineHeight: 1.25 }}>{s.product.name || "Unnamed product"}</div>
-            {s.code && (
-              <div style={{ ...meta, marginTop: 4, fontFamily: "ui-monospace, monospace" }}>
-                {formatStyleCodeForDisplay(s.code)}{s.field === "pending" ? " (pending)" : ""}
-              </div>
-            )}
-            <div style={{ ...meta, marginTop: 4, color: "#AFC6FF" }}>{s.reasons.join(" · ")}</div>
-          </div>
-          <span style={{ ...meta, color: BLUE, fontWeight: 800, flexShrink: 0 }}>ADD STOCK →</span>
-        </div>
-      ))}
-    </>
-  );
+  return <CandidateCards suggestions={suggestions} onPick={(p) => onAddStock(p.id)} />;
 }
 
 function Note({ tone, children }) {

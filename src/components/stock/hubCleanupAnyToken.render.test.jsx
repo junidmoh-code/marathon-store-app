@@ -88,6 +88,11 @@ const PRODUCTS = [
 
 // Every token the Lacoste label prints, as the reader now delivers them.
 const LACOSTE_META = { allCodes: ["45SMA0018", "352890625", "TTJJ21FB00001"], modelName: null, tokens: ["LGUARD", "BRKR", "CTT"] };
+// The same label with the production token REMOVED, so no token is answered by
+// the local catalogue. Needed since the merged gather (2026-08-15) sweeps every
+// token against the loaded products — with 352890625 present, "Lacoster white"
+// is found locally and the server-only paths below are never the whole story.
+const NO_LOCAL_OWNER_META = { allCodes: ["45SMA0018", "TTJJ21FB00001"], modelName: null, tokens: ["LGUARD", "BRKR", "CTT"] };
 
 const textOf = (tr) => JSON.stringify(tr.toJSON());
 
@@ -126,7 +131,10 @@ describe("any-token resolution in the count flow", () => {
     await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
 
     expect(resolveAnyCodes).toHaveBeenCalledTimes(1);
-    expect(resolveAnyCodes.mock.calls[0][0].sort()).toEqual(["352890625", "TTJJ21FB00001"]);
+    // The sweep now carries the WHOLE token set, the tapped one included
+    // (2026-08-15): the merged gather asks one question for the whole label
+    // instead of "the picked token, then the leftovers if that failed".
+    expect(resolveAnyCodes.mock.calls[0][0].sort()).toEqual(["352890625", "45SMA0018", "TTJJ21FB00001"]);
     const after = textOf(tr);
     expect(after).toContain("Lacoster white");           // the count panel
     expect(after).not.toContain("link it");              // NOT the link panel
@@ -152,7 +160,11 @@ describe("any-token resolution in the count flow", () => {
     // (fillToMin browses the whole catalogue), so the panel TITLE is the
     // assertion that distinguishes "the human is asked to pick between
     // owners" from "the scan fell through to browsing".
-    expect(after).toContain("One code, more than one product");
+    // TWO DIFFERENT numbers naming two products is not "one code" (2026-08-15):
+    // the title says what actually happened, and each row names its number.
+    expect(after).toContain("This label's numbers name more than one product");
+    expect(after).toContain("matched 352890-625");
+    expect(after).toContain("matched TTJJ21FB00001");
     expect(after).not.toContain("link it");
     expect(after).toContain("Lacoster white");
     expect(after).toContain("Some Other Boot");
@@ -163,7 +175,7 @@ describe("any-token resolution in the count flow", () => {
   it("a FAILED any-token lookup degrades to the link panel — never a false never-registered", async () => {
     resolveAnyCodes.mockImplementation(async () => { throw new Error("network down"); });
     const tr = await mountOnCountTab();
-    await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
+    await act(async () => { await readerProps.onCode("45SMA0018", NO_LOCAL_OWNER_META); });
     const after = textOf(tr);
     expect(after).toContain("link it");
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
@@ -197,13 +209,16 @@ describe("any-token resolution in the count flow", () => {
     resolveAnyCodes.mockImplementation(async () => ({
       resolved: null,
       owners: [
-        { productId: "pGhost1", code: "352890625", via: "index" },
-        { productId: "pGhost2", code: "352890625", via: "alias" },
+        { productId: "pGhost1", code: "45SMA0018", via: "index" },
+        { productId: "pGhost2", code: "45SMA0018", via: "alias" },
       ],
     }));
     fetchProductFollowingMerge.mockImplementation(async () => { throw new Error("down"); });
     const tr = await mountOnCountTab();
-    await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
+    // NO_LOCAL_OWNER_META: with the production token on the label the merged
+    // gather finds "Lacoster white" locally, and the honest answer is then the
+    // picker plus an unloaded warning — proved separately below.
+    await act(async () => { await readerProps.onCode("45SMA0018", NO_LOCAL_OWNER_META); });
     const after = textOf(tr);
     expect(after).not.toContain("link it");
     expect(after).toContain("none could be loaded");
@@ -240,14 +255,32 @@ describe("any-token resolution in the count flow", () => {
     // degrade that into 'link it' (duplicate-minting) or a never-registered
     // note. Same rule as the claim and alias branches.
     resolveAnyCodes.mockImplementation(async () => ({
-      resolved: "pUnknown", owners: [{ productId: "pUnknown", code: "352890625", via: "index" }],
+      resolved: "pUnknown", owners: [{ productId: "pUnknown", code: "45SMA0018", via: "index" }],
+    }));
+    fetchProductFollowingMerge.mockImplementation(async () => { throw new Error("network down"); });
+    const tr = await mountOnCountTab();
+    await act(async () => { await readerProps.onCode("45SMA0018", NO_LOCAL_OWNER_META); });
+    const after = textOf(tr);
+    expect(after).not.toContain("link it");
+    expect(after).toContain("couldn't be loaded");
+    expect(recordUnresolvedScan).not.toHaveBeenCalled();
+  });
+
+  it("a locally-known candidate PLUS an unloadable owner is the picker with the warning, not an error (2026-08-15)", async () => {
+    // The merged gather sees more than the server does. One token is stamped
+    // on a loaded product, another names an owner this device cannot show —
+    // the honest answer is the real candidate WITH "reload before trusting
+    // this list", never an error that hides the candidate we do have.
+    resolveAnyCodes.mockImplementation(async () => ({
+      resolved: "pUnknown", owners: [{ productId: "pUnknown", code: "45SMA0018", via: "index" }],
     }));
     fetchProductFollowingMerge.mockImplementation(async () => { throw new Error("network down"); });
     const tr = await mountOnCountTab();
     await act(async () => { await readerProps.onCode("45SMA0018", LACOSTE_META); });
     const after = textOf(tr);
+    expect(after).toContain("Lacoster white");
+    expect(after).toContain("loaded on this device");
     expect(after).not.toContain("link it");
-    expect(after).toContain("couldn't be loaded");
     expect(recordUnresolvedScan).not.toHaveBeenCalled();
   });
 
@@ -283,16 +316,17 @@ describe("any-token resolution in the count flow", () => {
   });
 
   it("the link panel POOLS the label's other tokens into its ranked rows", async () => {
-    // Nothing resolves anywhere (server sees no owner), but the local
-    // catalogue holds the production token's product — the pooled ranking
-    // must surface it, reason naming the other token.
+    // Nothing OWNS anything (server sees no owner, and neither token is
+    // stamped on a loaded product — 352890620 is one character off "Lacoster
+    // white"'s 352890625). The pooled ranking must still surface it, with the
+    // reason naming the other token.
     const tr = await mountOnCountTab();
     await act(async () => {
-      await readerProps.onCode("45SMA0099", { allCodes: ["45SMA0099", "352890625"], modelName: null, tokens: null });
+      await readerProps.onCode("45SMA0099", { allCodes: ["45SMA0099", "352890620"], modelName: null, tokens: null });
     });
     const after = textOf(tr);
     expect(after).toContain("link it");
     expect(after).toContain("Lacoster white");
-    expect(after).toContain("other token 352890-625");
+    expect(after).toContain("other token 352890-620");
   });
 });

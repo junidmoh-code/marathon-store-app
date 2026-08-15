@@ -50,6 +50,7 @@ import {
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
   DISPLAY_STORES, DISPLAY_STORE_LABELS,
+  labelTokenSet, mergeTokenCandidates,
 } from "./hubCleanupCore";
 import {
   loadRegister, loadUnresolved, registerDisplayUnit, addExtraDisplayUnit,
@@ -71,6 +72,7 @@ import { loadOffShelfSources, offShelfForCell, expectedOnShelf } from "./offShel
 import { loadDisplaySlots } from "./displaySlots";
 import { stockSizeKey } from "../../utils/sizeKey";
 import CameraScanner from "./CameraScanner.jsx";
+import CandidateCards from "../shared/CandidateCards.jsx";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import MergeProducts from "./MergeProducts.jsx";
 import HubSneakerCount from "./HubSneakerCount.jsx";
@@ -370,7 +372,138 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
           }
         } catch { /* best-effort — the count itself must never block on this */ }
       };
-      const claim = await lookupStyleClaim(normalised);
+
+      // ── EVERY TOKEN ON THE LABEL, ONE MERGED LIST (owner spec 2026-08-15) ──
+      // THE BUG THIS REPLACES: the reader auto-picks ONE code-shaped token off
+      // a multi-token label (a learned layout rule, or tier 2's preference —
+      // chooseFromLabelRead), and everything below used to run against that
+      // token ALONE. Whatever the label's OTHER numbers owned was invisible:
+      // the branches below return on the first hit, and meta.allCodes was not
+      // consulted until they had all failed. A Timberland label printing
+      // A6CWNEN3 and A8425 showed only the first token's products.
+      //
+      // The admin intake gate never had this problem — its candidate list is
+      // built from the token SET while the auto-pick only fills the text field
+      // (StyleCodeGate.jsx: buildLinkSuggestions with allCodes + one
+      // resolveAnyCode over [primary, ...others]). This is that gather, ported.
+      // One list, no auto-pick: more than one candidate ALWAYS asks.
+      const labelTokens = labelTokenSet(display, meta && meta.allCodes);
+      const multiToken = labelTokens.length > 1;
+      // Every token's index claim — single-key /style_code_index reads, in
+      // parallel. lookupStyleClaim already swallows its own errors (null), so
+      // the primary token's semantics below are exactly what they always were.
+      const claimResults = await Promise.all(labelTokens.map((t) => lookupStyleClaim(t)));
+      const claimByToken = {};
+      labelTokens.forEach((t, i) => { claimByToken[t] = claimResults[i]; });
+      const claim = claimByToken[normalised] || null;
+      // True once the any-token sweep has run over the WHOLE token set — the
+      // later alternates block would then be asking the same question twice.
+      let anyTokenSwept = false;
+
+      if (multiToken) {
+        // The server half — the ONLY way an alias-only owner is visible (a code
+        // filed against a product that never stamped it), and the only way an
+        // owner this device cannot show becomes `unloadedIds`.
+        //
+        // COST, ACCEPTED DELIBERATELY: labelAlias's resolveAnyCode reads
+        // /label_aliases whole-node, and this runs once per MULTI-TOKEN scan
+        // instead of only on the failure path. It is NOT conditional on the
+        // local gather coming up short — that shortcut was written first and
+        // removed: with two local owners already found, skipping the call hid
+        // a THIRD owner, and a hidden owner turns the collision framing into
+        // the sibling framing, which offers a Merge that would destroy a real
+        // colourway. Single-token labels still make zero calls here, and the
+        // duplicate call the alternates block below used to make is suppressed
+        // (`anyTokenSwept`), so the failure path costs exactly what it did.
+        let sweep = null;
+        try { sweep = await resolveAnyCodes(labelTokens); anyTokenSwept = true; } catch { sweep = null; }
+        const serverOwners = sweep ? sweep.owners : [];
+        // Ids nothing local answers for — followed through their merge pointer
+        // once each, exactly as the single-token branches below do. A failed
+        // fetch leaves the id UNLOADED; it is never silently dropped.
+        const localIds = new Set((products || []).map((p) => p && p.id));
+        const wanted = [...new Set([
+          ...serverOwners.map((o) => o && o.productId),
+          ...labelTokens.flatMap((t) => claimOwnerIds(claimByToken[t] || null)),
+        ])].filter((id) => id && !localIds.has(id));
+        const resolvedById = {};
+        for (const id of wanted) {
+          const fetchedProduct = await fetchProductFollowingMerge(id).catch(() => null);
+          if (fetchedProduct) resolvedById[id] = fetchedProduct;
+        }
+        const merged = mergeTokenCandidates({
+          tokens: labelTokens, products, claims: claimByToken, serverOwners, resolved: resolvedById,
+        });
+        // The link context every escape from the picker needs — the SAME
+        // payload openLink() builds below, so "show me everything" lands on the
+        // identical panel a never-owned code would have opened.
+        const linkContext = {
+          display, normalised,
+          allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+          modelName: meta && typeof meta.modelName === "string" ? meta.modelName : null,
+          tokens: meta && Array.isArray(meta.tokens) ? meta.tokens : null,
+        };
+
+        if (!merged.candidates.length && merged.unloadedIds.length) {
+          // Owners are PROVEN to exist but NOT ONE can be shown. This is
+          // checked before the picker: a picker with no rows and a "reload
+          // first" footnote is a worse answer than saying the read failed.
+          // Falling through instead would invite a duplicate or a false
+          // never-registered note.
+          flash("err", merged.unloadedIds.length > 1
+            ? "This label's numbers match registered products, but none could be loaded — try again."
+            : "A number on this label matches a registered product, but it couldn't be loaded — try again.");
+          return;
+        }
+
+        if (merged.candidates.length + merged.unloadedIds.length > 1) {
+          // MORE THAN ONE — never a silent pick, and never only one token's
+          // half of the list. Every row carries the number(s) that found it.
+          const single = merged.ownerCodes.length === 1 ? merged.ownerCodes[0] : null;
+          setPanel({
+            mode: "choose",
+            // One shared owner code names the set honestly; several means the
+            // label's own numbers disagree, and the display code is the anchor.
+            code: single ? (formatStyleCodeForDisplay(single) || display) : display,
+            claimants: merged.candidates.map((c) => c.product),
+            matchedCodes: Object.fromEntries(merged.candidates.map((c) => [c.product.id, c.codes])),
+            // Two DIFFERENT numbers naming two products is the duplicate
+            // question, not a colourway choice — the copy must say so.
+            multiToken: merged.ownerCodes.length > 1,
+            // SIBLINGS only when every owner rode ONE code and the index
+            // vouches for all of them (same rule as the alternates block
+            // below): the collision framing offers the live Merge affordance,
+            // and merging two legitimate colourways destroys stock history.
+            siblings: !!single && !merged.unloadedIds.length
+              && allRegisteredSiblings(claimByToken[single], merged.candidates.map((c) => c.product.id)),
+            unloadedIds: merged.unloadedIds,
+            allCodes: meta && Array.isArray(meta.allCodes) ? meta.allCodes : null,
+            link: linkContext,
+          });
+          return;
+        }
+
+        if (merged.candidates.length === 1 && !merged.unloadedIds.length) {
+          // EXACTLY ONE candidate across every token, unambiguous — it still
+          // resolves in one step, as it always did.
+          const only = merged.candidates[0];
+          const cp = countPanelFor(only.product);
+          if (cp) {
+            if (!only.codes.includes(normalised)) {
+              const via = formatStyleCodeForDisplay(only.codes[0]) || only.codes[0];
+              flash("ok", `${display} isn't registered, but another number on this label (${via}) is — “${only.product.name}”. Linked; the next scan resolves by itself.`, 6500);
+            }
+            fileAllCodes(only.product.id);
+            setPanel(cp);
+            return;
+          }
+        }
+
+        // Nothing owns ANY of this label's numbers — every fallback below
+        // (alias lookup, the per-size rule, token overlap, the link panel)
+        // is untouched and still runs.
+      }
+
       const out = resolveStyleNumber(display, { products, claim });
       if (out.kind === "claim") {
         // The visible catalogue is pre-filtered of merged-away records, but the
@@ -448,9 +581,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // and the stamped-products index. One owner resolves; several ask; a
       // failed call degrades to the link panel, never to a false
       // never-registered note.
+      // `anyTokenSwept` — the merged gather above already asked this exact
+      // question over the whole token set and found nothing; asking again is a
+      // second whole-node read of /label_aliases for the same answer.
       const alternates = (meta && Array.isArray(meta.allCodes) ? meta.allCodes : [])
         .map(normaliseStyleCode).filter((c) => c && c !== normalised);
-      if (alternates.length) {
+      if (alternates.length && !anyTokenSwept) {
         let anyTok = null;
         try { anyTok = await resolveAnyCodes(alternates); } catch { /* degrade to the panel below */ }
         if (anyTok && anyTok.resolved) {
@@ -1214,6 +1350,25 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                        setMerge({ loser: panel.claimants[0], other: panel.claimants[1] || null });
                        setPanel(null);
                      }}
+                     onShowAll={tab === "count" ? () => {
+                       // "IT'S NOT ONE OF THESE" — the admin gate's escape,
+                       // ported (owner spec 2026-08-15). Admin answers it with
+                       // "none of these — open the form"; the count's
+                       // equivalent full list is the LINK PANEL: every token
+                       // pooled and ranked, padded to ten rows, uncapped free
+                       // search, and "genuinely not in the catalogue" at the
+                       // bottom. COUNT ONLY — a link files an alias and
+                       // continues the COUNT, which is not what the register
+                       // pass is doing.
+                       setPanel({
+                         mode: "link", kind: "code", everything: true,
+                         display: (panel.link && panel.link.display) || panel.code,
+                         normalised: (panel.link && panel.link.normalised) || normaliseStyleCode(panel.code),
+                         allCodes: panel.allCodes || null,
+                         modelName: (panel.link && panel.link.modelName) || null,
+                         tokens: (panel.link && panel.link.tokens) || null,
+                       });
+                     } : null}
                      onClose={() => setPanel(null)} />
       )}
 
@@ -1343,6 +1498,12 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
     // list (owner spec 2026-08-13) — each row's reason names which token
     // found it, and the operator picks by photo.
     allCodes: panel.allCodes,
+    // "Show me everything" must not silently drop the exact owners the picker
+    // had just listed — the operator asked for the WHOLE list, and a list that
+    // hides the rows they came from is a narrower answer than the one they
+    // escaped (owner spec 2026-08-15). Off on the dead-end road, where exact
+    // owners are by definition absent.
+    includeExact: !!panel.everything,
     excludeIds: panel.excludeIds, products, fillToMin: SUGGEST_PAGE,
   }), [panel, products]);
   const [suggestShown, setSuggestShown] = useState(SUGGEST_PAGE);
@@ -1352,11 +1513,19 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
   // dressed weak rows up as suggestions).
   const anyRealMatch = suggestions.some((s) => !s.weak);
 
+  // REACHED FROM THE PICKER ("show me everything") the opening claim would be
+  // a lie — something DOES own one of this label's numbers, the operator just
+  // said it isn't the shoe in their hand. Same panel, same mechanics, honest
+  // words (owner spec 2026-08-15).
+  const everything = !!panel.everything;
+
   return (
-    <Panel title="Nothing owns this label — link it" onClose={onClose}>
+    <Panel title={everything ? "Everything close to this label" : "Nothing owns this label — link it"} onClose={onClose}>
       <div style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.5, marginBottom: 6 }}>
-        {shown ? <>“{shown}” reads cleanly but isn't registered to any product.</>
-               : <>This label's wording doesn't match anything registered.</>}
+        {everything
+          ? <>Every product close to this label's numbers — the ones that own them, and the ones that nearly do.</>
+          : shown ? <>“{shown}” reads cleanly but isn't registered to any product.</>
+                  : <>This label's wording doesn't match anything registered.</>}
       </div>
       <div style={{ fontSize: 12.5, color: GRAY, lineHeight: 1.55, marginBottom: 14 }}>
         Some brands print a different code on every size of the same shoe. If this is a shoe
@@ -1477,7 +1646,16 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
 // candidates may be the same shoe twice, and the merge question is not one a
 // photo can answer. "None of these" is always present — a colourway we have
 // no record for is a real answer, not a failure.
-function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
+//
+// ── EVERY TOKEN'S OWNERS, ONE LIST (owner spec 2026-08-15) ───────────────────
+// The claimants handed in may now come from SEVERAL of a multi-token label's
+// numbers, so each row names the number(s) that found it and the header stops
+// claiming "one code" when the label's own numbers disagree. The rows render
+// through shared/CandidateCards.jsx — the SAME renderer the admin intake gate
+// uses for its "is it one of these?" list — so there is one card in the app,
+// not two. Ordering (colour affinity) and the leader's highlight survive as
+// the list order and `highlightId`.
+function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onShowAll, onClose }) {
   const [photoColours, setPhotoColours] = useState(null);
   const [shooting, setShooting] = useState(false);
   const [autoNote, setAutoNote] = useState(null);
@@ -1567,12 +1745,39 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
     } finally { setShooting(false); }
   }
 
+  // The card rows, in the shared renderer's shape. `reasons` carries WHICH of
+  // the label's numbers found this product — the whole point of the merged
+  // list — and the colour leader's hint, which used to be a separate line.
+  const rows = ordered.map((p, i) => {
+    const codes = (panel.matchedCodes && panel.matchedCodes[p.id]) || [];
+    // A single-code picker (a barcode duplicate, one claimed code) still names
+    // its number on every row: the operator should never have to infer it.
+    const shownCodes = codes.length ? codes : (panel.code ? [panel.code] : []);
+    const reasons = [];
+    if (shownCodes.length) {
+      reasons.push(`matched ${shownCodes.map((c) => formatStyleCodeForDisplay(c) || c).join(" · ")}`);
+    }
+    if (photoColours && i === 0) reasons.push("closest colour match — check it, don't trust it");
+    return {
+      product: p,
+      code: shownCodes.length === 1 ? shownCodes[0] : null,
+      field: shownCodes.length === 1 ? "confirmed" : null,
+      reasons,
+    };
+  });
+
   return (
-    <Panel title={siblings ? "Which colourway is it?" : "One code, more than one product"} onClose={onClose}>
+    <Panel title={siblings ? "Which colourway is it?"
+                 : panel.multiToken ? "This label's numbers name more than one product"
+                 : "One code, more than one product"} onClose={onClose}>
       <div style={{ fontSize: 14.5, color: siblings ? "#CFE0FF" : "#FDE9B0", lineHeight: 1.5, marginBottom: 14 }}>
         {siblings ? (
           <>“{panel.code}” is on <strong>{panel.claimants.length} colourways</strong> — the label can't
             tell them apart, but you can. Tap the shoe in your hand.</>
+        ) : panel.multiToken ? (
+          <>This label prints more than one number, and between them they name{" "}
+            <strong>{panel.claimants.length + (panel.unloadedIds?.length || 0)} products</strong> —
+            every one of them is below. Tap the shoe in your hand; nothing is guessed for you.</>
         ) : (
           <>“{panel.code}” is on <strong>{panel.claimants.length + (panel.unloadedIds?.length || 0)} products</strong>.
             Tap the one in your hand — nothing is guessed for you.</>
@@ -1593,27 +1798,32 @@ function ChoosePanel({ panel, tab, busy, onPick, onNone, onMerge, onClose }) {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {ordered.map((p, i) => (
-          <button key={p.id} type="button" disabled={busy} onClick={() => pick(p)}
-            style={{ display: "flex", alignItems: "center", gap: 14, padding: 14, width: "100%",
-                     background: CARD, border: photoColours && i === 0 ? "2px solid rgba(74,127,255,.55)" : BORDER,
-                     borderRadius: 16, cursor: "pointer", textAlign: "left", fontFamily: FONT, color: "inherit" }}>
-            <Photo url={p.photoUrl} size={120} radius={14} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 17, fontWeight: 800, lineHeight: 1.3 }}>{p.name}</div>
-              {photoColours && i === 0 && (
-                <div style={{ fontSize: 11.5, color: BLUE_L, marginTop: 4 }}>Closest colour match — check it, don't trust it</div>
-              )}
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 900, color: BLUE_L }}>TAP</span>
-          </button>
-        ))}
+        <CandidateCards suggestions={rows} onPick={(p) => pick(p)} disabled={busy}
+                        limit={rows.length} photoSize={120} cta="TAP"
+                        highlightId={photoColours && rows[0] ? rows[0].product.id : null} />
       </div>
 
       {(panel.unloadedIds || []).length > 0 && (
         <div style={{ fontSize: 12, color: AMBER, marginTop: 10, lineHeight: 1.5 }}>
           {panel.unloadedIds.length} more product{panel.unloadedIds.length > 1 ? "s" : ""} own this code but
           {panel.unloadedIds.length > 1 ? " aren't" : " isn't"} loaded on this device — reload before trusting this list.
+        </div>
+      )}
+
+      {/* ── THE TWO "NOT ONE OF THESE" ANSWERS ────────────────────────────
+          They are DIFFERENT answers and both must survive. "Show me
+          everything" (the admin gate's escape, ported 2026-08-15) says the
+          shoe is probably in the catalogue but not on this short list — it
+          opens the link panel's full ranked list, pooling every token, with
+          free search under it. "It's a new colourway" says the catalogue has
+          no record of this shoe at all, and files the sighting. Offering only
+          the second one is what made an incomplete list look like a complete
+          one. */}
+      {onShowAll && (
+        <div style={{ marginTop: 14 }}>
+          <BigButton tone="blue" disabled={busy} onClick={onShowAll}>
+            It's not one of these — show me everything
+          </BigButton>
         </div>
       )}
 
