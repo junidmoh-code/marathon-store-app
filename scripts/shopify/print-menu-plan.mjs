@@ -143,8 +143,11 @@ menuCreate / menuUpdate already exist on API ${"2026-07"}; only the grant is mis
 for (const c of COLLECTIONS) {
   console.log(`  ${STOREFRONT}/collections/${c.handle}`);
 }
+// No hardcoded counts here: the rows above print the LIVE ones, and a fixed
+// second set would contradict them in the same run of output the first time
+// anything is published.
 console.log(`
-Each must return 200 and list the products the map sends there. Today, before
-any menu work: Sneakers 7 · Caps & Hats 4 · New In 11 · Under R500 4 · the rest
-empty (nothing else is published yet).`);
+Each must return 200 and list the products the map sends there. The live counts
+are printed beside every row above; a row marked EMPTY has nothing published in
+it yet.`);
 process.exit(0);
