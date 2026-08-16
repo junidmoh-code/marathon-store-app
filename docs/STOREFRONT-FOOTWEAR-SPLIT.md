@@ -20,6 +20,10 @@ the agreed taxonomy provided. The result on the live shop, read on 2026-08-16:
 | Sneakers | 19 | nothing |
 | Caps & Hats | 4 | `caps-hats` |
 
+(The active count is a *moving* number — Junid was publishing while this was
+written, and it went from 40 to 61 to 100 over the afternoon. What does not
+move is the shape: the `sneakers` collection held 7 products, all boots.)
+
 The `sneakers` collection held **7 products, every one of them a boot**, and not
 a single actual sneaker. A shopper tapping "Sneakers" in the menu got boots.
 
@@ -35,7 +39,16 @@ Read-only census of all 4,183 visible `/products` records, 2026-08-16.
 | `Footwear\|Soccer Boots` | 81 | `soccer-boots` *(new)* |
 | `Footwear\|Sandals & Slides` | 49 | `sandals-slides` *(new)* |
 | `Footwear\|Boots` | 45 | `boots` *(new)* |
-| `Footwear\|`*(no subcategory)* | 3 | `sneakers`, via the `Footwear\|*` row |
+| `Footwear\|`*(no subcategory)* | 3 | `sneakers`, via the `Footwear\|*` row — **see the caveat below** |
+
+> **The `Footwear|*` fallback is a fallback, not a judgement.** The three records
+> with no subcategory at all are *"Soccerboot kit"*, *"Kids soccerboot "* and
+> *"Labubu"*. Two of the three are soccer boots by name, so sending them to
+> Sneakers repeats — at n=2 — the mis-filing this split exists to end. The map
+> cannot fix that: it joins on `subcategory`, and these records have none. The
+> fix is a **data edit**: give them a subcategory in the app and they route
+> correctly with no code change. None of the three is live today. Raised on
+> review 2026-08-16 and recorded here rather than papered over.
 
 **By `categoryKey`** — the newer taxonomy registry at
 `/settings/productTaxonomy`. It carries four more footwear categories, and none
@@ -106,9 +119,10 @@ published before the collection step existed and joined nothing.
 After the split, the hand-built main menu needs two things done in the admin:
 
 1. **Add rows** for Boots, Soccer Boots and Sandals & Slides.
-2. **Decide what to do with the Sneakers row.** Once the boots leave it, it
-   holds only whatever real sneakers are live at the time. If that is zero, the
-   row leads to an empty page.
+2. **Check the Sneakers row.** Once the boots leave it, it holds only the real
+   sneakers that are live at that moment. That number is climbing as Junid
+   publishes, but it was **zero** when the split was written — so verify it is
+   non-empty before, not after, the menu points at it.
 
 Menus are built by hand: the app cannot be granted
 `write_online_store_navigation` (its `app_url` points at Shopify's placeholder
@@ -161,6 +175,28 @@ indistinguishable from deliberately converting it into a real product. The rule
 never fails open by accident, only by explicit intent. The predicate also
 requires the literal boolean `true`, so a stray `priceProduct: "no"` cannot
 smuggle a real product *out* of the storefront.
+
+Both string comparisons are **normalised** (trimmed, case-folded, whole-label).
+That is load-bearing rather than tidiness: `resolveCollection()` trims
+`category` before its table lookup, so a record carrying `"Price Products "`
+with a trailing space and no flag would otherwise read as *not* a price record
+here while still matching the `Price Products|*` row downstream — status
+`unmapped`, which publishes. Comparing more loosely than the consumer
+downstream is the one way an OR-ed fail-safe can still fail open.
+
+**Known limit, stated honestly.** Nothing in *this* repo ever writes
+`priceProduct: true` or creates a `Price Products` record — they arrive from the
+POS repo or by hand. So the argument above covers the 35 rows that exist. For
+records created *after* a category rename in the other repo, the gate rests on
+whichever of the three signals that repo keeps writing. Any one of them is
+enough, but they are not pinned across repos by a test.
+
+**Also not gated:** `publishProduct()` and `setDesiredState()` in
+`shopifyPublishStore.js` take `(productId, node, …)` and never see the
+`/products` record, so they cannot check this themselves. Unreachable from the
+UI today (no row, no route, no batch item) and caught by the reconciler
+regardless — which is why the enforcement point is deliberately the reconciler
+and not the client.
 
 ### Enforced in three places, not one
 

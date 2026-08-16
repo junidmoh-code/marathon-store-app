@@ -35,7 +35,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
+import { resolveCollection, COLLECTION_BY_KEY, MANUAL_KEYS } from "./collectionMap.mjs";
 import {
   collectionGidsByKey, manualGidsFrom, planCollectionMembership,
   readProductCollections, applyCollectionMembership, sweepIntent,
@@ -89,6 +89,41 @@ if (!managedGids.length) {
   process.exit(1);
 }
 console.log(`${managedGids.length} manual collections recorded`);
+
+// ── HARD PRE-FLIGHT: every mapped lane must EXIST before anything is moved ───
+// The destructive half of this sweep is `leave`. A product whose mapped
+// collection has no recorded id resolves to desired = null, and
+// planCollectionMembership then plans "leave every managed collection, join
+// nothing" — which is indistinguishable, at the mutation, from "this product
+// belongs nowhere".
+//
+// That is exactly the state right after a CATEGORY_MAP change lands and before
+// ensure-collections.mjs has created the new collections. Running --commit in
+// that window would strip every affected live product out of its old
+// collection and leave it in NO collection: reachable only through New In and
+// its direct URL, and worse than the mis-filing this exists to fix. The old
+// code did notice — status "no-id", counted BAD, exit 1 — but only in the
+// summary, long after the mutations had gone out.
+//
+// So the check moves to the front and refuses the WHOLE COMMIT RUN. The dry run
+// still proceeds and reports, because seeing the problem is the point of a dry
+// run. `ensure-collections.mjs --commit` is the one-command cure.
+const missingLaneKeys = MANUAL_KEYS.filter((key) => !collectionGids[key]);
+if (missingLaneKeys.length) {
+  const msg =
+    `${missingLaneKeys.length} manual collection(s) named by CATEGORY_MAP have no recorded id: ` +
+    `${missingLaneKeys.join(", ")}`;
+  if (COMMIT) {
+    console.error(`REFUSING THE RUN — ${msg}.`);
+    console.error(
+      "Committing now would plan a LEAVE with no JOIN for every product mapped to them, " +
+      "stripping live products out of their current collection into none at all. " +
+      "Run `node scripts/shopify/ensure-collections.mjs --commit` first, then re-run this."
+    );
+    process.exit(1);
+  }
+  console.error(`  ⚠ ${msg} — a commit run would be REFUSED until ensure-collections.mjs --commit has run\n`);
+}
 
 const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 

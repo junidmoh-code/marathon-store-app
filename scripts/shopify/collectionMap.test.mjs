@@ -291,3 +291,39 @@ describe("CATEGORY_MAP integrity", () => {
     for (const key of MANUAL_KEYS) expect({ key, used: used.has(key) }).toEqual({ key, used: true });
   });
 });
+
+// ─── THE SEQUENCING HAZARD ───────────────────────────────────────────────────
+// Raised on architectural review, 2026-08-16. sync-collections.mjs plans a
+// LEAVE for every managed collection a product is in and a JOIN only for its
+// mapped one — so a mapped collection with no recorded Shopify id plans
+// "leave everything, join nothing". Right after a CATEGORY_MAP change lands and
+// before ensure-collections.mjs has run, that is every affected live product.
+// The script now refuses the whole commit run on that condition; this pins the
+// data shape the refusal reads.
+describe("every CATEGORY_MAP target must be creatable before membership moves", () => {
+  it("the three new footwear lanes are MANUAL, so ensure-collections can create them", () => {
+    for (const key of ["boots", "soccer-boots", "sandals-slides"]) {
+      expect({ key, manual: MANUAL_KEYS.includes(key) }).toEqual({ key, manual: true });
+    }
+  });
+
+  it("MANUAL_KEYS is the complete set a sweep must find ids for", () => {
+    // The pre-flight checks `MANUAL_KEYS.filter(k => !recordedIds[k])`. That is
+    // only correct if every collection a product can be sent to is in
+    // MANUAL_KEYS — i.e. no CATEGORY_MAP row names a smart collection or a key
+    // outside it.
+    const targets = new Set(Object.values(CATEGORY_MAP).filter(Boolean));
+    for (const t of targets) {
+      expect({ target: t, inManualKeys: MANUAL_KEYS.includes(t) })
+        .toEqual({ target: t, inManualKeys: true });
+      expect(SMART_KEYS).not.toContain(t);
+    }
+  });
+
+  it("and every manual key is reachable, so the pre-flight never demands a collection nothing uses", () => {
+    const targets = new Set(Object.values(CATEGORY_MAP).filter(Boolean));
+    for (const key of MANUAL_KEYS) {
+      expect({ key, reachable: targets.has(key) }).toEqual({ key, reachable: true });
+    }
+  });
+});
