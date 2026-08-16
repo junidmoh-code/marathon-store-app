@@ -246,10 +246,21 @@ describe("the no-collection outcomes are distinguishable", () => {
   it("not-merchandise is 'excluded' — the only status that blocks publication", () => {
     expect(resolveCollection({ category: "Price Products", subcategory: "Price Products" }).status).toBe("excluded");
   });
-  it("a deliberate null is 'unmapped' — published, just no heading", () => {
-    // No live category maps to null any more, so this is exercised through a
-    // synthetic row shape rather than a real product.
-    expect(Object.values(CATEGORY_MAP).includes(null)).toBe(true);
+  it("'unmapped' is currently UNREACHABLE, because exclusion wins over the null rows", () => {
+    // The only null rows left in CATEGORY_MAP are the two Price Products ones,
+    // and isPriceRecord() short-circuits resolveCollection before the table is
+    // read — so those rows answer "excluded", not "unmapped". The rows stay as
+    // documentation of the decision. This states that plainly rather than
+    // pretending "unmapped" is still a live outcome, and it is the test that
+    // notices if a future null row is added for something that IS merchandise.
+    const nullRows = Object.entries(CATEGORY_MAP).filter(([, v]) => v === null).map(([k]) => k);
+    expect(nullRows).toEqual(["Price Products|Price Products", "Price Products|*"]);
+    for (const row of nullRows) {
+      const [category, sub] = row.split("|");
+      const subcategory = sub === "*" ? "Anything At All" : sub;
+      expect({ row, status: resolveCollection({ category, subcategory }).status })
+        .toEqual({ row, status: "excluded" });
+    }
   });
   it("a category nobody mapped is 'unknown'", () => {
     expect(resolveCollection({ category: "Homeware", subcategory: "Mugs" }).status).toBe("unknown");

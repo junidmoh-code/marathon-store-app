@@ -89,13 +89,24 @@ export function isPerfume(record) {
 // record publishable is to remove ALL THREE, which is indistinguishable from
 // deliberately converting it into a real product. It never fails open by
 // accident, only by explicit intent.
+// The string comparison is NORMALISED (trimmed, case-folded) and that is
+// load-bearing, not tidiness. resolveCollection() trims `category` before it
+// looks the row up, so a record carrying "Price Products " with a trailing
+// space and no `priceProduct` flag would read as NOT a price record here while
+// still matching the "Price Products|*" row downstream — status "unmapped",
+// which publishes. Comparing more loosely than the consumer downstream is the
+// one way an OR-ed fail-safe can still fail open, so both sides normalise.
 export const PRICE_RECORD_CATEGORY = "Price Products";
+const PRICE_RECORD_NORM = PRICE_RECORD_CATEGORY.toLowerCase();
+const isPriceLabel = (v) =>
+  typeof v === "string" && v.trim().toLowerCase() === PRICE_RECORD_NORM;
+
 export function isPriceRecord(record) {
   if (!record || typeof record !== "object") return false;
   return (
     record.priceProduct === true ||
-    record.category === PRICE_RECORD_CATEGORY ||
-    record.subcategory === PRICE_RECORD_CATEGORY
+    isPriceLabel(record.category) ||
+    isPriceLabel(record.subcategory)
   );
 }
 

@@ -1137,3 +1137,26 @@ test("the home badge does not count price records as awaiting review", async () 
   await flush();
   expect(seen).toBe(1); // p2 only — the price record adds nothing
 });
+
+test("the Live filter cannot surface a price record either, even with a live node", async () => {
+  // The Live groups are built from NODES, not from the category sections, so
+  // they were the one place on the page a price record could still appear —
+  // a node written before the exclusion shipped, or by hand in the console.
+  keys = new Set(["p1785900000000", "p1"]);
+  pipeline = {
+    p1785900000000: { state: "live", liveState: "on", condition: COND, cleanName: "Entry 30 Line" },
+    p1: { state: "live", liveState: "on", condition: COND, cleanName: "Plain tee black" },
+  };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={WITH_PRICE_RECORD} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Live").props.onClick(); });
+  await flush();
+  const onHeader = tree.root.findAll((n) => n.type === "div" && n.children.includes("On — visible to customers"))[0];
+  await act(() => { onHeader.parent.props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain("Plain tee black"); // the real live product still shows
+  expect(out).not.toContain("Entry 30 Line");
+  pipeline = {};
+});

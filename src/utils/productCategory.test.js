@@ -175,6 +175,19 @@ describe("isPriceRecord — internal price carriers are not merchandise", () => 
     expect(isPriceRecord({ category: "Footwear", priceProduct: 0 })).toBe(false);
   });
 
+  it("matches the way resolveCollection normalises — whitespace and case cannot open the gate", () => {
+    // The fail-open Kimi found on review: resolveCollection trims `category`
+    // before its lookup, so a padded value used to slip past this predicate and
+    // still match the "Price Products|*" row downstream — status "unmapped",
+    // which publishes.
+    expect(isPriceRecord({ category: "Price Products " })).toBe(true);
+    expect(isPriceRecord({ category: " price products" })).toBe(true);
+    expect(isPriceRecord({ category: "PRICE PRODUCTS" })).toBe(true);
+    expect(isPriceRecord({ subcategory: "\tPrice Products\n" })).toBe(true);
+    // …but it stays a match on the LABEL, not a substring of one.
+    expect(isPriceRecord({ category: "Price Products Archive" })).toBe(false);
+  });
+
   it("tolerates junk without throwing", () => {
     expect(isPriceRecord(null)).toBe(false);
     expect(isPriceRecord(undefined)).toBe(false);

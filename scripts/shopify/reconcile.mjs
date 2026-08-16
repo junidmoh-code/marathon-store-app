@@ -124,8 +124,13 @@ if (!COMMIT) {
   for (const { pid, node, want } of worklist) {
     assertSafeSegment(pid, "productId");
     const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    // The dry run is a PREVIEW, so it must say REFUSE where the commit run
+    // would refuse. Showing "CREATE+PUBLISH" for a product the ON path rejects
+    // outright would preview the opposite of what happens.
+    const dryProduct = want === "on" ? (await db.ref(`products/${pid}`).get()).val() : null;
     let action;
     if (want === "off") action = "UNPUBLISH";
+    else if (isPriceRecord(dryProduct)) action = "REFUSE (not merchandise)";
     else action = mapNode?.shopifyProductId ? "PUBLISH" : "CREATE+PUBLISH";
     const title = node.cleanName || "(lexicon at apply time)";
     // The collection is resolvable from RTDB alone, so the dry run shows it —
@@ -135,7 +140,7 @@ if (!COMMIT) {
     // is meant to be a complete preview, so it says so instead of showing "—".
     let collection = want === "off" ? "leaves collections" : "—";
     if (want === "on") {
-      const r = resolveCollection((await db.ref(`products/${pid}`).get()).val());
+      const r = resolveCollection(dryProduct);
       // "mapped but no recorded id" is a NO-COLLECTION outcome too — the map
       // names a collection that has never been created. Showing its title here
       // would promise a home the publish cannot deliver, which is exactly the
@@ -305,6 +310,13 @@ for (const { pid, want } of capped) {
     // ahead of every other check so a price record can never reach a Shopify
     // call, and refuse() (not a silent skip) so it lands visibly in the run log
     // and on the node as blockedReason.
+    //
+    // NOTE THE POSITION: this sits inside the "turning ON" half, AFTER the
+    // `want === "off"` branch has already `continue`d. That is on purpose and
+    // is the recovery path — a price record somehow already live must still be
+    // TAKE-DOWN-ABLE. Setting its intent to "off" runs the normal unpublish and
+    // collection teardown; only going ON is refused. Refusing both would strand
+    // a live one with no way down, which is the opposite of a safe gate.
     if (isPriceRecord(product)) {
       await refuse(pid, "internal price-carrier record, not merchandise — never publishable");
       continue;

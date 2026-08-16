@@ -444,6 +444,17 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return () => { on = false; };
   }, []);
 
+  // The ONE publishable-product index for this page: the sections, the Live
+  // groups, the product-page route and the batch dialog all read it, so a price
+  // record is absent from every one of them for the same reason. Declared here,
+  // above its first consumer (liveGroups) — a later `const` would be in the
+  // temporal dead zone when that memo runs.
+  const productById = useMemo(() => {
+    const m = new Map();
+    for (const p of products) if (p?.id && isPublishableProduct(p)) m.set(p.id, p);
+    return m;
+  }, [products]);
+
   // The catalogue grouped by its existing category field, subcategory kept for
   // the in-section subheaders. Categories and their products sort by name.
   const sections = useMemo(() => {
@@ -513,8 +524,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // says otherwise.
   const liveGroups = useMemo(() => {
     if (filter !== "live") return null;
-    const byId = new Map();
-    for (const p of products) if (p?.id) byId.set(p.id, p);
+    // productById, NOT a fresh walk of `products` — this view is built from
+    // NODES rather than from `sections`, so its own map would be the one place
+    // on the page a price record could still surface (with a live node written
+    // before the exclusion shipped). Sharing the filtered map closes that.
+    const byId = productById;
     const on = [];
     const off = [];
     for (const [pid, n] of Object.entries(nodes)) {
@@ -531,7 +545,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       { key: "__liveOn",  label: "On — visible to customers", list: on },
       { key: "__liveOff", label: "Off — on Shopify, not published", list: off },
     ];
-  }, [filter, products, nodes, q]);
+  }, [filter, productById, nodes, q]);
 
   // A section is effectively open when toggled open, or when a search has
   // narrowed the page far enough that showing the matches outright is cheap.
@@ -835,17 +849,6 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     setSelected(next);
     if (capped) capNotice();
   };
-
-  // Deliberately built from the SAME publishable filter the sections use: this
-  // map backs the product-page route and the batch dialog, so a price record
-  // left in it would still be reachable by a hand-typed #shopify/{pid} hash
-  // even though it has no row. Excluding it here makes the stale-hash guard
-  // below bounce that link straight back to the list.
-  const productById = useMemo(() => {
-    const m = new Map();
-    for (const p of products) if (p?.id && isPublishableProduct(p)) m.set(p.id, p);
-    return m;
-  }, [products]);
 
   // Product-page stale-hash guard: a hash pointing at a product that no
   // longer exists (deleted in another tab, or a mistyped link) returns to the
