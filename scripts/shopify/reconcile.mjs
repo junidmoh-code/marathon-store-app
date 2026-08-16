@@ -66,6 +66,11 @@ import {
   readProductCollections, applyCollectionMembership, requireOnlineStorePublication,
 } from "./collections.mjs";
 import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
+// The storefront search index. Kept in step at the moment the reconciler
+// CONFIRMS a state, so it tracks the storefront within one tick rather than
+// waiting for a rebuild. Best-effort by design — see searchIndexWrite.mjs.
+import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchIndexWrite.mjs";
+import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
 // Sizing rationale (measured against the live shop's rate limiter) lives on
@@ -112,7 +117,11 @@ for (const s of skippedLegacy) {
   console.error(`  ⚠ ${s.pid}: pre-migration state "${s.state}" — run migrate-live-state.mjs first, skipped`);
 }
 console.log(`nodes with unapplied intent: ${worklist.length}`);
-if (!worklist.length) { console.log("nothing to do."); process.exit(0); }
+// A DRY RUN with nothing to do is genuinely nothing to do. A COMMIT run is not:
+// the search-index sweep at the end of this file is what repairs a stale index,
+// and an idle shop is exactly when drift accumulates unnoticed. Exiting here on
+// a commit tick is how the index got 173 products behind in the first place.
+if (!worklist.length && !COMMIT) { console.log("nothing to do."); process.exit(0); }
 
 // ── Dry run: the table of what WOULD happen, from RTDB alone ─────────────────
 // (No Shopify credentials touched: the action column needs only the ID map.)
@@ -156,6 +165,7 @@ if (!COMMIT) {
 }
 
 // ── Commit path ──────────────────────────────────────────────────────────────
+if (!worklist.length) console.log("no intents to apply — running the search-index sweep only.");
 let capped = worklist;
 if (worklist.length > MAX_APPLY) {
   console.error(`⚠ ${worklist.length} intents — applying the first ${MAX_APPLY} only (hard cap; re-run for the rest)`);
@@ -192,6 +202,40 @@ if (!managedGids.length) {
   console.error("  ⚠ no storefront collections recorded at /shopify_sync/_collections — run `node scripts/shopify/ensure-collections.mjs --commit` first, or every product published here lands in no collection");
 }
 
+// ── ONE search-index document builder, shared by the hook and the sweep ──────
+// Both must write byte-identical documents: two builders would drift, and a
+// drifted index is one where a product's searchability depends on which code
+// path last touched it. Returns null when the product cannot be indexed (no
+// mapping, gone from the shop) — the caller counts that, it is not a throw.
+const buildSearchDocFor = async (pid) => {
+  const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  const gid = map?.shopifyProductId;
+  if (!gid) return null;
+  const rec = (await db.ref(`products/${pid}`).get()).val();
+  if (!rec) return null;
+  const idx = await graphql(
+    `query ($id: ID!) {
+      product(id: $id) {
+        id handle title
+        featuredMedia { preview { image { url(transform: { maxWidth: 600, maxHeight: 800 }) } } }
+        priceRangeV2 { minVariantPrice { amount currencyCode } }
+        variants(first: 100) { nodes { title availableForSale } }
+      }
+    }`,
+    { id: gid }
+  );
+  if (!idx.product) return null;
+  const r = resolveCollection(rec);
+  return {
+    product: rec,
+    shopifyProduct: idx.product,
+    collection: r.status === "mapped" ? COLLECTION_BY_KEY.get(r.collectionKey)?.handle ?? null : null,
+    // The identity is read from its OWN node, never from rec.name — that is the
+    // whole reason the node exists (src/utils/searchIdentity.js).
+    identity: (await db.ref(`${SEARCH_IDENTITY_PATH}/${pid}`).get()).val(),
+  };
+};
+
 const results = [];
 // Best-effort channel unpublish for fail-safe paths: a refusal or cancel on a
 // product that has somehow drifted to publicly-visible must take it down
@@ -218,6 +262,11 @@ const failSafeUnpublish = async (gid) => {
 const refuse = async (pid, why) => {
   console.error(`  🛑 ${pid} REFUSED: ${why}`);
   await markBlocked(db, pid, why, UPDATED_BY);
+  // A refusal is a take-down: every refusal path either never published or
+  // called failSafeUnpublish first. Whatever the reason, this product is not on
+  // the storefront, so it must not be answering searches with a link to it.
+  // No-ops when it was never indexed, which is the common case.
+  await unindexProduct(db, pid, "blocked");
   results.push({ pid, ok: false, why: `blocked: ${why}` });
 };
 
@@ -262,6 +311,7 @@ for (const { pid, want } of capped) {
         // and any admin link from an earlier life points at nothing.
         console.log("  no /shopify_sync mapping — nothing on Shopify to unpublish");
         await confirmLiveState(db, pid, "off", UPDATED_BY, { clearAdminUrl: true });
+        await unindexProduct(db, pid, "off");
         results.push({ pid, ok: true, note: "confirmed off (no Shopify product)" });
         continue;
       }
@@ -295,6 +345,10 @@ for (const { pid, want } of capped) {
         leftNote = ", collection membership NOT cleared (see the warning above)";
       }
       await confirmLiveState(db, pid, "off", UPDATED_BY, { gid: mapNode.shopifyProductId });
+      // Off the storefront means out of search. A result that leads to an
+      // unpublished product is worse than no result, so the document is
+      // REMOVED rather than flagged.
+      await unindexProduct(db, pid, "off");
       results.push({ pid, ok: true, note: `unpublished from the Online Store channel${leftNote}` });
       continue;
     }
@@ -664,6 +718,7 @@ for (const { pid, want } of capped) {
       // confirming "off" without an unpublish would strand it up for good.
       await failSafeUnpublish(gid);
       await confirmLiveState(db, pid, "off", UPDATED_BY, { gid });
+      await unindexProduct(db, pid, "cancelled");
       results.push({ pid, ok: true, note: "cancelled mid-run — created/reconciled but NOT published, confirmed off" });
       continue;
     }
@@ -751,6 +806,18 @@ for (const { pid, want } of capped) {
       continue;
     }
     await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
+    // Now that it IS live, put it in the storefront search index — through
+    // the SAME builder the sweep uses, so the two can never write different
+    // documents for the same product.
+    try {
+      const doc = await buildSearchDocFor(pid);
+      console.log(`  search index: ${doc ? await indexProductLive(db, pid, doc) : "skipped: nothing to build from"}`);
+    } catch (e) {
+      // NEVER turns a successful publish into a refusal. The product is live;
+      // the worst case is that it is missing from search until the sweep at the
+      // end of this run — or the next one — picks it up.
+      console.error(`  ⚠ ${pid}: search index write failed (${String(e?.message || e)}) — the product IS live; the sweep will catch it`);
+    }
     const numericId = gid.split("/").pop();
     results.push({
       pid, ok: true,
@@ -759,6 +826,32 @@ for (const { pid, want } of capped) {
   } catch (e) {
     results.push({ pid, ok: false, why: String(e?.message || e) });
   }
+}
+
+// ── SEARCH-INDEX SWEEP — the index cannot rot ────────────────────────────────
+// The per-product hooks above only fire on a state CHANGE. That was not enough:
+// on 2026-08-17 the index held 200 documents against 373 live products — 46% of
+// the storefront unfindable, none of it for want of identity. Every commit run
+// now reconciles the two sets. See searchIndexWrite.mjs for the cost argument.
+try {
+  const liveNow = Object.entries(await readAllPublishNodes(db))
+    .filter(([, n]) => n?.state === "live" && n?.liveState === "on")
+    .map(([p]) => p);
+  const sweep = await sweepSearchIndex(db, admin.app(), {
+    livePids: liveNow,
+    buildDoc: (pid) => buildSearchDocFor(pid),
+  });
+  if (sweep.skipped) {
+    // already warned
+  } else if (sweep.missing || sweep.orphans) {
+    console.log(
+      `\nsearch index: ${liveNow.length} live · +${sweep.indexed} indexed, -${sweep.removed} removed` +
+      (sweep.capped ? ` · ${sweep.missing - sweep.indexed} still missing (per-run cap; the next tick continues)` : "") +
+      (sweep.failed ? ` · ${sweep.failed} failed` : "")
+    );
+  }
+} catch (e) {
+  console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

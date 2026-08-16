@@ -3248,3 +3248,14 @@ exports.labelAlias = require("./labelAlias/labelAlias.js").labelAlias;
 // Pure logic in lib/style-code-siblings.cjs (node-tested).
 //   firebase deploy --only functions:styleCodeSibling
 exports.styleCodeSibling = require("./styleCode/styleCodeSibling.js").styleCodeSibling;
+
+// ── storefrontSearch — the PUBLIC, read-only storefront search endpoint ──────
+// Shopify's own search cannot find these products: every brand, sub-label and
+// silhouette term is stripped before a product is pushed, so the words a
+// shopper types are exactly the words the Shopify catalogue does not contain.
+// This matches on the app's TRUE data (an index at /search_index, built by
+// scripts/shopify/build-search-index.mjs) and answers with Shopify handles.
+// The brand is used to FIND a product and never travels back out — the response
+// is an allow-list, and the query is not echoed.
+// DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:storefrontSearch
+exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").storefrontSearch;
