@@ -136,9 +136,21 @@ number on the storefront that nothing in this system maintains.
 **The reconciler is deliberately wider.** It enforces tracking on *every*
 variant of a product it is about to publish, mapped or not — because a stray
 variant on our own product, about to go public, untracked and therefore
-infinitely sellable, is an oversell waiting to happen. Tracked at whatever
-quantity it holds (usually zero) fails towards *unbuyable*, which is the safe
-direction; the alternative is a size nobody can fulfil taking orders.
+infinitely sellable, is an oversell waiting to happen.
+
+Tracked at whatever quantity it holds is *finite* rather than infinite, which is
+already the safer direction. It is not automatically zero, though: a leftover
+from a size the record has since dropped still holds the last real number
+`setAvailable` wrote. The backfill closes that — a mapped variant whose size has
+left the catalogue is **zeroed**, because the record no longer lists that size,
+so the app holds no stock for it and zero is the truth rather than a guess.
+
+**A refusal is not a refusal to track.** Every data-shaped refusal in the
+backfill (`no-record`, `no-sizes`, `size-key-mismatch`, `size-collision`,
+`unmapped-size`) still turns tracking ON before it declines to re-price.
+Those products are already live and already untracked — that is, already
+infinitely sellable — and skipping them entirely would leave the worse of the
+two conditions standing on exactly the products with the worst data.
 
 #### Every catalogue size must still have a variant
 
@@ -150,8 +162,13 @@ product is reported `unmapped-size` and skipped rather than quietly having the
 subset that happens to be mapped priced as if it were the whole run.
 
 Writes Shopify variants and inventory levels **only**. No RTDB writes at all.
-Nothing is created, published, unpublished, archived or deleted. Safe to re-run:
-an already-correct product costs one read and no mutation.
+Nothing is created, published, unpublished, archived or deleted.
+
+Safe to re-run and idempotent — but **not free** on a re-run. Step 2 is
+conditional (an already-tracked product sends no tracking mutation at all);
+step 3 always fires, because a quantity is only correct as of the moment it is
+written. `setAvailable` is an absolute compare-and-set, so a re-run converges
+rather than double-counting.
 
 #### The size-key guard
 

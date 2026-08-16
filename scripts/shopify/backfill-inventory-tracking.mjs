@@ -40,6 +40,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment, encodeSizeKey, stockSizeKey } from "../../src/utils/sizeKey.js";
+import { findSizeCollisions } from "./sizeOrder.mjs";
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable,
@@ -158,23 +159,56 @@ for (const pid of pids) {
     // reads 0, and this script would then TRACK the variant and set it to zero
     // in the same pass — real stock turned into a silent, instant sold-out.
     // The same class of bug this PR exists to fix, pointing the other way.
+    // ── REFUSING TO RE-PRICE IS NOT REFUSING TO TRACK ───────────────────────
+    // Every refusal below is about a product whose DATA is broken, and those
+    // products are already live and already untracked — that is, already
+    // infinitely sellable. Skipping them entirely would leave the worse of the
+    // two conditions standing on exactly the products with the worst data.
+    // So each refusal tracks first and declines only the re-pricing: the
+    // variant keeps whatever quantity setAvailable last wrote, which is a real
+    // number, and stops being infinite. (Review finding, 2026-08-16.)
+    const refuseButTrack = async (status, detail) => {
+      let note = "";
+      if (COMMIT && untracked.length) {
+        try {
+          await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));
+          note = ` · TRACKED ${untracked.length} variant(s) anyway (quantities left as last written — they are no longer infinite)`;
+        } catch (e) {
+          note = ` · ⚠ AND could not be tracked (${String(e?.message || e)}) — it is live and still oversellable`;
+        }
+      } else if (untracked.length) {
+        note = ` · would still TRACK ${untracked.length} variant(s) (no re-pricing)`;
+      }
+      results.push({ pid, status, detail: detail + note });
+    };
+
     const product = (await db.ref(`products/${pid}`).get()).val();
     if (!product) {
-      results.push({ pid, status: "no-record", detail: `${bp.title} · mapped and live but no /products record` });
+      await refuseButTrack("no-record", `${bp.title} · mapped and live but no /products record`);
       continue;
     }
     const rawSizes = Array.isArray(product.sizes) ? product.sizes
       : product.sizes && typeof product.sizes === "object" ? Object.values(product.sizes) : [];
     if (!rawSizes.length) {
-      results.push({ pid, status: "no-sizes", detail: `${bp.title} · record has no sizes array` });
+      await refuseButTrack("no-sizes", `${bp.title} · record has no sizes array`);
       continue;
     }
     const divergent = rawSizes.filter((t) => encodeSizeKey(t) !== stockSizeKey(t));
     if (divergent.length) {
-      results.push({
-        pid, status: "size-key-mismatch",
-        detail: `${bp.title} · size token(s) ${divergent.map((t) => JSON.stringify(t)).join(", ")} key differently in /stock and the ID map — pricing them would read 0 and sell out real stock. Normalise the record and re-map first.`,
-      });
+      await refuseButTrack("size-key-mismatch",
+        `${bp.title} · size token(s) ${divergent.map((t) => JSON.stringify(t)).join(", ")} key differently in /stock and the ID map — pricing them would read 0 and sell out real stock. Normalise the record and re-map first.`);
+      continue;
+    }
+
+    // Two catalogue tokens that encode to the SAME variant key would put two
+    // entries with the same inventoryItemId into one inventorySetQuantities
+    // call, which Shopify rejects. The reconciler guards this with
+    // findSizeCollisions; the backfill never ran it, and the switch from
+    // Object.entries(variantMap) to rawSizes removed the free de-duplication
+    // that had been hiding it.
+    const collisions = findSizeCollisions(rawSizes);
+    if (collisions.length) {
+      await refuseButTrack("size-collision", `${bp.title} · ${collisions.join("; ")}`);
       continue;
     }
 
@@ -185,10 +219,8 @@ for (const pid of pids) {
     // rather than quietly pricing the subset that happens to be mapped.
     const missingSizes = rawSizes.filter((t) => !(encodeSizeKey(t) in variantMap));
     if (missingSizes.length) {
-      results.push({
-        pid, status: "unmapped-size",
-        detail: `${bp.title} · catalogue size(s) ${missingSizes.join(", ")} have no Shopify variant — the size set changed after this product went live. Fix the product (or the record) before trusting its inventory.`,
-      });
+      await refuseButTrack("unmapped-size",
+        `${bp.title} · catalogue size(s) ${missingSizes.join(", ")} have no Shopify variant — the size set changed after this product went live. Fix the product (or the record) before trusting its inventory.`);
       continue;
     }
 
@@ -209,10 +241,30 @@ for (const pid of pids) {
       quantity: totals[stockSizeKey(t)] ?? 0,
     }));
 
+    // THE OTHER DIRECTION, and it is a regression this script introduced when
+    // the pricing loop moved from the ID map's keys to the record's sizes: a
+    // variant that is MAPPED but whose size has LEFT the catalogue. The
+    // one-size collapses did exactly that to hundreds of records. It is still
+    // in variantMap, so it gets tracked — but it fell out of `items`, so it
+    // kept whatever quantity setAvailable last wrote, months ago, typically
+    // NON-ZERO. Tracked at a stale non-zero number is a promise to sell
+    // something the app no longer counts.
+    //
+    // The record no longer lists that size, so the app holds no stock for it:
+    // zero is not a guess, it is the truth. Zeroing also makes the reconciler's
+    // "tracked at whatever it holds (usually 0)" argument true rather than
+    // hopeful.
+    const catalogueKeys = new Set(rawSizes.map((t) => encodeSizeKey(t)));
+    const retiredKeys = Object.keys(variantMap).filter((k) => !catalogueKeys.has(k));
+    for (const k of retiredKeys) {
+      items.push({ inventoryItemId: variantMap[k].shopifyInventoryItemId, quantity: 0 });
+    }
+
     if (!COMMIT) {
       results.push({
         pid, status: untracked.length ? "would-track" : "already-tracked",
-        detail: `${bp.title} · ${untracked.length}/${rows.length} variant(s) to track · quantities ${JSON.stringify(totals)}`,
+        detail: `${bp.title} · ${untracked.length}/${rows.length} variant(s) to track · quantities ${JSON.stringify(totals)}` +
+          (retiredKeys.length ? ` · ${retiredKeys.length} retired size(s) (${retiredKeys.join(", ")}) to zero` : ""),
       });
       continue;
     }
@@ -221,14 +273,15 @@ for (const pid of pids) {
     await setAvailable(graphql, locId, items);
     results.push({
       pid, status: untracked.length ? "tracked" : "quantities-refreshed",
-      detail: `${bp.title} · ${untracked.length} variant(s) tracked · quantities ${JSON.stringify(totals)}`,
+      detail: `${bp.title} · ${untracked.length} variant(s) tracked · quantities ${JSON.stringify(totals)}` +
+        (retiredKeys.length ? ` · ${retiredKeys.length} retired size(s) zeroed (${retiredKeys.join(", ")})` : ""),
     });
   } catch (e) {
     results.push({ pid, status: "failed", detail: String(e?.message || e) });
   }
 }
 
-const BAD = new Set(["failed", "no-map", "no-record", "no-sizes", "gone", "too-many", "size-key-mismatch", "unmapped-size"]);
+const BAD = new Set(["failed", "no-map", "no-record", "no-sizes", "gone", "too-many", "size-key-mismatch", "size-collision", "unmapped-size"]);
 for (const r of results) {
   const icon = BAD.has(r.status) ? "✗" : r.status.startsWith("already") ? "·" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(20)} ${r.detail}`);
