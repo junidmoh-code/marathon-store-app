@@ -46,6 +46,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { isPriceRecord } from "../../src/utils/productCategory.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { cleanTitleFor, isTriggerFree, triggersInText } from "../../src/utils/shopifyTriggers.js";
 import {
@@ -297,6 +298,17 @@ for (const { pid, want } of capped) {
     const product = (await db.ref(`products/${pid}`).get()).val();
     if (!product) { await refuse(pid, "no /products record"); continue; }
     if (product.mergedInto) { await refuse(pid, `record merged into ${product.mergedInto} — publish the survivor`); continue; }
+    // NOT MERCHANDISE. This is the enforcement point, not the UI: the page's
+    // filter stops a price record being nominated, but an intent written
+    // before that filter shipped — or by a script, or by hand in the console —
+    // would otherwise sail straight through to the storefront. Deliberately
+    // ahead of every other check so a price record can never reach a Shopify
+    // call, and refuse() (not a silent skip) so it lands visibly in the run log
+    // and on the node as blockedReason.
+    if (isPriceRecord(product)) {
+      await refuse(pid, "internal price-carrier record, not merchandise — never publishable");
+      continue;
+    }
     if (!CONDITIONS.includes(fresh.condition)) { await refuse(pid, "condition unset — a product cannot go live without one"); continue; }
 
     // Title: the reviewed cleanName wins while still trigger-free; else lexicon.

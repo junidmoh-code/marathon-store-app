@@ -40,6 +40,7 @@ import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as in
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
+  isPublishableProduct,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
@@ -344,7 +345,10 @@ export function useShopifyAwaitingCount(products, enabled) {
   return useMemo(() => {
     if (!enabled || !keys) return null;
     let n = 0;
-    for (const p of products || []) if (p?.id && !keys.has(p.id)) n += 1;
+    // Price records are not merchandise and never enter the review flow, so
+    // counting them would leave the home badge permanently 35 too high with
+    // nothing on the page to work off.
+    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !keys.has(p.id)) n += 1;
     return n;
   }, [enabled, keys, products]);
 }
@@ -446,6 +450,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const byCat = new Map();
     for (const p of products) {
       if (!p?.id || !p?.name) continue;
+      // NOT MERCHANDISE — dropped before grouping, so the "Price Products"
+      // heading Junid saw on this page does not exist at all. Nothing here can
+      // be opened, named, graded, selected or nominated, because there is no
+      // row. The reconciler refuses them independently (see reconcile.mjs).
+      if (!isPublishableProduct(p)) continue;
       const cat = String(p.category || UNCAT);
       if (!byCat.has(cat)) byCat.set(cat, []);
       byCat.get(cat).push(p);
@@ -797,7 +806,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     if (!blockerCache.has(p.id)) {
       const node = nodes[p.id] || null;
       blockerCache.set(p.id, batchSelectBlocker(
-        node, effectiveNameFor(p, node).name, effectivePhotoList(p, node).photos.length));
+        node, effectiveNameFor(p, node).name, effectivePhotoList(p, node).photos.length, p));
     }
     return blockerCache.get(p.id);
   };
@@ -827,9 +836,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     if (capped) capNotice();
   };
 
+  // Deliberately built from the SAME publishable filter the sections use: this
+  // map backs the product-page route and the batch dialog, so a price record
+  // left in it would still be reachable by a hand-typed #shopify/{pid} hash
+  // even though it has no row. Excluding it here makes the stale-hash guard
+  // below bounce that link straight back to the list.
   const productById = useMemo(() => {
     const m = new Map();
-    for (const p of products) if (p?.id) m.set(p.id, p);
+    for (const p of products) if (p?.id && isPublishableProduct(p)) m.set(p.id, p);
     return m;
   }, [products]);
 

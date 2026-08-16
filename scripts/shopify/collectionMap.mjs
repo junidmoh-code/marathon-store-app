@@ -34,14 +34,51 @@
 // metafield, vendor or product type. The brand association lives in the app and
 // never reaches Shopify.
 //
-// ── WHERE THE TAXONOMY UNDER-COVERS THE CATALOGUE (read this) ────────────────
-// The agreed top level has ONE footwear lane, "Sneakers". The live catalogue
-// also holds Boots (45), Soccer Boots (81) and Sandals & Slides (49). They map
-// to "Sneakers" because it is the only footwear destination the agreed taxonomy
-// provides — so a shopper clicking "Sneakers" sees boots too. If that should be
-// split, it is a data edit and nothing else: add one COLLECTIONS entry
-// (`boots-sandals`) and repoint the three CATEGORY_MAP rows at it. No Shopify
-// call, no reconciler change, no stock change.
+// ── FOOTWEAR HAS FOUR LANES, NOT ONE (2026-08-16) ────────────────────────────
+// Slice 1 shipped ONE footwear lane, "Sneakers", and pointed Boots, Soccer
+// Boots and Sandals & Slides at it because no other destination existed. The
+// consequence was visible on the live storefront: of the products live on
+// 2026-08-16, 23 were boots and 15 were slides — every one of them filed under
+// a heading reading "Sneakers", and not a single actual sneaker was live.
+//
+// This is the split. It is a data edit exactly as the old note promised: three
+// new COLLECTIONS entries and three repointed CATEGORY_MAP rows. No reconciler
+// change, no handle change, no stock change — a product MOVES by collection
+// membership only, which sync-collections.mjs re-plans from Shopify every run.
+//
+// THE REAL FOOTWEAR SUBCATEGORY LIST, from a read-only census of all 4,183
+// visible /products records on 2026-08-16 — mapped as it IS, not as it was
+// named in the brief:
+//
+//   legacy `category|subcategory`      count   lane
+//   Footwear|Sneakers                   1224   sneakers
+//   Footwear|Soccer Boots                 81   soccer-boots   (new)
+//   Footwear|Sandals & Slides             49   sandals-slides (new)
+//   Footwear|Boots                        45   boots          (new)
+//   Footwear|(no subcategory)              3   sneakers (the `|*` fallback)
+//
+// The NEW taxonomy registry (/settings/productTaxonomy) carries four more
+// footwear categories, and they get NO lane of their own — deliberately,
+// because a collection with nothing in it is the exact complaint this change
+// exists to answer:
+//
+//   categoryKey     products   registry state   why no lane
+//   designer-shoes         4   active           4 records, all filed
+//                                               legacy Footwear|Boots → Boots
+//   kids-shoes             0   active           nothing to show
+//   boots                  0   INACTIVE         legacy subcategory already
+//                                               carries the 45 real boots
+//   running-shoes          0   INACTIVE         nothing to show
+//   loafers                0   INACTIVE         nothing to show
+//
+// WHY THIS MAP STILL KEYS ON THE LEGACY PAIR AND NOT ON categoryKey. The
+// census cross-tab says categoryKey is the WRONG signal for exactly the split
+// this change makes: 41 of the 45 records whose legacy subcategory is "Boots"
+// carry categoryKey "sneakers", and 1 legacy "Sandals & Slides" record does
+// too. Keying the storefront lane on categoryKey would put 42 boots and slides
+// straight back into Sneakers — the bug. The legacy subcategory is the field
+// that is right about what the shoe is, so it stays the join.
+import { isPriceRecord } from "../../src/utils/productCategory.js";
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
 
 // The one currency the shop trades in. Money conditions must carry it.
@@ -68,13 +105,57 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
+    // Copy rewritten for the split: this lane no longer holds boots or slides,
+    // and a description that still promised them would be a lie on the page.
     description:
-      "Shoes — sneakers, boots, soccer boots and slides. Every pair is checked by " +
-      "hand and graded before it is listed, and the grade is written on the " +
-      "product page.",
+      "Sneakers in the sizes we hold. Every pair is checked by hand and graded " +
+      "before it is listed, and the grade is written on the product page. " +
+      "Boots, soccer boots and slides have sections of their own.",
     seoTitle: "Sneakers | Marathon Club",
     seoDescription:
-      "Shoes in stock at Marathon Club — checked by hand, graded, and listed only in the sizes we hold.",
+      "Sneakers in stock at Marathon Club — checked by hand, graded, and listed only in the sizes we hold.",
+  },
+  {
+    key: "boots",
+    title: "Boots",
+    handle: "boots",
+    parent: null,
+    kind: "manual",
+    sortOrder: "CREATED_DESC",
+    description:
+      "Boots — lace-ups, hikers and waterproof pairs, in the sizes we hold. " +
+      "Checked by hand and graded before listing; the grade is on each product page.",
+    seoTitle: "Boots | Marathon Club",
+    seoDescription:
+      "Boots in stock at Marathon Club — hand-checked, graded, and listed only in the sizes we hold.",
+  },
+  {
+    key: "soccer-boots",
+    title: "Soccer Boots",
+    handle: "soccer-boots",
+    parent: null,
+    kind: "manual",
+    sortOrder: "CREATED_DESC",
+    description:
+      "Soccer boots in the sizes we hold — firm ground, turf and indoor. " +
+      "Each pair is checked by hand and carries a condition grade on its product page.",
+    seoTitle: "Soccer Boots | Marathon Club",
+    seoDescription:
+      "Soccer boots in stock at Marathon Club — hand-checked and graded before listing.",
+  },
+  {
+    key: "sandals-slides",
+    title: "Sandals & Slides",
+    handle: "sandals-slides",
+    parent: null,
+    kind: "manual",
+    sortOrder: "CREATED_DESC",
+    description:
+      "Slides and sandals in the sizes we hold. Checked by hand and graded before " +
+      "listing — the grade is written on each product page.",
+    seoTitle: "Sandals & Slides | Marathon Club",
+    seoDescription:
+      "Slides and sandals in stock at Marathon Club — hand-checked, graded, and listed in the sizes we hold.",
   },
   {
     key: "clothing",
@@ -319,11 +400,15 @@ export const SMART_KEYS = COLLECTIONS.filter((c) => c.kind === "smart").map((c) 
 // recorded here, not an omission: a category missing from this table entirely
 // is a different thing and warns differently.
 export const CATEGORY_MAP = {
-  // Footwear — one lane, per the agreed taxonomy. See the header note.
+  // Footwear — FOUR lanes as of 2026-08-16. See the header census.
   "Footwear|Sneakers": "sneakers",             // 1224
-  "Footwear|Boots": "sneakers",                //   45  ← not sneakers; see header
-  "Footwear|Soccer Boots": "sneakers",         //   81  ← not sneakers; see header
-  "Footwear|Sandals & Slides": "sneakers",     //   49  ← not sneakers; see header
+  "Footwear|Boots": "boots",                   //   45
+  "Footwear|Soccer Boots": "soccer-boots",     //   81
+  "Footwear|Sandals & Slides": "sandals-slides", // 49
+  // 3 records with no subcategory at all ("Soccerboot kit", "Labubu", "Kids
+  // soccerboot "). Sneakers is the dominant footwear lane and the least
+  // surprising home for a shoe nobody has filed; giving them their own lane
+  // would create a collection of three oddments.
   "Footwear|*": "sneakers",                    //    3  (no subcategory on the record)
 
   // Clothing — six named children, then the parent bucket for the rest.
@@ -357,13 +442,23 @@ export const CATEGORY_MAP = {
   "Perfume|*": "fragrance",
 
   // "Price Products" are internal price-carrier records, not goods on a shelf.
-  // They have no storefront home and must never get one.
+  // These rows are documentation only — isPriceRecord() short-circuits
+  // resolveCollection() long before the table is consulted, and answers
+  // "excluded", not "unmapped". The distinction matters: an unmapped product
+  // still goes live and shows up in New In (that is what Junid saw), an
+  // excluded one is refused publication outright.
   "Price Products|Price Products": null,       //   35
   "Price Products|*": null,
 };
 
 // ── WHAT HAPPENS TO ANYTHING UNMAPPED ────────────────────────────────────────
-// Two distinct cases, and they are NOT the same:
+// Three distinct cases, and they are NOT the same:
+//
+//   "excluded"  — not merchandise (isPriceRecord). The product does not go to
+//                 Shopify AT ALL: the publishing page will not offer it, the
+//                 batch selector skips it, and the reconciler refuses it at
+//                 apply time even if an intent somehow exists. This is the only
+//                 status that blocks publication.
 //
 //   "unmapped"  — the category IS in CATEGORY_MAP with the value null. A
 //                 deliberate decision (Price Products). Logged as a decision.
@@ -385,7 +480,11 @@ export const UNMAPPED_DESTINATION =
  *
  * → { collectionKey, status, key, reason }
  *     status "mapped"   — collectionKey is the manual collection to join.
+ *     status "excluded" — NOT MERCHANDISE. The product may not be published at
+ *                         all, in any state. collectionKey null.
  *     status "unmapped" — a deliberate null in CATEGORY_MAP; collectionKey null.
+ *                         The product IS published, it just joins no manual
+ *                         collection.
  *     status "unknown"  — the category is missing from CATEGORY_MAP entirely;
  *                         collectionKey null. THIS is the loud one.
  *
@@ -393,6 +492,19 @@ export const UNMAPPED_DESTINATION =
  * still gets a null collectionKey rather than a wrong collection.
  */
 export function resolveCollection(product) {
+  // FIRST, before any category lookup: is this merchandise at all? Price
+  // records are not, and the answer must not depend on which of their three
+  // identifying signals survived an edit (see isPriceRecord).
+  if (isPriceRecord(product)) {
+    return {
+      collectionKey: null,
+      status: "excluded",
+      key: "Price Products",
+      reason:
+        "internal price-carrier record, not merchandise — excluded from Shopify entirely " +
+        "(no collection, no product, no publication)",
+    };
+  }
   const category = typeof product?.category === "string" ? product.category.trim() : "";
   const subcategory = typeof product?.subcategory === "string" ? product.subcategory.trim() : "";
   const exact = `${category}|${subcategory}`;

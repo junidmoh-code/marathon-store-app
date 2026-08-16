@@ -5,6 +5,7 @@
 // from here; scripts/shopify/* has its own server-side twin of the condition
 // list (compliance.mjs) — the two are pinned equal by the tests.
 import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers";
+import { isPriceRecord } from "../../utils/productCategory";
 import { normalizePhotoList, CONDITIONS } from "./publishShared";
 
 // Condition values, exactly these three (owner spec 2026-08-13). NO default:
@@ -79,6 +80,22 @@ export function canUseShopifyPublish(viewer) {
   return !!viewer && (viewer.isSuperAdmin === true || viewer.stockRole === "admin");
 }
 
+// ─── WHAT MAY BE PUBLISHED AT ALL ────────────────────────────────────────────
+// Separate from, and above, every "is it ready yet" gate. `canGoLive` and
+// `batchSelectBlocker` answer "what still needs doing"; this answers "is this
+// even a thing we sell". Today the only answer is price-carrier records — 35
+// bookkeeping rows that Junid saw listed on this page under a "Price Products"
+// heading, which is the defect this closes.
+//
+// The predicate itself lives in productCategory.js so the owner-run reconciler
+// imports the SAME function (it refuses these at apply time). The UI filter and
+// the server refusal must never be able to disagree about what a price record
+// is.
+export const PRICE_RECORD_BLOCKER = "internal price record — not merchandise, cannot be published";
+export function isPublishableProduct(product) {
+  return !isPriceRecord(product);
+}
+
 // Can this node's product be published (or switched on) right now? The one
 // hard gate that survives every redesign: condition has NO default, and a
 // product cannot reach the storefront without one (owner spec).
@@ -119,7 +136,15 @@ export function checkCleanName(input) {
 // ships imageless) — surfaced inline on the row so an unselectable product is
 // never a silent skip, and never a surprise block minutes after a script run
 // (owner spec 2026-08-14).
-export function batchSelectBlocker(node, effectiveName, photoCount) {
+export function batchSelectBlocker(node, effectiveName, photoCount, product) {
+  // Not merchandise — the hardest gate, ahead of every fixable one. A price
+  // record has no grade, no name and no photo either, so without this it would
+  // read "set a condition grade first", which invites someone to try. The page
+  // also filters these products out of the list entirely (isPublishable); this
+  // is the second lock, for any row that reaches a batch by another route.
+  // `product` is optional so an older two/three-arg caller still works — it
+  // simply gets the pre-existing gates.
+  if (product !== undefined && !isPublishableProduct(product)) return PRICE_RECORD_BLOCKER;
   if (!canGoLive(node)) return "set a condition grade first";
   if (!checkCleanName(effectiveName).ok) return "needs a valid cleaned name first";
   if (!(photoCount > 0)) return "needs at least one photo";

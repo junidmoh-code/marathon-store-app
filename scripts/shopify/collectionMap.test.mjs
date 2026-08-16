@@ -43,13 +43,19 @@ const LIVE_PAIRS = [
 ];
 
 describe("COLLECTIONS — the shape of the storefront", () => {
-  it("is exactly the agreed taxonomy: 6 top level, 6 under Clothing, 3 cross-cutting", () => {
+  it("is exactly the agreed taxonomy: 9 top level, 6 under Clothing, 3 cross-cutting", () => {
+    // Boots / Soccer Boots / Sandals & Slides joined the top level on
+    // 2026-08-16 when the single footwear lane was split (see the header
+    // census in collectionMap.mjs).
     const tops = COLLECTIONS.filter((c) => c.parent === null && c.kind === "manual").map((c) => c.title);
-    expect(tops).toEqual(["Sneakers", "Clothing", "Caps & Hats", "Bags", "Fragrance", "Accessories"]);
+    expect(tops).toEqual([
+      "Sneakers", "Boots", "Soccer Boots", "Sandals & Slides",
+      "Clothing", "Caps & Hats", "Bags", "Fragrance", "Accessories",
+    ]);
     const kids = COLLECTIONS.filter((c) => c.parent === "clothing").map((c) => c.title);
     expect(kids).toEqual(["T-shirts", "Hoodies & Sweats", "Tracksuits", "Jackets", "Shorts", "Pants"]);
     expect(SMART_KEYS).toEqual(["new-in", "sale", "under-r500"]);
-    expect(MANUAL_KEYS).toHaveLength(12);
+    expect(MANUAL_KEYS).toHaveLength(15);
   });
 
   it("every key and every handle is unique", () => {
@@ -122,12 +128,42 @@ describe("resolveCollection — the join, against the real catalogue", () => {
     expect(unknown).toEqual([]);
   });
 
+  it("every live pair EXCEPT the price records resolves to a real collection", () => {
+    for (const [category, subcategory] of LIVE_PAIRS) {
+      const r = resolveCollection({ category, subcategory });
+      const expected = category === "Price Products" ? "excluded" : "mapped";
+      expect({ category, subcategory, status: r.status }).toEqual({ category, subcategory, status: expected });
+    }
+  });
+
   it("maps the pairs that carry the live storefront today", () => {
-    // 7 of the 11 currently-live products are Footwear|Boots, 4 are Clothing|Caps & Hats.
+    // The 2026-08-16 live set: 23 Footwear|Boots, 15 Footwear|Sandals & Slides,
+    // 4 Clothing|Caps & Hats, 3 Footwear|Sneakers.
     expect(resolveCollection({ category: "Footwear", subcategory: "Boots" }))
-      .toMatchObject({ collectionKey: "sneakers", status: "mapped" });
+      .toMatchObject({ collectionKey: "boots", status: "mapped" });
+    expect(resolveCollection({ category: "Footwear", subcategory: "Sandals & Slides" }))
+      .toMatchObject({ collectionKey: "sandals-slides", status: "mapped" });
     expect(resolveCollection({ category: "Clothing", subcategory: "Caps & Hats" }))
       .toMatchObject({ collectionKey: "caps-hats", status: "mapped" });
+  });
+
+  it("footwear has FOUR lanes, and a boot is never a sneaker", () => {
+    const lane = (subcategory) => resolveCollection({ category: "Footwear", subcategory }).collectionKey;
+    expect(lane("Sneakers")).toBe("sneakers");
+    expect(lane("Boots")).toBe("boots");
+    expect(lane("Soccer Boots")).toBe("soccer-boots");
+    expect(lane("Sandals & Slides")).toBe("sandals-slides");
+    // The regression this split exists to prevent.
+    expect(["Boots", "Soccer Boots", "Sandals & Slides"].map(lane)).not.toContain("sneakers");
+  });
+
+  it("the Sneakers copy no longer promises boots and slides it does not hold", () => {
+    const sneakers = COLLECTION_BY_KEY.get("sneakers");
+    // It may still NAME them — to point the shopper at the new lanes — but it
+    // must not read as though this collection contains them.
+    expect(sneakers.description).not.toMatch(/Shoes — sneakers, boots/i);
+    expect(sneakers.description).toMatch(/sections of their own/i);
+    expect(sneakers.seoDescription).toMatch(/^Sneakers in stock/);
   });
 
   it("one internal category lands in exactly ONE collection — never a list", () => {
@@ -156,12 +192,30 @@ describe("resolveCollection — the join, against the real catalogue", () => {
     expect(r).toMatchObject({ collectionKey: "clothing", status: "mapped", key: "Clothing|*" });
   });
 
-  it("Price Products is unmapped ON PURPOSE, and says so", () => {
+  it("Price Products is EXCLUDED, not merely unmapped", () => {
     const r = resolveCollection({ category: "Price Products", subcategory: "Price Products" });
-    expect(r.status).toBe("unmapped");
+    expect(r.status).toBe("excluded");
     expect(r.collectionKey).toBeNull();
-    expect(r.reason).toMatch(/on purpose/);
-    expect(r.reason).toMatch(/New In/);
+    expect(r.reason).toMatch(/not merchandise/);
+    // The old answer let it go live and surface in New In. It must not read
+    // that way any more.
+    expect(r.reason).not.toMatch(/New In/);
+  });
+
+  it("exclusion survives losing any ONE of its three identifying signals", () => {
+    // Fail-safe check: the rule is an OR, so an edit to any single field
+    // cannot make a price record publishable.
+    const full = { priceProduct: true, category: "Price Products", subcategory: "Price Products" };
+    for (const drop of ["priceProduct", "category", "subcategory"]) {
+      const rec = { ...full };
+      delete rec[drop];
+      expect({ drop, status: resolveCollection(rec).status }).toEqual({ drop, status: "excluded" });
+    }
+    // Re-categorised to a real category but still flagged: still excluded.
+    expect(resolveCollection({ priceProduct: true, category: "Clothing", subcategory: "T-Shirts" }).status)
+      .toBe("excluded");
+    // And a real product is unaffected.
+    expect(resolveCollection({ category: "Clothing", subcategory: "T-Shirts" }).status).toBe("mapped");
   });
 
   it("an entirely new top-level category is 'unknown' — the loud case", () => {
@@ -188,9 +242,14 @@ describe("resolveCollection — the join, against the real catalogue", () => {
 // The sweep distinguishes three "no collection" outcomes and they must stay
 // distinguishable from the map's answer alone: a deliberate null, a category
 // nobody mapped, and a mapped collection that was never created on the shop.
-describe("the three no-collection outcomes are distinguishable", () => {
-  it("a deliberate null is 'unmapped'", () => {
-    expect(resolveCollection({ category: "Price Products", subcategory: "Price Products" }).status).toBe("unmapped");
+describe("the no-collection outcomes are distinguishable", () => {
+  it("not-merchandise is 'excluded' — the only status that blocks publication", () => {
+    expect(resolveCollection({ category: "Price Products", subcategory: "Price Products" }).status).toBe("excluded");
+  });
+  it("a deliberate null is 'unmapped' — published, just no heading", () => {
+    // No live category maps to null any more, so this is exercised through a
+    // synthetic row shape rather than a real product.
+    expect(Object.values(CATEGORY_MAP).includes(null)).toBe(true);
   });
   it("a category nobody mapped is 'unknown'", () => {
     expect(resolveCollection({ category: "Homeware", subcategory: "Mugs" }).status).toBe("unknown");
@@ -199,7 +258,7 @@ describe("the three no-collection outcomes are distinguishable", () => {
     // sync-collections reports this as `no-id` (fix it with ensure-collections
     // --commit), never as the documented-normal `no-collection`.
     const r = resolveCollection({ category: "Footwear", subcategory: "Boots" });
-    expect(r).toMatchObject({ status: "mapped", collectionKey: "sneakers" });
+    expect(r).toMatchObject({ status: "mapped", collectionKey: "boots" });
   });
 });
 

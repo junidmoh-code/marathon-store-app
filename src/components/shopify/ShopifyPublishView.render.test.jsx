@@ -1085,3 +1085,55 @@ test("two overlapping reads landing OUT of order: the older answer never overwri
     expect(texts(tree)).not.toContain("PUBLISHING…");
   });
 });
+
+// ─── NOT MERCHANDISE ─────────────────────────────────────────────────────────
+// Price-carrier records ("Entry 30 Line", "Budget 180 Range" …) are internal
+// bookkeeping rows with no sizes, no SKU and no photo. Junid found them listed
+// on this page under a "Price Products" heading. They must not be here at all:
+// no section, no row, no badge count, and no way in through the hash route.
+// The reconciler refuses them independently — this covers the page half.
+const PRICE_RECORD = {
+  id: "p1785900000000", name: "Entry 30 Line", barcode: "30",
+  priceProduct: true, category: "Price Products", subcategory: "Price Products",
+  retailPrice: 30, stockPrice: 30,
+};
+const WITH_PRICE_RECORD = [...PRODUCTS, PRICE_RECORD];
+
+test("a price record has no section and no row on the publishing page", async () => {
+  keys = new Set();
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={WITH_PRICE_RECORD} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain("Clothing");
+  expect(out).toContain("Footwear");
+  // The heading itself is gone — there is nothing to expand.
+  expect(out).not.toContain("Price Products");
+  expect(out).not.toContain("Entry 30 Line");
+});
+
+test("a price record cannot be reached by its hash either — the route bounces to the list", async () => {
+  keys = new Set();
+  hashValue = "#shopify/p1785900000000";
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={WITH_PRICE_RECORD} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  expect(hashValue).toBe("");
+  expect(texts(tree)).not.toContain("Entry 30 Line");
+  // A REAL product on the same route still opens, so the guard is specific
+  // to price records and not a blanket "the hash route is broken".
+  await act(() => { fakeLocation.hash = "#shopify/p1"; });
+  await flush();
+  expect(texts(tree)).toContain("Plain tee black");
+  await act(() => { fakeLocation.hash = ""; });
+});
+
+test("the home badge does not count price records as awaiting review", async () => {
+  const { useShopifyAwaitingCount } = await import("./ShopifyPublishView.jsx");
+  keys = new Set(["p1", "p3"]);
+  let seen = null;
+  function Probe() { seen = useShopifyAwaitingCount(WITH_PRICE_RECORD, true); return null; }
+  await act(() => { create(<Probe />); });
+  await flush();
+  expect(seen).toBe(1); // p2 only — the price record adds nothing
+});

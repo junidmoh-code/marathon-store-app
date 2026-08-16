@@ -7,6 +7,7 @@ import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
   normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason,
   STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker, effectivePhotoList,
+  isPublishableProduct, PRICE_RECORD_BLOCKER,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY, normalizePhotoList } from "./publishShared";
 import { CONDITIONS as SCRIPT_CONDITIONS } from "../../../scripts/shopify/compliance.mjs";
@@ -191,5 +192,40 @@ describe("reviewStateFor — the page's row/filter state", () => {
     expect(matchesStateFilter("awaiting", "approved")).toBe(false);
     expect(matchesStateFilter("blocked", "blocked")).toBe(true);
     expect(matchesStateFilter("live", "awaiting")).toBe(false);
+  });
+});
+
+// ── Not merchandise ──────────────────────────────────────────────────────────
+describe("isPublishableProduct — price records never reach the storefront", () => {
+  const PRICE = { id: "p1785900000000", name: "Entry 30 Line", priceProduct: true, category: "Price Products", subcategory: "Price Products" };
+  const READY = { state: "awaiting", condition: "Very good — light cosmetic marks" };
+
+  it("a price record is not publishable", () => {
+    expect(isPublishableProduct(PRICE)).toBe(false);
+  });
+
+  it("a real product is", () => {
+    expect(isPublishableProduct({ id: "p1", name: "Slide brown", category: "Footwear" })).toBe(true);
+    expect(isPublishableProduct(null)).toBe(true); // absent record is not a price record
+  });
+
+  it("batchSelectBlocker refuses it AHEAD of every fixable gate", () => {
+    // Everything else about this row is perfect — grade set, valid name, a
+    // photo. It must still refuse, and with the not-merchandise reason, not a
+    // "go fix your grade" one.
+    expect(batchSelectBlocker(READY, "Entry 30 Line", 1, PRICE)).toBe(PRICE_RECORD_BLOCKER);
+    // And it wins even when the fixable gates would also fire.
+    expect(batchSelectBlocker({ state: "awaiting" }, "", 0, PRICE)).toBe(PRICE_RECORD_BLOCKER);
+  });
+
+  it("the same call on a real product is unaffected", () => {
+    const real = { id: "p1", name: "Slide brown", category: "Footwear" };
+    expect(batchSelectBlocker(READY, "Slide brown", 1, real)).toBeNull();
+    expect(batchSelectBlocker(READY, "Slide brown", 0, real)).toBe("needs at least one photo");
+  });
+
+  it("callers that pass no product keep the old three-argument behaviour", () => {
+    expect(batchSelectBlocker(READY, "Slide brown", 1)).toBeNull();
+    expect(batchSelectBlocker({ state: "awaiting" }, "Slide brown", 1)).toBe("set a condition grade first");
   });
 });
