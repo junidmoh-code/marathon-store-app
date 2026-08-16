@@ -170,16 +170,28 @@ export async function enforceTracking(graphql, productId, variantIds) {
   // Read the mutation's OWN echo rather than trusting the absence of errors:
   // this is the gate between a listing and overselling, so "it said nothing"
   // is not good enough.
-  const still = untrackedVariants(
-    (data.productVariantsBulkUpdate.productVariants || []).map((v) => ({
-      variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
-    }))
-  );
+  //
+  // TWO checks, because either alone has a blind spot. Scanning the returned
+  // variants catches one that came back still untracked; but a variant DROPPED
+  // from the response entirely — no entry, no userError, which bulk mutations
+  // can do under concurrent modification — is invisible to that scan and would
+  // pass. So the returned id set must also COVER every id requested.
+  const echoed = (data.productVariantsBulkUpdate.productVariants || []).map((v) => ({
+    variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
+  }));
+  const missing = variantIds.filter((id) => !echoed.some((v) => v.variantId === id));
+  if (missing.length) {
+    throw new Error(
+      `inventory tracking response did not mention ${missing.length} requested variant(s): ` +
+        missing.join(", ") + " — treating as not applied"
+    );
+  }
+  const still = untrackedVariants(echoed);
   if (still.length) {
     throw new Error(
       `inventory tracking did not take on ${still.length} variant(s): ` +
         still.map((v) => v.variantId).join(", ")
     );
   }
-  return { fixed: variantIds.length };
+  return { fixed: echoed.length };
 }

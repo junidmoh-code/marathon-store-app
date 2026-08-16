@@ -122,3 +122,28 @@ storefront that nothing in this system maintains.
 Writes Shopify variants and inventory levels **only**. No RTDB writes at all.
 Nothing is created, published, unpublished, archived or deleted. Safe to re-run:
 an already-correct product costs one read and no mutation.
+
+#### The size-key guard
+
+`networkTotals` re-applies `stockSizeKey` to whatever size list it is given,
+while the ID map's keys came from `encodeSizeKey`. For every token the live
+catalogue uses the two agree — but **not** for a literal `"Free Size"`, which
+encodes to `Free_Size` in the map and folds to `_` in `/stock`. Given such a
+key, `networkTotals` finds no matching cell, returns `0`, and the backfill would
+then *track* that variant and set it to zero in the same pass: real stock turned
+into a silent, instant sold-out. The same class of bug as the one being fixed,
+pointing the other way.
+
+`reconcile.mjs` already refuses that mismatch before publishing. The backfill
+reads `/shopify_sync` directly and never goes through that check, so it carries
+its own: a product with a divergent mapped key is reported `size-key-mismatch`,
+skipped, and the run exits non-zero.
+
+#### Read cost
+
+Location names come from a REST `?shallow=true` read (`shallowKeys`), not a
+`db.ref("stock").get()` — that would pull every location × every product × every
+size to read off ten top-level keys, and this project has a Firebase
+bandwidth-cost incident on record. The per-product stock cells are then fetched
+one request per location, **all in flight at once** rather than ten sequential
+round-trips per product.

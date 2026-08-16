@@ -1,7 +1,7 @@
 // ─── Photos + inventory, pure parts pinned ───────────────────────────────────
 import { describe, it, expect } from "vitest";
 import { buildMediaPlan, mediaFingerprint } from "./media.mjs";
-import { networkTotals, untrackedVariants, TRACKED_VARIANT } from "./inventory.mjs";
+import { networkTotals, untrackedVariants, TRACKED_VARIANT, enforceTracking } from "./inventory.mjs";
 
 describe("buildMediaPlan", () => {
   const product = {
@@ -142,5 +142,61 @@ describe("untrackedVariants — which variants need fixing", () => {
   it("returns only the wrong ones, so the mutation is as small as the damage", () => {
     const bad = { variantId: "v2", tracked: false, inventoryPolicy: "DENY" };
     expect(untrackedVariants([ok, bad, { ...ok, variantId: "v3" }])).toEqual([bad]);
+  });
+});
+
+// ─── enforceTracking's echo check ────────────────────────────────────────────
+// This is the gate between a listing and overselling, so it verifies the
+// mutation's OWN response rather than trusting an empty userErrors. Two checks,
+// because either alone has a blind spot: scanning what came back catches a
+// variant returned still untracked, and comparing the id sets catches one
+// DROPPED from the response entirely — which bulk mutations can do under
+// concurrent modification, with no userError to show for it (review finding,
+// 2026-08-16).
+const V1 = "gid://shopify/ProductVariant/1";
+const V2 = "gid://shopify/ProductVariant/2";
+const echo = (vs) => async () => ({
+  productVariantsBulkUpdate: {
+    productVariants: vs,
+    userErrors: [],
+  },
+});
+const good = (id) => ({ id, inventoryPolicy: "DENY", inventoryItem: { tracked: true } });
+
+describe("enforceTracking", () => {
+  it("sends nothing when there is nothing to fix", async () => {
+    let called = false;
+    const gql = async () => { called = true; return {}; };
+    expect(await enforceTracking(gql, "gid://shopify/Product/1", [])).toEqual({ fixed: 0 });
+    expect(called).toBe(false);
+  });
+
+  it("asks for tracked + DENY on exactly the variants it was given", async () => {
+    let sent = null;
+    const gql = async (_q, vars) => { sent = vars; return (await echo([good(V1), good(V2)])()); };
+    await enforceTracking(gql, "gid://shopify/Product/1", [V1, V2]);
+    expect(sent.productId).toBe("gid://shopify/Product/1");
+    expect(sent.variants).toEqual([{ id: V1, ...TRACKED_VARIANT }, { id: V2, ...TRACKED_VARIANT }]);
+  });
+
+  it("throws on userErrors", async () => {
+    const gql = async () => ({ productVariantsBulkUpdate: { productVariants: [], userErrors: [{ field: "id", message: "nope" }] } });
+    await expect(enforceTracking(gql, "p", [V1])).rejects.toThrow(/userErrors/);
+  });
+
+  it("throws when a variant comes back STILL untracked", async () => {
+    const gql = echo([{ id: V1, inventoryPolicy: "DENY", inventoryItem: { tracked: false } }]);
+    await expect(enforceTracking(gql, "p", [V1])).rejects.toThrow(/did not take/);
+  });
+
+  it("throws when a requested variant is DROPPED from the response — no error, no entry", async () => {
+    // The blind spot: V2 is simply absent. Scanning what came back sees only a
+    // correct V1 and would have returned success while V2 could still oversell.
+    const gql = echo([good(V1)]);
+    await expect(enforceTracking(gql, "p", [V1, V2])).rejects.toThrow(/did not mention/);
+  });
+
+  it("reports the count it actually saw applied, not the count it asked for", async () => {
+    expect(await enforceTracking(echo([good(V1), good(V2)]), "p", [V1, V2])).toEqual({ fixed: 2 });
   });
 });

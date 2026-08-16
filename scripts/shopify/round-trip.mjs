@@ -22,6 +22,7 @@ import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs"
 import { cleanTitleFor, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
 import { VENDOR, validatePayload } from "./compliance.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
+import { TRACKED_VARIANT } from "./inventory.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -102,6 +103,12 @@ const input = {
   variants: sizes.map((s) => ({
     optionValues: [{ optionName: "Size", name: sizeName(s) }],
     price,
+    // Same as the reconciler's create path: productSet leaves
+    // inventoryItem.tracked at FALSE, and an untracked variant is one Shopify
+    // will sell for ever. reconcile.mjs would heal a product created here on
+    // its next run, but a draft that never reaches the reconciler would sit
+    // untracked in the admin looking fine.
+    ...TRACKED_VARIANT,
     ...(product.sku ? { sku: `${product.sku}-${encodeSizeKey(s)}` } : {}),
   })),
 };

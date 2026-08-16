@@ -34,7 +34,8 @@
 // tracked with current quantities costs one read and no mutation.
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
-import { assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { assertSafeSegment, encodeSizeKey, stockSizeKey } from "../../src/utils/sizeKey.js";
+import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable,
   untrackedVariants, enforceTracking,
@@ -83,10 +84,13 @@ console.log(`${pids.length} mapped products in scope` +
   ` · ${pids.filter((p) => confirmedOn(publishNodes[p])).length} confirmed ON the storefront`);
 console.log(COMMIT ? "MODE: commit\n" : "MODE: dry run — nothing written\n");
 
-// The stock tree is read ONCE per location rather than per product: the live
-// tree is large and a per-product walk of every location would be thousands of
-// reads for a job that touches at most a few hundred products.
-const locNames = Object.keys((await db.ref("stock").get()).val() || {});
+// The LOCATION NAMES, and nothing else. A `db.ref("stock").get()` here would
+// pull the entire tree — every location x every product x every size — to read
+// off ten top-level keys, and this project has a Firebase bandwidth-cost
+// incident on record. shallowKeys is the REST ?shallow=true read the census
+// scripts already use for exactly this: it returns the keys and none of the
+// weight.
+const locNames = await shallowKeys(admin.app(), "stock");
 
 const locId = await requireSingleLocation(graphql);
 const results = [];
@@ -125,16 +129,37 @@ for (const pid of pids) {
       .map((v) => ({ variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy }));
     const untracked = untrackedVariants(rows);
 
-    // Current network quantity per mapped size, from /stock.
-    const cells = {};
-    for (const loc of locNames) {
-      const c = (await db.ref(`stock/${loc}/${pid}`).get()).val();
-      if (c) cells[loc] = { [pid]: c };
-    }
-    // networkTotals keys by stockSizeKey; the ID map is already keyed the same
-    // way (encodeSizeKey), and the reconciler refuses any record where the two
-    // disagree — so the map's own keys are the size list to price.
+    // THE SIZE-KEY GUARD, and it is not optional. networkTotals re-applies
+    // stockSizeKey to whatever size list it is given, while the ID map's keys
+    // came from encodeSizeKey. For every token the live catalogue uses the two
+    // agree — but they do NOT for a literal "Free Size", which encodes to
+    // "Free_Size" in the map and folds to "_" in /stock. Given such a key,
+    // networkTotals would find no matching cell, return 0, and this script
+    // would then TRACK the variant and set it to zero in the same pass —
+    // turning real stock into a silent, instant sold-out. That is the same
+    // class of bug this PR exists to fix, pointing the other way.
+    //
+    // reconcile.mjs already refuses this mismatch before publishing; the
+    // backfill reads /shopify_sync directly and never goes through that check,
+    // so it needs its own. Refuse the product rather than price it wrong.
     const sizeKeys = Object.keys(variantMap);
+    const divergent = sizeKeys.filter((k) => stockSizeKey(k) !== k || encodeSizeKey(k) !== k);
+    if (divergent.length) {
+      results.push({
+        pid, status: "size-key-mismatch",
+        detail: `${bp.title} · mapped size key(s) ${divergent.join(", ")} do not survive stockSizeKey/encodeSizeKey unchanged — pricing them would read 0 from /stock and sell-out real stock. Normalise the record and re-map first.`,
+      });
+      continue;
+    }
+
+    // Current network quantity per mapped size, from /stock. One request per
+    // location, ALL IN FLIGHT AT ONCE rather than ten sequential round-trips
+    // per product.
+    const perLoc = await Promise.all(
+      locNames.map((loc) => db.ref(`stock/${loc}/${pid}`).get().then((snap) => [loc, snap.val()]))
+    );
+    const cells = {};
+    for (const [loc, c] of perLoc) if (c) cells[loc] = { [pid]: c };
     const totals = networkTotals(cells, pid, sizeKeys);
     const items = Object.entries(variantMap).map(([sizeKey, v]) => ({
       inventoryItemId: v.shopifyInventoryItemId,
@@ -160,7 +185,7 @@ for (const pid of pids) {
   }
 }
 
-const BAD = new Set(["failed", "no-map", "gone", "too-many"]);
+const BAD = new Set(["failed", "no-map", "gone", "too-many", "size-key-mismatch"]);
 for (const r of results) {
   const icon = BAD.has(r.status) ? "✗" : r.status.startsWith("already") ? "·" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(20)} ${r.detail}`);
