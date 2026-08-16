@@ -46,6 +46,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { encodeSizeKey, stockSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { isPriceRecord } from "../../src/utils/productCategory.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { cleanTitleFor, isTriggerFree, triggersInText } from "../../src/utils/shopifyTriggers.js";
 import {
@@ -123,8 +124,13 @@ if (!COMMIT) {
   for (const { pid, node, want } of worklist) {
     assertSafeSegment(pid, "productId");
     const mapNode = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    // The dry run is a PREVIEW, so it must say REFUSE where the commit run
+    // would refuse. Showing "CREATE+PUBLISH" for a product the ON path rejects
+    // outright would preview the opposite of what happens.
+    const dryProduct = want === "on" ? (await db.ref(`products/${pid}`).get()).val() : null;
     let action;
     if (want === "off") action = "UNPUBLISH";
+    else if (isPriceRecord(dryProduct)) action = "REFUSE (not merchandise)";
     else action = mapNode?.shopifyProductId ? "PUBLISH" : "CREATE+PUBLISH";
     const title = node.cleanName || "(lexicon at apply time)";
     // The collection is resolvable from RTDB alone, so the dry run shows it —
@@ -134,7 +140,7 @@ if (!COMMIT) {
     // is meant to be a complete preview, so it says so instead of showing "—".
     let collection = want === "off" ? "leaves collections" : "—";
     if (want === "on") {
-      const r = resolveCollection((await db.ref(`products/${pid}`).get()).val());
+      const r = resolveCollection(dryProduct);
       // "mapped but no recorded id" is a NO-COLLECTION outcome too — the map
       // names a collection that has never been created. Showing its title here
       // would promise a home the publish cannot deliver, which is exactly the
@@ -297,6 +303,24 @@ for (const { pid, want } of capped) {
     const product = (await db.ref(`products/${pid}`).get()).val();
     if (!product) { await refuse(pid, "no /products record"); continue; }
     if (product.mergedInto) { await refuse(pid, `record merged into ${product.mergedInto} — publish the survivor`); continue; }
+    // NOT MERCHANDISE. This is the enforcement point, not the UI: the page's
+    // filter stops a price record being nominated, but an intent written
+    // before that filter shipped — or by a script, or by hand in the console —
+    // would otherwise sail straight through to the storefront. Deliberately
+    // ahead of every other check so a price record can never reach a Shopify
+    // call, and refuse() (not a silent skip) so it lands visibly in the run log
+    // and on the node as blockedReason.
+    //
+    // NOTE THE POSITION: this sits inside the "turning ON" half, AFTER the
+    // `want === "off"` branch has already `continue`d. That is on purpose and
+    // is the recovery path — a price record somehow already live must still be
+    // TAKE-DOWN-ABLE. Setting its intent to "off" runs the normal unpublish and
+    // collection teardown; only going ON is refused. Refusing both would strand
+    // a live one with no way down, which is the opposite of a safe gate.
+    if (isPriceRecord(product)) {
+      await refuse(pid, "internal price-carrier record, not merchandise — never publishable");
+      continue;
+    }
     if (!CONDITIONS.includes(fresh.condition)) { await refuse(pid, "condition unset — a product cannot go live without one"); continue; }
 
     // Title: the reviewed cleanName wins while still trigger-free; else lexicon.

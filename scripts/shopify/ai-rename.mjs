@@ -21,6 +21,7 @@
 import { createRequire } from "module";
 import "./env.mjs"; // side effect: tops up process.env from the repo-root .env
 import { cleanTitleFor, triggersInText, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
+import { isPriceRecord } from "../../src/utils/productCategory.js";
 import { cachePublishName, readPublishNode } from "./publishNode.mjs";
 
 const flags = process.argv.slice(2);
@@ -54,6 +55,10 @@ const all = (await db.ref("products").get()).val() || {};
 const residue = [];
 for (const [pid, p] of Object.entries(all)) {
   if (!p || typeof p !== "object" || p.mergedInto) continue;
+  // Not merchandise — no listing title will ever be needed for it, so it does
+  // not belong in a naming worklist (and in ai-rename.mjs's case would spend a
+  // real API call on one).
+  if (isPriceRecord(p)) continue;
   const r = cleanTitleFor(p);
   if (r.needsAI) residue.push({ pid, product: p, reason: r.reason });
 }

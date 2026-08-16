@@ -40,6 +40,7 @@ import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as in
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
+  isPublishableProduct,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
@@ -344,7 +345,10 @@ export function useShopifyAwaitingCount(products, enabled) {
   return useMemo(() => {
     if (!enabled || !keys) return null;
     let n = 0;
-    for (const p of products || []) if (p?.id && !keys.has(p.id)) n += 1;
+    // Price records are not merchandise and never enter the review flow, so
+    // counting them would leave the home badge permanently 35 too high with
+    // nothing on the page to work off.
+    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !keys.has(p.id)) n += 1;
     return n;
   }, [enabled, keys, products]);
 }
@@ -440,12 +444,28 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return () => { on = false; };
   }, []);
 
+  // The ONE publishable-product index for this page: the sections, the Live
+  // groups, the product-page route and the batch dialog all read it, so a price
+  // record is absent from every one of them for the same reason. Declared here,
+  // above its first consumer (liveGroups) — a later `const` would be in the
+  // temporal dead zone when that memo runs.
+  const productById = useMemo(() => {
+    const m = new Map();
+    for (const p of products) if (p?.id && isPublishableProduct(p)) m.set(p.id, p);
+    return m;
+  }, [products]);
+
   // The catalogue grouped by its existing category field, subcategory kept for
   // the in-section subheaders. Categories and their products sort by name.
   const sections = useMemo(() => {
     const byCat = new Map();
     for (const p of products) {
       if (!p?.id || !p?.name) continue;
+      // NOT MERCHANDISE — dropped before grouping, so the "Price Products"
+      // heading Junid saw on this page does not exist at all. Nothing here can
+      // be opened, named, graded, selected or nominated, because there is no
+      // row. The reconciler refuses them independently (see reconcile.mjs).
+      if (!isPublishableProduct(p)) continue;
       const cat = String(p.category || UNCAT);
       if (!byCat.has(cat)) byCat.set(cat, []);
       byCat.get(cat).push(p);
@@ -504,8 +524,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // says otherwise.
   const liveGroups = useMemo(() => {
     if (filter !== "live") return null;
-    const byId = new Map();
-    for (const p of products) if (p?.id) byId.set(p.id, p);
+    // productById, NOT a fresh walk of `products` — this view is built from
+    // NODES rather than from `sections`, so its own map would be the one place
+    // on the page a price record could still surface (with a live node written
+    // before the exclusion shipped). Sharing the filtered map closes that.
+    const byId = productById;
     const on = [];
     const off = [];
     for (const [pid, n] of Object.entries(nodes)) {
@@ -522,7 +545,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       { key: "__liveOn",  label: "On — visible to customers", list: on },
       { key: "__liveOff", label: "Off — on Shopify, not published", list: off },
     ];
-  }, [filter, products, nodes, q]);
+  }, [filter, productById, nodes, q]);
 
   // A section is effectively open when toggled open, or when a search has
   // narrowed the page far enough that showing the matches outright is cheap.
@@ -763,17 +786,31 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // — local writes and external ones alike (the window-focus refetch can pull
   // in a reconciler-side block; publishing that stale selection would clear
   // the validator's refusal and re-queue the very product it refused).
+  //
+  // Also prune anything that has LEFT productById. The selection is page-level
+  // and survives collapsing a section, so a product that stops being publishable
+  // while it sits selected — the /products subscription delivers an edit that
+  // makes it a price record, or the record is deleted in another tab — would
+  // otherwise stay in the set with no row to unselect it from.
+  //
+  // It could never have been PUBLISHED that way: batchItems already dropped a
+  // pid missing from productById, and runBatch iterates batchItems. The defect
+  // was ACCOUNTING — the bar counted a phantom in "n of 25 selected" and it
+  // consumed one of the 25 cap slots, while the dialog silently listed one
+  // fewer product than the bar promised. productById is the one index the rest
+  // of the page reads, so pruning against it keeps all three in step.
   useEffect(() => {
     setSelected((prev) => {
       if (prev.size === 0) return prev;
       const next = new Set(prev);
       for (const pid of prev) {
+        if (!productById.has(pid)) { next.delete(pid); continue; }
         const node = nodes[pid];
         if (node !== undefined && !selectionEligible(node)) next.delete(pid);
       }
       return next.size === prev.size ? prev : next;
     });
-  }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [nodes, productById]); // eslint-disable-line react-hooks/exhaustive-deps
   // (nodesRef — the freshest nodes for runBatch's long-lived closure — is
   // declared with the pending refresh above, which needs the same thing.)
   const capNotice = () =>
@@ -797,7 +834,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     if (!blockerCache.has(p.id)) {
       const node = nodes[p.id] || null;
       blockerCache.set(p.id, batchSelectBlocker(
-        node, effectiveNameFor(p, node).name, effectivePhotoList(p, node).photos.length));
+        node, effectiveNameFor(p, node).name, effectivePhotoList(p, node).photos.length, p));
     }
     return blockerCache.get(p.id);
   };
@@ -826,12 +863,6 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     setSelected(next);
     if (capped) capNotice();
   };
-
-  const productById = useMemo(() => {
-    const m = new Map();
-    for (const p of products) if (p?.id) m.set(p.id, p);
-    return m;
-  }, [products]);
 
   // Product-page stale-hash guard: a hash pointing at a product that no
   // longer exists (deleted in another tab, or a mistyped link) returns to the

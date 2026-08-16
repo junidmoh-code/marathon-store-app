@@ -14,6 +14,7 @@
 import { createRequire } from "module";
 import { writeFileSync } from "fs";
 import { cleanTitleFor } from "../../src/utils/shopifyTriggers.js";
+import { isPriceRecord } from "../../src/utils/productCategory.js";
 
 const flags = process.argv.slice(2);
 const SHOW_RESIDUE = flags.includes("--residue");
@@ -37,6 +38,10 @@ const residue = [];
 let total = 0;
 for (const [pid, p] of Object.entries(all)) {
   if (!p || typeof p !== "object" || p.mergedInto) continue;
+  // Not merchandise — no listing title will ever be needed for it, so it does
+  // not belong in a naming worklist (and in ai-rename.mjs's case would spend a
+  // real API call on one).
+  if (isPriceRecord(p)) continue;
   total++;
   const r = cleanTitleFor(p);
   if (r.needsAI) {

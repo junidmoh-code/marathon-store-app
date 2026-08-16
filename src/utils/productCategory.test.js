@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { categorize, sizeClass, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory } from "./productCategory.js";
+import { categorize, sizeClass, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPriceRecord, PRICE_RECORD_CATEGORY } from "./productCategory.js";
 
 const SHOE = ["6", "7", "8", "9", "10", "11"];
 const CLOTHES = ["S", "M", "L", "XL", "XXL"];
@@ -131,5 +131,67 @@ describe("topCategory (display-only bucket)", () => {
     expect(topCategory({ category: "Nonsense" })).toBe(UNCATEGORIZED_TOP);
     expect(topCategory({})).toBe(UNCATEGORIZED_TOP);
     expect(topCategory(null)).toBe(UNCATEGORIZED_TOP);
+  });
+});
+
+// ── Price records ────────────────────────────────────────────────────────────
+// The 35 live rows all carry ALL THREE signals; the predicate ORs them so that
+// losing any one to an edit does not open the gate. Shape lifted from the
+// 2026-08-16 census (p1785900000000 "Entry 30 Line").
+describe("isPriceRecord — internal price carriers are not merchandise", () => {
+  const REAL = {
+    id: "p1785900000000", name: "Entry 30 Line", barcode: "30",
+    priceProduct: true, category: "Price Products", subcategory: "Price Products",
+    retailPrice: 30, stockPrice: 30, hasShoeBoxOption: false,
+  };
+
+  it("recognises a live price record", () => {
+    expect(isPriceRecord(REAL)).toBe(true);
+  });
+
+  it("any ONE signal is enough — the rule cannot be edited open by halves", () => {
+    expect(isPriceRecord({ priceProduct: true })).toBe(true);
+    expect(isPriceRecord({ category: PRICE_RECORD_CATEGORY })).toBe(true);
+    expect(isPriceRecord({ subcategory: PRICE_RECORD_CATEGORY })).toBe(true);
+    // Re-categorised to a real category, flag left behind:
+    expect(isPriceRecord({ priceProduct: true, category: "Clothing", subcategory: "T-Shirts" })).toBe(true);
+    // Flag stripped, category left behind:
+    expect(isPriceRecord({ category: PRICE_RECORD_CATEGORY, subcategory: "T-Shirts" })).toBe(true);
+  });
+
+  it("dropping any single field from a real record still reads as a price record", () => {
+    for (const drop of ["priceProduct", "category", "subcategory"]) {
+      const rec = { ...REAL };
+      delete rec[drop];
+      expect({ drop, priceRecord: isPriceRecord(rec) }).toEqual({ drop, priceRecord: true });
+    }
+  });
+
+  it("a real product is never one — including a truthy-but-not-true flag", () => {
+    expect(isPriceRecord({ id: "p1", name: "Slide brown", category: "Footwear", subcategory: "Sandals & Slides" })).toBe(false);
+    // Only the literal boolean counts; a stray string must not smuggle a real
+    // product out of the storefront.
+    expect(isPriceRecord({ category: "Footwear", priceProduct: "no" })).toBe(false);
+    expect(isPriceRecord({ category: "Footwear", priceProduct: 0 })).toBe(false);
+  });
+
+  it("matches the way resolveCollection normalises — whitespace and case cannot open the gate", () => {
+    // The fail-open Kimi found on review: resolveCollection trims `category`
+    // before its lookup, so a padded value used to slip past this predicate and
+    // still match the "Price Products|*" row downstream — status "unmapped",
+    // which publishes.
+    expect(isPriceRecord({ category: "Price Products " })).toBe(true);
+    expect(isPriceRecord({ category: " price products" })).toBe(true);
+    expect(isPriceRecord({ category: "PRICE PRODUCTS" })).toBe(true);
+    expect(isPriceRecord({ subcategory: "\tPrice Products\n" })).toBe(true);
+    // …but it stays a match on the LABEL, not a substring of one.
+    expect(isPriceRecord({ category: "Price Products Archive" })).toBe(false);
+  });
+
+  it("tolerates junk without throwing", () => {
+    expect(isPriceRecord(null)).toBe(false);
+    expect(isPriceRecord(undefined)).toBe(false);
+    expect(isPriceRecord("Price Products")).toBe(false);
+    expect(isPriceRecord({})).toBe(false);
   });
 });

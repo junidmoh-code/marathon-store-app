@@ -68,6 +68,48 @@ export function isPerfume(record) {
   return !!record && record.category === PERFUME_CATEGORY;
 }
 
+// ── PRICE RECORDS — internal price carriers, never goods ──────────────────────
+// A "Price Product" is a bookkeeping row that exists so a cashier can ring up a
+// loose item at a set price ("Entry 30 Line", "Budget 180 Range", …). It has a
+// name, a barcode and a price, and NOTHING else: no sizes, no SKU, no photo, no
+// stock. The 2026-08-16 census found 35 of them, and every one carries all
+// THREE of the signals below.
+//
+// It is not merchandise and must never reach a storefront. This predicate is
+// the ONE definition of that, shared by the browser (the publishing page's
+// nominate + batch-select gates) and the owner-run reconciler (its apply-time
+// refusal). Both sides asking the same question is the point: a UI-only filter
+// would still let a stale intent — or a hand-written /shopify_publish node —
+// push one live.
+//
+// FAIL-SAFE BY CONSTRUCTION: the three signals are OR-ed, not AND-ed. Each one
+// alone is sufficient, so a record stays excluded if any of them is edited away
+// — re-categorise it to "Clothing" and `priceProduct: true` still catches it;
+// strip the flag and the category still does. The only way to make a price
+// record publishable is to remove ALL THREE, which is indistinguishable from
+// deliberately converting it into a real product. It never fails open by
+// accident, only by explicit intent.
+// The string comparison is NORMALISED (trimmed, case-folded) and that is
+// load-bearing, not tidiness. resolveCollection() trims `category` before it
+// looks the row up, so a record carrying "Price Products " with a trailing
+// space and no `priceProduct` flag would read as NOT a price record here while
+// still matching the "Price Products|*" row downstream — status "unmapped",
+// which publishes. Comparing more loosely than the consumer downstream is the
+// one way an OR-ed fail-safe can still fail open, so both sides normalise.
+export const PRICE_RECORD_CATEGORY = "Price Products";
+const PRICE_RECORD_NORM = PRICE_RECORD_CATEGORY.toLowerCase();
+const isPriceLabel = (v) =>
+  typeof v === "string" && v.trim().toLowerCase() === PRICE_RECORD_NORM;
+
+export function isPriceRecord(record) {
+  if (!record || typeof record !== "object") return false;
+  return (
+    record.priceProduct === true ||
+    isPriceLabel(record.category) ||
+    isPriceLabel(record.subcategory)
+  );
+}
+
 // ── Size class (mirrors the POS src/shared/sizeClass.js contract) ──────────────
 const CLOTHING_LETTER_RE = /^(XS|S|M|L|X+L|[2-9]X+L)$/;
 const WAIST_MIN = 28; // numeric ≥ 28 is a pants waist (clothing); below is a shoe.

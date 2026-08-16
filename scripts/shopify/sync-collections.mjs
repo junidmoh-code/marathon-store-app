@@ -35,7 +35,7 @@
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
+import { resolveCollection, COLLECTION_BY_KEY, MANUAL_KEYS } from "./collectionMap.mjs";
 import {
   collectionGidsByKey, manualGidsFrom, planCollectionMembership,
   readProductCollections, applyCollectionMembership, sweepIntent,
@@ -89,6 +89,41 @@ if (!managedGids.length) {
   process.exit(1);
 }
 console.log(`${managedGids.length} manual collections recorded`);
+
+// ── HARD PRE-FLIGHT: every mapped lane must EXIST before anything is moved ───
+// The destructive half of this sweep is `leave`. A product whose mapped
+// collection has no recorded id resolves to desired = null, and
+// planCollectionMembership then plans "leave every managed collection, join
+// nothing" — which is indistinguishable, at the mutation, from "this product
+// belongs nowhere".
+//
+// That is exactly the state right after a CATEGORY_MAP change lands and before
+// ensure-collections.mjs has created the new collections. Running --commit in
+// that window would strip every affected live product out of its old
+// collection and leave it in NO collection: reachable only through New In and
+// its direct URL, and worse than the mis-filing this exists to fix. The old
+// code did notice — status "no-id", counted BAD, exit 1 — but only in the
+// summary, long after the mutations had gone out.
+//
+// So the check moves to the front and refuses the WHOLE COMMIT RUN. The dry run
+// still proceeds and reports, because seeing the problem is the point of a dry
+// run. `ensure-collections.mjs --commit` is the one-command cure.
+const missingLaneKeys = MANUAL_KEYS.filter((key) => !collectionGids[key]);
+if (missingLaneKeys.length) {
+  const msg =
+    `${missingLaneKeys.length} manual collection(s) named by CATEGORY_MAP have no recorded id: ` +
+    `${missingLaneKeys.join(", ")}`;
+  if (COMMIT) {
+    console.error(`REFUSING THE RUN — ${msg}.`);
+    console.error(
+      "Committing now would plan a LEAVE with no JOIN for every product mapped to them, " +
+      "stripping live products out of their current collection into none at all. " +
+      "Run `node scripts/shopify/ensure-collections.mjs --commit` first, then re-run this."
+    );
+    process.exit(1);
+  }
+  console.error(`  ⚠ ${msg} — a commit run would be REFUSED until ensure-collections.mjs --commit has run\n`);
+}
 
 const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 
@@ -171,6 +206,7 @@ for (const pid of pids) {
     // whatever its record says — desired null only ever leaves.
     let desired = null;
     let missingId = false;
+    let excludedLive = false;
     let label = node
       ? `not on the storefront (state ${node.state}/${node.liveState ?? "—"}) — leaves every managed collection`
       : "on Shopify but never reviewed (no /shopify_publish node) — leaves every managed collection";
@@ -188,6 +224,14 @@ for (const pid of pids) {
       // no-collection outcome would hide a live product with no home behind a
       // status that exits 0.
       missingId = r.status === "mapped" && !desired;
+      // NOT MERCHANDISE, and CONFIRMED LIVE. This sweep can take it out of
+      // every managed collection (desired is null, so the plan is all-leave),
+      // but it cannot unpublish it — that is the reconciler's job, and the
+      // reconciler now refuses these outright. So say so loudly and exit
+      // non-zero: a price record on the storefront is not a "no collection"
+      // notice, it is a defect that needs `reconcile.mjs` run with the
+      // product's desiredState set to "off".
+      excludedLive = r.status === "excluded";
       label =
         r.status !== "mapped" ? `⚠ ${r.status}: ${r.reason}`
         : desired ? COLLECTION_BY_KEY.get(r.collectionKey).title
@@ -204,7 +248,7 @@ for (const pid of pids) {
         results.push({
           pid, name,
           status: live
-          ? (desired ? "already-correct" : missingId ? "no-id" : "no-collection")
+          ? (desired ? "already-correct" : excludedLive ? "excluded-but-live" : missingId ? "no-id" : "no-collection")
           : "nothing-to-do",
           detail: label,
         });
@@ -214,7 +258,7 @@ for (const pid of pids) {
     if (COMMIT) await applyCollectionMembership(graphql, gid, plan);
     results.push({
       pid, name,
-      status: COMMIT ? "changed" : "would-change",
+      status: excludedLive ? "excluded-but-live" : COMMIT ? "changed" : "would-change",
       detail: `${label} · join ${plan.join.length}, leave ${plan.leave.length}`,
     });
   } catch (e) {
@@ -233,7 +277,7 @@ console.log("══ COLLECTION MEMBERSHIP ══");
 // ISN'T ours, or has no record at all: those are broken, ✗, and they now fail
 // the run. Marking them ✗ while exiting 0 was the same contradiction demoting
 // no-collection was supposed to remove.
-const BAD = new Set(["failed", "no-map", "no-record", "unknown-pid", "live-drift", "no-id"]);
+const BAD = new Set(["failed", "no-map", "no-record", "unknown-pid", "live-drift", "no-id", "excluded-but-live"]);
 for (const r of results) {
   const icon = BAD.has(r.status) ? "✗" : (r.status === "no-collection" || r.status === "reconciler-busy") ? "⚠" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(16)} ${r.name}`);

@@ -257,7 +257,7 @@ records passing the app's own `id && name` filter, `mergedInto` excluded):
 The map keys on the `category|subcategory` PAIR (subcategory is present on
 4,163 of 4,167, and is already what the reconciler pushes as `productType` and
 as a tag), with a `category|*` row per category as the fallback. Resolving
-every visible record through it: **4,132 mapped · 35 unmapped · 0 unknown.**
+every visible record through it: **4,132 mapped · 35 excluded · 0 unknown.**
 
 ### 8.2 One category, one collection
 
@@ -266,26 +266,33 @@ sibling bucket — jerseys, polos, underwear, uncategorised — not a superset o
 its six children; the menu nests them, the collections do not. Jerseys and
 polos are deliberately NOT filed under "T-shirts": they are not t-shirts.
 
-**Where the agreed taxonomy under-covers the catalogue.** It has one footwear
-lane, "Sneakers". The catalogue also holds Boots (45), Soccer Boots (81) and
-Sandals & Slides (49), which map there because it is the only footwear
-destination available — and 7 of the 11 products live today are Boots. If that
-should be split it is a data edit: one `COLLECTIONS` entry plus three repointed
-`CATEGORY_MAP` rows.
+**Footwear has four lanes (2026-08-16).** The original single "Sneakers" lane
+held 7 products, every one of them a boot. Boots (45), Soccer Boots (81) and
+Sandals & Slides (49) now have their own top-level collections. The split was
+the data edit this section always promised: three `COLLECTIONS` entries plus
+three repointed `CATEGORY_MAP` rows, no handle change and no reconciler change.
+Full census, the `categoryKey`-vs-legacy analysis and the apply runbook are in
+`docs/STOREFRONT-FOOTWEAR-SPLIT.md`.
 
-### 8.3 Unmapped vs unknown
+### 8.3 Excluded vs unmapped vs unknown
 
-Two different things, kept apart on purpose:
+Three different things, kept apart on purpose:
 
-- **unmapped** — a `null` in `CATEGORY_MAP`; a recorded decision. Only "Price
-  Products" (35), which are internal price-carrier records, not goods.
+- **excluded** — not merchandise. `isPriceRecord()` (`src/utils/productCategory.js`)
+  answers this before any category lookup, for the 35 internal price-carrier
+  records. This is the ONLY status that blocks publication: the publishing page
+  does not list them and the reconciler refuses them at apply time. See
+  `docs/STOREFRONT-FOOTWEAR-SPLIT.md` §2 for the rule and its fail-safe.
+- **unmapped** — a `null` in `CATEGORY_MAP`; a recorded decision. No live
+  category resolves here today.
 - **unknown** — the category is absent from the table entirely: somebody added
   a category and did not update this file. A doubled warning in the reconciler
   run log, never a silent skip and never a refusal.
 
-Both share ONE defined destination: no manual collection, so no menu heading —
-but still ACTIVE and published, so the "New In" smart collection picks it up.
-Reachable from the home page and by direct URL. Nothing is stranded.
+`unmapped` and `unknown` share ONE defined destination: no manual collection, so
+no menu heading — but still ACTIVE and published, so the "New In" smart
+collection picks it up. Reachable from the home page and by direct URL. Nothing
+is stranded. `excluded` never reaches Shopify at all.
 
 ### 8.4 Compliance
 
@@ -294,7 +301,8 @@ catalogue fields and go through the SAME brand-trigger engine
 (`triggersInText` in `src/utils/shopifyTriggers.js`) the product push uses,
 before anything is created — wrapped as `validateCollectionPayload` in
 `scripts/shopify/collectionMap.mjs`, plus a whole-run refusal in `ensureAllCollections`
-(a half-built navigation is worse than none). All 15 pass; nothing was refused.
+(a half-built navigation is worse than none). All 18 pass — the three new
+footwear lanes included; nothing was refused.
 No brand is expressed as a tag, metafield, vendor or product type: the brand
 association stays in the app.
 
