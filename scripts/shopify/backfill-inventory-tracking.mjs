@@ -30,8 +30,13 @@
 //
 // WRITES: Shopify variants + inventory levels ONLY. No RTDB writes at all —
 // not /shopify_publish, not /shopify_sync. Nothing is created, published,
-// unpublished, archived or deleted. Safe to re-run: a product that is already
-// tracked with current quantities costs one read and no mutation.
+// unpublished, archived or deleted.
+//
+// Safe to re-run, and idempotent — but NOT free on a re-run: step 3 always
+// fires, because a quantity is only correct as of the moment it is written.
+// setAvailable is an absolute compare-and-set, so a re-run converges rather
+// than double-counting. Only step 2 is conditional (an already-tracked product
+// sends no tracking mutation at all).
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment, encodeSizeKey, stockSizeKey } from "../../src/utils/sizeKey.js";
@@ -68,15 +73,24 @@ const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 
 const syncNodes = (await db.ref("shopify_sync").get()).val() || {};
 const publishNodes = await readAllPublishNodes(db);
-const pids = Object.keys(syncNodes)
+const mappedPids = Object.keys(syncNodes)
   .filter((k) => k !== "_collections")
-  .filter((pid) => !ONLY || ONLY.has(pid))
+  .filter((pid) => !ONLY || ONLY.has(pid));
+const pids = mappedPids
   .filter((pid) => !LIVE_ONLY || confirmedOn(publishNodes[pid]))
   .sort();
 
-const unknownPids = ONLY ? [...ONLY].filter((pid) => !pids.includes(pid)) : [];
+// Computed against the MAPPED set, before --live-only narrows it. Otherwise a
+// named pid that is mapped but simply not live was reported as "this program
+// has never pushed it", which is a false reason on a true refusal.
+const unknownPids = ONLY ? [...ONLY].filter((pid) => !mappedPids.includes(pid)) : [];
 for (const pid of unknownPids) {
   console.error(`  ✗ ${pid}: no /shopify_sync entry — this program has never pushed it`);
+}
+if (ONLY && LIVE_ONLY) {
+  for (const pid of mappedPids.filter((p) => !pids.includes(p))) {
+    console.error(`  · ${pid}: mapped but not confirmed ON — skipped by --live-only`);
+  }
 }
 
 console.log(`${pids.length} mapped products in scope` +
@@ -129,30 +143,56 @@ for (const pid of pids) {
       .map((v) => ({ variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy }));
     const untracked = untrackedVariants(rows);
 
-    // THE SIZE-KEY GUARD, and it is not optional. networkTotals re-applies
-    // stockSizeKey to whatever size list it is given, while the ID map's keys
-    // came from encodeSizeKey. For every token the live catalogue uses the two
-    // agree — but they do NOT for a literal "Free Size", which encodes to
-    // "Free_Size" in the map and folds to "_" in /stock. Given such a key,
-    // networkTotals would find no matching cell, return 0, and this script
-    // would then TRACK the variant and set it to zero in the same pass —
-    // turning real stock into a silent, instant sold-out. That is the same
-    // class of bug this PR exists to fix, pointing the other way.
+    // ── THE SIZE-KEY GUARD, done against the RAW catalogue tokens ───────────
+    // The first attempt at this compared the ID MAP's keys — and those are
+    // ALREADY encodeSizeKey'd, so both functions are idempotent on them and the
+    // check could never fire. `encodeSizeKey("Free_Size")` is `"Free_Size"`;
+    // only the RAW token `"Free Size"` diverges (`encodeSizeKey` → "Free_Size",
+    // `stockSizeKey` → "_"). reconcile.mjs gets this right because it compares
+    // the raw token from `product.sizes`; the backfill has to read the record
+    // to do the same. (Spec review, 2026-08-16.)
     //
-    // reconcile.mjs already refuses this mismatch before publishing; the
-    // backfill reads /shopify_sync directly and never goes through that check,
-    // so it needs its own. Refuse the product rather than price it wrong.
-    const sizeKeys = Object.keys(variantMap);
-    const divergent = sizeKeys.filter((k) => stockSizeKey(k) !== k || encodeSizeKey(k) !== k);
+    // Why it matters: networkTotals re-applies stockSizeKey to whatever size
+    // list it is given and drops any cell whose key is not in the list. A
+    // divergent token means the real /stock cell is never summed, the total
+    // reads 0, and this script would then TRACK the variant and set it to zero
+    // in the same pass — real stock turned into a silent, instant sold-out.
+    // The same class of bug this PR exists to fix, pointing the other way.
+    const product = (await db.ref(`products/${pid}`).get()).val();
+    if (!product) {
+      results.push({ pid, status: "no-record", detail: `${bp.title} · mapped and live but no /products record` });
+      continue;
+    }
+    const rawSizes = Array.isArray(product.sizes) ? product.sizes
+      : product.sizes && typeof product.sizes === "object" ? Object.values(product.sizes) : [];
+    if (!rawSizes.length) {
+      results.push({ pid, status: "no-sizes", detail: `${bp.title} · record has no sizes array` });
+      continue;
+    }
+    const divergent = rawSizes.filter((t) => encodeSizeKey(t) !== stockSizeKey(t));
     if (divergent.length) {
       results.push({
         pid, status: "size-key-mismatch",
-        detail: `${bp.title} · mapped size key(s) ${divergent.join(", ")} do not survive stockSizeKey/encodeSizeKey unchanged — pricing them would read 0 from /stock and sell-out real stock. Normalise the record and re-map first.`,
+        detail: `${bp.title} · size token(s) ${divergent.map((t) => JSON.stringify(t)).join(", ")} key differently in /stock and the ID map — pricing them would read 0 and sell out real stock. Normalise the record and re-map first.`,
       });
       continue;
     }
 
-    // Current network quantity per mapped size, from /stock. One request per
+    // Every catalogue size must have a mapped variant — the backfill's
+    // equivalent of the reconciler's missingSizes refusal. The reconciler never
+    // revisits a settled live product, so a size added to the record AFTER
+    // publish has no variant and nothing else would ever notice. Report it
+    // rather than quietly pricing the subset that happens to be mapped.
+    const missingSizes = rawSizes.filter((t) => !(encodeSizeKey(t) in variantMap));
+    if (missingSizes.length) {
+      results.push({
+        pid, status: "unmapped-size",
+        detail: `${bp.title} · catalogue size(s) ${missingSizes.join(", ")} have no Shopify variant — the size set changed after this product went live. Fix the product (or the record) before trusting its inventory.`,
+      });
+      continue;
+    }
+
+    // Current network quantity per RAW size token, from /stock. One request per
     // location, ALL IN FLIGHT AT ONCE rather than ten sequential round-trips
     // per product.
     const perLoc = await Promise.all(
@@ -160,10 +200,13 @@ for (const pid of pids) {
     );
     const cells = {};
     for (const [loc, c] of perLoc) if (c) cells[loc] = { [pid]: c };
-    const totals = networkTotals(cells, pid, sizeKeys);
-    const items = Object.entries(variantMap).map(([sizeKey, v]) => ({
-      inventoryItemId: v.shopifyInventoryItemId,
-      quantity: totals[sizeKey] ?? 0,
+    // networkTotals takes RAW tokens and returns them keyed by stockSizeKey;
+    // the guard above has established that equals encodeSizeKey, which is how
+    // the ID map is keyed — so the two line up by proof, not by assumption.
+    const totals = networkTotals(cells, pid, rawSizes);
+    const items = rawSizes.map((t) => ({
+      inventoryItemId: variantMap[encodeSizeKey(t)].shopifyInventoryItemId,
+      quantity: totals[stockSizeKey(t)] ?? 0,
     }));
 
     if (!COMMIT) {
@@ -185,7 +228,7 @@ for (const pid of pids) {
   }
 }
 
-const BAD = new Set(["failed", "no-map", "gone", "too-many", "size-key-mismatch"]);
+const BAD = new Set(["failed", "no-map", "no-record", "no-sizes", "gone", "too-many", "size-key-mismatch", "unmapped-size"]);
 for (const r of results) {
   const icon = BAD.has(r.status) ? "✗" : r.status.startsWith("already") ? "·" : "✓";
   console.log(`${icon} ${r.pid.padEnd(16)} ${r.status.padEnd(20)} ${r.detail}`);

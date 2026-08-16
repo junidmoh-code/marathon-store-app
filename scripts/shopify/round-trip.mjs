@@ -22,7 +22,7 @@ import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs"
 import { cleanTitleFor, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
 import { VENDOR, validatePayload } from "./compliance.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
-import { TRACKED_VARIANT } from "./inventory.mjs";
+import { TRACKED_VARIANT, untrackedVariants, enforceTracking } from "./inventory.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -239,7 +239,7 @@ const back = await graphql(
       id title status
       variants(first: 100) {
         pageInfo { hasNextPage }
-        nodes { id title sku inventoryItem { id } }
+        nodes { id title sku inventoryPolicy inventoryItem { id tracked } }
       }
     }
   }`,
@@ -256,6 +256,33 @@ if (!p) {
 }
 console.log(`product on shop (status ${p.status}): ${p.title}`);
 console.log(`productId: ${p.id}`);
+
+// ── TRACKING, VERIFIED FROM THE READ-BACK ────────────────────────────────────
+// The create above sends TRACKED_VARIANT, but this file's own argument for
+// re-reading anything is that productSet cannot be trusted on this field (a
+// 2026-08-16 probe: the SAME mutation left tracked=false on a variant with
+// inventoryItem omitted and true on one with it supplied). The mapped and
+// ADOPTED paths never send it at all — they reach here on a product somebody
+// else created — so this is the only place a round-tripped product's tracking
+// is ever checked. Repair rather than refuse: this is a diagnostic tool, and
+// its product is a DRAFT that no customer can reach.
+if (COMMIT) {
+  const wrong = untrackedVariants(p.variants.nodes.map((v) => ({
+    variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
+  })));
+  if (wrong.length) {
+    try {
+      await enforceTracking(graphql, p.id, wrong.map((r) => r.variantId));
+      console.log(`inventory tracking enabled on ${wrong.length} variant(s) (DENY)`);
+    } catch (e) {
+      console.error(`⚠ could not enable inventory tracking (${String(e?.message || e)}) — ` +
+        `this product would sell every size for ever. Fix it before publishing; ` +
+        `reconcile.mjs re-checks tracking on every run and will refuse it as it stands.`);
+    }
+  } else {
+    console.log("inventory tracking: all variants tracked (DENY)");
+  }
+}
 console.log("");
 // Variant titles are DISPLAY values ("One Size"); the ID map must key by the
 // original catalogue size token, so classify read-back variants against the

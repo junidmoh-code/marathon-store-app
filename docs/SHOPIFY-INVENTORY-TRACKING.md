@@ -17,15 +17,29 @@ variants: tracked=0  untracked=389  nonDENYpolicy=0
 `inventoryPolicy` was already `DENY` on all 389 — that one defaults correctly.
 **Tracking was the whole defect.**
 
-### Why it was off
+### Why it was off — proved, not inferred
 
 `reconcile.mjs` creates products with the `productSet` mutation and never
-populated `ProductVariantSetInput.inventoryItem`. On that path `tracked`
-defaults to **false** — unlike the Shopify admin UI and unlike
-`productVariantsBulkCreate`, both of which default it on.
+populated `ProductVariantSetInput.inventoryItem`.
 
-The evidence is unambiguous. Products created before this program existed are
-tracked; every product this program created is not:
+The first draft of this document argued from correlation: products created by
+hand in 2025-08 are `tracked: true`, everything this program created from
+2026-08-13 on is `tracked: false`. That is suggestive but does not rule out a
+shop-level default, so it was replaced with an **isolating probe** — one
+`productSet` call, one product, two variants differing in exactly one field,
+read back and then deleted:
+
+| variant | `inventoryItem` in the input | read back |
+|---|---|---|
+| A | *omitted* — what the reconciler used to send | `tracked=false`, `policy=DENY` |
+| B | `{ tracked: true }` — what it sends now | `tracked=true`, `policy=DENY` |
+
+Same mutation, same product, same moment. `productSet` leaves `tracked` at
+**false** when the field is absent, and `inventoryPolicy` genuinely does default
+to `DENY`. The probe product was a DRAFT (never on any sales channel) and was
+deleted in the same run.
+
+The correlation still holds and is worth recording:
 
 | created | by | `tracked` | `inventoryPolicy` |
 |---|---|---|---|
@@ -115,9 +129,25 @@ Step 3 is not optional. Flipping tracking on stale numbers would put the
 storefront's idea of stock live without checking it — the same class of bug in
 the other direction.
 
-Only variants **this program mapped** are touched. A variant added by hand in
-the admin is not ours, and turning its tracking on would put a number on the
-storefront that nothing in this system maintains.
+Only variants **this program mapped** are touched by the backfill. A variant
+added by hand in the admin is not ours, and turning its tracking on would put a
+number on the storefront that nothing in this system maintains.
+
+**The reconciler is deliberately wider.** It enforces tracking on *every*
+variant of a product it is about to publish, mapped or not — because a stray
+variant on our own product, about to go public, untracked and therefore
+infinitely sellable, is an oversell waiting to happen. Tracked at whatever
+quantity it holds (usually zero) fails towards *unbuyable*, which is the safe
+direction; the alternative is a size nobody can fulfil taking orders.
+
+#### Every catalogue size must still have a variant
+
+`reconcile.mjs` refuses to publish a product whose catalogue sizes do not all
+have a Shopify variant. The backfill now carries the same check — because the
+reconciler never revisits a settled live product, so a size added to a record
+*after* it went live has no variant and nothing else would ever notice. Such a
+product is reported `unmapped-size` and skipped rather than quietly having the
+subset that happens to be mapped priced as if it were the whole run.
 
 Writes Shopify variants and inventory levels **only**. No RTDB writes at all.
 Nothing is created, published, unpublished, archived or deleted. Safe to re-run:
@@ -147,3 +177,21 @@ size to read off ten top-level keys, and this project has a Firebase
 bandwidth-cost incident on record. The per-product stock cells are then fetched
 one request per location, **all in flight at once** rather than ten sequential
 round-trips per product.
+
+---
+
+## What the operator still has to check (A4)
+
+The code half is done: every size in the run is a variant, zero-stock sizes
+included, and after this their quantities finally count. What no code in this
+repo can settle is how the **theme** draws a size that has run out.
+
+In the theme editor, on the product page's variant picker, there is a setting
+along the lines of *"Show unavailable variants"* / *"Hide unavailable variants"*.
+It must be set to **show** them. Hiding a sold-out size makes a nine-size run
+look like a seven-size run and tells the shopper nothing; showing it struck
+through tells them the shoe exists in their size and is gone.
+
+Check it on a product that genuinely has a zero-stock size — for example
+`lace-boot-white-navy`, whose sizes 12 and 13 are at zero while 6–11 are not.
+Before the tracking fix, all eight rendered identically.

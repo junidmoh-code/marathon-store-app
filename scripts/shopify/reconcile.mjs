@@ -642,7 +642,19 @@ for (const { pid, want } of capped) {
     // that can oversell, so a failure here refuses and takes the product off
     // the channel rather than publishing something that can sell stock the
     // shop does not hold.
-    const untracked = untrackedVariants(rows);
+    // EVERY variant on the product, not just `rows`. `rows` is filtered to
+    // variants whose title matches a catalogue size, so a variant added by hand
+    // in the admin — or left over from a size the record dropped — never
+    // entered it, was never tracked, and would go live infinitely sellable
+    // under a product we published. It is on OUR product and about to be
+    // public, so it gets the same lock as the rest. Tracked with whatever
+    // quantity it holds (usually 0) fails towards unbuyable, which is the safe
+    // direction; the alternative is a size nobody can fulfil taking orders.
+    // (Spec review, 2026-08-16.)
+    const allVariantRows = bp.variants.nodes.map((v) => ({
+      variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
+    }));
+    const untracked = untrackedVariants(allVariantRows);
     if (untracked.length) {
       try {
         await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));

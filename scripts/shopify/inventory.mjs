@@ -133,10 +133,15 @@ export async function setAvailable(graphql, locationId, items) {
 // TRACKED_VARIANT is what every push must carry. `inventoryItem` deliberately
 // carries ONLY `tracked`: the same input accepts `cost`, and cost is
 // `stockPrice`, which is internal and must never reach Shopify.
-export const TRACKED_VARIANT = {
-  inventoryPolicy: "DENY",           // never sell past zero
-  inventoryItem: { tracked: true },  // and count what is there
-};
+// FROZEN, both levels. This object is spread into every variant input on every
+// path ({ id, ...TRACKED_VARIANT }), which shares the SAME inner inventoryItem
+// by reference across the reconciler, round-trip and the backfill. A future
+// line that mutated it — adding a `cost`, say — would leak globally and
+// silently. Freezing makes that a thrown error in strict mode instead.
+export const TRACKED_VARIANT = Object.freeze({
+  inventoryPolicy: "DENY",                          // never sell past zero
+  inventoryItem: Object.freeze({ tracked: true }),  // and count what is there
+});
 
 /** Variants whose tracking/policy is not what we require. Pure — unit-tested.
  *  rows: [{ variantId, tracked, inventoryPolicy }] from a Shopify read-back. */

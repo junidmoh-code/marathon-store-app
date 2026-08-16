@@ -200,3 +200,16 @@ describe("enforceTracking", () => {
     expect(await enforceTracking(echo([good(V1), good(V2)]), "p", [V1, V2])).toEqual({ fixed: 2 });
   });
 });
+
+describe("TRACKED_VARIANT is frozen", () => {
+  it("cannot be mutated — it is shared by reference across every variant input", () => {
+    // { id, ...TRACKED_VARIANT } shares the SAME inner inventoryItem object
+    // across the reconciler, round-trip and the backfill. A line that added a
+    // `cost` to it would leak stockPrice into every push at once. Frozen, that
+    // is a thrown error in a module (strict mode) instead of a silent global.
+    expect(Object.isFrozen(TRACKED_VARIANT)).toBe(true);
+    expect(Object.isFrozen(TRACKED_VARIANT.inventoryItem)).toBe(true);
+    expect(() => { TRACKED_VARIANT.inventoryItem.cost = "1.00"; }).toThrow();
+    expect(TRACKED_VARIANT.inventoryItem).toEqual({ tracked: true });
+  });
+});
