@@ -9,7 +9,7 @@ Every variant this program has ever pushed to Shopify had inventory tracking
 
 Read off the live shop, 2026-08-16:
 
-```
+```text
 ACTIVE products: 61
 variants: tracked=0  untracked=389  nonDENYpolicy=0
 ```
