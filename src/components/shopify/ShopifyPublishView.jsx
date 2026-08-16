@@ -791,9 +791,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // and survives collapsing a section, so a product that stops being publishable
   // while it sits selected — the /products subscription delivers an edit that
   // makes it a price record, or the record is deleted in another tab — would
-  // otherwise stay in the set with no row to unselect it from, and go out with
-  // the next batch. productById is the one index the rest of the page reads, so
-  // pruning against it keeps the selection and the visible rows in step.
+  // otherwise stay in the set with no row to unselect it from.
+  //
+  // It could never have been PUBLISHED that way: batchItems already dropped a
+  // pid missing from productById, and runBatch iterates batchItems. The defect
+  // was ACCOUNTING — the bar counted a phantom in "n of 25 selected" and it
+  // consumed one of the 25 cap slots, while the dialog silently listed one
+  // fewer product than the bar promised. productById is the one index the rest
+  // of the page reads, so pruning against it keeps all three in step.
   useEffect(() => {
     setSelected((prev) => {
       if (prev.size === 0) return prev;

@@ -1160,3 +1160,30 @@ test("the Live filter cannot surface a price record either, even with a live nod
   expect(out).not.toContain("Entry 30 Line");
   pipeline = {};
 });
+
+test("a selected product that stops being publishable leaves the selection", async () => {
+  // The prune effect reacts to productById, not only to node updates. Covers
+  // the case the batch DIALOG already tolerated but the batch BAR did not: a
+  // pid that has left the map still counted towards `selected.size` and still
+  // consumed one of the 25 cap slots, while the dialog silently dropped it.
+  keys = new Set(["p1", "p2"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
+  bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await act(() => { button(tree, "Select all").props.onClick({ stopPropagation: () => {} }); });
+  await flush();
+  expect(texts(tree)).toContain('"2"," of ","25"," selected"');
+
+  // Now the /products subscription delivers an edit that turns p1 into a price
+  // record. Its row disappears — and so must its place in the selection.
+  const edited = PRODUCTS.map((p) => (p.id === "p1" ? { ...p, priceProduct: true } : p));
+  await act(() => { tree.update(<ShopifyPublishView products={edited} onExit={() => {}} />); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain('"1"," of ","25"," selected"'); // p2 survives, p1 is gone
+  expect(out).not.toContain("Plain tee black");
+  bodies = {};
+});
