@@ -1,7 +1,7 @@
 // ─── Photos + inventory, pure parts pinned ───────────────────────────────────
 import { describe, it, expect } from "vitest";
 import { buildMediaPlan, mediaFingerprint } from "./media.mjs";
-import { networkTotals } from "./inventory.mjs";
+import { networkTotals, untrackedVariants, TRACKED_VARIANT } from "./inventory.mjs";
 
 describe("buildMediaPlan", () => {
   const product = {
@@ -86,5 +86,61 @@ describe("networkTotals — one sellable pool", () => {
   });
   it("empty tree → zeros, never a crash", () => {
     expect(networkTotals(null, "p1", ["8"])).toEqual({ "8": 0 });
+  });
+});
+
+// ─── INVENTORY TRACKING ──────────────────────────────────────────────────────
+// The defect this pins: every one of the 389 live variants on 2026-08-16 had
+// inventoryItem.tracked === false, because productSet leaves it at its FALSE
+// default and the reconciler never set it. Shopify therefore ignored every
+// quantity setAvailable had been writing — nothing could show sold out and the
+// shop could oversell. inventoryPolicy was already DENY everywhere; tracking
+// was the whole defect.
+describe("TRACKED_VARIANT — what every pushed variant must carry", () => {
+  it("is tracked and DENY", () => {
+    expect(TRACKED_VARIANT).toEqual({ inventoryPolicy: "DENY", inventoryItem: { tracked: true } });
+  });
+
+  it("carries NO cost — InventoryItemInput accepts one, and cost is stockPrice", () => {
+    // stockPrice is internal (and not even a real cost — it is a B2B wholesale
+    // selling price). It must never reach Shopify through this door.
+    expect(Object.keys(TRACKED_VARIANT.inventoryItem)).toEqual(["tracked"]);
+  });
+});
+
+describe("untrackedVariants — which variants need fixing", () => {
+  const ok = { variantId: "gid://shopify/ProductVariant/1", tracked: true, inventoryPolicy: "DENY" };
+
+  it("a correct variant costs nothing — no mutation is planned for it", () => {
+    expect(untrackedVariants([ok, { ...ok, variantId: "v2" }])).toEqual([]);
+  });
+
+  it("catches the live defect: tracked false, policy already DENY", () => {
+    const live = { variantId: "v", tracked: false, inventoryPolicy: "DENY" };
+    expect(untrackedVariants([live])).toEqual([live]);
+  });
+
+  it("catches a CONTINUE policy even when tracking is on — that one oversells too", () => {
+    const oversell = { variantId: "v", tracked: true, inventoryPolicy: "CONTINUE" };
+    expect(untrackedVariants([oversell])).toEqual([oversell]);
+  });
+
+  it("treats an absent or non-boolean tracked as untracked, never as fine", () => {
+    // A read-back that did not ask for the field, or an API shape change, must
+    // fail towards "fix it", not towards "ship it".
+    for (const tracked of [undefined, null, "true", 1]) {
+      expect(untrackedVariants([{ variantId: "v", tracked, inventoryPolicy: "DENY" }])).toHaveLength(1);
+    }
+  });
+
+  it("tolerates junk without throwing", () => {
+    expect(untrackedVariants(null)).toEqual([]);
+    expect(untrackedVariants(undefined)).toEqual([]);
+    expect(untrackedVariants([])).toEqual([]);
+  });
+
+  it("returns only the wrong ones, so the mutation is as small as the damage", () => {
+    const bad = { variantId: "v2", tracked: false, inventoryPolicy: "DENY" };
+    expect(untrackedVariants([ok, bad, { ...ok, variantId: "v3" }])).toEqual([bad]);
   });
 });

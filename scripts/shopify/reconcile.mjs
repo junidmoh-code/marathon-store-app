@@ -53,7 +53,10 @@ import {
   validatePayload,
 } from "./compliance.mjs";
 import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } from "./media.mjs";
-import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
+import {
+  networkTotals, requireSingleLocation, setAvailable,
+  TRACKED_VARIANT, untrackedVariants, enforceTracking,
+} from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked } from "./publishNode.mjs";
 // Storefront collections. The map is repo data (collectionMap.mjs); the gids
@@ -436,6 +439,11 @@ for (const { pid, want } of capped) {
             variants: sizes.map((s) => ({
               optionValues: [{ optionName: "Size", name: displaySizeName(s) }],
               price,
+              // Tracked + DENY at birth. Without this, productSet leaves
+              // `tracked` at its FALSE default and Shopify ignores every
+              // quantity setAvailable later writes — the storefront then shows
+              // every size as available for ever. See inventory.mjs.
+              ...TRACKED_VARIANT,
               ...(product.sku ? { sku: `${product.sku}-${encodeSizeKey(s)}` } : {}),
             })),
           },
@@ -456,7 +464,9 @@ for (const { pid, want } of capped) {
         product(id: $id) {
           id
           media(first: 50) { pageInfo { hasNextPage } nodes { id } }
-          variants(first: 100) { pageInfo { hasNextPage } nodes { id title inventoryItem { id } } }
+          variants(first: 100) { pageInfo { hasNextPage } nodes {
+            id title inventoryPolicy inventoryItem { id tracked }
+          } }
         }
       }`,
       { id: gid }
@@ -467,7 +477,10 @@ for (const { pid, want } of capped) {
     const sizeByDisplay = new Map(sizes.map((s) => [displaySizeName(s), s]));
     const rows = bp.variants.nodes
       .filter((v) => sizeByDisplay.has(v.title) && v.inventoryItem?.id)
-      .map((v) => ({ size: sizeByDisplay.get(v.title), variantId: v.id, inventoryItemId: v.inventoryItem.id }));
+      .map((v) => ({
+        size: sizeByDisplay.get(v.title), variantId: v.id, inventoryItemId: v.inventoryItem.id,
+        tracked: v.inventoryItem.tracked, inventoryPolicy: v.inventoryPolicy,
+      }));
     if (!rows.length) { await refuse(pid, "no read-back variant matches any catalogue size"); continue; }
     // Every catalogue size must have a Shopify variant — a size added while
     // the product sat OFF has none, and shipping without it would silently
@@ -616,6 +629,31 @@ for (const { pid, want } of capped) {
       if (cells) tree[loc] = { [pid]: cells };
     }
     const totals = networkTotals(tree, pid, sizes);
+
+    // ── TRACKING, ENFORCED ON EVERY RUN ──────────────────────────────────────
+    // Not just at creation. This is the SELF-HEALING half: it re-checks the
+    // read-back on both the create and the reconcile path, so a product created
+    // before the create path carried TRACKED_VARIANT — or one whose tracking
+    // was switched off by hand in the admin — is repaired the next time its
+    // intent is applied, without anyone remembering to.
+    //
+    // Cost is zero for a correct product: untrackedVariants() returns nothing
+    // and no mutation is sent. FAIL CLOSED — an untracked variant is a variant
+    // that can oversell, so a failure here refuses and takes the product off
+    // the channel rather than publishing something that can sell stock the
+    // shop does not hold.
+    const untracked = untrackedVariants(rows);
+    if (untracked.length) {
+      try {
+        await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));
+        console.log(`  inventory tracking enabled on ${untracked.length} variant(s) (DENY)`);
+      } catch (e) {
+        await failSafeUnpublish(gid);
+        await refuse(pid, `could not enable inventory tracking (${String(e?.message || e)}) — refusing to list a product that would oversell`);
+        continue;
+      }
+    }
+
     const locId = await requireSingleLocation(graphql);
     await setAvailable(
       graphql,
