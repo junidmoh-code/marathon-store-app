@@ -301,7 +301,8 @@ catalogue fields and go through the SAME brand-trigger engine
 (`triggersInText` in `src/utils/shopifyTriggers.js`) the product push uses,
 before anything is created — wrapped as `validateCollectionPayload` in
 `scripts/shopify/collectionMap.mjs`, plus a whole-run refusal in `ensureAllCollections`
-(a half-built navigation is worse than none). All 15 pass; nothing was refused.
+(a half-built navigation is worse than none). All 18 pass — the three new
+footwear lanes included; nothing was refused.
 No brand is expressed as a tag, metafield, vendor or product type: the brand
 association stays in the app.
 

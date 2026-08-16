@@ -72,7 +72,7 @@ zero-count categories get no collection.
 
 The cross-tab is the reason:
 
-```
+```text
 1195  sneakers        <=  Footwear|Sneakers
   80  soccer-boots    <=  Footwear|Soccer Boots
   48  slides          <=  Footwear|Sandals & Slides

@@ -786,17 +786,26 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // — local writes and external ones alike (the window-focus refetch can pull
   // in a reconciler-side block; publishing that stale selection would clear
   // the validator's refusal and re-queue the very product it refused).
+  //
+  // Also prune anything that has LEFT productById. The selection is page-level
+  // and survives collapsing a section, so a product that stops being publishable
+  // while it sits selected — the /products subscription delivers an edit that
+  // makes it a price record, or the record is deleted in another tab — would
+  // otherwise stay in the set with no row to unselect it from, and go out with
+  // the next batch. productById is the one index the rest of the page reads, so
+  // pruning against it keeps the selection and the visible rows in step.
   useEffect(() => {
     setSelected((prev) => {
       if (prev.size === 0) return prev;
       const next = new Set(prev);
       for (const pid of prev) {
+        if (!productById.has(pid)) { next.delete(pid); continue; }
         const node = nodes[pid];
         if (node !== undefined && !selectionEligible(node)) next.delete(pid);
       }
       return next.size === prev.size ? prev : next;
     });
-  }, [nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [nodes, productById]); // eslint-disable-line react-hooks/exhaustive-deps
   // (nodesRef — the freshest nodes for runBatch's long-lived closure — is
   // declared with the pending refresh above, which needs the same thing.)
   const capNotice = () =>
