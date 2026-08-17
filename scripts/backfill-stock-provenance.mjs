@@ -380,8 +380,12 @@ if (!EXECUTE) {
   //                which is exact precisely because nothing else incremented them.
   //   contended  → this run cannot produce an authoritative index. The sentinels are
   //                REMOVED, so every location reads as unready: the engine arms
-  //                nothing and (since the needGone guard) withdraws nothing either.
-  //                Nothing is left half-trusted. Re-run during a quiet window.
+  //                nothing, and the needGone guard stops it withdrawing anything on
+  //                the strength of a target that only failed to resolve because the
+  //                index was missing. It does NOT freeze withdrawal altogether —
+  //                explicit `target: 0` rows and target-met withdrawals stay active,
+  //                deliberately, since neither consults provenance. Nothing is left
+  //                half-trusted. Re-run during a quiet window.
   //
   // Quiescence is DETECTED, not assumed. If forward maintenance is live, its increment
   // is already visible in the index — either as a changed pair or as a pair that did
@@ -505,12 +509,16 @@ if (!EXECUTE) {
 
   say();
   if (!authoritative) {
-    // Leave NOTHING half-trusted. Unready arms nothing and withdraws nothing.
+    // Leave NOTHING half-trusted. Unready arms nothing, and no line is withdrawn
+    // BECAUSE the index is missing — explicit-0 and target-met withdrawals continue
+    // on their own evidence, which is correct.
     for (const loc of LOCS) await db.ref(idx.metaPath(loc)).remove();
     say(`## ⛔ Sentinels REMOVED — the index is not armed`);
     say();
     say(`Pair records are still in place (they are useful and mostly correct) but every location now`);
-    say(`reads as UNREADY, so the engine arms nothing and withdraws nothing. Re-run this script during`);
+    say(`reads as UNREADY, so the engine arms nothing new and withdraws nothing on account of the`);
+    say(`missing index. (Explicit \`target: 0\` and target-met withdrawals still run — they never`);
+    say(`consulted provenance.) Re-run this script during`);
     say(`a quiet window — with hosting not yet carrying the provenance leg, per PROVENANCE-RULES.md —`);
     say(`and it will claim authority and write the sentinels.`);
   } else {

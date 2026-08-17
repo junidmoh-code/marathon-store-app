@@ -676,8 +676,11 @@ function computeRefillPlan(snapshot) {
     if (!provenanceReady[d]) {
       errors.push(
         `PROVENANCE INDEX NOT READY at ${d} — no valid /stock_provenance/_meta/${d} sentinel. ` +
-        `Nothing will be armed there until scripts/backfill-stock-provenance.mjs --execute completes. ` +
-        `Explicit targets and introduce:true opt-ins are unaffected.`
+        `No rule-based or category-based demand will be armed there until ` +
+        `scripts/backfill-stock-provenance.mjs --execute completes. Explicit targets and ` +
+        `introduce:true opt-ins still arm. Withdrawal is suppressed ONLY where it would rest on ` +
+        `a target that failed to resolve for want of the index; explicit target-0 and ` +
+        `target-already-met withdrawals continue, because neither consults provenance.`
       );
     }
   }

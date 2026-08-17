@@ -27,8 +27,14 @@ every rule-managed cell, and the engine's `needGone` branch would have read that
 "nobody needs this any more" — cancelling the entire live rule-managed queue at every
 destination in one scan, orders deleted. The engine is now guarded (the `!t` withdrawal
 branch requires a ready index, `refill-engine.cjs`), so a missing or unreadable index
-pauses new demand and touches nothing existing. Step 2 still belongs before step 3, but
-getting it wrong no longer destroys the queue.
+pauses new demand and withdraws nothing *on account of being missing*.
+
+To be precise, because the imprecise version of this sentence was itself a review finding:
+an unready index suppresses only the **provenance-dependent** withdrawal — the one where no
+target resolved at all. Withdrawals that rest on their own evidence carry on as they should:
+an explicit `target: 0` row (a human's "excluded") and a request whose target is already met
+by stock on hand. Neither consults provenance, so neither should pause. Step 2 still belongs
+before step 3, but getting it wrong no longer destroys the queue.
 
 **4 goes last, and this is now a correctness requirement rather than tidiness.** The
 backfill SETs counters from a ledger read. If the app's forward maintenance is live at the
@@ -45,8 +51,9 @@ for a later quiet run — never a half-trusted index. With hosting deployed last
 carrying the provenance leg is not live during the backfill and the run is quiescent by
 construction. The POS app never writes this node.
 
-If the backfill reports **CONTENDED** and removes the sentinels, nothing is broken: the
-engine arms nothing and withdraws nothing at an unready location. Re-run it in a quiet
+If the backfill reports **CONTENDED** and removes the sentinels, nothing is broken: at an
+unready location the engine arms nothing new and withdraws nothing because of the missing
+index (explicit-0 and target-met withdrawals continue, as above). Re-run it in a quiet
 window.
 
 ## Where it goes
