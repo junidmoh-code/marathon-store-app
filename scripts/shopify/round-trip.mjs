@@ -22,6 +22,7 @@ import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs"
 import { cleanTitleFor, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
 import { VENDOR, validatePayload } from "./compliance.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
+import { TRACKED_VARIANT, untrackedVariants, enforceTracking } from "./inventory.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -102,6 +103,12 @@ const input = {
   variants: sizes.map((s) => ({
     optionValues: [{ optionName: "Size", name: sizeName(s) }],
     price,
+    // Same as the reconciler's create path: productSet leaves
+    // inventoryItem.tracked at FALSE, and an untracked variant is one Shopify
+    // will sell for ever. reconcile.mjs would heal a product created here on
+    // its next run, but a draft that never reaches the reconciler would sit
+    // untracked in the admin looking fine.
+    ...TRACKED_VARIANT,
     ...(product.sku ? { sku: `${product.sku}-${encodeSizeKey(s)}` } : {}),
   })),
 };
@@ -232,7 +239,7 @@ const back = await graphql(
       id title status
       variants(first: 100) {
         pageInfo { hasNextPage }
-        nodes { id title sku inventoryItem { id } }
+        nodes { id title sku inventoryPolicy inventoryItem { id tracked } }
       }
     }
   }`,
@@ -249,7 +256,8 @@ if (!p) {
 }
 console.log(`product on shop (status ${p.status}): ${p.title}`);
 console.log(`productId: ${p.id}`);
-console.log("");
+
+
 // Variant titles are DISPLAY values ("One Size"); the ID map must key by the
 // original catalogue size token, so classify read-back variants against the
 // CURRENT record: matched (mappable), extra (on Shopify, not in the record),
@@ -310,6 +318,41 @@ if (hard.length) {
       `The pending pointer (if any) is preserved; nothing was clobbered.`
   );
   process.exit(1);
+}
+
+// ── TRACKING, VERIFIED FROM THE READ-BACK ────────────────────────────────────
+// DELIBERATELY AFTER the hard refusals, not before. This block MUTATES the
+// Shopify product, and until `hard` has passed we do not yet know the product
+// is ours: on the ADOPT path the SKU-prefix and exact-size checks above are
+// what establish that a same-title product is not somebody else's. Enforcing
+// tracking first would have flipped inventoryPolicy and tracked on every
+// variant of a stranger's product and only then refused to map it.
+// (Review finding, 2026-08-16.)
+//
+// The create above sends TRACKED_VARIANT, but this file's own reason for
+// re-reading anything is that productSet cannot be trusted on this field (a
+// 2026-08-16 probe: the SAME mutation left tracked=false on a variant with
+// inventoryItem omitted and true on one with it supplied). The mapped and
+// adopted paths never send it at all — they arrive at a product somebody else
+// created — so this is the only place a round-tripped product's tracking is
+// ever checked. Repair rather than refuse: this is a diagnostic tool and its
+// product is a DRAFT no customer can reach.
+if (COMMIT) {
+  const wrong = untrackedVariants(p.variants.nodes.map((v) => ({
+    variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
+  })));
+  if (wrong.length) {
+    try {
+      await enforceTracking(graphql, p.id, wrong.map((r) => r.variantId));
+      console.log(`inventory tracking enabled on ${wrong.length} variant(s) (DENY)`);
+    } catch (e) {
+      console.error(`⚠ could not enable inventory tracking (${String(e?.message || e)}) — ` +
+        `this product would sell every size for ever. Fix it before publishing; ` +
+        `reconcile.mjs re-checks tracking on every run and will refuse it as it stands.`);
+    }
+  } else {
+    console.log("inventory tracking: all variants tracked (DENY)");
+  }
 }
 
 const w = (k) => Math.max(k.length, ...rows.map((r) => String(r[k]).length));

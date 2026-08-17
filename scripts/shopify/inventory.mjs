@@ -109,3 +109,94 @@ export async function setAvailable(graphql, locationId, items) {
   if (errs?.length) throw new Error(`inventorySetQuantities userErrors: ${JSON.stringify(errs)}`);
   return { set: items.length };
 }
+
+// ── TRACKING — the field that decides whether any of the above matters ────────
+// Shopify only honours a variant's quantities when its inventory item is
+// TRACKED. Untracked, the storefront treats every size as infinitely available:
+// nothing ever shows sold out, the shop can sell stock it does not have, and
+// Shopify's own ABC / sell-through reports stay empty.
+//
+// WHY IT WAS OFF (measured on the live shop, 2026-08-16). The reconciler creates
+// products with `productSet`, and `ProductVariantSetInput.inventoryItem` was
+// never populated. `tracked` defaults to FALSE on that path — unlike the admin
+// UI and unlike `productVariantsBulkCreate`, which default it on. The evidence
+// is unambiguous:
+//
+//   products created 2025-08 (by hand / an earlier tool)   tracked = true
+//   every product this program created from 2026-08-13 on  tracked = false
+//
+// 389 of 389 live variants were untracked. `inventoryPolicy` was already DENY
+// everywhere (that one DOES default correctly), so tracking was the whole
+// defect. The quantities themselves were correct all along — setAvailable had
+// been writing them faithfully, and Shopify was storing and ignoring them.
+//
+// TRACKED_VARIANT is what every push must carry. `inventoryItem` deliberately
+// carries ONLY `tracked`: the same input accepts `cost`, and cost is
+// `stockPrice`, which is internal and must never reach Shopify.
+// FROZEN, both levels. This object is spread into every variant input on every
+// path ({ id, ...TRACKED_VARIANT }), which shares the SAME inner inventoryItem
+// by reference across the reconciler, round-trip and the backfill. A future
+// line that mutated it — adding a `cost`, say — would leak globally and
+// silently. Freezing makes that a thrown error in strict mode instead.
+export const TRACKED_VARIANT = Object.freeze({
+  inventoryPolicy: "DENY",                          // never sell past zero
+  inventoryItem: Object.freeze({ tracked: true }),  // and count what is there
+});
+
+/** Variants whose tracking/policy is not what we require. Pure — unit-tested.
+ *  rows: [{ variantId, tracked, inventoryPolicy }] from a Shopify read-back. */
+export function untrackedVariants(rows) {
+  return (rows || []).filter(
+    (r) => r.tracked !== true || r.inventoryPolicy !== "DENY"
+  );
+}
+
+/**
+ * Make every listed variant tracked and DENY. Idempotent and cheap: the caller
+ * passes only the variants that a read-back showed were wrong, so a correct
+ * product costs ZERO mutations.
+ * Throws on userErrors — the caller must refuse rather than publish a product
+ * that can oversell.
+ */
+export async function enforceTracking(graphql, productId, variantIds) {
+  if (!variantIds.length) return { fixed: 0 };
+  const data = await graphql(
+    `mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants { id inventoryPolicy inventoryItem { tracked } }
+        userErrors { field message }
+      }
+    }`,
+    { productId, variants: variantIds.map((id) => ({ id, ...TRACKED_VARIANT })) },
+    { mutation: true }
+  );
+  const errs = data.productVariantsBulkUpdate.userErrors;
+  if (errs?.length) throw new Error(`inventory tracking update userErrors: ${JSON.stringify(errs)}`);
+  // Read the mutation's OWN echo rather than trusting the absence of errors:
+  // this is the gate between a listing and overselling, so "it said nothing"
+  // is not good enough.
+  //
+  // TWO checks, because either alone has a blind spot. Scanning the returned
+  // variants catches one that came back still untracked; but a variant DROPPED
+  // from the response entirely — no entry, no userError, which bulk mutations
+  // can do under concurrent modification — is invisible to that scan and would
+  // pass. So the returned id set must also COVER every id requested.
+  const echoed = (data.productVariantsBulkUpdate.productVariants || []).map((v) => ({
+    variantId: v.id, tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
+  }));
+  const missing = variantIds.filter((id) => !echoed.some((v) => v.variantId === id));
+  if (missing.length) {
+    throw new Error(
+      `inventory tracking response did not mention ${missing.length} requested variant(s): ` +
+        missing.join(", ") + " — treating as not applied"
+    );
+  }
+  const still = untrackedVariants(echoed);
+  if (still.length) {
+    throw new Error(
+      `inventory tracking did not take on ${still.length} variant(s): ` +
+        still.map((v) => v.variantId).join(", ")
+    );
+  }
+  return { fixed: echoed.length };
+}
