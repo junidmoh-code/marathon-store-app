@@ -252,6 +252,13 @@ GET https://europe-west1-marathon-club.cloudfunctions.net/storefrontSearch?q=sam
 firebase deploy --only functions:storefrontSearch
 ```
 
+`npm run deploy` inside `functions/` used to be `firebase deploy --only
+functions` — a bare, unscoped deploy. This project **shares its Firebase
+functions with other apps**, so that would redeploy every function on the
+project, including ones nobody reviewed. That script now refuses and prints the
+scoped form instead. It predates this work; it is fixed here because the new
+function fell under it too.
+
 ### Assume the response is public, because it is
 
 No auth, browser-callable. The response is built by `publicResult`, an

@@ -6,7 +6,7 @@
   },
   "main": "index.js",
   "scripts": {
-    "deploy": "firebase deploy --only functions",
+    "deploy": "echo 'REFUSED: this project shares its Firebase functions with other apps, so a bare --only functions deploy would redeploy EVERY function including ones nobody reviewed. Deploy by name instead:  firebase deploy --only functions:<name>' && exit 1",
     "logs": "firebase functions:log",
     "test": "node --test"
   },
