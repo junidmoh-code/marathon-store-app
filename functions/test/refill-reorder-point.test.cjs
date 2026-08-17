@@ -11,7 +11,17 @@
 // Run: cd functions && node --test test/refill-reorder-point.test.cjs
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { computeRefillPlan, resolveTarget } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan: _rawComputeRefillPlan, resolveTarget: _rawResolveTarget } = require("../lib/refill-engine.cjs");
+// storeCarries() now reads the derived provenance index, not cell existence
+// (2026-08-17 — a customer-collection husk was arming whole size runs). The
+// fixtures below write a /stock cell to mean "this shop stocks this line", which
+// was true of the old predicate, so withProvenance() states that in the index's own
+// terms and leaves every assertion in this file measuring what it always did.
+// It never overrides a `provenance`/`provenanceMeta` a test sets itself.
+const { withProvenance } = require("./helpers/provenance.cjs");
+const computeRefillPlan = (snap) => _rawComputeRefillPlan(withProvenance(snap, Object.keys(snap?.config?.routes || {})));
+// Same for the direct resolveTarget probes: ctx now carries the provenance index.
+const resolveTarget = (ctx, ...rest) => _rawResolveTarget(withProvenance(ctx, Object.keys(ctx?.config?.routes || {})), ...rest);
 
 const NOW = Date.parse("2026-07-27T09:00:00.000Z");
 

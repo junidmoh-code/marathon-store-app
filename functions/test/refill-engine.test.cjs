@@ -1,7 +1,17 @@
 // Tests for the pure refill-engine core. Run: cd functions && node --test
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate, resolveTarget } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan: _rawComputeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate, resolveTarget: _rawResolveTarget } = require("../lib/refill-engine.cjs");
+// storeCarries() now reads the derived provenance index, not cell existence
+// (2026-08-17 — a customer-collection husk was arming whole size runs). The
+// fixtures below write a /stock cell to mean "this shop stocks this line", which
+// was true of the old predicate, so withProvenance() states that in the index's own
+// terms and leaves every assertion in this file measuring what it always did.
+// It never overrides a `provenance`/`provenanceMeta` a test sets itself.
+const { withProvenance } = require("./helpers/provenance.cjs");
+const computeRefillPlan = (snap) => _rawComputeRefillPlan(withProvenance(snap, Object.keys(snap?.config?.routes || {})));
+// Same for the direct resolveTarget probes: ctx now carries the provenance index.
+const resolveTarget = (ctx, ...rest) => _rawResolveTarget(withProvenance(ctx, Object.keys(ctx?.config?.routes || {})), ...rest);
 
 // ── retryHistoryKey — RTDB keys may NOT contain . # $ [ ] / ────────────────────
 // Regression pin for the 2026-07-22 outage: an ISO timestamp in the key (its ".")
@@ -1744,12 +1754,47 @@ test("DEFAULT RULE: store that does not carry the product gets no target", () =>
   assert.ok(plan.intents.filter((i) => i.dest === "trophy").length >= 1, "trophy carries p1");
 });
 
-test("DEFAULT RULE: zero-qty stock node still counts as carrying", () => {
-  const plan = computeRefillPlan(base({
-    targets: {},
-    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} },
+// REWRITTEN 2026-08-17. This test used to read "zero-qty stock node still counts as
+// carrying" and passed because the old predicate was cell-existence. That sentence
+// is now HALF true, and the half that changed is the whole bug: an empty shelf at a
+// shop that trades the line must still be refilled, while an empty cell left behind
+// by a customer collection must not arm anything. Both halves are asserted here with
+// provenance stated LITERALLY — withProvenance() is deliberately not used, because
+// deriving provenance from the cell is exactly the behaviour under test.
+const READY_META = { "marathon-pe": { at: "2026-08-17T10:00:00.000Z", pairs: 1, version: 1 }, hub2: { at: "2026-08-17T10:00:00.000Z", pairs: 1, version: 1 }, central: { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 }, trophy: { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 } };
+const EMPTY_SHELF = { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} };
+
+test("DEFAULT RULE: a SOLD-OUT shelf at a shop that stocks the line still refills", () => {
+  const plan = _rawComputeRefillPlan(base({
+    targets: {}, stock: EMPTY_SHELF,
+    provenance: { "marathon-pe": { p1: { k: 6 } }, hub2: { p1: { k: 20 } } },
+    provenanceMeta: READY_META,
   }));
-  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "zero-qty node still carries");
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1,
+    "a zero cell with real stocking history is an empty shelf, and empty shelves are what refill is for");
+});
+
+test("DEFAULT RULE: a zero cell left by a CUSTOMER COLLECTION arms nothing", () => {
+  // The 2026-08-17 shape: units routed through for a named buyer, nothing stocked,
+  // nothing sold here. Identical /stock to the test above — only provenance differs.
+  const plan = _rawComputeRefillPlan(base({
+    targets: {}, stock: EMPTY_SHELF,
+    provenance: { hub2: { p1: { k: 20 } } },     // marathon-pe has NO entry at all
+    provenanceMeta: READY_META,
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe").length, 0,
+    "a husk cell must never arm — this is the bug this change exists to kill");
+});
+
+test("DEFAULT RULE: a fully-undone refill fulfil arms nothing either", () => {
+  // The engine's own wrongly-armed fulfil landed 4 units and was undone. Netting is
+  // what stops the predicate ratifying the demand it exists to refuse.
+  const plan = _rawComputeRefillPlan(base({
+    targets: {}, stock: EMPTY_SHELF,
+    provenance: { "marathon-pe": { p1: { k: 4, u: 4 } }, hub2: { p1: { k: 20 } } },
+    provenanceMeta: READY_META,
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe").length, 0, "k − u = 0 does not carry");
 });
 
 test("RETRY: rejection writes retryState + retryHistory; retry after 24h", () => {

@@ -194,11 +194,82 @@ function isFootwear(product) {
   return product?.category === "Footwear";
 }
 
-// Store carries a product if the stock node exists (regardless of qty).
-// Zero-qty cells persist indefinitely (applyMovement never deletes cells), so
-// node presence is a reliable assortment indicator even after sellouts.
-function storeCarries(stock, loc, pid) {
-  return !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;
+// ═══ storeCarries — DOES THIS LOCATION TRADE THIS LINE? ══════════════════════
+//
+// It used to be `the /stock node exists`, on the reasoning that zero-qty cells
+// persist forever so their presence is a reliable assortment signal. That
+// reasoning was wrong in one direction that mattered: a cell records that a unit
+// was once THERE, not that the shop SELLS it. Anything that routes a unit through
+// a shop creates one, and it never goes away.
+//
+// PROVEN LIVE 2026-08-17. A customer collection for two Trophy-owned Lacoste
+// sweatshirts was dispatched hub2 → marathon-pe (correct: the buyer collects at
+// PE). Staff walked the units next door to Trophy, where they sold. PE's cells
+// went back to 0 and STAYED IN EXISTENCE, so this function answered `true`, the
+// clothing rule below applied PE's full M/L/XL run against an on-hand of 0, and
+// the engine raised the whole run as AUTO demand. The warehouse fulfilled it,
+// someone undid the fulfil, the cells remained, and the next scan re-armed —
+// a closed loop with a one-hour period. 165 (destination, product) pairs were in
+// that state network-wide; 42 open lines were live demand nobody wanted.
+//
+// The discriminator is PROVENANCE, not stock presence. A location carries a
+// product if it has ever SOLD it there, or has ever received it via a
+// STOCKING-class movement (a refill fulfil, a receive, a deliberate transfer).
+// A unit routed through for a named customer counts for nothing.
+//
+// PROVENANCE IS NOT COMPUTED HERE. It is a fold over the whole ledger, and this
+// runs 49 times a day against a snapshot that already costs ~31 MB. It is
+// materialised at /stock_provenance by scripts/backfill-stock-provenance.mjs and
+// maintained forward inside applyMovement's atomic update — see
+// functions/lib/provenance-index.cjs for the shape and why it stores counters.
+//
+// TWO WAYS TO ANSWER TRUE, IN THIS ORDER:
+//
+//  1. AN EXPLICIT `introduce: true` OPT-IN. Without it the predicate would make
+//     it impossible to give a store a line it has never held: no provenance → no
+//     target → no refill → no provenance, forever. The opt-in is the deliberate
+//     act that breaks that circle, and it is checked FIRST — before the readiness
+//     gate — because it is owner intent stated directly on a target row or policy
+//     entry, not something derived from the index. It therefore still works while
+//     the index is unavailable, and it is bounded to the (dest, pid) it names.
+//     Default off: absent, false, or any other value arms nothing.
+//
+//  2. THE INDEX, but only when it is READY for this location. `indexReady()`
+//     demands a sentinel naming a completed backfill at the current version.
+//
+// FAIL CLOSED. An absent or unreadable index arms NOTHING. There is deliberately
+// NO fallback to cell-existence: that fallback is the bug this replaces, and a
+// silent revert to it would look like a fix while behaving exactly as before.
+// Under-ordering is visible as an empty shelf; over-ordering moved 43 units of
+// someone else's stock across town. The caller logs the unready case loudly and
+// surfaces it in the Health view (refill-scan.cjs), because a permanently quiet
+// engine is the failure mode this direction risks.
+const { carriesByIndex, indexReady, provenanceEntry } = require("./provenance-index.cjs");
+
+// Has the owner explicitly introduced this line at this location? Either on any
+// explicit /stock_targets row for the product at that destination (a per-size row
+// speaks for the product's presence in the shop), or on the destination's entry in
+// a /config/refillEngine/categoryPolicy category. Read live, so introducing a line
+// is a data edit — no deploy, matching every other switch in this file.
+function introducedAt(ctx, loc, pid) {
+  const rows = ctx?.targets?.[loc]?.[pid];
+  if (rows && typeof rows === "object" && !Array.isArray(rows)) {
+    for (const sizeKey of Object.keys(rows)) {
+      if (rows[sizeKey]?.introduce === true) return true;
+    }
+  }
+  const key = ctx?.products?.[pid]?.categoryKey;
+  if (typeof key === "string" && key) {
+    const cat = ctx?.config?.categoryPolicy?.[key];
+    if (cat && typeof cat === "object" && !Array.isArray(cat) && cat[loc]?.introduce === true) return true;
+  }
+  return false;
+}
+
+function storeCarries(ctx, loc, pid) {
+  if (introducedAt(ctx, loc, pid)) return true;
+  if (!indexReady(ctx?.provenanceMeta, loc)) return false;
+  return carriesByIndex(provenanceEntry(ctx?.provenance, loc, pid));
 }
 
 // Product catalog sizes — the source of truth for what a product comes in.
@@ -417,7 +488,12 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
   return shaped(sizeUnitsAnywhere(stock, pid, size) > 0 ? entry.target : 0);
 }
 
-function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+// ctx is taken WHOLE rather than destructured in the parameter list: storeCarries
+// now needs the provenance index and the introduce opt-in (targets + config +
+// products) as well, and threading five more parameters through every call site is
+// how one of them ends up with a stale copy.
+function resolveTarget(ctx, dest, pid, size) {
+  const { targets, config, products, stock } = ctx;
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -470,7 +546,7 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   // eager below-target behaviour, matching resolveTarget's existing fail-safe
   // direction (over-order visibly rather than starve silently).
   const fp = products?.[pid];
-  if (footwearTargetsEnabled(config, dest) && isFootwear(fp) && storeCarries(stock, dest, pid)) {
+  if (footwearTargetsEnabled(config, dest) && isFootwear(fp) && storeCarries(ctx, dest, pid)) {
     if (productSizes(products, pid).includes(size)) {
       const run = config?.footwearRunByLocation?.[dest] || {};
       // encodeSizeKey, NOT the raw size — RTDB rejects "." in a key, so the half
@@ -496,7 +572,7 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
   // Global clothing rule: apply the location's standard run to every catalog
   // size, but only where the store actually carries the product.
   const p = products?.[pid];
-  if (isClothing(p) && storeCarries(stock, dest, pid)) {
+  if (isClothing(p) && storeCarries(ctx, dest, pid)) {
     const sizes = productSizes(products, pid);
     if (sizes.includes(size)) {
       // MORE SPECIFIC WINS: a subcategory policy overrides the size run for the
@@ -542,6 +618,13 @@ function computeRefillPlan(snapshot) {
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
     retryState = {},        // /refill_engine/retryState — persisted rejected-request retry state
     heldLines = {},         // /settings/stockHold/held — central→hub credits parked in transit (count-integrity hold lane)
+    // /stock_provenance — the derived carries index and its readiness sentinel.
+    // NOT defaulted to a friendly empty shape by accident: {} for both means "no
+    // sentinel anywhere", which indexReady() reads as NOT READY, which arms
+    // nothing. A caller that forgets to read these gets a quiet engine and a loud
+    // error below — never the old cell-existence behaviour.
+    provenance = {},        // { [loc]: { [pid]: { s, k, u } } }
+    provenanceMeta = {},    // { [loc]: { at, pairs, version } }
   } = snapshot;
 
   const errors = [];
@@ -554,7 +637,27 @@ function computeRefillPlan(snapshot) {
     return a.localeCompare(b);
   });
 
-  const ctx = { targets, config, products, stock };
+  const ctx = { targets, config, products, stock, provenance, provenanceMeta };
+
+  // ── PROVENANCE INDEX READINESS — loud, per destination ─────────────────────
+  // A destination whose sentinel is missing arms NOTHING (storeCarries returns
+  // false for every product there). That is the correct fail-closed direction,
+  // but it is indistinguishable from "this shop needs nothing" unless it is said
+  // out loud — so it is said here, once per destination, into `errors` (which the
+  // caller writes onto the run record) and into the plan's own health block for
+  // the Health view. A silently quiet engine is the failure mode this direction
+  // risks, and this is what stops it being silent.
+  const provenanceReady = {};
+  for (const d of dests) {
+    provenanceReady[d] = indexReady(provenanceMeta, d);
+    if (!provenanceReady[d]) {
+      errors.push(
+        `PROVENANCE INDEX NOT READY at ${d} — no valid /stock_provenance/_meta/${d} sentinel. ` +
+        `Nothing will be armed there until scripts/backfill-stock-provenance.mjs --execute completes. ` +
+        `Explicit targets and introduce:true opt-ins are unaffected.`
+      );
+    }
+  }
 
   // ── inbound & reservations from EXISTING open intents ──────────────────────
   // inbound[dest|pid|size] = qty already on its way. Manual (human-placed) Shop
@@ -1004,7 +1107,7 @@ function computeRefillPlan(snapshot) {
     if (!ruleOn && !footOn && !catOn) return out;
     for (const [pid, p] of Object.entries(products || {})) {
       if (catOn && categoryPolicyEntry(config, products, pid, dest)) { out.add(pid); continue; }
-      if (!storeCarries(stock, dest, pid)) continue;
+      if (!storeCarries(ctx, dest, pid)) continue;
       if (ruleOn && isClothing(p)) out.add(pid);
       else if (footOn && isFootwear(p)) out.add(pid);
     }
@@ -1028,7 +1131,7 @@ function computeRefillPlan(snapshot) {
     if (!ruleOn && !footOn) return out;
     const p = products?.[pid];
     const managedHere = (ruleOn && isClothing(p)) || (footOn && isFootwear(p));
-    if (managedHere && storeCarries(stock, dest, pid)) {
+    if (managedHere && storeCarries(ctx, dest, pid)) {
       for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
     }
     return out;
@@ -1933,7 +2036,21 @@ function computeRefillPlan(snapshot) {
       throttled: clothingIntents.length > maxIntents,
       footwearThrottled: footwearIntents.length > maxFootwearIntents,
     },
-    stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
+    stats: {
+      managedCells, footwearManagedCells,
+      ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}),
+      // Health-view surface for the fail-closed case. INSIDE `stats` deliberately:
+      // refill-scan.cjs writes only `stats` and `exceptions` onto
+      // /stock_exceptions/latest, so a top-level key here would never reach the
+      // dashboard and the loud failure would be loud only in the logs.
+      // `ready` is per destination so a half-backfilled estate reads as such
+      // rather than as one red light for the whole network.
+      provenanceIndex: {
+        ready: provenanceReady,
+        unreadyDests: dests.filter((d) => !provenanceReady[d]),
+        backfilledAt: Object.fromEntries(dests.map((d) => [d, provenanceMeta?.[d]?.at || null])),
+      },
+    },
     exceptions: {
       noTarget: cap(noTarget),
       unintroduced: cap(unintroduced, 900),
