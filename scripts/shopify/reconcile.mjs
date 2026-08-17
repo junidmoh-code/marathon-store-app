@@ -222,6 +222,12 @@ const buildSearchDocFor = async (pid) => {
   if (!gid) return null;
   const rec = (await db.ref(`products/${pid}`).get()).val();
   if (!rec) return null;
+  // NOT MERCHANDISE. Structurally unreachable — the ON path refuses a price
+  // record long before it could be confirmed live — but the SWEEP builds from
+  // whatever /shopify_publish claims is live, and a node written before that
+  // refusal shipped (or by hand in the console) would walk straight past it.
+  // An index is a second publication; it gets the same gate.
+  if (isPriceRecord(rec)) return null;
   const idx = await graphql(
     `query ($id: ID!) {
       product(id: $id) {

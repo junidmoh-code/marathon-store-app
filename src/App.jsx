@@ -626,6 +626,14 @@ function addProductToFirebase(product) {
   // a failed write would silently burn the reserved sku/barcode pair AND
   // clear the form as if save succeeded).
   return set(ref(database, `products/${product.id}`), product)
+    // Identity from birth. The rename guard protects a product that ALREADY
+    // has an identity, but a product created after the migration ran would
+    // have none until someone renamed it — the index would fall back to
+    // `name`, which is exactly the field a later rename rewrites. Seeding here
+    // closes that window. After the write, and best-effort: a failed seed must
+    // not fail the save (the caller relies on this promise to know the product
+    // was created), and the index falls back to `name` in the meantime anyway.
+    .then((r) => seedSearchIdentityFrom(product).then(() => r, () => r))
     .catch(err => { console.warn("Add product failed:", err); throw err; });
 }
 
