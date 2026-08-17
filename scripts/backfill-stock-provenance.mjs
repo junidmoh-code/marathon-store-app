@@ -54,8 +54,21 @@
 // sentinel is missing, so this backfill should complete before the rewired engine
 // deploys — otherwise those locations arm nothing until it does. (The engine no
 // longer WITHDRAWS on an unready index either; that was a genuine hazard and is
-// fixed in refill-engine.cjs.) Full order, and why hosting is last, in
-// PROVENANCE-RULES.md: rules → backfill → functions → hosting.
+// fixed in refill-engine.cjs.)
+//
+// ORDER — rules → HOSTING → this script, quiet → functions.
+// See PROVENANCE-RULES.md for the measurement behind it. Hosting is SECOND, not last.
+// An earlier version of this file said last, reasoning that it kept forward maintenance
+// from racing the backfill. It does — but it also leaves the index materialised and
+// UNMAINTAINED until hosting lands, and that interval is not safe in both directions:
+// an unrecorded UNSTOCK leaves `u` low, so `k − u` reads HIGH, so the index over-states
+// carriage and fails toward ARMING a shop that holds nothing. Under-counting `s` or `k`
+// merely under-arms; over-counting carriage is the bug this index exists to prevent.
+//
+// With hosting already live, a daytime run is not dangerous — it is merely futile. The
+// full-subtree contention check sees the concurrent writes and REMOVES the sentinels
+// rather than claiming authority. Quiescence is what this script verifies, never what
+// the deploy order assumes on its behalf. Run it before 07:00 or after 19:00.
 //
 // SEED CELLS ESTABLISH NOTHING. 540 cells carry `mv: "seed"` from setCellState(),
 // which writes outside the ledger by design, and 34 (loc,pid) pairs have no other
@@ -63,7 +76,7 @@
 // the provenance study for why both readings are defensible and why the
 // conservative one was taken.
 //
-// Usage:
+// Usage (step 3 of four — see the ORDER note below; hosting must already be deployed):
 //   node scripts/backfill-stock-provenance.mjs                      # dry run
 //   node scripts/backfill-stock-provenance.mjs --execute            # apply
 //   LEDGER_DIR=/path node scripts/backfill-stock-provenance.mjs     # use a cache
@@ -440,9 +453,12 @@ if (!EXECUTE) {
   // concurrent movement for a previously unseen (loc, pid) creates its counter at a
   // path pass 1 never had, which such a check cannot see.
   //
-  // In the documented deploy order this is quiescent by construction: hosting goes
-  // last, so the app carrying applyMovement's provenance leg is not live yet, and the
-  // POS app never writes this node.
+  // NOTHING HERE ASSUMES QUIESCENCE — it is verified. Under the documented order hosting
+  // is already live, so applyMovement's provenance leg CAN write while this runs; that
+  // is precisely why the check below is a full-subtree comparison rather than a trust in
+  // sequencing. A run during trading finds contention and declines. A run in a quiet
+  // window finds none and claims authority. (The POS app never writes this node, so
+  // tills are not a source of contention — only this repo's own hosting bundle is.)
   say();
   say(`### Authoritative-or-unready pass`);
   say();
@@ -563,9 +579,13 @@ if (!EXECUTE) {
     say(`Pair records are still in place (they are useful and mostly correct) but every location now`);
     say(`reads as UNREADY, so the engine arms nothing new and withdraws nothing on account of the`);
     say(`missing index. (Explicit \`target: 0\` and target-met withdrawals still run — they never`);
-    say(`consulted provenance.) Re-run this script during`);
-    say(`a quiet window — with hosting not yet carrying the provenance leg, per PROVENANCE-RULES.md —`);
-    say(`and it will claim authority and write the sentinels.`);
+    say(`consulted provenance.)`);
+    say();
+    say(`WHAT TO DO: re-run this script in a QUIET WINDOW — before 07:00 or after 19:00 SAST. Something`);
+    say(`is writing /stock_provenance concurrently, which is expected once hosting is live (that is the`);
+    say(`documented order: rules → hosting → this script → functions). A concurrent writer cannot be`);
+    say(`reconciled from the ledger, so the run declines instead of publishing a number it cannot`);
+    say(`vouch for. Nothing is broken and nothing needs undoing.`);
   } else {
     // `pairs` keeps ONE meaning in both writes: pairs this run computed for the
     // location. Counted from `payload`, which now includes any increments applied
