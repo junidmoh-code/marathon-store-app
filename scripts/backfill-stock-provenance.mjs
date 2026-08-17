@@ -179,6 +179,14 @@ say();
 // shop carrying a line on evidence that no longer exists. Reported, never swept: a
 // delete here changes what the engine will refill, so it is a decision.
 const liveIndex = (await db.ref(idx.PROVENANCE_ROOT).once("value")).val() || {};
+// Every pair that existed BEFORE this run, by path. The contention check below needs
+// it to tell "a record this run does not touch" from "a record something else just
+// wrote" — without it, every pre-existing orphan would read as contention.
+const preExistingOrphans = new Map();
+for (const loc of Object.keys(liveIndex)) {
+  if (loc === "_meta") continue;
+  for (const pid of Object.keys(liveIndex[loc] || {})) preExistingOrphans.set(idx.pairPath(loc, pid), liveIndex[loc][pid]);
+}
 const orphanPaths = [];
 for (const loc of Object.keys(liveIndex)) {
   if (loc === "_meta") continue;
@@ -375,10 +383,13 @@ if (!EXECUTE) {
   //                nothing and (since the needGone guard) withdraws nothing either.
   //                Nothing is left half-trusted. Re-run during a quiet window.
   //
-  // Quiescence is DETECTED, not assumed. If forward maintenance is live, a new
-  // movement's increment is already visible in the live pair, so the live value
-  // differs from what pass 1 wrote. Comparing the two is a direct read of "is
-  // something else writing here".
+  // Quiescence is DETECTED, not assumed. If forward maintenance is live, its increment
+  // is already visible in the index — either as a changed pair or as a pair that did
+  // not exist when this run started. So the check compares the WHOLE indexed subtree
+  // against the state this run expects, and treats a changed, missing OR unexpected
+  // pair as contention. Comparing only the pairs pass 1 wrote is not enough: a
+  // concurrent movement for a previously unseen (loc, pid) creates its counter at a
+  // path pass 1 never had, which such a check cannot see.
   //
   // In the documented deploy order this is quiescent by construction: hosting goes
   // last, so the app carrying applyMovement's provenance leg is not live yet, and the
@@ -395,22 +406,55 @@ if (!EXECUTE) {
     const newIds = Object.keys(reread).filter((id) => !seenIds.has(id) && reread[id]);
     say(`Round ${rounds}: ledger holds ${Object.keys(reread).length} record(s); ${newIds.length} are new since pass 1's read.`);
 
-    // CONTENTION CHECK. Every pair pass 1 wrote is compared against live. A
-    // difference means another writer incremented it — there is no safe reconciliation
-    // and no point continuing.
+    // CONTENTION CHECK — THE WHOLE SUBTREE, NOT JUST THE PAIRS PASS 1 WROTE.
+    //
+    // The first version of this check iterated `payload` only, which misses the case
+    // that matters most: a movement arriving after pass 1's read for a (loc, pid) that
+    // pass 1 never saw. applyMovement creates its ledger record AND its provenance
+    // counter in one atomic update, so a brand-new pair appears live at a path absent
+    // from `payload`. Comparing only `payload` finds no difference, declares the run
+    // quiescent, and then the tail pass sees that movement's id as new and increments
+    // the counter the app already wrote — {k:1} becomes {k:2}, and for an undo
+    // sequence it inflates `u` instead. Exactly the double-count the whole
+    // authoritative-or-unready design exists to make impossible. (CodeRabbit.)
+    //
+    // So contention means ANY difference between the live indexed subtree and the state
+    // this run expects: a changed pair, a MISSING pair, or an UNEXPECTED one.
+    //
+    // Pairs that were already live before pass 1 and are not reproduced by the fold
+    // (the orphans reported above) are expected to be present and unchanged — they are
+    // pre-existing records this run deliberately does not touch, not evidence of a
+    // concurrent writer.
     const contended = [];
-    for (const [path, rec] of Object.entries(payload)) {
-      const live = (await db.ref(path).once("value")).val();
-      if (JSON.stringify(live) !== JSON.stringify(rec)) contended.push({ path, live, expected: rec });
-      if (contended.length >= 5) break;                 // enough to prove it; stop paying for reads
+    for (const loc of LOCS) {
+      const liveLoc = (await db.ref(idx.locPath(loc)).once("value")).val() || {};
+      const seenPaths = new Set();
+      for (const pid of Object.keys(liveLoc)) {
+        const path = idx.pairPath(loc, pid);
+        seenPaths.add(path);
+        const expected = payload[path] ?? preExistingOrphans.get(path) ?? null;
+        if (expected === null) {
+          contended.push({ path, live: liveLoc[pid], expected: "(pair did not exist when this run started)" });
+        } else if (JSON.stringify(liveLoc[pid]) !== JSON.stringify(expected)) {
+          contended.push({ path, live: liveLoc[pid], expected });
+        }
+      }
+      // A pair this run wrote that is now GONE is contention too — something removed it.
+      for (const path of Object.keys(payload)) {
+        if (path.startsWith(`${idx.PROVENANCE_ROOT}/${loc}/`) && !seenPaths.has(path)) {
+          contended.push({ path, live: "(missing)", expected: payload[path] });
+        }
+      }
+      if (contended.length) break;
     }
     if (contended.length) {
       say();
       say(`⛔ **CONTENDED — another writer is maintaining /stock_provenance while this run is writing.**`);
       say();
-      say(`| path | pass 1 wrote | live now |`);
+      say(`| path | this run expected | live now |`);
       say(`|---|---|---|`);
-      for (const c of contended) say(`| \`${c.path}\` | \`${JSON.stringify(c.expected)}\` | \`${JSON.stringify(c.live)}\` |`);
+      for (const c of contended.slice(0, 20)) say(`| \`${c.path}\` | \`${JSON.stringify(c.expected)}\` | \`${JSON.stringify(c.live)}\` |`);
+      if (contended.length > 20) say(`| … | | _${contended.length - 20} more_ |`);
       say();
       say(`A concurrent \`u\` increment cannot be reconciled from the ledger: overwriting it RAISES`);
       say(`\`k - u\` and would arm a shop that holds nothing. So this run will not claim authority.`);
