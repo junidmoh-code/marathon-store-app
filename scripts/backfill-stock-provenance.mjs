@@ -89,6 +89,51 @@ admin.initializeApp({
 });
 const db = admin.database();
 
+// ── COMPARING TWO PROVENANCE RECORDS ─────────────────────────────────────────
+// NOT JSON.stringify. The first live --execute run reported 283 pairs as CONTENDED
+// and removed every sentinel, on differences that were entirely key ORDER: RTDB
+// returns a node's children lexicographically (`{k, s}`) while `toRecord` builds them
+// in counter order (`{s, k, u}`), so `{"s":2,"k":14}` and `{"k":14,"s":2}` — the same
+// record — compared unequal. The fail-safe behaved exactly as designed; it was the
+// evidence feeding it that was wrong.
+//
+// The contract is three integer counters, so the comparison is on those three values,
+// with an absent counter and a zero counter treated alike (toRecord omits zeroes, so
+// both spellings of "none" occur). Any key outside the contract on either side is
+// still a real difference and still reported — that is a foreign write, which is
+// exactly what this check exists to catch.
+// CANONICALISING, NOT FORGIVING. The distinction is the whole point: this check is the
+// fail-safe that stopped a bad publish, and it is not being traded for convenience.
+//
+// Equal ONLY when, for each of the three counters, the two records agree on the same
+// integer — where "absent" and "0" are the same integer, because toRecord OMITS zeroes
+// and so both spellings of "none" legitimately occur in live data. Everything else is a
+// difference:
+//   • any counter differing by any amount, in either direction  → different
+//   • a counter PRESENT but not a finite integer                → different (a corrupt
+//     or foreign write must not be laundered into 0 and matched against an absent one)
+//   • any key outside the three                                 → different
+//   • a null/array/non-object on one side only                  → different
+function normCounter(v) {
+  if (v === undefined || v === null) return 0;                     // absent === zero
+  if (typeof v !== "number" || !Number.isFinite(v) || v % 1 !== 0) return NaN;   // corrupt
+  return v;
+}
+const COUNTER_FIELDS = ["s", "k", "u"];
+function sameRecord(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  if (typeof a !== "object" || typeof b !== "object" || Array.isArray(a) || Array.isArray(b)) return false;
+  for (const f of COUNTER_FIELDS) {
+    const x = normCounter(a[f]), y = normCounter(b[f]);
+    // NaN !== NaN, so a corrupt counter can never compare equal to anything — not even
+    // to another corrupt one. That is deliberate: it forces CONTENDED rather than a
+    // quiet match.
+    if (!(x === y)) return false;
+  }
+  const foreign = (o) => Object.keys(o).some((k) => !COUNTER_FIELDS.includes(k));
+  return !foreign(a) && !foreign(b);
+}
+
 async function readPaged(path, pageSize = 3000) {
   const acc = {}; let lastKey = null;
   for (;;) {
@@ -439,7 +484,7 @@ if (!EXECUTE) {
         const expected = payload[path] ?? preExistingOrphans.get(path) ?? null;
         if (expected === null) {
           contended.push({ path, live: liveLoc[pid], expected: "(pair did not exist when this run started)" });
-        } else if (JSON.stringify(liveLoc[pid]) !== JSON.stringify(expected)) {
+        } else if (!sameRecord(liveLoc[pid], expected)) {
           contended.push({ path, live: liveLoc[pid], expected });
         }
       }
