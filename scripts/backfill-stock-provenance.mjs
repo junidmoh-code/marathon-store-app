@@ -34,9 +34,11 @@
 // picture. Never reorder these.
 //
 // THE SENTINEL IS ALSO THE DEPLOY GATE. The engine refuses to arm a location whose
-// sentinel is missing, so this backfill must complete BEFORE the rewired engine
-// deploys — otherwise every location goes quiet. Rules first, backfill second,
-// functions third.
+// sentinel is missing, so this backfill should complete before the rewired engine
+// deploys — otherwise those locations arm nothing until it does. (The engine no
+// longer WITHDRAWS on an unready index either; that was a genuine hazard and is
+// fixed in refill-engine.cjs.) Full order, and why hosting is last, in
+// PROVENANCE-RULES.md: rules → backfill → functions → hosting.
 //
 // SEED CELLS ESTABLISH NOTHING. 540 cells carry `mv: "seed"` from setCellState(),
 // which writes outside the ledger by design, and 34 (loc,pid) pairs have no other
@@ -89,8 +91,9 @@ async function readPaged(path, pageSize = 3000) {
 // The ledger is the only expensive read; a local cache may stand in for a dry run,
 // but NEVER for --execute. Writing live state from a snapshot of unknown age is how
 // a backfill silently reverts an hour of trade.
-// Stamped BEFORE the ledger read so the tail merge at the end can find everything
-// that landed while this script was running.
+// Reported for the operator's record. NOT used to select the tail merge — that is
+// keyed on movement ids, because a paginated read can include records stamped after
+// it began (see the tail merge below).
 const readStartedAt = new Date().toISOString();
 
 let movements, stock, products, config;
@@ -334,9 +337,21 @@ if (!EXECUTE) {
   say();
   say(`### Tail merge`);
   say();
-  const tail = Object.values(await readPaged("/stock_movements"))
-    .filter((m) => m && String(m.appliedAt || m.ts || "") > readStartedAt);
-  say(`${tail.length} movement(s) landed after the ledger read at \`${readStartedAt}\`.`);
+  // MERGED BY MOVEMENT ID, NOT BY TIMESTAMP (CodeRabbit, PR #376). The first version
+  // selected `appliedAt > readStartedAt`, which double-counts: the initial read is
+  // PAGINATED and runs for a while, so a movement written during it can carry a
+  // timestamp after readStartedAt and STILL have been included in that read — its
+  // units are already in the SET value, and incrementing again inflates s/k/u and
+  // can flip a carriage decision on numbers that were correct.
+  //
+  // The ids from the initial read are the authoritative record of what the SET
+  // already accounts for, so the tail is exactly the ids that were not in it.
+  // Timestamps are not consulted at all.
+  const seenIds = new Set(Object.keys(movements));
+  const reread = await readPaged("/stock_movements");
+  const tail = Object.entries(reread).filter(([id, m]) => m && !seenIds.has(id)).map(([, m]) => m);
+  say(`Initial read covered ${seenIds.size} movement(s); re-read found ${Object.keys(reread).length}.`);
+  say(`${tail.length} movement(s) are new since the initial read and were not in the SET values.`);
   if (tail.length) {
     const tailProv = foldProvenance(tail);
     const upd = {};
@@ -354,8 +369,9 @@ if (!EXECUTE) {
       say(`None of them affect a counter at an indexed location.`);
     }
     say();
-    say(`⚠ A movement landing during the tail merge itself is still possible. Re-running this script`);
-    say(`is always safe and always converges — that is what the SET semantics buy.`);
+    say(`⚠ A movement landing during the tail merge itself is still possible, and would be picked up`);
+    say(`by the next run. Re-running this script is always safe and always converges — the SET`);
+    say(`semantics make the recomputation authoritative and the id check keeps the merge exact.`);
   }
 }
 say();

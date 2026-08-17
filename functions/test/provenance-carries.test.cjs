@@ -185,7 +185,12 @@ test("UNREADY INDEX: a live rule-managed request is NOT cancelled", () => {
   // MUTATION: drop the `provOk` guard from needGone and this fails — the request is
   // cancelled `no_longer_needed` and its order deleted, on a transient read failure.
   const plan = computeRefillPlan(snap({ ...HEALTHY, provenanceMeta: {} }));
-  assert.deepEqual(plan.closes || [], [], "an unready index must withdraw NOTHING");
+  // Precisely: the PROVENANCE-DEPENDENT `!t` withdrawal is suppressed. Explicit-zero
+  // and target-met withdrawals stay active while the index is unready — both are
+  // asserted below — so this fixture is deliberately one where neither applies.
+  // (CodeRabbit, PR #376: the original message overstated this as "withdraws
+  // nothing", which is only true of this fixture.)
+  assert.deepEqual(plan.closes || [], [], "the !t withdrawal must be suppressed while the index is unready");
   // …while still arming nothing new, which is the half that was already right.
   assert.equal(plan.intents.length, 0);
   assert.ok(plan.errors.some((e) => /PROVENANCE INDEX NOT READY/.test(e)));
