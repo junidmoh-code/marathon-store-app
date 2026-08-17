@@ -41,13 +41,14 @@ import {
   VISION_PROMPT, regenerationNote, parseVisionResponse, validateVisionName,
   buildNameProposal, identityTextFrom, projectCost, mayProposeFor,
   NAME_PROPOSAL_KEY, VISION_NAME_SOURCE,
+  visionModel, THINKING_CONFIG, costFromUsage, leadShapeHint,
 } from "../../src/utils/visionNaming.js";
 import {
   SEARCH_IDENTITY_PATH, shouldReplaceIdentity,
 } from "../../src/utils/searchIdentity.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
 
-const MODEL = "gemini-2.5-flash";
+const MODEL = visionModel(process.env);
 const API = "https://generativelanguage.googleapis.com/v1beta/models";
 
 const flags = process.argv.slice(2);
@@ -141,22 +142,65 @@ if (CONFIRM !== work.length) {
 if (!work.length) { console.log("nothing in scope."); process.exit(0); }
 
 // ── One call per photo ───────────────────────────────────────────────────────
-async function callGemini(photoUrl, extraInstruction) {
-  const img = await fetch(photoUrl, { signal: AbortSignal.timeout(20000) });
-  if (!img.ok) throw new Error(`could not fetch the photo (HTTP ${img.status})`);
+// The photo download is the fragile step, and it fails for reasons that have
+// nothing to do with this program: on the first full run 2,479 of 2,916 products
+// failed with a bare "fetch failed" because the machine's network dropped
+// mid-run. None of them reached the API, so nothing was charged — but the run
+// reported 85% failure for a transient cause. A bounded retry with backoff turns
+// that into a pause instead of a loss.
+async function fetchWithRetry(url, attempts = 4) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r;
+    } catch (e) {
+      last = e;
+      if (i < attempts - 1) await new Promise((res) => setTimeout(res, 1000 * 2 ** i));
+    }
+  }
+  throw new Error(`could not fetch the photo after ${attempts} attempts (${String(last?.message || last)})`);
+}
+
+async function callGemini(photoUrl, extraInstruction, shapeHint) {
+  const img = await fetchWithRetry(photoUrl);
   const mimeType = img.headers.get("content-type")?.split(";")[0] || "image/jpeg";
   const data = Buffer.from(await img.arrayBuffer()).toString("base64");
   const parts = [{ inlineData: { mimeType, data } }, { text: VISION_PROMPT }];
+  // The rotating lead-shape preference. Without it the model converges on one
+  // template — measured: 13 of the first 20 opened identically.
+  if (shapeHint) parts.push({ text: shapeHint });
   if (extraInstruction) parts.push({ text: extraInstruction });
-  const res = await fetch(`${API}/${MODEL}:generateContent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: { temperature: 0.4, responseMimeType: "application/json" },
-    }),
-    signal: AbortSignal.timeout(90000),
+  // The API call gets the same treatment, but ONLY for transport failures —
+  // never after a response arrives, because a completed generation has already
+  // been charged and retrying would pay for it twice.
+  const body = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: {
+      temperature: 0.4,
+      responseMimeType: "application/json",
+      // Thinking is billed at the OUTPUT rate and measured 46% more expensive
+      // for an answer of the same quality. See THINKING_CONFIG.
+      thinkingConfig: { ...THINKING_CONFIG },
+    },
   });
+  let res, lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      res = await fetch(`${API}/${MODEL}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
+        body,
+        signal: AbortSignal.timeout(90000),
+      });
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * 2 ** attempt));
+    }
+  }
+  if (!res) throw new Error(`could not reach Gemini after 3 attempts (${String(lastErr?.message || lastErr)})`);
   if (!res.ok) throw new Error(`Gemini HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = await res.json();
   const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("") || "";
@@ -164,18 +208,24 @@ async function callGemini(photoUrl, extraInstruction) {
     const why = json?.promptFeedback?.blockReason || json?.candidates?.[0]?.finishReason || "no text in response";
     throw new Error(`Gemini returned nothing usable (${why})`);
   }
+  // The model's OWN reported usage. The projection is a constant so a batch can
+  // be quoted before it runs; this is what it actually cost, so drift between
+  // the two is visible instead of assumed.
+  measuredUsd += costFromUsage(json.usageMetadata);
   return text;
 }
 
 const results = [];
 let spent = 0;
+let measuredUsd = 0;
 
-for (const { pid, product, node, photo } of work) {
+for (const [i, { pid, product, node, photo }] of work.entries()) {
   assertSafeSegment(pid, "productId");
   const previousName = node?.cleanName || null;
   try {
     // ── attempt 1 ──
-    let raw = await callGemini(photo, null);
+    const shapeHint = leadShapeHint(i);
+    let raw = await callGemini(photo, null, shapeHint);
     spent += 1;
     let parsed = parseVisionResponse(raw);
     if (!parsed.ok) { results.push({ pid, status: "unusable", detail: parsed.error }); continue; }
@@ -185,7 +235,7 @@ for (const { pid, product, node, photo } of work) {
     // ── ONE regeneration, naming the offending term. Then refuse. ──
     if (!verdict.ok) {
       const first = parsed.publicName;
-      raw = await callGemini(photo, regenerationNote(verdict.triggers));
+      raw = await callGemini(photo, regenerationNote(verdict.triggers), shapeHint);
       spent += 1;
       attempts = 2;
       const retry = parseVisionResponse(raw);
@@ -257,8 +307,9 @@ for (const r of results) {
 }
 const tally = {};
 for (const r of results) tally[r.status] = (tally[r.status] ?? 0) + 1;
-const actual = projectCost(spent);
 console.log(`\n${Object.entries(tally).map(([k, v]) => `${k}: ${v}`).join(" · ") || "nothing done"}`);
-console.log(`calls made: ${spent} (retries included) · actual cost ≈ $${actual.usd} (~R${actual.zar})`);
+console.log(`model: ${MODEL} · calls made: ${spent} (retries included)`);
+console.log(`MEASURED cost from the model's own usage: $${measuredUsd.toFixed(5)} (~R${(measuredUsd * 18).toFixed(3)})` +
+  (spent ? ` · $${(measuredUsd / spent).toFixed(6)}/call vs $${projectCost(1).usd} projected` : ""));
 console.log(`Proposals are PENDING. Nothing is on the storefront until they are approved in the publishing page.`);
 process.exit(results.some((r) => BAD.has(r.status)) ? 1 : 0);

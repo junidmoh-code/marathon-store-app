@@ -51,17 +51,54 @@ export const VISION_NAME_SOURCE = "vision";
 /** Where a proposal waits for review. NOT cleanName — that is the applied name. */
 export const NAME_PROPOSAL_KEY = "nameProposal";
 
+// ── The model ────────────────────────────────────────────────────────────────
+// PINNED, with an env override. This is not a preference: `gemini-2.5-flash`
+// was the original choice and Google retired it for new API keys mid-build —
+// every call came back HTTP 404 "no longer available to new users", which is
+// why the pin is explicit and why overriding it must not need a code change.
+// (2026-08-17.)
+export const VISION_MODEL_DEFAULT = "gemini-3.7-flash";
+export function visionModel(env = {}) {
+  return String(env.GEMINI_VISION_MODEL || "").trim() || VISION_MODEL_DEFAULT;
+}
+
+// THINKING IS OFF, and it is a cost decision backed by a measurement. These
+// models think by default and thinking tokens are billed at the OUTPUT rate.
+// Measured on a real 67 KB product photo, same prompt, same photo:
+//
+//   thinking OFF : 1578 in ·  55 answer ·  66 thinking  →  $0.001637
+//   thinking ON  : 1578 in ·  47 answer · 274 thinking  →  $0.002387
+//
+// 46% more expensive for an answer of the same quality — both read the shoe
+// correctly and both wrote a usable name. (thinkingBudget 0 still leaves a ~66
+// token floor; it is a cap, not a switch.)
+export const THINKING_CONFIG = Object.freeze({ thinkingBudget: 0 });
+
 // ── Cost ─────────────────────────────────────────────────────────────────────
-// Gemini 2.5 Flash pricing, 2026-08. One image at 600x800 is ~600 tokens of
-// input; the prompt is ~450; the JSON answer is ~120 output tokens. Input
-// $0.30/1M, output $2.50/1M.
-//   input : (600 + 450) x $0.30/1M  = $0.000315
-//   output: 120 x $2.50/1M          = $0.000300
-//                                    ≈ $0.00062 per name  (~R0.011)
-// Deliberately a CONSTANT and not a live lookup: a batch runner must be able to
-// quote a total before it spends anything. Verify against the console after the
-// first real batch and correct it here.
-export const COST_PER_NAME_USD = 0.00062;
+// MEASURED, not estimated. The first version of this constant was $0.00062 from
+// Gemini 2.5 Flash list prices and a guess at the image's token cost. Both were
+// wrong: 3.x Flash is $0.75/1M in and $3.75/1M out (paid tier, through
+// 2026-12-31), and a 600x800 product photo is ~1,100 input tokens — so the
+// prompt is 1,578 tokens, not the ~450 assumed.
+//
+//   input : 1578 x $0.75/1M = $0.001184
+//   output: (55 + 66) x $3.75/1M = $0.000454
+//                                 = $0.001637 per name  (~R0.029)
+//
+// 2.6x the original estimate. Deliberately a CONSTANT and not a live lookup: a
+// batch runner has to quote a total BEFORE it spends anything. The runner also
+// prints the ACTUAL measured cost from usageMetadata at the end of every run,
+// so drift between this number and reality is visible rather than assumed.
+export const COST_PER_NAME_USD = 0.001637;
+export const GEMINI_INPUT_PER_TOKEN = 0.75 / 1e6;
+export const GEMINI_OUTPUT_PER_TOKEN = 3.75 / 1e6;
+
+/** Cost of one call from its own reported usage — the honest after-the-fact number. */
+export function costFromUsage(usage) {
+  const inTok = Number(usage?.promptTokenCount) || 0;
+  const outTok = (Number(usage?.candidatesTokenCount) || 0) + (Number(usage?.thoughtsTokenCount) || 0);
+  return inTok * GEMINI_INPUT_PER_TOKEN + outTok * GEMINI_OUTPUT_PER_TOKEN;
+}
 export const USD_TO_ZAR = 18.0; // for the operator-facing quote only
 
 /** What a run of `n` names will cost, for the quote shown BEFORE it starts. */
@@ -109,11 +146,50 @@ PUBLIC NAME RULES — this is a shop listing title a customer reads.
   or silhouette name, NO logo wording, and NO team, city or athlete name.
 - Natural retail English, 3 to 9 words, no ALL CAPS, no punctuation beyond
   ordinary hyphens, and it must not start with a digit.
-- Lead with the product type ("Low-top leather sneaker", "Panelled mesh
-  runner", "Quilted bomber jacket") then the colour detail.
 - Do not mention condition, wear, price, size or availability.
 
+VARY THE SENTENCE SHAPE. This is a hard requirement, not a preference. Hundreds
+of these names are written for one shop and they must not all read alike. In
+particular do NOT begin every name with the product type. Choose whichever of
+these shapes the item actually calls for:
+
+  A. material first        "Brushed suede low-top in sand"
+  B. colour first          "Oxblood leather derby with brogue detail"
+  C. the standout detail    "Contrast-stitch panel runner in bone and rust"
+  D. silhouette first       "High-top basketball silhouette in cracked white"
+  E. the pattern or print   "Leopard-print calf hair slip-on"
+  F. construction           "Cup-sole canvas trainer in faded navy"
+  G. the trim or hardware   "Gum-sole mesh runner with reflective piping"
+  H. the finish             "Patent black loafer with a squared toe"
+
+MAKE IT SPECIFIC TO THIS ITEM. Two black bags must not get the same name. Reach
+for the thing that would let someone pick this one out of a row of similar
+items: the exact shade, the panel layout, the hardware, the stitching, the sole
+colour, the texture. A name that could describe fifty other items in the shop is
+a failed name.
+
 Return the JSON object only.`;
+
+// ── Lead-shape rotation ──────────────────────────────────────────────────────
+// The prompt lists eight shapes; a model left to choose freely still converges
+// on one. Measured on the first real batch of 20: THIRTEEN opened with
+// "Low-top leather sneaker(s) in" — the lexicon's monotony reproduced with a
+// different template, which is also a handle-collision generator.
+//
+// So the runner rotates a PREFERRED shape across the batch. It is a preference,
+// not a command: an item the shape genuinely does not fit gets a different one,
+// because a forced shape reads worse than a repeated one. Rotation is by index
+// so a batch spreads deterministically rather than by chance.
+export const LEAD_SHAPES = [
+  "A (material first)", "C (the standout detail)", "B (colour first)",
+  "G (the trim or hardware)", "F (construction)", "E (the pattern or print)",
+  "D (silhouette first)", "H (the finish)",
+];
+
+export function leadShapeHint(index) {
+  const shape = LEAD_SHAPES[index % LEAD_SHAPES.length];
+  return `For THIS item, prefer sentence shape ${shape} unless it genuinely does not suit what you can see — in which case pick a different shape from the list, but do not default to leading with the product type.`;
+}
 
 /**
  * The retry instruction after a refusal. It NAMES the offending terms, because
