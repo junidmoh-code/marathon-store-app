@@ -32,10 +32,17 @@
 // the live index rather than silently leaving it: clearing an orphan is a delete, and
 // deletes here get read and decided one at a time, not swept.
 //
-// ORDER OF WRITES IS LOAD-BEARING. Pairs are written FIRST, the readiness sentinel
-// LAST, per location. `indexReady()` gates arming on the sentinel, so a run that
-// dies halfway leaves the location unarmed rather than armed against half a
-// picture. Never reorder these.
+// ORDER OF WRITES IS LOAD-BEARING, WITHIN PASS 1. Pairs are written FIRST, the
+// readiness sentinel LAST, per location: `indexReady()` gates arming on the sentinel,
+// so a run that dies halfway leaves the location unarmed rather than armed against
+// half a picture. Never reorder those two.
+//
+// The convergence pass then writes pairs AFTER those sentinels exist, and re-touches
+// `_meta` at the end. That is deliberate and safe, not an exception to the rule above:
+// a location armed during convergence reads pass-1 values, and pass-1 values can only
+// be LOW relative to the truth (see the residual note in that block), so the engine
+// under-arms for a few seconds rather than over-arming. Arming early beats staying
+// dark, given the direction of the error is known.
 //
 // THE SENTINEL IS ALSO THE DEPLOY GATE. The engine refuses to arm a location whose
 // sentinel is missing, so this backfill should complete before the rewired engine
@@ -389,9 +396,44 @@ if (!EXECUTE) {
     // Compare against what pass 1 wrote, not against live — live may already hold a
     // forward increment we are about to (correctly) supersede.
     if (JSON.stringify(rec) === JSON.stringify(payload[path] || null)) continue;
-    converge[path] = rec;
+    // LEAF-LEVEL PATHS WITH EXPLICIT NULLS, not `{path: rec}`. RTDB update() expands
+    // an object value into leaf writes and does NOT delete keys absent from it, so
+    // `{path: rec}` is a MERGE dressed as a SET. Today that is indistinguishable —
+    // counters only accumulate, so a changed record's key set is always a superset —
+    // but the exactness argument should not rest on that. Writing each counter and
+    // nulling the absent ones makes the primitive match the claim, and survives a
+    // future classifier version that lets a counter fall. (Admin SDK bypasses the
+    // newData.exists() rule that stops CLIENTS nulling a counter.)
+    for (const f of ["s", "k", "u"]) converge[`${path}/${f}`] = rec[f] ?? null;
     changed.push({ loc, pid, from: payload[path] || null, to: rec });
   }
+  // ── THE ONE INFLATION PATH, NAMED AND CHECKED ──────────────────────────────
+  // Everything above iterates `reProv`, so a pair that pass 1 wrote but the re-fold
+  // NO LONGER PRODUCES is never visited and pass 1's value survives. That is the only
+  // way this run can leave a counter too HIGH, and the "never inflated" claim depends
+  // on it being impossible. It is impossible only because the ledger is APPEND-ONLY:
+  // counters accumulate (an undo adds to `u`, it never subtracts from `k`), and no
+  // code path deletes a /stock_movements record — undos are new records with their own
+  // ids (`crundo_…`). That premise is now stated rather than assumed, and checked
+  // rather than trusted, because it is load-bearing for a safety claim.
+  const vanished = Object.keys(payload).filter((path) => {
+    const [, loc, pid] = path.split("/");
+    return !reProv.has(`${loc}|${pid}`);
+  });
+  if (vanished.length) {
+    say(`⛔ **${vanished.length} pair(s) written by pass 1 are no longer produced by the re-fold.**`);
+    say(`This should be impossible on an append-only ledger and means a movement record was deleted`);
+    say(`or mutated mid-run. Those pairs keep pass 1's value, which may now be too HIGH — the unsafe`);
+    say(`direction. Re-run this script and investigate the ledger before trusting the index.`);
+    say();
+    for (const path of vanished.slice(0, 20)) say(`- \`${path}\` still holds \`${JSON.stringify(payload[path])}\``);
+    say();
+  } else {
+    say(`Append-only premise holds: every pair pass 1 wrote is still produced by the re-fold, so no`);
+    say(`counter can have been left too high.`);
+    say();
+  }
+
   if (!changed.length) {
     say(`No pair's authoritative value changed. Pass 1 is already converged.`);
   } else {
@@ -407,14 +449,39 @@ if (!EXECUTE) {
     const CH = 400;
     const entries = Object.entries(converge);
     for (let i = 0; i < entries.length; i += CH) await db.ref().update(Object.fromEntries(entries.slice(i, i + CH)));
-    say(`Applied ${entries.length} corrected pair record(s).`);
+    say(`Applied ${entries.length} counter write(s) across ${changed.length} pair(s).`);
+    // The orphan table above was printed BEFORE pass 1 and said "this run will NOT
+    // change it". A movement landing mid-run can give an orphan fresh provenance, in
+    // which case this pass does change it — correct behaviour, but it makes that
+    // earlier sentence false unless it is corrected here.
+    const wereOrphans = changed.filter((c) => orphanPaths.some((o) => o.loc === c.loc && o.pid === c.pid));
+    if (wereOrphans.length) {
+      say(`⚠ ${wereOrphans.length} of these were listed as ORPHANS above — they gained provenance during`);
+      say(`this run, so that part of the orphan table is now out of date. They are correct as written.`);
+    }
   }
   // The sentinels were written after pass 1 so each location became armable as early
   // as possible; refresh their metadata now so `at` and `pairs` describe the state
   // the run actually left behind rather than an intermediate one.
+  // `pairs` keeps ONE meaning across both writes: pairs THIS RUN computed for the
+  // location. Pass 1 wrote that; the refresh must not quietly redefine it as "children
+  // currently at the node", which would include orphans and any foreign record and so
+  // disagree with a pass-1-only sentinel under the same field name. It is counted from
+  // the re-fold rather than by re-reading the node — the data is already in hand, and a
+  // read-then-count would also race an app increment creating a pair between the two.
+  const rePairs = new Map();
+  for (const key of reProv.keys()) {
+    const [loc, pid] = key.split("|");
+    if (!LOCS.includes(loc)) continue;
+    if (!Object.keys(idx.toRecord(reProv.get(`${loc}|${pid}`))).length) continue;
+    rePairs.set(loc, (rePairs.get(loc) || 0) + 1);
+  }
   for (const loc of LOCS) {
-    const live = (await db.ref(idx.locPath(loc)).once("value")).val() || {};
-    await db.ref(idx.metaPath(loc)).update({ at: new Date().toISOString(), pairs: Object.keys(live).length, ledgerRecords: Object.keys(reread).length });
+    await db.ref(idx.metaPath(loc)).update({
+      at: new Date().toISOString(),
+      pairs: rePairs.get(loc) || 0,
+      ledgerRecords: Object.keys(reread).length,
+    });
   }
   say();
   say(`Sentinels refreshed. A movement landing during this pass leaves its counter LOW, never high —`);
