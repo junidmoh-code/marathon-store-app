@@ -6,6 +6,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
+import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
@@ -625,6 +626,14 @@ function addProductToFirebase(product) {
   // a failed write would silently burn the reserved sku/barcode pair AND
   // clear the form as if save succeeded).
   return set(ref(database, `products/${product.id}`), product)
+    // Identity from birth. The rename guard protects a product that ALREADY
+    // has an identity, but a product created after the migration ran would
+    // have none until someone renamed it — the index would fall back to
+    // `name`, which is exactly the field a later rename rewrites. Seeding here
+    // closes that window. After the write, and best-effort: a failed seed must
+    // not fail the save (the caller relies on this promise to know the product
+    // was created), and the index falls back to `name` in the meantime anyway.
+    .then((r) => seedSearchIdentityFrom(product).then(() => r, () => r))
     .catch(err => { console.warn("Add product failed:", err); throw err; });
 }
 
@@ -633,9 +642,53 @@ function deleteProductFromFirebase(id) {
     .catch(err => console.warn("Delete product failed:", err));
 }
 
-function updateProductName(id, newName) {
+// ─── THE ONE PLACE A PRODUCT IS RENAMED ──────────────────────────────────────
+// Both renaming paths come through here — the Review-Names approve button and
+// the admin product page's name field — so this is where the searchable
+// identity is protected, once, for every caller present and future.
+//
+// The problem it solves: `name` is brand-first ("Lacoste Gripshot Lace Boot"),
+// and that brand is the ONLY thing the storefront search can match on, because
+// none of those words are allowed to exist on Shopify. Renaming a product to a
+// compliant public name therefore destroys its searchability — silently, with
+// no copy left anywhere.
+//
+// So before the new name lands, the OUTGOING one is seeded into
+// /product_identity/{pid} as source "record". Seeding is a no-op when an
+// identity already exists (shouldReplaceIdentity refuses a same-rank write with
+// no new information is not the case here — a "record" write DOES outrank a
+// "vision" guess, which is correct: the name the product was received under
+// beats anything read off a photo).
+//
+// Best effort by design: a rename must not fail because the identity write did.
+// Losing one seed costs a rebuild; refusing the rename costs Junid his edit.
+async function seedSearchIdentityFrom(product) {
+  if (!product?.id) return;
+  const incoming = buildRecordIdentity(product, { at: Date.now(), by: "rename-guard" });
+  if (!incoming) return;
+  try {
+    // A TRANSACTION, not read-then-write. Two renames of the same product fired
+    // close together (a double-submit before the re-render) would otherwise both
+    // read the same "existing" and both decide to write — last one wins, and
+    // which one that is depends on network timing. The precedence rule is the
+    // whole value of this field; it has to be evaluated against what is actually
+    // stored at the moment of the write.
+    const idRef = ref(database, `${SEARCH_IDENTITY_PATH}/${product.id}`);
+    await runTransaction(idRef, (existing) => {
+      if (!shouldReplaceIdentity(existing, incoming)) return undefined; // abort, keep what is there
+      return { ...incoming, ...(existing?.text ? { supersededText: existing.text } : {}) };
+    });
+  } catch (err) {
+    console.warn("search identity seed failed (the rename still applies):", err);
+  }
+}
+
+function updateProductName(id, newName, product = null) {
   if (!id || !newName.trim()) return Promise.resolve();
-  return update(ref(database, `products/${id}`), { name: newName.trim() })
+  // Seed FIRST, then rename. The other order would race: a rebuild landing
+  // between the two would read the new public name as the identity.
+  return seedSearchIdentityFrom(product && product.id === id ? product : { id, name: null })
+    .then(() => update(ref(database, `products/${id}`), { name: newName.trim() }))
     .catch(err => console.warn("updateProductName failed:", err));
 }
 
@@ -4826,7 +4879,8 @@ function AdminReviewNamesTab({ products }) {
     if (!name) return false;
     setBusyId(row.id);
     try {
-      await updateProductName(row.id, name);
+      // row.current is the outgoing name the proposal was raised against.
+      await updateProductName(row.id, name, { id: row.id, name: row.current });
       await update(ref(database, `aiAssistant/nameProposals/${row.id}`), { status: "approved", appliedName: name, decidedAt: serverNowMs() });
       return true;
     } catch (e) { setRunMsg(`Approve failed for “${row.current || row.id}”: ${e?.message || e}`); return false; }
@@ -6343,7 +6397,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
   const saveName = () => {
     const next = nameDraft.trim();
-    if (next && next !== product.name) updateProductName(product.id, next);
+    if (next && next !== product.name) updateProductName(product.id, next, product);
     else if (!next) setNameDraft(product.name);
   };
 
