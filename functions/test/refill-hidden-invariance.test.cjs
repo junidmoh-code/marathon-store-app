@@ -22,7 +22,15 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
-const { computeRefillPlan } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan: _rawComputeRefillPlan } = require("../lib/refill-engine.cjs");
+// storeCarries() now reads the derived provenance index, not cell existence
+// (2026-08-17 — a customer-collection husk was arming whole size runs). The
+// fixtures below write a /stock cell to mean "this shop stocks this line", which
+// was true of the old predicate, so withProvenance() states that in the index's own
+// terms and leaves every assertion in this file measuring what it always did.
+// It never overrides a `provenance`/`provenanceMeta` a test sets itself.
+const { withProvenance } = require("./helpers/provenance.cjs");
+const computeRefillPlan = (snap) => _rawComputeRefillPlan(withProvenance(snap, Object.keys(snap?.config?.routes || {})));
 
 const SCAN_SRC = readFileSync(join(__dirname, "..", "refill-scan.cjs"), "utf8");
 const ENGINE_SRC = readFileSync(join(__dirname, "..", "lib", "refill-engine.cjs"), "utf8");

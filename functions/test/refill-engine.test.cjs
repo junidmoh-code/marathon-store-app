@@ -1,7 +1,17 @@
 // Tests for the pure refill-engine core. Run: cd functions && node --test
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { computeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate, resolveTarget } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan: _rawComputeRefillPlan, computeConfidence, encodeSizeKey, saTodayKey, retryHistoryKey, sanitizeUpdate, resolveTarget: _rawResolveTarget } = require("../lib/refill-engine.cjs");
+// storeCarries() now reads the derived provenance index, not cell existence
+// (2026-08-17 — a customer-collection husk was arming whole size runs). The
+// fixtures below write a /stock cell to mean "this shop stocks this line", which
+// was true of the old predicate, so withProvenance() states that in the index's own
+// terms and leaves every assertion in this file measuring what it always did.
+// It never overrides a `provenance`/`provenanceMeta` a test sets itself.
+const { withProvenance } = require("./helpers/provenance.cjs");
+const computeRefillPlan = (snap) => _rawComputeRefillPlan(withProvenance(snap, Object.keys(snap?.config?.routes || {})));
+// Same for the direct resolveTarget probes: ctx now carries the provenance index.
+const resolveTarget = (ctx, ...rest) => _rawResolveTarget(withProvenance(ctx, Object.keys(ctx?.config?.routes || {})), ...rest);
 
 // ── retryHistoryKey — RTDB keys may NOT contain . # $ [ ] / ────────────────────
 // Regression pin for the 2026-07-22 outage: an ISO timestamp in the key (its ".")
@@ -1744,12 +1754,47 @@ test("DEFAULT RULE: store that does not carry the product gets no target", () =>
   assert.ok(plan.intents.filter((i) => i.dest === "trophy").length >= 1, "trophy carries p1");
 });
 
-test("DEFAULT RULE: zero-qty stock node still counts as carrying", () => {
-  const plan = computeRefillPlan(base({
-    targets: {},
-    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} },
+// REWRITTEN 2026-08-17. This test used to read "zero-qty stock node still counts as
+// carrying" and passed because the old predicate was cell-existence. That sentence
+// is now HALF true, and the half that changed is the whole bug: an empty shelf at a
+// shop that trades the line must still be refilled, while an empty cell left behind
+// by a customer collection must not arm anything. Both halves are asserted here with
+// provenance stated LITERALLY — withProvenance() is deliberately not used, because
+// deriving provenance from the cell is exactly the behaviour under test.
+const READY_META = { "marathon-pe": { at: "2026-08-17T10:00:00.000Z", pairs: 1, version: 1 }, hub2: { at: "2026-08-17T10:00:00.000Z", pairs: 1, version: 1 }, central: { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 }, trophy: { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 } };
+const EMPTY_SHELF = { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(9) } }, central: {}, trophy: {} };
+
+test("DEFAULT RULE: a SOLD-OUT shelf at a shop that stocks the line still refills", () => {
+  const plan = _rawComputeRefillPlan(base({
+    targets: {}, stock: EMPTY_SHELF,
+    provenance: { "marathon-pe": { p1: { k: 6 } }, hub2: { p1: { k: 20 } } },
+    provenanceMeta: READY_META,
   }));
-  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1, "zero-qty node still carries");
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe" && i.sizeKey === "M").length, 1,
+    "a zero cell with real stocking history is an empty shelf, and empty shelves are what refill is for");
+});
+
+test("DEFAULT RULE: a zero cell left by a CUSTOMER COLLECTION arms nothing", () => {
+  // The 2026-08-17 shape: units routed through for a named buyer, nothing stocked,
+  // nothing sold here. Identical /stock to the test above — only provenance differs.
+  const plan = _rawComputeRefillPlan(base({
+    targets: {}, stock: EMPTY_SHELF,
+    provenance: { hub2: { p1: { k: 20 } } },     // marathon-pe has NO entry at all
+    provenanceMeta: READY_META,
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe").length, 0,
+    "a husk cell must never arm — this is the bug this change exists to kill");
+});
+
+test("DEFAULT RULE: a fully-undone refill fulfil arms nothing either", () => {
+  // The engine's own wrongly-armed fulfil landed 4 units and was undone. Netting is
+  // what stops the predicate ratifying the demand it exists to refuse.
+  const plan = _rawComputeRefillPlan(base({
+    targets: {}, stock: EMPTY_SHELF,
+    provenance: { "marathon-pe": { p1: { k: 4, u: 4 } }, hub2: { p1: { k: 20 } } },
+    provenanceMeta: READY_META,
+  }));
+  assert.equal(plan.intents.filter((i) => i.dest === "marathon-pe").length, 0, "k − u = 0 does not carry");
 });
 
 test("RETRY: rejection writes retryState + retryHistory; retry after 24h", () => {
@@ -1833,6 +1878,32 @@ const CAT_CONFIG = {
     },
   },
 };
+// ── CARRIAGE GATE, 2026-08-17 ────────────────────────────────────────────────
+// categoryPolicyTarget now requires storeCarries(), symmetric with the clothing
+// and footwear rules. Several tests below were written on the premise "no row AND
+// no cell still resolves"; the half of that premise about the CELL is exactly what
+// changed. `introduce: true` on the destination entry is how the original intent —
+// a category governing a product the shop has not held yet — is now expressed, so
+// those tests use this variant and say so. The gate itself is proved separately,
+// with and without the key, further down.
+const CAT_CONFIG_INTRO = {
+  ...CAT_CONFIG,
+  categoryPolicy: {
+    perfumes: {
+      "marathon-pe": { target: 8, reorderPoint: 3, minQty: 4, introduce: true },
+      hub2: { target: 10, reorderPoint: 5, minQty: 5, introduce: true },
+    },
+    "caps-beanies": {
+      "marathon-pe": { target: 5, reorderPoint: 0, minQty: 3, introduce: true },
+      hub2: { target: 10, reorderPoint: 0, minQty: 5, introduce: true },
+    },
+    "fitted-caps": {
+      perSize: true,
+      "marathon-pe": { target: 2, reorderPoint: 0, minQty: 1, introduce: true },
+      hub2: { target: 5, reorderPoint: 0, minQty: 3, introduce: true },
+    },
+  },
+};
 const CAT_PRODUCTS = {
   scent1: { name: "Gentleman Givenchy perfume", categoryKey: "perfumes", sizes: ["_"] },   // NO productType — the live shape
   beanie1: { name: "Nike beanie brown", productType: "clothing", categoryKey: "caps-beanies", subcategory: "Caps & Hats", sizes: ["_"] },
@@ -1847,7 +1918,7 @@ const CAT_PRODUCTS = {
   belt1: { name: "Belt Premium", productType: "clothing", categoryKey: "belts", sizes: ["_"] },
 };
 const catCtx = (over = {}) => ({
-  targets: {}, config: CAT_CONFIG, products: CAT_PRODUCTS,
+  targets: {}, config: CAT_CONFIG_INTRO, products: CAT_PRODUCTS,
   stock: {
     central: { scent1: { _: cell(48) }, fitted1: { M: cell(0) } },
     hub2: { fitted1: { M: cell(3), S: cell(1) } },
@@ -1913,13 +1984,13 @@ test("category policy: dead-size 0 ARMS ITSELF the moment units exist anywhere",
 test("category policy: survives the kill switch — and the OFF SWITCH is deleting the entry", () => {
   // ruleBasedTargets off: the run dies, the map does not (it is owner-armed
   // policy, same reasoning as explicit rows).
-  const killed = catCtx({ config: { ...CAT_CONFIG, ruleBasedTargets: false } });
+  const killed = catCtx({ config: { ...CAT_CONFIG_INTRO, ruleBasedTargets: false } });
   assert.equal(resolveTarget(killed, "marathon-pe", "beanie1", "_").target, 5);
   assert.equal(resolveTarget(killed, "marathon-pe", "capLegacy", "M"), null); // the run is dead
   // THE off switch: delete /config/refillEngine/categoryPolicy/<key> → the
   // category falls back to exactly the pre-map branches, live, no deploy.
-  const { perfumes, ...rest } = CAT_CONFIG.categoryPolicy;
-  const off = catCtx({ config: { ...CAT_CONFIG, categoryPolicy: rest } });
+  const { perfumes, ...rest } = CAT_CONFIG_INTRO.categoryPolicy;
+  const off = catCtx({ config: { ...CAT_CONFIG_INTRO, categoryPolicy: rest } });
   assert.equal(resolveTarget(off, "marathon-pe", "scent1", "_"), null);
   // And an entirely absent/garbled map arms nothing (fail-safe).
   assert.equal(resolveTarget(catCtx({ config: CONFIG }), "marathon-pe", "scent1", "_"), null);
@@ -1934,7 +2005,7 @@ test("category policy: malformed entries arm NOTHING (fail-safe direction)", () 
     { "marathon-pe": 8 },                        // location not an object
     ["not", "a", "map"],                         // entry not an object
   ]) {
-    const cfg = { ...CAT_CONFIG, categoryPolicy: { perfumes: bad } };
+    const cfg = { ...CAT_CONFIG_INTRO, categoryPolicy: { perfumes: bad } };
     assert.equal(resolveTarget(catCtx({ config: cfg }), "marathon-pe", "scent1", "_"), null,
       `entry ${JSON.stringify(bad)} must arm nothing`);
   }
@@ -1953,9 +2024,9 @@ test("category policy: unmapped clothing and footwear resolve BYTE-FOR-BYTE as w
   }
 });
 
-test("category policy END TO END: a stranded perfume raises the central→hub2 leg with NO row and NO cell", () => {
+test("category policy END TO END: an INTRODUCED stranded perfume raises the central→hub2 leg with NO row and NO cell", () => {
   const plan = computeRefillPlan({
-    nowMs: NOW, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    nowMs: NOW, config: CAT_CONFIG_INTRO, products: CAT_PRODUCTS,
     targets: {},
     stock: { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
     openIndex: {}, refillRequests: {}, orders: {}, movements: [],
@@ -1975,7 +2046,7 @@ test("category policy END TO END: a stranded perfume raises the central→hub2 l
 
 test("category policy END TO END: reorderPoint 0 keeps a mapped one-size cell SILENT until it sells out", () => {
   const plan = computeRefillPlan({
-    nowMs: NOW, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    nowMs: NOW, config: CAT_CONFIG_INTRO, products: CAT_PRODUCTS,
     targets: {},
     stock: {
       central: {}, hub2: { beanie1: { _: cell(10) } },
@@ -1987,7 +2058,7 @@ test("category policy END TO END: reorderPoint 0 keeps a mapped one-size cell SI
   assert.ok(!plan.intents.find((x) => x.productId === "beanie1" && x.dest === "marathon-pe"),
     "1 on hand > reorderPoint 0 → silent");
   const empty = computeRefillPlan({
-    nowMs: NOW, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    nowMs: NOW, config: CAT_CONFIG_INTRO, products: CAT_PRODUCTS,
     targets: {},
     stock: {
       central: {}, hub2: { beanie1: { _: cell(10) } },
@@ -2035,11 +2106,158 @@ test("category policy: the Decision Queue agrees with the planner even with the 
   assert.ok(reflagged.length > 0, "without the map the queue must flag it again");
 });
 
+// ═══ THE CARRIAGE GATE ON categoryPolicyTarget (2026-08-17) ══════════════════
+// The independent second defect. PR #352 shipped this branch with NO storeCarries()
+// check while the clothing and footwear rules beside it both required one, so a
+// category entry armed every product in the category at every mapped location —
+// including shops that have never traded it. Measured on live data: 176
+// (destination, product) pairs, 88 of them shielded by an explicit row that wins
+// one branch up, and 3 open marathon-pe bag lines.
+//
+// These use _rawComputeRefillPlan / the raw resolveTarget where provenance must be
+// stated literally, because the whole subject is what counts as carriage.
+
+test("CATEGORY GATE: a mapped category does NOT arm a shop that has never traded the line", () => {
+  // MUTATION: delete `if (!storeCarries(ctx, dest, pid)) return null;` from
+  // categoryPolicyTarget and this fails — the pre-fix behaviour exactly.
+  const ctx = {
+    targets: {}, config: CAT_CONFIG, products: CAT_PRODUCTS,      // NO introduce
+    stock: { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
+    provenance: {}, provenanceMeta: { "marathon-pe": { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 }, hub2: { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 } },
+  };
+  assert.equal(_rawResolveTarget(ctx, "marathon-pe", "scent1", "_"), null, "no carriage, no introduce → nothing");
+  assert.equal(_rawResolveTarget(ctx, "hub2", "scent1", "_"), null);
+});
+
+test("CATEGORY GATE: the same map DOES arm a shop that trades the line", () => {
+  // The gate must not break the categories that are working. Identical config and
+  // stock as above — only provenance differs.
+  const ctx = {
+    targets: {}, config: CAT_CONFIG, products: CAT_PRODUCTS,
+    stock: { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
+    provenance: { "marathon-pe": { scent1: { s: 4 } }, hub2: { scent1: { k: 60 } } },
+    provenanceMeta: { "marathon-pe": { at: "2026-08-17T10:00:00.000Z", pairs: 1, version: 1 }, hub2: { at: "2026-08-17T10:00:00.000Z", pairs: 1, version: 1 } },
+  };
+  assert.deepEqual(_rawResolveTarget(ctx, "marathon-pe", "scent1", "_"),
+    { target: 8, minQty: 4, reorderPoint: 3, source: "category_policy" });
+  assert.deepEqual(_rawResolveTarget(ctx, "hub2", "scent1", "_"),
+    { target: 10, minQty: 5, reorderPoint: 5, source: "category_policy" });
+});
+
+test("CATEGORY GATE: introduce:true on the destination entry is the deliberate override", () => {
+  // MUTATION: delete the categoryPolicy branch of introducedAt() and this fails —
+  // and with it the ability to introduce a category to a shop at all, which is the
+  // capability the gate would otherwise remove. This is the test that must break
+  // when the OPT-IN is deleted, distinct from the one above that breaks when the
+  // GATE is deleted.
+  const noProv = { provenance: {}, provenanceMeta: { hub2: { at: "2026-08-17T10:00:00.000Z", pairs: 0, version: 1 } } };
+  const stock = { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} };
+
+  const gated = { targets: {}, config: CAT_CONFIG, products: CAT_PRODUCTS, stock, ...noProv };
+  assert.equal(_rawResolveTarget(gated, "hub2", "scent1", "_"), null, "without the key: refused");
+
+  const introduced = { targets: {}, config: CAT_CONFIG_INTRO, products: CAT_PRODUCTS, stock, ...noProv };
+  assert.equal(_rawResolveTarget(introduced, "hub2", "scent1", "_").target, 10, "with the key: governs");
+  assert.equal(_rawResolveTarget(introduced, "hub2", "scent1", "_").source, "category_policy");
+});
+
+test("CATEGORY GATE: introduce is per DESTINATION, not per category", () => {
+  // Only hub2 is opted in. marathon-pe, in the same category with the same absent
+  // history, stays refused. MUTATION: hoist the opt-in to the category level and
+  // this fails.
+  const cfg = {
+    ...CAT_CONFIG,
+    categoryPolicy: {
+      perfumes: {
+        "marathon-pe": { target: 8, reorderPoint: 3, minQty: 4 },
+        hub2: { target: 10, reorderPoint: 5, minQty: 5, introduce: true },
+      },
+    },
+  };
+  const ctx = {
+    targets: {}, config: cfg, products: CAT_PRODUCTS,
+    stock: { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
+    provenance: {}, provenanceMeta: { hub2: { at: "x2026", pairs: 0, version: 1 }, "marathon-pe": { at: "x2026", pairs: 0, version: 1 } },
+  };
+  assert.equal(_rawResolveTarget(ctx, "hub2", "scent1", "_").target, 10);
+  assert.equal(_rawResolveTarget(ctx, "marathon-pe", "scent1", "_"), null);
+});
+
+test("CATEGORY GATE: an explicit row still wins over the gate — a human already decided", () => {
+  // The gate sits in the category branch, one below explicit rows. This is why 88
+  // of the 176 measured pairs change nothing: their row answers first.
+  const ctx = {
+    targets: { hub2: { scent1: { _: { target: 4, minQty: 2 } } } },
+    config: CAT_CONFIG, products: CAT_PRODUCTS,
+    stock: { central: { scent1: { _: cell(48) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
+    provenance: {}, provenanceMeta: {},
+  };
+  const t = _rawResolveTarget(ctx, "hub2", "scent1", "_");
+  assert.equal(t.source, "explicit");
+  assert.equal(t.target, 4);
+});
+
+test("CATEGORY GATE: a refused pair contributes no managed cell, an introduced one does", () => {
+  // The Inventory Health score divides belowTarget by managedCells, so what counts
+  // as managed is not cosmetic.
+  const shared = {
+    nowMs: NOW, products: CAT_PRODUCTS, targets: {},
+    stock: { central: { scent1: { _: cell(48) }, beanie1: { _: cell(20) } }, hub2: {}, "marathon-pe": {}, trophy: {} },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+    provenance: {}, provenanceMeta: { hub2: { at: "x2026", pairs: 0, version: 1 }, "marathon-pe": { at: "x2026", pairs: 0, version: 1 }, trophy: { at: "x2026", pairs: 0, version: 1 } },
+  };
+  const gated = _rawComputeRefillPlan({ ...shared, config: CAT_CONFIG });
+  const introduced = _rawComputeRefillPlan({ ...shared, config: CAT_CONFIG_INTRO });
+  assert.equal(gated.stats.managedCells, 0, "a refused pair contributes no managed cell");
+  assert.ok(introduced.stats.managedCells > 0, "an introduced pair does");
+});
+
+test("CATEGORY GATE: a refused pair becomes VISIBLE as needing a decision", () => {
+  // THE INVARIANT: gating the target must not make stock disappear. A pair the gate
+  // refuses is no longer armed, so if it were also absent from the decision queues
+  // it would be invisible in both directions — worse than either failure alone.
+  //
+  // What guarantees it is the pre-existing BLIND-SPOT GUARD (PR #277), not a second
+  // carriage check: the guard walks managed products and reports any size that is
+  // not DECIDED, and a refused pair decides nothing. Measured, a carriage gate on
+  // `managedHere` changes this output not at all — the same
+  // `{ loc, pid, units, noStandard: true }` is emitted either way, via a different
+  // branch. So the invariant is pinned HERE, to the observable outcome, and the
+  // redundant gate was removed rather than left in place untestable.
+  // The pair HOLDS UNITS. That is load-bearing: the decision queues are
+  // unit-driven (`units > 0`), so a zero-quantity husk was never in them and
+  // gating it changes nothing there. The shape that matters is the one the
+  // provenance study found 2 live examples of — real units at a shop with no
+  // stocking history behind them, because they arrived by a return or a
+  // correction. Those are the pairs that must surface for a human.
+  // beanie1, not scent1: these queue loops open with
+  // `if (!isClothing(products?.[pid])) continue;`, and the live perfume record
+  // carries NO productType (that is the real shape — see CAT_PRODUCTS). So perfumes
+  // never reach these queues at all and could not demonstrate anything here. A
+  // caps-beanies record is productType "clothing" and does.
+  const shared = {
+    nowMs: NOW, products: { beanie1: CAT_PRODUCTS.beanie1 }, targets: {},
+    stock: { central: {}, hub2: { beanie1: { _: cell(5) } }, "marathon-pe": {}, trophy: {} },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+    provenance: {}, provenanceMeta: { hub2: { at: "x2026", pairs: 0, version: 1 }, "marathon-pe": { at: "x2026", pairs: 0, version: 1 }, trophy: { at: "x2026", pairs: 0, version: 1 } },
+  };
+  const gated = _rawComputeRefillPlan({ ...shared, config: CAT_CONFIG });
+  const queued = [...(gated.exceptions.noTarget.items || []), ...(gated.exceptions.unintroduced.items || [])];
+  assert.ok(queued.some((x) => (x.pid || x.productId) === "beanie1"),
+    "a pair the gate refuses must surface for a human decision, not vanish");
+
+  // …and once introduced, it leaves the queue and is managed again.
+  const introduced = _rawComputeRefillPlan({ ...shared, config: CAT_CONFIG_INTRO });
+  const stillQueued = [...(introduced.exceptions.noTarget.items || []), ...(introduced.exceptions.unintroduced.items || [])];
+  assert.ok(!stillQueued.some((x) => (x.pid || x.productId) === "beanie1"),
+    "introducing it takes it out of the decision queue");
+});
+
 test("category policy per-size mode REFUSES the '_' sentinel — a data error falls through, on both sides", () => {
   // A per-size product declaring one-size is a record error; answering for it
   // would put a one-size target on a sized product. (CodeRabbit, PR #352.)
   const products = { ...CAT_PRODUCTS, fittedOdd: { name: "Odd fitted", productType: "clothing", categoryKey: "fitted-caps", sizes: ["_", "M"] } };
-  const ctx = { targets: {}, config: CAT_CONFIG, products, stock: { central: { fittedOdd: { _: cell(4), M: cell(2) } }, hub2: {}, "marathon-pe": {}, trophy: {} } };
+  const ctx = { targets: {}, config: CAT_CONFIG_INTRO, products, stock: { central: { fittedOdd: { _: cell(4), M: cell(2) } }, hub2: {}, "marathon-pe": {}, trophy: {} } };
   assert.equal(resolveTarget(ctx, "marathon-pe", "fittedOdd", "_"), null);
   // …while its real letter size still resolves the map.
   assert.equal(resolveTarget(ctx, "marathon-pe", "fittedOdd", "M").target, 2);

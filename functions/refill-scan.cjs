@@ -407,8 +407,38 @@ async function runScan() {
     const stock = Object.fromEntries(stockSnaps);
     const movements = Object.values(movementsSnap.val() || {});
 
+    // ── the provenance index — READ SEPARATELY AND FAIL CLOSED ───────────────
+    // Not folded into the Promise.all above on purpose. A rejected promise in
+    // there aborts the whole run, and "the scan crashed" is a different, louder
+    // failure than "the index was unreadable this cycle" — the second must leave
+    // the engine running so closes, satisfied-withdrawals and reconciliation
+    // still happen, while arming nothing new.
+    //
+    // ON FAILURE THE META STAYS EMPTY. indexReady({}) is false for every
+    // location, so storeCarries answers false everywhere and the engine arms
+    // nothing rule-based this cycle. Explicit /stock_targets rows and
+    // introduce:true opt-ins are unaffected — they never consult the index.
+    // There is deliberately NO fallback to cell-existence: that fallback is the
+    // 2026-08-17 bug, and reverting to it on a bad read would be the worst of
+    // both worlds — the fix appears deployed and behaves as if it were not.
+    let provenance = {}, provenanceMeta = {};
+    try {
+      const [metaSnap, ...provSnaps] = await Promise.all([
+        db.ref("stock_provenance/_meta").once("value"),
+        ...locs.map((l) => db.ref(`stock_provenance/${l}`).once("value").then((s) => [l, s.val() || {}])),
+      ]);
+      provenanceMeta = metaSnap.val() || {};
+      provenance = Object.fromEntries(provSnaps);
+    } catch (e) {
+      // Loud, and not swallowed: this lands on the run record and in the logs.
+      counts.errors.push(`PROVENANCE INDEX UNREADABLE — ${String(e?.message || e)} — arming nothing rule-based this cycle`);
+      console.error("[refillHealthScan] /stock_provenance read failed — failing closed", e);
+      provenance = {}; provenanceMeta = {};
+    }
+
     const plan = engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines,
+      provenance, provenanceMeta,
     });
     counts.errors.push(...plan.errors);
 

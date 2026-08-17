@@ -321,6 +321,11 @@ export default function HealthView({ products = [], onExit }) {
   const count = (k) => ex[k]?.count || 0;
   const lastRun = runs[0];
 
+  // The provenance index is what licenses the engine to arm a destination
+  // (functions/lib/provenance-index.cjs). When its readiness sentinel is missing
+  // the engine arms NOTHING there — correct, but indistinguishable from "this shop
+  // needs nothing" unless it is said out loud. This is where it gets said.
+  const provUnready = ex.stats?.provenanceIndex?.unreadyDests || [];
   const managed = ex.stats?.managedCells || 0;
   const score = managed ? Math.max(0, Math.round(100 * (1 - count("belowTarget") / managed))) : null;
   const scoreTone = score == null ? GRAY : score >= 80 ? GREEN : score >= 50 ? AMBER : RED;
@@ -693,6 +698,28 @@ export default function HealthView({ products = [], onExit }) {
       <div style={{ padding: "4px 12px 40px" }}>
         {detail || (
           <>
+            {/* Provenance index unready — the engine is arming NOTHING at these
+                locations. Placed ABOVE the receiving-session row and styled RED
+                because a silently quiet engine is the failure mode the fail-closed
+                design risks, and the whole point is that it must not be silent. */}
+            {provUnready.length > 0 && (
+              <div style={{ ...GLASS, padding: "11px 14px", marginBottom: 12, border: "1px solid rgba(220,38,38,.55)" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: RED }}>
+                  Refill paused — stock history index not ready
+                </div>
+                <div style={{ color: GRAY, fontSize: 11, marginTop: 3, lineHeight: 1.45 }}>
+                  No automatic refills will be raised for{" "}
+                  <b style={{ color: "#fff" }}>{provUnready.map(locLabel).join(", ")}</b>.
+                  The engine decides whether a shop stocks a line from its recorded sales and
+                  deliveries, and that record has not been built for {provUnready.length === 1 ? "this shop" : "these shops"} yet.
+                  Explicit targets and lines marked “introduce” are unaffected.
+                </div>
+                <div style={{ color: GRAY, fontSize: 10.5, marginTop: 5, fontFamily: "monospace" }}>
+                  fix: node scripts/backfill-stock-provenance.mjs --execute
+                </div>
+              </div>
+            )}
+
             {/* Receiving session — inventory SETUP mode: engine fully paused */}
             <div style={{ ...GLASS, padding: "11px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, border: session?.active ? "1px solid rgba(251,191,36,.45)" : undefined }}>
               <div>
