@@ -31,10 +31,19 @@
 // We retry any failure a bounded number of times; a real permission error simply
 // exhausts the retries and is reported.
 
-import { ref, child, get, update, push } from "firebase/database";
+import { ref, child, get, update, push, increment } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { stockCellPath } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
+// The provenance classifier — the SAME module the backfill uses, so a movement is
+// classified identically whether it is being written now or replayed from history.
+import { classifyMovement, SALE, STOCKING, UNSTOCK } from "./provenanceClass";
+// The index root. DUPLICATED, not imported: the canonical declaration is
+// functions/lib/provenance-index.cjs, which is CommonJS in the functions package and
+// has no business being pulled into the browser bundle. The two strings must match
+// or this writes somewhere the engine never reads, so they are pinned against each
+// other by functions/test/provenance-index.test.cjs, which reads both files.
+const PROVENANCE_ROOT = "stock_provenance";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -182,6 +191,43 @@ export async function applyMovement(movement, opts = {}) {
       updates[`${c.path}/updatedAt`] = now;
       updates[`${c.path}/updatedBy`] = user.uid;
       if (movement.cellState) updates[`${c.path}/state`] = movement.cellState;
+    }
+
+    // ── PROVENANCE INDEX — maintained forward, in THIS atomic update ──────────
+    // The refill engine no longer asks "does a cell exist here" (a customer
+    // collection routed through a shop created one and armed its whole size run —
+    // 2026-08-17). It asks whether the location has ever SOLD the product or ever
+    // received it via a stocking-class movement. That is a fold over the entire
+    // ledger, far too expensive to recompute on each 15-minute scan, so it is
+    // materialised at /stock_provenance and kept current from right here.
+    //
+    // IN THE SAME update() ON PURPOSE. If the counters were written separately they
+    // could diverge from the movement that justified them — a failed second write
+    // would leave a shop's history missing a delivery it actually received, and the
+    // engine would stop replenishing a line it genuinely stocks. One atomic update
+    // means the index cannot disagree with the ledger.
+    //
+    // increment(), not read-modify-write: the value is resolved server-side, so two
+    // devices landing a movement in the same instant both count. And because the
+    // idempotency check above returns early when the movement id already exists, a
+    // retry or an offline re-sync can never double-count.
+    //
+    // ADDITIVE ONLY. Nothing above changes: /stock cells and the ledger record are
+    // written exactly as before, and this function's return contract is untouched.
+    // A movement that proves nothing (a customer collection, an adjustment, a
+    // return, any leg into in_transit) adds no path at all.
+    //
+    // NOTE ON THE SALE LEG: this covers sales that flow through THIS app
+    // (offlineQueue.drainQueue → applyMovement). The POS app is a separate repo with
+    // its own writer, so a till sale there does not increment `s`. That is benign —
+    // a shop can only sell what a stocking movement delivered, and `k` is already
+    // positive by then — and the backfill is the reconciliation if it ever matters.
+    const prov = classifyMovement(mv);
+    if (prov.loc) {
+      const base = `${PROVENANCE_ROOT}/${prov.loc}/${movement.productId}`;
+      if (prov.cls === SALE) updates[`${base}/s`] = increment(1);
+      else if (prov.cls === STOCKING) updates[`${base}/k`] = increment(prov.qty);
+      else if (prov.cls === UNSTOCK) updates[`${base}/u`] = increment(prov.qty);
     }
 
     try {

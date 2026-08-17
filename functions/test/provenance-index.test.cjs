@@ -91,6 +91,27 @@ test("toRecord omits zeroes — the stored shape is what the bandwidth note clai
   assert.strictEqual(idx.carriesByIndex(idx.toRecord({ sold: 0, stockedUnits: 4, unstockedUnits: 4 })), false);
 });
 
+test("applyMovement writes to the SAME root the engine reads", () => {
+  // applyMovement.js duplicates the root string rather than importing this CommonJS
+  // module into the browser bundle. If the two ever disagree, the app maintains an
+  // index nobody reads and the engine reads one nobody maintains — a silent, total
+  // failure with no error anywhere. So both declarations are read and compared.
+  const app = readFileSync(path.join(__dirname, "../../src/components/stock/applyMovement.js"), "utf8");
+  const m = app.match(/const PROVENANCE_ROOT = "([^"]+)";/);
+  assert.ok(m, "applyMovement.js must declare PROVENANCE_ROOT as a string literal");
+  assert.strictEqual(m[1], idx.PROVENANCE_ROOT, "applyMovement and the engine disagree about the index root");
+  // …and it must actually be used to build the write paths, not merely declared.
+  assert.match(app, /\$\{PROVENANCE_ROOT\}\/\$\{prov\.loc\}\/\$\{movement\.productId\}/);
+  // The three counters, and only those three (the rules reject any fourth key).
+  for (const k of ["s", "k", "u"]) {
+    assert.ok(app.includes("`${base}/" + k + "`"), `applyMovement must maintain the '${k}' counter`);
+  }
+  // Written with increment(), never a read-modify-write: two devices landing a
+  // movement in the same instant must both count.
+  assert.match(app, /= increment\(1\);/);
+  assert.match(app, /= increment\(prov\.qty\);/);
+});
+
 test("paths are stable — the rules in PROVENANCE-RULES.md are written against these", () => {
   assert.strictEqual(idx.PROVENANCE_ROOT, "stock_provenance");
   assert.strictEqual(idx.locPath("marathon-pe"), "stock_provenance/marathon-pe");
