@@ -850,7 +850,30 @@ function computeRefillPlan(snapshot) {
         // the warehouse deliver a surplus.
         const t = unresolvedOurs ? resolveTarget(ctx, dest, pid, size) : null;
         const otherInbound = Math.max((inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) - (num(entry.qty) || 1), 0);
-        const needGone = unresolvedOurs && (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0);
+        // ── WITHDRAWAL NEEDS A TRUSTWORTHY INDEX (CodeRabbit, PR #376) ────────
+        // Failing closed is right for ARMING and catastrophic for WITHDRAWING. An
+        // unready /stock_provenance makes resolveTarget return null for EVERY
+        // rule-managed and category-managed cell, so an unguarded `!t` would read
+        // as "nobody needs this any more" and cancel the entire live rule-managed
+        // queue at every destination in ONE scan — orders deleted, locks dropped —
+        // on nothing worse than a transient read failure. Reproduced before fixing:
+        // one healthy open request at a shop with 12 recorded sales was cancelled
+        // `no_longer_needed` and its order deleted, purely because provenanceMeta
+        // arrived empty.
+        //
+        // So the `!t` branch — and only that branch — requires a ready index. The
+        // other two withdrawal reasons are kept exactly as they were, because
+        // neither depends on carriage:
+        //   • t.target <= 0            an explicit 0 row is a human's "excluded";
+        //                              explicit rows never consult the index
+        //   • target met by inbound    arithmetic on numbers we already trust
+        // The result is that an unready index pauses new demand and touches no
+        // existing line, which is the conservative reading in both directions.
+        const provOk = provenanceReady[dest] === true;
+        const needGone = unresolvedOurs && (
+          (!t && provOk) ||
+          (!!t && (t.target <= 0 || t.target - destHave - otherInbound <= 0))
+        );
         // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
         // anywhere upstream → withdrawn; staff never see unpickable requests.
         const unfillable = unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0;

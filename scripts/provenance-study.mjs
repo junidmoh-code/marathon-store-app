@@ -180,8 +180,14 @@ say(`- records classified COLLECTION: **${collection.length}**`);
 say(`- of those, NOT carrying the \`disp_\` movement-id prefix: **${notDisp.length}**${notDisp.length ? ` — ${notDisp.slice(0, 5).map(([i]) => `\`${i}\``).join(", ")}` : ""}`);
 say(`- records with the \`disp_\` prefix NOT classified COLLECTION: **${dispNotCollection.length}**${dispNotCollection.length ? ` — ${dispNotCollection.slice(0, 5).map(([i, m]) => `\`${i}\` (${m.type}/${m.reason})`).join(", ")}` : ""}`);
 say();
+// Agreement is measured INSIDE the COLLECTION set. `dispNotCollection` is disjoint
+// from it — those records were never classified COLLECTION — so subtracting it here
+// would understate the figure and could even go negative. It is reported as its own
+// disagreement direction above and in the verdict. (CodeRabbit, PR #376.)
 say(`Two independent signals — the structural \`link\` shape and the \`disp_\` id convention — agree on`);
-say(`${collection.length - notDisp.length - dispNotCollection.length} of ${collection.length} records. Full agreement means the class is not resting on a naming habit.`);
+say(`${collection.length - notDisp.length} of ${collection.length} records classified COLLECTION, with`);
+say(`${dispNotCollection.length} record(s) carrying the \`disp_\` prefix that were classified otherwise.`);
+say(`Both directions at zero means the class is not resting on a naming habit.`);
 say();
 
 // ── 3. THE UNIVERSE, RECLASSIFIED ────────────────────────────────────────────

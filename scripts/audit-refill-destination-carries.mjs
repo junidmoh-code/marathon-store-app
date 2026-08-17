@@ -306,13 +306,20 @@ for (const pid of PIDS) {
   if (orderIds.size) {
     say(`### Orders referenced by those locks`);
     say();
-    for (const [oid, o] of Object.entries(orders)) {
-      const num = o?.orderNumber != null ? String(o.orderNumber) : null;
-      const hit = [...orderIds].some((x) => String(x).startsWith(String(num))) && String(o?.type || "").length >= 0;
-      if (!hit || !num) continue;
+    // The lock's orderId is the /orders KEY (e.g. "R009-10"), so match it directly.
+    // The previous version compared it to `orderNumber` with startsWith and ANDed in
+    // `String(o?.type || "").length >= 0`, which is true for every possible value and
+    // filtered nothing. Prefix matching also made order number "1" match lock id
+    // "10…", printing an unrelated order as the one the lock points at — exactly the
+    // wrong-record class of error this whole audit exists to avoid. (CodeRabbit,
+    // PR #376.) Line records here are per-order-line, so a matched order's own pid
+    // is checked as well as any nested items.
+    for (const oid of [...orderIds].sort()) {
+      const o = orders[oid];
+      if (!o) { say(`- \`/orders/${oid}\` — **referenced by a lock but no longer present**`); continue; }
       const items = (o.items || o.lines || []).filter((it) => it?.productId === pid || it?.pid === pid);
-      if (!items.length) continue;
-      say(`- \`/orders/${oid}\` number=\`${num}\` type=\`${o.type ?? "—"}\` dest=\`${o.destShop ?? o.store ?? o.requestingLocation ?? "—"}\` createdAt=\`${o.createdAt ?? "—"}\` status=\`${o.status ?? "—"}\``);
+      if (o.productId !== pid && !items.length) continue;
+      say(`- \`/orders/${oid}\` productId=\`${o.productId ?? "—"}\` size=\`${o.size ?? "—"}\` qty=\`${o.qty ?? "—"}\` dest=\`${o.destShop ?? "—"}\` createdAt=\`${o.createdAt ?? "—"}\` status=\`${o.status ?? "—"}\` autoRefill=\`${o.autoRefill === true}\` gen=\`${o.clothingRefillGen ?? "—"}\``);
       for (const it of items) say(`  - line: \`${JSON.stringify(it)}\``);
     }
     say();

@@ -17,7 +17,16 @@
 //   • re-running after a partial/interrupted run → completes it, no double-count
 //   • re-running after forward maintenance (Commit 5) has been incrementing →
 //     replaces the incremented values with the recomputed ones, which are
-//     authoritative. This is the repair path if maintenance ever drifts.
+//     authoritative.
+//
+// ⚠ THE LIMIT OF THAT CLAIM (CodeRabbit, PR #376). A re-run repairs any pair the
+// fold still PRODUCES. It cannot repair one it no longer produces, because the
+// apply step writes paths and never deletes them — an orphaned record (a pair whose
+// evidence was reclassified away, or one written by an older index version) survives
+// untouched and keeps the shop carrying the line. So this is a repair path for
+// DRIFTED counters, not for ORPHANED records. The run reports the difference against
+// the live index rather than silently leaving it: clearing an orphan is a delete, and
+// deletes here get read and decided one at a time, not swept.
 //
 // ORDER OF WRITES IS LOAD-BEARING. Pairs are written FIRST, the readiness sentinel
 // LAST, per location. `indexReady()` gates arming on the sentinel, so a run that
@@ -80,6 +89,10 @@ async function readPaged(path, pageSize = 3000) {
 // The ledger is the only expensive read; a local cache may stand in for a dry run,
 // but NEVER for --execute. Writing live state from a snapshot of unknown age is how
 // a backfill silently reverts an hour of trade.
+// Stamped BEFORE the ledger read so the tail merge at the end can find everything
+// that landed while this script was running.
+const readStartedAt = new Date().toISOString();
+
 let movements, stock, products, config;
 if (DIR && existsSync(`${DIR}/movements.json`) && !EXECUTE) {
   const j = (f) => JSON.parse(readFileSync(`${DIR}/${f}.json`, "utf8"));
@@ -138,6 +151,45 @@ for (const loc of LOCS) {
 }
 say();
 say(`Total paths to write: **${Object.keys(payload).length}** pairs + ${LOCS.length} sentinels.`);
+say();
+
+// ── ORPHANS — records the live index holds that this run does NOT produce ─────
+// The apply step writes paths and never deletes them, so anything already at
+// /stock_provenance that the fold no longer emits would survive a re-run and keep a
+// shop carrying a line on evidence that no longer exists. Reported, never swept: a
+// delete here changes what the engine will refill, so it is a decision.
+const liveIndex = (await db.ref(idx.PROVENANCE_ROOT).once("value")).val() || {};
+const orphanPaths = [];
+for (const loc of Object.keys(liveIndex)) {
+  if (loc === "_meta") continue;
+  for (const pid of Object.keys(liveIndex[loc] || {})) {
+    const path = idx.pairPath(loc, pid);
+    if (payload[path]) continue;                       // recomputed — will be overwritten
+    orphanPaths.push({ loc, pid, path, live: liveIndex[loc][pid], indexed: LOCS.includes(loc) });
+  }
+}
+say(`## Orphans — live records this run does not reproduce`);
+say();
+if (!Object.keys(liveIndex).length) {
+  say(`_the index is empty — this is the first run, so there is nothing to orphan_`);
+} else if (!orphanPaths.length) {
+  say(`_none: every live record is reproduced by this run_`);
+} else {
+  say(`**${orphanPaths.length}** record(s). Each one keeps its shop carrying the line and this run will`);
+  say(`NOT change it. Review, then clear individually if the evidence really is gone.`);
+  say();
+  say(`| location | pid | name (display only) | live record | still carries | location indexed here |`);
+  say(`|---|---|---|---|---|---|`);
+  for (const o of orphanPaths.slice(0, 80)) {
+    say(`| \`${o.loc}\` | \`${o.pid}\` | ${JSON.stringify(products?.[o.pid]?.name ?? null)} | \`${JSON.stringify(o.live)}\` | ${idx.carriesByIndex(o.live)} | ${o.indexed ? "yes" : "**no**"} |`);
+  }
+  if (orphanPaths.length > 80) say(`| … | | | | | _${orphanPaths.length - 80} more_ |`);
+  say();
+  say("```bash");
+  say(`# to clear one, after deciding it should go:`);
+  for (const o of orphanPaths.slice(0, 3)) say(`#   firebase database:remove /${o.path}`);
+  say("```");
+}
 say();
 
 // ── the match table: before → after against the CURRENT gate ─────────────────
@@ -267,6 +319,44 @@ if (!EXECUTE) {
   }
   say();
   say(`**${written} pair records + ${LOCS.length} sentinels written.**`);
+
+  // ── THE TAIL MERGE (CodeRabbit, PR #376) ───────────────────────────────────
+  // The counters above were SET from a ledger read taken before the writes began.
+  // If forward maintenance is live, a movement landing in that gap incremented a
+  // counter which the set has just overwritten — the movement's contribution is
+  // lost, and a pair that was genuinely stocked can be written back to a
+  // non-carrying state.
+  //
+  // Deploying hosting AFTER this run avoids the gap entirely (see
+  // PROVENANCE-RULES.md), but relying on operator sequencing for correctness is
+  // not the same as being correct. So the tail is re-read and re-applied as
+  // INCREMENTS, which is what the lost writes would have been.
+  say();
+  say(`### Tail merge`);
+  say();
+  const tail = Object.values(await readPaged("/stock_movements"))
+    .filter((m) => m && String(m.appliedAt || m.ts || "") > readStartedAt);
+  say(`${tail.length} movement(s) landed after the ledger read at \`${readStartedAt}\`.`);
+  if (tail.length) {
+    const tailProv = foldProvenance(tail);
+    const upd = {};
+    for (const [key, e] of tailProv.entries()) {
+      const [loc, pid] = key.split("|");
+      if (!LOCS.includes(loc)) continue;
+      if (e.sold > 0) upd[`${idx.pairPath(loc, pid)}/s`] = admin.database.ServerValue.increment(e.sold);
+      if (e.stockedUnits > 0) upd[`${idx.pairPath(loc, pid)}/k`] = admin.database.ServerValue.increment(e.stockedUnits);
+      if (e.unstockedUnits > 0) upd[`${idx.pairPath(loc, pid)}/u`] = admin.database.ServerValue.increment(e.unstockedUnits);
+    }
+    if (Object.keys(upd).length) {
+      await db.ref().update(upd);
+      say(`Merged ${Object.keys(upd).length} counter increment(s) across ${tailProv.size} pair(s).`);
+    } else {
+      say(`None of them affect a counter at an indexed location.`);
+    }
+    say();
+    say(`⚠ A movement landing during the tail merge itself is still possible. Re-running this script`);
+    say(`is always safe and always converges — that is what the SET semantics buy.`);
+  }
 }
 say();
 

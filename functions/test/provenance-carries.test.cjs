@@ -164,6 +164,79 @@ test("FAIL CLOSED: an omitted snapshot field is not a friendly default", () => {
   assert.equal(plan.stats.provenanceIndex.unreadyDests.length, 3);
 });
 
+// ═══ FAIL CLOSED MUST NOT MEAN "CANCEL EVERYTHING" ═══════════════════════════
+// CodeRabbit, PR #376. Failing closed is right for arming and catastrophic for
+// withdrawing: an unready index makes resolveTarget return null for every
+// rule-managed cell, and an unguarded `!t` reads that as "nobody needs this any
+// more". Reproduced before the fix — one healthy request at a shop with 12 recorded
+// sales was cancelled and its order deleted because provenanceMeta arrived empty.
+
+// A live, healthy rule-managed request at a shop that genuinely sells the line.
+const HEALTHY = {
+  targets: {},
+  stock: { "marathon-pe": { [NAVY]: { M: cell(0) } }, hub2: { [NAVY]: { M: cell(9) } }, trophy: {}, central: {} },
+  openIndex: { "marathon-pe": { [NAVY]: { M: { refillId: "r1", orderId: "R001-1", orderCreatedAt: "2026-08-17T08:00:00.000Z", qty: 2, source: "hub2", createdAt: "2026-08-17T08:00:00.000Z" } } } },
+  refillRequests: { r1: { status: "open", requestingLocation: "marathon-pe", productId: NAVY, size: "M", qty: 2 } },
+  orders: { "R001-1": { customerName: "Shop Refill", destShop: "marathon-pe", productId: NAVY, size: "M", qty: 2, createdAt: "2026-08-17T08:00:00.000Z", autoRefill: true } },
+  provenance: { "marathon-pe": { [NAVY]: { s: 12 } }, hub2: { [NAVY]: { k: 40 } } },
+};
+
+test("UNREADY INDEX: a live rule-managed request is NOT cancelled", () => {
+  // MUTATION: drop the `provOk` guard from needGone and this fails — the request is
+  // cancelled `no_longer_needed` and its order deleted, on a transient read failure.
+  const plan = computeRefillPlan(snap({ ...HEALTHY, provenanceMeta: {} }));
+  assert.deepEqual(plan.closes || [], [], "an unready index must withdraw NOTHING");
+  // …while still arming nothing new, which is the half that was already right.
+  assert.equal(plan.intents.length, 0);
+  assert.ok(plan.errors.some((e) => /PROVENANCE INDEX NOT READY/.test(e)));
+});
+
+test("READY INDEX: the same request is still not cancelled — the shop needs it", () => {
+  const plan = computeRefillPlan(snap({ ...HEALTHY, provenanceMeta: ready("marathon-pe", "hub2", "trophy", "central") }));
+  assert.deepEqual(plan.closes || [], []);
+});
+
+test("READY INDEX: a request whose carriage is genuinely gone IS withdrawn", () => {
+  // The withdrawal must still work on evidence we trust — otherwise the guard above
+  // would have disabled the whole point of the change.
+  const plan = computeRefillPlan(snap({
+    ...HEALTHY,
+    provenance: { "marathon-pe": { [NAVY]: { k: 4, u: 4 } }, hub2: { [NAVY]: { k: 40 } } },
+    provenanceMeta: ready("marathon-pe", "hub2", "trophy", "central"),
+  }));
+  const c = (plan.closes || []).find((x) => x.dest === "marathon-pe" && x.pid === NAVY);
+  assert.ok(c, "a husk-armed request is withdrawn when the index is trustworthy");
+  assert.equal(c.cancelReason, "no_longer_needed");
+});
+
+test("UNREADY INDEX: an EXPLICIT target 0 still withdraws — it never consulted the index", () => {
+  // The guard is scoped to the `!t` branch only. An explicit row is a human's
+  // "deliberately excluded" and must keep working whatever the index is doing.
+  // MUTATION: gate the whole needGone on provOk and this fails.
+  const plan = computeRefillPlan(snap({
+    ...HEALTHY,
+    targets: { "marathon-pe": { [NAVY]: { M: { target: 0, minQty: 0 } } } },
+    provenanceMeta: {},
+  }));
+  const c = (plan.closes || []).find((x) => x.dest === "marathon-pe" && x.pid === NAVY);
+  assert.ok(c, "an explicit 0 withdraws regardless of index readiness");
+  assert.equal(c.cancelReason, "no_longer_needed");
+});
+
+test("UNREADY INDEX: a request already satisfied by stock on hand still withdraws", () => {
+  // The target-met branch is arithmetic on numbers we already trust, so it is not
+  // gated either. Here the shop holds 5 against a run target of 2.
+  const plan = computeRefillPlan(snap({
+    ...HEALTHY,
+    targets: { "marathon-pe": { [NAVY]: { M: { target: 2, minQty: 1 } } } },
+    stock: { ...HEALTHY.stock, "marathon-pe": { [NAVY]: { M: cell(5) } } },
+    provenanceMeta: {},
+  }));
+  const c = (plan.closes || []).find((x) => x.dest === "marathon-pe" && x.pid === NAVY);
+  assert.ok(c, "a satisfied request withdraws regardless of index readiness");
+  assert.equal(c.cancelReason, "no_longer_needed");
+});
+
 // ═══ THE introduce: true OPT-IN ══════════════════════════════════════════════
 
 test("INTRODUCE via a target row: opts one product into one destination", () => {

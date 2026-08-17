@@ -12,13 +12,29 @@ console-managed** — nothing here edits it, and nobody should run
 2. **Run the backfill** — `node scripts/backfill-stock-provenance.mjs --execute`.
    It writes pair records first and the readiness sentinel last, per location.
 3. **Deploy the functions** — `firebase deploy --only functions:refillHealthScan`.
+4. **Deploy hosting** — `firebase deploy --only hosting:marathon-club`.
 
-Doing 3 before 2 is safe but pointless: the engine refuses to arm a location whose
-sentinel is missing, so every location would go quiet until the backfill lands. Doing
-either before 1 fails: the backfill uses the Admin SDK and bypasses rules, but the
-**app's** forward maintenance (`applyMovement`) is a client write and would be denied,
-taking every stock write down with it — the whole multi-path update is atomic, so a
-denied provenance leg rejects the movement and the ledger record too.
+**The order is binding in both directions.**
+
+Doing **1 late** fails loudly: the backfill uses the Admin SDK and bypasses rules, but the
+app's forward maintenance (`applyMovement`) is a client write inside the atomic stock
+update, so an unruled path rejects the whole movement — the cell and the ledger record
+along with it. Every stock write in the app would fail.
+
+Doing **2 late** used to be described here as "safe but pointless". **That was wrong**, and
+CodeRabbit caught it on PR #376. An unready index makes `resolveTarget` return null for
+every rule-managed cell, and the engine's `needGone` branch would have read that as
+"nobody needs this any more" — cancelling the entire live rule-managed queue at every
+destination in one scan, orders deleted. The engine is now guarded (the `!t` withdrawal
+branch requires a ready index, `refill-engine.cjs`), so a missing or unreadable index
+pauses new demand and touches nothing existing. Step 2 still belongs before step 3, but
+getting it wrong no longer destroys the queue.
+
+**4 goes last** so the backfill runs while forward maintenance is not yet live. Otherwise
+a movement landing between the ledger read and the counter write is folded into no counter
+and its increment is overwritten by the recomputed value. The backfill also merges the
+ledger tail after writing to close that window, so a re-run is safe either way — but not
+needing the merge is better than relying on it.
 
 ## Where it goes
 
@@ -32,14 +48,16 @@ A new top-level sibling of `"stock"`, inside the existing `"rules"` object.
       },
       "$loc": {
         "$pid": {
-          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
           "s": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && newData.exists()",
             ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() >= (data.exists() ? data.val() : 0)"
           },
           "k": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && newData.exists()",
             ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() >= (data.exists() ? data.val() : 0)"
           },
           "u": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && newData.exists()",
             ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() >= (data.exists() ? data.val() : 0)"
           },
           "$other": {
@@ -64,10 +82,27 @@ was never built. Only the Admin SDK writes it, and only the backfill does that, 
 after the pairs are in. A named child beats the `$loc` wildcard in RTDB rule matching,
 so this denial genuinely shadows the writable branch below — it is not decoration.
 
-**`.write` — the same `stockRole` gate as `/stock`.** The index is maintained inside the
-same atomic `update()` that writes the cell and the ledger record (Commit 5), so anyone
-who may move stock must be able to write it, and nobody else may. Reusing `/stock`'s
-exact condition means there is no second answer to "who may move stock" to keep in sync.
+**`.write` sits on each COUNTER, not on `$pid`, and requires `newData.exists()`.** Both
+halves matter, and the first version of these rules got it wrong (CodeRabbit, PR #376).
+
+`.validate` rules are **skipped entirely when a write is a deletion** — otherwise
+required data could never be removed. So validation cannot stop a delete; only `.write`
+can. And a `.write` grant at `$pid` cascades to every descendant, which would let any
+`stockRole` client issue `set(null)` on `stock_provenance/{loc}/{pid}/k` and erase a
+shop's stocking history. `carriesByIndex()` would then read false and the engine would
+stop replenishing a line the shop genuinely sells — a silent starvation with no error
+anywhere and nothing in the ledger to explain it.
+
+Granting write only on `s`, `k` and `u`, each conditioned on `newData.exists()`, closes
+both: a client may raise a counter and may create the pair by writing one, but cannot
+null a counter and cannot touch the `$pid` node itself (no rule grants it). The Admin
+SDK bypasses all of this, which is what still lets the backfill rewrite or clear a
+record.
+
+The `stockRole` condition is byte-identical to `/stock`'s, so there is no second answer
+to "who may move stock" to keep in sync — the index is maintained inside the same atomic
+`update()` that writes the cell and the ledger record (Commit 5), so exactly the people
+who may move stock must be able to write it.
 
 **Counters validate as monotonic non-negative integers.** `newData.val() >= data.val()`
 is the load-bearing half. Forward maintenance uses `ServerValue.increment(qty)` with a

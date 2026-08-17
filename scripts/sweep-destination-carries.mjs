@@ -23,9 +23,11 @@
 //
 //   TRADES        — the store has sold this pid at least once. Legitimate demand.
 //   STOCKED       — never sold there, but the store currently holds units.
-//   PASS-THROUGH  — never sold there, holds nothing, and every unit that ever
-//                   entered was a customer-order dispatch or a refill fulfil that
-//                   was later undone. The husk-armed set. This is the damage.
+//   PASS-THROUGH  — never sold there, holds nothing, and every REASON that ever
+//                   brought units in is a pass-through reason (a customer-order
+//                   dispatch or a CR fulfil). Membership of the reason set, NOT a net
+//                   of undos — see the ledger-facts block below for why, and for
+//                   which module is authoritative. The husk-armed set.
 //   HUSK          — never sold there, holds nothing, and NO movement ever put a
 //                   positive quantity into the cell at all (created by a
 //                   decrement, a seed, or a state flip).
@@ -103,28 +105,39 @@ const [stock, products, refillRequests, orders, config] = await Promise.all([
 ]);
 
 // ── ledger facts per (loc, pid) ──────────────────────────────────────────────
-// soldAt[loc|pid]      = number of `sold` movements the store recorded
-// posInflow[loc|pid]   = { reason: qty } for every movement that ADDED units there
-// maxAfter[loc|pid]    = highest post-movement quantity seen (0 when never known)
-// undone[loc|pid]      = units returned out again by a clothing_cr_undo
-const soldAt = new Map(), posInflow = new Map(), undone = new Map(), touched = new Set();
+// CodeRabbit, PR #376: this block previously documented a `maxAfter` the script never
+// computed, filled an `undone` map that `classify` never read, and described
+// `inflow` as "movements that ADDED units" when it accumulates every movement naming
+// the location as `to` regardless of sign. Since the 165-pair result rests on this
+// classification, the comments now describe what the code actually does — and the two
+// unused structures are gone rather than left as a claim about behaviour that is not
+// there.
+//
+//   soldAt[loc|pid]  = how many `sold` movements the location recorded
+//   inflowBy[loc|pid] = { reason: summed qty } over every movement naming this
+//                       location as `to`, whatever the sign. Only the SET OF REASON
+//                       KEYS is used below; the sums are carried for the report.
+//
+// Note the deliberate scope limit: this sweep classifies from REASON MEMBERSHIP, not
+// from net units, so a partially-undone fulfil still reads as PASS-THROUGH here. The
+// authoritative predicate — which does net undos — is
+// src/components/stock/provenanceClass.js, and scripts/provenance-study.mjs is what
+// the 165 figure was confirmed against. This sweep is the exploratory pass that
+// found the shape; it is not the arbiter of it.
+const soldAt = new Map(), inflowBy = new Map();
 const bump = (m, k, n = 1) => m.set(k, (m.get(k) || 0) + n);
 
 const scanned = await readPaged("/stock_movements", 3000, (_id, m) => {
   if (!m || !m.productId) return;
   const q = Number(m.qty) || 0;
-  if (m.type === "sold" && m.from) { bump(soldAt, `${m.from}|${m.productId}`, 1); touched.add(`${m.from}|${m.productId}`); }
-  // Positive leg: `to` gains units on received/opening/return/transfer_*/positive adjustment.
+  if (m.type === "sold" && m.from) bump(soldAt, `${m.from}|${m.productId}`, 1);
   if (m.to && m.type !== "sold") {
     const k = `${m.to}|${m.productId}`;
-    touched.add(k);
     const r = m.reason || "(none)";
-    const byReason = posInflow.get(k) || {};
+    const byReason = inflowBy.get(k) || {};
     byReason[r] = (byReason[r] || 0) + q;
-    posInflow.set(k, byReason);
+    inflowBy.set(k, byReason);
   }
-  if (m.from && m.type !== "sold") touched.add(`${m.from}|${m.productId}`);
-  if (m.reason === "clothing_cr_undo" && m.from) bump(undone, `${m.from}|${m.productId}`, q);
 });
 
 // ── classify one (dest, pid) ─────────────────────────────────────────────────
@@ -132,7 +145,7 @@ function classify(dest, pid) {
   const k = `${dest}|${pid}`;
   const held = units(stock?.[dest]?.[pid]);
   const sold = soldAt.get(k) || 0;
-  const inflow = posInflow.get(k) || {};
+  const inflow = inflowBy.get(k) || {};
   const reasons = Object.keys(inflow);
   if (sold > 0) return { cls: "TRADES", held, sold, reasons };
   if (held > 0) return { cls: "STOCKED", held, sold, reasons };
@@ -215,7 +228,7 @@ for (const cls of ["TRADES", "STOCKED", "PASS-THROUGH", "HUSK"]) {
   const meaning = {
     TRADES: "store has sold this pid — legitimate demand",
     STOCKED: "never sold there, but the store holds units now",
-    "PASS-THROUGH": "never sold, holds nothing, every inflow was a dispatch or an undone fulfil",
+    "PASS-THROUGH": "never sold, holds nothing, every inflow REASON is a dispatch or a CR fulfil",
     HUSK: "never sold, holds nothing, no movement ever added units",
   }[cls];
   say(`| **${cls}** | ${meaning} | ${R.length} | ${R.reduce((s, r) => s + r.qty, 0)} | ${C.length} | ${C.reduce((s, r) => s + r.qty, 0)} |`);
