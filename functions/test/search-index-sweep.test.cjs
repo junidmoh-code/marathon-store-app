@@ -106,3 +106,37 @@ test("additions are capped per run and the cap is REPORTED, never silent", async
   assert.strictEqual(out.missing, 5);
   assert.strictEqual(out.capped, true);
 });
+
+test("one indexed document and one orphan is REFUSED, not a 100% wipe", async () => {
+  // The hole CodeRabbit found: `Math.max(1, floor(1 * 0.5))` was 1, so `1 > 1`
+  // was false and the sweep deleted the entire index. Comparing against the
+  // exact fraction (0.5) makes `1 > 0.5` true, and it refuses.
+  const { sweepSearchIndex } = await load();
+  const db = fakeDb(new Set(["p1"]));
+  const out = await sweepSearchIndex(db, fakeApp(["p1"]), {
+    livePids: ["p2"], buildDoc: async () => null, max: 0,
+  });
+  assert.strictEqual(out.refused, "removal ceiling");
+  assert.strictEqual(out.removed, 0);
+  assert.deepStrictEqual(db.removed, []);
+});
+
+test("two indexed, one orphan is EXACTLY the ceiling and still applies", async () => {
+  const { sweepSearchIndex } = await load();
+  const db = fakeDb(new Set(["p1", "p2"]));
+  const out = await sweepSearchIndex(db, fakeApp(["p1", "p2"]), {
+    livePids: ["p1"], buildDoc: async () => null,
+  });
+  assert.strictEqual(out.refused, undefined);
+  assert.deepStrictEqual(db.removed, ["p2"]);
+});
+
+test("three indexed, two orphans is over the ceiling and is refused", async () => {
+  const { sweepSearchIndex } = await load();
+  const db = fakeDb(new Set(["p1", "p2", "p3"]));
+  const out = await sweepSearchIndex(db, fakeApp(["p1", "p2", "p3"]), {
+    livePids: ["p1"], buildDoc: async () => null,
+  });
+  assert.strictEqual(out.refused, "removal ceiling");
+  assert.deepStrictEqual(db.removed, []);
+});

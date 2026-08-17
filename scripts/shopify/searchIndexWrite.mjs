@@ -136,7 +136,18 @@ export async function sweepSearchIndex(db, adminApp, {
   // but badly short (a truncated read, a half-applied migration). Removing most
   // of the index is never a routine outcome, so it needs a human rather than a
   // best guess.
-  const removalLimit = Math.max(1, Math.floor(indexedPids.size * MAX_REMOVAL_FRACTION));
+  // EXACT fraction, no floor and no rounding. `Math.max(1, …)` was the first
+  // attempt and it defeated the ceiling at exactly the sizes that need it most:
+  // with ONE document indexed and one orphan, the limit rounded to 1, `1 > 1`
+  // was false, and the sweep would happily delete 100% of the index — the very
+  // outcome the ceiling exists to prevent. (CodeRabbit, 2026-08-17.)
+  //
+  // The consequence is deliberate: on a one-document index, taking that
+  // document out is refused. Going from 1 to 0 IS the empty-index state the
+  // first floor already treats as suspicious, and a real take-down is handled
+  // by the per-product OFF hook — the sweep is the repair pass, not the
+  // primary path.
+  const removalLimit = indexedPids.size * MAX_REMOVAL_FRACTION;
   if (orphans.length > removalLimit) {
     console.error(
       `  ⚠ search-index sweep REFUSED the removals — ${orphans.length} of ` +
