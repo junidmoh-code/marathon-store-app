@@ -1,10 +1,14 @@
 // ─── COMMIT 2 — BACKFILL /stock_provenance (STAGED; --execute TO APPLY) ───────
 //
-// Materialises the derived carries index from the whole ledger, once, so the engine
-// never has to. Reads /stock_movements end to end (56k+ records — this is the ONE
-// place that cost is paid), classifies every record through the single shared
-// classifier in src/components/stock/provenanceClass.js, folds the result per
-// (loc, pid), and writes:
+// Materialises the derived carries index from the whole ledger so the engine never
+// has to. Reads /stock_movements end to end — TWICE under --execute: once to compute
+// and once for the convergence pass at the end, which is the only exact way to catch
+// movements that landed mid-run (see that block for why no increment-based catch-up
+// works, and why there is no key-range shortcut). This script is where the ledger's
+// full read cost is paid; the engine never pays it.
+//
+// Every record is classified through the single shared classifier in
+// src/components/stock/provenanceClass.js. The fold is per (loc, pid), and writes:
 //
 //   /stock_provenance/{loc}/{pid} = { s, k, u }        ← counters, zeroes omitted
 //   /stock_provenance/_meta/{loc} = { at, pairs, version }   ← readiness sentinel
@@ -91,9 +95,9 @@ async function readPaged(path, pageSize = 3000) {
 // The ledger is the only expensive read; a local cache may stand in for a dry run,
 // but NEVER for --execute. Writing live state from a snapshot of unknown age is how
 // a backfill silently reverts an hour of trade.
-// Reported for the operator's record. NOT used to select the tail merge — that is
-// keyed on movement ids, because a paginated read can include records stamped after
-// it began (see the tail merge below).
+// Reported for the operator's record only. Deliberately NOT used to select anything:
+// the convergence pass at the end re-folds the full ledger rather than trying to
+// identify a tail by time or by id, because neither is answerable (see that block).
 const readStartedAt = new Date().toISOString();
 
 let movements, stock, products, config;
@@ -323,56 +327,98 @@ if (!EXECUTE) {
   say();
   say(`**${written} pair records + ${LOCS.length} sentinels written.**`);
 
-  // ── THE TAIL MERGE (CodeRabbit, PR #376) ───────────────────────────────────
+  // ── THE CONVERGENCE PASS ───────────────────────────────────────────────────
   // The counters above were SET from a ledger read taken before the writes began.
   // If forward maintenance is live, a movement landing in that gap incremented a
-  // counter which the set has just overwritten — the movement's contribution is
-  // lost, and a pair that was genuinely stocked can be written back to a
-  // non-carrying state.
+  // counter that the SET has just overwritten, so its contribution is lost and a
+  // pair that was genuinely stocked can be written back to non-carrying.
   //
-  // Deploying hosting AFTER this run avoids the gap entirely (see
-  // PROVENANCE-RULES.md), but relying on operator sequencing for correctness is
-  // not the same as being correct. So the tail is re-read and re-applied as
-  // INCREMENTS, which is what the lost writes would have been.
-  say();
-  say(`### Tail merge`);
-  say();
-  // MERGED BY MOVEMENT ID, NOT BY TIMESTAMP (CodeRabbit, PR #376). The first version
-  // selected `appliedAt > readStartedAt`, which double-counts: the initial read is
-  // PAGINATED and runs for a while, so a movement written during it can carry a
-  // timestamp after readStartedAt and STILL have been included in that read — its
-  // units are already in the SET value, and incrementing again inflates s/k/u and
-  // can flip a carriage decision on numbers that were correct.
+  // TWO EARLIER ATTEMPTS AT THIS WERE BOTH WRONG, in instructive ways:
   //
-  // The ids from the initial read are the authoritative record of what the SET
-  // already accounts for, so the tail is exactly the ids that were not in it.
-  // Timestamps are not consulted at all.
+  //  1. Re-apply movements with `appliedAt > readStartedAt` as INCREMENTS. Wrong
+  //     because the initial read is paginated and runs for a while: a movement
+  //     written during it can be stamped after readStartedAt and STILL be in that
+  //     read, so its units were already in the SET and incrementing double-counts.
+  //     (CodeRabbit.)
+  //  2. Re-apply movements whose ID was absent from the initial read, as
+  //     INCREMENTS. Selection is now exact with respect to the READ — but that is
+  //     the wrong reference point. Whether an increment survived depends on when
+  //     the movement landed relative to the SET WRITE OF ITS PAIR, not relative to
+  //     the read. A movement landing after its pair's SET but before the re-read
+  //     sees its key has a surviving increment AND gets incremented again. The
+  //     window is the entire write phase. (Kimi, reviewing the delta CodeRabbit
+  //     was rate-limited out of.)
+  //
+  // The lesson is that no INCREMENT-based catch-up can be exact, because "was this
+  // already counted" is not answerable from the ledger alone. So this pass does not
+  // increment. It re-folds the FULL ledger from a fresh read and SETS any pair whose
+  // authoritative value differs from what pass 1 wrote.
+  //
+  // THE RESIDUAL, AND WHY IT IS THE RIGHT ONE. A movement landing between this
+  // re-read and this SET still has its increment overwritten. That is a LOST update,
+  // not a double count — the counter ends up too LOW, which makes the predicate
+  // refuse to arm. Every ambiguity in this engine resolves to "arm nothing" (see the
+  // kill-switch and fail-safe notes in refill-engine.cjs), and a re-run corrects it.
+  // An inflated counter would instead arm a shop that does not trade the line, which
+  // is the entire bug this index exists to fix. Given a choice of residual, take the
+  // one that fails in the direction the system already fails safely in.
+  //
+  // WHY THE FULL LEDGER IS RE-READ. There is no key-range shortcut: movement ids are
+  // NOT uniformly push ids — `disp_018_…`, `cr_R004-2_…`, `sold:…`, `crundo_…` and
+  // `rrf_…` are all hand-built. A new `cr_…` id sorts before an existing `sold:…`
+  // one, so `orderByKey().startAt(lastKey)` would silently miss exactly the
+  // clothing-refill movements this index cares most about. The second read is the
+  // price of that, once, in an owner-run script.
+  say();
+  say(`### Convergence pass`);
+  say();
   const seenIds = new Set(Object.keys(movements));
   const reread = await readPaged("/stock_movements");
-  const tail = Object.entries(reread).filter(([id, m]) => m && !seenIds.has(id)).map(([, m]) => m);
-  say(`Initial read covered ${seenIds.size} movement(s); re-read found ${Object.keys(reread).length}.`);
-  say(`${tail.length} movement(s) are new since the initial read and were not in the SET values.`);
-  if (tail.length) {
-    const tailProv = foldProvenance(tail);
-    const upd = {};
-    for (const [key, e] of tailProv.entries()) {
-      const [loc, pid] = key.split("|");
-      if (!LOCS.includes(loc)) continue;
-      if (e.sold > 0) upd[`${idx.pairPath(loc, pid)}/s`] = admin.database.ServerValue.increment(e.sold);
-      if (e.stockedUnits > 0) upd[`${idx.pairPath(loc, pid)}/k`] = admin.database.ServerValue.increment(e.stockedUnits);
-      if (e.unstockedUnits > 0) upd[`${idx.pairPath(loc, pid)}/u`] = admin.database.ServerValue.increment(e.unstockedUnits);
-    }
-    if (Object.keys(upd).length) {
-      await db.ref().update(upd);
-      say(`Merged ${Object.keys(upd).length} counter increment(s) across ${tailProv.size} pair(s).`);
-    } else {
-      say(`None of them affect a counter at an indexed location.`);
-    }
-    say();
-    say(`⚠ A movement landing during the tail merge itself is still possible, and would be picked up`);
-    say(`by the next run. Re-running this script is always safe and always converges — the SET`);
-    say(`semantics make the recomputation authoritative and the id check keeps the merge exact.`);
+  const newIds = Object.keys(reread).filter((id) => !seenIds.has(id));
+  say(`Initial read covered ${seenIds.size} movement(s); re-read found ${Object.keys(reread).length}, of which ${newIds.length} are new.`);
+
+  const reProv = foldProvenance(Object.values(reread).filter(Boolean));
+  const converge = {};
+  const changed = [];
+  for (const [key, e] of reProv.entries()) {
+    const [loc, pid] = key.split("|");
+    if (!LOCS.includes(loc)) continue;
+    const rec = idx.toRecord(e);
+    if (!Object.keys(rec).length) continue;
+    const path = idx.pairPath(loc, pid);
+    // Compare against what pass 1 wrote, not against live — live may already hold a
+    // forward increment we are about to (correctly) supersede.
+    if (JSON.stringify(rec) === JSON.stringify(payload[path] || null)) continue;
+    converge[path] = rec;
+    changed.push({ loc, pid, from: payload[path] || null, to: rec });
   }
+  if (!changed.length) {
+    say(`No pair's authoritative value changed. Pass 1 is already converged.`);
+  } else {
+    say(`${changed.length} pair(s) differ from what pass 1 wrote — re-SET to the authoritative value:`);
+    say();
+    say(`| location | pid | pass 1 | authoritative |`);
+    say(`|---|---|---|---|`);
+    for (const c of changed.slice(0, 40)) {
+      say(`| \`${c.loc}\` | \`${c.pid}\` | \`${JSON.stringify(c.from)}\` | \`${JSON.stringify(c.to)}\` |`);
+    }
+    if (changed.length > 40) say(`| … | | | _${changed.length - 40} more_ |`);
+    say();
+    const CH = 400;
+    const entries = Object.entries(converge);
+    for (let i = 0; i < entries.length; i += CH) await db.ref().update(Object.fromEntries(entries.slice(i, i + CH)));
+    say(`Applied ${entries.length} corrected pair record(s).`);
+  }
+  // The sentinels were written after pass 1 so each location became armable as early
+  // as possible; refresh their metadata now so `at` and `pairs` describe the state
+  // the run actually left behind rather than an intermediate one.
+  for (const loc of LOCS) {
+    const live = (await db.ref(idx.locPath(loc)).once("value")).val() || {};
+    await db.ref(idx.metaPath(loc)).update({ at: new Date().toISOString(), pairs: Object.keys(live).length, ledgerRecords: Object.keys(reread).length });
+  }
+  say();
+  say(`Sentinels refreshed. A movement landing during this pass leaves its counter LOW, never high —`);
+  say(`the predicate then refuses to arm, which is the safe direction, and a re-run corrects it.`);
 }
 say();
 
