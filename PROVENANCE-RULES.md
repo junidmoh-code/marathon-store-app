@@ -30,11 +30,24 @@ branch requires a ready index, `refill-engine.cjs`), so a missing or unreadable 
 pauses new demand and touches nothing existing. Step 2 still belongs before step 3, but
 getting it wrong no longer destroys the queue.
 
-**4 goes last** so the backfill runs while forward maintenance is not yet live. Otherwise
-a movement landing between the ledger read and the counter write is folded into no counter
-and its increment is overwritten by the recomputed value. The backfill also merges the
-ledger tail after writing to close that window, so a re-run is safe either way — but not
-needing the merge is better than relying on it.
+**4 goes last, and this is now a correctness requirement rather than tidiness.** The
+backfill SETs counters from a ledger read. If the app's forward maintenance is live at the
+same time, some of those increments are overwritten — and that is not a harmless staleness.
+The predicate is `k − u > 0`, so overwriting a concurrent **`u`** increment makes net
+stocking LARGER and can arm a shop that holds nothing: the exact bug this index exists to
+prevent, reintroduced by its own repair path. (Found by CodeRabbit on PR #376, after two
+earlier reconciliation designs had already been rejected for double-counting.)
+
+No write protocol fixes this from the ledger alone, because "was this already counted" is
+not a question the ledger answers. So the backfill **detects** whether it ran alone and
+either claims authority or removes the readiness sentinels, leaving every location unarmed
+for a later quiet run — never a half-trusted index. With hosting deployed last, the app
+carrying the provenance leg is not live during the backfill and the run is quiescent by
+construction. The POS app never writes this node.
+
+If the backfill reports **CONTENDED** and removes the sentinels, nothing is broken: the
+engine arms nothing and withdraws nothing at an unready location. Re-run it in a quiet
+window.
 
 ## Where it goes
 

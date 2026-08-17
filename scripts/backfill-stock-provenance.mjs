@@ -1,11 +1,17 @@
 // ─── COMMIT 2 — BACKFILL /stock_provenance (STAGED; --execute TO APPLY) ───────
 //
 // Materialises the derived carries index from the whole ledger so the engine never
-// has to. Reads /stock_movements end to end — TWICE under --execute: once to compute
-// and once for the convergence pass at the end, which is the only exact way to catch
-// movements that landed mid-run (see that block for why no increment-based catch-up
-// works, and why there is no key-range shortcut). This script is where the ledger's
-// full read cost is paid; the engine never pays it.
+// has to. Reads /stock_movements end to end at least twice under --execute: once to
+// compute, then again to establish that nothing else wrote provenance while it was
+// writing. This script is where the ledger's full read cost is paid; the engine never
+// pays it.
+//
+// AUTHORITATIVE OR UNREADY — there is no third state. A backfill that races another
+// writer cannot be reconciled from the ledger, because "was this already counted" is
+// not a question the ledger answers. So the run either PROVES it was alone and claims
+// authority, or removes the readiness sentinels and leaves every location unarmed for
+// a later quiet run. It never leaves a half-trusted index behind. The reasoning, and
+// the three rejected designs that led here, are in that block.
 //
 // Every record is classified through the single shared classifier in
 // src/components/stock/provenanceClass.js. The fold is per (loc, pid), and writes:
@@ -334,158 +340,156 @@ if (!EXECUTE) {
   say();
   say(`**${written} pair records + ${LOCS.length} sentinels written.**`);
 
-  // ── THE CONVERGENCE PASS ───────────────────────────────────────────────────
-  // The counters above were SET from a ledger read taken before the writes began.
-  // If forward maintenance is live, a movement landing in that gap incremented a
-  // counter that the SET has just overwritten, so its contribution is lost and a
-  // pair that was genuinely stocked can be written back to non-carrying.
+  // ── THE AUTHORITATIVE-OR-UNREADY PASS ──────────────────────────────────────
+  // Pass 1 SET every counter from a ledger read taken before the writes began. If
+  // anything else was writing provenance during that window, some of those writes
+  // were overwritten. Three designs for reconciling that were tried and rejected,
+  // and the third failure is the reason this block now refuses rather than repairs:
   //
-  // TWO EARLIER ATTEMPTS AT THIS WERE BOTH WRONG, in instructive ways:
+  //  1. Re-apply movements stamped after the read, as INCREMENTS. Wrong: the read is
+  //     paginated, so a movement stamped after it began can already be IN it and gets
+  //     counted twice. (CodeRabbit.)
+  //  2. Re-apply movements whose ID was absent from the read, as INCREMENTS. Wrong:
+  //     survival of an increment depends on when the movement landed relative to the
+  //     SET WRITE OF ITS PAIR, not relative to the read, so one landing after its
+  //     pair's SET is both preserved and re-incremented. (Kimi.)
+  //  3. Re-SET every differing pair from a fresh full fold, calling the residual a
+  //     lost update that "fails closed". Wrong, and this is the important one: a lost
+  //     update is only safe for `s` and `k`. The predicate is `k - u > 0`, so losing
+  //     a `u` increment makes net stocking LARGER. Overwrite a concurrent `u` and a
+  //     pair that correctly does not carry starts carrying — {k:4,u:3} re-SET over a
+  //     live {k:4,u:4} arms a shop that has nothing. That is the exact bug this index
+  //     exists to prevent, reintroduced by its own repair path. (CodeRabbit.)
   //
-  //  1. Re-apply movements with `appliedAt > readStartedAt` as INCREMENTS. Wrong
-  //     because the initial read is paginated and runs for a while: a movement
-  //     written during it can be stamped after readStartedAt and STILL be in that
-  //     read, so its units were already in the SET and incrementing double-counts.
-  //     (CodeRabbit.)
-  //  2. Re-apply movements whose ID was absent from the initial read, as
-  //     INCREMENTS. Selection is now exact with respect to the READ — but that is
-  //     the wrong reference point. Whether an increment survived depends on when
-  //     the movement landed relative to the SET WRITE OF ITS PAIR, not relative to
-  //     the read. A movement landing after its pair's SET but before the re-read
-  //     sees its key has a surviving increment AND gets incremented again. The
-  //     window is the entire write phase. (Kimi, reviewing the delta CodeRabbit
-  //     was rate-limited out of.)
+  // There is no write protocol that reconciles a concurrent writer from the ledger
+  // alone, because "was this already counted" is not a question the ledger answers.
+  // So this pass does not try. It establishes whether the run was QUIESCENT and acts
+  // on the answer:
   //
-  // The lesson is that no INCREMENT-based catch-up can be exact, because "was this
-  // already counted" is not answerable from the ledger alone. So this pass does not
-  // increment. It re-folds the FULL ledger from a fresh read and SETS any pair whose
-  // authoritative value differs from what pass 1 wrote.
+  //   quiescent  → no other writer touched provenance, pass 1 IS authoritative, and
+  //                the only work left is catching movements that landed after the
+  //                read. Those are increments of ids pass 1 provably did not count,
+  //                which is exact precisely because nothing else incremented them.
+  //   contended  → this run cannot produce an authoritative index. The sentinels are
+  //                REMOVED, so every location reads as unready: the engine arms
+  //                nothing and (since the needGone guard) withdraws nothing either.
+  //                Nothing is left half-trusted. Re-run during a quiet window.
   //
-  // THE RESIDUAL, AND WHY IT IS THE RIGHT ONE. A movement landing between this
-  // re-read and this SET still has its increment overwritten. That is a LOST update,
-  // not a double count — the counter ends up too LOW, which makes the predicate
-  // refuse to arm. Every ambiguity in this engine resolves to "arm nothing" (see the
-  // kill-switch and fail-safe notes in refill-engine.cjs), and a re-run corrects it.
-  // An inflated counter would instead arm a shop that does not trade the line, which
-  // is the entire bug this index exists to fix. Given a choice of residual, take the
-  // one that fails in the direction the system already fails safely in.
+  // Quiescence is DETECTED, not assumed. If forward maintenance is live, a new
+  // movement's increment is already visible in the live pair, so the live value
+  // differs from what pass 1 wrote. Comparing the two is a direct read of "is
+  // something else writing here".
   //
-  // WHY THE FULL LEDGER IS RE-READ. There is no key-range shortcut: movement ids are
-  // NOT uniformly push ids — `disp_018_…`, `cr_R004-2_…`, `sold:…`, `crundo_…` and
-  // `rrf_…` are all hand-built. A new `cr_…` id sorts before an existing `sold:…`
-  // one, so `orderByKey().startAt(lastKey)` would silently miss exactly the
-  // clothing-refill movements this index cares most about. The second read is the
-  // price of that, once, in an owner-run script.
+  // In the documented deploy order this is quiescent by construction: hosting goes
+  // last, so the app carrying applyMovement's provenance leg is not live yet, and the
+  // POS app never writes this node.
   say();
-  say(`### Convergence pass`);
+  say(`### Authoritative-or-unready pass`);
   say();
   const seenIds = new Set(Object.keys(movements));
-  const reread = await readPaged("/stock_movements");
-  const newIds = Object.keys(reread).filter((id) => !seenIds.has(id));
-  say(`Initial read covered ${seenIds.size} movement(s); re-read found ${Object.keys(reread).length}, of which ${newIds.length} are new.`);
+  let authoritative = true;
+  let rounds = 0;
 
-  const reProv = foldProvenance(Object.values(reread).filter(Boolean));
-  const converge = {};
-  const changed = [];
-  for (const [key, e] of reProv.entries()) {
-    const [loc, pid] = key.split("|");
-    if (!LOCS.includes(loc)) continue;
-    const rec = idx.toRecord(e);
-    if (!Object.keys(rec).length) continue;
-    const path = idx.pairPath(loc, pid);
-    // Compare against what pass 1 wrote, not against live — live may already hold a
-    // forward increment we are about to (correctly) supersede.
-    if (JSON.stringify(rec) === JSON.stringify(payload[path] || null)) continue;
-    // LEAF-LEVEL PATHS WITH EXPLICIT NULLS, not `{path: rec}`. RTDB update() expands
-    // an object value into leaf writes and does NOT delete keys absent from it, so
-    // `{path: rec}` is a MERGE dressed as a SET. Today that is indistinguishable —
-    // counters only accumulate, so a changed record's key set is always a superset —
-    // but the exactness argument should not rest on that. Writing each counter and
-    // nulling the absent ones makes the primitive match the claim, and survives a
-    // future classifier version that lets a counter fall. (Admin SDK bypasses the
-    // newData.exists() rule that stops CLIENTS nulling a counter.)
-    for (const f of ["s", "k", "u"]) converge[`${path}/${f}`] = rec[f] ?? null;
-    changed.push({ loc, pid, from: payload[path] || null, to: rec });
-  }
-  // ── THE ONE INFLATION PATH, NAMED AND CHECKED ──────────────────────────────
-  // Everything above iterates `reProv`, so a pair that pass 1 wrote but the re-fold
-  // NO LONGER PRODUCES is never visited and pass 1's value survives. That is the only
-  // way this run can leave a counter too HIGH, and the "never inflated" claim depends
-  // on it being impossible. It is impossible only because the ledger is APPEND-ONLY:
-  // counters accumulate (an undo adds to `u`, it never subtracts from `k`), and no
-  // code path deletes a /stock_movements record — undos are new records with their own
-  // ids (`crundo_…`). That premise is now stated rather than assumed, and checked
-  // rather than trusted, because it is load-bearing for a safety claim.
-  const vanished = Object.keys(payload).filter((path) => {
-    const [, loc, pid] = path.split("/");
-    return !reProv.has(`${loc}|${pid}`);
-  });
-  if (vanished.length) {
-    say(`⛔ **${vanished.length} pair(s) written by pass 1 are no longer produced by the re-fold.**`);
-    say(`This should be impossible on an append-only ledger and means a movement record was deleted`);
-    say(`or mutated mid-run. Those pairs keep pass 1's value, which may now be too HIGH — the unsafe`);
-    say(`direction. Re-run this script and investigate the ledger before trusting the index.`);
-    say();
-    for (const path of vanished.slice(0, 20)) say(`- \`${path}\` still holds \`${JSON.stringify(payload[path])}\``);
-    say();
-  } else {
-    say(`Append-only premise holds: every pair pass 1 wrote is still produced by the re-fold, so no`);
-    say(`counter can have been left too high.`);
-    say();
+  for (rounds = 1; rounds <= 3; rounds += 1) {
+    const reread = await readPaged("/stock_movements");
+    const newIds = Object.keys(reread).filter((id) => !seenIds.has(id) && reread[id]);
+    say(`Round ${rounds}: ledger holds ${Object.keys(reread).length} record(s); ${newIds.length} are new since pass 1's read.`);
+
+    // CONTENTION CHECK. Every pair pass 1 wrote is compared against live. A
+    // difference means another writer incremented it — there is no safe reconciliation
+    // and no point continuing.
+    const contended = [];
+    for (const [path, rec] of Object.entries(payload)) {
+      const live = (await db.ref(path).once("value")).val();
+      if (JSON.stringify(live) !== JSON.stringify(rec)) contended.push({ path, live, expected: rec });
+      if (contended.length >= 5) break;                 // enough to prove it; stop paying for reads
+    }
+    if (contended.length) {
+      say();
+      say(`⛔ **CONTENDED — another writer is maintaining /stock_provenance while this run is writing.**`);
+      say();
+      say(`| path | pass 1 wrote | live now |`);
+      say(`|---|---|---|`);
+      for (const c of contended) say(`| \`${c.path}\` | \`${JSON.stringify(c.expected)}\` | \`${JSON.stringify(c.live)}\` |`);
+      say();
+      say(`A concurrent \`u\` increment cannot be reconciled from the ledger: overwriting it RAISES`);
+      say(`\`k - u\` and would arm a shop that holds nothing. So this run will not claim authority.`);
+      authoritative = false;
+      break;
+    }
+
+    if (!newIds.length) { say(`Quiescent — pass 1 is authoritative.`); break; }
+
+    // Increments of ids pass 1 provably did not count, applied only after quiescence
+    // has been established, so nothing else has counted them either.
+    const tailProv = foldProvenance(newIds.map((id) => reread[id]));
+    const upd = {};
+    let touched = 0;
+    for (const [key, e] of tailProv.entries()) {
+      const [loc, pid] = key.split("|");
+      if (!LOCS.includes(loc)) continue;
+      if (e.sold > 0) upd[`${idx.pairPath(loc, pid)}/s`] = admin.database.ServerValue.increment(e.sold);
+      if (e.stockedUnits > 0) upd[`${idx.pairPath(loc, pid)}/k`] = admin.database.ServerValue.increment(e.stockedUnits);
+      if (e.unstockedUnits > 0) upd[`${idx.pairPath(loc, pid)}/u`] = admin.database.ServerValue.increment(e.unstockedUnits);
+      touched += 1;
+    }
+    if (Object.keys(upd).length) {
+      await db.ref().update(upd);
+      say(`Applied ${Object.keys(upd).length} increment(s) across ${touched} pair(s) for the new movements.`);
+      // Fold the applied ids into BOTH the seen set and `payload`, so the next round's
+      // contention check compares against what is now expected rather than flagging
+      // this pass's own writes as someone else's.
+      for (const id of newIds) seenIds.add(id);
+      for (const [key, e] of tailProv.entries()) {
+        const [loc, pid] = key.split("|");
+        if (!LOCS.includes(loc)) continue;
+        const path = idx.pairPath(loc, pid);
+        const base = payload[path] || {};
+        payload[path] = idx.toRecord({
+          sold: (base.s || 0) + e.sold,
+          stockedUnits: (base.k || 0) + e.stockedUnits,
+          unstockedUnits: (base.u || 0) + e.unstockedUnits,
+        });
+      }
+    } else {
+      for (const id of newIds) seenIds.add(id);
+      say(`None of the new movements affect a counter at an indexed location.`);
+      break;
+    }
+    if (rounds === 3) { say(); say(`⛔ Still not quiescent after 3 rounds — the ledger is too busy for this run to claim authority.`); authoritative = false; }
   }
 
-  if (!changed.length) {
-    say(`No pair's authoritative value changed. Pass 1 is already converged.`);
-  } else {
-    say(`${changed.length} pair(s) differ from what pass 1 wrote — re-SET to the authoritative value:`);
-    say();
-    say(`| location | pid | pass 1 | authoritative |`);
-    say(`|---|---|---|---|`);
-    for (const c of changed.slice(0, 40)) {
-      say(`| \`${c.loc}\` | \`${c.pid}\` | \`${JSON.stringify(c.from)}\` | \`${JSON.stringify(c.to)}\` |`);
-    }
-    if (changed.length > 40) say(`| … | | | _${changed.length - 40} more_ |`);
-    say();
-    const CH = 400;
-    const entries = Object.entries(converge);
-    for (let i = 0; i < entries.length; i += CH) await db.ref().update(Object.fromEntries(entries.slice(i, i + CH)));
-    say(`Applied ${entries.length} counter write(s) across ${changed.length} pair(s).`);
-    // The orphan table above was printed BEFORE pass 1 and said "this run will NOT
-    // change it". A movement landing mid-run can give an orphan fresh provenance, in
-    // which case this pass does change it — correct behaviour, but it makes that
-    // earlier sentence false unless it is corrected here.
-    const wereOrphans = changed.filter((c) => orphanPaths.some((o) => o.loc === c.loc && o.pid === c.pid));
-    if (wereOrphans.length) {
-      say(`⚠ ${wereOrphans.length} of these were listed as ORPHANS above — they gained provenance during`);
-      say(`this run, so that part of the orphan table is now out of date. They are correct as written.`);
-    }
-  }
-  // The sentinels were written after pass 1 so each location became armable as early
-  // as possible; refresh their metadata now so `at` and `pairs` describe the state
-  // the run actually left behind rather than an intermediate one.
-  // `pairs` keeps ONE meaning across both writes: pairs THIS RUN computed for the
-  // location. Pass 1 wrote that; the refresh must not quietly redefine it as "children
-  // currently at the node", which would include orphans and any foreign record and so
-  // disagree with a pass-1-only sentinel under the same field name. It is counted from
-  // the re-fold rather than by re-reading the node — the data is already in hand, and a
-  // read-then-count would also race an app increment creating a pair between the two.
-  const rePairs = new Map();
-  for (const key of reProv.keys()) {
-    const [loc, pid] = key.split("|");
-    if (!LOCS.includes(loc)) continue;
-    if (!Object.keys(idx.toRecord(reProv.get(`${loc}|${pid}`))).length) continue;
-    rePairs.set(loc, (rePairs.get(loc) || 0) + 1);
-  }
-  for (const loc of LOCS) {
-    await db.ref(idx.metaPath(loc)).update({
-      at: new Date().toISOString(),
-      pairs: rePairs.get(loc) || 0,
-      ledgerRecords: Object.keys(reread).length,
-    });
-  }
   say();
-  say(`Sentinels refreshed. A movement landing during this pass leaves its counter LOW, never high —`);
-  say(`the predicate then refuses to arm, which is the safe direction, and a re-run corrects it.`);
+  if (!authoritative) {
+    // Leave NOTHING half-trusted. Unready arms nothing and withdraws nothing.
+    for (const loc of LOCS) await db.ref(idx.metaPath(loc)).remove();
+    say(`## ⛔ Sentinels REMOVED — the index is not armed`);
+    say();
+    say(`Pair records are still in place (they are useful and mostly correct) but every location now`);
+    say(`reads as UNREADY, so the engine arms nothing and withdraws nothing. Re-run this script during`);
+    say(`a quiet window — with hosting not yet carrying the provenance leg, per PROVENANCE-RULES.md —`);
+    say(`and it will claim authority and write the sentinels.`);
+  } else {
+    // `pairs` keeps ONE meaning in both writes: pairs this run computed for the
+    // location. Counted from `payload`, which now includes any increments applied
+    // above, so it cannot disagree with a pass-1-only sentinel under the same name.
+    const finalPairs = new Map();
+    for (const path of Object.keys(payload)) {
+      const loc = path.split("/")[1];
+      finalPairs.set(loc, (finalPairs.get(loc) || 0) + 1);
+    }
+    for (const loc of LOCS) {
+      await db.ref(idx.metaPath(loc)).update({
+        at: new Date().toISOString(),
+        pairs: finalPairs.get(loc) || 0,
+        rounds,
+      });
+    }
+    say(`## ✅ Authoritative — sentinels confirmed after ${rounds} round(s)`);
+    say();
+    say(`No other writer touched /stock_provenance during this run, so pass 1's SET values stand and`);
+    say(`the increments applied above are exact. Every location is armable.`);
+  }
 }
 say();
 
