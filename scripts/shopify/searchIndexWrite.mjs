@@ -87,10 +87,37 @@ export async function unindexProduct(db, pid, why = "off") {
 // reconciler's real work has already succeeded by the time it runs.
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 
+// The most a healthy sweep should ever remove, as a fraction of the index. A
+// real day sees a handful of products come off; anything approaching the whole
+// index means the LIVE set is wrong, not that the shop emptied.
+const MAX_REMOVAL_FRACTION = 0.5;
+
 export async function sweepSearchIndex(db, adminApp, {
   livePids, buildDoc, max = 50,
 } = {}) {
   const summary = { indexed: 0, removed: 0, missing: 0, orphans: 0, capped: false, failed: 0 };
+
+  // ── THE FLOOR, and it is the most important line in this file ─────────────
+  // Every doc in the index is an "orphan" the moment livePids is empty, and the
+  // removal loop below is uncapped. readAllPublishNodes returns `{}` on a read
+  // that comes back empty for ANY reason — a momentary permission problem, a
+  // wiped node, a bad deploy — so one bad tick could delete the entire
+  // storefront search index. That is the exact failure this whole file exists
+  // to prevent, inverted and worse: 0 documents instead of 200.
+  //
+  // A live storefront with ZERO live products is not a state this sweep should
+  // ever act on. If it is genuinely true, the per-product OFF hook has already
+  // removed each one as it went; there is nothing here to do that has not been
+  // done. So refuse, loudly. (Review finding, 2026-08-17.)
+  if (!Array.isArray(livePids) || livePids.length === 0) {
+    console.error(
+      "  ⚠ search-index sweep REFUSED — the live set is empty. Every indexed " +
+      "product would have been treated as an orphan and removed. If the shop " +
+      "really has nothing live, the per-product hooks have already cleared the " +
+      "index; otherwise /shopify_publish did not read correctly."
+    );
+    return { ...summary, skipped: true, refused: "empty live set" };
+  }
   let indexedPids;
   try {
     indexedPids = new Set(await shallowKeys(adminApp, `${SEARCH_INDEX_PATH}/docs`));
@@ -105,13 +132,28 @@ export async function sweepSearchIndex(db, adminApp, {
   summary.orphans = orphans.length;
   if (!missing.length && !orphans.length) return summary;
 
-  // Removals first, and uncapped: they are cheap (no Shopify read) and they
-  // are the half with a customer consequence — an orphan answers searches with
-  // a link to a product that is no longer published.
-  for (const pid of orphans) {
-    const r = await unindexProduct(db, pid, "sweep");
-    if (r === "unindexed") summary.removed += 1;
-    else if (String(r).startsWith("failed")) summary.failed += 1;
+  // A SECOND FLOOR, for the case the first cannot see: livePids is non-empty
+  // but badly short (a truncated read, a half-applied migration). Removing most
+  // of the index is never a routine outcome, so it needs a human rather than a
+  // best guess.
+  const removalLimit = Math.max(1, Math.floor(indexedPids.size * MAX_REMOVAL_FRACTION));
+  if (orphans.length > removalLimit) {
+    console.error(
+      `  ⚠ search-index sweep REFUSED the removals — ${orphans.length} of ` +
+      `${indexedPids.size} indexed products look orphaned (over the ${Math.round(MAX_REMOVAL_FRACTION * 100)}% ceiling). ` +
+      `That is a bad live set far more often than it is a real take-down. ` +
+      `Additions still applied. Run build-search-index.mjs --commit if the index really should shrink.`
+    );
+    summary.refused = "removal ceiling";
+  } else {
+    // Otherwise uncapped: removals are cheap (no Shopify read) and they are the
+    // half with a customer consequence — an orphan answers searches with a link
+    // to a product that is no longer published.
+    for (const pid of orphans) {
+      const r = await unindexProduct(db, pid, "sweep");
+      if (r === "unindexed") summary.removed += 1;
+      else if (String(r).startsWith("failed")) summary.failed += 1;
+    }
   }
 
   // Additions are capped per run: each needs a Shopify read, and a 173-product

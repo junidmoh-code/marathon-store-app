@@ -99,15 +99,28 @@ function rateLimited(ip, now) {
 }
 
 // ── The in-memory index ──────────────────────────────────────────────────────
-let cache = { version: null, docs: [], checkedAt: 0 };
+// `loaded` is a SEPARATE flag from `version`, and that separation is the fix
+// for a real hole: the guard used to be `cache.version !== null`, so an index
+// whose meta is missing or unstamped resolved version to null every time, never
+// satisfied the guard, and re-read BOTH meta and the whole corpus on EVERY
+// REQUEST — for ever, until a build stamped a version. Precisely the unbounded
+// read pattern this project has a bandwidth incident over, and it would have
+// been live from the moment the endpoint deployed until the first build.
+// (Review finding, 2026-08-17.)
+let cache = { version: null, docs: [], checkedAt: 0, loaded: false };
 
 async function loadIndex(now) {
-  if (cache.version !== null && now - cache.checkedAt < META_TTL_MS) return cache.docs;
+  if (cache.loaded && now - cache.checkedAt < META_TTL_MS) return cache.docs;
   const db = admin.database();
   const meta = (await db.ref(`${INDEX_PATH}/meta`).get()).val();
-  cache.checkedAt = now;
   const version = meta?.version ?? null;
-  if (version !== null && version === cache.version) return cache.docs; // unchanged
+  // Only stamp checkedAt once the corpus is actually in hand. Stamping before
+  // the docs read means a failed read still starts a 60s window in which the
+  // stale corpus is served without a retry.
+  if (cache.loaded && version !== null && version === cache.version) {
+    cache.checkedAt = now;
+    return cache.docs; // unchanged
+  }
   const raw = (await db.ref(`${INDEX_PATH}/docs`).get()).val() || {};
   // The search contexts are computed ONCE here, not per query. The pid is the
   // KEY, and it is deliberately not copied onto the document — nothing that
@@ -124,7 +137,9 @@ async function loadIndex(now) {
     },
   }));
   cache.version = version;
-  console.log(`[storefrontSearch] index loaded: ${cache.docs.length} docs, version ${version}`);
+  cache.loaded = true;
+  cache.checkedAt = now;
+  console.log(`[storefrontSearch] index loaded: ${cache.docs.length} docs, version ${version ?? "(unstamped)"}`);
   return cache.docs;
 }
 

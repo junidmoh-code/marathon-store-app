@@ -659,11 +659,17 @@ async function seedSearchIdentityFrom(product) {
   const incoming = buildRecordIdentity(product, { at: Date.now(), by: "rename-guard" });
   if (!incoming) return;
   try {
+    // A TRANSACTION, not read-then-write. Two renames of the same product fired
+    // close together (a double-submit before the re-render) would otherwise both
+    // read the same "existing" and both decide to write — last one wins, and
+    // which one that is depends on network timing. The precedence rule is the
+    // whole value of this field; it has to be evaluated against what is actually
+    // stored at the moment of the write.
     const idRef = ref(database, `${SEARCH_IDENTITY_PATH}/${product.id}`);
-    const existing = (await get(idRef)).val();
-    if (shouldReplaceIdentity(existing, incoming)) {
-      await update(idRef, { ...incoming, ...(existing?.text ? { supersededText: existing.text } : {}) });
-    }
+    await runTransaction(idRef, (existing) => {
+      if (!shouldReplaceIdentity(existing, incoming)) return undefined; // abort, keep what is there
+      return { ...incoming, ...(existing?.text ? { supersededText: existing.text } : {}) };
+    });
   } catch (err) {
     console.warn("search identity seed failed (the rename still applies):", err);
   }

@@ -183,23 +183,32 @@ if (worklist.length > MAX_APPLY) {
 // then writes confirmLiveState "on", so a wrong guess records a product as LIVE
 // while it sits on no channel, and the intent is consumed so the worklist never
 // revisits it. Refusing to guess is much cheaper than a durable false "live".
+// ONLY when there is something to apply. This tick may exist purely to run the
+// search-index sweep, and the sweep touches neither the publication nor the
+// collection map. Resolving them anyway would spend a Shopify API call and an
+// RTDB read on every idle tick — 720 a day on the mini's two-minute schedule —
+// for values nothing reads. (Review finding, 2026-08-17.)
 let online;
-try {
-  online = { id: await requireOnlineStorePublication(graphql, { strict: true }) };
-} catch (e) {
-  console.error(String(e?.message || e));
-  process.exit(1);
-}
+let collectionGids = {};
+let managedGids = [];
+if (worklist.length) {
+  try {
+    online = { id: await requireOnlineStorePublication(graphql, { strict: true }) };
+  } catch (e) {
+    console.error(String(e?.message || e));
+    process.exit(1);
+  }
 
-// The collection gids, read ONCE. An empty map is not fatal: publishing must
-// still work on a shop where ensure-collections.mjs has never run — the
-// products just land in no collection, and the warning below says so on every
-// single product rather than once, because a storefront with no navigation is
-// exactly the failure this work exists to fix.
-const collectionGids = await collectionGidsByKey(db);
-const managedGids = manualGidsFrom(collectionGids);
-if (!managedGids.length) {
-  console.error("  ⚠ no storefront collections recorded at /shopify_sync/_collections — run `node scripts/shopify/ensure-collections.mjs --commit` first, or every product published here lands in no collection");
+  // The collection gids, read ONCE. An empty map is not fatal: publishing must
+  // still work on a shop where ensure-collections.mjs has never run — the
+  // products just land in no collection, and the warning below says so on every
+  // single product rather than once, because a storefront with no navigation is
+  // exactly the failure this work exists to fix.
+  collectionGids = await collectionGidsByKey(db);
+  managedGids = manualGidsFrom(collectionGids);
+  if (!managedGids.length) {
+    console.error("  ⚠ no storefront collections recorded at /shopify_sync/_collections — run `node scripts/shopify/ensure-collections.mjs --commit` first, or every product published here lands in no collection");
+  }
 }
 
 // ── ONE search-index document builder, shared by the hook and the sweep ──────

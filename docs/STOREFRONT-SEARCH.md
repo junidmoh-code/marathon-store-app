@@ -108,8 +108,24 @@ accumulates unnoticed. A commit run now always reaches the sweep.
 
 Additions are capped at 50 per run: each needs a Shopify read, and a
 173-product catch-up must not turn a two-minute tick into a rate-limit incident.
-The cap is **reported**, never a silent truncation. Removals are uncapped —
-they are free and they are the half with a customer consequence.
+The cap is **reported**, never a silent truncation.
+
+### Two floors on the removals
+
+Removing orphans is also the shape of a catastrophe. `readAllPublishNodes`
+returns `{}` for *any* empty read — a momentary permission problem, a wiped
+node, a bad deploy — and with an empty live set **every** indexed document looks
+like an orphan. One bad tick could have deleted the entire storefront search
+index: the failure this file exists to prevent, inverted and worse.
+
+1. **Empty live set → the sweep refuses entirely.** A storefront with zero live
+   products is not a state worth acting on: if it is genuinely true, the
+   per-product OFF hook already removed each one as it went.
+2. **More than 50% of the index orphaned → removals refused, additions still
+   applied.** That is a bad live set far more often than a real take-down.
+
+Both refuse loudly and say what to run. A normal take-down — one product of
+several hundred — is unaffected.
 
 ---
 
@@ -259,6 +275,7 @@ Verified on the live wire, every result of every query: **0 brand leaks.**
 | | RTDB reads |
 |---|---|
 | warm instance, steady state | **0** |
+| index with no `meta.version` yet | **0** — a separate `loaded` flag, not the version, gates the cache |
 | freshness check | one `meta/version` read, at most 1 per 60s per instance |
 | cold start | one read of the corpus — 373 docs ≈ 90 KB |
 | repeated query, same shopper | **0** — `Cache-Control: public, max-age=60` |
