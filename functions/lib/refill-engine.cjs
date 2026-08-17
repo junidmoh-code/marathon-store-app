@@ -459,9 +459,32 @@ function sizeUnitsAnywhere(stock, pid, size) {
   return n;
 }
 
-function categoryPolicyTarget(config, products, stock, dest, pid, size) {
+// ── THE CARRIAGE GATE, ADDED 2026-08-17 ──────────────────────────────────────
+// This branch shipped in PR #352 with NO carriage gate, deliberately: the reasoning
+// (still in managedPids below) was that "a stranded perfume with no cell anywhere
+// must still resolve its buffer target at hub2, or the standing policy would only
+// govern products someone had already introduced by hand". That intent was right;
+// the mechanism was too broad. Without a gate, a category entry arms EVERY product
+// in the category at EVERY mapped location, including shops that have never traded
+// it — which is how three marathon-pe bag lines and 24 bag pairs at trophy came to
+// be armed for stock those shops do not sell.
+//
+// The gate is now symmetric with the footwear rule and the clothing rule, and the
+// original intent is expressible precisely instead of globally: put
+// `introduce: true` on the category's entry for that destination and it governs
+// there regardless of history (storeCarries checks exactly that, first, before it
+// consults the index). One deliberate key, scoped to the location it names, instead
+// of an unconditional exemption for a whole map.
+//
+// MEASURED against live data on the day: 176 (destination, product) pairs stop
+// resolving here, 88 of which hold an explicit /stock_targets row that still wins
+// one branch up, and exactly ONE open engine lock is affected. 1,342 pairs keep
+// resolving untouched.
+function categoryPolicyTarget(ctx, dest, pid, size) {
+  const { config, products, stock } = ctx;
   const entry = categoryPolicyEntry(config, products, pid, dest);
   if (!entry) return null;
+  if (!storeCarries(ctx, dest, pid)) return null;
   const rp = entry.reorderPoint;
   const shaped = (target) => ({
     target,
@@ -529,7 +552,7 @@ function resolveTarget(ctx, dest, pid, size) {
   // rules means a mapped clothing category (headwear) overrides the garment
   // size run for exactly the sizes the entry speaks for — and no others; see
   // categoryPolicyTarget for the two size modes and their fall-through.
-  const catT = categoryPolicyTarget(config, products, stock, dest, pid, size);
+  const catT = categoryPolicyTarget(ctx, dest, pid, size);
   if (catT) return catT;
   // ── FOOTWEAR RULE (2026-07-30) ─────────────────────────────────────────────
   // Evaluated BEFORE the clothing kill switch below — see footwearTargetsEnabled
@@ -1106,6 +1129,15 @@ function computeRefillPlan(snapshot) {
     const catOn = config?.categoryPolicy && typeof config.categoryPolicy === "object";
     if (!ruleOn && !footOn && !catOn) return out;
     for (const [pid, p] of Object.entries(products || {})) {
+      // DELIBERATELY NOT GATED, even though categoryPolicyTarget now is. A gate here
+      // was written and then removed: it changed no observable output. Admitting a
+      // pid whose target cannot resolve costs one resolveTarget call that returns
+      // null, and the `!t || t.target <= 0` guard in the deficit loop drops the cell
+      // before it is counted or planned — so the managed-cell total, the health
+      // score and the intents are all identical either way. Adding a condition that
+      // cannot be observed means adding one that cannot be tested, and this file
+      // already has four places that must agree about carriage. Keeping the gate in
+      // ONE of them, where it decides something, is the version that stays true.
       if (catOn && categoryPolicyEntry(config, products, pid, dest)) { out.add(pid); continue; }
       if (!storeCarries(ctx, dest, pid)) continue;
       if (ruleOn && isClothing(p)) out.add(pid);
@@ -1123,6 +1155,8 @@ function computeRefillPlan(snapshot) {
     // manage this product); per-size mode walks every declared size —
     // resolveTarget then answers 0 for the dead ones, and the deficit loop's
     // `target <= 0` guard skips them at nearly zero cost.
+    // Not gated, for the same measured reason as managedPids above: resolveTarget's
+    // own gate suppresses every size this would add, so a gate here is invisible.
     const cat = categoryPolicyEntry(config, products, pid, dest);
     if (cat) {
       if (cat.perSize) for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
@@ -1870,6 +1904,18 @@ function computeRefillPlan(snapshot) {
     // Entry presence is the test, not a positive resolution: an entry whose
     // sizes all resolve dead-0 is "deliberately excluded", the same reading
     // an explicit 0 row gets one branch up. (CodeRabbit + Sonnet, PR #352.)
+    //
+    // NOT GATED, though categoryPolicyTarget now is (2026-08-17). A gate here was
+    // written, tested and removed: the worry was that a pair the target gate refuses
+    // would be called "managed" here and so vanish from the queue that exists to
+    // surface undecided stock — unarmed AND invisible. It cannot. The BLIND-SPOT
+    // GUARD below (PR #277) catches exactly that pair: it walks products that ARE
+    // managed here and pushes any size that is not DECIDED, and a refused pair
+    // decides nothing. Measured both ways, the emitted exception is byte-identical —
+    // `{ loc, pid, units, noStandard: true }` — just reached by a different branch.
+    // The guard is what makes the invariant hold, so the invariant is pinned to the
+    // guard (see "a refused pair becomes VISIBLE" in refill-engine.test.cjs) rather
+    // than duplicated as a second carriage check here that nothing can observe.
     if (categoryPolicyEntry(config, products, pid, loc)) return true;
     if (!ruleTargetsEnabled(config, loc)) return false;
     for (const s of productSizes(products, pid)) if (targetResolves(loc, pid, s)) return true;

@@ -61,12 +61,13 @@ const OWNED_BY = process.env.AUDIT_OWNER || "trophy";
 const NAME_TOKENS = (process.env.AUDIT_NAME_GREP || "lacoste sweatshirt").toLowerCase().split(/\s+/).filter(Boolean);
 const PINNED = (process.env.AUDIT_PIDS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
-// storeCarries — COPIED, not re-derived: refill-engine.cjs does not export it, and
-// the line is one expression whose exact form is the finding. Any drift here is
-// caught because the same file's resolveTarget IS called for real below, and the
-// two must agree on every line this report prints.
-// refill-engine.cjs:200-202
-const storeCarries = (stock, loc, pid) =>
+// THE OLD PREDICATE, kept deliberately. This was refill-engine.cjs:200-202 before
+// 2026-08-17 — "a cell exists here". It is retained verbatim so the report can show
+// BEFORE and AFTER side by side: this function's answer next to the live
+// resolveTarget()'s, which now consults the provenance index. It is no longer a copy
+// of anything in the engine, and must not be updated to track it — its whole value
+// is that it is the superseded question.
+const storeCarriesOld = (stock, loc, pid) =>
   !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;
 
 const out = [];
@@ -95,7 +96,7 @@ async function readPaged(path, pageSize = 2000) {
   return acc;
 }
 
-const [config, products, stock, targets, refillRequests, engineOpen, orders] = await Promise.all([
+const [config, products, stock, targets, refillRequests, engineOpen, orders, provenance, provenanceMeta] = await Promise.all([
   db.ref("/config/refillEngine").once("value").then((s) => s.val() || {}),
   readPaged("/products"),
   db.ref("/stock").once("value").then((s) => s.val() || {}),
@@ -103,6 +104,12 @@ const [config, products, stock, targets, refillRequests, engineOpen, orders] = a
   readPaged("/refill_requests"),
   db.ref("/refill_engine/open").once("value").then((s) => s.val() || {}),
   readPaged("/orders"),
+  db.ref("/stock_provenance").once("value").then((s) => {
+    const v = s.val() || {};
+    const { _meta, ...locs } = v;   // _meta is not a location
+    return locs;
+  }),
+  db.ref("/stock_provenance/_meta").once("value").then((s) => s.val() || {}),
 ]);
 
 const openReqs = Object.entries(refillRequests).filter(([, r]) => r && r.status === "open");
@@ -204,11 +211,13 @@ for (const pid of PIDS) {
 
   // 1b. which rule armed it — the REAL resolveTarget, called
   const dests = [...new Set(mine.map(([, r]) => r.requestingLocation))];
-  const ctx = { targets, config, products, stock };
+  // provenance/provenanceMeta are read live so this audit reflects what the engine
+  // would actually decide right now, including a not-yet-backfilled index.
+  const ctx = { targets, config, products, stock, provenance, provenanceMeta };
   for (const dest of dests) {
     say(`### Rule that armed \`${dest}\` — computed by calling the real \`resolveTarget()\``);
     say();
-    say(`\`storeCarries(stock, "${dest}", "${pid}")\` → **\`${storeCarries(stock, dest, pid)}\`**`);
+    say(`\`storeCarriesOld(stock, "${dest}", "${pid}")\` → **\`${storeCarriesOld(stock, dest, pid)}\`**`);
     const cells = stock?.[dest]?.[pid] || {};
     say(`  (cell keys present at \`${dest}\`: ${JSON.stringify(Object.keys(cells))})`);
     say();
@@ -220,10 +229,14 @@ for (const pid of PIDS) {
     const sizes = [...new Set([...(p?.sizes || []).map(String), ...mine.filter(([, r]) => r.requestingLocation === dest).map(([, r]) => String(r.size))])];
     for (const size of sizes) {
       const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
-      const cat = categoryPolicyTarget(config, products, stock, dest, pid, size);
+      // Signature changed 2026-08-17: categoryPolicyTarget now takes ctx whole, because
+      // it consults storeCarries() (which needs the provenance index and the
+      // introduce opt-in). Passing `ctx` here keeps this probe calling the REAL
+      // function with the REAL inputs rather than a reconstruction of it.
+      const cat = categoryPolicyTarget(ctx, dest, pid, size);
       const rt = resolveTarget(ctx, dest, pid, size);
       say(`| ${size} | ${explicit ? `\`${JSON.stringify(explicit)}\`` : "—"} | ${cat ? `\`${JSON.stringify(cat)}\`` : "**null**"} | ${rt ? `\`${rt.source}\`` : "null"} | ${rt?.target ?? "—"} | ${rt?.reorderPoint ?? "null"} | ${rt?.minQty ?? "—"} |`);
-      findings.push({ pid, dest, size, carries: storeCarries(stock, dest, pid), catEntry: !!catEntry, cat: !!cat, source: rt?.source ?? null });
+      findings.push({ pid, dest, size, carries: storeCarriesOld(stock, dest, pid), catEntry: !!catEntry, cat: !!cat, source: rt?.source ?? null });
     }
     say();
   }
@@ -363,7 +376,7 @@ say(`---`);
 say();
 say(`## Verdict`);
 say();
-say(`| pid | dest | storeCarries(dest) | categoryPolicy entry | categoryPolicyTarget fired | resolveTarget source(s) | engine-created |`);
+say(`| pid | dest | storeCarriesOld(dest) | categoryPolicy entry | categoryPolicyTarget fired | resolveTarget source(s) | engine-created |`);
 say(`|---|---|---|---|---|---|---|`);
 const seen = new Set();
 for (const f of findings) {
@@ -423,7 +436,7 @@ say(`**Candidate B — \`storeCarries()\` counts a cell that holds nothing and n
 say(`(refill-engine.cjs:200-202). For this to be the cause, the gate must PASS at the destination while the`);
 say(`destination holds no units and has never sold the product — i.e. the cell is a husk left by a pass-through.`);
 say();
-say(`| pid | dest | storeCarries | units held at dest | \`sold\` movements ever at dest | first positive inflow at dest |`);
+say(`| pid | dest | storeCarriesOld | units held at dest | \`sold\` movements ever at dest | first positive inflow at dest |`);
 say(`|---|---|---|---|---|---|`);
 let bLive = false;
 for (const k of new Set(findings.map((f) => `${f.pid}|${f.dest}`))) {
@@ -432,7 +445,7 @@ for (const k of new Set(findings.map((f) => `${f.pid}|${f.dest}`))) {
   const sold = mvs.filter(([, m]) => m.productId === pid && m.type === "sold" && m.from === dest).length;
   const inflow = mvs.filter(([, m]) => m.productId === pid && m.to === dest && m.type !== "sold");
   const first = inflow[0]?.[1];
-  const carries = storeCarries(stock, dest, pid);
+  const carries = storeCarriesOld(stock, dest, pid);
   if (carries && held === 0 && sold === 0) bLive = true;
   say(`| \`${pid}\` | \`${dest}\` | **${carries}** | ${held} | ${sold} | ${first ? `\`${first.reason ?? "(none)"}\` — ${first.type} ${first.from ?? "—"}→${first.to}, ${first.appliedAt ?? first.ts}` : "**never**"} |`);
 }
@@ -455,7 +468,7 @@ say();
     s.push(`\`storeCarries()\` is defined (refill-engine.cjs:200-202) as **"a cell object exists"**:`);
     s.push(``);
     s.push("```js");
-    s.push(`function storeCarries(stock, loc, pid) {`);
+    s.push(`function storeCarriesOld(stock, loc, pid) {`);
     s.push(`  return !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;`);
     s.push(`}`);
     s.push("```");
