@@ -39,6 +39,7 @@ import RefillQueue from "./RefillQueue";
 import MoveExcess from "./MoveExcess";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
+import StarvedList from "./StarvedList";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
 import { partitionHidden } from "./hiddenProductsCore";
@@ -638,6 +639,20 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
+      case "starved":
+        // THE SILENT-MISS CARD. Every other exception here is something the engine
+        // DID; this is the one thing it quietly did NOT do. It has to be standing,
+        // not a script someone remembers to run, because a wrong refusal has no
+        // other symptom until a shelf is empty.
+        return (
+          <DetailShell title="Starved — refused, but trading"
+            sub="The engine has no stock history for these shops, yet they hold, sell or have asked for the line. Introduce, or fix the history."
+            count={count("starved")} onBack={back}>
+            <StarvedList rows={ex.starved?.items || []} byId={byId}
+              canAct={["store", "warehouse", "admin"].includes(actorRole)}
+              sizesFor={(pid) => (byId.get(pid)?.sizes || []).map(String)} />
+          </DetailShell>
+        );
       case "negative": {
         // LIVE data (bugfix): fixed cells disappear instantly instead of
         // lingering in the up-to-15-min-old scan snapshot.
@@ -798,6 +813,13 @@ export default function HealthView({ products = [], onExit }) {
                         // the over-the-counter exposure the HoldSpot exists to
                         // prevent. Normal chip stickiness is untouched.
                         onClick={() => { setMissingTab((t) => (t === "hidden" ? null : t)); setScreen("missingProducts"); }} />
+              {/* STARVED sits with the red cards, not among the informational ones.
+                  Every other tile counts something the engine DID; this counts what
+                  it quietly refused to do, and a quiet refusal has no other symptom
+                  until a shelf is empty. Red at one, because one wrong refusal is a
+                  line that will never be replenished again on its own. */}
+              <StatCard label="Starved" value={count("starved")} tone={count("starved") ? RED : GREEN}
+                        sub="Refused for no stock history, but holding, selling or asking" onClick={() => setScreen("starved")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />
               <StatCard label="Recount Needed" value={count("recountNeeded")} tone={count("recountNeeded") ? RED : GREEN}
