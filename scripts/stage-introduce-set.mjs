@@ -21,10 +21,12 @@
 // OPTION B TAKEN (owner, 2026-08-18). The reasoning is worth recording because it is
 // the reasoning, not the list, that will be needed next time:
 //
-//   1. ON A ZERO-HELD CELL, `introduce` MEANS "RAISE THE FULL SIZE RUN TONIGHT".
+//   1. ON A ZERO-HELD CELL, `introduce` MEANS "RAISE THE FULL SIZE RUN".
 //      Every one of the 34 pairs holds 0 units. An introduction therefore does not
 //      gently permit future replenishment — it opens the whole run against an on-hand
-//      of nothing, immediately. Option A would have raised 34 full runs in one scan.
+//      of nothing. Option A would have raised 34 full runs in one scan. (Subject to
+//      the reject guards below, which is why the report separates the run a pair
+//      RESOLVES from the units it ACTUALLY ASKS FOR.)
 //
 //   2. THE OTHER 33 HAVE NEVER SOLD A UNIT ANYWHERE. Verified against the live index
 //      at the top of this run, not asserted: for every other pair on the worklist,
@@ -40,6 +42,25 @@
 //      was written. Waiting costs an empty shelf that someone will notice; introducing
 //      early costs stock moved to a shop that never asked for it, which is the incident
 //      that started this work.
+//
+// ── CARRIAGE IS NOT ORDERING, AND THE REPORT MUST SAY WHICH IT MEANS ─────────
+// `introduce: true` decides whether a TARGET RESOLVES. Two guards further down the
+// deficit loop decide whether an INTENT IS RAISED, and neither consults provenance
+// or this flag: the loop guard (N human rejections while the source's counted cell
+// still claims stock → Recount Needed) and the 24h auto-retry.
+//
+// This is not hypothetical for the chosen pair. On 2026-08-17 at 13:37 an admin
+// REJECTED all five sizes of it at hub2, and the streak now stands at 4 of a limit
+// of 4 on every size while central's count shows stock. So applying this set today
+// arms the line and raises ZERO units — the target resolves and the loop guard parks
+// it. That is correct behaviour twice over: carriage answers "does this shop stock
+// the line" and a rejection answers "do we want this delivery now", and an opt-in
+// must not overrule a person who said no yesterday.
+//
+// So the report reads both guards live and prints "resolves" and "ACTUALLY ASKS" as
+// SEPARATE columns. A staging report that promised a full run while a human's
+// rejection was parked against it would be telling the owner the opposite of what
+// happens — and it is the number in that report that the decision to apply rests on.
 //
 // ── SHAPE OF THE WRITE ───────────────────────────────────────────────────────
 // One row per DECLARED CATALOGUE SIZE at /stock_targets/{loc}/{pid}/{sizeKey}:
@@ -121,31 +142,92 @@ const WORKLIST = [
   ["trophy", "p1784448340082"], ["trophy", "p1786800705938"], ["trophy", "p1786801945086"],
 ];
 
-const [productsSnap, targetsSnap, stockSnap, provSnap, cfgSnap] = await Promise.all([
+const [productsSnap, targetsSnap, stockSnap, provSnap, cfgSnap, streakSnap, retrySnap] = await Promise.all([
   db.ref("/products").once("value"),
   db.ref("/stock_targets").once("value"),
   db.ref("/stock").once("value"),
   db.ref("/stock_provenance").once("value"),
   db.ref("/config/refillEngine").once("value"),
+  db.ref("/refill_engine/rejectStreak").once("value"),
+  db.ref("/refill_engine/retryState").once("value"),
 ]);
 const products = productsSnap.val() || {};
 const targets = targetsSnap.val() || {};
 const stock = stockSnap.val() || {};
 const prov = provSnap.val() || {};
 const cfg = cfgSnap.val() || {};
+const rejectStreak = streakSnap.val() || {};
+const retryState = retrySnap.val() || {};
 const provLocs = Object.keys(prov).filter((k) => k !== "_meta");
+const NOW_MS = Date.now();
 
 const nameOf = (pid) => String(products?.[pid]?.name ?? "(unknown)").trim();
 const sizesOf = (pid) => (products?.[pid]?.sizes || []).map(String);
 const runFor = (loc) => cfg?.defaultRunByStore?.[loc] || {};
 const entryAt = (loc, pid) => prov?.[loc]?.[pid] ?? null;
 const soldAnywhere = (pid) => provLocs.filter((l) => Number(prov?.[l]?.[pid]?.s) > 0);
-// The engine's own opt-in test, restated on the data this script is about to write.
+const availAt = (loc, pid, sk) => Math.max(0, Number(stock?.[loc]?.[pid]?.[sk]?.qty) || 0);
+
+// The engine's opt-in test, restated on the data this script is about to write.
+// BOTH branches, because introducedAt() has two: an explicit /stock_targets row,
+// OR the destination's entry in a categoryPolicy category. Mirroring only the first
+// would print "not introduced yet" for a pair the engine already considers
+// introduced, and then claim credit for a change it did not make.
 const introducedRow = (loc, pid) => {
   const rows = targets?.[loc]?.[pid];
-  if (!rows || typeof rows !== "object") return false;
-  return Object.keys(rows).some((k) => rows[k]?.introduce === true);
+  if (rows && typeof rows === "object" && !Array.isArray(rows)
+      && Object.keys(rows).some((k) => rows[k]?.introduce === true)) return true;
+  const key = products?.[pid]?.categoryKey;
+  if (typeof key === "string" && key) {
+    const cat = cfg?.categoryPolicy?.[key];
+    if (cat && typeof cat === "object" && !Array.isArray(cat) && cat[loc]?.introduce === true) return true;
+  }
+  return false;
 };
+
+// ── THE REJECT GATES — WHY "IT CARRIES" IS NOT "IT ORDERS" ───────────────────
+// storeCarries() decides whether a target RESOLVES. Two independent guards sit
+// further down the deficit loop and can still park the cell, and neither consults
+// provenance or the introduce flag:
+//
+//   • THE LOOP GUARD (refill-engine.cjs streakState/`st.flagged`). N human
+//     rejections while the DENIER's counted cell still claims stock means the
+//     count is the problem, not the demand — the cell goes to Recount Needed and
+//     the scan raises nothing until someone recounts or taps "Ask again".
+//   • THE 24h AUTO-RETRY (`rt.nextRetryAt > now`). An ordinary rejection parks the
+//     cell until its scheduled retry.
+//
+// A report that says "introducing this raises the full run" while a human's
+// rejection is parked against it is telling the owner the opposite of what will
+// happen. So both are read live and mirrored here. This is a MIRROR of
+// streakState() — kept deliberately literal against the three conditions it
+// tests, because the engine does not export it.
+const streakLimit = Math.max(1, Number(cfg?.rejectStreakLimit) || 3);
+const confirmedOutMs = Math.max(1, Number(cfg?.confirmedOutDays) || 14) * 86400e3;
+const cooldownMin = Number(cfg?.recheckCooldownMinutes) || 1440;
+
+function rejectGate(dest, pid, size, sizeKey) {
+  const denier = cfg?.routes?.[dest] || null;
+  const s = rejectStreak?.[dest]?.[pid]?.[sizeKey] || null;
+  const rt = retryState?.[dest]?.[pid]?.[sizeKey] || null;
+  const out = { parked: false, why: null, streak: s, retry: rt, denier: s?.by || denier };
+  if (s) {
+    const ts = Date.parse(s.lastTs || 0) || 0;
+    const stale = NOW_MS - ts > confirmedOutMs;
+    const count = Number(s.count) || 0;
+    const has = out.denier ? availAt(out.denier, pid, sizeKey) : 0;
+    if (!stale && count >= streakLimit && has > 0) {
+      out.parked = true;
+      out.why = `LOOP GUARD — rejected ${count}× (limit ${streakLimit}) at \`${out.denier}\` while its count shows ${has}. Recount Needed; clears on a recount or "Ask again" in Health.`;
+      return out;
+    }
+  }
+  if (rt?.nextRetryAt && Date.parse(rt.nextRetryAt) > NOW_MS) {
+    out.parked = true;
+    out.why = `24h AUTO-RETRY — last rejected ${rt.lastRejectedAt}, next retry ${rt.nextRetryAt} (${cooldownMin}min cooldown).`;
+  }
+  return out;
+}
 
 say(`# Introduce set — Option B — ${EXECUTE ? "**EXECUTE**" : "STAGED (nothing written)"}`);
 say();
@@ -157,12 +239,14 @@ say(`## 1. The set`);
 say();
 say(`| location | pid | name | catalogue sizes | provenance there | carries there today | already introduced |`);
 say(`|---|---|---|---|---|---|---|`);
-let mismatched = 0;
+let mismatched = 0, sizeless = 0;
 for (const s of SET) {
   const e = entryAt(s.loc, s.pid);
   const live = nameOf(s.pid);
+  const sizes = sizesOf(s.pid);
   if (s.expectName && live !== s.expectName) mismatched += 1;
-  say(`| \`${s.loc}\` | \`${s.pid}\` | ${JSON.stringify(live)}${s.expectName && live !== s.expectName ? ` ⛔ expected ${JSON.stringify(s.expectName)}` : ""} | ${sizesOf(s.pid).join(", ") || "—"} | ${e ? JSON.stringify(e) : "absent"} | ${carriesByIndex(e) ? "TRUE" : "**false**"} | ${introducedRow(s.loc, s.pid) ? "YES" : "no"} |`);
+  if (!sizes.length) sizeless += 1;
+  say(`| \`${s.loc}\` | \`${s.pid}\` | ${JSON.stringify(live)}${s.expectName && live !== s.expectName ? ` ⛔ expected ${JSON.stringify(s.expectName)}` : ""} | ${sizes.join(", ") || "**none ⛔**"} | ${e ? JSON.stringify(e) : "absent"} | ${carriesByIndex(e) ? "TRUE" : "**false**"} | ${introducedRow(s.loc, s.pid) ? "YES" : "no"} |`);
 }
 say();
 if (mismatched) {
@@ -171,17 +255,32 @@ if (mismatched) {
   say(`catalogue have diverged since it was made. Nothing is written. Re-check before forcing it.`);
   say();
 }
+if (sizeless) {
+  // Without declared sizes there is nothing to write a row against, and the
+  // "already applied" branch below would otherwise report a set of zero rows as
+  // a set that is fully in place — a false all-clear on an empty write.
+  say(`⛔ **${sizeless} pid declares NO catalogue sizes**, so there is no size key to introduce it on`);
+  say(`and the size run has nothing to apply. Nothing is written. Fix the product record first.`);
+  say();
+}
+const refuse = mismatched + sizeless;
 
 // ── 2. WHAT IT RAISES TONIGHT ────────────────────────────────────────────────
 say(`## 2. What the introduction raises on the next scan`);
 say();
 say(`\`introduce: true\` makes storeCarries() answer TRUE, and the clothing size run then applies to`);
 say(`every declared size against the on-hand at that location. With every cell at zero that is the`);
-say(`FULL RUN, immediately — which is the whole reason this set is one product and not thirty-four.`);
+say(`FULL RUN — which is the whole reason this set is one product and not thirty-four.`);
 say();
-say(`| location | size | hub run target | units held there | units it will ask for | source available |`);
-say(`|---|---|---|---|---|---|`);
-let askTotal = 0;
+say(`**Carrying is not ordering.** Two guards sit below the target and consult neither provenance nor`);
+say(`the introduce flag: the loop guard (N human rejections while the source still counts stock) and`);
+say(`the 24h auto-retry. Both are read live below, because a report that promises a full run while a`);
+say(`human's rejection is parked against it is telling you the opposite of what will happen.`);
+say();
+say(`| location | size | run target | held | source | source has | resolves | ACTUALLY ASKS |`);
+say(`|---|---|---|---|---|---|---|---|`);
+let resolveTotal = 0, askTotal = 0;
+const parked = [];
 for (const s of SET) {
   const run = runFor(s.loc);
   const src = cfg?.routes?.[s.loc] || null;
@@ -189,15 +288,43 @@ for (const s of SET) {
     const sk = encodeSizeKey(size);
     const held = Number(stock?.[s.loc]?.[s.pid]?.[sk]?.qty) || 0;
     const t = Number(run[size]) || 0;
-    const ask = Math.max(0, t - Math.max(0, held));
+    const want = Math.max(0, t - Math.max(0, held));
+    resolveTotal += want;
+    const gate = rejectGate(s.loc, s.pid, size, sk);
+    const ask = gate.parked ? 0 : want;
     askTotal += ask;
-    const avail = Math.max(0, Number(stock?.[src]?.[s.pid]?.[sk]?.qty) || 0);
-    say(`| \`${s.loc}\` | ${size} | ${t || "—"} | ${held} | ${ask} | \`${src}\` holds ${avail} |`);
+    if (gate.parked) parked.push({ ...s, size, want, gate });
+    say(`| \`${s.loc}\` | ${size} | ${t || "—"} | ${held} | \`${src}\` | ${availAt(src, s.pid, sk)} | ${want} | ${gate.parked ? "**0 — PARKED**" : ask} |`);
   }
 }
 say();
-say(`**${askTotal} unit(s)** of demand, once the provenance index is ready and the rewired engine is live.`);
-say(`Against \`maxIntentsPerRun\` = ${JSON.stringify(cfg?.maxIntentsPerRun)} and mode ${JSON.stringify(cfg?.mode)}.`);
+if (parked.length) {
+  say(`### ⛔ ${parked.length} of ${resolveTotal ? sizesOf(SET[0].pid).length : 0} size(s) are PARKED BY A HUMAN REJECTION`);
+  say();
+  say(`The target resolves. The intent is not raised. **${resolveTotal} unit(s) would be asked for; ${askTotal} actually will be.**`);
+  say();
+  for (const p of parked) say(`- \`${p.loc}\` ${p.size} — ${p.gate.why}`);
+  say();
+  say(`**Read this before applying.** Somebody rejected these lines deliberately, in the app. The`);
+  say(`introduce flag does NOT override that and should not: carriage answers "does this shop stock`);
+  say(`the line", a rejection answers "do we want this delivery now", and they are different`);
+  say(`questions. Introducing is still the right standing decision — the flag is what lets the line`);
+  say(`arm at all once the rejection clears — but it will not move stock tonight.`);
+  say();
+  say(`To make it move: recount the source cell, or tap **Ask again** in Health for these sizes.`);
+  say(`Neither is this script's business, and neither should be done just to make a number appear.`);
+  say();
+} else {
+  say(`✅ No reject streak or retry gate is parked against any size. **${askTotal} unit(s)** of demand`);
+  say(`on the next scan after the rewired engine deploys.`);
+  say();
+}
+say(`Timing, precisely: \`introducedAt()\` is checked BEFORE the readiness gate (refill-engine.cjs),`);
+say(`so an introduced pair arms even while \`/stock_provenance/_meta\` is missing. **The gate is the`);
+say(`FUNCTIONS deploy, not the backfill** — nothing here moves until \`refillHealthScan\` ships the`);
+say(`rewired engine, and after that it moves on the next scan whether or not the index is ready.`);
+say();
+say(`Against \`maxIntentsPerRun\` = ${JSON.stringify(cfg?.maxIntentsPerRun)}, mode ${JSON.stringify(cfg?.mode)}, \`rejectStreakLimit\` = ${streakLimit}.`);
 say();
 
 // ── 3. THE CLAIM THE DECISION RESTS ON, RE-CHECKED ───────────────────────────
@@ -219,7 +346,7 @@ say(`|---|---|`);
 say(`| on the worklist | ${WORKLIST.length} |`);
 say(`| whose product has a recorded sale ANYWHERE | ${withSales.length} |`);
 say(`| **already carrying under the predicate today** (real trade turned them on) | **${nowCarries.length}** |`);
-say(`| still refused, and left refused by this decision | ${stillDark.length - SET.length} |`);
+say(`| still refused, and left refused by this decision | ${stillDark.filter((d) => !chosen.has(`${d.loc}|${d.pid}`)).length} |`);
 say(`| introduced by this script | ${SET.length} |`);
 say();
 if (withSales.length) {
@@ -251,22 +378,31 @@ if (nowCarries.length) {
 }
 
 // ── 4. BEFORE / AFTER ────────────────────────────────────────────────────────
-let rowsBefore = 0, introBefore = 0;
+let rowsBefore = 0, introBefore = 0, pinnedBefore = 0, zeroBefore = 0;
 for (const loc of Object.keys(targets)) {
   for (const pid of Object.keys(targets[loc] || {})) {
     for (const sk of Object.keys(targets[loc][pid] || {})) {
+      const row = targets[loc][pid][sk];
       rowsBefore += 1;
-      if (targets[loc][pid][sk]?.introduce === true) introBefore += 1;
+      if (row?.introduce === true) introBefore += 1;
+      if (typeof row?.target === "number") pinnedBefore += 1;
+      if (row?.target === 0) zeroBefore += 1;
     }
   }
 }
 const now = new Date().toISOString();
 const updates = {};
-if (!mismatched) {
+// Which size keys ALREADY hold a row? A leaf written under an existing row MERGES
+// into it rather than creating one, so the row total would be overstated — and the
+// "no existing row touched" sentence would be false. Measured, not assumed.
+const touchingExisting = [];
+if (!refuse) {
   for (const s of SET) {
     for (const size of sizesOf(s.pid)) {
       const sk = encodeSizeKey(size);
-      if (targets?.[s.loc]?.[s.pid]?.[sk]?.introduce === true) continue;   // idempotent
+      const row = targets?.[s.loc]?.[s.pid]?.[sk];
+      if (row?.introduce === true) continue;   // idempotent — already introduced
+      if (row) touchingExisting.push({ loc: s.loc, pid: s.pid, sk, row });
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introduce`] = true;
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introducedAt`] = now;
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introducedBy`] = ACTOR;
@@ -275,20 +411,31 @@ if (!mismatched) {
   }
 }
 const newRows = Object.keys(updates).filter((k) => k.endsWith("/introduce")).length;
+const brandNewRows = newRows - touchingExisting.length;
 
 say(`## 4. Before / after`);
 say();
 say(`| | before | after |`);
 say(`|---|---|---|`);
-say(`| \`/stock_targets\` rows total | ${rowsBefore} | ${rowsBefore + newRows} |`);
+say(`| \`/stock_targets\` rows total | ${rowsBefore} | ${rowsBefore + brandNewRows} |`);
 say(`| rows carrying \`introduce: true\` | ${introBefore} | ${introBefore + newRows} |`);
-say(`| rows carrying a numeric \`target\` | unchanged | unchanged |`);
-say(`| \`target: 0\` policy rows | unchanged | unchanged |`);
-say(`| locations answering carries for \`${SET.map((s) => s.pid).join(", ")}\` | ${SET.filter((s) => carriesByIndex(entryAt(s.loc, s.pid))).length} of ${SET.length} | ${SET.length} of ${SET.length} |`);
+say(`| rows carrying a numeric \`target\` | ${pinnedBefore} | ${pinnedBefore} |`);
+say(`| \`target: 0\` policy rows | ${zeroBefore} | ${zeroBefore} |`);
+say(`| locations answering carries for \`${SET.map((s) => s.pid).join(", ")}\` | ${SET.filter((s) => carriesByIndex(entryAt(s.loc, s.pid)) || introducedRow(s.loc, s.pid)).length} of ${SET.length} | ${SET.length} of ${SET.length} |`);
 say();
-say(`Nothing existing is modified: every path written is a NEW leaf under a size key that holds no`);
-say(`row today. No \`target\`, no \`minQty\`, no existing row touched.`);
-say();
+if (touchingExisting.length) {
+  say(`⚠️ **${touchingExisting.length} of the ${newRows} flag(s) land on a size key that ALREADY holds a row**, so they`);
+  say(`merge into it rather than creating one — which is why the row total above rises by only`);
+  say(`${brandNewRows}. Those rows keep every field they have, including any numeric \`target\`, and a`);
+  say(`numeric target OUTRANKS the size run. Check these before applying:`);
+  say();
+  for (const t of touchingExisting) say(`- \`${t.loc}/${t.pid}/${t.sk}\` → ${JSON.stringify(t.row)}`);
+  say();
+} else {
+  say(`Nothing existing is modified — checked, not assumed: every one of the ${newRows} path(s) written`);
+  say(`lands on a size key that holds no row today. No \`target\`, no \`minQty\`, no existing row touched.`);
+  say();
+}
 
 if (!EXECUTE) {
   say(`## Nothing written`);
@@ -297,26 +444,44 @@ if (!EXECUTE) {
   say(`node scripts/stage-introduce-set.mjs --execute`);
   say("```");
   say();
-  say(`${newRows} row(s) staged across ${Object.keys(updates).length} paths. Re-running after a partial`);
-  say(`failure skips rows that already carry the flag, so it repairs rather than doubles.`);
-} else if (mismatched) {
+  say(`${newRows} row(s) staged across ${Object.keys(updates).length} paths, one atomic update. A re-run`);
+  say(`skips any row that already carries the flag, so it resumes rather than doubles.`);
+} else if (refuse) {
   say(`## Refused`);
   say();
-  say(`Nothing written — see the pid/name disagreement above.`);
-} else if (!newRows) {
-  say(`## Already applied`);
-  say();
-  say(`Every row in the set already carries \`introduce: true\`. Nothing written.`);
+  say(`Nothing written — see the refusal(s) above.`);
 } else {
-  say(`## Applying`);
+  if (newRows) {
+    say(`## Applying`);
+    say();
+    try {
+      await db.ref().update(updates);
+    } catch (err) {
+      say(`⛔ the write FAILED and nothing landed: ${String(err?.message || err)}`);
+      say();
+      say(`A multi-path update is atomic, so this is all-or-nothing — re-run once the cause is fixed.`);
+      process.exitCode = 1;
+    }
+    if (!process.exitCode) say(`- wrote ${newRows} row(s), ${Object.keys(updates).length} paths, in one atomic update.`);
+  } else {
+    say(`## Already applied — re-verifying anyway`);
+    say();
+    say(`Every row in the set already carries \`introduce: true\`, so nothing is written. The invariant`);
+    say(`is still checked below: "already introduced" and "still correct" are different claims, and a`);
+    say(`row that acquired a numeric \`target\` since it was written is exactly what this run should`);
+    say(`catch. Skipping the check on the no-op path would blind it precisely when it is being used`);
+    say(`to confirm state. (CodeRabbit-substitute review, PR #380.)`);
+  }
   say();
-  await db.ref().update(updates);
-  say(`- wrote ${newRows} row(s), ${Object.keys(updates).length} paths, in one atomic update.`);
-  say();
+  // ── THE INVARIANT, CHECKED ON EVERY --execute ──────────────────────────────
+  // Runs whether or not anything was written. The row must carry the flag AND
+  // must NOT carry a numeric target: a `{target, minQty}` write is rule-shaped, so
+  // the console and any future app writer are ALLOWED to add one, which would
+  // silently pin the quantities and defeat the whole design of the row.
   say(`## Verification`);
   say();
   const fresh = (await db.ref("/stock_targets").once("value")).val() || {};
-  say(`| location | pid | size | introduce | has numeric target (must be no) |`);
+  say(`| location | pid | size | introduce | has numeric target (must be none) |`);
   say(`|---|---|---|---|---|`);
   let bad = 0;
   for (const s of SET) {
@@ -325,7 +490,7 @@ if (!EXECUTE) {
       const ok = row?.introduce === true;
       const pinned = typeof row?.target === "number";
       if (!ok || pinned) bad += 1;
-      say(`| \`${s.loc}\` | \`${s.pid}\` | ${size} | ${ok ? "✅ true" : "⛔ missing"} | ${pinned ? `⛔ ${row.target}` : "✅ none"} |`);
+      say(`| \`${s.loc}\` | \`${s.pid}\` | ${size} | ${ok ? "✅ true" : "⛔ missing"} | ${pinned ? `⛔ ${row.target} — the run is overruled` : "✅ none"} |`);
     }
   }
   say();
@@ -338,9 +503,19 @@ say();
 say(`Delete the rows. The predicate reverts to the index alone and the location goes dark again for`);
 say(`this product — no other product, no other location, nothing else keyed to these rows.`);
 say();
+say(`Runnable, not illustrative — each line removes one row:`);
+say();
 say("```bash");
-for (const s of SET) for (const size of sizesOf(s.pid)) say(`# stock_targets/${s.loc}/${s.pid}/${encodeSizeKey(size)}`);
+for (const s of SET) {
+  for (const size of sizesOf(s.pid)) {
+    say(`firebase database:remove /stock_targets/${s.loc}/${s.pid}/${encodeSizeKey(size)} --project marathon-club --force`);
+  }
+}
 say("```");
+say();
+say(`⚠️ That removes the WHOLE row, which is right only while the row holds nothing but the`);
+say(`introduce fields — the state this script writes and verifies above. If the table shows a`);
+say(`numeric target on a row, delete the \`introduce\` leaf alone instead.`);
 say();
 
 if (process.env.INTRO_MD) {
@@ -348,5 +523,5 @@ if (process.env.INTRO_MD) {
   writeFileSync(path, out.join("\n") + "\n");
   console.log(`\n[written] ${path}`);
 }
-if (mismatched) process.exitCode = 1;
+if (refuse) process.exitCode = 1;
 process.exit(process.exitCode || 0);

@@ -173,3 +173,62 @@ test("the plan raises hub2's full run and nothing else", () => {
   assert.strictEqual(plan.intents.filter((i) => i.productId === NOCTA && i.dest !== "hub2").length, 0);
   assert.deepStrictEqual(plan.errors, [], "no errors");
 });
+
+// ═══ 6. THE UNREADY CLAIM, AT PLAN LEVEL ═════════════════════════════════════
+// Test 3 pins "the opt-in survives an unready index" at resolveTarget. That is the
+// wrong altitude to leave it at on its own: the intent has to survive managedPids,
+// sizesFor AND the deficit loop, and none of those is exercised by calling
+// resolveTarget directly. A future "consistency cleanup" that added
+// `if (!indexReady(meta, dest)) continue` to the deficit loop would silently stop
+// every introduced pair from arming until the backfill ran — and every other test
+// in this file would stay green, because they all use a ready index.
+//
+// The distinction is operational, not academic: `introduce` is checked BEFORE the
+// readiness gate precisely so an owner can arm a line during the window where the
+// index is not yet built. If that stopped working, the opt-in would be useless in
+// exactly the situation it was designed for.
+test("an introduced pair raises its full run through computeRefillPlan with NO sentinel at all", () => {
+  const plan = computeRefillPlan({
+    nowMs: NOW, config: CONFIG, products: PRODUCTS,
+    targets: { hub2: { [NOCTA]: introduceRows() } },
+    stock: {
+      central: { [NOCTA]: { S: { qty: 2, v: 0 }, M: { qty: 5, v: 0 }, L: { qty: 4, v: 0 }, XL: { qty: 2, v: 0 }, XXL: { qty: 2, v: 0 } } },
+      hub2: { [NOCTA]: { S: seed(), M: seed(), L: seed(), XL: seed(), XXL: seed() }, [OTHER]: { M: seed() } },
+    },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+    provenance: {}, provenanceMeta: {},          // ← nothing ready, anywhere
+  });
+  const mine = plan.intents.filter((i) => i.productId === NOCTA && i.dest === "hub2");
+  assert.deepStrictEqual(
+    Object.fromEntries(mine.map((i) => [i.size, i.qty])),
+    { S: 2, M: 3, L: 3, XL: 2, XXL: 2 },
+    "the introduce opt-in must arm without a readiness sentinel — that is its whole purpose",
+  );
+  // The un-introduced neighbour is the control: same unready index, no row, nothing.
+  assert.strictEqual(plan.intents.filter((i) => i.productId === OTHER).length, 0);
+});
+
+// ═══ 7. CARRIAGE IS NOT ORDERING ═════════════════════════════════════════════
+// The reject guards sit BELOW the target and consult neither provenance nor the
+// introduce flag. This is pinned because the staging script reports on it, and a
+// report that promised a full run while a human's rejection was parked against the
+// line would be telling the owner the opposite of what happens. Live on
+// 2026-08-18: all five sizes of this exact pair sit at reject streak 4 of 4.
+test("a reject streak at the limit parks the line even though the row introduces it", () => {
+  const strike = { by: "central", count: 4, lastTs: "2026-08-18T06:00:00.000Z" };
+  const plan = computeRefillPlan({
+    nowMs: NOW, config: { ...CONFIG, rejectStreakLimit: 4 }, products: PRODUCTS,
+    targets: { hub2: { [NOCTA]: introduceRows() } },
+    stock: {
+      central: { [NOCTA]: { S: { qty: 2, v: 0 }, M: { qty: 5, v: 0 }, L: { qty: 4, v: 0 }, XL: { qty: 2, v: 0 }, XXL: { qty: 2, v: 0 } } },
+      hub2: { [NOCTA]: { S: seed(), M: seed(), L: seed(), XL: seed(), XXL: seed() } },
+    },
+    openIndex: {}, refillRequests: {}, orders: {}, movements: [],
+    provenance: {}, provenanceMeta: ready("hub2", "marathon-pe", "trophy"),
+    rejectStreak: { hub2: { [NOCTA]: { S: strike, M: strike, L: strike, XL: strike, XXL: strike } } },
+  });
+  assert.strictEqual(
+    plan.intents.filter((i) => i.productId === NOCTA && i.dest === "hub2").length, 0,
+    "the loop guard outranks the introduction — a human's rejection is not overridden by a target",
+  );
+});
