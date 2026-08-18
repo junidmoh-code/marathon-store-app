@@ -51,11 +51,17 @@ const STOCK = {
   "marathon-pe": { [TEE]: { S: cell(0), M: cell(0), L: cell(0) } },
 };
 
-const snap = (provenance) => ({
+// The source's sentinel is a SEPARATE axis from the source's data, and both have to
+// vary. A planner that read source provenance only when the SOURCE INDEX WAS READY
+// would slip past a fixture that never makes it ready — both variants would take the
+// same branch and the comparison would prove nothing. (CodeRabbit, PR #382.)
+const snap = (provenance, { sourceReady = false } = {}) => ({
   nowMs: NOW, config: CONFIG, products: PRODUCTS, targets: {}, stock: STOCK,
   openIndex: {}, refillRequests: {}, orders: {}, movements: [],
   provenance,
-  provenanceMeta: ready("hub1", "hub2", "marathon-pe", "trophy"),
+  provenanceMeta: sourceReady
+    ? ready("hub1", "hub2", "marathon-pe", "trophy", "central")
+    : ready("hub1", "hub2", "marathon-pe", "trophy"),
 });
 
 // Carriage at every DESTINATION, plus the source. `central` is a source only.
@@ -66,19 +72,42 @@ const WITH_SOURCE = {
 };
 const WITHOUT_SOURCE = { hub2: { [TEE]: { k: 40 } }, "marathon-pe": { [TEE]: { s: 9 } } };
 
+// THE WHOLE plan object, not a chosen handful of fields. Listing fields by hand is
+// how `resizes`, `satisfiedClosures`, `streakOps`, `retryOps`, `exceptions` and
+// `policy` went uncompared in the first version of this test — and any one of them
+// could carry a source-derived value. (CodeRabbit, PR #382.)
+const wholePlan = (p) => JSON.stringify(p, Object.keys(p).sort());
+
 test("the plan is IDENTICAL with and without the source's provenance — so reading it is pure cost", () => {
   const withIt = computeRefillPlan(snap(WITH_SOURCE));
   const without = computeRefillPlan(snap(WITHOUT_SOURCE));
-
-  // The whole plan, not just the intents: closes, resizes, exceptions and the
-  // health block all have to be untouched, or "unused" is too strong a word.
-  assert.deepStrictEqual(without.intents, withIt.intents);
-  assert.deepStrictEqual(without.closes, withIt.closes);
-  assert.deepStrictEqual(without.errors, withIt.errors);
-  assert.deepStrictEqual(without.stats, withIt.stats);
-
-  // And it is not vacuous — the fixture really does plan work.
+  assert.strictEqual(wholePlan(without), wholePlan(withIt));
+  // Not vacuous — the fixture really does plan work.
   assert.ok(withIt.intents.length > 0, "fixture must produce intents or it proves nothing");
+  // And the comparison really does cover the fields that were missing before.
+  for (const k of ["intents", "closes", "resizes", "satisfiedClosures", "streakOps", "retryOps", "errors", "policy", "stats", "exceptions"]) {
+    assert.ok(k in withIt, `the plan must expose ${k} for this comparison to be complete`);
+  }
+});
+
+test("…and STILL identical when the source's index is READY — the sentinel axis", () => {
+  // The gap CodeRabbit found. With `central` absent from the meta in both variants,
+  // a planner that consulted source provenance only behind an indexReady(source)
+  // check would take the same branch either way and this suite would stay green
+  // while the source read had quietly become load-bearing.
+  const withIt = computeRefillPlan(snap(WITH_SOURCE, { sourceReady: true }));
+  const without = computeRefillPlan(snap(WITHOUT_SOURCE, { sourceReady: true }));
+  assert.strictEqual(wholePlan(without), wholePlan(withIt));
+  assert.ok(withIt.intents.length > 0);
+});
+
+test("making the source READY changes nothing at all — the sentinel is not consulted either", () => {
+  // Stronger still: not merely "the two agree with each other", but "the source's
+  // readiness is invisible to the plan". If that ever stops being true, the read
+  // scope has to be revisited deliberately.
+  const unready = computeRefillPlan(snap(WITH_SOURCE, { sourceReady: false }));
+  const readySrc = computeRefillPlan(snap(WITH_SOURCE, { sourceReady: true }));
+  assert.strictEqual(wholePlan(readySrc), wholePlan(unready));
 });
 
 test("a source with NO sentinel changes nothing either — readiness is asked only of destinations", () => {
