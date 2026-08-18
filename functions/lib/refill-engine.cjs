@@ -245,6 +245,7 @@ function isFootwear(product) {
 // surfaces it in the Health view (refill-scan.cjs), because a permanently quiet
 // engine is the failure mode this direction risks.
 const { carriesByIndex, indexReady, provenanceEntry } = require("./provenance-index.cjs");
+const { computeStarved } = require("./starved-list.cjs");
 
 // Has the owner explicitly introduced this line at this location? Either on any
 // explicit /stock_targets row for the product at that destination (a per-size row
@@ -2080,6 +2081,17 @@ function computeRefillPlan(snapshot) {
   }
 
   const cap = (arr, n = 300) => ({ count: arr.length, items: arr.slice(0, n) });
+
+  // ── THE STARVED LIST — the silent-miss detector (see lib/starved-list.cjs) ──
+  // A wrong refusal is invisible by construction: no error, no request, no card,
+  // just a shelf that stops being refilled. This surfaces every pair the index
+  // refuses WHILE the shop holds units, has sold inside the window, or has an open
+  // ask. `storeCarries` is passed in rather than reimplemented so the card can
+  // never disagree with the decision it is reporting on.
+  const starved = computeStarved({
+    dests, stock, products, provenance, provenanceMeta, movements, openIndex, targets,
+    carries: (dest, pid) => storeCarries(ctx, dest, pid),
+  });
   return {
     intents: plannedIntents,
     closes,
@@ -2138,6 +2150,7 @@ function computeRefillPlan(snapshot) {
       onlyInHub2: cap(onlyInHub2),
       excess: cap(excess),
       negativeCells: cap(negativeCells),
+      starved: cap(starved, 600),
     },
   };
 }
