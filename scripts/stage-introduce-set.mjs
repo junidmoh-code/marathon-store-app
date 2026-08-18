@@ -396,6 +396,11 @@ const updates = {};
 // into it rather than creating one, so the row total would be overstated — and the
 // "no existing row touched" sentence would be false. Measured, not assumed.
 const touchingExisting = [];
+// Rows this run CREATES, as opposed to rows it merges a flag into. The distinction is
+// only visible here, and the rollback below is wrong without it: deleting a whole row
+// that someone else created — and this run merely added a flag to — destroys their
+// target along with our flag. (CodeRabbit, PR #380.)
+const brandNew = new Set();
 if (!refuse) {
   for (const s of SET) {
     for (const size of sizesOf(s.pid)) {
@@ -403,6 +408,7 @@ if (!refuse) {
       const row = targets?.[s.loc]?.[s.pid]?.[sk];
       if (row?.introduce === true) continue;   // idempotent — already introduced
       if (row) touchingExisting.push({ loc: s.loc, pid: s.pid, sk, row });
+      else brandNew.add(`stock_targets/${s.loc}/${s.pid}/${sk}`);
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introduce`] = true;
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introducedAt`] = now;
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introducedBy`] = ACTOR;
@@ -454,6 +460,37 @@ if (!EXECUTE) {
   if (newRows) {
     say(`## Applying`);
     say();
+    // ── OWNERSHIP RE-CHECK, AS LATE AS POSSIBLE (CodeRabbit, PR #380) ────────
+    // The match table was computed from a snapshot taken minutes ago. If another
+    // writer created one of these rows since — the app's target editor, the
+    // Introduce Existing migration, another script — then merging a flag into it
+    // silently attaches this decision to somebody else's row, and the rollback
+    // below would delete their work along with our flag.
+    //
+    // RTDB has no conditional multi-path update, so this is a guard, not a CAS: it
+    // re-reads each affected row and refuses if the answer moved. Same honest limit
+    // as the negative-cell script — it narrows the window to one round trip and
+    // does not close it. Run it quiet, or accept a one-row blast radius that the
+    // report names exactly.
+    const rowPaths = [...new Set(Object.keys(updates).map((k) => k.replace(/\/[^/]+$/, "")))];
+    const fresh = await Promise.all(rowPaths.map((p) => db.ref(p).once("value").then((s) => s.val())));
+    const moved = [];
+    rowPaths.forEach((p, i) => {
+      const before = brandNew.has(p) ? null : (touchingExisting.find((t) => `stock_targets/${t.loc}/${t.pid}/${t.sk}` === p)?.row ?? null);
+      const nowRow = fresh[i];
+      if (before === null && nowRow !== null) moved.push(`${p} — created by another writer since the match table`);
+      else if (before !== null && JSON.stringify(nowRow) !== JSON.stringify(before)) moved.push(`${p} — changed since the match table`);
+    });
+    if (moved.length) {
+      say(`⛔ **Refused at the ownership re-check — nothing written.** ${moved.length} row(s) moved since the`);
+      say(`match table above was computed, so applying would merge this decision into a row someone else`);
+      say(`just wrote:`);
+      say();
+      for (const m of moved) say(`- \`${m}\``);
+      say();
+      say(`Re-run to get a fresh match table and decide against the current state.`);
+      process.exitCode = 1;
+    } else {
     try {
       await db.ref().update(updates);
     } catch (err) {
@@ -463,6 +500,7 @@ if (!EXECUTE) {
       process.exitCode = 1;
     }
     if (!process.exitCode) say(`- wrote ${newRows} row(s), ${Object.keys(updates).length} paths, in one atomic update.`);
+    }
   } else {
     say(`## Already applied — re-verifying anyway`);
     say();
@@ -503,19 +541,30 @@ say();
 say(`Delete the rows. The predicate reverts to the index alone and the location goes dark again for`);
 say(`this product — no other product, no other location, nothing else keyed to these rows.`);
 say();
-say(`Runnable, not illustrative — each line removes one row:`);
+say(`Runnable, not illustrative. A row this run CREATED is removed whole; a row that already`);
+say(`existed and merely gained the flag has ONLY the introduce leaves removed — deleting it whole`);
+say(`would destroy a target somebody else wrote. (CodeRabbit, PR #380.)`);
 say();
 say("```bash");
-for (const s of SET) {
-  for (const size of sizesOf(s.pid)) {
-    say(`firebase database:remove /stock_targets/${s.loc}/${s.pid}/${encodeSizeKey(size)} --project marathon-club --force`);
+{
+  const merged = new Set(touchingExisting.map((t) => `stock_targets/${t.loc}/${t.pid}/${t.sk}`));
+  for (const s of SET) {
+    for (const size of sizesOf(s.pid)) {
+      const p = `stock_targets/${s.loc}/${s.pid}/${encodeSizeKey(size)}`;
+      if (merged.has(p)) {
+        for (const leaf of ["introduce", "introducedAt", "introducedBy", "note"]) {
+          say(`firebase database:remove /${p}/${leaf} --project marathon-club --force`);
+        }
+      } else {
+        say(`firebase database:remove /${p} --project marathon-club --force`);
+      }
+    }
   }
 }
 say("```");
 say();
-say(`⚠️ That removes the WHOLE row, which is right only while the row holds nothing but the`);
-say(`introduce fields — the state this script writes and verifies above. If the table shows a`);
-say(`numeric target on a row, delete the \`introduce\` leaf alone instead.`);
+say(`⚠️ Re-read the match table before pasting: which branch a row belongs in is decided by whether`);
+say(`it existed when this ran, and that is a fact about the moment, not about the path.`);
 say();
 
 if (process.env.INTRO_MD) {
