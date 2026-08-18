@@ -421,11 +421,30 @@ async function runScan() {
     // There is deliberately NO fallback to cell-existence: that fallback is the
     // 2026-08-17 bug, and reverting to it on a bad read would be the worst of
     // both worlds — the fix appears deployed and behaves as if it were not.
+    // ── DESTINATIONS ONLY — NOT `locs` ─────────────────────────────────────────
+    // `locs` is destinations ∪ sources, because /stock is needed at BOTH ends: the
+    // source's on-hand decides what can actually be sent. Provenance is not
+    // symmetric that way. `storeCarries()` is only ever asked about a DESTINATION —
+    // every call site passes `dest`, and `dests` is `Object.keys(routes)` — so a
+    // source's subtree is downloaded, parsed, and never read.
+    //
+    // MEASURED 2026-08-18 against the live index: central is 40,324 B of the
+    // 217,030 B this block was fetching, or 18.6%. At 49 scans a day that is
+    // 1.9 MB/day, 57 MB/month, of Outgoing Bandwidth — the SKU behind the $409
+    // month — paid for data no branch consults. Restricting the read to
+    // destinations takes the block to 176,706 B/run, 248 MB/month.
+    //
+    // The granularity above and below this is worse, both ways. One request per
+    // (loc, pid) would be thousands of round trips per scan against ~6,400 managed
+    // pairs. The whole node in one read would pull every location including the
+    // three that are not refill destinations at all. Per-destination subtree is the
+    // level at which the read matches the question.
+    const provLocs = Object.keys(config.routes || {});
     let provenance = {}, provenanceMeta = {};
     try {
       const [metaSnap, ...provSnaps] = await Promise.all([
         db.ref("stock_provenance/_meta").once("value"),
-        ...locs.map((l) => db.ref(`stock_provenance/${l}`).once("value").then((s) => [l, s.val() || {}])),
+        ...provLocs.map((l) => db.ref(`stock_provenance/${l}`).once("value").then((s) => [l, s.val() || {}])),
       ]);
       provenanceMeta = metaSnap.val() || {};
       provenance = Object.fromEntries(provSnaps);
