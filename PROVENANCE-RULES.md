@@ -9,52 +9,45 @@ console-managed** — nothing here edits it, and nobody should run
 ## Order of operations
 
 1. **Paste the rules below** in the Firebase console → Realtime Database → Rules → Publish.
-2. **Run the backfill** — `node scripts/backfill-stock-provenance.mjs --execute`.
-   It writes pair records first and the readiness sentinel last, per location.
-3. **Deploy the functions** — `firebase deploy --only functions:refillHealthScan`.
-4. **Deploy hosting** — `firebase deploy --only hosting:marathon-club`.
+2. **Deploy hosting** — `firebase deploy --only hosting:marathon-club`.
+3. **Run the backfill IN A QUIET WINDOW** — `node scripts/backfill-stock-provenance.mjs --execute`.
+   Outside trading hours. It refuses and removes the sentinels if anything writes
+   provenance while it runs, which during trading it will.
+4. **Deploy the functions** — `firebase deploy --only functions:refillHealthScan`.
 
-**The order is binding in both directions.**
+**⚠ THIS ORDER WAS REVISED 2026-08-17. Hosting moved from LAST to SECOND.** The earlier
+version put hosting last so the backfill could not race forward maintenance. That was
+right about the race and wrong about the cost, because it left a window in which the
+index was materialised but *not maintained* — and that window is not safe in both
+directions.
+
+Measured on the live ledger: an unrecorded `STOCKING` or `SALE` movement leaves a
+counter too LOW, so the predicate under-states carriage and fails toward NOT arming —
+harmless. But an unrecorded **UNSTOCK** leaves `u` too low, so `k − u` is too HIGH, so
+the index **over-states** carriage and fails toward arming a shop that holds nothing.
+That is the bug this whole index exists to prevent, so a window that can produce it is
+not acceptable regardless of how narrow it is.
+
+Rate at which it matters: ~880–1,000 movements/day overall (105–139/hour in trading),
+of which UNSTOCK is **14 in 59 days** — 0.24/day, one every ~4 days, all
+`clothing_cr_undo`. So the exposure was small. It was still the wrong direction, and
+sequencing hosting second removes it entirely: forward maintenance is live before the
+index is published, so there is no unmaintained window at all.
+
+The cost of the new order is that step 3 must run quiet. The backfill detects contention
+and refuses rather than publishing something it cannot vouch for, so a daytime run is
+safe but will simply decline. Run it before 07:00 or after 19:00.
 
 Doing **1 late** fails loudly: the backfill uses the Admin SDK and bypasses rules, but the
 app's forward maintenance (`applyMovement`) is a client write inside the atomic stock
 update, so an unruled path rejects the whole movement — the cell and the ledger record
-along with it. Every stock write in the app would fail.
+along with it. Every stock write in the app would fail. Rules genuinely must be first.
 
-Doing **2 late** used to be described here as "safe but pointless". **That was wrong**, and
-CodeRabbit caught it on PR #376. An unready index makes `resolveTarget` return null for
-every rule-managed cell, and the engine's `needGone` branch would have read that as
-"nobody needs this any more" — cancelling the entire live rule-managed queue at every
-destination in one scan, orders deleted. The engine is now guarded (the `!t` withdrawal
-branch requires a ready index, `refill-engine.cjs`), so a missing or unreadable index
-pauses new demand and withdraws nothing *on account of being missing*.
-
-To be precise, because the imprecise version of this sentence was itself a review finding:
-an unready index suppresses only the **provenance-dependent** withdrawal — the one where no
-target resolved at all. Withdrawals that rest on their own evidence carry on as they should:
-an explicit `target: 0` row (a human's "excluded") and a request whose target is already met
-by stock on hand. Neither consults provenance, so neither should pause. Step 2 still belongs
-before step 3, but getting it wrong no longer destroys the queue.
-
-**4 goes last, and this is now a correctness requirement rather than tidiness.** The
-backfill SETs counters from a ledger read. If the app's forward maintenance is live at the
-same time, some of those increments are overwritten — and that is not a harmless staleness.
-The predicate is `k − u > 0`, so overwriting a concurrent **`u`** increment makes net
-stocking LARGER and can arm a shop that holds nothing: the exact bug this index exists to
-prevent, reintroduced by its own repair path. (Found by CodeRabbit on PR #376, after two
-earlier reconciliation designs had already been rejected for double-counting.)
-
-No write protocol fixes this from the ledger alone, because "was this already counted" is
-not a question the ledger answers. So the backfill **detects** whether it ran alone and
-either claims authority or removes the readiness sentinels, leaving every location unarmed
-for a later quiet run — never a half-trusted index. With hosting deployed last, the app
-carrying the provenance leg is not live during the backfill and the run is quiescent by
-construction. The POS app never writes this node.
-
-If the backfill reports **CONTENDED** and removes the sentinels, nothing is broken: at an
-unready location the engine arms nothing new and withdraws nothing because of the missing
-index (explicit-0 and target-met withdrawals continue, as above). Re-run it in a quiet
-window.
+Doing **4 early** is not destructive but silences all rule-based and category-based
+auto-refill until the backfill claims authority: the engine refuses to arm a location
+whose sentinel is missing. An unready index withdraws nothing *on account of being
+missing* — the `needGone` guard covers that — though explicit `target: 0` and target-met
+withdrawals continue, because neither consults provenance.
 
 ## Where it goes
 

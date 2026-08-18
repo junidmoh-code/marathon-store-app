@@ -54,8 +54,21 @@
 // sentinel is missing, so this backfill should complete before the rewired engine
 // deploys — otherwise those locations arm nothing until it does. (The engine no
 // longer WITHDRAWS on an unready index either; that was a genuine hazard and is
-// fixed in refill-engine.cjs.) Full order, and why hosting is last, in
-// PROVENANCE-RULES.md: rules → backfill → functions → hosting.
+// fixed in refill-engine.cjs.)
+//
+// ORDER — rules → HOSTING → this script, quiet → functions.
+// See PROVENANCE-RULES.md for the measurement behind it. Hosting is SECOND, not last.
+// An earlier version of this file said last, reasoning that it kept forward maintenance
+// from racing the backfill. It does — but it also leaves the index materialised and
+// UNMAINTAINED until hosting lands, and that interval is not safe in both directions:
+// an unrecorded UNSTOCK leaves `u` low, so `k − u` reads HIGH, so the index over-states
+// carriage and fails toward ARMING a shop that holds nothing. Under-counting `s` or `k`
+// merely under-arms; over-counting carriage is the bug this index exists to prevent.
+//
+// With hosting already live, a daytime run is not dangerous — it is merely futile. The
+// full-subtree contention check sees the concurrent writes and REMOVES the sentinels
+// rather than claiming authority. Quiescence is what this script verifies, never what
+// the deploy order assumes on its behalf. Run it before 07:00 or after 19:00.
 //
 // SEED CELLS ESTABLISH NOTHING. 540 cells carry `mv: "seed"` from setCellState(),
 // which writes outside the ledger by design, and 34 (loc,pid) pairs have no other
@@ -63,7 +76,7 @@
 // the provenance study for why both readings are defensible and why the
 // conservative one was taken.
 //
-// Usage:
+// Usage (step 3 of four — see the ORDER note below; hosting must already be deployed):
 //   node scripts/backfill-stock-provenance.mjs                      # dry run
 //   node scripts/backfill-stock-provenance.mjs --execute            # apply
 //   LEDGER_DIR=/path node scripts/backfill-stock-provenance.mjs     # use a cache
@@ -88,6 +101,51 @@ admin.initializeApp({
   databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
 });
 const db = admin.database();
+
+// ── COMPARING TWO PROVENANCE RECORDS ─────────────────────────────────────────
+// NOT JSON.stringify. The first live --execute run reported 283 pairs as CONTENDED
+// and removed every sentinel, on differences that were entirely key ORDER: RTDB
+// returns a node's children lexicographically (`{k, s}`) while `toRecord` builds them
+// in counter order (`{s, k, u}`), so `{"s":2,"k":14}` and `{"k":14,"s":2}` — the same
+// record — compared unequal. The fail-safe behaved exactly as designed; it was the
+// evidence feeding it that was wrong.
+//
+// The contract is three integer counters, so the comparison is on those three values,
+// with an absent counter and a zero counter treated alike (toRecord omits zeroes, so
+// both spellings of "none" occur). Any key outside the contract on either side is
+// still a real difference and still reported — that is a foreign write, which is
+// exactly what this check exists to catch.
+// CANONICALISING, NOT FORGIVING. The distinction is the whole point: this check is the
+// fail-safe that stopped a bad publish, and it is not being traded for convenience.
+//
+// Equal ONLY when, for each of the three counters, the two records agree on the same
+// integer — where "absent" and "0" are the same integer, because toRecord OMITS zeroes
+// and so both spellings of "none" legitimately occur in live data. Everything else is a
+// difference:
+//   • any counter differing by any amount, in either direction  → different
+//   • a counter PRESENT but not a finite integer                → different (a corrupt
+//     or foreign write must not be laundered into 0 and matched against an absent one)
+//   • any key outside the three                                 → different
+//   • a null/array/non-object on one side only                  → different
+function normCounter(v) {
+  if (v === undefined || v === null) return 0;                     // absent === zero
+  if (typeof v !== "number" || !Number.isFinite(v) || v % 1 !== 0) return NaN;   // corrupt
+  return v;
+}
+const COUNTER_FIELDS = ["s", "k", "u"];
+function sameRecord(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  if (typeof a !== "object" || typeof b !== "object" || Array.isArray(a) || Array.isArray(b)) return false;
+  for (const f of COUNTER_FIELDS) {
+    const x = normCounter(a[f]), y = normCounter(b[f]);
+    // NaN !== NaN, so a corrupt counter can never compare equal to anything — not even
+    // to another corrupt one. That is deliberate: it forces CONTENDED rather than a
+    // quiet match.
+    if (!(x === y)) return false;
+  }
+  const foreign = (o) => Object.keys(o).some((k) => !COUNTER_FIELDS.includes(k));
+  return !foreign(a) && !foreign(b);
+}
 
 async function readPaged(path, pageSize = 3000) {
   const acc = {}; let lastKey = null;
@@ -395,9 +453,12 @@ if (!EXECUTE) {
   // concurrent movement for a previously unseen (loc, pid) creates its counter at a
   // path pass 1 never had, which such a check cannot see.
   //
-  // In the documented deploy order this is quiescent by construction: hosting goes
-  // last, so the app carrying applyMovement's provenance leg is not live yet, and the
-  // POS app never writes this node.
+  // NOTHING HERE ASSUMES QUIESCENCE — it is verified. Under the documented order hosting
+  // is already live, so applyMovement's provenance leg CAN write while this runs; that
+  // is precisely why the check below is a full-subtree comparison rather than a trust in
+  // sequencing. A run during trading finds contention and declines. A run in a quiet
+  // window finds none and claims authority. (The POS app never writes this node, so
+  // tills are not a source of contention — only this repo's own hosting bundle is.)
   say();
   say(`### Authoritative-or-unready pass`);
   say();
@@ -439,7 +500,7 @@ if (!EXECUTE) {
         const expected = payload[path] ?? preExistingOrphans.get(path) ?? null;
         if (expected === null) {
           contended.push({ path, live: liveLoc[pid], expected: "(pair did not exist when this run started)" });
-        } else if (JSON.stringify(liveLoc[pid]) !== JSON.stringify(expected)) {
+        } else if (!sameRecord(liveLoc[pid], expected)) {
           contended.push({ path, live: liveLoc[pid], expected });
         }
       }
@@ -518,9 +579,13 @@ if (!EXECUTE) {
     say(`Pair records are still in place (they are useful and mostly correct) but every location now`);
     say(`reads as UNREADY, so the engine arms nothing new and withdraws nothing on account of the`);
     say(`missing index. (Explicit \`target: 0\` and target-met withdrawals still run — they never`);
-    say(`consulted provenance.) Re-run this script during`);
-    say(`a quiet window — with hosting not yet carrying the provenance leg, per PROVENANCE-RULES.md —`);
-    say(`and it will claim authority and write the sentinels.`);
+    say(`consulted provenance.)`);
+    say();
+    say(`WHAT TO DO: re-run this script in a QUIET WINDOW — before 07:00 or after 19:00 SAST. Something`);
+    say(`is writing /stock_provenance concurrently, which is expected once hosting is live (that is the`);
+    say(`documented order: rules → hosting → this script → functions). A concurrent writer cannot be`);
+    say(`reconciled from the ledger, so the run declines instead of publishing a number it cannot`);
+    say(`vouch for. Nothing is broken and nothing needs undoing.`);
   } else {
     // `pairs` keeps ONE meaning in both writes: pairs this run computed for the
     // location. Counted from `payload`, which now includes any increments applied
