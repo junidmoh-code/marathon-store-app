@@ -135,13 +135,17 @@ export function carriageAt({ provenance, provenanceMeta, targets, categoryPolicy
 /**
  * The whole decision for one Solve press, across every location it would seed.
  *
+ * Takes no `sizes`: carriage is a fact about the (location, product) pair, not about
+ * any size of it. The run only matters once a plan is being turned into rows, which is
+ * introduceUpdates' job. (CodeRabbit, PR #381.)
+ *
  * ALL-OR-NOTHING ON BLOCKED. A central-stranded solve seeds hub2 AND the store, and
  * the two are one causal chain — the engine's first leg is central→hub2 and the second
  * only fires once hub2 receives. Seeding the half we can vouch for would leave demand
  * that can never complete, which is a subtler version of the same false promise. If
  * any location is BLOCKED the whole solve is refused.
  */
-export function solveCarriagePlan({ locs, pid, sizes, provenance, provenanceMeta, targets, categoryPolicy, categoryKey }) {
+export function solveCarriagePlan({ locs, pid, provenance, provenanceMeta, targets, categoryPolicy, categoryKey }) {
   const at = (locs || []).map((loc) => carriageAt({ provenance, provenanceMeta, targets, categoryPolicy, categoryKey, loc, pid }));
   const blocked = at.filter((a) => a.state === BLOCKED);
   const introduce = at.filter((a) => a.state === INTRODUCE);

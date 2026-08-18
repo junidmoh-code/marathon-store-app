@@ -279,7 +279,7 @@ describe("the store the panel names is the store the write uses", () => {
     // Declared as ALREADY CARRIED, which is what this test always meant: it was
     // written when a seed WAS the carriage, so the product it describes is one the
     // engine agrees the shop stocks. The introduce path is covered separately below.
-    carries("p1786357771559", "hub2", "trophy", "marathon-pe");
+    carries(BEANIE, "hub2", "trophy", "marathon-pe");
     const tree = render(TROPHY_ONLY);
     expect(solveButton(tree).props.disabled).toBe(false);
     await act(async () => { solveButton(tree).props.onClick(); });
@@ -482,7 +482,7 @@ describe("Solve writes carriage cells and NEVER a target row", () => {
     // Declared as ALREADY CARRIED, which is what this test always meant: it was
     // written when a seed WAS the carriage, so the product it describes is one the
     // engine agrees the shop stocks. The introduce path is covered separately below.
-    carries("p1786357771559", "hub2", "trophy", "marathon-pe");
+    carries(BEANIE, "hub2", "trophy", "marathon-pe");
     const targets = {
       hub2: { [BEANIE]: { _: { target: 15 } } },
       trophy: { [BEANIE]: { _: { target: 5 } } },

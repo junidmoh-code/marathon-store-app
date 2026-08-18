@@ -155,9 +155,17 @@ const MUTATIONS = [
   },
 ];
 
+// THE REPOSITORY'S vitest, resolved explicitly — never `npx`.
+// A mutation harness whose verdict comes from a DIFFERENT vitest than the suite
+// normally runs under is not proof of anything: `npx` will fall back to a global
+// (or a fetched) binary when local resolution misses, and the failure mode is a
+// silent PASS on a mutation that a correct run would have killed. `process.execPath`
+// plus the local entry point removes the choice. (CodeRabbit, PR #381.)
+const VITEST = new URL("../node_modules/vitest/vitest.mjs", import.meta.url).pathname;
+
 function runVitest(files) {
   try {
-    execFileSync("npx", ["vitest", "run", ...files, "--silent"], { stdio: "pipe", maxBuffer: 64 * 1024 * 1024 });
+    execFileSync(process.execPath, [VITEST, "run", ...files, "--silent"], { stdio: "pipe", maxBuffer: 64 * 1024 * 1024 });
     return "PASS";
   } catch (err) {
     const out = `${err.stdout || ""}${err.stderr || ""}`;

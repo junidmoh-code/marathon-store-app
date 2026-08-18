@@ -30,11 +30,6 @@ import { solveCarriagePlan, introduceUpdates, carriageNotice } from "./solveCarr
 
 const STORES = ["marathon-pe", "trophy"];
 
-// { loc → entry } (how this screen fetches it, one pid at a time) → { loc → { pid →
-// entry } } (the shape the engine holds and solveCarriage speaks). Kept as a named
-// function rather than an inline reshape so the two shapes never get confused at a
-// call site: an entry read for the WRONG pid would answer the carriage question
-// about a different product entirely.
 // Remove the /stock_targets introduce rows a solve wrote. DELIBERATELY OUTSIDE
 // undoSolve, and deliberately not a cell path.
 //
@@ -60,6 +55,11 @@ async function removeIntroducedRows(introPaths) {
   return Object.keys(del).length;
 }
 
+// { loc → entry } (how this screen fetches it, one pid at a time) → { loc → { pid →
+// entry } } (the shape the engine holds and solveCarriage speaks). Kept as a named
+// function rather than an inline reshape so the two shapes never get confused at a
+// call site: an entry read for the WRONG pid would answer the carriage question
+// about a different product entirely.
 function invertPairs(byLoc, pid) {
   const out = {};
   for (const [loc, entry] of Object.entries(byLoc || {})) {
@@ -502,7 +502,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const provenance = {};
       locs.forEach((loc, i) => { if (entries[i] != null) provenance[loc] = { [card.pid]: entries[i] }; });
       carriage = solveCarriagePlan({
-        locs, pid: card.pid, sizes, provenance, provenanceMeta: meta,
+        locs, pid: card.pid, provenance, provenanceMeta: meta,
         targets: targetRows, categoryPolicy: cfg?.categoryPolicy, categoryKey: card.categoryKey,
       });
     } catch (e) {
@@ -718,7 +718,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const carriage = sOpen ? solveCarriagePlan({
           locs: seedLocations(card.source, sStore),
           pid: card.pid,
-          sizes: plan.sizes,
           provenance: provPairsFor === card.pid ? invertPairs(provPairs[card.pid], card.pid) : {},
           provenanceMeta: provMeta,
           targets: targetRows, categoryPolicy: cfg?.categoryPolicy,
