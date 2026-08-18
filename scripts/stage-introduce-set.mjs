@@ -567,18 +567,27 @@ say();
   // A row introduced by anything else is listed as untouched and gets no command.
   const leafDel = (p) => ["introduce", "introducedAt", "introducedBy", "note"]
     .map((leaf) => `firebase database:remove /${p}/${leaf} --project marathon-club --force`);
+  // LEAF-SCOPED FOR EVERY GROUP, including rows this run creates. Twice now the
+  // create-vs-merge distinction has produced a rollback that deletes someone else's
+  // target (CodeRabbit, PR #380, twice) — the second time because `ownedEarlier`
+  // cannot tell whether an EARLIER run created its row or merged into one.
+  //
+  // Deleting the four leaves is correct in every case and needs no such knowledge:
+  // RTDB removes a node whose children all vanish, so a row this script created —
+  // which holds nothing but these four — disappears entirely, while a row that
+  // carried a target keeps it. The distinction that kept getting this wrong is now
+  // simply absent from the rollback.
   const lines = [];
-  for (const t of touchingExisting) lines.push(...leafDel(`stock_targets/${t.loc}/${t.pid}/${t.sk}`));
-  for (const p of brandNew) lines.push(`firebase database:remove /${p} --project marathon-club --force`);
-  for (const t of ownedEarlier) lines.push(`firebase database:remove /stock_targets/${t.loc}/${t.pid}/${t.sk} --project marathon-club --force`);
+  for (const t of [...touchingExisting, ...ownedEarlier]) lines.push(...leafDel(`stock_targets/${t.loc}/${t.pid}/${t.sk}`));
+  for (const p of brandNew) lines.push(...leafDel(p));
 
   if (!lines.length) {
     say(`Nothing to roll back — this run neither wrote nor previously wrote any of these rows.`);
     say();
   } else {
-    say(`Runnable, not illustrative. A row this script CREATED is removed whole; a row that already`);
-    say(`existed and merely gained the flag has ONLY the four introduce leaves removed — deleting it`);
-    say(`whole would destroy a target somebody else wrote. (CodeRabbit, PR #380.)`);
+    say(`Runnable, not illustrative. Only the four introduce leaves are removed, never the row: a row`);
+    say(`this script created holds nothing else and disappears with them (RTDB drops a node whose`);
+    say(`children all vanish), while a row that carried a target keeps it. (CodeRabbit, PR #380.)`);
     say();
     say("```bash");
     for (const l of lines) say(l);
@@ -594,8 +603,8 @@ say();
     say();
   }
 }
-say(`⚠️ Re-read the match table before pasting: which branch a row belongs in is decided by whether`);
-say(`it existed when this ran, and that is a fact about the moment, not about the path.`);
+say(`⚠️ Re-read the match table before pasting — these paths describe the state at the top of this`);
+say(`run, and the rows can move under you.`);
 say();
 
 if (process.env.INTRO_MD) {
