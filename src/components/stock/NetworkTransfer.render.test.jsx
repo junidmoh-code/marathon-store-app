@@ -21,12 +21,20 @@ const NOW = Date.parse("2026-08-10T10:00:00.000Z");
 
 const paths = {};                       // onValue subscriptions
 const gets = {};                        // one-shot get() reads
+// Paths whose get() REJECTS. A denied read is a live possibility on
+// /stock_provenance (it is rule-gated) and it is indistinguishable from an empty
+// index, so the component must refuse to seed on it. Simulating that needs the mock
+// to fail, not a runtime reassignment of the imported module — the component binds
+// `get` at import and never sees a later swap.
+const getFails = new Set();
 const updateMock = vi.fn(() => Promise.resolve());
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path ?? "" }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
-  get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
+  get: (r) => (getFails.has(r.path)
+    ? Promise.reject(new Error("permission denied"))
+    : Promise.resolve({ val: () => gets[r.path] ?? null })),
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
@@ -110,6 +118,7 @@ beforeEach(() => {
   updateMock.mockClear();
   for (const k of Object.keys(paths)) delete paths[k];
   for (const k of Object.keys(gets)) delete gets[k];
+  getFails.clear();
   paths["config/refillEngine"] = CONFIG;
   // BOTH the subscription and the one-shot read. The panel renders from the live
   // `onValue` sentinel, but solve() RE-READS it with get() so the write decides on
@@ -590,18 +599,35 @@ describe("Solve's carriage gate — it must not seed and lie", () => {
   });
 
   it("A FAILED READ is not a licence to seed", async () => {
-    // Indistinguishable from an empty index. Seeding on it would be the same silent
-    // lie wearing a different hat.
+    // /stock_provenance is rule-gated, so a denied read is a live possibility — and
+    // it is indistinguishable from an empty index. Seeding on it would be the same
+    // silent lie wearing a different hat.
+    carries(BEANIE, "hub2", "trophy");
     const tree = render(targets);
     await act(async () => { solveButton(tree).props.onClick(); });
     await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
-    const dbmod = await import("firebase/database");
-    const orig = dbmod.get;
-    dbmod.get = () => Promise.reject(new Error("permission denied"));
-    try {
-      await act(async () => { buttonSaying(tree, "Solve — carry at").props.onClick(); });
-    } finally { dbmod.get = orig; }
+    getFails.add("stock_provenance/_meta");
+    await act(async () => { buttonSaying(tree, "Solve — carry at").props.onClick(); });
     expect(updateMock).not.toHaveBeenCalled();
+    expect(textOf(tree)).toMatch(/Couldn't check whether/);
+  });
+
+  it("THE PANEL'S ANSWER GOES STALE — solve() re-reads and refuses on the FRESH one", async () => {
+    // A confirm panel can sit open for minutes. If the sentinel is withdrawn in that
+    // window (a re-run backfill clearing it, a rules change denying the read), the
+    // version that WRITES must be the version that DECIDED. Reading the render's copy
+    // would seed against a picture that is no longer true.
+    //
+    // The subscription still holds the ready sentinel the panel rendered from; only
+    // the one-shot read has moved on. A component that trusted `provMeta` seeds here.
+    carries(BEANIE, "hub2", "trophy");
+    const tree = render(targets);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    gets["stock_provenance/_meta"] = {};                 // withdrawn since the panel opened
+    await act(async () => { buttonSaying(tree, "Solve — carry at").props.onClick(); });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(textOf(tree)).toMatch(/Nothing was seeded/);
   });
 
   it("ALREADY INTRODUCED → carriage stands even with an unready index, and no duplicate row is written", async () => {
