@@ -64,8 +64,12 @@
 //   • stock_movements/{mvId}  the ledger record, with before/after per location
 //   • per touched cell: qty, v (= old v + 1, or 0 if the cell is new), mv, lastType,
 //     updatedAt, updatedBy
-// Movement ids are deterministic, so a re-run after a partial failure is idempotent
-// rather than double-applied.
+// Movement ids are deterministic, so a re-run never double-applies. What it repairs is
+// narrower than "a partial failure", and the difference is worth stating (CodeRabbit,
+// PR #379): a re-run RESUMES between corrections — if the run dies after the first
+// lands, the rest still go — but there is nothing to repair WITHIN one, because its
+// legs and its ledger record are a single atomic update that lands whole or not at all.
+// A DRIFTED cell is never repaired by re-running; it is refused every time, by design.
 //
 // ── THE RACE, STATED HONESTLY (CodeRabbit, PR #379) ──────────────────────────
 // The review asked for each cell to be committed conditionally against current server
@@ -247,7 +251,20 @@ if (!EXECUTE) {
   say("```");
   say();
   say(`${updates.filter((u) => !u.skip).length} atomic update(s) staged. Movement ids are deterministic`);
-  say(`(\`${LEDGER_REF}_{pid}_{sizeKey}\`), so a re-run after a partial failure repairs rather than doubles.`);
+  say(`(\`${LEDGER_REF}_{pid}_{sizeKey}\`), so a re-run NEVER doubles: each correction is one atomic`);
+  say(`update, and one whose movement id is already present is skipped, not rewritten.`);
+  say();
+  say(`What a re-run does and does not repair — the distinction matters (CodeRabbit, PR #379):`);
+  say();
+  say(`- **Between corrections it resumes.** If the run dies after correction 1 lands, a re-run skips 1`);
+  say(`  and applies the rest. That is the only "partial failure" this script can produce.`);
+  say(`- **Within a correction there is nothing to repair.** Its legs and its ledger record are one`);
+  say(`  atomic update, so it lands whole or not at all — a half-written correction is not a state`);
+  say(`  that exists.`);
+  say(`- **A DRIFTED cell is not repaired, deliberately.** If a quantity no longer matches the audit,`);
+  say(`  a re-run refuses it every time rather than adapting. Clearing that needs a fresh audit, not`);
+  say(`  another run.`);
+  say();
   say(`Run it QUIET — see the race note in the header. The guard read narrows the window; only a shut`);
   say(`till closes it.`);
 } else {
