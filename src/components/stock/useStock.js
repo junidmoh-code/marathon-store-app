@@ -208,6 +208,25 @@ export function useStockTargetsState(locationId) {
 // /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — postpone
 // decisions from the Decision Queue (keep / snooze / until_change); the engine
 // skips products while a decision is active.
+// /stock_provenance → { loc: { pid: {s,k,u} } } plus the `_meta` sentinels — the
+// derived carries index the refill engine arms from (functions/lib/provenance-index).
+//
+// SUBSCRIBE PER LOCATION, NEVER THE WHOLE NODE. The full node is ~217 KB and includes
+// three locations that are not refill destinations at all; the destinations alone are
+// ~177 KB. A screen only ever asks about places the engine can arm, so it should only
+// pay for those. (The same distinction, measured, is why refill-scan reads
+// Object.keys(routes) rather than its wider `locs` set — PR #382.)
+export function useProvenanceAt(loc) {
+  return usePath(loc ? `stock_provenance/${loc}` : null);
+}
+
+// The readiness sentinels — tiny, and the thing that decides whether the index may be
+// believed at all. An absent sentinel means "arms nothing here", NOT "carries nothing
+// here", and callers must keep those apart.
+export function useProvenanceMeta() {
+  return usePath("stock_provenance/_meta");
+}
+
 export function useTargetDecisions() {
   return usePath("stock_targets_decisions");
 }

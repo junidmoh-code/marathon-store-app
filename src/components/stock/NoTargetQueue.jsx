@@ -31,13 +31,14 @@
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig } from "./useStock";
+import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig, useProvenanceAt, useProvenanceMeta } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
+import { carriesByEntry, indexReadyAt } from "./solveCarriage";
 import { categoryPolicyLocs } from "./solvePlan";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
@@ -84,6 +85,17 @@ export default function NoTargetQueue({ products = [] }) {
   const allTargets = allTargetsRaw || {};
   const decisions = useTargetDecisions() || {};
   const engineConfig = useEngineConfig();
+  // The carries index, per destination. See the hook for why this is not one read of
+  // the whole node.
+  const provMeta = useProvenanceMeta();
+  const provPE = useProvenanceAt("marathon-pe");
+  const provTrophy = useProvenanceAt("trophy");
+  const provHub2 = useProvenanceAt("hub2");
+  const provHub1 = useProvenanceAt("hub1");
+  const provenance = useMemo(
+    () => ({ "marathon-pe": provPE, trophy: provTrophy, hub2: provHub2, hub1: provHub1 }),
+    [provPE, provTrophy, provHub2, provHub1],
+  );
   const dests = useMemo(() => destsFrom(engineConfig), [engineConfig]);
   // Never classify against half-loaded data: with targets still null EVERY
   // product would render as a wrong card for a moment.
@@ -127,6 +139,14 @@ export default function NoTargetQueue({ products = [] }) {
     // because its letter cells genuinely stay the run's business).
     const policy = engineConfig?.categoryPolicy;
     const mappedAt = (pid, loc) => categoryPolicyLocs(policy, byId.get(pid)?.categoryKey).includes(loc);
+    // FAIL SAFE IN THE OTHER DIRECTION FROM THE ENGINE, DELIBERATELY. The engine
+    // treats an unready index as "arm nothing" — the safe answer when the question
+    // is whether to MOVE STOCK. Here the question is whether to show a human a
+    // decision, and an unready index means we do not know, so the pair stays in the
+    // queue and a person looks at it. Hiding a row on a failed read would be the
+    // silent direction, which is the whole failure mode this cutover is fighting.
+    const carriedAt = (pid, loc) => indexReadyAt(provMeta, loc)
+      && carriesByEntry(provenance?.[loc]?.[pid]);
     const mappedAnywhere = (pid) => categoryPolicyLocs(policy, byId.get(pid)?.categoryKey).length > 0;
     const mappedPerSize = (pid) => policy?.[byId.get(pid)?.categoryKey]?.perSize === true;
     // GENUINELY NEW at Central — no targets anywhere AND never circulated.
@@ -160,6 +180,20 @@ export default function NoTargetQueue({ products = [] }) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
         if (mappedAt(pid, loc)) continue;   // the category already decided here
+        // ── CARRIED = ALREADY DECIDED (the same reasoning, one source along) ──
+        // Since PR #376 the engine arms a location from /stock_provenance. A pair
+        // it CARRIES is being managed right now — the size run resolves for it on
+        // every scan — so it is no more an open decision than a category-mapped one,
+        // and offering it here is actively dangerous rather than merely noisy:
+        // the panel's Exclude writes an explicit `target: 0`, which OUTRANKS the
+        // index permanently. One tap on a shop with real recorded sales would
+        // silently stop replenishing a line it demonstrably trades, and nothing
+        // would say so.
+        //
+        // Surfaced by the substitute reviewer on PR #380: writing introduce rows at
+        // hub2 flips `introducedElsewhere` for the product, which is what routes it
+        // into this queue at the OTHER shops in the first place.
+        if (carriedAt(pid, loc)) continue;
         if (allTargets?.[loc]?.[pid]) continue;
         const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
         if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
@@ -216,7 +250,7 @@ export default function NoTargetQueue({ products = [] }) {
       }
     }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
-  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig]);
+  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig, provenance, provMeta]);
 
   // Pointer only — migration lives on the Health screen, not in this queue.
   const migratableCount = useMemo(
