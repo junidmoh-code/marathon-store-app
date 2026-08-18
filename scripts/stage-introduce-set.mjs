@@ -401,12 +401,27 @@ const touchingExisting = [];
 // that someone else created — and this run merely added a flag to — destroys their
 // target along with our flag. (CodeRabbit, PR #380.)
 const brandNew = new Set();
+// Rows already carrying the flag, split by who put it there. Only the first group
+// belongs in a rollback: a row introduced by anything other than this script is a
+// decision this script did not make and must not offer to undo.
+const ownedEarlier = [];
+const foreign = [];
 if (!refuse) {
   for (const s of SET) {
     for (const size of sizesOf(s.pid)) {
       const sk = encodeSizeKey(size);
       const row = targets?.[s.loc]?.[s.pid]?.[sk];
-      if (row?.introduce === true) continue;   // idempotent — already introduced
+      if (row?.introduce === true) {
+        // Idempotent — already introduced. Record WHO introduced it, because the
+        // rollback below must not offer to delete a row this script never touched.
+        // A row carrying our own ACTOR is one an earlier run of this script wrote,
+        // and rolling that back is exactly what someone asking for a rollback means.
+        // Anything else — a hand-written row, another script, the app — is somebody
+        // else's decision and gets no command at all. (CodeRabbit, PR #380.)
+        (row.introducedBy === ACTOR ? ownedEarlier : foreign)
+          .push({ loc: s.loc, pid: s.pid, sk, row });
+        continue;
+      }
       if (row) touchingExisting.push({ loc: s.loc, pid: s.pid, sk, row });
       else brandNew.add(`stock_targets/${s.loc}/${s.pid}/${sk}`);
       updates[`stock_targets/${s.loc}/${s.pid}/${sk}/introduce`] = true;
@@ -541,28 +556,44 @@ say();
 say(`Delete the rows. The predicate reverts to the index alone and the location goes dark again for`);
 say(`this product — no other product, no other location, nothing else keyed to these rows.`);
 say();
-say(`Runnable, not illustrative. A row this run CREATED is removed whole; a row that already`);
-say(`existed and merely gained the flag has ONLY the introduce leaves removed — deleting it whole`);
-say(`would destroy a target somebody else wrote. (CodeRabbit, PR #380.)`);
-say();
-say("```bash");
 {
-  const merged = new Set(touchingExisting.map((t) => `stock_targets/${t.loc}/${t.pid}/${t.sk}`));
-  for (const s of SET) {
-    for (const size of sizesOf(s.pid)) {
-      const p = `stock_targets/${s.loc}/${s.pid}/${encodeSizeKey(size)}`;
-      if (merged.has(p)) {
-        for (const leaf of ["introduce", "introducedAt", "introducedBy", "note"]) {
-          say(`firebase database:remove /${p}/${leaf} --project marathon-club --force`);
-        }
-      } else {
-        say(`firebase database:remove /${p} --project marathon-club --force`);
-      }
-    }
+  // ONLY rows this run is responsible for. Three groups, and only two get a command:
+  //   • brandNew      — this run creates the row  → delete it whole
+  //   • touchingExisting — this run merges a flag into somebody's row → delete the
+  //                        four leaves, never the row (their target lives there)
+  //   • ownedEarlier  — an earlier run of THIS script already wrote it → same shape
+  //                     as it would have had, because rolling that back is exactly
+  //                     what someone asking for a rollback after an apply means
+  // A row introduced by anything else is listed as untouched and gets no command.
+  const leafDel = (p) => ["introduce", "introducedAt", "introducedBy", "note"]
+    .map((leaf) => `firebase database:remove /${p}/${leaf} --project marathon-club --force`);
+  const lines = [];
+  for (const t of touchingExisting) lines.push(...leafDel(`stock_targets/${t.loc}/${t.pid}/${t.sk}`));
+  for (const p of brandNew) lines.push(`firebase database:remove /${p} --project marathon-club --force`);
+  for (const t of ownedEarlier) lines.push(`firebase database:remove /stock_targets/${t.loc}/${t.pid}/${t.sk} --project marathon-club --force`);
+
+  if (!lines.length) {
+    say(`Nothing to roll back — this run neither wrote nor previously wrote any of these rows.`);
+    say();
+  } else {
+    say(`Runnable, not illustrative. A row this script CREATED is removed whole; a row that already`);
+    say(`existed and merely gained the flag has ONLY the four introduce leaves removed — deleting it`);
+    say(`whole would destroy a target somebody else wrote. (CodeRabbit, PR #380.)`);
+    say();
+    say("```bash");
+    for (const l of lines) say(l);
+    say("```");
+    say();
+  }
+  if (foreign.length) {
+    say(`⚠️ ${foreign.length} row(s) already carry \`introduce: true\` from somewhere that is NOT this`);
+    say(`script, so no rollback command is offered for them — undoing another writer's decision is not`);
+    say(`this script's call:`);
+    say();
+    for (const t of foreign) say(`- \`stock_targets/${t.loc}/${t.pid}/${t.sk}\` — introducedBy ${JSON.stringify(t.row.introducedBy ?? null)}`);
+    say();
   }
 }
-say("```");
-say();
 say(`⚠️ Re-read the match table before pasting: which branch a row belongs in is decided by whether`);
 say(`it existed when this ran, and that is a fact about the moment, not about the path.`);
 say();
