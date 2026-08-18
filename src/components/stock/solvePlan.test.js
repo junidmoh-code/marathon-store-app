@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { seedLocations, standardUnits, solvePlan, qualifyingSizes, effectiveStandard, ruleTargetsEnabledFor } from "./solvePlan";
+import { seedLocations, standardUnits, solvePlan, qualifyingSizes, effectiveStandard, ruleTargetsEnabledFor, explicitTarget, resolvedRun } from "./solvePlan";
 
 describe("ruleTargetsEnabledFor — mirrors the engine's kill switch", () => {
   it("true means on everywhere", () => {
@@ -278,5 +278,46 @@ describe("categoryPolicyLocs + the Introduce-Existing guard (Sonnet review, PR #
     });
     expect(run["marathon-pe"]).toEqual({ M: 2 });   // no "_" key, ever
     expect(run.hub2).toEqual({ M: 5 });
+  });
+});
+
+// ─── THE INTRODUCE ROW, MIRRORED (scripts/stage-introduce-set.mjs) ────────────
+// The Option B introduce set writes rows carrying `introduce: true` and NO numeric
+// `target`, so the hub2 size run keeps deciding the quantities. That only holds if
+// BOTH readers agree the row is not an explicit pin — the engine's resolveTarget
+// (pinned in functions/test/introduce-row-shape.test.cjs) and this file's mirror.
+// If they ever disagree, Solve renders a target the engine is not serving, or greys
+// one it is: the exact lie resolvedRun exists to prevent, and the reason #342 wrote
+// the mirror in the first place.
+describe("explicitTarget — an introduce-only row is not an explicit target", () => {
+  const PID = "p1784206551366";                       // "Nike NOCTA Golf T-Shirt White"
+  const ROW = { introduce: true, introducedAt: "2026-08-18T09:00:00.000Z", introducedBy: "scripts/stage-introduce-set.mjs" };
+  const targets = { hub2: { [PID]: { S: { ...ROW }, M: { ...ROW }, L: { ...ROW } } } };
+
+  it("returns null, so the size run is reached", () => {
+    for (const size of ["S", "M", "L"]) {
+      expect(explicitTarget(targets, "hub2", PID, size)).toBe(null);
+    }
+  });
+
+  it("still returns the number once one is added — the contrast that justifies omitting it", () => {
+    const pinned = { hub2: { [PID]: { ...targets.hub2[PID], M: { ...ROW, target: 1, minQty: 1 } } } };
+    expect(explicitTarget(pinned, "hub2", PID, "M")).toBe(1);
+    expect(explicitTarget(pinned, "hub2", PID, "L")).toBe(null);
+  });
+
+  it("target: 0 on an introduce row still reads as the excluded row it is", () => {
+    const off = { hub2: { [PID]: { ...targets.hub2[PID], L: { ...ROW, target: 0, minQty: 0 } } } };
+    expect(explicitTarget(off, "hub2", PID, "L")).toBe(0);
+  });
+
+  it("resolvedRun therefore hands the introduce-only sizes to the run", () => {
+    const run = resolvedRun({
+      std: { hub2: { S: 2, M: 3, L: 3, XL: 2, XXL: 2 } },
+      subRun: {}, subcategory: "T-Shirts", sizes: ["S", "M", "L"],
+      targets, pid: PID, ruleBasedTargets: true, categoryPolicy: {}, categoryKey: "t-shirts",
+      unitsAnywhere: () => 0,
+    });
+    expect(run.hub2).toMatchObject({ S: 2, M: 3, L: 3 });
   });
 });
