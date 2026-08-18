@@ -90,11 +90,34 @@ const solveButton = (tree) => buttonsOf(tree).find((b) => (b.children || []).inc
 const buttonSaying = (tree, needle) =>
   buttonsOf(tree).find((b) => (b.children || []).some((c) => typeof c === "string" && c.includes(needle)));
 
+// ── THE PROVENANCE READINESS SENTINEL ────────────────────────────────────────
+// Since Solve's carriage gate shipped, a solve only seeds where the engine agrees
+// the shop carries the line (or where the solve records it as introduced), and it
+// REFUSES outright while the index is unready. Every test below that asserts a
+// normal seed therefore has to declare a ready index — the default here — because
+// without one the correct behaviour is to write nothing.
+//
+// That is not test scaffolding hiding a problem: it IS the fix. The tests that
+// exercise the unready and never-stocked paths set their own state and are grouped
+// at the bottom of this file.
+const READY_META = Object.fromEntries(
+  ["hub2", "marathon-pe", "trophy", "central"].map((l) => [l, { at: "2026-08-10T06:00:00.000Z", pairs: 9, version: 1 }]),
+);
+/** Declare that these locations have genuinely stocked this product. */
+const carries = (pid, ...locs) => { for (const l of locs) gets[`stock_provenance/${l}/${pid}`] = { k: 12 }; };
+
 beforeEach(() => {
   updateMock.mockClear();
   for (const k of Object.keys(paths)) delete paths[k];
   for (const k of Object.keys(gets)) delete gets[k];
   paths["config/refillEngine"] = CONFIG;
+  // BOTH the subscription and the one-shot read. The panel renders from the live
+  // `onValue` sentinel, but solve() RE-READS it with get() so the write decides on
+  // its own read rather than on whatever the render happened to be holding — a
+  // panel can sit open for minutes. Setting only one of these would test half the
+  // gate and leave the other half free to regress.
+  paths["stock_provenance/_meta"] = READY_META;
+  gets["stock_provenance/_meta"] = READY_META;
   perm.permRecord = { stockRole: "warehouse" };
 });
 
@@ -244,6 +267,10 @@ describe("the store the panel names is the store the write uses", () => {
   };
 
   it("seeds the store shown on the button, not STORES[0]", async () => {
+    // Declared as ALREADY CARRIED, which is what this test always meant: it was
+    // written when a seed WAS the carriage, so the product it describes is one the
+    // engine agrees the shop stocks. The introduce path is covered separately below.
+    carries("p1786357771559", "hub2", "trophy", "marathon-pe");
     const tree = render(TROPHY_ONLY);
     expect(solveButton(tree).props.disabled).toBe(false);
     await act(async () => { solveButton(tree).props.onClick(); });
@@ -340,6 +367,10 @@ describe("perfume — visible, and solvable against the correct hub (2026-08-13)
   });
 
   it("Central-stranded perfume seeds Hub 2 AND the shop, on the '_' sentinel, and writes no target row", async () => {
+    // Declared as ALREADY CARRIED, which is what this test always meant: it was
+    // written when a seed WAS the carriage, so the product it describes is one the
+    // engine agrees the shop stocks. The introduce path is covered separately below.
+    carries("scent1", "hub2", "trophy", "marathon-pe");
     const tree = renderScent(SCENT_ROWS);
     await act(async () => { solveButton(tree).props.onClick(); });
     await act(async () => { buttonSaying(tree, "Solve — carry at Marathon PE").props.onClick(); });
@@ -389,6 +420,10 @@ describe("perfume — visible, and solvable against the correct hub (2026-08-13)
   });
 
   it("CATEGORY POLICY: a mapped perfume is SOLVABLE with no row at all, and seeds the mapped legs", async () => {
+    // Declared as ALREADY CARRIED, which is what this test always meant: it was
+    // written when a seed WAS the carriage, so the product it describes is one the
+    // engine agrees the shop stocks. The introduce path is covered separately below.
+    carries("scent1", "hub2", "trophy", "marathon-pe");
     // The standing policy (2026-08-13): /config/refillEngine/categoryPolicy
     // arms every product of a category with no per-product row — so a perfume
     // imported by script tomorrow renders an ARMED Solve the moment it is
@@ -435,6 +470,10 @@ describe("perfume — visible, and solvable against the correct hub (2026-08-13)
 
 describe("Solve writes carriage cells and NEVER a target row", () => {
   it("seeds qty-0 cells at hub2 and the store, and touches no other subtree", async () => {
+    // Declared as ALREADY CARRIED, which is what this test always meant: it was
+    // written when a seed WAS the carriage, so the product it describes is one the
+    // engine agrees the shop stocks. The introduce path is covered separately below.
+    carries("p1786357771559", "hub2", "trophy", "marathon-pe");
     const targets = {
       hub2: { [BEANIE]: { _: { target: 15 } } },
       trophy: { [BEANIE]: { _: { target: 5 } } },
@@ -472,5 +511,138 @@ describe("Solve writes carriage cells and NEVER a target row", () => {
     const text = textOf(tree);
     expect(text).toMatch(/One size/);            // shown to the operator
     expect(text).not.toMatch(/Free.?Size/);      // never the phantom label
+  });
+});
+
+// ─── THE CARRIAGE GATE — THE REGRESSION THIS FILE EXISTS TO CATCH ────────────
+// Solve seeds a cell and tells the user "the engine will refill on its next scan".
+// That was true while storeCarries() meant "a cell exists" — the seed WAS the
+// carriage. Since PR #376 the predicate is provenance, and setCellState writes no
+// ledger record, so a seed confers nothing: the same button makes the same promise
+// while the engine refuses the line forever, the row leaves Missing Products looking
+// handled, and nothing anywhere says why.
+//
+// These render the real component and assert what it WRITES and what it SAYS.
+describe("Solve's carriage gate — it must not seed and lie", () => {
+  const targets = { hub2: { [BEANIE]: { _: { target: 15 } } }, trophy: { [BEANIE]: { _: { target: 5 } } } };
+  const openAndConfirm = async (tree) => {
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    const btn = buttonSaying(tree, "Solve — carry at");
+    await act(async () => { btn.props.onClick(); });
+    return btn;
+  };
+
+  it("NEVER STOCKED + ready index → it seeds AND records the introduction, in ONE write", async () => {
+    // No provenance for this pid anywhere: the shop genuinely does not stock it.
+    // Solve is a person saying it should, which is exactly what introduce: true
+    // means — so carriage is written through the engine's own documented route.
+    const tree = render(targets);
+    await openAndConfirm(tree);
+
+    expect(updateMock).toHaveBeenCalledTimes(1);          // cells and carriage together
+    const payload = updateMock.mock.calls[0][1];
+    const keys = Object.keys(payload).sort();
+    expect(keys).toContain(`stock/hub2/${BEANIE}/_`);
+    expect(keys).toContain(`stock/trophy/${BEANIE}/_`);
+    expect(keys).toContain(`stock_targets/hub2/${BEANIE}/_/introduce`);
+    expect(keys).toContain(`stock_targets/trophy/${BEANIE}/_/introduce`);
+    expect(payload[`stock_targets/trophy/${BEANIE}/_/introduce`]).toBe(true);
+    // ⚠ NO numeric target. A number here pins the quantities and outranks the size
+    // run forever; the row says only "this shop stocks this line".
+    expect(keys.some((k) => k.endsWith("/target") || k.endsWith("/minQty"))).toBe(false);
+    // And it is attributable — a standing decision with a name on it.
+    expect(payload[`stock_targets/trophy/${BEANIE}/_/introducedBy`]).toBe("u1");
+    expect(payload[`stock_targets/trophy/${BEANIE}/_/note`]).toMatch(/Solve/);
+  });
+
+  it("NEVER STOCKED → the panel SAYS SO before the press, naming the units it opens", async () => {
+    const tree = render(targets);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).toMatch(/never stocked this line/);
+    expect(text).toMatch(/standing decision/);
+  });
+
+  it("UNREADY INDEX → it writes NOTHING and names the shop and the reason", async () => {
+    // The state the network is in until the backfill claims authority. An unready
+    // index is indistinguishable from an empty one, and those demand opposite
+    // actions — so Solve refuses rather than guessing, exactly as the engine does.
+    paths["stock_provenance/_meta"] = {};
+    gets["stock_provenance/_meta"] = {};
+    const tree = render(targets);
+    await openAndConfirm(tree);
+
+    expect(updateMock).not.toHaveBeenCalled();
+    const text = textOf(tree);
+    expect(text).toMatch(/stock-history index/);
+    expect(text).toMatch(/Nothing was seeded/);
+  });
+
+  it("UNREADY INDEX → the confirm button is disabled, not merely un-clickable after the fact", async () => {
+    paths["stock_provenance/_meta"] = {};
+    gets["stock_provenance/_meta"] = {};
+    const tree = render(targets);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    expect(buttonSaying(tree, "Solve — carry at").props.disabled).toBe(true);
+  });
+
+  it("A FAILED READ is not a licence to seed", async () => {
+    // Indistinguishable from an empty index. Seeding on it would be the same silent
+    // lie wearing a different hat.
+    const tree = render(targets);
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    const dbmod = await import("firebase/database");
+    const orig = dbmod.get;
+    dbmod.get = () => Promise.reject(new Error("permission denied"));
+    try {
+      await act(async () => { buttonSaying(tree, "Solve — carry at").props.onClick(); });
+    } finally { dbmod.get = orig; }
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("ALREADY INTRODUCED → carriage stands even with an unready index, and no duplicate row is written", async () => {
+    // introducedAt() is checked BEFORE the readiness gate in the engine, so an
+    // existing opt-in keeps working during the cutover window. Solve must agree, or
+    // it would block a pair the engine happily arms.
+    paths["stock_provenance/_meta"] = {};
+    gets["stock_provenance/_meta"] = {};
+    const introduced = {
+      hub2: { [BEANIE]: { _: { target: 15, introduce: true } } },
+      trophy: { [BEANIE]: { _: { target: 5, introduce: true } } },
+    };
+    const tree = render(introduced);
+    await openAndConfirm(tree);
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const keys = Object.keys(updateMock.mock.calls[0][1]);
+    expect(keys.every((k) => k.startsWith("stock/"))).toBe(true);   // cells only
+    expect(keys.some((k) => k.startsWith("stock_targets/"))).toBe(false);
+  });
+
+  it("ALREADY CARRIED by provenance → cells only, no introduction claimed", async () => {
+    carries(BEANIE, "hub2", "trophy");
+    const tree = render(targets);
+    await openAndConfirm(tree);
+    const keys = Object.keys(updateMock.mock.calls[0][1]);
+    expect(keys.some((k) => k.startsWith("stock_targets/"))).toBe(false);
+    expect(textOf(tree)).not.toMatch(/never stocked/);
+  });
+
+  it("HALF-KNOWN is refused whole — one unready leg blocks the readable one too", async () => {
+    // central→hub2→store is one causal chain. Seeding the half we can vouch for
+    // leaves demand that can never complete: the same false promise, one step later.
+    const half = { ...READY_META };
+    delete half.trophy;
+    paths["stock_provenance/_meta"] = half;
+    gets["stock_provenance/_meta"] = half;
+    carries(BEANIE, "hub2");
+    const tree = render(targets);
+    await openAndConfirm(tree);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(textOf(tree)).toMatch(/Nothing was seeded/);
   });
 });
