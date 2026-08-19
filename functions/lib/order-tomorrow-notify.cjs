@@ -160,8 +160,26 @@ async function notifyOrderTomorrow({ db, enqueueWhatsApp, orderId, before, after
   // enqueue and the bookkeeping that records it are separate awaits; a failure
   // of the SECOND must not fall into the same catch as a failure of the first,
   // or the retry re-sends a message that was already enqueued once the 90s
-  // window lapses. That is the exact 2-5 copies incident. Only a failure BEFORE
-  // the producer answered may release the claim.
+  // window lapses. That is the exact 2-5 copies incident. Only a failure of the
+  // enqueue itself may release the claim.
+  //
+  // AND THAT IS NOT A PROOF THAT NOTHING WAS ENQUEUED (Kimi review, #386). A
+  // throw is not evidence the producer did nothing: enqueueWhatsApp's
+  // Firestore .add() sits inside its own try, so an ambiguous commit — the
+  // write lands, the response is lost to a deadline — surfaces here as an
+  // ordinary error, and we release the claim and rethrow. The retry then
+  // enqueues a second time, and if the trigger's backoff has pushed it past the
+  // producer's 90s dedupe window the customer is messaged twice.
+  //
+  // This is left as-is, deliberately. The window is narrow (ambiguous Firestore
+  // commits are rare and the retry usually lands well inside 90s, where the
+  // dedupe does catch it), and closing it properly means giving the outbox doc
+  // a deterministic id so the producer's write is idempotent — a change to
+  // enqueueWhatsApp, which is SHARED with holdAvailabilityNotify, the client
+  // callable and the POS repo's reminders. That is a producer-level fix and it
+  // belongs in its own PR, not in a restoration that claims to touch nothing.
+  // Recorded here so the next reader does not mistake the comment above for a
+  // guarantee the code can actually make.
   let result;
   try {
     result = await enqueueWhatsApp({
