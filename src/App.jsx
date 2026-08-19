@@ -10152,8 +10152,10 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Hold order handled by a human — see onHoldRefill.js. Create-if-absent
     // so a re-tap can neither duplicate the ask nor reopen one the source
     // already rejected. The customer-facing hold status (warehouse tab, TV
-    // row, status page) is untouched; the "available tomorrow" WhatsApp is
-    // GONE — no customer notification for holds is sent any more.
+    // row, status page) is untouched, and NOTHING is messaged here: the old
+    // "available tomorrow" WhatsApp — a promise made before any stock existed —
+    // stays deleted. The reinstated notification (owner 2026-08-19) fires at
+    // FULFIL, server-side, off the holdLink this record carries.
     if (status === STATUS.COMING_TOMORROW) {
       const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
       if (plan.ok) {
@@ -10251,10 +10253,13 @@ function WarehouseView({ products = [], orders, onExit }) {
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
-    // NO WhatsApp on COMING_TOMORROW (owner spec 2026-08-08): a hold is an
-    // ordinary refill request now, and the customer notification for holds is
-    // not sent any more. The order status itself (warehouse tab, TV row,
-    // status page) is unchanged — this removed only the outbound message.
+    // NO WhatsApp on COMING_TOMORROW (owner spec 2026-08-08, unchanged by the
+    // 2026-08-19 reinstatement): a hold is an ordinary refill request, and
+    // nothing is promised to the customer at hold time because no stock exists
+    // yet. The held customer IS told — when the hold's refill line is FULFILLED
+    // and the stock is physically there. That send is server-side and owned by
+    // functions holdAvailabilityNotify, off the holdLink written above; no
+    // client fires it, so a sleeping tablet cannot lose or repeat it.
   };
 
   // Mark an order Sent AND auto-print its dispatch label — but ONLY when the hub→shop
