@@ -194,6 +194,10 @@ test("2c · BOTH LEGS SAY THE SAME THING — the template is registered with thi
   assert.equal(TEMPLATE, "order_ready");
   assert.match(src, /order_ready:\s*\{\s*params:\s*2,/);
   assert.match(src, /is ready to collect at Marathon Club/);
+  // …and the producer's dedupe window is the SAME constant this notifier bets a
+  // customer's message on, not a second copy of the number (CodeRabbit #385).
+  assert.match(src, /const DEDUPE_WINDOW_MS = WHATSAPP_DEDUPE_WINDOW_MS;/);
+  assert.equal(require("../lib/whatsapp-dedupe.cjs").WHATSAPP_DEDUPE_WINDOW_MS, 90 * 1000);
 });
 
 // ── 3 · DOUBLE-TAP FULFIL ENQUEUES ONE, NOT TWO ──────────────────────────────

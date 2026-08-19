@@ -8,6 +8,7 @@ const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
 const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
+const { WHATSAPP_DEDUPE_WINDOW_MS } = require("./lib/whatsapp-dedupe.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -194,7 +195,11 @@ async function enqueueWhatsApp(data) {
   // and reuse it instead of creating a duplicate. We filter ONLY on createdAt
   // (single-field, auto-indexed) and match to/templateName/renderedText/status
   // in memory — a composite where() would require a manual index.
-  const DEDUPE_WINDOW_MS = 90 * 1000;
+  // SHARED with hold-availability-notify.cjs, which bets a customer's message on
+  // this window: inside it a re-enqueue is collapsed here, so an unresolved
+  // notification claim may safely resume; outside it, that notifier refuses to
+  // resend rather than risk a second message. One constant, two readers.
+  const DEDUPE_WINDOW_MS = WHATSAPP_DEDUPE_WINDOW_MS;
   const ACTIVE_STATUSES  = ["pending", "sending", "sent"];
   try {
     const cutoff = admin.firestore.Timestamp.fromMillis(Date.now() - DEDUPE_WINDOW_MS);

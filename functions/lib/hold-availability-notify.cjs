@@ -81,10 +81,11 @@
 
 const TEMPLATE = "order_ready";   // the now-available variant, approved copy, unchanged
 
-// MUST equal DEDUPE_WINDOW_MS in enqueueWhatsApp (functions/index.js). It is the
-// only window in which re-enqueuing an identical message is provably harmless,
-// and the resume decision above rests entirely on that.
-const PRODUCER_DEDUPE_MS = 90 * 1000;
+// THE SAME constant the producer dedupes on — shared, not restated, so the two
+// cannot drift (CodeRabbit #385). It is the only window in which re-enqueuing an
+// identical message is provably harmless, and the resume decision below rests
+// entirely on that.
+const { WHATSAPP_DEDUPE_WINDOW_MS: PRODUCER_DEDUPE_MS } = require("./whatsapp-dedupe.cjs");
 
 /**
  * @param db               admin.database()
