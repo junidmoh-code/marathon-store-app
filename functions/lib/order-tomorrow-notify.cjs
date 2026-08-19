@@ -147,8 +147,23 @@ async function notifyOrderTomorrow({ db, enqueueWhatsApp, orderId, before, after
     const res = await claimRef.transaction((cur) => (cur == null ? now : undefined));
     claimed = res.committed && res.snapshot.val() === now;
   } catch (err) {
-    console.error("orderTomorrowNotify: claim failed:", orderId, err.message);
-    return { sent: false, skipped: "claim_failed" };
+    // RETHROW, don't swallow (CodeRabbit #386). A refused claim is not a
+    // decision not to send — it is "we do not know yet". Returning here would
+    // read as success to the trigger, no retry would follow, and the customer
+    // would be silently never told. That is the precise failure class this
+    // whole module exists to end: order_tomorrow was dead for eleven days and
+    // 477 customers went untold because nothing was loud about it.
+    //
+    // Rethrowing is safe for the one-message rule: the claim was NOT won, so
+    // nothing reached the producer and a retry cannot duplicate anything. And a
+    // persistent claim failure (a rules change, say) now shows up as sustained
+    // red in Cloud Logging instead of silence.
+    //
+    // NOTE this deliberately diverges from holdAvailabilityNotify, which
+    // returns here. That is a bug in the older module by the same reasoning,
+    // not a pattern worth copying — but it is #385's to fix, not this PR's.
+    console.error("orderTomorrowNotify: claim transaction failed, retrying:", orderId, err.message);
+    throw err;
   }
   if (!claimed) return { sent: false, skipped: "already_claimed" };
 

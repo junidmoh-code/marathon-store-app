@@ -363,19 +363,17 @@ test("6 · an unusable number is TERMINAL — stamped, claim kept, never retried
   assert.equal(enqueue.calls.length, 1);
 });
 
-test("6e · a failing claim transaction enqueues nothing and does not throw", async () => {
+test("6e · a failing claim transaction enqueues nothing and RETHROWS for the retry", async () => {
   // The claim is the only door to the producer. If the transaction itself is
-  // refused — rules, a network fault — the correct answer is to send nothing and
-  // let the trigger's retry try again, NOT to assume the claim was won.
-  // (CodeRabbit #386: this branch had no test and no mutation guard, so a future
-  // edit that swallowed the error and fell through to the send would stay green.)
+  // refused — rules, a network fault — the answer is to send nothing AND to be
+  // loud, so the trigger re-drives it. Swallowing the error would read as
+  // success, no retry would follow, and the customer would be silently never
+  // told: the exact failure class this module exists to end. (CodeRabbit #386 —
+  // the branch had no test and no mutation guard, and it was returning.)
   const db = fakeDb({ orders: { "042": order() } },
     { failTransaction: (path) => path.endsWith("tomorrowNotifyClaimedAt") });
   const enqueue = spy();
-  let res;
-  await assert.doesNotReject(async () => { res = await drive(db, enqueue); });
-  assert.equal(res.sent, false);
-  assert.equal(res.skipped, "claim_failed");
+  await assert.rejects(() => drive(db, enqueue), /claim write refused/);
   assert.equal(enqueue.calls.length, 0, "a refused claim must never reach the producer");
   // and nothing is left stamped on the order that would suppress a later retry
   const o = db.state.orders["042"];

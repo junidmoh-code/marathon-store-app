@@ -93,9 +93,24 @@ const MUTATIONS = [
     id: "M5c",
     guard: "A REFUSED claim sends nothing — it is never mistaken for a won one",
     file: LIB,
-    from: `    console.error("orderTomorrowNotify: claim failed:", orderId, err.message);
-    return { sent: false, skipped: "claim_failed" };`,
+    from: `    console.error("orderTomorrowNotify: claim transaction failed, retrying:", orderId, err.message);
+    throw err;`,
     to: `    claimed = true;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M5d",
+    guard: "A refused claim is LOUD — swallowing it silently loses the customer's message",
+    file: LIB,
+    // The shape this module shipped with until CodeRabbit #386: return instead
+    // of throw. Reads as success to the trigger, so no retry follows and nobody
+    // is ever told. Eleven days of exactly this is why the PR exists.
+    from: `    throw err;
+  }
+  if (!claimed) return { sent: false, skipped: "already_claimed" };`,
+    to: `    return { sent: false, skipped: "claim_failed" };
+  }
+  if (!claimed) return { sent: false, skipped: "already_claimed" };`,
     nodeTests: SERVER_TESTS,
   },
   {
