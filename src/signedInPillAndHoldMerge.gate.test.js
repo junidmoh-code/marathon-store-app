@@ -117,7 +117,12 @@ describe("3 · both customer messages fire server-side; the raise/withdraw links
     // It must not reach into PR #385's record. Comments are stripped first —
     // the module's header explains at length what it deliberately does NOT
     // touch, and prose naming a node must not read as a reference to it.
-    const LIB_CODE = LIB.split("\n").filter(l => !l.trim().startsWith("//")).join("\n");
+    // BOTH comment forms, and trailing ones (CodeRabbit #386): stripping only
+    // full-line // would turn a reformat of that header into a failure pointing
+    // at holdLink, which is the least useful place it could point.
+    const LIB_CODE = LIB
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
     expect(LIB_CODE).not.toContain("holdLink");
     expect(LIB_CODE).not.toContain("refill_requests");
   });

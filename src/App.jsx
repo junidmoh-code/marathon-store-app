@@ -10152,10 +10152,13 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Hold order handled by a human — see onHoldRefill.js. Create-if-absent
     // so a re-tap can neither duplicate the ask nor reopen one the source
     // already rejected. The customer-facing hold status (warehouse tab, TV
-    // row, status page) is untouched, and NOTHING is messaged here: the old
-    // "available tomorrow" WhatsApp — a promise made before any stock existed —
-    // stays deleted. The reinstated notification (owner 2026-08-19) fires at
-    // FULFIL, server-side, off the holdLink this record carries.
+    // row, status page) is untouched, and NOTHING is messaged HERE — but the
+    // customer IS messaged, twice, by two server triggers hanging off the
+    // writes this handler makes:
+    //   orderTomorrowNotify     off /orders/{id}/status → coming_tomorrow
+    //   holdAvailabilityNotify  off the holdLink this record carries, at FULFIL
+    // See the note at the WhatsApp section below for which says what. No client
+    // fires either one.
     if (status === STATUS.COMING_TOMORROW) {
       const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
       if (plan.ok) {

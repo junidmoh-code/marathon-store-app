@@ -196,7 +196,8 @@ test("3 · an order with no customer phone enqueues nothing and does not throw",
   for (const phone of [undefined, null, ""]) {
     const db = fakeDb({ orders: { "042": order({ customerPhone: phone }) } });
     const enqueue = spy();
-    const res = await assert.doesNotReject(() => drive(db, enqueue)).then(() => drive(db, enqueue));
+    let res;
+    await assert.doesNotReject(async () => { res = await drive(db, enqueue); });
     assert.equal(enqueue.calls.length, 0, `phone ${JSON.stringify(phone)} must enqueue nothing`);
     assert.equal(res.skipped, "no_phone");
     // and it must not have claimed anything on the way out

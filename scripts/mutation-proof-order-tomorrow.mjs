@@ -12,8 +12,12 @@
 //   obviously broken. M1/M2 are the guards that would let it silently die
 //   again.
 //   THE MESSAGE MUST FIRE ONCE. A previous customer message in this codebase
-//   went out 2-5 times and got the gateway number banned. M4-M9 are the guards
+//   went out 2-5 times and got the gateway number banned. M4-M8 are the guards
 //   that keep "one order, one message" a property something watches break.
+//
+// M9/M10 keep it from reaching the wrong person, M11 keeps it the RIGHT message
+// (the approved template, the approved arity), and M12 keeps it out of PR #385's
+// way.
 //
 // Run:  node scripts/mutation-proof-order-tomorrow.mjs
 
@@ -23,9 +27,9 @@ import { execFileSync } from "node:child_process";
 const LIB = "functions/lib/order-tomorrow-notify.cjs";
 const FN  = "functions/index.js";
 const SERVER_TESTS = ["test/order-tomorrow-notify.test.cjs"];
-// The #385 suite runs alongside on the isolation mutations: the whole claim of
-// M10/M11 is that this feature cannot disturb that one, and the only way to
-// watch that break is to run its tests.
+// The #385 suite runs alongside on the isolation mutation: the whole claim of
+// M12 is that this feature cannot disturb that one, and the only way to watch
+// that break is to run its tests.
 const BOTH_SUITES = ["test/order-tomorrow-notify.test.cjs", "test/hold-availability-notify.test.cjs"];
 
 const MUTATIONS = [
@@ -120,7 +124,7 @@ const MUTATIONS = [
     nodeTests: SERVER_TESTS,
   },
 
-  // ── "PR #385 is not disturbed, and the other three still work" ────────────
+  // ── "the right message, and PR #385 is not disturbed" ─────────────────────
   {
     id: "M11",
     guard: "The template and its arity are the approved ones — order_tomorrow, one param, the order number",
