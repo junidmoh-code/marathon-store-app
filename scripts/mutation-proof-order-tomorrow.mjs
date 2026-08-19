@@ -79,6 +79,17 @@ const MUTATIONS = [
     nodeTests: SERVER_TESTS,
   },
   {
+    id: "M5b",
+    guard: "res.committed is the LOAD-BEARING half of the claim check — the value comparison alone is not enough",
+    file: LIB,
+    // Exactly the shape CodeRabbit #386 feared the code already had: identity by
+    // timestamp alone. Two deliveries in the same millisecond both see their own
+    // value and both send. Test 2c-ms is what catches it.
+    from: `    claimed = res.committed && res.snapshot.val() === now;`,
+    to: `    claimed = res.snapshot.val() === now;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
     id: "M6",
     guard: "An unresolved claim is NEVER taken over — no resume, no lease, at any age",
     file: LIB,
@@ -215,8 +226,14 @@ for (const m of MUTATIONS) {
   let restored = "?";
   const restore = () => { try { writeFileSync(m.file, original); } catch { /* nothing better available */ } };
   const onSignal = () => { restore(); process.exit(130); };
+  // An uncaught throw outside the try would otherwise leave the MUTATED file on
+  // disk: the next run fails its clean-tree preflight, and a careless commit
+  // ships the bug. (CodeRabbit #386.)
+  const onCrash = (e) => { restore(); console.error("restored after crash:", e); process.exit(3); };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  process.on("uncaughtException", onCrash);
+  process.on("unhandledRejection", onCrash);
   try {
     writeFileSync(m.file, original.replace(m.from, () => m.to));
     mutated = runAll(m);
@@ -226,6 +243,8 @@ for (const m of MUTATIONS) {
     restore();
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
+    process.removeListener("uncaughtException", onCrash);
+    process.removeListener("unhandledRejection", onCrash);
   }
   const proven = mutated === "FAIL" && restored === "PASS";
   results.push({ ...m, mutated, restored, proven });

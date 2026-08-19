@@ -114,17 +114,24 @@ describe("3 · both customer messages fire server-side; the raise/withdraw links
     expect(LIB).toMatch(/const TEMPLATE\s*=\s*"order_tomorrow";/);
     expect(LIB).toMatch(/if\s*\(after !== STATE\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"not_coming_tomorrow"\s*\}/);
     expect(LIB).toMatch(/if\s*\(before === STATE\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"no_transition"\s*\}/);
-    // It must not reach into PR #385's record. Comments are stripped first —
-    // the module's header explains at length what it deliberately does NOT
-    // touch, and prose naming a node must not read as a reference to it.
-    // BOTH comment forms, and trailing ones (CodeRabbit #386): stripping only
-    // full-line // would turn a reformat of that header into a failure pointing
-    // at holdLink, which is the least useful place it could point.
-    const LIB_CODE = LIB
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    // It must not reach into PR #385's record. The module's header explains at
+    // length what it deliberately does NOT touch, so prose naming a node must
+    // not read as a reference to it — but stripping comments by regex is the
+    // wrong way to arrange that (CodeRabbit #386): the patterns also match
+    // inside string literals, so a future edit that put `holdLink` in a string
+    // the stripper ate would turn this into a silent false PASS. A guard that
+    // can stop guarding without saying so is worse than no guard.
+    //
+    // Anchor to the CODE instead. Everything above `const TEMPLATE` is header;
+    // everything below is the module. No stripping, nothing to fool.
+    const codeStart = LIB.indexOf("const TEMPLATE");
+    expect(codeStart, "the module must still declare TEMPLATE").toBeGreaterThan(-1);
+    const LIB_CODE = LIB.slice(codeStart);
     expect(LIB_CODE).not.toContain("holdLink");
     expect(LIB_CODE).not.toContain("refill_requests");
+    // The behavioural half of this claim is functions/test/order-tomorrow-notify
+    // test 5, which drives the notifier against a real refill_requests record
+    // and asserts it comes back byte-identical.
   });
 
   it("the queue itself messages nobody — this is what keeps the list untouchable", () => {

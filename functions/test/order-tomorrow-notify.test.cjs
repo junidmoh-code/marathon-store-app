@@ -174,6 +174,27 @@ test("2c · two deliveries racing the SAME write: only the claim winner sends", 
     `the CLAIM must be what refuses the loser, got ${JSON.stringify([a.skipped, b.skipped])}`);
 });
 
+test("2c-ms · two deliveries in the SAME MILLISECOND: still one message", async () => {
+  // CodeRabbit #386 read the claim's identity as the timestamp and argued that
+  // two invocations sharing a millisecond would both see
+  // `res.snapshot.val() === now` and both send. The value comparison IS true for
+  // both — but it is not what decides. `res.committed` is: the loser's update fn
+  // returns undefined against a non-null `cur`, the transaction ABORTS, and
+  // `committed` is false. The && is what makes the pair safe, so this drives the
+  // exact same-millisecond case rather than arguing about it.
+  const db = fakeDb({ orders: { "042": order() } }, { frozenReads: true });
+  const enqueue = spy();
+  const same = "2026-08-19T09:00:00.000Z";
+  const [a, b] = await Promise.all([
+    notifyOrderTomorrow({ db, enqueueWhatsApp: enqueue, orderId: "042", before: "incoming", after: "coming_tomorrow", nowIso: same }),
+    notifyOrderTomorrow({ db, enqueueWhatsApp: enqueue, orderId: "042", before: "incoming", after: "coming_tomorrow", nowIso: same }),
+  ]);
+  assert.equal(enqueue.calls.length, 1, "IDENTICAL claim values must still yield ONE message");
+  assert.equal([a.sent, b.sent].filter(Boolean).length, 1);
+  assert.ok([a.skipped, b.skipped].includes("already_claimed"),
+    `the CLAIM must refuse the loser even at the same ms, got ${JSON.stringify([a.skipped, b.skipped])}`);
+});
+
 test("2d · a redelivered trigger event (tomorrow → tomorrow) is not a transition", async () => {
   const db = fakeDb({ orders: { "042": order() } });
   const enqueue = spy();
