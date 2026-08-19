@@ -21,7 +21,11 @@
 // is visible beats a silent under-count of people we owe a message.
 //
 // ── WHERE THE CUSTOMER COMES FROM ────────────────────────────────────────────
-// Not from /orders: order numbers reset daily and that node is ephemeral, so by
+// holdLink on the request FIRST, for rows raised from 2026-08-19 — that is the
+// whole point of the re-link, and the /insights_log write is a SEPARATE write
+// from request creation, so a failed log must not make this report NO-CONTACT
+// for a number sitting on the row (CodeRabbit #385). Every row says which
+// source answered. Beyond that, not from /orders: order numbers reset daily and that node is ephemeral, so by
 // now most of these rows point at a recycled or deleted order. The durable
 // source is /insights_log — the "tomorrow" event logged at hold time carries
 // refillRequestId alongside customerName, customerPhone and orderNumber. (This
@@ -43,6 +47,7 @@
 import { createRequire } from "module";
 import { writeFileSync, chmodSync } from "fs";
 import { homedir } from "os";
+import { isInGap, gapRow } from "./lib/holdNotifyGap.mjs";
 import { join } from "path";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -142,18 +147,7 @@ async function main() {
   // THE GAP: raised by a hold, actually FULFILLED (the stock reached the hub),
   // and carrying no evidence that a message went out.
   const gap = ids
-    .filter((id) => {
-      const r = requests[id];
-      if (r.status !== "fulfilled") return false;         // nothing arrived → nothing was owed
-      // notifiedAt = told. notifyFailedAt = the number was refused outright, and
-      // the row carries the reason. An UNRESOLVED claim (notifyClaimedAt with
-      // neither) is deliberately left IN the gap: the notifier never takes a
-      // claim over, so nobody can say whether that message went out — which is
-      // precisely a customer a human should look at.
-      const hl = r.holdLink;
-      if (hl && (hl.notifiedAt || hl.notifyFailedAt)) return false;
-      return true;
-    })
+    .filter((id) => isInGap(requests[id]))
     .sort((a, b) => String(requests[a].resolvedAt || "").localeCompare(String(requests[b].resolvedAt || "")));
 
   // THE TAIL. Rows raised before this PR deployed carry no holdLink, so when
@@ -175,39 +169,16 @@ async function main() {
   const { byRequestId, pages } = await readTomorrowEvents(REMOVED_AT);
   console.log(`/insights_log: ${pages} page(s) read, ${byRequestId.size} hold events carrying a request id\n`);
 
-  const rows = gap.map((id) => {
-    const r = requests[id];
-    const e = byRequestId.get(id) || {};
-    const orderId = r.createdFrom?.orderId ?? e.orderNumber ?? null;
-    return {
-      requestId: id,
-      orderNumber: orderId,
-      saDate: r.createdFrom?.orderDate ?? null,
-      hub: r.requestingLocation ?? null,
-      customerName: e.customerName ?? null,
-      customerPhone: e.customerPhone ?? null,
-      productId: r.productId ?? null,
-      productName: e.productName ?? null,
-      size: r.size ?? null,
-      qty: r.qty ?? null,
-      raisedAt: r.createdAt ?? null,
-      fulfilledAt: r.resolvedAt ?? null,
-      // A row raised before the removal COMMIT may have had its message sent by
-      // the still-live old bundle — flagged, not dropped.
-      beforeRemovalCommit: !!(r.createdAt && r.createdAt < REMOVED_AT),
-      customerResolved: !!e.customerPhone,
-      // An earlier notifier run claimed this and never recorded the outcome.
-      unresolvedClaim: !!(r.holdLink && r.holdLink.notifyClaimedAt),
-    };
-  });
+  // holdLink FIRST, the log as fallback — see scripts/lib/holdNotifyGap.mjs.
+  const rows = gap.map((id) => gapRow(id, requests[id], byRequestId.get(id), REMOVED_AT));
 
   const w = (s, n) => String(s ?? "—").slice(0, n).padEnd(n);
-  console.log(`${w("order", 7)}${w("SA date", 12)}${w("hub", 6)}${w("customer", 18)}${w("phone", 15)}${w("size", 6)}${w("fulfilled", 21)}flag`);
-  console.log("-".repeat(96));
+  console.log(`${w("order", 7)}${w("SA date", 12)}${w("hub", 6)}${w("customer", 18)}${w("phone", 15)}${w("from", 13)}${w("size", 6)}${w("fulfilled", 21)}flag`);
+  console.log("-".repeat(110));
   for (const r of rows) {
     console.log(
       w(r.orderNumber, 7) + w(r.saDate, 12) + w(r.hub, 6) +
-      w(r.customerName, 18) + w(fmtPhone(r.customerPhone), 15) +
+      w(r.customerName, 18) + w(fmtPhone(r.customerPhone), 15) + w(r.contactSource, 13) +
       w(r.size, 6) + w(r.fulfilledAt, 21) +
       (r.beforeRemovalCommit ? "pre-commit " : "") +
       (r.unresolvedClaim ? "UNRESOLVED-SEND " : "") +
