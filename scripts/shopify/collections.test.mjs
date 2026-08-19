@@ -17,12 +17,18 @@ const UNDER = COLLECTION_BY_KEY.get("under-r500");
 const SALE = COLLECTION_BY_KEY.get("sale");
 const SNEAKERS = COLLECTION_BY_KEY.get("sneakers");
 
-describe("buildCollectionDescriptionHtml", () => {
-  it("wraps one paragraph and escapes HTML", () => {
-    expect(buildCollectionDescriptionHtml("Shoes & socks <b>")).toBe("<p>Shoes &amp; socks &lt;b&gt;</p>");
+describe("buildCollectionDescriptionHtml — there is no body any more", () => {
+  // Junid does not want a paragraph on his category pages (owner decision
+  // 2026-08-19). The builder returns an EMPTY STRING rather than being deleted:
+  // an empty string is a real value the reconciler diffs and pushes, so the
+  // copy already on the shop is CLEARED. Returning nothing — or dropping the
+  // field from the mutation — would leave the old paragraphs live forever.
+  it("returns an empty string, and ignores anything passed to it", () => {
+    expect(buildCollectionDescriptionHtml()).toBe("");
+    expect(buildCollectionDescriptionHtml("Shoes & socks <b>")).toBe("");
   });
-  it("refuses an empty description", () => {
-    expect(() => buildCollectionDescriptionHtml("   ")).toThrow(/may not be empty/);
+  it("is not an empty paragraph — Shopify renders <p></p> as a blank line", () => {
+    expect(buildCollectionDescriptionHtml()).not.toMatch(/</);
   });
 });
 

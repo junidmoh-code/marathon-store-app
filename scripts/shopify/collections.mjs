@@ -39,14 +39,20 @@ import { COLLECTIONS, COLLECTION_BY_KEY, CATEGORY_MAP, validateCollectionPayload
 
 export const COLLECTIONS_NODE = "shopify_sync/_collections";
 
-const escapeHtml = (s) =>
-  String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-/** The collection body as pushed. One paragraph, plain, escaped. */
-export function buildCollectionDescriptionHtml(description) {
-  const text = String(description ?? "").trim();
-  if (!text) throw new Error("a collection description may not be empty — it is customer-facing copy");
-  return `<p>${escapeHtml(text)}</p>`;
+// THE COLLECTION BODY IS EMPTY, ALWAYS. Junid does not want a paragraph on his
+// category pages (owner decision 2026-08-19) — the heading says what the
+// section is, and the prose underneath it was copy nobody asked for. The
+// function survives rather than being deleted at every call site because it is
+// what makes the change STICK: an empty string is a real value that the
+// reconciler diffs and pushes, so the copy already sitting on the shop's
+// collections is CLEARED on the next run rather than merely stopping being
+// regenerated. Deleting the field instead would leave the old paragraphs live
+// forever.
+//
+// It takes no argument and returns no markup — not even an empty <p>, which
+// Shopify's editor renders as a blank line above the products.
+export function buildCollectionDescriptionHtml() {
+  return "";
 }
 
 // ── The conditions source, in the 2026-07 input shape ────────────────────────
@@ -306,7 +312,7 @@ export async function ensureCollection(graphql, db, spec, { commit = false, reco
     );
   }
 
-  const descriptionHtml = buildCollectionDescriptionHtml(spec.description);
+  const descriptionHtml = buildCollectionDescriptionHtml();
   const seo = { title: spec.seoTitle, description: spec.seoDescription };
 
   // 1) the recorded id, 2) the handle.
