@@ -32,8 +32,9 @@
 //      (the audit stamp both fulfil writers set atomically with the status), so
 //      a bare status flip with no stock behind it can never message anybody.
 //   3. DURABLE CLAIM — holdLink/notifyClaimedAt is a create-once transaction.
-//      Only the invocation that wins it may enqueue. This outlives the 90s
-//      dedupe window and survives at-least-once trigger redelivery.
+//      Only the invocation that wins it may enqueue, and it is NEVER taken over
+//      (see the long note at the claim). This outlives the 90s dedupe window and
+//      survives at-least-once trigger redelivery.
 //   4. The producer's own 90s dedupe, underneath everything.
 //
 // COLD-CACHE NOTE (the lesson from hold-reveal-sweep.cjs, opposite polarity):
@@ -81,11 +82,6 @@
 
 const TEMPLATE = "order_ready";   // the now-available variant, approved copy, unchanged
 
-// THE SAME constant the producer dedupes on — shared, not restated, so the two
-// cannot drift (CodeRabbit #385). It is the only window in which re-enqueuing an
-// identical message is provably harmless, and the resume decision below rests
-// entirely on that.
-const { WHATSAPP_DEDUPE_WINDOW_MS: PRODUCER_DEDUPE_MS } = require("./whatsapp-dedupe.cjs");
 
 /**
  * @param db               admin.database()
@@ -122,57 +118,49 @@ async function notifyHoldAvailability({ db, enqueueWhatsApp, requestId, before, 
   if (!link.customerPhone) return { sent: false, skipped: "no_phone" };
   if (link.notifiedAt || link.notifyFailedAt) return { sent: false, skipped: "already_handled" };
 
-  // 3. DURABLE CLAIM — ONE compare-and-swap, and the only door to the producer.
+  // 3. DURABLE CLAIM — create-once, and the only door to the producer.
   //
-  // AN UNRESOLVED CLAIM (CodeRabbit #385). notifyClaimedAt with no notifiedAt
-  // and no notifyFailedAt means an earlier invocation claimed and then died
-  // — killed mid-flight, OOM, timeout — WITHOUT recording whether the enqueue
-  // landed. Nothing on the record can tell us which, so the age of the claim
-  // decides, and only because the producer's own dedupe makes one answer safe:
+  // AN UNRESOLVED CLAIM IS NEVER TAKEN OVER (CodeRabbit #385, third pass).
+  // notifyClaimedAt with no notifiedAt and no notifyFailedAt means some earlier
+  // invocation claimed and never recorded what happened next. It is tempting to
+  // let a later delivery resume it — a mid-flight death would otherwise cost one
+  // customer their message — and two drafts of this module tried:
   //
-  //   younger than the producer's 90s window  → RESUME. A re-enqueue inside
-  //     that window is collapsed by the producer into the doc the dead run may
-  //     already have created, so the customer gets one message whichever way it
-  //     went.
-  //   older                                   → REFUSE, and say so on the
-  //     record. The window has closed, so a re-enqueue could be the SECOND
-  //     message to a real customer. A missed notification is recoverable by a
-  //     human (scripts/hold-notify-gap-census.mjs lists them); the gateway
-  //     number being banned for duplicates is not. We bias to silence.
+  //   draft 1  resumed inside the producer's 90s dedupe window by SKIPPING the
+  //            claim. Two concurrent deliveries then both reached the producer,
+  //            whose dedupe is query-then-add and NOT atomic: both observe an
+  //            empty window, both .add(), the gateway delivers both.
+  //   draft 2  folded resume into the CAS with a `cur === observedClaim` fence.
+  //            That proves the taker replaced the value it saw. It does NOT
+  //            prove the original claimant is dead — A can still be blocked
+  //            inside enqueueWhatsApp while B takes the claim and sends too.
   //
-  // RESUMING IS ITSELF A CAS (CodeRabbit #385, second pass). An earlier draft
-  // resumed by simply skipping the claim, which let two concurrent deliveries
-  // BOTH reach the producer and leaned on its dedupe to collapse them. That
-  // dedupe is read-then-add, not atomic: two calls that observe the same empty
-  // window can both .add(), and the gateway delivers both. So resume is folded
-  // into the same transaction as the fresh claim — null → now for a first
-  // delivery, observedClaim → now for a resume — and the CAS admits exactly one
-  // invocation either way. NOTHING in this module calls the producer without
-  // having won this transaction first. (The producer's dedupe is unchanged and
-  // stays underneath as defence in depth, covering the one case a CAS cannot:
-  // the DEAD run whose enqueue may already have landed.)
+  // Distinguishing a dead claimant from a slow one needs a LEASE longer than the
+  // function's maximum lifetime. That lease would consume most of the 90s window
+  // inside which re-enqueuing is provably harmless, leaving a band both narrow
+  // and coupled to a deploy-time timeout — too fragile a thing to bet a real
+  // customer's message on. So: no takeover, at any age.
   //
-  // Cold-cache polarity is unchanged: `cur` is null on the first pass, which is
-  // a proceed, so the body always reaches the server CAS re-run.
-  const claimedAt = link.notifyClaimedAt || null;
-  const claimedAtMs = claimedAt ? Date.parse(claimedAt) : NaN;
-  const claimAgeMs = Number.isFinite(claimedAtMs) ? Date.parse(now) - claimedAtMs : NaN;
-  const resumable = Number.isFinite(claimAgeMs) && claimAgeMs >= 0 && claimAgeMs < PRODUCER_DEDUPE_MS;
-  if (claimedAt && !resumable) {
-    console.error("holdAvailabilityNotify: unresolved claim past the dedupe window, NOT sending:", requestId);
+  // An unresolved claim is instead STAMPED (notifyUnresolvedAt) and left for a
+  // human. scripts/hold-notify-gap-census.mjs lists them by name. That is the
+  // standing bias of this whole module: a missed notification is recoverable by
+  // a person; the gateway number being banned for duplicates is not.
+  if (link.notifyClaimedAt) {
+    console.error("holdAvailabilityNotify: unresolved claim from an earlier run, NOT sending:", requestId);
     await reqRef.child("holdLink").update({ notifyUnresolvedAt: now })
       .catch((e) => console.error("holdAvailabilityNotify: could not stamp unresolved claim:", requestId, e.message));
     return { sent: false, skipped: "claim_unresolved" };
   }
 
+  // Create-once. NOTHING in this module calls the producer without having won
+  // this transaction. Cold-cache polarity: `cur` is null on the first pass,
+  // which is a proceed, so the body always reaches the server CAS re-run — the
+  // dangerous direction (aborting on the cold null and never consulting the
+  // server) cannot happen with this polarity.
   const claimRef = db.ref(`refill_requests/${requestId}/holdLink/notifyClaimedAt`);
   let claimed = false;
   try {
-    const res = await claimRef.transaction((cur) => {
-      if (cur == null) return now;                                  // first delivery
-      if (resumable && cur === claimedAt) return now;               // take over the run that died
-      return undefined;                                             // someone else owns it
-    });
+    const res = await claimRef.transaction((cur) => (cur == null ? now : undefined));
     claimed = res.committed && res.snapshot.val() === now;
   } catch (err) {
     console.error("holdAvailabilityNotify: claim failed:", requestId, err.message);

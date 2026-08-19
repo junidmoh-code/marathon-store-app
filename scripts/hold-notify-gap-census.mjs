@@ -145,7 +145,13 @@ async function main() {
     .filter((id) => {
       const r = requests[id];
       if (r.status !== "fulfilled") return false;         // nothing arrived → nothing was owed
-      if (r.holdLink && (r.holdLink.notifiedAt || r.holdLink.notifyFailedAt)) return false;  // handled by the restored notifier
+      // notifiedAt = told. notifyFailedAt = the number was refused outright, and
+      // the row carries the reason. An UNRESOLVED claim (notifyClaimedAt with
+      // neither) is deliberately left IN the gap: the notifier never takes a
+      // claim over, so nobody can say whether that message went out — which is
+      // precisely a customer a human should look at.
+      const hl = r.holdLink;
+      if (hl && (hl.notifiedAt || hl.notifyFailedAt)) return false;
       return true;
     })
     .sort((a, b) => String(requests[a].resolvedAt || "").localeCompare(String(requests[b].resolvedAt || "")));
@@ -190,6 +196,8 @@ async function main() {
       // the still-live old bundle — flagged, not dropped.
       beforeRemovalCommit: !!(r.createdAt && r.createdAt < REMOVED_AT),
       customerResolved: !!e.customerPhone,
+      // An earlier notifier run claimed this and never recorded the outcome.
+      unresolvedClaim: !!(r.holdLink && r.holdLink.notifyClaimedAt),
     };
   });
 
@@ -201,7 +209,9 @@ async function main() {
       w(r.orderNumber, 7) + w(r.saDate, 12) + w(r.hub, 6) +
       w(r.customerName, 18) + w(fmtPhone(r.customerPhone), 15) +
       w(r.size, 6) + w(r.fulfilledAt, 21) +
-      (r.beforeRemovalCommit ? "pre-commit " : "") + (r.customerResolved ? "" : "NO-CONTACT")
+      (r.beforeRemovalCommit ? "pre-commit " : "") +
+      (r.unresolvedClaim ? "UNRESOLVED-SEND " : "") +
+      (r.customerResolved ? "" : "NO-CONTACT")
     );
   }
 
@@ -212,6 +222,8 @@ async function main() {
   console.log(`  ${contactable.length} with a phone number on record, raised after the removal commit`);
   if (preCommit.length) console.log(`  ${preCommit.length} raised BEFORE the removal commit — the old bundle may still have messaged them`);
   if (unresolved.length) console.log(`  ${unresolved.length} with no hold event left in /insights_log — no contact details recoverable`);
+  const ambiguous = rows.filter((r) => r.unresolvedClaim);
+  if (ambiguous.length) console.log(`  ${ambiguous.length} whose notification was CLAIMED but never recorded as sent — a human must decide`);
 
   writeFileSync(OUT, JSON.stringify({
     generatedAt: new Date().toISOString(),

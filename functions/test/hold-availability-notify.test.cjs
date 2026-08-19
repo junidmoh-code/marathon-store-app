@@ -194,10 +194,6 @@ test("2c · BOTH LEGS SAY THE SAME THING — the template is registered with thi
   assert.equal(TEMPLATE, "order_ready");
   assert.match(src, /order_ready:\s*\{\s*params:\s*2,/);
   assert.match(src, /is ready to collect at Marathon Club/);
-  // …and the producer's dedupe window is the SAME constant this notifier bets a
-  // customer's message on, not a second copy of the number (CodeRabbit #385).
-  assert.match(src, /const DEDUPE_WINDOW_MS = WHATSAPP_DEDUPE_WINDOW_MS;/);
-  assert.equal(require("../lib/whatsapp-dedupe.cjs").WHATSAPP_DEDUPE_WINDOW_MS, 90 * 1000);
 });
 
 // ── 3 · DOUBLE-TAP FULFIL ENQUEUES ONE, NOT TWO ──────────────────────────────
@@ -420,48 +416,63 @@ test("the claim survives the cold local cache a Cloud Function starts with", asy
 });
 
 // ── AN INVOCATION THAT DIED MID-FLIGHT (CodeRabbit #385) ─────────────────────
-// notifyClaimedAt set, nothing resolved: an earlier run claimed and was killed
-// without recording whether the enqueue landed. Nothing on the record can say
-// which, so the age of the claim decides — and only because the producer's own
-// 90s dedupe makes one of the two answers provably harmless.
+// notifyClaimedAt set, nothing resolved: some earlier run claimed and never
+// recorded what happened next. It is NEVER taken over — see the long note at
+// the claim. Two drafts tried to resume it and both let two live senders reach
+// the producer; distinguishing a dead claimant from a slow one needs a lease
+// longer than the function's own lifetime, which is not a thing to bet a real
+// customer's message on. The claim is stamped and left for a human instead.
 const LATER = (ms) => new Date(Date.parse(NOW) + ms).toISOString();
 
-test("a claim younger than the producer's dedupe window RESUMES — the producer collapses the double", async () => {
-  const db = fakeDb({ refill_requests: { h: holdRequest({
-    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
-                notifyOnFulfil: true, notifyClaimedAt: NOW },
-  }) } });
-  const enqueue = spy();
-  const res = await notifyHoldAvailability({
-    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
-    nowIso: LATER(30 * 1000),
-  });
-  assert.equal(res.sent, true, "inside the window a resend is safe — the producer dedupes it");
-  assert.equal(enqueue.calls.length, 1);
+const unresolvedClaim = () => fakeDb({ refill_requests: { h: holdRequest({
+  holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
+              notifyOnFulfil: true, notifyClaimedAt: NOW },
+}) } });
+
+test("an unresolved claim is never taken over — not after a second, not after a day", async () => {
+  for (const offset of [1, 30 * 1000, 89 * 1000, 10 * 60 * 1000, 24 * 60 * 60 * 1000]) {
+    const db = unresolvedClaim();
+    const enqueue = spy();
+    const res = await notifyHoldAvailability({
+      db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
+      nowIso: LATER(offset),
+    });
+    assert.equal(enqueue.calls.length, 0, `claim aged ${offset}ms must not be taken over`);
+    assert.equal(res.skipped, "claim_unresolved");
+    assert.equal(db.state.refill_requests.h.holdLink.notifyUnresolvedAt, LATER(offset));
+    assert.equal(db.state.refill_requests.h.holdLink.notifyClaimedAt, NOW, "the original claim stands");
+  }
 });
 
-test("a claim PAST the dedupe window refuses to send, and says so on the record", async () => {
-  // Past 90s the producer can no longer collapse a duplicate, so a resend could
-  // be the SECOND message to a real customer. A missed notification is
-  // recoverable by a human; a banned gateway number is not. Bias to silence.
-  const db = fakeDb({ refill_requests: { h: holdRequest({
-    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
-                notifyOnFulfil: true, notifyClaimedAt: NOW },
-  }) } });
-  const enqueue = spy();
-  const res = await notifyHoldAvailability({
+test("a claim held by a LIVE invocation is not taken over while it is still sending", async () => {
+  // The case draft 2's `cur === observedClaim` fence could not see: A has won
+  // the claim and is blocked inside enqueueWhatsApp when B's duplicate event
+  // arrives. B must not send.
+  const db = fakeDb({ refill_requests: { h: holdRequest() } }, { frozenReads: true });
+  let releaseA;
+  const gate = new Promise((r) => { releaseA = r; });
+  const calls = [];
+  const enqueue = async (arg) => { calls.push(arg); await gate; return { success: true, outboxId: "obA" }; };
+
+  const a = drive(db, enqueue, { requestId: "h" });                       // claims, then blocks
+  await new Promise((r) => setImmediate(r));
+  const b = await notifyHoldAvailability({                                // duplicate delivery
     db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
-    nowIso: LATER(10 * 60 * 1000),
+    nowIso: LATER(2 * 1000),
   });
-  assert.equal(enqueue.calls.length, 0);
-  assert.equal(res.skipped, "claim_unresolved");
-  assert.equal(db.state.refill_requests.h.holdLink.notifyUnresolvedAt, LATER(10 * 60 * 1000));
+  assert.equal(b.sent, false);
+  assert.equal(b.skipped, "already_claimed", "B must lose the CAS, not take the claim over");
+  assert.equal(calls.length, 1, "only A reached the producer");
+
+  releaseA();
+  assert.equal((await a).sent, true);
+  assert.equal(calls.length, 1, "one message");
 });
 
 test("ENQUEUED-but-unstamped never releases the claim, so a later retry cannot resend", async () => {
   // The 2-5 copies incident in miniature: the enqueue lands, the bookkeeping
   // write fails, and a compensating claim release would let the retry send a
-  // second message once the dedupe window lapsed.
+  // second message.
   const db = fakeDb(
     { refill_requests: { h: holdRequest() } },
     { failUpdate: (path, patch) => path.endsWith("holdLink") && "notifiedAt" in patch },
@@ -474,49 +485,10 @@ test("ENQUEUED-but-unstamped never releases the claim, so a later retry cannot r
   assert.equal(link.notifyClaimedAt, NOW, "the claim is KEPT — a message was enqueued");
   assert.ok(!link.notifiedAt, "and the stamp genuinely did not land");
 
-  // A retry well past the dedupe window must not send a second copy.
   const res2 = await notifyHoldAvailability({
     db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
     nowIso: LATER(10 * 60 * 1000),
   });
   assert.equal(res2.skipped, "claim_unresolved");
   assert.equal(enqueue.calls.length, 1, "still one message");
-});
-
-test("two concurrent deliveries RESUMING the same dead claim reach the producer once", async () => {
-  // The hole CodeRabbit found in the first resume design: both deliveries
-  // skipped the claim and leaned on the producer to collapse them — but that
-  // dedupe is read-then-add, so two calls observing the same empty window can
-  // both create a doc and the gateway delivers both. Resume is now folded into
-  // the same CAS as a fresh claim, so exactly one invocation gets through.
-  const db = fakeDb({ refill_requests: { h: holdRequest({
-    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
-                notifyOnFulfil: true, notifyClaimedAt: NOW },
-  }) } }, { frozenReads: true });
-  const enqueue = spy();
-  const results = await Promise.all([30, 31].map((offset) => notifyHoldAvailability({
-    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
-    nowIso: LATER(offset * 1000),
-  })));
-  assert.equal(enqueue.calls.length, 1, "the CAS, not the producer, is what makes this one message");
-  assert.equal(results.filter((r) => r.sent).length, 1);
-  assert.ok(results.some((r) => r.skipped === "already_claimed"));
-});
-
-test("a resume cannot take over a claim that has already moved on", async () => {
-  // The stale-read case: we observed claim A, but by the time our transaction
-  // runs another delivery has installed claim B. Taking over would put two live
-  // senders on one message.
-  const db = fakeDb({ refill_requests: { h: holdRequest({
-    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
-                notifyOnFulfil: true, notifyClaimedAt: NOW },
-  }) } }, { frozenReads: true });
-  db.state.refill_requests.h.holdLink.notifyClaimedAt = LATER(20 * 1000);  // someone else took it
-  const enqueue = spy();
-  const res = await notifyHoldAvailability({
-    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
-    nowIso: LATER(30 * 1000),
-  });
-  assert.equal(enqueue.calls.length, 0);
-  assert.equal(res.skipped, "already_claimed");
 });
