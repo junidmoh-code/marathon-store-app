@@ -34,6 +34,24 @@
 // no second button. RefillQueue.jsx never reads holdLink, and two pinned gate
 // suites keep it that way.
 //
+// ── WHY THE PHONE SITS HERE, ON A STAFF-READABLE NODE (assessed, deliberate;
+// CodeRabbit #385 raised it) ─────────────────────────────────────────────────
+// /refill_requests is readable by every signed-in non-anonymous user, so
+// holdLink.customerPhone is readable by all staff, and a staff client could in
+// principle overwrite it. Both were weighed and neither is a new exposure:
+//   • The SAME number, for the same order, is already at /insights_log (every
+//     order event logs customerName + customerPhone) and on /orders, under
+//     byte-identical read grants. Moving holdLink alone would narrow nothing.
+//   • Overwriting it redirects one message — but any signed-in staff client can
+//     already call the sendWhatsApp callable directly with any number and any
+//     approved template. holdLink grants no capability that boundary does not.
+// The real fix is a rules change, and rules are console-managed here and drift
+// from the local file, so the PR PRINTS the hardening (holdLink's notify* audit
+// fields server-only) rather than editing database.rules.json. A server-only
+// contact store would additionally mean the hold-raise could no longer write it
+// from the client at all — a callable, a new write path, and a much larger
+// change than "only the notification comes back".
+//
 // FAIL CLOSED. The hub comes from the order's own routing (placedAtHub, the
 // same field dispatch uses), never a guess: if the hub is not hub1/hub2, or
 // the order has no productId or size, NO request is raised — the order simply

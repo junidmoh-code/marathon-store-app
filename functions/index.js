@@ -431,6 +431,12 @@ exports.holdAvailabilityNotify = onValueWritten(
     region:         "europe-west1",
     memory:         "256MiB",
     timeoutSeconds: 60,
+    // A transient enqueue failure rethrows, and the status will never change
+    // again — without retries that customer is simply never told. The core
+    // releases its claim BEFORE rethrowing, so a retry re-claims and re-sends;
+    // every other outcome returns rather than throws, so nothing else re-drives.
+    // (CodeRabbit #385.)
+    retry:          true,
   },
   async (event) => {
     await notifyHoldAvailability({

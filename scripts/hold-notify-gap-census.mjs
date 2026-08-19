@@ -118,7 +118,14 @@ async function readTomorrowEvents(fromIso) {
   return { byRequestId, pages };
 }
 
-const fmtPhone = (p) => (p ? String(p) : "—");
+// MASKED for the terminal (CodeRabbit #385). Scrollback, shell session logs and
+// any `tee`/CI capture outlive the run; the full number belongs only in the
+// mode-600 report, which is where the owner reads it to actually make contact.
+const fmtPhone = (p) => {
+  if (!p) return "—";
+  const s = String(p);
+  return s.length <= 4 ? "•".repeat(s.length) : `${"•".repeat(s.length - 4)}${s.slice(-4)}`;
+};
 
 async function main() {
   console.log("HOLD NOTIFICATION GAP CENSUS — read-only, nothing is sent, nothing is written to RTDB\n");
@@ -215,9 +222,11 @@ async function main() {
     openLegacyCount: openLegacy.length,
     openLegacyOrders: openLegacy.map((id) => ({ requestId: id, orderNumber: requests[id].createdFrom?.orderId ?? null })),
     rows,
-  }, null, 2));
+  }, null, 2), { mode: 0o600 });
+  // mode on writeFileSync only applies at CREATION; chmod covers a re-run over
+  // a file an earlier, wider umask already made.
   chmodSync(OUT, 0o600);   // contains customer phone numbers
-  console.log(`\nDetail (contains phone numbers, mode 600): ${OUT}`);
+  console.log(`\nFull numbers (mode 600, not printed above): ${OUT}`);
   console.log(`\nbytes read: ${JSON.stringify(bytesByNode)}`);
   console.log("\nNo message was sent and no record was changed. Contacting these customers is the owner's call.");
   return { gap: rows, requests: ids.length };

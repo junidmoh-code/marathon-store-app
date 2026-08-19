@@ -127,13 +127,16 @@ describe("3 · the hold notification fires at FULFIL, server-side; the raise/wit
   it("the server trigger is the ONE producer, keyed on the fulfil transition", () => {
     const FN = readFileSync(join(HERE, "../functions/index.js"), "utf8");
     const LIB = readFileSync(join(HERE, "../functions/lib/hold-availability-notify.cjs"), "utf8");
-    expect(FN).toContain('ref:            "/refill_requests/{requestId}/status"');
-    expect(FN).toContain("exports.holdAvailabilityNotify = onValueWritten(");
+    // Whitespace-tolerant (CodeRabbit #385): a formatter run must not be able to
+    // report the trigger as missing. The mutation harness keeps its own EXACT
+    // anchors — it WANTS to notice text drift, this gate does not.
+    expect(FN).toMatch(/ref:\s*"\/refill_requests\/\{requestId\}\/status"/);
+    expect(FN).toMatch(/exports\.holdAvailabilityNotify\s*=\s*onValueWritten\(/);
     // No new send path: the existing outbox producer, injected.
     expect(FN).toMatch(/notifyHoldAvailability\(\{[\s\S]*?enqueueWhatsApp,/);
-    expect(LIB).toContain('const TEMPLATE = "order_ready";');
-    expect(LIB).toContain('if (after !== "fulfilled") return { sent: false, skipped: "not_fulfilled" };');
-    expect(LIB).toContain('if (before === "fulfilled") return { sent: false, skipped: "no_transition" };');
+    expect(LIB).toMatch(/const TEMPLATE\s*=\s*"order_ready";/);
+    expect(LIB).toMatch(/if\s*\(after !== "fulfilled"\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"not_fulfilled"\s*\}/);
+    expect(LIB).toMatch(/if\s*\(before === "fulfilled"\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"no_transition"\s*\}/);
   });
 
   it("a hold still RAISES an ordinary request, create-if-absent, fail-closed", () => {

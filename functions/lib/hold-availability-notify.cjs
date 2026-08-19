@@ -81,6 +81,11 @@
 
 const TEMPLATE = "order_ready";   // the now-available variant, approved copy, unchanged
 
+// MUST equal DEDUPE_WINDOW_MS in enqueueWhatsApp (functions/index.js). It is the
+// only window in which re-enqueuing an identical message is provably harmless,
+// and the resume decision above rests entirely on that.
+const PRODUCER_DEDUPE_MS = 90 * 1000;
+
 /**
  * @param db               admin.database()
  * @param enqueueWhatsApp  the outbox producer (functions/index.js)
@@ -114,55 +119,99 @@ async function notifyHoldAvailability({ db, enqueueWhatsApp, requestId, before, 
   const link = rec.holdLink;
   if (!link || link.notifyOnFulfil !== true) return { sent: false, skipped: "not_hold_origin" };
   if (!link.customerPhone) return { sent: false, skipped: "no_phone" };
-  if (link.notifiedAt || link.notifyFailedAt || link.notifyClaimedAt) {
-    return { sent: false, skipped: "already_handled" };
-  }
+  if (link.notifiedAt || link.notifyFailedAt) return { sent: false, skipped: "already_handled" };
 
   // 3. DURABLE CLAIM — create-once. See the cold-cache note in the header.
-  const claimRef = db.ref(`refill_requests/${requestId}/holdLink/notifyClaimedAt`);
-  let claimed = false;
-  try {
-    const res = await claimRef.transaction((cur) => (cur == null ? now : undefined));
-    claimed = res.committed && res.snapshot.val() === now;
-  } catch (err) {
-    console.error("holdAvailabilityNotify: claim failed:", requestId, err.message);
-    return { sent: false, skipped: "claim_failed" };
+  //
+  // AN UNRESOLVED CLAIM (CodeRabbit #385). notifyClaimedAt with no notifiedAt
+  // and no notifyFailedAt means an earlier invocation claimed and then died
+  // — killed mid-flight, OOM, timeout — WITHOUT recording whether the enqueue
+  // landed. Nothing on the record can tell us which, so the age of the claim
+  // decides, and only because the producer's own dedupe makes one answer safe:
+  //
+  //   younger than the producer's 90s window  → RESUME. A re-enqueue inside
+  //     that window is collapsed by the producer into the doc the dead run may
+  //     already have created, so the customer gets one message whichever way it
+  //     went. We take over the claim rather than re-taking it (the create-once
+  //     transaction would refuse), which also means two genuinely concurrent
+  //     deliveries can both reach the producer here — and be deduped there,
+  //     which is exactly what that dedupe is for.
+  //   older                                   → REFUSE, and say so on the
+  //     record. The window has closed, so a re-enqueue could be the SECOND
+  //     message to a real customer. A missed notification is recoverable by a
+  //     human (scripts/hold-notify-gap-census.mjs lists them); the gateway
+  //     number being banned for duplicates is not. We bias to silence.
+  const claimedAtMs = link.notifyClaimedAt ? Date.parse(link.notifyClaimedAt) : NaN;
+  const claimAgeMs = Number.isFinite(claimedAtMs) ? Date.parse(now) - claimedAtMs : NaN;
+  const resumable = Number.isFinite(claimAgeMs) && claimAgeMs >= 0 && claimAgeMs < PRODUCER_DEDUPE_MS;
+  if (link.notifyClaimedAt && !resumable) {
+    console.error("holdAvailabilityNotify: unresolved claim past the dedupe window, NOT sending:", requestId);
+    await reqRef.child("holdLink").update({ notifyUnresolvedAt: now })
+      .catch((e) => console.error("holdAvailabilityNotify: could not stamp unresolved claim:", requestId, e.message));
+    return { sent: false, skipped: "claim_unresolved" };
   }
-  if (!claimed) return { sent: false, skipped: "already_claimed" };
+
+  if (!resumable) {
+    const claimRef = db.ref(`refill_requests/${requestId}/holdLink/notifyClaimedAt`);
+    let claimed = false;
+    try {
+      const res = await claimRef.transaction((cur) => (cur == null ? now : undefined));
+      claimed = res.committed && res.snapshot.val() === now;
+    } catch (err) {
+      console.error("holdAvailabilityNotify: claim failed:", requestId, err.message);
+      return { sent: false, skipped: "claim_failed" };
+    }
+    if (!claimed) return { sent: false, skipped: "already_claimed" };
+  }
 
   // 4. THE SEND — the existing producer, the existing outbox, the existing
   //    90s dedupe. orderId is what the customer knows the order by.
+  //
+  // ONCE THIS RESOLVES, THE CLAIM IS NEVER RELEASED (CodeRabbit #385). The
+  // enqueue and the bookkeeping that records it are separate awaits, and a
+  // failure of the SECOND one used to fall into the same catch as a failure of
+  // the first — releasing the claim on a message that had already been
+  // enqueued, so the retry sent it again once the 90s window lapsed. That is
+  // the exact 2-5 copies incident. The two are now separated: only a failure
+  // BEFORE the producer answered can release the claim.
+  let result;
   try {
-    const result = await enqueueWhatsApp({
+    result = await enqueueWhatsApp({
       templateName:   TEMPLATE,
       recipientPhone: link.customerPhone,
       templateParams: [link.customerName || "there", link.orderId],
     });
-    await reqRef.child("holdLink").update({
-      notifiedAt:      now,
-      notifyOutboxId:  (result && result.outboxId) || null,
-      notifyTemplate:  TEMPLATE,
-    });
-    console.log("holdAvailabilityNotify: enqueued", JSON.stringify({
-      requestId, orderId: link.orderId, outboxId: (result && result.outboxId) || null,
-      deduped: !!(result && result.deduped),
-    }));
-    return { sent: true, skipped: null };
   } catch (err) {
     const terminal = !!(err && err.code === "invalid-argument" && err.details && err.details.unusableRecipient);
     await reqRef.child("holdLink").update({
       notifyError: String((err && err.message) || err).slice(0, 300),
       ...(terminal
         ? { notifyFailedAt: now }
-        : { notifyClaimedAt: null }),   // release so a redelivery can retry
+        : { notifyClaimedAt: null }),   // nothing was enqueued — release for a retry
     }).catch((e) => console.error("holdAvailabilityNotify: could not stamp failure:", requestId, e.message));
     if (terminal) {
       console.error("holdAvailabilityNotify: unusable phone, NOT sent (terminal):", requestId, err.message);
       return { sent: false, skipped: "unusable_recipient" };
     }
     console.error("holdAvailabilityNotify: enqueue failed, claim released:", requestId, err.message);
-    throw err;   // red in Cloud Logging; there is no retry sweep by design
+    throw err;   // retry: true on the trigger re-drives this with backoff
   }
+
+  // The producer has answered: a doc exists. From here a failure may only be
+  // logged, never compensated by releasing the claim.
+  await reqRef.child("holdLink").update({
+    notifiedAt:      now,
+    notifyOutboxId:  (result && result.outboxId) || null,
+    notifyTemplate:  TEMPLATE,
+  }).catch((e) => console.error(
+    "holdAvailabilityNotify: ENQUEUED but could not stamp notifiedAt (claim kept, will not resend):",
+    requestId, e.message,
+  ));
+  console.log("holdAvailabilityNotify: enqueued", JSON.stringify({
+    requestId, orderId: link.orderId, outboxId: (result && result.outboxId) || null,
+    deduped: !!(result && result.deduped),
+  }));
+  return { sent: true, skipped: null };
 }
 
 module.exports = { notifyHoldAvailability, TEMPLATE };

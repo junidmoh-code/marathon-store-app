@@ -21,7 +21,11 @@ import { execFileSync } from "node:child_process";
 const LIB = "functions/lib/hold-availability-notify.cjs";
 const PLAN = "src/components/stock/onHoldRefill.js";
 const SERVER_TESTS = ["test/hold-availability-notify.test.cjs"];
-const CLIENT_TESTS = ["src/components/stock/onHoldRefill.test.js", "src/signedInPillAndHoldMerge.gate.test.js"];
+// M9/M10 run against the BEHAVIOURAL suite only. The gate suite asserts the
+// exact source text of both anchors, so including it would let those mutations
+// be "proven" by the string disappearing rather than by anything breaking —
+// circular, and worth nothing. (CodeRabbit #385.)
+const PLAN_BEHAVIOUR_TESTS = ["src/components/stock/onHoldRefill.test.js"];
 
 const MUTATIONS = [
   // ── "Out of Stock sends nothing" / "nothing enqueues without a fulfil" ─────
@@ -69,9 +73,7 @@ const MUTATIONS = [
     id: "M6",
     guard: "A double-tap fulfil is refused by the durable stamp, not left to the 90s window",
     file: LIB,
-    from: `  if (link.notifiedAt || link.notifyFailedAt || link.notifyClaimedAt) {
-    return { sent: false, skipped: "already_handled" };
-  }`,
+    from: `  if (link.notifiedAt || link.notifyFailedAt) return { sent: false, skipped: "already_handled" };`,
     to: ``,
     nodeTests: SERVER_TESTS,
   },
@@ -91,6 +93,33 @@ const MUTATIONS = [
     to: `    const terminal = !!(err && err.code === "invalid-argument");`,
     nodeTests: SERVER_TESTS,
   },
+  {
+    id: "M11",
+    guard: "An unresolved claim past the dedupe window REFUSES to send rather than risk a second message",
+    file: LIB,
+    from: `  if (link.notifyClaimedAt && !resumable) {`,
+    to: `  if (false) {`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M12",
+    guard: "Once the producer has answered, NOTHING releases the claim — the 2-5 copies incident in miniature",
+    file: LIB,
+    from: `  }).catch((e) => console.error(
+    "holdAvailabilityNotify: ENQUEUED but could not stamp notifiedAt (claim kept, will not resend):",
+    requestId, e.message,
+  ));`,
+    to: `  }).catch(async () => { await reqRef.child("holdLink").update({ notifyClaimedAt: null }).catch(() => {}); });`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M13",
+    guard: "A claim inside the dedupe window RESUMES — a mid-flight death must not silently drop the message",
+    file: LIB,
+    from: `  const resumable = Number.isFinite(claimAgeMs) && claimAgeMs >= 0 && claimAgeMs < PRODUCER_DEDUPE_MS;`,
+    to: `  const resumable = false;`,
+    nodeTests: SERVER_TESTS,
+  },
   // ── the client half: without the re-link there is nobody to message ────────
   {
     id: "M9",
@@ -98,7 +127,7 @@ const MUTATIONS = [
     file: PLAN,
     from: `      holdLink: holdCustomerLink(order, saDate),`,
     to: ``,
-    tests: CLIENT_TESTS,
+    tests: PLAN_BEHAVIOUR_TESTS,
   },
   {
     id: "M10",
@@ -106,7 +135,7 @@ const MUTATIONS = [
     file: PLAN,
     from: `    notifyOnFulfil: !!phone,`,
     to: `    notifyOnFulfil: true,`,
-    tests: CLIENT_TESTS,
+    tests: PLAN_BEHAVIOUR_TESTS,
   },
 ];
 
@@ -127,7 +156,10 @@ function runVitest(files) {
 
 function runNodeTests(files) {
   try {
-    execFileSync("node", ["--test", ...files], { stdio: "pipe", cwd: "functions", maxBuffer: 64 * 1024 * 1024 });
+    // TAP is PINNED, not left to the default reporter: node 24 prints "ℹ fail 1"
+    // where node 22 prints "# fail 1", and the parser below would read a real
+    // failure as ERROR — silently crediting no guard at all. (CodeRabbit #385.)
+    execFileSync("node", ["--test", "--test-reporter=tap", ...files], { stdio: "pipe", cwd: "functions", maxBuffer: 64 * 1024 * 1024 });
     return "PASS";
   } catch (err) {
     const out = `${err.stdout || ""}${err.stderr || ""}`;

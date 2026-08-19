@@ -27,7 +27,7 @@ const NOW = "2026-08-19T09:00:00.000Z";
 // wrote: every get() returns the record as it was at construction. That takes
 // the cheap pre-check out of play so the create-once claim is the only thing
 // left that can separate them.
-function fakeDb(initial, { frozenReads = false } = {}) {
+function fakeDb(initial, { frozenReads = false, failUpdate = null } = {}) {
   const state = structuredClone(initial);
   const frozen = structuredClone(initial);
   const node = (path) => path.split("/").filter(Boolean).reduce((n, k) => (n == null ? n : n[k]), state);
@@ -42,6 +42,7 @@ function fakeDb(initial, { frozenReads = false } = {}) {
   const api = {
     state,
     transactionAttempts: 0,
+    transactionPasses: 0,   // invocations of the UPDATE FN — the cold pass and the CAS re-run
     ref(path) {
       const self = {
         child: (c) => api.ref(`${path}/${c}`),
@@ -52,15 +53,18 @@ function fakeDb(initial, { frozenReads = false } = {}) {
           return { val: () => (src === undefined ? null : src) };
         },
         async update(patch) {
+          if (failUpdate && failUpdate(path, patch)) throw new Error("update refused");
           for (const [k, v] of Object.entries(patch)) setNode(`${path}/${k}`, v);
         },
         async transaction(fn) {
           api.transactionAttempts++;
           // Pass 1: the COLD local cache — always null in a Cloud Function.
+          api.transactionPasses++;
           const cold = fn(null);
           if (cold === undefined) return { committed: false, snapshot: { val: () => node(path) ?? null } };
           // Pass 2: the CAS re-run against the real server value.
           const live = node(path);
+          api.transactionPasses++;
           const hot = fn(live === undefined ? null : live);
           if (hot === undefined) return { committed: false, snapshot: { val: () => (live === undefined ? null : live) } };
           setNode(path, hot);
@@ -135,6 +139,19 @@ test("1b · a hold line whose flag was never armed (no phone) sends nothing", as
   const res = await drive(db, enqueue, { requestId: "h" });
   assert.equal(enqueue.calls.length, 0);
   assert.equal(res.skipped, "not_hold_origin");
+});
+
+test("1c · an ARMED hold with no phone still sends nothing", async () => {
+  // onHoldRefill arms the flag only when a phone exists, but the send must not
+  // depend on that staying true — a later edit arming the flag without a number
+  // would otherwise hand the producer an empty recipient. (CodeRabbit #385.)
+  const db = fakeDb({ refill_requests: { h: holdRequest({
+    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "", notifyOnFulfil: true },
+  }) } });
+  const enqueue = spy();
+  const res = await drive(db, enqueue, { requestId: "h" });
+  assert.equal(enqueue.calls.length, 0);
+  assert.equal(res.skipped, "no_phone");
 });
 
 // ── 2 · A HOLD-ORIGIN LINE FULFILS AND ENQUEUES EXACTLY ONE ──────────────────
@@ -392,7 +409,72 @@ test("the claim survives the cold local cache a Cloud Function starts with", asy
   // The fake runs the body against null FIRST and only then against the server
   // value; a body that aborted on the cold null would never reach the server
   // and no message would ever send. Two passes is the proof it did.
-  assert.ok(db.transactionAttempts >= 1);
+  assert.equal(db.transactionPasses, 2,
+    "the body survived the cold null and re-ran against the server value");
   assert.equal(db.state.refill_requests.h.holdLink.notifyClaimedAt, NOW);
   assert.equal(enqueue.calls.length, 1);
+});
+
+// ── AN INVOCATION THAT DIED MID-FLIGHT (CodeRabbit #385) ─────────────────────
+// notifyClaimedAt set, nothing resolved: an earlier run claimed and was killed
+// without recording whether the enqueue landed. Nothing on the record can say
+// which, so the age of the claim decides — and only because the producer's own
+// 90s dedupe makes one of the two answers provably harmless.
+const LATER = (ms) => new Date(Date.parse(NOW) + ms).toISOString();
+
+test("a claim younger than the producer's dedupe window RESUMES — the producer collapses the double", async () => {
+  const db = fakeDb({ refill_requests: { h: holdRequest({
+    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
+                notifyOnFulfil: true, notifyClaimedAt: NOW },
+  }) } });
+  const enqueue = spy();
+  const res = await notifyHoldAvailability({
+    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
+    nowIso: LATER(30 * 1000),
+  });
+  assert.equal(res.sent, true, "inside the window a resend is safe — the producer dedupes it");
+  assert.equal(enqueue.calls.length, 1);
+});
+
+test("a claim PAST the dedupe window refuses to send, and says so on the record", async () => {
+  // Past 90s the producer can no longer collapse a duplicate, so a resend could
+  // be the SECOND message to a real customer. A missed notification is
+  // recoverable by a human; a banned gateway number is not. Bias to silence.
+  const db = fakeDb({ refill_requests: { h: holdRequest({
+    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
+                notifyOnFulfil: true, notifyClaimedAt: NOW },
+  }) } });
+  const enqueue = spy();
+  const res = await notifyHoldAvailability({
+    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
+    nowIso: LATER(10 * 60 * 1000),
+  });
+  assert.equal(enqueue.calls.length, 0);
+  assert.equal(res.skipped, "claim_unresolved");
+  assert.equal(db.state.refill_requests.h.holdLink.notifyUnresolvedAt, LATER(10 * 60 * 1000));
+});
+
+test("ENQUEUED-but-unstamped never releases the claim, so a later retry cannot resend", async () => {
+  // The 2-5 copies incident in miniature: the enqueue lands, the bookkeeping
+  // write fails, and a compensating claim release would let the retry send a
+  // second message once the dedupe window lapsed.
+  const db = fakeDb(
+    { refill_requests: { h: holdRequest() } },
+    { failUpdate: (path, patch) => path.endsWith("holdLink") && "notifiedAt" in patch },
+  );
+  const enqueue = spy();
+  const res = await drive(db, enqueue, { requestId: "h" });
+  assert.equal(res.sent, true);
+  assert.equal(enqueue.calls.length, 1);
+  const link = db.state.refill_requests.h.holdLink;
+  assert.equal(link.notifyClaimedAt, NOW, "the claim is KEPT — a message was enqueued");
+  assert.ok(!link.notifiedAt, "and the stamp genuinely did not land");
+
+  // A retry well past the dedupe window must not send a second copy.
+  const res2 = await notifyHoldAvailability({
+    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
+    nowIso: LATER(10 * 60 * 1000),
+  });
+  assert.equal(res2.skipped, "claim_unresolved");
+  assert.equal(enqueue.calls.length, 1, "still one message");
 });
