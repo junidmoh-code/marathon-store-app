@@ -176,3 +176,68 @@ describe("the three live corrections, end to end through the pure logic", () => 
     }
   });
 });
+
+// ─── THE THIRD HALF OF applyMovement (CodeRabbit, PR #379) ───────────────────
+// The script reproduces applyMovement, which writes THREE things in one atomic
+// update: the cell, the ledger record, and the forward provenance increment. The
+// first version wrote two of the three — a ledger record the next backfill would
+// count, over a materialised index left stale in the meantime.
+//
+// These drive the REAL classifier over the EXACT records the script builds, so they
+// fail if provenanceClass ever reclassifies this movement shape out from under it.
+import { classifyMovement } from "./movementProvenance.mjs";
+import { provenanceUpdatesFor } from "./negativeCellPlanCore.mjs";
+
+const LEDGER_REF = "bagneg-pe-2026-08-17";
+const inc = (n) => ({ __increment: n });          // stand-in for the RTDB sentinel
+const record = (over = {}) => ({
+  type: "transfer_out", productId: "p1782635759411", size: "_", qty: 1,
+  from: "trophy", to: "marathon-pe",
+  before: { trophy: 2, "marathon-pe": -1 }, after: { trophy: 1, "marathon-pe": 0 },
+  actor: "scripts/fix-negative-pe-bag-cells.mjs", actorRole: "admin",
+  ts: "T", appliedAt: "T", reason: `${LEDGER_REF}: …`,
+  link: { orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, correction: LEDGER_REF },
+  ...over,
+});
+
+describe("forward provenance rides the same atomic update", () => {
+  it("the PAIRED TRANSFER classifies STOCKING at the DESTINATION and increments k there", () => {
+    // transfer_out into a real shop with an empty link → "scripted relocation".
+    // The unit lands at marathon-pe, so marathon-pe is what gains carriage — trophy
+    // sending stock away establishes nothing about trophy.
+    const c = classifyMovement(record());
+    expect(c.cls).toBe("STOCKING");
+    expect(c.loc).toBe("marathon-pe");
+    expect(c.qty).toBe(1);
+    expect(provenanceUpdatesFor(c, "p1782635759411", inc)).toEqual({
+      "stock_provenance/marathon-pe/p1782635759411/k": { __increment: 1 },
+    });
+  });
+
+  it("a NEGATIVE HEAL classifies NEUTRAL and writes NO provenance path", () => {
+    // An adjustment establishes nothing — a correction is not evidence of trade.
+    // This is the case that must add no path at all, or clearing a phantom debt
+    // would silently arm the shop for a line it never stocked.
+    const c = classifyMovement(record({ type: "adjustment", from: null, to: "marathon-pe" }));
+    expect(c.cls).toBe("NEUTRAL");
+    expect(c.loc).toBe(null);
+    expect(provenanceUpdatesFor(c, "p1782640227755", inc)).toEqual({});
+  });
+
+  it("maps each class to its own counter, and nothing to the ones that prove nothing", () => {
+    const pid = "p1";
+    expect(provenanceUpdatesFor({ cls: "SALE", loc: "trophy", qty: 3 }, pid, inc))
+      .toEqual({ "stock_provenance/trophy/p1/s": { __increment: 1 } });   // events, not units
+    expect(provenanceUpdatesFor({ cls: "STOCKING", loc: "hub2", qty: 4 }, pid, inc))
+      .toEqual({ "stock_provenance/hub2/p1/k": { __increment: 4 } });
+    expect(provenanceUpdatesFor({ cls: "UNSTOCK", loc: "hub2", qty: 2 }, pid, inc))
+      .toEqual({ "stock_provenance/hub2/p1/u": { __increment: 2 } });
+    expect(provenanceUpdatesFor({ cls: "COLLECTION", loc: "marathon-pe", qty: 1 }, pid, inc)).toEqual({});
+    expect(provenanceUpdatesFor({ cls: "NEUTRAL", loc: null, qty: 1 }, pid, inc)).toEqual({});
+  });
+
+  it("writes nothing when the classifier names no location", () => {
+    expect(provenanceUpdatesFor({ cls: "STOCKING", loc: null, qty: 1 }, "p1", inc)).toEqual({});
+    expect(provenanceUpdatesFor({ cls: "STOCKING", loc: "hub2", qty: 1 }, null, inc)).toEqual({});
+  });
+});

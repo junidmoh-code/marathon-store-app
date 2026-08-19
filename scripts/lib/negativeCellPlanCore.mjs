@@ -105,3 +105,36 @@ export function verifyLeg({ nowQty, expectedAfter }) {
 export function nextVersion(cell) {
   return typeof cell?.v === "number" ? cell.v + 1 : 0;
 }
+
+/**
+ * The /stock_provenance paths a correction must write, alongside its cell and ledger
+ * writes, in the SAME atomic update.
+ *
+ * WHY THIS EXISTS (CodeRabbit, PR #379). The correction script reproduces
+ * applyMovement, and applyMovement maintains the provenance index inside the same
+ * atomic update as the cell and the ledger record. The first version reproduced only
+ * two of those three, so it wrote a ledger record the next backfill would count while
+ * leaving the materialised index stale in the meantime — the ledger/index divergence
+ * the index exists to prevent.
+ *
+ * That went from theoretical to real on 2026-08-18, when hosting deployed and forward
+ * maintenance went live: every other writer now keeps the index current, and this
+ * script would have been the one that did not.
+ *
+ * THE CLASSIFIER DECIDES, NOT THIS FUNCTION. It is handed the classification and only
+ * maps a class to its counter. A rule written here about what establishes carriage
+ * would be a second definition to keep in step with provenanceClass.js — and this repo
+ * has already paid for one predicate living in two places.
+ *
+ * `increment` is injected because the sentinel comes from firebase-admin, and a pure
+ * function that can be tested without a database is worth more than one that saves an
+ * import.
+ */
+export function provenanceUpdatesFor({ cls, loc, qty }, pid, increment) {
+  if (!loc || !pid) return {};
+  const base = `stock_provenance/${loc}/${pid}`;
+  if (cls === "SALE") return { [`${base}/s`]: increment(1) };
+  if (cls === "STOCKING") return { [`${base}/k`]: increment(qty) };
+  if (cls === "UNSTOCK") return { [`${base}/u`]: increment(qty) };
+  return {};                                   // COLLECTION and NEUTRAL establish nothing
+}

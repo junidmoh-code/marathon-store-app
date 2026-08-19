@@ -64,6 +64,13 @@
 //   • stock_movements/{mvId}  the ledger record, with before/after per location
 //   • per touched cell: qty, v (= old v + 1, or 0 if the cell is new), mv, lastType,
 //     updatedAt, updatedBy
+//   • /stock_provenance — the forward carries increment, when the SHARED classifier
+//     says the movement establishes anything (CodeRabbit, PR #379). Omitting this
+//     wrote a ledger record the next backfill would count over an index left stale
+//     in the meantime — and since hosting deployed on 2026-08-18 every other writer
+//     maintains that index, so this would have been the one that did not. The paired
+//     transfer classifies STOCKING at marathon-pe; the negative heals are
+//     `adjustment` → NEUTRAL and correctly write no path at all.
 // Movement ids are deterministic, so a re-run never double-applies. What it repairs is
 // narrower than "a partial failure", and the difference is worth stating (CodeRabbit,
 // PR #379): a re-run RESUMES between corrections — if the run dies after the first
@@ -107,8 +114,12 @@ import { homedir } from "os";
 // The three questions this script has to get right are pure, so they live in a
 // module with tests rather than inline where only healthy data ever exercises them.
 import {
-  classifyLeg, correctionState, guardDrift, verifyLeg, nextVersion, APPLIED, PENDING,
+  classifyLeg, correctionState, guardDrift, verifyLeg, nextVersion, provenanceUpdatesFor, APPLIED, PENDING,
 } from "./lib/negativeCellPlanCore.mjs";
+// THE shared classifier — the same one applyMovement and the backfill use. Imported
+// rather than reimplemented so this script cannot hold a second opinion about what
+// establishes carriage.
+import { classifyMovement } from "./lib/movementProvenance.mjs";
 
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -313,7 +324,7 @@ if (!EXECUTE) {
       upd[`${path}/updatedAt`] = now;
       upd[`${path}/updatedBy`] = ACTOR;
     });
-    upd[`stock_movements/${id}`] = {
+    const record = {
       type: mvType(p),
       productId: p.pid, size: p.size, qty: p.qty,
       from: p.from ?? null, to: p.to ?? null,
@@ -323,6 +334,29 @@ if (!EXECUTE) {
       reason: p.reason,
       link: { orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, correction: LEDGER_REF },
     };
+    upd[`stock_movements/${id}`] = record;
+
+    // ── FORWARD PROVENANCE, IN THE SAME UPDATE (CodeRabbit, PR #379) ─────────
+    // This script reproduces applyMovement, and applyMovement maintains
+    // /stock_provenance inside the same atomic update as the cell and the ledger
+    // record. Omitting that half writes a ledger record the NEXT backfill will
+    // count while leaving the materialised index stale in the meantime — exactly
+    // the ledger/index divergence the index exists to prevent.
+    //
+    // It matters more now than when this script was written: hosting deployed on
+    // 2026-08-18, so forward maintenance is LIVE and every other writer keeps the
+    // index current. This would have been the one that did not.
+    //
+    // The CLASSIFIER decides, not this file. The paired transfer is a
+    // `transfer_out` into a real shop with an empty link, which
+    // provenanceClass.js resolves to STOCKING at `to` — but that is its call to
+    // make, not a fact worth restating here, and a hand-written rule would be a
+    // second definition of carriage to keep in step. The negative heals are
+    // `adjustment`, which classifies NEUTRAL, so they correctly add no path at all.
+    const prov = classifyMovement(record);
+    Object.assign(upd, provenanceUpdatesFor(prov, p.pid, (n) => admin.database.ServerValue.increment(n)));
+    say(`- \`${p.pid}\`/${p.sizeKey}: provenance ${prov.cls}${prov.loc ? ` at \`${prov.loc}\` (+${prov.qty})` : " — no index path"} · ${prov.why}`);
+
     await db.ref().update(upd);
     say(`- \`${p.pid}\`/${p.sizeKey}: applied \`${id}\` (${Object.keys(upd).length} paths)`);
   }
