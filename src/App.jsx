@@ -10257,20 +10257,32 @@ function WarehouseView({ products = [], orders, onExit }) {
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
     // NO CLIENT WhatsApp on COMING_TOMORROW — and that is not the same thing as
-    // no message. The customer IS told, twice, by two server triggers:
+    // no message. The send is the SERVER's: functions orderTomorrowNotify fires
+    // order_tomorrow ("scheduled for tomorrow, we will notify you when it is
+    // ready") off /orders/{id}/status the moment this handler writes it.
     //
-    //   at THIS transition   functions orderTomorrowNotify  → order_tomorrow
-    //                        ("scheduled for tomorrow, we will notify you")
-    //   at FULFIL            functions holdAvailabilityNotify → order_ready
-    //                        ("ready to collect") — PR #385, off holdLink above
+    // It hangs off the WRITE rather than the button because the client
+    // fire-and-forget e115cde deleted is the shape that once sent the same
+    // message 2-5 times and got the gateway number banned. It is behind a
+    // create-once claim, so a sleeping tablet can neither lose it nor repeat
+    // it. Nothing to add here: updateOrder(patch) above IS the trigger.
     //
-    // The first promises the second; they are not duplicates. Both hang off the
-    // WRITES this handler already makes rather than off the button, because the
-    // deleted client fire-and-forget (e115cde) is the shape that once sent the
-    // same message 2-5 times and got the gateway number banned. Each is behind
-    // its own create-once claim, so a sleeping tablet can neither lose a message
-    // nor repeat one. Nothing to add here: updateOrder(patch) above is the
-    // trigger.
+    // ── WHO ELSE SENDS order_ready, AND THE ONE KNOWN OVERLAP ────────────────
+    // order_ready has THREE producers, and they are NOT all server-side:
+    //   1. the client, four lines up — every non-held Ready, immediately;
+    //   2. dispatchHoldRevealSweep — a Hub 2 Ready, deferred to notifyReadyAt;
+    //   3. holdAvailabilityNotify (PR #385) — a HELD order's refill line
+    //      reaching `fulfilled`, i.e. the stock physically arriving.
+    //
+    // order_tomorrow and (3) are not duplicates of each other: the first
+    // promises the second, in those words. But (1) and (3) CAN both fire for
+    // one held order — #385 messages "ready to collect" when the refill
+    // fulfils, and staff then marking that same order Ready sends the identical
+    // text again from (1). The producer's 90s dedupe only catches it if those
+    // two happen within 90 seconds, which the real workflow does not guarantee.
+    // NOT FIXED HERE — out of scope for the order_tomorrow restoration (#386),
+    // and as of this writing no held order has completed that path in
+    // production yet. Flagged for the owner; the fix belongs with #385.
   };
 
   // Mark an order Sent AND auto-print its dispatch label — but ONLY when the hub→shop
