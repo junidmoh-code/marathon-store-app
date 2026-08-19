@@ -137,7 +137,10 @@ if (!COMMIT) {
 //   1. /shopify_sync/{productId} — the durable record; if present, RECONCILE
 //      that product (a title edit on either side must not cause a re-create).
 //   2. exact-title search — catches the orphan state where a prior run created
-//      the product but died before the ID map was written; ADOPT, don't create.
+//      the product but died before the ID map was written; ADOPT, don't create
+//      — but ONLY when ownership is provable from the candidate itself: the
+//      record's SKU must be on its variants and its size set must match
+//      exactly. A shared stripped title ("Sneaker") is not ownership.
 //   3. neither → create, and persist a pending {shopifyProductId} node BEFORE
 //      the read-back, so even a crash right here leaves a durable pointer.
 const db = admin.database();
@@ -189,9 +192,57 @@ if (mapNode) {
       );
       process.exit(1);
     }
+    // ── THE CANDIDATE IS CHECKED, NOT ASSUMED ────────────────────────────────
+    // Having a SKU is not the same as being the same product. The old check
+    // stopped at "this record has a sku" and adopted on the strength of a
+    // matching TITLE — and the titles that reach this path are the stripped,
+    // near-content-free ones ("Sneaker", "Soccer Jerseys") that dozens of
+    // unrelated records share. Adopting on that would point an RTDB record at
+    // somebody else's variants, which is the twin-collision incident (PR #307)
+    // arriving by a different door.
+    //
+    // So ownership must be PROVABLE from durable facts: the record's SKU must
+    // appear on the candidate's variants, and the candidate's size set must be
+    // exactly this record's size set. Either mismatch refuses and says which.
+    //
+    // Measured against the two unowned handles on the live shop (2026-08-19):
+    // both are ARCHIVED products created in September 2025, before this sync
+    // existed, carrying NO SKUs at all and a different size run. Neither is an
+    // orphan of a crashed run; both are legacy squatters, and this check is
+    // what tells them apart from the real thing.
+    const candidate = await graphql(
+      `query ($id: ID!) { product(id: $id) { id status variants(first: 100) { nodes { sku title } } } }`,
+      { id: exact[0].id }
+    );
+    const candVariants = candidate.product?.variants?.nodes ?? [];
+    const candSkus = new Set(candVariants.map((v) => v.sku).filter(Boolean));
+    const candSizes = candVariants.map((v) => v.title).filter(Boolean).sort();
+    const wantSizes = input.variants.map((v) => v.optionValues?.[0]?.name ?? v.title).filter(Boolean).sort();
+    const adoptionProblems = [];
+    if (!candSkus.has(String(product.sku))) {
+      adoptionProblems.push(
+        candSkus.size === 0
+          ? `the candidate carries NO SKUs at all (so it was not created from this catalogue)`
+          : `record SKU "${product.sku}" is on none of the candidate's ${candSkus.size} SKU(s)`
+      );
+    }
+    if (JSON.stringify(candSizes) !== JSON.stringify(wantSizes)) {
+      adoptionProblems.push(
+        `size sets differ — candidate ${JSON.stringify(candSizes)} vs record ${JSON.stringify(wantSizes)}`
+      );
+    }
+    if (adoptionProblems.length) {
+      console.error(
+        `Refusing to adopt ${exact[0].id} for ${productId}: ${adoptionProblems.join("; ")}.\n` +
+          `A matching title is not ownership. If this really is the same product, ` +
+          `fix the record's SKU or sizes first, or seed /shopify_sync by hand.`
+      );
+      process.exit(1);
+    }
     console.error(
-      `Product with this exact title already exists (${exact[0].id}) and ` +
-        `/shopify_sync/${productId} is empty — adopting it instead of creating.`
+      `Product with this exact title already exists (${exact[0].id}), ` +
+        `/shopify_sync/${productId} is empty, and its SKU and size set both match — ` +
+        `adopting it instead of creating.`
     );
     shopifyProductId = exact[0].id;
     adopted = true;
