@@ -1,11 +1,13 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onValueWritten } = require("firebase-functions/v2/database");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
 const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
+const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -401,6 +403,49 @@ exports.dispatchHoldRevealSweep = onSchedule(
   { schedule: "every 1 minutes", region: "europe-west1", timeoutSeconds: 120, memory: "256MiB" },
   async () => {
     await runHoldRevealSweep({ db: admin.database(), enqueueWhatsApp });
+  }
+);
+
+// ─── HOLD AVAILABILITY NOTIFY (owner reinstatement 2026-08-19) ───────────────
+// The customer WhatsApp for held items, restored — at FULFIL, when the stock is
+// physically there, never at hold-placed time (the old "available tomorrow"
+// send was deleted in e115cde and stays deleted).
+//
+// It hangs off the WRITE the Fulfil action already makes, not off the button:
+// /refill_requests/{id}/status → "fulfilled". That keeps the combined refill
+// list byte-identical — a hold line stays an ordinary request row with no
+// badge, no order number, no customer name and no second button — and keeps the
+// send off a tablet that might sleep, drop its connection, or fire twice.
+//
+// Scoped to the STATUS LEAF, not the whole record: a partial fulfil writes
+// qty/sentQty and this never even wakes. enqueueWhatsApp is the same outbox
+// producer the app's sendWhatsApp callable uses, with the same 90s dedupe;
+// there is no new send path and no secret binding here (the Meta token lives
+// only on metaFallbackSweep). Every guard, the merged-line rule and the failure
+// handling live in lib/hold-availability-notify.cjs (node-tested).
+//   firebase deploy --only functions:holdAvailabilityNotify
+exports.holdAvailabilityNotify = onValueWritten(
+  {
+    ref:            "/refill_requests/{requestId}/status",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    // A transient enqueue failure rethrows, and the status will never change
+    // again — without retries that customer is simply never told. The core
+    // releases its claim BEFORE rethrowing, so a retry re-claims and re-sends;
+    // every other outcome returns rather than throws, so nothing else re-drives.
+    // (CodeRabbit #385.)
+    retry:          true,
+  },
+  async (event) => {
+    await notifyHoldAvailability({
+      db:        admin.database(),
+      enqueueWhatsApp,
+      requestId: event.params.requestId,
+      before:    event.data.before.val(),
+      after:     event.data.after.val(),
+    });
   }
 );
 
