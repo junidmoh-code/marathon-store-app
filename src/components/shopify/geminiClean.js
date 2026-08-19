@@ -39,6 +39,33 @@
 // on gemini-3.1-flash-image. One image per click, no bulk generate — Junid's
 // painted backdrop stays the default for ordinary catalogue photos and is
 // never bulk-regenerated.
+//
+// ── WHAT THE GATE ACTUALLY DOES ON A REAL PHOTO (measured 2026-08-19) ────────
+// The gate had never been run against a real product image before this. It has
+// now, on p1777895620932 (a live cream/black/grey low-top on the shop's painted
+// backdrop, 592x800), seven real generations:
+//
+//   · ONE deliberately tampered prompt — "recolour the shoe deep red, remove
+//     every logo, clean off all scuffs". The model did exactly that. DISCARDED,
+//     never shown. That is the check doing the job it exists for.
+//   · SIX honest background-swap prompts, the wording below verbatim, twice
+//     with the output size pinned to the original's aspect. ALL SIX DISCARDED.
+//
+// The six are not a false alarm — they are the model re-rendering rather than
+// editing. It returns its own resolution (880x1189 for a 592x800 input),
+// reframes and rescales the shoe inside the frame, and redraws detail it
+// cannot reproduce: on the first run the shoe's printed side text came back as
+// "NAKE AND THE SWOOTH … SNOOSH". A customer shown that would be looking at a
+// shoe that does not exist. The gate was right every time.
+//
+// SO: THE ACTION IS SAFE, AND ON PHOTOS LIKE THESE IT CURRENTLY PRODUCES
+// NOTHING. Expect "discarded" on a photo shot against the shop backdrop with
+// the rack visible — replacing that much of the frame is a re-render, and a
+// re-render never survives a pixel comparison. A photo already on a plain
+// field, where the model has little to invent, is the case with a chance.
+// Pixel-preserving background replacement is a SEGMENTATION-AND-COMPOSITE job,
+// not a generation job; if this action is ever wanted as a working tool rather
+// than a safe one, that is the change to make, and it is not a prompt tweak.
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 
@@ -131,9 +158,18 @@ export function assessSubjectPreservation(orig, cand) {
   for (let p = 0; p < w * h; p++) if (!mask[p] && !seen[p]) holeArea++;
   const holeFrac = holeArea / subjectArea;
   if (holeFrac > 0.005) {
+    // The reason names BOTH readings, because in practice the second one is
+    // the common cause and the first alone reads as a false accusation. A
+    // background-coloured island inside the silhouette is either a mark
+    // painted out, or — far more often — a whole re-render whose subject sits
+    // somewhere else in the frame, so the two silhouettes do not line up at
+    // all. Naming only "a mark may have been painted out" sent a reader
+    // hunting for an erasure that was not there (measured 2026-08-19).
     return {
       pass: false,
-      reason: `background-coloured region inside the product (${(holeFrac * 100).toFixed(2)}% of the subject — a mark may have been painted out)`,
+      reason: `the product region does not line up with the original ` +
+              `(${(holeFrac * 100).toFixed(2)}% of it reads as background — either a mark was painted out, ` +
+              `or the whole photo was re-rendered and the item moved)`,
       metrics: { areaFrac: Number(areaFrac.toFixed(4)), holeFrac: Number(holeFrac.toFixed(4)) },
     };
   }

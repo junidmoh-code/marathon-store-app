@@ -71,7 +71,7 @@ describe("assessSubjectPreservation", () => {
     drawRect(cand, 45, 45, 55, 55, STUDIO); // mark painted out with the studio backdrop
     const v = assessSubjectPreservation(orig, cand);
     expect(v.pass).toBe(false);
-    expect(v.reason).toMatch(/inside the product/);
+    expect(v.reason).toMatch(/does not line up with the original/);
   });
   it("fails when even a TINY mark was cleaned off — the changed-area gate closes the p95 tail hole", () => {
     // A 4×4 scuff on the body (~1% of the subject): erasing it barely moves
