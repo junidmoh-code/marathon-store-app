@@ -482,3 +482,41 @@ test("ENQUEUED-but-unstamped never releases the claim, so a later retry cannot r
   assert.equal(res2.skipped, "claim_unresolved");
   assert.equal(enqueue.calls.length, 1, "still one message");
 });
+
+test("two concurrent deliveries RESUMING the same dead claim reach the producer once", async () => {
+  // The hole CodeRabbit found in the first resume design: both deliveries
+  // skipped the claim and leaned on the producer to collapse them — but that
+  // dedupe is read-then-add, so two calls observing the same empty window can
+  // both create a doc and the gateway delivers both. Resume is now folded into
+  // the same CAS as a fresh claim, so exactly one invocation gets through.
+  const db = fakeDb({ refill_requests: { h: holdRequest({
+    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
+                notifyOnFulfil: true, notifyClaimedAt: NOW },
+  }) } }, { frozenReads: true });
+  const enqueue = spy();
+  const results = await Promise.all([30, 31].map((offset) => notifyHoldAvailability({
+    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
+    nowIso: LATER(offset * 1000),
+  })));
+  assert.equal(enqueue.calls.length, 1, "the CAS, not the producer, is what makes this one message");
+  assert.equal(results.filter((r) => r.sent).length, 1);
+  assert.ok(results.some((r) => r.skipped === "already_claimed"));
+});
+
+test("a resume cannot take over a claim that has already moved on", async () => {
+  // The stale-read case: we observed claim A, but by the time our transaction
+  // runs another delivery has installed claim B. Taking over would put two live
+  // senders on one message.
+  const db = fakeDb({ refill_requests: { h: holdRequest({
+    holdLink: { orderId: "042", customerName: "Thandi", customerPhone: "0821234567",
+                notifyOnFulfil: true, notifyClaimedAt: NOW },
+  }) } }, { frozenReads: true });
+  db.state.refill_requests.h.holdLink.notifyClaimedAt = LATER(20 * 1000);  // someone else took it
+  const enqueue = spy();
+  const res = await notifyHoldAvailability({
+    db, enqueueWhatsApp: enqueue, requestId: "h", before: "open", after: "fulfilled",
+    nowIso: LATER(30 * 1000),
+  });
+  assert.equal(enqueue.calls.length, 0);
+  assert.equal(res.skipped, "already_claimed");
+});

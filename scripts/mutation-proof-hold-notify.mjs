@@ -97,7 +97,7 @@ const MUTATIONS = [
     id: "M11",
     guard: "An unresolved claim past the dedupe window REFUSES to send rather than risk a second message",
     file: LIB,
-    from: `  if (link.notifyClaimedAt && !resumable) {`,
+    from: `  if (claimedAt && !resumable) {`,
     to: `  if (false) {`,
     nodeTests: SERVER_TESTS,
   },
@@ -110,6 +110,14 @@ const MUTATIONS = [
     requestId, e.message,
   ));`,
     to: `  }).catch(async () => { await reqRef.child("holdLink").update({ notifyClaimedAt: null }).catch(() => {}); });`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M14",
+    guard: "RESUMING IS A CAS — two live deliveries can never both reach the producer",
+    file: LIB,
+    from: `      if (resumable && cur === claimedAt) return now;               // take over the run that died`,
+    to: `      if (resumable) return now;                                    // take over the run that died`,
     nodeTests: SERVER_TESTS,
   },
   {

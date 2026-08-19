@@ -122,7 +122,7 @@ async function notifyHoldAvailability({ db, enqueueWhatsApp, requestId, before, 
   if (!link.customerPhone) return { sent: false, skipped: "no_phone" };
   if (link.notifiedAt || link.notifyFailedAt) return { sent: false, skipped: "already_handled" };
 
-  // 3. DURABLE CLAIM — create-once. See the cold-cache note in the header.
+  // 3. DURABLE CLAIM — ONE compare-and-swap, and the only door to the producer.
   //
   // AN UNRESOLVED CLAIM (CodeRabbit #385). notifyClaimedAt with no notifiedAt
   // and no notifyFailedAt means an earlier invocation claimed and then died
@@ -133,37 +133,52 @@ async function notifyHoldAvailability({ db, enqueueWhatsApp, requestId, before, 
   //   younger than the producer's 90s window  → RESUME. A re-enqueue inside
   //     that window is collapsed by the producer into the doc the dead run may
   //     already have created, so the customer gets one message whichever way it
-  //     went. We take over the claim rather than re-taking it (the create-once
-  //     transaction would refuse), which also means two genuinely concurrent
-  //     deliveries can both reach the producer here — and be deduped there,
-  //     which is exactly what that dedupe is for.
+  //     went.
   //   older                                   → REFUSE, and say so on the
   //     record. The window has closed, so a re-enqueue could be the SECOND
   //     message to a real customer. A missed notification is recoverable by a
   //     human (scripts/hold-notify-gap-census.mjs lists them); the gateway
   //     number being banned for duplicates is not. We bias to silence.
-  const claimedAtMs = link.notifyClaimedAt ? Date.parse(link.notifyClaimedAt) : NaN;
+  //
+  // RESUMING IS ITSELF A CAS (CodeRabbit #385, second pass). An earlier draft
+  // resumed by simply skipping the claim, which let two concurrent deliveries
+  // BOTH reach the producer and leaned on its dedupe to collapse them. That
+  // dedupe is read-then-add, not atomic: two calls that observe the same empty
+  // window can both .add(), and the gateway delivers both. So resume is folded
+  // into the same transaction as the fresh claim — null → now for a first
+  // delivery, observedClaim → now for a resume — and the CAS admits exactly one
+  // invocation either way. NOTHING in this module calls the producer without
+  // having won this transaction first. (The producer's dedupe is unchanged and
+  // stays underneath as defence in depth, covering the one case a CAS cannot:
+  // the DEAD run whose enqueue may already have landed.)
+  //
+  // Cold-cache polarity is unchanged: `cur` is null on the first pass, which is
+  // a proceed, so the body always reaches the server CAS re-run.
+  const claimedAt = link.notifyClaimedAt || null;
+  const claimedAtMs = claimedAt ? Date.parse(claimedAt) : NaN;
   const claimAgeMs = Number.isFinite(claimedAtMs) ? Date.parse(now) - claimedAtMs : NaN;
   const resumable = Number.isFinite(claimAgeMs) && claimAgeMs >= 0 && claimAgeMs < PRODUCER_DEDUPE_MS;
-  if (link.notifyClaimedAt && !resumable) {
+  if (claimedAt && !resumable) {
     console.error("holdAvailabilityNotify: unresolved claim past the dedupe window, NOT sending:", requestId);
     await reqRef.child("holdLink").update({ notifyUnresolvedAt: now })
       .catch((e) => console.error("holdAvailabilityNotify: could not stamp unresolved claim:", requestId, e.message));
     return { sent: false, skipped: "claim_unresolved" };
   }
 
-  if (!resumable) {
-    const claimRef = db.ref(`refill_requests/${requestId}/holdLink/notifyClaimedAt`);
-    let claimed = false;
-    try {
-      const res = await claimRef.transaction((cur) => (cur == null ? now : undefined));
-      claimed = res.committed && res.snapshot.val() === now;
-    } catch (err) {
-      console.error("holdAvailabilityNotify: claim failed:", requestId, err.message);
-      return { sent: false, skipped: "claim_failed" };
-    }
-    if (!claimed) return { sent: false, skipped: "already_claimed" };
+  const claimRef = db.ref(`refill_requests/${requestId}/holdLink/notifyClaimedAt`);
+  let claimed = false;
+  try {
+    const res = await claimRef.transaction((cur) => {
+      if (cur == null) return now;                                  // first delivery
+      if (resumable && cur === claimedAt) return now;               // take over the run that died
+      return undefined;                                             // someone else owns it
+    });
+    claimed = res.committed && res.snapshot.val() === now;
+  } catch (err) {
+    console.error("holdAvailabilityNotify: claim failed:", requestId, err.message);
+    return { sent: false, skipped: "claim_failed" };
   }
+  if (!claimed) return { sent: false, skipped: "already_claimed" };
 
   // 4. THE SEND — the existing producer, the existing outbox, the existing
   //    90s dedupe. orderId is what the customer knows the order by.
