@@ -90,6 +90,15 @@ const MUTATIONS = [
     nodeTests: SERVER_TESTS,
   },
   {
+    id: "M5c",
+    guard: "A REFUSED claim sends nothing — it is never mistaken for a won one",
+    file: LIB,
+    from: `    console.error("orderTomorrowNotify: claim failed:", orderId, err.message);
+    return { sent: false, skipped: "claim_failed" };`,
+    to: `    claimed = true;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
     id: "M6",
     guard: "An unresolved claim is NEVER taken over — no resume, no lease, at any age",
     file: LIB,

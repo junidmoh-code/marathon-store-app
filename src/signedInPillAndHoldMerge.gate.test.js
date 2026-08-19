@@ -110,7 +110,9 @@ describe("3 · both customer messages fire server-side; the raise/withdraw links
     expect(FN).toMatch(/ref:\s*"\/orders\/\{orderId\}\/status"/);
     expect(FN).toMatch(/exports\.orderTomorrowNotify\s*=\s*onValueWritten\(/);
     // No new send path: the existing outbox producer, injected.
-    expect(FN).toMatch(/notifyOrderTomorrow\(\{[\s\S]*?enqueueWhatsApp,/);
+    // [^}]*? not [\s\S]*? — bounded to the call's own argument object, so the
+    // match cannot wander into a later function's body (CodeRabbit #386).
+    expect(FN).toMatch(/notifyOrderTomorrow\(\{[^}]*?enqueueWhatsApp,/);
     expect(LIB).toMatch(/const TEMPLATE\s*=\s*"order_tomorrow";/);
     expect(LIB).toMatch(/if\s*\(after !== STATE\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"not_coming_tomorrow"\s*\}/);
     expect(LIB).toMatch(/if\s*\(before === STATE\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"no_transition"\s*\}/);

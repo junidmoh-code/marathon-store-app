@@ -30,7 +30,7 @@ const NOW = "2026-08-19T09:00:00.000Z";
 // `frozenReads` models two invocations that BOTH read the record before either
 // wrote, taking the cheap pre-check out of play so the create-once claim is the
 // only thing left that can separate them.
-function fakeDb(initial, { frozenReads = false, failUpdate = null } = {}) {
+function fakeDb(initial, { frozenReads = false, failUpdate = null, failTransaction = null } = {}) {
   const state = structuredClone(initial);
   const frozen = structuredClone(initial);
   const node = (path) => path.split("/").filter(Boolean).reduce((n, k) => (n == null ? n : n[k]), state);
@@ -59,6 +59,7 @@ function fakeDb(initial, { frozenReads = false, failUpdate = null } = {}) {
           for (const [k, v] of Object.entries(patch)) setNode(`${path}/${k}`, v);
         },
         async transaction(fn) {
+          if (failTransaction && failTransaction(path)) throw new Error("claim write refused");
           api.transactionAttempts++;
           const cold = fn(null);                       // pass 1: the COLD local cache
           if (cold === undefined) return { committed: false, snapshot: { val: () => node(path) ?? null } };
@@ -360,6 +361,27 @@ test("6 · an unusable number is TERMINAL — stamped, claim kept, never retried
   const again = await drive(db, enqueue, { before: "ready" });
   assert.equal(again.skipped, "already_handled");
   assert.equal(enqueue.calls.length, 1);
+});
+
+test("6e · a failing claim transaction enqueues nothing and does not throw", async () => {
+  // The claim is the only door to the producer. If the transaction itself is
+  // refused — rules, a network fault — the correct answer is to send nothing and
+  // let the trigger's retry try again, NOT to assume the claim was won.
+  // (CodeRabbit #386: this branch had no test and no mutation guard, so a future
+  // edit that swallowed the error and fell through to the send would stay green.)
+  const db = fakeDb({ orders: { "042": order() } },
+    { failTransaction: (path) => path.endsWith("tomorrowNotifyClaimedAt") });
+  const enqueue = spy();
+  let res;
+  await assert.doesNotReject(async () => { res = await drive(db, enqueue); });
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "claim_failed");
+  assert.equal(enqueue.calls.length, 0, "a refused claim must never reach the producer");
+  // and nothing is left stamped on the order that would suppress a later retry
+  const o = db.state.orders["042"];
+  assert.equal(o.tomorrowNotifiedAt, undefined);
+  assert.equal(o.tomorrowNotifyClaimedAt, undefined);
+  assert.equal(o.tomorrowNotifyFailedAt, undefined);
 });
 
 test("6b · a TRANSIENT failure releases the claim and rethrows, so the retry re-sends", async () => {
