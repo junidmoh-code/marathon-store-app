@@ -12,12 +12,13 @@
 //   2. ON HOLD IS ABOLISHED — no exception rows, no held cards, no hold badge,
 //      no customer name or order number anywhere on the refill surface; the
 //      hold's request is an ordinary row.
-//   3. THE HOLD NOTIFICATION MOVED — REVISED 2026-08-19. The owner reinstated
-//      the customer message, but NOT where it was: order_tomorrow (fired at
-//      hold-PLACED time, promising stock that did not exist yet) stays deleted,
-//      and the send now happens SERVER-SIDE at FULFIL. What this block pins is
-//      unchanged in spirit — the refill surface still messages nobody, and the
-//      raise + withdraw-on-release links still survive.
+//   3. BOTH CUSTOMER MESSAGES ARE SERVER-SIDE — REVISED AGAIN 2026-08-19 (2nd).
+//      The owner has now restored order_tomorrow as well, so a held customer is
+//      told TWICE: "scheduled for tomorrow" at this transition, "ready to
+//      collect" at fulfil. What this block pins is unchanged in spirit and is
+//      the whole point of it — NEITHER send may come from a client, and the
+//      refill surface still messages nobody. The count assertion below is what
+//      keeps the restored message from sneaking back in as a fire-and-forget.
 //   4. THE GATE IS PRESENTATION-ONLY — stock writes never consult the release
 //      windows, and the engine sources know nothing of them.
 //   5. ONE LIST, ONE DESIGN — the per-origin row components are gone; every
@@ -91,9 +92,34 @@ describe("2 · On Hold is ABOLISHED from the refill surface — not relocated", 
   });
 });
 
-describe("3 · the hold notification fires at FULFIL, server-side; the raise/withdraw links live on", () => {
-  it("the hold-PLACED message stays deleted — nothing is promised before stock exists", () => {
-    expect(SRC).not.toContain("order_tomorrow");
+describe("3 · both customer messages fire server-side; the raise/withdraw links live on", () => {
+  it("NO CLIENT sends the hold-placed message — restored 2026-08-19, but as a server trigger", () => {
+    // order_tomorrow is back (owner restoration): staff mark an order coming
+    // tomorrow, the customer is told immediately, exactly as before e115cde.
+    // What must never come back is the DELIVERY shape — the deleted line was
+    // `sendWhatsAppTemplate(order.customerPhone, "order_tomorrow", [order.id])`
+    // in updateStatus, a fire-and-forget with no double-tap guard. The send now
+    // hangs off /orders/{id}/status, behind a create-once claim.
+    expect(SRC).not.toMatch(/sendWhatsAppTemplate\([^)]*order_tomorrow/);
+    expect(SRC).not.toMatch(/COMING_TOMORROW\)\s*\n?\s*sendWhatsAppTemplate/);
+  });
+
+  it("the restored trigger is the ONE producer, keyed on the coming_tomorrow transition", () => {
+    const FN = readFileSync(join(HERE, "../functions/index.js"), "utf8");
+    const LIB = readFileSync(join(HERE, "../functions/lib/order-tomorrow-notify.cjs"), "utf8");
+    expect(FN).toMatch(/ref:\s*"\/orders\/\{orderId\}\/status"/);
+    expect(FN).toMatch(/exports\.orderTomorrowNotify\s*=\s*onValueWritten\(/);
+    // No new send path: the existing outbox producer, injected.
+    expect(FN).toMatch(/notifyOrderTomorrow\(\{[\s\S]*?enqueueWhatsApp,/);
+    expect(LIB).toMatch(/const TEMPLATE\s*=\s*"order_tomorrow";/);
+    expect(LIB).toMatch(/if\s*\(after !== STATE\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"not_coming_tomorrow"\s*\}/);
+    expect(LIB).toMatch(/if\s*\(before === STATE\)\s*return\s*\{\s*sent:\s*false,\s*skipped:\s*"no_transition"\s*\}/);
+    // It must not reach into PR #385's record. Comments are stripped first —
+    // the module's header explains at length what it deliberately does NOT
+    // touch, and prose naming a node must not read as a reference to it.
+    const LIB_CODE = LIB.split("\n").filter(l => !l.trim().startsWith("//")).join("\n");
+    expect(LIB_CODE).not.toContain("holdLink");
+    expect(LIB_CODE).not.toContain("refill_requests");
   });
 
   it("the queue itself messages nobody — this is what keeps the list untouchable", () => {
@@ -101,7 +127,7 @@ describe("3 · the hold notification fires at FULFIL, server-side; the raise/wit
     // not off the button, precisely so this file stays empty of customer
     // vocabulary. A hold line is an ordinary request row: no badge, no order
     // number, no customer name, no second button.
-    for (const banned of ["sendWhatsApp", "order_ready", "customerPhone", "holdLink", "notify"]) {
+    for (const banned of ["sendWhatsApp", "order_ready", "order_tomorrow", "customerPhone", "holdLink", "notify"]) {
       expect(Q, `${banned} must not appear in RefillQueue.jsx`).not.toContain(banned);
     }
   });

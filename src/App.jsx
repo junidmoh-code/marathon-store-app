@@ -10253,13 +10253,21 @@ function WarehouseView({ products = [], orders, onExit }) {
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
-    // NO WhatsApp on COMING_TOMORROW (owner spec 2026-08-08, unchanged by the
-    // 2026-08-19 reinstatement): a hold is an ordinary refill request, and
-    // nothing is promised to the customer at hold time because no stock exists
-    // yet. The held customer IS told — when the hold's refill line is FULFILLED
-    // and the stock is physically there. That send is server-side and owned by
-    // functions holdAvailabilityNotify, off the holdLink written above; no
-    // client fires it, so a sleeping tablet cannot lose or repeat it.
+    // NO CLIENT WhatsApp on COMING_TOMORROW — and that is not the same thing as
+    // no message. The customer IS told, twice, by two server triggers:
+    //
+    //   at THIS transition   functions orderTomorrowNotify  → order_tomorrow
+    //                        ("scheduled for tomorrow, we will notify you")
+    //   at FULFIL            functions holdAvailabilityNotify → order_ready
+    //                        ("ready to collect") — PR #385, off holdLink above
+    //
+    // The first promises the second; they are not duplicates. Both hang off the
+    // WRITES this handler already makes rather than off the button, because the
+    // deleted client fire-and-forget (e115cde) is the shape that once sent the
+    // same message 2-5 times and got the gateway number banned. Each is behind
+    // its own create-once claim, so a sleeping tablet can neither lose a message
+    // nor repeat one. Nothing to add here: updateOrder(patch) above is the
+    // trigger.
   };
 
   // Mark an order Sent AND auto-print its dispatch label — but ONLY when the hub→shop

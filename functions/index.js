@@ -8,6 +8,7 @@ const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
 const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
+const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -403,6 +404,54 @@ exports.dispatchHoldRevealSweep = onSchedule(
   { schedule: "every 1 minutes", region: "europe-west1", timeoutSeconds: 120, memory: "256MiB" },
   async () => {
     await runHoldRevealSweep({ db: admin.database(), enqueueWhatsApp });
+  }
+);
+
+// ─── ORDER TOMORROW NOTIFY (owner restoration 2026-08-19) ────────────────────
+// The FOURTH order-status message, restored. order_placed / order_ready /
+// rder_out_of_stock still fire from the client on their own transitions; this
+// one — deleted from WarehouseView by e115cde on 2026-08-08, after which 892
+// messages a month went to zero — fires again the moment staff mark an order
+// COMING TOMORROW.
+//
+// SAME trigger, SAME template, SAME timing as before the deletion. What is NOT
+// the same is the delivery: the old call was a client-side fire-and-forget,
+// which is precisely the shape that once sent a customer the same message 2-5
+// times and got the gateway number banned. It now hangs off the WRITE the staff
+// action already makes — /orders/{orderId}/status → "coming_tomorrow" — behind
+// a create-once claim, so one order is messaged exactly once, ever.
+//
+// NOT PR #385. That message fires at FULFIL and says the stock is here; this
+// one fires at hold-placed time and says it is coming. Nothing here reads or
+// writes holdLink, /refill_requests, or anything else #385 owns.
+//
+// Scoped to the STATUS LEAF: a re-queue that rewrites comingTomorrowAt without
+// changing the status never even wakes this. enqueueWhatsApp is the same outbox
+// producer with the same 90s dedupe; no new send path, no secret binding. Every
+// guard and the failure handling live in lib/order-tomorrow-notify.cjs
+// (node-tested, mutation-proven).
+//   firebase deploy --only functions:orderTomorrowNotify
+exports.orderTomorrowNotify = onValueWritten(
+  {
+    ref:            "/orders/{orderId}/status",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    // A transient enqueue failure rethrows, and the status may never change
+    // again — without retries that customer is simply never told. The core
+    // releases its claim BEFORE rethrowing, so a retry re-claims and re-sends;
+    // every other outcome returns rather than throws, so nothing else re-drives.
+    retry:          true,
+  },
+  async (event) => {
+    await notifyOrderTomorrow({
+      db:      admin.database(),
+      enqueueWhatsApp,
+      orderId: event.params.orderId,
+      before:  event.data.before.val(),
+      after:   event.data.after.val(),
+    });
   }
 );
 
