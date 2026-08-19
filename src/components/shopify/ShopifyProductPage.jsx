@@ -31,7 +31,7 @@ import { MAX_PUBLISH_PHOTOS, buildDescriptionHtml } from "./publishShared";
 import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos,
          applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
 import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
-import { isCleanBackgroundAvailable, cleanBackground } from "./geminiClean";
+import { cleanBackground } from "./geminiClean";
 
 // The uppercase section label used across the full-page views.
 const SECTION_LABEL = {
@@ -324,10 +324,11 @@ export function PhotoStrip({ product, node, locked, onChanged }) {
 // accept. Accepting uploads a NEW Storage object beside the original
 // (derivedFrom recorded) and swaps only this slot of the publishing set —
 // the original photo survives in the record, in Storage, everywhere.
-// Without GEMINI_API_KEY at build time the chip is disabled with a plain
-// message and the rest of the strip works untouched.
+// The key lives on the SERVER now (functions/photoClean/cleanProductPhoto.js),
+// so there is no build-time condition left to disable the chip on. A server
+// that has no secret configured answers with one plain sentence saying so, and
+// that sentence is shown like any other failure.
 function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace }) {
-  const available = isCleanBackgroundAvailable();
   const [generating, setGenerating] = useState(false);
   const [candidate, setCandidate] = useState(null); // { blob, previewUrl, metrics, sourceUrl }
   const [saving, setSaving] = useState(false);
@@ -355,7 +356,7 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
     if (generating || busy) return;
     setGenerating(true); setErr(null);
     try {
-      const res = await cleanBackground(originalUrl);
+      const res = await cleanBackground(originalUrl, productId);
       if (!res.ok) {
         setErr(`The generated image changed the product and was discarded (${res.reason}). The original stays as it is — you can try again.`);
         return;
@@ -389,17 +390,11 @@ function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace
 
   return (
     <>
-      <button disabled={!available || busy || generating}
+      <button disabled={busy || generating}
         onClick={generate}
-        title={available ? undefined : "GEMINI_API_KEY was not set when this app was built — the action is disabled."}
-        style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem", opacity: available ? 1 : 0.4 }}>
+        style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem" }}>
         {generating ? "Generating…" : "Clean background"}
       </button>
-      {!available && (
-        <span style={{ fontSize: 10, color: GRAY, alignSelf: "center" }}>
-          background cleanup off — no GEMINI_API_KEY at build
-        </span>
-      )}
       {candidate && (
         <div style={{ width: "100%", marginTop: 7 }}>
           <div style={{ display: "flex", gap: 8 }}>

@@ -94,7 +94,10 @@ const db = admin.database();
 const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 
 // ── Resolve the scope ────────────────────────────────────────────────────────
-const publish = (await db.ref("shopify_publish").get()).val() || {};
+// PAGED, never one whole-node read: /shopify_publish is 1,400 nodes and
+// growing toward one per product, and a single get() of it is exactly the
+// read that spikes the bandwidth bill (same rule the browser store follows).
+const publish = await readMapPaged(db, "shopify_publish", { pageSize: 400 });
 const onlyPids = PIDS ? new Set(PIDS.split(",").map((s) => s.trim()).filter(Boolean)) : null;
 if (onlyPids && onlyPids.size === 0) { console.error("--pids parsed to an empty list"); process.exit(2); }
 
@@ -250,7 +253,7 @@ for (const [i, { pid, product, node, photo }] of work.entries()) {
             publicName: retry.publicName, identity: retry.identity, previousName,
             model: MODEL, at: Date.now(), attempts,
             refusedFor: `${retryVerdict.problems.join("; ")} (first attempt also refused: ${first})`,
-          }), retry.identity, product);
+          }), retry.identity, product, node);
           results.push({ pid, status: "refused", detail: retryVerdict.problems.join("; ") });
           continue;
         }
@@ -263,7 +266,7 @@ for (const [i, { pid, product, node, photo }] of work.entries()) {
     await writeProposal(pid, buildNameProposal({
       publicName: parsed.publicName, identity: parsed.identity, previousName,
       model: MODEL, at: Date.now(), attempts,
-    }), parsed.identity, product);
+    }), parsed.identity, product, node);
     results.push({
       pid, status: "proposed",
       detail: `${JSON.stringify(previousName || "(no name)")} → ${JSON.stringify(parsed.publicName)}` +
@@ -277,8 +280,21 @@ for (const [i, { pid, product, node, photo }] of work.entries()) {
 // The proposal, and — separately and only when the model actually identified
 // something — the identity. Identity goes through shouldReplaceIdentity, so it
 // can fill a gap or beat a weaker guess but never overwrite supplier data.
-async function writeProposal(pid, proposal, identity, product) {
-  await db.ref(`shopify_publish/${pid}`).update({ [NAME_PROPOSAL_KEY]: proposal });
+async function writeProposal(pid, proposal, identity, product, node) {
+  // A proposal written onto a node that has no `state` is INVISIBLE to the
+  // app: every read the review page makes is a server-filtered query on the
+  // one index that exists (.indexOn ["state"]), and the live .validate on
+  // /shopify_publish/$pid requires hasChildren(['state']) — so the browser
+  // could not even write such a node back. The first runs produced 560 nodes
+  // holding nothing but a nameProposal, and not one of them was reviewable.
+  //
+  // So the state is supplied when it is ABSENT, and never otherwise: "awaiting"
+  // is what a node with no state already means (normalizedState), and
+  // overwriting a real state here would let a naming run move a live product
+  // out of the pipeline.
+  const patch = { [NAME_PROPOSAL_KEY]: proposal };
+  if (!node?.state) patch.state = "awaiting";
+  await db.ref(`shopify_publish/${pid}`).update(patch);
   if (!identity) return;
   const text = identityTextFrom(identity);
   if (!text) return;

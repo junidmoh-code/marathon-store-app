@@ -31,13 +31,13 @@ export default defineConfig({
   plugins: [react(), emitVersionJson()],
   define: {
     __BUILD_VERSION__: JSON.stringify(buildVersion),
-    // Shopify Publishing photo cleanup (geminiClean.js). Baked at BUILD time
-    // from the build machine's env: absent ⇒ empty string ⇒ the action ships
-    // DISABLED with a plain message (no stub, no fallback provider). NOTE the
-    // key lands in the public bundle and is extractable — referrer
-    // restrictions are advisory (Referer is forgeable), so use a dedicated
-    // key with a hard quota cap in the Google console, never a shared one.
-    __GEMINI_API_KEY__: JSON.stringify(process.env.GEMINI_API_KEY ?? ""),
+    // NO API KEY IS BAKED INTO THIS BUNDLE, and none may be added. The photo
+    // cleanup action used to define __GEMINI_API_KEY__ here from the build
+    // machine's env, which put a spendable Google key in front of anyone who
+    // viewed the site's JavaScript. The call now lives in a Cloud Function
+    // (functions/photoClean/cleanProductPhoto.js) holding the key as a Cloud
+    // Functions secret. A `define` is a public string — treat every entry
+    // here as published.
   },
   build: {
     outDir: "dist",
