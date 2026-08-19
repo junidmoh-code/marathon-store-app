@@ -25,9 +25,11 @@ import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as in
 import {
   CONDITIONS, checkCleanName, blockedReason, reviewStateFor, effectiveNameFor,
   isOn, isPendingSwitch, canGoLive, effectivePhotoList, normalizedState,
+  pendingProposal, proposalApplyBlocker,
 } from "./shopifyPublishCore";
 import { MAX_PUBLISH_PHOTOS, buildDescriptionHtml } from "./publishShared";
-import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos } from "./shopifyPublishStore";
+import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos,
+         applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
 import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
 import { isCleanBackgroundAvailable, cleanBackground } from "./geminiClean";
 
@@ -36,6 +38,68 @@ const SECTION_LABEL = {
   fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase",
   color: GRAY, fontWeight: 700,
 };
+
+// ─── SUGGESTED FROM THE PHOTO ────────────────────────────────────────────────
+// The vision run (scripts/shopify/vision-name.mjs) reads a product's PHOTO and
+// writes a proposed listing name to /shopify_publish/{pid}/nameProposal. It
+// applies nothing — this card is where the proposal becomes the name, and it
+// exists because the alternative is what Junid has been looking at: a lexicon
+// title built from what staff typed, which for 69% of the live storefront is
+// the single word "Sneaker" plus a colour.
+//
+// The card shows BOTH names because the decision is a comparison, and it shows
+// the model's identity guess with its own confidence because that guess is a
+// GUESS — it never reaches Shopify (it goes to /product_identity for search
+// only) and Junid is entitled to see how sure the model claims to be before he
+// trusts the description that came with it.
+//
+// Two buttons, no modal: taking a name is fully undoable (the previous name is
+// recorded on the proposal), so it does not earn the going-live dialog's
+// friction. Nothing here can put a product on the storefront.
+export function NameProposalCard({ product, node, busy, onApply, onDismiss }) {
+  const proposal = pendingProposal(node);
+  if (!proposal) return null;
+  const gate = proposalApplyBlocker(node);
+  const identity = proposal.identity;
+  const conf = Number(identity?.confidence);
+  return (
+    <div style={{ border: "1px solid rgba(74,127,255,.35)", background: "rgba(74,127,255,.06)",
+                  borderRadius: 12, padding: "12px 13px", marginTop: 10 }}>
+      <div style={{ fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase",
+                    color: BLUE_L, fontWeight: 800 }}>
+        Suggested from the photo
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 800, color: "#fff", marginTop: 8, lineHeight: 1.35,
+                    overflowWrap: "break-word" }}>
+        {proposal.name}
+      </div>
+      <div style={{ fontSize: 11.5, color: GRAY, marginTop: 6, lineHeight: 1.5 }}>
+        Now: {proposal.previousName ? `“${proposal.previousName}”` : "no listing name yet"}
+      </div>
+      {identity?.text && (
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,.55)", marginTop: 7, lineHeight: 1.5 }}>
+          The model thinks this is <span style={{ color: "#fff", fontWeight: 700 }}>{identity.text}</span>
+          {Number.isFinite(conf) ? ` — ${Math.round(conf * 100)}% sure` : ""}.
+          {" "}That is a guess for searching in the shop only; it never goes on the storefront.
+        </div>
+      )}
+      {!gate.ok && (
+        <div style={{ fontSize: 10.5, color: RED, marginTop: 7 }}>{gate.reason}</div>
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 11 }}>
+        <button disabled={busy || !gate.ok} onClick={onApply}
+          style={{ ...bBlue, padding: "7px 12px", fontSize: "0.72rem",
+                   opacity: busy || !gate.ok ? 0.5 : 1 }}>
+          Use this name
+        </button>
+        <button disabled={busy} onClick={onDismiss}
+          style={{ ...bGray, padding: "7px 12px", fontSize: "0.72rem" }}>
+          Keep the old one
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // What the storefront would show — the facts the confirmation dialog states.
 // The photo count prices the EFFECTIVE publishing set (custom list when one
@@ -574,6 +638,17 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
             ) : nameSaved ? (
               <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>Name saved.</div>
             ) : null}
+            <NameProposalCard
+              product={product} node={node} busy={busy}
+              onApply={() => run(() => applyNameProposal(product.id, node), (res) => {
+                // The input is a draft the reviewer may have typed into; the
+                // saved name has just changed under it, so it follows.
+                setDraft(res.node?.cleanName || draft);
+                onChanged(product.id, res.node);
+              })}
+              onDismiss={() => run(() => dismissNameProposal(product.id, node),
+                                   (res) => onChanged(product.id, res.node))}
+            />
           </>
         ))}
 

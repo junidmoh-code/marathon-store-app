@@ -18,7 +18,8 @@
 import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields } from "./shopifyPublishCore";
+import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
+         NAME_PROPOSAL_KEY, PROPOSAL_APPROVED_SOURCE, proposalApplyBlocker } from "./shopifyPublishCore";
 import { MAX_PUBLISH_PHOTOS, normalizePhotoList } from "./publishShared";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
@@ -66,7 +67,15 @@ export async function loadPipelineNodes() {
   // The four legacy states ride along until every node is migrated — an
   // unmigrated draft/nominated node must not vanish from the page. Each is
   // one cheap indexed query returning at most a handful of rows.
-  const states = ["live", "blocked", "nominated", "draft"];
+  //
+  // "awaiting" joins them because of the PROPOSED-NAMES lane. A vision
+  // proposal lands on products that are not live and not blocked, and the
+  // page has to be able to list them without reading the whole node — so the
+  // runner stamps state:"awaiting" on any node it touches that has none (see
+  // scripts/shopify/vision-name.mjs and the one-off backfill), which puts
+  // every proposal-carrying product inside the ONE index that already exists
+  // (.indexOn ["state"]). No new index, no rule paste, no whole-node read.
+  const states = ["awaiting", "live", "blocked", "nominated", "draft"];
   const snaps = await Promise.all(states.map((s) =>
     get(query(ref(database, "shopify_publish"), orderByChild("state"), equalTo(s)))));
   const merged = {};
@@ -168,6 +177,70 @@ export async function approveName(productId, node, name, source = "manual") {
     }
     return { ...base, ...normalizedFields(base), cleanName, cleanNameSource: source,
              nameApprovedAt: serverNowMs(), ...stamp() };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
+// ─── VISION NAME PROPOSALS ───────────────────────────────────────────────────
+// scripts/shopify/vision-name.mjs proposes; THIS is where a proposal becomes
+// the product's listing name, or is put away. Both writes are the same
+// transaction every other write here uses, and both keep the proposal record
+// on the node — an applied proposal is the audit trail for where the name
+// came from, and a dismissed one is the record that the photo was read and
+// the answer was not wanted (so a later run does not re-propose it blind).
+
+/**
+ * Take the proposed name. Writes cleanName + cleanNameSource "ai" (the value
+ * the LIVE console rule admits — see PROPOSAL_APPROVED_SOURCE) and stamps the
+ * proposal applied. The gates are re-checked against the SERVER's node inside
+ * the transaction, not against the row snapshot: the reconciler may have put
+ * the product live since the page loaded, and renaming a live listing is
+ * exactly what approveName refuses.
+ */
+export async function applyNameProposal(productId, node) {
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    const gate = proposalApplyBlocker(base);
+    if (!gate.ok) { refusal = gate.reason; return undefined; }
+    const proposal = base[NAME_PROPOSAL_KEY];
+    const cleanName = String(proposal.name).trim();
+    return {
+      ...base,
+      ...normalizedFields(base),
+      cleanName,
+      cleanNameSource: PROPOSAL_APPROVED_SOURCE,
+      nameApprovedAt: serverNowMs(),
+      [NAME_PROPOSAL_KEY]: { ...proposal, status: "applied", decidedAt: serverNowMs() },
+      ...stamp(),
+    };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
+/**
+ * Keep the name the product already has. The proposal is marked rejected and
+ * KEPT — never deleted. A deleted proposal is indistinguishable from one that
+ * was never made, and the next run would spend real money re-reading the same
+ * photo to produce the same answer Junid has already turned down.
+ */
+export async function dismissNameProposal(productId, node) {
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    const proposal = base[NAME_PROPOSAL_KEY];
+    if (!proposal || proposal.status !== "pending") {
+      refusal = "That suggestion has already been decided.";
+      return undefined;
+    }
+    return {
+      ...base,
+      ...normalizedFields(base),
+      [NAME_PROPOSAL_KEY]: { ...proposal, status: "rejected", decidedAt: serverNowMs() },
+      ...stamp(),
+    };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;

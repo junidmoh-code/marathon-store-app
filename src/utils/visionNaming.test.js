@@ -9,6 +9,7 @@ import {
   parseVisionResponse, validateVisionName, identityTextFrom,
   buildNameProposal, isPendingProposal, isRefusedProposal, mayProposeFor,
 } from "./visionNaming.js";
+import { triggersInText } from "./shopifyTriggers.js";
 
 const good = (over = {}) => JSON.stringify({
   identified: true, brand: "Lacoste", model: "Gripshot", colourway: "White Navy",
@@ -216,5 +217,36 @@ describe("regenerationNote — a bare retry gets the same answer back", () => {
   it("still says something useful when the terms are unknown", () => {
     expect(regenerationNote([])).toMatch(/forbidden brand or model term/);
     expect(regenerationNote(null)).toMatch(/forbidden/);
+  });
+});
+
+// ─── THE PROMPT MAY NOT SUGGEST A WORD THE VALIDATOR REFUSES ─────────────────
+// This is not a style rule, it is a cost and quality rule. The first version of
+// the prompt listed "suede" as a material to reach for and used it in worked
+// example A — and "suede" is a silhouette in the compliance lexicon (the PUMA
+// model), so every name that followed the prompt's own advice was refused,
+// regenerated at full price, and often refused again because the second attempt
+// reached for the same obvious word. A prompt that argues with its own validator
+// is a defect the tests must catch, not something to rediscover on a bill.
+describe("the prompt and the validator must agree", () => {
+  it("every worked example quoted in the prompt passes validateVisionName", () => {
+    const quoted = [...VISION_PROMPT.matchAll(/"([A-Z][^"]{10,60})"/g)].map((m) => m[1]);
+    expect(quoted.length).toBeGreaterThan(6); // the eight lead shapes are in there
+    for (const example of quoted) {
+      const verdict = validateVisionName(example);
+      expect(verdict.ok, `${example} → ${verdict.problems.join("; ")}`).toBe(true);
+    }
+  });
+
+  it("no material the prompt recommends is a brand trigger", () => {
+    const list = VISION_PROMPT.match(/when it is obvious \(([^)]+)\)/);
+    expect(list).toBeTruthy();
+    for (const word of list[1].split(",").map((w) => w.trim())) {
+      expect(triggersInText(word), `prompt recommends "${word}"`).toEqual([]);
+    }
+  });
+
+  it("suede is still refused — the fix is the prompt, never a softened validator", () => {
+    expect(validateVisionName("Brushed suede low-top in sand").ok).toBe(false);
   });
 });

@@ -36,15 +36,17 @@
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bGray, bGreen } from "../stock/ui";
+import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
+  pendingProposal, proposalApplyBlocker,
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
   isPublishableProduct,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
+  applyNameProposal, dismissNameProposal,
 } from "./shopifyPublishStore";
 import ShopifyProductPage from "./ShopifyProductPage";
 
@@ -111,6 +113,53 @@ function Thumb({ p, node }) {
   }
   return <div style={{ width: 44, height: 44, borderRadius: 10, background: "rgba(120,150,255,.08)",
                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{p?.photo || "👟"}</div>;
+}
+
+// ─── PROPOSED-NAME ROW ───────────────────────────────────────────────────────
+// One product under the "Proposed names" filter: the photo, the name it has
+// now, the name read off that photo, and the two decisions. Deliberately NOT
+// ProductListRow — that row is built around publishing (state chip, condition
+// chips, batch checkbox) and none of it is the question being asked here. The
+// question is only ever "is this name better than that one", and the row shows
+// exactly the two strings that answer it.
+//
+// The thumbnail is not decoration: the proposal was written from that photo,
+// so the photo is the evidence. Tapping the row still opens the product page
+// for anyone who wants the rest of the picture.
+export function ProposalRow({ product, node, busy, onOpen, onApply, onDismiss }) {
+  const proposal = pendingProposal(node);
+  if (!proposal) return null;
+  const gate = proposalApplyBlocker(node);
+  return (
+    <div style={{ display: "flex", gap: 11, alignItems: "flex-start", padding: "11px 2px",
+                  borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+      <div onClick={() => onOpen(product.id)} style={{ cursor: "pointer", flexShrink: 0 }}>
+        <Thumb p={product} node={node} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div onClick={() => onOpen(product.id)}
+             style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", lineHeight: 1.35,
+                      cursor: "pointer", overflowWrap: "break-word" }}>
+          {proposal.name}
+        </div>
+        <div style={{ fontSize: 11, color: GRAY, marginTop: 3, overflowWrap: "break-word" }}>
+          replaces {proposal.previousName ? `“${proposal.previousName}”` : "no listing name"}
+        </div>
+        {!gate.ok && <div style={{ fontSize: 10.5, color: RED, marginTop: 3 }}>{gate.reason}</div>}
+        <div style={{ display: "flex", gap: 7, marginTop: 8 }}>
+          <button disabled={busy || !gate.ok} onClick={() => onApply(product.id)}
+            style={{ ...bBlue, padding: "5px 10px", fontSize: "0.68rem",
+                     opacity: busy || !gate.ok ? 0.5 : 1 }}>
+            Use this name
+          </button>
+          <button disabled={busy} onClick={() => onDismiss(product.id)}
+            style={{ ...bGray, padding: "5px 10px", fontSize: "0.68rem" }}>
+            Keep the old one
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
@@ -547,6 +596,36 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     ];
   }, [filter, productById, nodes, q]);
 
+  // ─── THE PROPOSED-NAMES LANE ───────────────────────────────────────────────
+  // Built from NODES, exactly like liveGroups and for the same reason: the
+  // question "which products have a name waiting" is answered by the node, and
+  // walking the catalogue's category sections to find them would need a body
+  // for every product on the page. The pipeline query already holds every
+  // proposal-carrying node — the runner stamps state:"awaiting" on any node it
+  // touches that has none, so all of them land inside the ONE index that
+  // exists (.indexOn ["state"]) and the lane costs no extra read.
+  //
+  // Sorted by when the proposal was made, oldest first: a run's output is
+  // reviewed in the order it was produced, so a session that stops halfway
+  // resumes where it stopped instead of re-reading the same names.
+  const proposedList = useMemo(() => {
+    if (filter !== "proposed") return null;
+    const out = [];
+    for (const [pid, n] of Object.entries(nodes)) {
+      if (!pendingProposal(n)) continue;
+      const p = productById.get(pid);
+      if (!p) continue;
+      if (q && !(String(p.name || "").toLowerCase().includes(q) ||
+                 String(n.cleanName || "").toLowerCase().includes(q) ||
+                 String(n.nameProposal?.name || "").toLowerCase().includes(q))) continue;
+      out.push(p);
+    }
+    out.sort((a, b) =>
+      (Number(nodes[a.id]?.nameProposal?.proposedAt) || 0) -
+      (Number(nodes[b.id]?.nameProposal?.proposedAt) || 0));
+    return out;
+  }, [filter, productById, nodes, q]);
+
   // A section is effectively open when toggled open, or when a search has
   // narrowed the page far enough that showing the matches outright is cheap.
   // A broad search (a one-letter query can match most of the catalogue)
@@ -770,6 +849,31 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         .catch(() => {});
     }
   };
+
+  // ─── Proposed-name decisions ───────────────────────────────────────────────
+  // One in flight at a time, tracked by pid so only the row being decided goes
+  // busy. The write returns the new node and applyWrite folds it in, which is
+  // what makes the row leave the lane — the lane's membership test is the
+  // node's own pending-proposal flag, so nothing has to be removed by hand.
+  const [proposalBusy, setProposalBusy] = useState(null);
+  const [proposalError, setProposalError] = useState(null);
+  const decideProposal = useMemo(() => {
+    const run = (write) => async (pid) => {
+      if (proposalBusy) return;
+      setProposalBusy(pid);
+      setProposalError(null);
+      try {
+        const res = await write(pid, nodesRef.current[pid] || null);
+        if (!res?.ok) { setProposalError(res?.message || "Not saved."); return; }
+        applyWrite(pid, res.node);
+      } catch (e) {
+        setProposalError(String(e?.message || e));
+      } finally {
+        setProposalBusy(null);
+      }
+    };
+    return { apply: run(applyNameProposal), dismiss: run(dismissNameProposal) };
+  }, [proposalBusy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Batch-publish selection ───────────────────────────────────────────────
   // Only awaiting-review rows in the CATEGORY sections are selectable — every
@@ -1060,6 +1164,46 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading pipeline…</div>
         )}
 
+        {/* PROPOSED NAMES — the vision run's output, one decision per row */}
+        {proposedList && proposalError && (
+          <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
+            {proposalError}
+          </div>
+        )}
+        {keys && pipeline && proposedList && (
+          proposedList.length === 0 ? (
+            <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
+              {q ? "No suggested names match." : (
+                <>
+                  No names are waiting. Suggestions appear here after a naming run
+                  reads the product photos — nothing on this page changes until you
+                  take one.
+                </>
+              )}
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px 4px", lineHeight: 1.6 }}>
+                {proposedList.length} name{proposedList.length === 1 ? "" : "s"} read from the
+                product photos, waiting for a decision. Taking one changes only the listing
+                name — it never puts anything on the storefront, and the old name is kept so
+                the change can be undone.
+              </div>
+              {proposedList.map((p) => (
+                <ProposalRow
+                  key={p.id}
+                  product={p}
+                  node={nodes[p.id] || null}
+                  busy={proposalBusy === p.id}
+                  onOpen={openProduct}
+                  onApply={decideProposal.apply}
+                  onDismiss={decideProposal.dismiss}
+                />
+              ))}
+            </>
+          )
+        )}
+
         {/* LIVE FILTER — the On / Off groups replace the category sections */}
         {keys && pipeline && liveGroups && (
           liveGroups.every((g) => g.list.length === 0) ? (
@@ -1090,13 +1234,13 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           )
         )}
 
-        {keys && pipeline && !liveGroups && viewSections.length === 0 && (
+        {keys && pipeline && !liveGroups && !proposedList && viewSections.length === 0 && (
           <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>
             {q ? "No products match." : "Nothing to show under this filter."}
           </div>
         )}
 
-        {keys && pipeline && !liveGroups && viewSections.map(({ cat, matched, count, pending }) => {
+        {keys && pipeline && !liveGroups && !proposedList && viewSections.map(({ cat, matched, count, pending }) => {
           const opened = isOpen(cat);
           // The category's select-all: only rows that would render under the
           // current filter, are awaiting review, and pass the batch gates.

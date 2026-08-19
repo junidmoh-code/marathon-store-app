@@ -10,6 +10,7 @@
 // Store fully mocked — no live data, no network, no DOM (minimal window stub,
 // same pattern as UserManagement.gate.test.jsx).
 import { test, expect, vi, beforeEach } from "vitest";
+import { NAME_PROPOSAL_KEY } from "../../utils/visionNaming";
 import React from "react";
 import { create, act } from "react-test-renderer";
 
@@ -41,16 +42,32 @@ const fakeWindow = {
 globalThis.window = fakeWindow;
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
 
-const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [] };
+const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [],
+                applyProposal: [], dismissProposal: [] };
 let keys = new Set();
 let pipeline = {};
 let bodies = {};
 let approveResult = { ok: true };
+let proposalWriteResult = { ok: true };
 // Read-in-flight control — see loadNodesFor below.
 let holdNodesFor = false;
 const heldReads = [];
 
 vi.mock("./shopifyPublishStore", () => ({
+  applyNameProposal: (pid, node) => {
+    calls.applyProposal.push(pid);
+    const proposal = (node || {})[NAME_PROPOSAL_KEY];
+    return Promise.resolve(proposalWriteResult.ok
+      ? { ok: true, node: { ...(node || {}), cleanName: proposal.name, cleanNameSource: "ai",
+                            nameApprovedAt: 1, [NAME_PROPOSAL_KEY]: { ...proposal, status: "applied" } } }
+      : { ok: false, message: proposalWriteResult.message });
+  },
+  dismissNameProposal: (pid, node) => {
+    calls.dismissProposal.push(pid);
+    const proposal = (node || {})[NAME_PROPOSAL_KEY];
+    return Promise.resolve({ ok: true,
+      node: { ...(node || {}), [NAME_PROPOSAL_KEY]: { ...proposal, status: "rejected" } } });
+  },
   loadPublishKeys: () => Promise.resolve(keys),
   loadPipelineNodes: () => Promise.resolve(pipeline),
   loadNodesFor: (pids) => {
@@ -175,6 +192,9 @@ beforeEach(() => {
   pipeline = {};
   bodies = {};
   approveResult = { ok: true };
+  proposalWriteResult = { ok: true };
+  calls.applyProposal.length = 0;
+  calls.dismissProposal.length = 0;
   holdNodesFor = false;
   heldReads.length = 0;
 });
@@ -1186,4 +1206,104 @@ test("a selected product that stops being publishable leaves the selection", asy
   expect(out).toContain('"1"," of ","25"," selected"'); // p2 survives, p1 is gone
   expect(out).not.toContain("Plain tee black");
   bodies = {};
+});
+
+// ─── PROPOSED NAMES — the vision run's review lane ───────────────────────────
+// The reason this lane exists: 663 names had already been read off product
+// photos and written to /shopify_publish/{pid}/nameProposal with NO surface in
+// the app to decide any of them. These tests pin the surface, not the model.
+
+const PROPOSAL = {
+  name: "Brushed nubuck low-top in sand",
+  source: "vision",
+  previousName: "Sneaker",
+  identity: { brand: "Nike", model: "Air Force 1", colourway: "Sand", confidence: 0.82,
+              text: "Nike Air Force 1 Sand" },
+  attempts: 1,
+  visionModel: "gemini-3.7-flash",
+  proposedAt: 1787000000000,
+  status: "pending",
+};
+
+// The lane reads from the PIPELINE query, not from an expanded section — that
+// is the whole point of the runner stamping state:"awaiting" on the nodes it
+// touches. A proposal must therefore be visible with nothing expanded at all.
+const mountProposals = async (nodes) => {
+  pipeline = nodes;
+  keys = new Set(Object.keys(nodes));
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  const chip = button(tree, "Proposed names");
+  await act(() => { chip.props.onClick(); });
+  await flush();
+  return tree;
+};
+
+test("proposals: the lane lists a waiting name with NOTHING expanded, and both names are shown", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  const out = texts(tree);
+  expect(out).toContain("Brushed nubuck low-top in sand"); // the proposal
+  expect(out).toContain("Sneaker");                       // what it replaces
+  expect(calls.nodesFor.length).toBe(0);                  // no section body fetch was needed
+});
+
+test("proposals: Use this name writes through the store and the row leaves the lane", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  await act(() => { button(tree, "Use this name").props.onClick(); });
+  await flush();
+  expect(calls.applyProposal).toEqual(["p3"]);
+  // The lane's membership test is the node's own pending flag; the applied
+  // node is no longer pending, so the row is gone with no bookkeeping.
+  expect(texts(tree)).not.toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: Keep the old one dismisses without touching the name", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  await act(() => { button(tree, "Keep the old one").props.onClick(); });
+  await flush();
+  expect(calls.dismissProposal).toEqual(["p3"]);
+  expect(calls.applyProposal).toEqual([]);
+});
+
+test("proposals: a refused write surfaces its message and the row stays", async () => {
+  proposalWriteResult = { ok: false, message: "Listing is ON the storefront — switch it off before taking a new name." };
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  await act(() => { button(tree, "Use this name").props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain("switch it off before taking a new name");
+  expect(out).toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: a name that is a brand trigger TODAY cannot be taken, and says why", async () => {
+  // A proposal written before the lexicon grew. The lane must not be a softer
+  // door than the hand-typed name editor.
+  const tree = await mountProposals({
+    p3: { state: "awaiting", cleanName: "Sneaker",
+          nameProposal: { ...PROPOSAL, name: "Nike low-top in sand" } },
+  });
+  const use = button(tree, "Use this name");
+  expect(use.props.disabled).toBe(true);
+  expect(texts(tree)).toContain("brand trigger");
+});
+
+test("proposals: a listing that is ON cannot take a new name from the lane", async () => {
+  const tree = await mountProposals({
+    p3: { state: "live", liveState: "on", cleanName: "Sneaker", nameProposal: PROPOSAL },
+  });
+  expect(button(tree, "Use this name").props.disabled).toBe(true);
+  expect(texts(tree)).toContain("switch it off");
+});
+
+test("proposals: an already-decided proposal never appears in the lane", async () => {
+  const tree = await mountProposals({
+    p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: { ...PROPOSAL, status: "applied" } },
+  });
+  expect(texts(tree)).toContain("No names are waiting");
+});
+
+test("proposals: the lane is empty-stated, not blank, when nothing is waiting", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker" } });
+  expect(texts(tree)).toContain("No names are waiting");
 });

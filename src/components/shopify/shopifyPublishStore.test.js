@@ -30,7 +30,8 @@ vi.mock("../../firebase", () => ({
 }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => 1755000000000 }));
 
-const { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos, publishPhotoListProblem } =
+const { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos, publishPhotoListProblem,
+        applyNameProposal, dismissNameProposal } =
   await import("./shopifyPublishStore");
 const { CONDITIONS } = await import("./shopifyPublishCore");
 const COND = CONDITIONS[0];
@@ -165,5 +166,72 @@ describe("setCondition — the unblock path", () => {
   it("rejects a value outside the three grades", async () => {
     serverNode = { state: "awaiting" };
     expect((await setCondition("p1", serverNode, "Mint")).ok).toBe(false);
+  });
+});
+
+// ─── VISION NAME PROPOSALS ───────────────────────────────────────────────────
+// The two writes that turn a photo-read name into the product's listing name,
+// or put it away. Both re-check against the SERVER node inside the mutator —
+// the reconciler moves products while a reviewer is on the page.
+describe("applyNameProposal / dismissNameProposal", () => {
+  const PROP = { name: "Brushed nubuck low-top in sand", source: "vision", previousName: "Sneaker",
+                 status: "pending", proposedAt: 1787000000000, visionModel: "gemini-3.7-flash" };
+
+  it("takes the proposed name, records it as an AI name, and stamps the proposal applied", async () => {
+    serverNode = { state: "awaiting", cleanName: "Sneaker", condition: COND, nameProposal: PROP };
+    const res = await applyNameProposal("p1", serverNode);
+    expect(res.ok).toBe(true);
+    expect(res.node).toMatchObject({
+      cleanName: "Brushed nubuck low-top in sand",
+      // NOT "vision": the LIVE console rule on cleanNameSource admits only
+      // lexicon|ai|manual, so a "vision" write would be refused by the
+      // database. The finer provenance survives on the proposal record.
+      cleanNameSource: "ai",
+      nameApprovedAt: 1755000000000,
+      updatedBy: "u1",
+    });
+    expect(res.node.nameProposal).toMatchObject({ status: "applied", source: "vision", previousName: "Sneaker" });
+  });
+
+  it("refuses when the SERVER says the listing is ON — a live rename diverges from what customers see", async () => {
+    serverNode = { state: "live", liveState: "on", cleanName: "Sneaker", nameProposal: PROP };
+    const res = await applyNameProposal("p1", { state: "awaiting", nameProposal: PROP });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/switch it off/i);
+    expect(serverNode.cleanName).toBe("Sneaker"); // nothing written
+  });
+
+  it("refuses a proposal whose name is a brand trigger today — no softer door than a typed name", async () => {
+    serverNode = { state: "awaiting", nameProposal: { ...PROP, name: "Nike low-top in sand" } };
+    const res = await applyNameProposal("p1", serverNode);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/brand trigger/i);
+    expect(serverNode.cleanName).toBeUndefined();
+  });
+
+  it("a legacy node with no state still lands with one — the rules require it", async () => {
+    // The runner wrote proposals onto nodes that carry NOTHING else. The live
+    // .validate on /shopify_publish/$pid demands hasChildren(['state']), so a
+    // write that dropped it would be refused outright.
+    serverNode = { nameProposal: PROP };
+    const res = await applyNameProposal("p1", serverNode);
+    expect(res.ok).toBe(true);
+    expect(res.node.state).toBe("awaiting");
+  });
+
+  it("dismiss keeps the proposal, marked rejected — never deletes it", async () => {
+    serverNode = { state: "awaiting", cleanName: "Sneaker", nameProposal: PROP };
+    const res = await dismissNameProposal("p1", serverNode);
+    expect(res.ok).toBe(true);
+    expect(res.node.cleanName).toBe("Sneaker");                 // name untouched
+    expect(res.node.nameProposal).toMatchObject({ status: "rejected", decidedAt: 1755000000000 });
+    expect(res.node.nameProposal.name).toBe(PROP.name);         // kept, so a re-run does not re-spend on it
+  });
+
+  it("dismiss refuses an already-decided proposal instead of re-stamping it", async () => {
+    serverNode = { state: "awaiting", nameProposal: { ...PROP, status: "applied" } };
+    const res = await dismissNameProposal("p1", serverNode);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/already been decided/i);
   });
 });

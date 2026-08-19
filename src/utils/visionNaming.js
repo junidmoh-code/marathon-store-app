@@ -116,6 +116,16 @@ export function projectCost(n) {
 // Asks for strict JSON with both answers. The compliance rules are stated, but
 // the model is NEVER trusted to police itself — validateVisionName is what
 // actually holds the line, and it runs on every output.
+//
+// THE PROMPT MUST NOT SUGGEST A WORD THE VALIDATOR REFUSES. It did: the
+// material list read "leather, suede, mesh, canvas, knit, denim" and worked
+// example A was "Brushed suede low-top in sand". "suede" is a SILHOUETTE in
+// shopifyTriggers.js (the PUMA model), so every name that took the prompt's
+// own advice was refused, regenerated at full price, and — when the second
+// attempt reached for the same obvious word — refused for good. Measured
+// across the 663 proposals the first runs produced before this was found:
+// see the PR. Nothing else in the material list, and no other word in any of
+// the eight worked examples, is a trigger — checked, not assumed.
 export const VISION_PROMPT = `You are looking at ONE photo of a single second-hand item of clothing, footwear or an accessory that a resale shop is about to list.
 
 Answer with STRICT JSON and nothing else. No markdown, no code fence, no commentary.
@@ -141,11 +151,14 @@ IDENTIFICATION RULES
 PUBLIC NAME RULES — this is a shop listing title a customer reads.
 - Describe the ITEM, not its maker. Say what it looks like: the colour and any
   colour blocking, the cut or profile, panel and trim detail, and the material
-  when it is obvious (leather, suede, mesh, canvas, knit, denim).
+  when it is obvious (leather, nubuck, mesh, canvas, knit, denim, corduroy).
 - It must contain NO brand name, NO sub-label, NO collaboration name, NO model
   or silhouette name, NO logo wording, and NO team, city or athlete name.
 - Natural retail English, 3 to 9 words, no ALL CAPS, no punctuation beyond
   ordinary hyphens, and it must not start with a digit.
+- The word "suede" is a MODEL name in this shop's compliance lexicon and is
+  refused like any brand term. Say "nubuck", "brushed leather" or "napped
+  leather" instead. This is the only ordinary material word that is barred.
 - Do not mention condition, wear, price, size or availability.
 
 VARY THE SENTENCE SHAPE. This is a hard requirement, not a preference. Hundreds
@@ -153,7 +166,7 @@ of these names are written for one shop and they must not all read alike. In
 particular do NOT begin every name with the product type. Choose whichever of
 these shapes the item actually calls for:
 
-  A. material first        "Brushed suede low-top in sand"
+  A. material first        "Brushed nubuck low-top in sand"
   B. colour first          "Oxblood leather derby with brogue detail"
   C. the standout detail    "Contrast-stitch panel runner in bone and rust"
   D. silhouette first       "High-top basketball silhouette in cracked white"
