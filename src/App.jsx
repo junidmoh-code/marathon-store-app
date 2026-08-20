@@ -52,6 +52,10 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
+// The photo regenerator's vocabulary and call-shaping, shared with the same
+// tool on the Shopify product page so the two can never offer different fixes
+// or send differently-shaped requests (src/components/shopify/aiStudioCore.js).
+import { FIX_PRESETS, buildGenerateRequest, costByEngineStr, photoFailureSuffix } from "./components/shopify/aiStudioCore";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
@@ -3067,44 +3071,9 @@ function usePhotoProposals() {
   return proposals;
 }
 
-// " · gemini $0.0390, openai $0.0461" from the function's per-engine cost split.
-function costByEngineStr(cbe) {
-  if (!cbe || typeof cbe !== "object") return "";
-  const parts = Object.entries(cbe).filter(([, v]) => Number(v) > 0).map(([k, v]) => `${k} $${Number(v).toFixed(4)}`);
-  return parts.length ? ` · ${parts.join(", ")}` : "";
-}
-
-// Aggregate generateProductPhotos per-product failure reasons into a short "why"
-// suffix so a failed run isn't silent (e.g. " — why: AI credits depleted… ×11;
-// No sneaker Style Kit references… ×1"). Empty when the run had no failures or an
-// older function build returned no `failures` array.
-function photoFailureSuffix(failures) {
-  if (!Array.isArray(failures) || !failures.length) return "";
-  const byReason = new Map();
-  for (const f of failures) {
-    const r = (f && f.reason) || "failed";
-    byReason.set(r, (byReason.get(r) || 0) + 1);
-  }
-  const parts = [...byReason.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([r, n]) => `${r} ×${n}`);
-  return ` — why: ${parts.join("; ")}`;
-}
-
-// One-tap fix shortcuts for a regenerate: a short label the user taps → a clear,
-// expanded instruction the image engine understands, appended to the run note. Tap
-// several to combine; free text can be added too. Keeps "make gemini understand
-// what to fix" to one tap instead of writing a prompt each time.
-const FIX_PRESETS = [
-  ["Wrong shape",   "the shape and silhouette look wrong — correct it to the authentic product's true shape and proportions"],
-  ["Wrong side",    "the wrong side is showing — show the OUTER branded display side, do not flip to the plain inner side"],
-  ["Colour off",    "the colours are off or washed out — restore the product's true, accurate, full-strength colours exactly"],
-  ["Blacks weak",   "the dark areas look weak and greyish — make black, charcoal and navy richer and deeper so they stand out"],
-  ["Blurry",        "it looks blurry or soft — make it tack-sharp with crisp clean edges and fine detail throughout"],
-  ["Design detail", "minor design details are wrong — fix the logos, patterns, stitching and text to match the authentic product exactly"],
-  ["Framing",       "framing is off — centre the product straight and level with an even margin, fully visible and not cut off"],
-  ["Remove bg",     "remove every trace of the original background and props — show only the single product on flat pure white"],
-];
+// FIX_PRESETS, costByEngineStr and photoFailureSuffix moved to
+// components/shopify/aiStudioCore.js when the Shopify product page gained the
+// same regenerator — one definition, imported by both surfaces.
 
 // ─── "RECENT" PICKER CATEGORY ─────────────────────────────────────────────────
 // Newest photo uploads across ALL categories. Upload time = photoUpdatedAt
@@ -3396,12 +3365,20 @@ function AdminReviewPhotosTab({ products = [] }) {
   const regenerate = async (row, opts = {}) => {
     setRegenIds(s => new Set(s).add(row.id));
     const note = String(opts.note || "").trim();
-    const thisNote = note ? { note } : {};
     const engine = opts.engine;
-    const thisEngine = (engine === "gemini" || engine === "openai") ? { engine } : engineArg;
     setRunMsg(`Regenerating “${row.name || row.id}”${house ? " in house style" : ""} at ${quality}${!house && engine && engine !== "auto" ? ` via ${engine}` : ""}${note ? ` — “${note}”` : ""}…`);
     try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ productIds: [row.id], reprocess: true, quality, ...thisEngine, ...thisNote, ...styleArg });
+      // The SAME request shape the Shopify product page sends (aiStudioCore) —
+      // one builder, so a change to how the function is called can never reach
+      // one surface and miss the other. `engineArg` is the studio-level engine
+      // this popup fell back to when its own choice was "auto".
+      const res = await httpsCallable(functions, "generateProductPhotos")(buildGenerateRequest({
+        productId: row.id,
+        style: house ? "house" : "white",
+        note,
+        engine: (engine === "gemini" || engine === "openai") ? engine : (engineArg.engine || "auto"),
+        quality,
+      }));
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”${photoFailureSuffix(d.failures)}.`);
     } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }

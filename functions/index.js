@@ -2094,8 +2094,11 @@ exports.cleanProductNames = onCall(
 //
 // request.data (all optional): { limit=12, productIds:[...], category, reprocess=false,
 // style: "white" (default, existing behavior) | "house" (Marathon house-style scene,
-// conditioned on the Style Kit reference images — see STYLE_KIT_PATH below) }.
-// Returns { processed, failed, total, estCostUSD, sample }.
+// conditioned on the Style Kit reference images — see STYLE_KIT_PATH below),
+// note: "…" (a per-run fix instruction folded into the prompt),
+// sourceUrl: "https://…" (SINGLE-product calls only — the photo to re-shoot when
+// it is not the record's hero; Shopify Publishing's photo set is its own list) }.
+// Returns { processed, failed, total, estCostUSD, costByEngine, sample, failures }.
 
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
@@ -2606,16 +2609,47 @@ exports.generateProductPhotos = onCall(
       ? data.note.replace(/[^\x20-\x7E\u00A0-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
       : "";
 
-    const [prodSnap, propSnap] = await Promise.all([
-      db.ref("products").once("value"),
-      db.ref(PHOTO_PROPOSALS_PATH).once("value"),
-    ]);
-    const products = prodSnap.val() || {};
-    const existing = propSnap.val() || {};
+    // ── SCOPE, WITHOUT READING THE CATALOGUE FOR ONE PRODUCT ─────────────────
+    // A named-ids call (the Studio's Regenerate, and every call from the
+    // Shopify product page) used to read ALL of /products and ALL of
+    // /aiAssistant/photoProposals to re-shoot ONE photo — 4,275 records and
+    // ~3,500 proposal nodes off the wire for a single image. Those two reads
+    // exist for the unattended sweep, which genuinely has to scan to find the
+    // next N products missing a photo; a caller that already knows the id
+    // needs neither. Fetch exactly the named records instead.
+    let products, existing = {};
+    const namedIds = Array.isArray(data.productIds) && data.productIds.length
+      ? [...new Set(data.productIds)].slice(0, PHOTO_MAX_BATCH)
+      : null;
+    if (namedIds) {
+      const snaps = await Promise.all(namedIds.map((id) => db.ref(`products/${id}`).once("value")));
+      products = {};
+      snaps.forEach((s, i) => { const v = s.val(); if (v) products[namedIds[i]] = v; });
+    } else {
+      const [prodSnap, propSnap] = await Promise.all([
+        db.ref("products").once("value"),
+        db.ref(PHOTO_PROPOSALS_PATH).once("value"),
+      ]);
+      products = prodSnap.val() || {};
+      existing = propSnap.val() || {};
+    }
+
+    // ── THE PHOTO TO RE-SHOOT ────────────────────────────────────────────────
+    // Normally the product record's hero. Shopify Publishing needs an override
+    // because its photo set is NOT the record's: the reviewer taps a slot in
+    // the publishing strip and expects that image re-shot, and a custom
+    // publishing set may not contain the hero at all. Single-product calls
+    // only — a source photo means nothing applied across a batch. Untrusted
+    // input, so it is bounded here and fetched through fetchImageBuffer's
+    // existing SSRF guard (https + *.googleapis.com, no redirects) like any
+    // other URL.
+    const sourceUrl = typeof data.sourceUrl === "string" && namedIds && namedIds.length === 1
+      ? data.sourceUrl.trim().slice(0, 2000)
+      : null;
 
     let ids;
-    if (Array.isArray(data.productIds) && data.productIds.length) {
-      ids = [...new Set(data.productIds)].filter((id) => products[id] && products[id].photoUrl).slice(0, PHOTO_MAX_BATCH);
+    if (namedIds) {
+      ids = namedIds.filter((id) => products[id] && (sourceUrl || products[id].photoUrl));
     } else {
       ids = Object.keys(products).filter((id) => {
         const p = products[id];
@@ -2656,7 +2690,9 @@ exports.generateProductPhotos = onCall(
         const template = isClothing ? "clothing" : "sneaker";
         const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
         try {
-          const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
+          // The override when the caller named one, else the record's hero.
+          const srcUrl = sourceUrl || p.photoUrl;
+          const { buffer, contentType } = await fetchImageBuffer(srcUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = isClothing ? "1024x1536" : PHOTO_SIZE;
           const kit = styleKit ? styleKit[template] : null;
@@ -2688,9 +2724,13 @@ exports.generateProductPhotos = onCall(
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
           await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
-            // Prefer the TRUE original: if this product was already approved once,
-            // p.photoUrl is a generated image — keep the real original from photoUrlOriginal.
-            originalUrl: p.photoUrlOriginal || p.photoUrl,
+            // The image this proposal was actually made FROM — the side-by-side
+            // is a lie if it shows anything else. When the caller named a source
+            // photo, that IS the original for this generation. Otherwise prefer
+            // the TRUE original: if this product was already approved once,
+            // p.photoUrl is a generated image — keep the real original from
+            // photoUrlOriginal.
+            originalUrl: sourceUrl || p.photoUrlOriginal || p.photoUrl,
             proposedUrl,
             name: p.name || "",
             productType: p.productType || null,
@@ -3420,15 +3460,24 @@ exports.styleCodeSibling = require("./styleCode/styleCodeSibling.js").styleCodeS
 // DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:storefrontSearch
 exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").storefrontSearch;
 
-// ── cleanProductPhoto — ONE background swap, key held server-side ────────────
-// The per-photo "clean background" action on the Shopify product page. PR #368
-// shipped it calling Gemini from the BROWSER with the key baked into the bundle
-// by vite, which put a spendable key in front of anyone who viewed the site's
-// JavaScript — and it shipped DISABLED because no key existed at build time.
-// Both problems have the same answer: the call lives on the server and the key
-// is a Cloud Functions secret the build never sees. The bundle now carries no
-// key at all.
-// The subject-preservation gate stays in the browser, where both images are
-// already decoded — only the paid call moved.
-// DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:cleanProductPhoto
-exports.cleanProductPhoto = require("./photoClean/cleanProductPhoto.js").cleanProductPhoto;
+// ── cleanProductPhoto — REMOVED (2026-08-20) ────────────────────────────────
+// The per-photo "clean background" action is gone, and the callable with it.
+// It was not broken: the truthfulness gate in the browser compared the product
+// region pixel-for-pixel and discarded any result where the model had redrawn
+// the item. The trouble was that on real shop photographs — a shoe on a rack
+// against a painted backdrop — replacing that much of the frame IS a re-render,
+// and a re-render never survives a pixel comparison. Measured on 2026-08-19:
+// seven generations, one deliberately tampered (correctly discarded) and six
+// honest ones (all discarded). The action was safe and it produced nothing.
+//
+// What replaced it is the AI Studio regenerator, already in this file as
+// generateProductPhotos, now reachable from the Shopify product page with a
+// `sourceUrl` naming the publishing photo to re-shoot. Its guard is not a pixel
+// gate — a house-style re-shoot changes the whole scene by design — it is an
+// explicit human accept against a side-by-side, which is how AI Studio has
+// always worked.
+//
+// THE DEPLOYED FUNCTION MUST STILL BE DELETED. Removing the export stops it
+// being redeployed; it does NOT remove the running instance, which still holds
+// the GEMINI_API_KEY secret binding and is still callable by any admin:
+//   firebase functions:delete cleanProductPhoto --region europe-west1
