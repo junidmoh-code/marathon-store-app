@@ -67,8 +67,7 @@ const MUTATIONS = [
     id: "S6",
     guard: "An explicit target:0 row is FLAGGED rather than silently dropped",
     file: CORE,
-    from: `      const excluded = !!rowsForPid && typeof rowsForPid === "object"
-        && Object.keys(rowsForPid).some((k) => rowsForPid[k]?.target === 0);`,
+    from: `      const excluded = numericRows.length > 0;`,
     to: `      const excluded = false;`,
     nodeTests: CORE_T,
   },
@@ -84,7 +83,7 @@ const MUTATIONS = [
     id: "S8",
     guard: "The engine actually EMITS the list in its exceptions",
     file: ENGINE,
-    from: `      starved: cap(starved, 600),`,
+    from: `      starved: { ...cap(starved), active: starved.filter((r) => !r.excluded).length },`,
     to: ``,
     nodeTests: CORE_T,
   },
@@ -100,10 +99,10 @@ const MUTATIONS = [
     id: "S10",
     guard: "stocked-then-undone does not read as 'never heard of it'",
     file: CARD,
-    from: `    : (r.k > 0 && r.k - r.u <= 0)
-      ? \`stocked \${r.k} and took \${r.u} back, so the history nets to nothing\``,
-    to: `    : (false)
-      ? \`stocked \${r.k} and took \${r.u} back, so the history nets to nothing\``,
+    from: `  const record = !r.rec
+    ? "no stock history at all for this shop"`,
+    to: `  const record = true
+    ? "no stock history at all for this shop"`,
     tests: CARD_T,
   },
   {
@@ -127,16 +126,16 @@ const MUTATIONS = [
     id: "S13",
     guard: "A failed write reads as a refusal, never as success",
     file: CARD,
-    from: `      setDone((d) => ({ ...d, [key]: { ok: false, msg: \`Couldn't introduce — nothing changed, retry. (\${e?.message || "error"})\` } }));`,
-    to: `      setDone((d) => ({ ...d, [key]: { ok: true, msg: "Introduced." } }));`,
+    from: `      const denied = /permission|denied/i.test(String(e?.message || e));`,
+    to: `      const denied = false; setDone((d) => ({ ...d, [key]: { ok: true, msg: "Introduced at last." } })); if (denied) return; return setBusy(null) ||`,
     tests: CARD_T,
   },
   {
     id: "S14",
     guard: "The card is REACHABLE from the Health grid — a standing card, not orphaned code",
     file: HEALTH,
-    from: `              <StatCard label="Starved" value={count("starved")} tone={count("starved") ? RED : GREEN}`,
-    to: `              <StatCard label="Starved" value={0} tone={GREEN}`,
+    from: `              <StatCard label="Starved" value={ex.starved?.active ?? count("starved")}`,
+    to: `              <StatCard label="Starved-nope" value={0}`,
     tests: CARD_T,
   },
 ];
