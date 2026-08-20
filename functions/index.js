@@ -1,6 +1,7 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onValueWritten } = require("firebase-functions/v2/database");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -9,6 +10,7 @@ const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
+const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -29,6 +31,11 @@ const metaToken   = defineSecret("meta-whatsapp-token");
 const META_FALLBACK_ENABLED  = process.env.META_FALLBACK_ENABLED !== "false";        // default true
 const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // gateway's head start
 const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS, 10) || 2;       // Meta tries before "failed"
+// Kill switch for the event-driven outboxInstantSend trigger (default ON).
+// Set INSTANT_SEND_ENABLED=false — e.g. if a self-hosted gateway ever comes
+// back and should get its FALLBACK_GRACE_SECONDS head start again — and the
+// system degrades to exactly the pre-trigger behaviour: the sweep alone.
+const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -268,76 +275,22 @@ exports.sendWhatsApp = onCall(
   }
 );
 
-// Claim a single stale outbox doc and deliver it via Meta. The claim is a
-// Firestore transaction acting as a mutex against the gateway: it proceeds only
-// if the doc is still "pending", so we can never double-send a doc the gateway
-// already grabbed. Resolves quietly (no throw) so one bad doc can't abort the sweep.
+// Claim a single outbox doc and deliver it via Meta. The claim-then-send body
+// moved VERBATIM to lib/outbox-deliver.cjs so the instant trigger and the
+// sweep share ONE code path and the duplicate-safety tests
+// (test/outbox-deliver.test.cjs) can drive it without firebase-admin. The
+// claim is a Firestore transaction acting as a mutex against every other
+// claimer: it proceeds only if the doc is still "pending", so we can never
+// double-send a doc someone else already grabbed. Resolves quietly (no throw)
+// so one bad doc can't abort the sweep.
 async function processFallbackDoc(db, docRef, docId) {
-  let claimed;
-  try {
-    claimed = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(docRef);
-      if (!snap.exists) return null;
-      const data = snap.data();
-      if (data.status !== "pending") return null;   // gateway grabbed it (or it failed) — skip
-      const attempts = (data.attempts || 0) + 1;
-      tx.update(docRef, {
-        status:    "sending",
-        provider:  "meta",
-        attempts,
-        claimedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return { ...data, attempts };
-    });
-  } catch (err) {
-    console.error("metaFallbackSweep claim failed:", JSON.stringify({ docId, error: err.message }));
-    return;
-  }
-  if (!claimed) return;  // no longer pending — the gateway won the race
-
-  const to           = claimed.to;
-  const templateName = claimed.templateName;
-  const templateParams = claimed.variables || claimed.templateParams || [];
-
-  const result = await sendViaMetaTemplate(to, templateName, templateParams);
-
-  if (result.ok) {
-    await docRef.update({
-      status:    "sent",
-      provider:  "meta",
-      sentAt:    admin.firestore.FieldValue.serverTimestamp(),
-      messageId: result.messageId,
-    });
-    console.log("metaFallbackSweep meta-send:", JSON.stringify({
-      docId, recipient: maskPhone(to), templateName, outcome: "sent", messageId: result.messageId,
-    }));
-    return;
-  }
-
-  // Meta send failed. The fallback is the last resort, so it's the only path
-  // that ever sets "failed" — but only once we've exhausted META_MAX_ATTEMPTS.
-  if (claimed.attempts >= META_MAX_ATTEMPTS) {
-    await docRef.update({
-      status:    "failed",
-      lastError: result.error || "Meta send failed",
-    });
-    console.error("metaFallbackSweep meta-send:", JSON.stringify({
-      docId, recipient: maskPhone(to), templateName, outcome: "failed",
-      attempts: claimed.attempts, error: result.error,
-    }));
-  } else {
-    // Revert to pending so a later sweep retries — or the gateway sends it if
-    // it recovers. Clearing provider hands it back to whoever claims next.
-    await docRef.update({
-      status:    "pending",
-      provider:  null,
-      lastError: result.error || "Meta send failed",
-    });
-    console.warn("metaFallbackSweep meta-send:", JSON.stringify({
-      docId, recipient: maskPhone(to), templateName, outcome: "retry",
-      attempts: claimed.attempts, error: result.error,
-    }));
-  }
+  await deliverOutboxDoc({
+    db, docRef, docId,
+    sendTemplate:    sendViaMetaTemplate,
+    maxAttempts:     META_MAX_ATTEMPTS,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    maskPhone,
+  });
 }
 
 // Scheduled Meta fallback for the WhatsApp outbox. Runs every minute and
@@ -383,6 +336,56 @@ exports.metaFallbackSweep = onSchedule(
     for (const docSnap of stale) {
       await processFallbackDoc(db, docSnap.ref, docSnap.id);
     }
+  }
+);
+
+// ─── INSTANT OUTBOX SEND — event-driven delivery (fix for the 4-5 min lag) ───
+// Fires the moment a doc lands in whatsapp_outbox and delivers it via Meta
+// immediately, instead of leaving it for the every-minute sweep.
+//
+// WHY: the self-hosted gateway VM this outbox was built for NO LONGER EXISTS —
+// project marathon-club has zero Compute instances and its static IP
+// (marathon-broadcast-ip, 34.59.92.37) sits RESERVED, attached to nothing.
+// Every one of the last 3,200 outbox docs was delivered by metaFallbackSweep,
+// which by design waits FALLBACK_GRACE_SECONDS (60s, the dead gateway's head
+// start) and then polls each minute — a measured 60-126s (median ~95s) added
+// to EVERY customer message. This trigger removes that penalty; the sweep
+// stays deployed, untouched, as the retry lane and backstop.
+//
+// DUPLICATE SAFETY (do not weaken): delivery goes through the SAME
+// processFallbackDoc → deliverOutboxDoc claim transaction the sweep uses —
+// only a "pending" doc can be claimed, and the flip to "sending" commits
+// atomically, so a trigger re-fire (Firestore create events are delivered
+// at-least-once), an overlapping sweep run, or any future claimer finds the
+// doc non-pending and walks away. The producer-side 90s dedupe in
+// enqueueWhatsApp is a separate, untouched guard on doc CREATION. retry:false
+// below keeps the platform from re-running a crashed invocation on its own —
+// a doc whose instant send died mid-flight is either claimed (sweep-visible
+// retry semantics unchanged) or still pending (sweep sends it within ~2 min),
+// so the backstop covers the crash without a second live send path.
+//
+// Failure semantics are the lib's: a failed Meta send reverts the doc to
+// "pending" for the SWEEP to retry (an update never re-fires this create
+// trigger), terminal "failed" only past META_MAX_ATTEMPTS — exactly as before.
+exports.outboxInstantSend = onDocumentCreated(
+  {
+    document: "whatsapp_outbox/{docId}",
+    region:   "europe-west1",   // must match the Firestore database location
+    memory:   "256MiB",
+    retry:    false,
+    secrets:  [metaToken],
+  },
+  async (event) => {
+    if (!INSTANT_SEND_ENABLED) {
+      console.log("outboxInstantSend: disabled (INSTANT_SEND_ENABLED=false)");
+      return;
+    }
+    const db = admin.firestore();
+    const docId = event.params.docId;
+    // Re-resolve the ref from params rather than trusting the event snapshot:
+    // the claim transaction re-reads the doc anyway, so a stale snapshot can
+    // never cause a send the current doc state doesn't justify.
+    await processFallbackDoc(db, db.collection("whatsapp_outbox").doc(docId), docId);
   }
 );
 
