@@ -15,7 +15,7 @@
 //   this file writes; the browser never calls Shopify), blockedReason,
 //   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
 //   condition, updatedAt, updatedBy
-import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAfter, limitToFirst } from "firebase/database";
+import { ref, child, get, runTransaction, query, orderByChild, equalTo, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
@@ -100,22 +100,37 @@ export async function loadPipelineNodes() {
 // "p<epoch-ms>" ids is oldest product first; the lane re-sorts what it holds
 // by when the proposal was made.
 //
-// `after` is the last key of the previous page; RTDB's startAt is inclusive,
-// so the overlap record is dropped by the caller.
+// PAGING USES equalTo's SECOND ARGUMENT, and it has to. `equalTo(v)` is not a
+// separate operator — it expands to startAt(v, key) + endAt(v, key) — so
+// adding startAfter() to a query that already has equalTo() throws
+// "equalTo: Starting point was already set". The supported way to move a
+// cursor INSIDE an equal set is the optional key argument: equalTo(v, key)
+// starts at that key. It is INCLUSIVE, so a continued page asks for one extra
+// record and drops the overlap — the same treatment scripts/lib/rtdbPaged.mjs
+// gives its cursor, and for the same reason.
 export const PROPOSAL_PAGE_SIZE = 300;
 
 export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_SIZE } = {}) {
-  let q = query(ref(database, "shopify_publish"), orderByChild("state"), equalTo("awaiting"));
-  // startAt/endAt on the ORDER-BY value are already fixed by equalTo; paging
-  // therefore uses the key range, which RTDB applies within the equal set.
-  const snap = await get(after
-    ? query(q, startAfter(null, after), limitToFirst(pageSize))
-    : query(q, limitToFirst(pageSize)));
+  const want = after ? pageSize + 1 : pageSize; // +1 covers the inclusive overlap
+  const snap = await get(query(
+    ref(database, "shopify_publish"),
+    orderByChild("state"),
+    after ? equalTo("awaiting", after) : equalTo("awaiting"),
+    limitToFirst(want),
+  ));
   const nodes = {};
   let lastKey = null;
-  snap.forEach((child) => { nodes[child.key] = child.val(); lastKey = child.key; });
-  const count = Object.keys(nodes).length;
-  return { nodes, lastKey, done: count < pageSize };
+  let seen = 0;
+  snap.forEach((child) => {
+    seen += 1;
+    lastKey = child.key;
+    if (child.key === after) return; // the overlap record, already delivered
+    nodes[child.key] = child.val();
+  });
+  // `done` is judged on RECORDS RETURNED, not on the new ones kept: a final
+  // page holding only the overlap is still the end, and counting the kept
+  // records would read a full page of duplicates as "more to come".
+  return { nodes, lastKey, done: seen < want };
 }
 
 // Session cache for the shallow key set — the home badge asks on every visit
