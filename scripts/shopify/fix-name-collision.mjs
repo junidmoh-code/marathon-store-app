@@ -35,11 +35,15 @@
 // written to the database and never reaches Shopify.
 //
 // ── THE GUARDS, AND WHY EACH ONE EXISTS ──────────────────────────────────────
-//   · A listing that is ON is NEVER renamed. Renaming it would change the
-//     handle of a page customers and search engines are already pointed at,
-//     and the app would disagree with the storefront until the next reconcile.
-//     Clearing a collision by renaming the live member is a decision with
-//     public consequences and it is not this script's to make.
+//   · A listing that is ON — or on its way ON — is NEVER renamed. Renaming a
+//     live one changes the handle of a page customers and search engines are
+//     already pointed at; renaming one whose desiredState is "on" changes the
+//     name that is about to be pushed, out from under the person who signed it
+//     off minutes ago. Clearing a collision by renaming a public product is a
+//     decision with public consequences and it is not this script's to make.
+//     The predicate is the APP'S OWN (publishState.js), not a local rewrite:
+//     a hand-rolled `state === "live" && liveState === "on"` misses a legacy
+//     node that has no liveState field and IS on the storefront.
 //   · The new name must pass validateVisionName TODAY — the browser's own
 //     checkCleanName gate is a strict SUBSET of it (same digit-start, same
 //     3-80 length, same trigger list; the vision validator adds an ALL-CAPS
@@ -76,6 +80,7 @@ import { join } from "path";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
 import { validateVisionName, NAME_PROPOSAL_KEY } from "../../src/utils/visionNaming.js";
+import { isOn, isOnOrGoingOn } from "../../src/components/shopify/publishState.js";
 import { buildHandle } from "./compliance.mjs";
 
 const arg = (flag) => (process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : null);
@@ -100,7 +105,6 @@ admin.initializeApp({
   databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
 });
 const db = admin.database();
-const isOn = (n) => n?.state === "live" && n?.liveState === "on";
 // Server time, not this laptop's clock: updatedAt is a rules-validated field
 // (`newData.val() <= now + 86400000`) and a skewed local clock would write a
 // value the rule rejects for every browser that touches the node afterwards.
@@ -111,21 +115,51 @@ const stamp = () => ({ updatedAt: SERVER_NOW, updatedBy: "script:fix-name-collis
 if (UNDO) {
   const rows = JSON.parse(readFileSync(UNDO, "utf8"));
   console.log(`undoing ${rows.length} rename(s) from ${UNDO}`);
-  let back = 0;
+  let back = 0, refused = 0;
   for (const { pid, previousName, previousSource, previousProposalStatus } of rows) {
     assertSafeSegment(pid, "productId");
-    await db.ref(`shopify_publish/${pid}`).update({
-      // null is how RTDB removes a field, which is exactly right when the node
-      // had no name (or no source) before this script ran.
-      cleanName: previousName ?? null,
-      cleanNameSource: previousSource ?? null,
-      ...(previousProposalStatus ? { [`${NAME_PROPOSAL_KEY}/status`]: previousProposalStatus } : {}),
-      ...stamp(),
+    // THE UNDO NEEDS THE SAME GATE AS THE COMMIT, and for a sharper reason.
+    // Time has passed: a product renamed while it was blocked may have been
+    // published since. Putting the old name back would then rename a LIVE
+    // listing — the one thing this script refuses to do — and it would do it
+    // without anyone asking. A transaction, not update(), so the check is made
+    // against the SERVER's value at write time.
+    // Read the node ONCE up front so the transaction has something to fall
+    // back to. RTDB hands the mutator a null `cur` on the first (cold-cache)
+    // attempt even when the node exists, and `if (!cur) return undefined`
+    // would abort every transaction and put nothing back at all — the
+    // documented trap this repo has walked into before. The server's
+    // compare-and-retry then supplies the real value and the gate below runs
+    // again against THAT, which is where it matters.
+    const scanned = await db.ref(`shopify_publish/${pid}`).once("value").then((sn) => sn.val());
+    if (!scanned) { refused += 1; console.warn(`  ✗ ${pid} — no node; nothing to put back`); continue; }
+    const res = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
+      const base = cur || scanned;
+      if (isOnOrGoingOn(base)) return undefined;
+      const next = {
+        ...base,
+        // null is how RTDB removes a field, which is exactly right when the
+        // node had no name (or no source) before this script ran.
+        cleanName: previousName ?? null,
+        cleanNameSource: previousSource ?? null,
+        ...stamp(),
+      };
+      if (previousName == null) delete next.cleanName;
+      if (previousSource == null) delete next.cleanNameSource;
+      if (previousProposalStatus && next[NAME_PROPOSAL_KEY]) {
+        next[NAME_PROPOSAL_KEY] = { ...next[NAME_PROPOSAL_KEY], status: previousProposalStatus };
+        // A proposal put back to "pending" must not keep the decision stamp
+        // this script wrote — a pending proposal carrying a decidedAt is a
+        // contradiction the review lane has no way to read.
+        if (previousProposalStatus === "pending") delete next[NAME_PROPOSAL_KEY].decidedAt;
+      }
+      return next;
     });
-    back += 1;
+    if (res.committed) back += 1;
+    else { refused += 1; console.warn(`  ✗ ${pid} — on the storefront (or published and waiting); NOT put back`); }
   }
-  console.log(`done — ${back} name(s) put back.`);
-  process.exit(0);
+  console.log(`done — ${back} name(s) put back${refused ? `, ${refused} refused (see above)` : ""}.`);
+  process.exit(refused ? 2 : 0);
 }
 
 // ── THE LIVE PICTURE ─────────────────────────────────────────────────────────
@@ -154,8 +188,8 @@ if (REPORT || (!FILE && !COMMIT)) {
   const needsLiveRename = [];
   const skeleton = [];
   for (const [handle, pids] of groups) {
-    const live = pids.filter((p) => isOn(publish[p]));
-    const nonLive = pids.filter((p) => !isOn(publish[p]));
+    const live = pids.filter((p) => isOnOrGoingOn(publish[p]));
+    const nonLive = pids.filter((p) => !isOnOrGoingOn(publish[p]));
     // A group clears by renaming only its non-live members when renaming ALL
     // of them leaves at most one product on this handle. With 0 or 1 live
     // member that always holds; with 2+ the handle is contested by products
@@ -165,7 +199,7 @@ if (REPORT || (!FILE && !COMMIT)) {
     console.log(`\n${handle}  (${pids.length})`);
     for (const pid of pids) {
       const n = publish[pid];
-      console.log(`  ${isOn(n) ? "LIVE " : "     "}${pid}  ${JSON.stringify(n?.cleanName)}  src=${n?.cleanNameSource ?? "-"} state=${n?.state ?? "-"}`);
+      console.log(`  ${isOnOrGoingOn(n) ? "LIVE " : "     "}${pid}  ${JSON.stringify(n?.cleanName)}  src=${n?.cleanNameSource ?? "-"} state=${n?.state ?? "-"}`);
     }
     for (const pid of nonLive) skeleton.push({ pid, name: "", why: "", wasCalled: publish[pid]?.cleanName ?? null, handle });
   }
@@ -176,7 +210,9 @@ if (REPORT || (!FILE && !COMMIT)) {
   for (const g of needsLiveRename) console.log(`     ${g.handle} — ${g.live.length} live members: ${g.live.join(", ")}`);
   console.log(`  non-live products to name            : ${skeleton.length}`);
   mkdirSync(ROLLBACK_DIR, { recursive: true });
-  const out = join(ROLLBACK_DIR, "collision-skeleton.json");
+  // Timestamped: a fixed name would silently overwrite a skeleton the operator
+  // was halfway through filling in, and the names in it are the expensive part.
+  const out = join(ROLLBACK_DIR, `collision-skeleton-${Date.now()}.json`);
   writeFileSync(out, JSON.stringify(skeleton, null, 1));
   console.log(`\nskeleton written to ${out} — fill in every "name", then:`);
   console.log(`  node scripts/shopify/fix-name-collision.mjs --file ${out} --commit`);
@@ -207,7 +243,7 @@ for (const row of rows) {
   try { assertSafeSegment(pid, "productId"); } catch (e) { reject(String(e.message)); continue; }
   const node = publish[pid];
   if (!node) { reject("no /shopify_publish node — nothing to rename"); continue; }
-  if (isOn(node)) { reject("listing is ON — a live product is never renamed by this script"); continue; }
+  if (isOnOrGoingOn(node)) { reject(node.desiredState === "on" && !isOn(node) ? "published and waiting for the reconciler — renaming now would change the name that is about to go out" : "listing is ON — a live product is never renamed by this script"); continue; }
   const clean = String(name ?? "").trim();
   if (!clean) { reject("no name supplied (the skeleton's blank was never filled in)"); continue; }
   const vision = validateVisionName(clean);
@@ -252,7 +288,7 @@ for (const { pid, node, name } of work) {
     // node and let the server's compare-and-retry supply the real value — the
     // gate below then runs again against THAT, which is where it matters.
     const base = cur || node;
-    if (isOn(base)) return undefined;                 // went live since the scan
+    if (isOnOrGoingOn(base)) return undefined;        // went live, or was published, since the scan
     const proposal = base[NAME_PROPOSAL_KEY];
     // A pending proposal left pending would be re-applied over this name by
     // approve-name-proposals.mjs on its next run. Decide it truthfully:
@@ -284,7 +320,7 @@ for (const { pid, node, name } of work) {
     });
   } else {
     aborted += 1;
-    console.warn(`  ✗ ${pid} — went live between the scan and the write; NOT renamed`);
+    console.warn(`  ✗ ${pid} — went live (or was published) between the scan and the write; NOT renamed`);
   }
 }
 

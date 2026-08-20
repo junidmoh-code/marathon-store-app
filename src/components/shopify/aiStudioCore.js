@@ -75,11 +75,39 @@ export const PHOTO_PRESETS = [
 ];
 
 /** Engine choices for the "normal" preset. House ignores these. */
+// The hints describe what the router ACTUALLY does. defaultEngineFor() sends
+// Footwear AND Clothing to Gemini and everything else (accessories, perfume) to
+// OpenAI — so the long-standing "OpenAI · best for clothing" label described a
+// route that has never existed. Corrected here, for both surfaces at once.
 export const PHOTO_ENGINES = [
-  ["auto", "Auto", "picks by category"],
-  ["gemini", "Gemini", "best for shoes"],
-  ["openai", "OpenAI", "best for clothing"],
+  ["auto", "Auto", "shoes & clothing → Gemini, the rest → OpenAI"],
+  ["gemini", "Gemini", "flat per-image price"],
+  ["openai", "OpenAI", "billed per token, rises with quality"],
 ];
+
+/**
+ * The engine the function will actually use, given the preset, an explicit
+ * choice, and the product. Mirrors defaultEngineFor() in functions/index.js —
+ * a UI that prices a button has to know which provider will be billed.
+ */
+export function resolveEngine({ style = STYLE_WHITE, engine = "auto", product = null } = {}) {
+  if (style === STYLE_HOUSE) return "nbpro";
+  if (engine === "gemini" || engine === "openai") return engine;
+  const c = product && product.category;
+  return c === "Footwear" || c === "Clothing" ? "gemini" : "openai";
+}
+
+/**
+ * What the button may honestly claim. Gemini and Nano Banana Pro have a flat
+ * documented per-image price; OpenAI gpt-image-1 is billed on tokens and rises
+ * with quality, so there is no single number to show and the label says so
+ * instead of showing a figure that belongs to a different provider.
+ */
+export function priceLabelFor(resolved) {
+  if (resolved === "nbpro") return "~$0.134";
+  if (resolved === "gemini") return "~$0.067";
+  return "billed per token";
+}
 
 // One-tap fix shortcuts: a short label the reviewer taps → the clear, expanded
 // instruction the image engine actually understands. Tap several to combine;
@@ -114,7 +142,29 @@ export function toggleFix(note, instruction) {
       .replace(/^;\s*|;\s*$/g, "")
       .trim();
   }
-  return (t ? `${t}; ${instruction}` : instruction).slice(0, NOTE_MAX);
+  // ── DO NOT TRUNCATE AN INSTRUCTION ───────────────────────────────────────
+  // The old `.slice(0, NOTE_MAX)` here was worse than a lost tail. The chips
+  // are 100-103 characters, so a third one lands exactly on the 240 cap and
+  // gets cut mid-sentence: "…the colours are off or washed out" — with
+  // "restore the product's true, accurate, full-strength colours exactly"
+  // gone. The paid prompt then TELLS the model the colours are wrong and
+  // never says to fix them, which is the opposite of what was tapped. And
+  // because `note.includes(instruction)` is then false, the chip renders
+  // unticked and tapping it again just re-truncates: permanently stuck off,
+  // with a fragment only hand-editing could remove.
+  //
+  // A chip that does not fit is not added. The caller sees no tick, which is
+  // the truth: the instruction is not in the note.
+  const next = t ? `${t}; ${instruction}` : instruction;
+  return next.length > NOTE_MAX ? t : next;
+}
+
+/** Would this fix chip fit? Lets a UI dim what it cannot add, instead of
+ *  offering a tap that silently does nothing. */
+export function fixFits(note, instruction) {
+  const t = String(note ?? "").trim();
+  if (t.includes(instruction)) return true;   // already on — untapping always fits
+  return (t ? `${t}; ${instruction}` : instruction).length <= NOTE_MAX;
 }
 
 /**
@@ -212,6 +262,12 @@ export function readGenerateResult(data, productId) {
     ok: true,
     proposedUrl: hit.proposedUrl,
     engine: hit.engine || null,
+    // The image the SERVER actually read. Absent from any deployed build older
+    // than the `sourceUrl` argument — which is the signal a caller needs to
+    // refuse a side-by-side it cannot vouch for. Deliberately NOT defaulted to
+    // the requested url: a missing echo must read as "unknown", never as
+    // "yes, the one you asked for".
+    usedSourceUrl: hit.sourceUrl ?? null,
     costUSD: Number(d.estCostUSD) || 0,
     costLine: costByEngineStr(d.costByEngine),
   };

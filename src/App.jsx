@@ -55,7 +55,8 @@ import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopif
 // The photo regenerator's vocabulary and call-shaping, shared with the same
 // tool on the Shopify product page so the two can never offer different fixes
 // or send differently-shaped requests (src/components/shopify/aiStudioCore.js).
-import { FIX_PRESETS, buildGenerateRequest, costByEngineStr, photoFailureSuffix } from "./components/shopify/aiStudioCore";
+import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngineStr,
+         photoFailureSuffix, toggleFix } from "./components/shopify/aiStudioCore";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
@@ -3691,13 +3692,12 @@ function RegenerateModal({ row, quality, house = false, product = null, extraCou
     catch (err) { setBoxErr(String(err?.message || err)); }
     finally { setBoxBusy(false); }
   };
-  const toggle = (instr) => setNote(n => {
-    const t = n.trim();
-    if (t.includes(instr)) return t.replace(instr, "").replace(/;\s*;/g, ";").replace(/^;\s*|;\s*$/g, "").trim();
-    return (t ? t + "; " + instr : instr).slice(0, 240);
-  });
+  // The SHARED toggle — this modal used to carry a byte-equivalent copy with
+  // the 240 cap hardcoded. Two copies of one rule is how the two surfaces
+  // start disagreeing, which is the whole reason aiStudioCore exists.
+  const toggle = (instr) => setNote(n => toggleFix(n, instr));
   const lbl = { fontSize:11, fontWeight:700, color:"rgba(255,255,255,.5)", marginBottom:7, letterSpacing:.4 };
-  const ENGINES = [["auto","Auto","smart pick"], ["gemini","Gemini","best for shoes"], ["openai","OpenAI","best for clothing"]];
+  const ENGINES = PHOTO_ENGINES;  // shared — the local copy had already drifted
   return (
     <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(4,6,12,.72)", backdropFilter:"blur(6px)", WebkitBackdropFilter:"blur(6px)", zIndex:10000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
       <div onClick={e => e.stopPropagation()} style={{ width:"100%", maxWidth:440, maxHeight:"90vh", overflowY:"auto", background:"linear-gradient(180deg, rgba(18,22,38,.98), rgba(10,13,24,.98))", border:"1px solid rgba(74,127,255,.28)", borderRadius:18, boxShadow:"0 24px 80px rgba(0,0,0,.6)", padding:18 }}>
@@ -3771,7 +3771,7 @@ function RegenerateModal({ row, quality, house = false, product = null, extraCou
         </div>
 
         <div style={lbl}>COMMENT <span style={{ fontWeight:500, color:"rgba(255,255,255,.3)" }}>optional</span></div>
-        <textarea value={note} onChange={e => setNote(e.target.value.slice(0, 240))} maxLength={240} rows={2}
+        <textarea value={note} onChange={e => setNote(e.target.value.slice(0, NOTE_MAX))} maxLength={NOTE_MAX} rows={2}
                   placeholder="Tell the AI exactly what to change…"
                   style={{ width:"100%", boxSizing:"border-box", background:"rgba(255,255,255,.06)", border:"1px solid "+(note.trim() ? "rgba(74,127,255,.5)" : "rgba(255,255,255,.14)"), borderRadius:10, color:"#fff", padding:"10px 12px", fontSize:12.5, resize:"vertical", fontFamily:"inherit" }}/>
 

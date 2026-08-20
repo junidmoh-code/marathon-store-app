@@ -33,14 +33,14 @@
 // aiStudioCore.test.js pins that.
 import React, { useEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
-import { ref, get } from "firebase/database";
-import { functions, database } from "../../firebase";
-import { FONT, GRAY, RED, BLUE_L, GREEN, bBlue, bGray, bGreen, tabOn, tabOff, input as inputStyle } from "../stock/ui";
+import { functions } from "../../firebase";
+import { FONT, GRAY, RED, AMBER, BLUE_L, GREEN, bBlue, bGray, bGreen, tabOn, tabOff, input as inputStyle } from "../stock/ui";
 import { uploadPublishPhoto } from "./photoTools";
 import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
-  PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE,
+  PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
   toggleFix, sanitiseNote, buildGenerateRequest, readGenerateResult,
+  resolveEngine, priceLabelFor,
 } from "./aiStudioCore";
 
 const SECTION_LABEL = {
@@ -50,9 +50,24 @@ const SECTION_LABEL = {
 
 const generateCall = httpsCallable(functions, "generateProductPhotos");
 
+// ── IN-FLIGHT GENERATIONS, HELD OUTSIDE THE COMPONENT ────────────────────────
+// A ref guards a double TAP, but not a double MOUNT. This card lives inside
+// `sel !== null && photos[sel] && …` on the product page, and tapping the
+// already-selected thumbnail sets `sel` to null — so a reviewer who starts a
+// 60-second house-style generation (~$0.13) and then taps the photo to look at
+// it unmounts the card, resets its refs, and can start the identical
+// generation again. Two charges, and the second result overwrites the first.
+// Keyed by product id because that, not the component, is what is being paid
+// for. A module-level Set survives the unmount; the entry is always removed in
+// a finally.
+const inFlight = new Set();
+
 /**
  * @param product      the product record (needs `id`; `category`/`productType`
- *                     only to explain which house template will be used)
+ *                     decide the house template and which engine Auto picks)
+ * @param node         the /shopify_publish body — read only for the condition
+ *                     grade, so the card can warn when "pristine" would
+ *                     contradict the grade the description will state
  * @param sourceUrl    the publishing photo the reviewer has selected — the
  *                     image to re-shoot, and the one the result is compared to
  * @param photoCount   how many photos the publishing set already holds, so
@@ -62,7 +77,7 @@ const generateCall = httpsCallable(functions, "generateProductPhotos");
  * @param onReplace    (newUrl, sourceUrl) => Promise<boolean> — swap this slot
  * @param onAdd        (newUrl) => Promise<boolean> — append, keeping the original
  */
-export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy = false, onReplace, onAdd }) {
+export default function AiStudioCard({ product, node = null, sourceUrl, photoCount = 0, busy = false, onReplace, onAdd }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState(PHOTO_PRESETS[0].key);
   const [engine, setEngine] = useState("auto");
@@ -80,24 +95,65 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
   const house = style === STYLE_HOUSE;
   const preset = PHOTO_PRESETS.find((p) => p.key === style) || PHOTO_PRESETS[0];
   const isClothing = product?.category === "Clothing" || product?.productType === "clothing";
+  // Which provider will actually be billed, and what may honestly be claimed
+  // about it. A flat "$0.067" on a button that is about to call OpenAI's
+  // token-priced model is a made-up number.
+  const resolved = resolveEngine({ style, engine, product });
+  const price = priceLabelFor(resolved);
+
+  // ── WHEN "PRISTINE" CONTRADICTS THE GRADE ────────────────────────────────
+  // The Normal preset's prompt instructs the model, verbatim, to "clean off
+  // dust, smudges, fingerprints, scuffs, scratches, lint, stray threads and
+  // creases". Two of the three condition grades exist precisely to tell a
+  // customer that those marks are there — and the grade is printed in the
+  // description the photo sits beside. A re-shoot that erases the wear on a
+  // product sold as worn shows an item better than the one that ships, which
+  // the owner spec of 2026-08-14 named as misrepresentation of goods.
+  //
+  // This warns rather than blocks: House re-shoots the scene and does not
+  // carry that instruction, and Junid may still have a reason. But it must
+  // never be silent, and it names the grade so the contradiction is visible
+  // without going and reading the prompt.
+  const gradeAdmitsWear = typeof node?.condition === "string" && /marks|wear/i.test(node.condition);
+  const pristineConflict = !house && gradeAdmitsWear;
 
   // A candidate belongs to ONE source photo. If the selection moves under an
   // open candidate, drop it — accepting a re-shoot of photo A into photo B's
   // slot is exactly the mix-up the side-by-side exists to prevent.
   useEffect(() => {
-    setCandidate((cur) => (cur && cur.sourceUrl !== sourceUrl ? null : cur));
+    setCandidate((cur) => {
+      if (!cur || cur.sourceUrl === sourceUrl) return cur;
+      // The message and the error described THAT photo. Left standing, the
+      // success line ("Generated on gemini — about $0.0670") renders GREEN
+      // once the candidate is gone, so it reads as a confirmation for an
+      // image that is no longer on screen and was never accepted.
+      setMsg(null);
+      setErr(null);
+      return null;
+    });
   }, [sourceUrl]);
 
   // Don't leave a stale error or a spent candidate behind a closed card.
   const closeCard = () => { setOpen(false); setCandidate(null); setErr(null); setMsg(null); };
 
   // Synchronous guard: a second tap lands before React re-renders the disabled
-  // state, and a double generation is a double charge.
+  // state, and a double generation is a double charge. `inFlight` covers the
+  // same product across an unmount/remount; the ref covers this instance.
   const runningRef = useRef(false);
+  // Same discipline on the accept: `saving` is state and lags a fast second
+  // click, which would upload the image twice (the second list write is then
+  // refused on its basis check, leaving an orphan object and a misleading
+  // "the photo set changed in another session").
+  const savingRef = useRef(false);
 
   const generate = async () => {
     if (runningRef.current || generating || busy || !product?.id || !sourceUrl) return;
+    if (inFlight.has(product.id)) {
+      setErr("A re-shoot for this product is already running — wait for it rather than paying for a second one.");
+      return;
+    }
     runningRef.current = true;
+    inFlight.add(product.id);
     setGenerating(true); setErr(null); setMsg(null);
     try {
       const res = await generateCall(buildGenerateRequest({
@@ -106,19 +162,17 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
       const out = readGenerateResult(res?.data, product.id);
       if (!out.ok) { setErr(out.problem); return; }
       // ── THE SIDE-BY-SIDE MUST NOT LIE ────────────────────────────────────
-      // `sourceUrl` is a new argument. A deployed function that predates it
-      // ignores it silently and re-shoots the product record's hero instead —
-      // and then this card would put the SELECTED photo next to a generation
-      // made from a DIFFERENT one, which is exactly the comparison the accept
-      // step depends on being true. The function records what it actually
-      // read as the proposal's originalUrl, so ask it, rather than trusting
-      // that the deploy went out in the right order (or was never rolled
-      // back). One leaf read, not a node.
-      const seen = await get(ref(database, `aiAssistant/photoProposals/${product.id}/originalUrl`))
-        .then((snap) => snap.val())
-        .catch(() => null);
-      if (seen && seen !== sourceUrl) {
-        setErr("The server re-shot a different photo from the one selected, so there is nothing honest to compare — this build of generateProductPhotos is older than the app and ignores which photo was picked. The image was still generated and is waiting in AI Studio; nothing here has changed. Deploy functions:generateProductPhotos and try again.");
+      // `sourceUrl` is a new argument, and the function echoes back the image
+      // it ACTUALLY read. A deployed build older than the argument ignores it,
+      // re-shoots the product record's hero, and echoes nothing — and this
+      // card would then put the SELECTED photo beside a generation made from a
+      // DIFFERENT one, which is exactly the comparison the accept step rests
+      // on. Refuse rather than show it. This holds whichever order the deploys
+      // go out in, and after a rollback.
+      if (out.usedSourceUrl !== sourceUrl) {
+        setErr(out.usedSourceUrl
+          ? "The server re-shot a different photo from the one selected, so there is nothing honest to compare here."
+          : "This deployed build of generateProductPhotos is older than the app: it ignores which photo was picked and re-shot the product's main photo instead. Nothing here has changed. Deploy functions:generateProductPhotos, then try again.");
         return;
       }
       setCandidate({ proposedUrl: out.proposedUrl, sourceUrl, engine: out.engine, costUSD: out.costUSD });
@@ -131,6 +185,7 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
     } finally {
       setGenerating(false);
       runningRef.current = false;
+      inFlight.delete(product.id);
     }
   };
 
@@ -140,12 +195,13 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
   // prefix media.mjs allows, instead of pointing the storefront at the
   // proposal object the Studio's own review lane is also holding.
   const useIt = async (mode) => {
-    if (!candidate || saving) return;
+    if (!candidate || saving || savingRef.current) return;
     if (mode === "add" && photoCount >= MAX_PUBLISH_PHOTOS) {
       setErr(`At most ${MAX_PUBLISH_PHOTOS} photos per product — replace one instead.`);
       return;
     }
-    setSaving(true); setErr(null);
+    savingRef.current = true;
+    setSaving(true); setErr(null); setMsg(null);
     try {
       const res = await fetch(candidate.proposedUrl);
       if (!res.ok) throw new Error(`could not read the generated image back (HTTP ${res.status})`);
@@ -164,6 +220,7 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
       setErr(String(e?.message || e));
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
   };
 
@@ -204,7 +261,7 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
         {PHOTO_PRESETS.map((p) => chip(p.label, style === p.key, () => setStyle(p.key), p.key))}
       </div>
       <div style={{ fontSize: 10, color: GRAY, marginBottom: 11 }}>
-        {preset.hint} · about ${preset.costUSD.toFixed(3)} an image
+        {preset.hint} · {price === "billed per token" ? "billed per token on OpenAI (rises with quality)" : `about ${price.replace("~", "")} an image`}
         {house && (
           <> · uses the {isClothing ? "clothing" : "sneaker"} Style Kit references
             {isClothing ? "" : ", plus this product's own box photo if one is saved"}.
@@ -243,10 +300,21 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
         {sanitiseNote(note).length}/{NOTE_MAX} · goes to the image model only — never to Shopify
       </div>
 
+      {pristineConflict && (
+        <div style={{ marginTop: 11, padding: "9px 11px", borderRadius: 10,
+                      background: "rgba(251,191,36,.09)", border: "1px solid rgba(251,191,36,.4)",
+                      fontSize: 10.5, color: AMBER, lineHeight: 1.5 }}>
+          ⚠ This product is graded <strong>“{node.condition}”</strong>, and the Normal preset tells the
+          model to clean off scuffs, marks and creases along with the background. A photo of an item in
+          better condition than the description promises is a misrepresentation of what ships. Use
+          House, or check the result against the real item before accepting it.
+        </div>
+      )}
+
       <button type="button" disabled={busy || generating || saving} onClick={generate}
         style={{ ...bBlue, padding: "9px 14px", fontSize: "0.76rem", marginTop: 11,
                  opacity: generating ? 0.55 : 1, cursor: generating ? "wait" : "pointer" }}>
-        {generating ? "Generating… (this takes a while)" : `✦ Regenerate — ${preset.label.toLowerCase()} (~$${preset.costUSD.toFixed(3)})`}
+        {generating ? "Generating… (this takes a while)" : `✦ Regenerate — ${preset.label.toLowerCase()} (${price})`}
       </button>
 
       {candidate && (
@@ -263,7 +331,8 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
           </div>
           <div style={{ fontSize: 10, color: GRAY, marginTop: 6, lineHeight: 1.45 }}>
             Check the product itself, not the background: the item a customer receives has to be the
-            item in this picture. If a logo, a colour, a shape or any wear has changed, throw it away.
+            item in this picture. If a logo, a colour, a shape or a design detail has changed, throw it
+            away. {!house && "Normal is instructed to clean off scuffs, marks and creases — so if this item's condition is part of what is being sold, that erasure is a reason to reject it too."}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
             <button type="button" disabled={saving} onClick={() => setCandidate(null)}

@@ -2120,6 +2120,12 @@ const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
 // and is managed from the AI Studio Style Kit panel — prompt + refs are re-read
 // on every call, so edits take effect next generation with NO redeploy.
 const STYLE_KIT_PATH = "aiAssistant/styleKit";
+
+// Scoping decisions live in lib/ so they can be proved without a runtime, a
+// secret or a paid image call — the same split every other function here uses.
+const {
+  resolveNamedIds, resolveSourceUrl, needsCatalogueScan, pickIds, mayRecordProposal,
+} = require("./lib/photo-scope.cjs");
 const HOUSE_MAX_REFS = 6;   // refs sent per generation (kit can hold more; more refs = more latency)
 
 // gpt-image-1 token pricing (USD per 1M tokens) — used only for an ESTIMATE; the
@@ -2618,10 +2624,8 @@ exports.generateProductPhotos = onCall(
     // next N products missing a photo; a caller that already knows the id
     // needs neither. Fetch exactly the named records instead.
     let products, existing = {};
-    const namedIds = Array.isArray(data.productIds) && data.productIds.length
-      ? [...new Set(data.productIds)].slice(0, PHOTO_MAX_BATCH)
-      : null;
-    if (namedIds) {
+    const namedIds = resolveNamedIds(data, PHOTO_MAX_BATCH);
+    if (!needsCatalogueScan(namedIds)) {
       const snaps = await Promise.all(namedIds.map((id) => db.ref(`products/${id}`).once("value")));
       products = {};
       snaps.forEach((s, i) => { const v = s.val(); if (v) products[namedIds[i]] = v; });
@@ -2643,26 +2647,11 @@ exports.generateProductPhotos = onCall(
     // input, so it is bounded here and fetched through fetchImageBuffer's
     // existing SSRF guard (https + *.googleapis.com, no redirects) like any
     // other URL.
-    const sourceUrl = typeof data.sourceUrl === "string" && namedIds && namedIds.length === 1
-      ? data.sourceUrl.trim().slice(0, 2000)
-      : null;
+    const sourceUrl = resolveSourceUrl(data, namedIds);
 
-    let ids;
-    if (namedIds) {
-      ids = namedIds.filter((id) => products[id] && (sourceUrl || products[id].photoUrl));
-    } else {
-      ids = Object.keys(products).filter((id) => {
-        const p = products[id];
-        if (!p || !p.photoUrl) return false;
-        // Match either the new `category` (e.g. "Footwear") OR the legacy productType
-        // (e.g. "clothing"), so old and new callers both work.
-        if (data.category && p.category !== data.category && (p.productType || "") !== data.category) return false;
-        if (!data.reprocess && existing[id]) return false;
-        return true;
-      });
-      ids.sort();
-      ids = ids.slice(0, limit);
-    }
+    // Named ids keep the caller's order; the sweep filters, sorts and caps.
+    // Both branches live in lib/photo-scope.cjs and are node-tested.
+    const ids = pickIds({ namedIds, products, existing, sourceUrl, data, limit });
 
     const OpenAINS = require("openai");
     const OpenAI = OpenAINS.default || OpenAINS;
@@ -2723,14 +2712,35 @@ exports.generateProductPhotos = onCall(
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
+          // ── A sourceUrl CALL WRITES NO PROPOSAL NODE ─────────────────────
+          // /aiAssistant/photoProposals is keyed by product id and written
+          // with .set() — a whole-node REPLACE. It belongs to the AI Studio
+          // review lane, and a caller that re-shoots one slot of a Shopify
+          // publishing set must not write into it, for two reasons that both
+          // end in real damage:
+          //
+          //   · It would silently destroy an unreviewed AI Studio candidate
+          //     for the same product — already generated, already paid for.
+          //   · Worse, `originalUrl` on that node is what AI Studio's approve
+          //     writes into products/{id}/photoUrlOriginal. A publishing photo
+          //     can itself be a generated image, so approving such a proposal
+          //     in the OTHER surface would overwrite the record's pointer to
+          //     the TRUE original with a generated one — the file survives in
+          //     Storage with nothing left referencing it. "Originals are never
+          //     overwritten" has to hold across both surfaces, not one.
+          //
+          // So the image is returned and nothing is recorded. It stays in
+          // Storage as an immutable object; if the caller discards it, it is
+          // an orphan, which is the honest price of not corrupting a lane that
+          // belongs to somebody else.
+          if (mayRecordProposal(sourceUrl)) {
           await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
-            // The image this proposal was actually made FROM — the side-by-side
-            // is a lie if it shows anything else. When the caller named a source
-            // photo, that IS the original for this generation. Otherwise prefer
-            // the TRUE original: if this product was already approved once,
-            // p.photoUrl is a generated image — keep the real original from
-            // photoUrlOriginal.
-            originalUrl: sourceUrl || p.photoUrlOriginal || p.photoUrl,
+            // Unchanged, and deliberately so: this branch only runs when NO
+            // sourceUrl was named, so p.photoUrl is what was read. Prefer the
+            // TRUE original — if this product was already approved once,
+            // p.photoUrl is itself a generated image, and photoUrlOriginal is
+            // the record's only pointer back to the real photograph.
+            originalUrl: p.photoUrlOriginal || p.photoUrl,
             proposedUrl,
             name: p.name || "",
             productType: p.productType || null,
@@ -2742,8 +2752,14 @@ exports.generateProductPhotos = onCall(
             // House-style provenance (absent on white runs — their records are unchanged).
             ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
           });
+          }
           processed++;
-          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName });
+          // `sourceUrl` echoes back the image this generation was ACTUALLY made
+          // from. A caller that asked for a specific photo can compare it and
+          // refuse to show a side-by-side against a different one — which is
+          // what a deployed build older than this argument would produce, and
+          // what a rollback would produce again.
+          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl });
         } catch (err) {
           failed++;
           if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });

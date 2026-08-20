@@ -34,10 +34,11 @@ export default defineConfig({
     // NO API KEY IS BAKED INTO THIS BUNDLE, and none may be added. The photo
     // cleanup action used to define __GEMINI_API_KEY__ here from the build
     // machine's env, which put a spendable Google key in front of anyone who
-    // viewed the site's JavaScript. The call now lives in a Cloud Function
-    // (functions/photoClean/cleanProductPhoto.js) holding the key as a Cloud
-    // Functions secret. A `define` is a public string — treat every entry
-    // here as published.
+    // viewed the site's JavaScript. Every paid image call now lives in a Cloud
+    // Function (generateProductPhotos in functions/index.js) holding the key as
+    // a Cloud Functions secret the build never sees. A `define` is a public
+    // string — treat every entry here as published.
+    // Pinned by src/noBakedKeys.test.js.
   },
   build: {
     outDir: "dist",

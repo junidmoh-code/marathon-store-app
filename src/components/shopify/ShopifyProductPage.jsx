@@ -306,7 +306,7 @@ export function PhotoStrip({ product, node, locked, onChanged }) {
           {chip("Make primary", () => makePrimary(sel), sel === 0)}
           {chip("Remove from publish set", () => removeAt(sel))}
           <AiStudioCard
-            product={product} sourceUrl={photos[sel]} photoCount={photos.length}
+            product={product} node={node} sourceUrl={photos[sel]} photoCount={photos.length}
             busy={busy || uploading}
             onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))}
             onAdd={(url) => write([...photos, url], () => setSel(photos.length))} />

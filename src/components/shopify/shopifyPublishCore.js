@@ -30,26 +30,14 @@ export { CONDITIONS };
 // (scripts/shopify/reconcile.mjs) applies it with credentials, then writes the
 // confirmed `state`/`liveState` back. A row whose desiredState differs from
 // its confirmed state shows as pending until the reconciler catches up.
-export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
-
-// Pre-migration values still readable in old nodes (migrate-live-state.mjs
-// rewrites them; the UI tolerates them in the meantime): a draft existed on
-// Shopify unpublished — exactly what live+off now means.
-const LEGACY_STATE_MAP = { none: "awaiting", nominated: "awaiting", draft: "live", live: "live", blocked: "blocked" };
-
-export function normalizedState(node) {
-  const s = node?.state;
-  if (PUBLISH_STATES.includes(s)) return s;
-  return LEGACY_STATE_MAP[s] || "awaiting";
-}
-
-// Is the product CONFIRMED on the public storefront right now? Legacy "draft"
-// normalises to live but was never published → off; legacy "live" was → on.
-export function isOn(node) {
-  if (!node || normalizedState(node) !== "live") return false;
-  if (node.liveState === "on" || node.liveState === "off") return node.liveState === "on";
-  return node.state === "live"; // legacy node without liveState
-}
+// The publishing-state vocabulary and the two predicates now live in
+// publishState.js — a module with no imports, so the Admin-SDK scripts can
+// load it under plain Node and stop hand-rolling their own narrower `isOn`.
+// Re-exported here so every existing import path is unchanged.
+export { PUBLISH_STATES, normalizedState, isOn, isOnOrGoingOn } from "./publishState";
+// …and imported for use inside this file: a re-export does not bring a name
+// into scope.
+import { normalizedState, isOn } from "./publishState";
 
 // The state fields a WRITE must carry for this node. Writing normalizedState
 // alone would be a trap for legacy nodes: "draft" normalises to "live", and a

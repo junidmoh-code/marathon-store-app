@@ -36,6 +36,7 @@ import { join } from "path";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
 import { validateVisionName, NAME_PROPOSAL_KEY } from "../../src/utils/visionNaming.js";
+import { isOn, isOnOrGoingOn } from "../../src/components/shopify/publishState.js";
 
 const COMMIT = process.argv.includes("--commit");
 const UNDO = process.argv.includes("--undo") ? process.argv[process.argv.indexOf("--undo") + 1] : null;
@@ -47,16 +48,30 @@ admin.initializeApp({
   databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
 });
 const db = admin.database();
-const isOn = (n) => n?.state === "live" && n?.liveState === "on";
-const stamp = () => ({ updatedAt: Date.now(), updatedBy: "script:approve-name-proposals" });
+// Server time, not this laptop's clock. `updatedAt` is a rules-validated field
+// (`newData.val() <= now + 86400000`) and the Admin SDK bypasses rules, so a
+// skewed clock writes ~2,700 nodes carrying a value the rule would have refused
+// — silently, with no error, poisoning every later browser write to those nodes.
+const SERVER_NOW = admin.database.ServerValue.TIMESTAMP;
+const stamp = () => ({ updatedAt: SERVER_NOW, updatedBy: "script:approve-name-proposals" });
 
 // ── UNDO ─────────────────────────────────────────────────────────────────────
 if (UNDO) {
   const rows = JSON.parse(readFileSync(UNDO, "utf8"));
   console.log(`undoing ${rows.length} approval(s) from ${UNDO}`);
-  let back = 0;
+  let back = 0, skippedLive = 0;
   for (const { pid, previousName, previousSource } of rows) {
     assertSafeSegment(pid, "productId");
+    // Time has passed since the run this is undoing: a product renamed while
+    // it was awaiting may have been PUBLISHED since. Putting the old name back
+    // would then rename a live listing — the one thing the apply path refuses
+    // to do — and would do it without anyone asking.
+    const now = await db.ref(`shopify_publish/${pid}`).once("value").then((sn) => sn.val());
+    if (isOnOrGoingOn(now)) {
+      skippedLive += 1;
+      console.warn(`  ✗ ${pid} — on the storefront (or published and waiting); NOT put back`);
+      continue;
+    }
     await db.ref(`shopify_publish/${pid}`).update({
       // previousName null means the product had NO listing name before, and
       // null is how RTDB says "remove this field" — which is exactly right.
@@ -74,20 +89,29 @@ if (UNDO) {
     back += 1;
     if (back % 200 === 0) console.log(`  ${back}/${rows.length}`);
   }
-  console.log(`done — ${back} name(s) put back and their suggestions returned to pending.`);
+  console.log(`done — ${back} name(s) put back and their suggestions returned to pending${skippedLive ? `; ${skippedLive} refused because the product is public now` : ""}.`);
   process.exit(0);
 }
 
 // ── SCOPE ────────────────────────────────────────────────────────────────────
 const publish = await readMapPaged(db, "shopify_publish", { pageSize: 400 });
-const skipped = { notPending: 0, live: 0, refusedByValidator: 0, noName: 0 };
+const skipped = { notPending: 0, live: 0, refusedByValidator: 0, noName: 0, manual: 0 };
 const work = [];
 for (const [pid, node] of Object.entries(publish)) {
   const p = node?.[NAME_PROPOSAL_KEY];
   if (!p) continue;
   if (p.status !== "pending") { skipped.notPending += 1; continue; }
   if (!p.name) { skipped.noName += 1; continue; }
-  if (isOn(node)) { skipped.live += 1; continue; }
+  if (isOnOrGoingOn(node)) { skipped.live += 1; continue; }
+  // A NAME JUNID TYPED IS HIS DECISION, and a pending proposal is not proof
+  // he never made one. approveName() and publishProduct() write cleanName and
+  // cleanNameSource but never DECIDE the proposal, so a hand-written name sits
+  // beside a proposal that is still "pending" — and without this gate the very
+  // next run of this script would overwrite his name with the machine's AND
+  // rewrite cleanNameSource to "ai", which is the one field that told anyone
+  // the name was his. It would also unlock the product for future vision runs
+  // (mayProposeFor), so the same overwrite could then happen again.
+  if (node.cleanNameSource === "manual") { skipped.manual += 1; continue; }
   const verdict = validateVisionName(p.name);
   if (!verdict.ok) { skipped.refusedByValidator += 1; continue; }
   work.push({ pid, node, proposal: p });
@@ -95,7 +119,8 @@ for (const [pid, node] of Object.entries(publish)) {
 
 console.log(`proposals that would be taken : ${work.length}`);
 console.log(`  skipped — already decided   : ${skipped.notPending}`);
-console.log(`  skipped — listing is ON     : ${skipped.live}   (renaming a live listing is refused)`);
+console.log(`  skipped — listing is ON     : ${skipped.live}   (live, or published and waiting for the reconciler)`);
+console.log(`  skipped — hand-written name : ${skipped.manual}   (cleanNameSource "manual" — Junid's own decision)`);
 console.log(`  skipped — fails the validator: ${skipped.refusedByValidator}   (brand trigger today)`);
 console.log(`  skipped — proposal has no name: ${skipped.noName}`);
 const renames = work.filter((w) => w.node.cleanName).length;
@@ -138,9 +163,10 @@ async function worker() {
       const base = cur || node;
       const p = base[NAME_PROPOSAL_KEY];
       if (!p || p.status !== "pending") return undefined;   // decided since the scan
-      if (isOn(base)) return undefined;                     // went live since the scan
+      if (isOnOrGoingOn(base)) return undefined;             // went live, or was published, since the scan
+      if (base.cleanNameSource === "manual") return undefined;  // hand-named since the scan
       if (!validateVisionName(p.name).ok) return undefined;
-      const at = Date.now();
+      const at = SERVER_NOW;
       return {
         ...base,
         state: base.state || "awaiting",
