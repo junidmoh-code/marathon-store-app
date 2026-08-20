@@ -85,7 +85,16 @@ async function deliverOutboxDoc({
   const templateName   = claimed.templateName;
   const templateParams = claimed.variables || claimed.templateParams || [];
 
-  const result = await sendTemplate(to, templateName, templateParams);
+  // Guarded so a rejecting sender can't break the no-throw contract: a
+  // rejection becomes the same failure value the ladder below already
+  // handles. (The production sender returns errors as values; this covers
+  // injected/future senders.)
+  let result;
+  try {
+    result = await sendTemplate(to, templateName, templateParams);
+  } catch (err) {
+    result = { ok: false, error: `sendTemplate threw: ${err.message}` };
+  }
 
   // Every post-send status write is guarded: docRef.update() can throw (doc
   // deleted mid-flight, transient Firestore error), and an escaped rejection
@@ -117,8 +126,14 @@ async function deliverOutboxDoc({
   }
 
   // Meta send failed. This is the last-resort path, so it's the only one that
-  // ever sets "failed" — but only once we've exhausted maxAttempts.
-  if (claimed.attempts >= maxAttempts) {
+  // ever sets "failed" — but only once we've exhausted maxAttempts, and NEVER
+  // for a failure the sender marked retryable:true. Retryable means an INFRA
+  // fault (e.g. the secret binding is missing after a fresh deploy), not a
+  // fault with the message: terminal-failing a customer's message over a
+  // condition an operator will fix would silently drop it, so those revert to
+  // "pending" indefinitely and the every-minute sweep keeps them alive until
+  // the infra recovers. Meta-side rejections stay subject to the cap.
+  if (claimed.attempts >= maxAttempts && !result.retryable) {
     await recordOutcome({
       status:    "failed",
       lastError: result.error || "Meta send failed",

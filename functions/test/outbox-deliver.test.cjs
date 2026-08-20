@@ -157,6 +157,30 @@ test("reverted doc retried once by the sweep, then terminal failed at maxAttempt
   assert.equal(sends, 2, "a failed doc must never be sent");
 });
 
+test("retryable (infra) failure NEVER goes terminal, even past the attempts cap", async () => {
+  // retryable:true marks an infra fault (missing secret binding after a fresh
+  // deploy), not a message fault. The doc must keep reverting to pending —
+  // alive for the sweep — no matter how many attempts have burned, so a
+  // customer's message survives until an operator fixes the infra.
+  const fake = fakeDoc(pendingDoc());
+  const infraFail = async () => ({ ok: false, retryable: true, error: "secret unavailable" });
+  for (let i = 0; i < 4; i++) await deliver(fake, infraFail);  // well past maxAttempts=2
+  assert.equal(fake.state.data.status, "pending", "an infra failure must never terminal-fail a message");
+  assert.equal(fake.state.data.attempts, 4);
+  // and once the infra recovers, the message still goes out exactly once
+  let sends = 0;
+  await deliver(fake, async () => { sends++; return { ok: true, messageId: "wamid.rec" }; });
+  assert.equal(sends, 1);
+  assert.equal(fake.state.data.status, "sent");
+});
+
+test("a rejecting sender is converted to a failure value — no throw, ladder still applies", async () => {
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => { throw new Error("boom"); });   // must not reject
+  assert.equal(fake.state.data.status, "pending", "rejection below cap reverts like any send failure");
+  assert.match(fake.state.data.lastError, /sendTemplate threw: boom/);
+});
+
 test("doc deleted before delivery → quiet no-op", async () => {
   const fake = fakeDoc(null);
   let sends = 0;

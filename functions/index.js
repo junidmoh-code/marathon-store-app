@@ -139,8 +139,12 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
   // lags. Without this check the request goes out as "Bearer " and Meta's 401
   // (code 190) triggers the TOKEN EXPIRED log below, sending the operator to
   // rotate a perfectly good token.
+  // retryable:true — this is an INFRA failure, not a message failure: the doc
+  // must never go terminally "failed" over it (CodeRabbit, PR #388). The
+  // delivery ladder keeps reverting a retryable failure to "pending" past the
+  // attempts cap, so the message survives until the binding is fixed.
   if (!metaToken.value()) {
-    return { ok: false, error: "meta-whatsapp-token secret not available to this function (check secret binding / IAM grant)" };
+    return { ok: false, retryable: true, error: "meta-whatsapp-token secret not available to this function (check secret binding / IAM grant)" };
   }
 
   let waRes, json;
