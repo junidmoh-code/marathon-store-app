@@ -419,7 +419,9 @@ exports.metaFallbackSweep = onSchedule(
 //
 // Failure semantics are the lib's: a failed Meta send reverts the doc to
 // "pending" for the SWEEP to retry (an update never re-fires this create
-// trigger), terminal "failed" only past META_MAX_ATTEMPTS — exactly as before.
+// trigger), terminal "failed" past META_MAX_ATTEMPTS — as before — or, for a
+// preflight (infra) failure that provably sent nothing, past the separate
+// META_MAX_INFRA_ATTEMPTS budget.
 exports.outboxInstantSend = onDocumentCreated(
   {
     document: "whatsapp_outbox/{docId}",
