@@ -116,7 +116,7 @@ if (UNDO) {
   const rows = JSON.parse(readFileSync(UNDO, "utf8"));
   console.log(`undoing ${rows.length} rename(s) from ${UNDO}`);
   let back = 0, refused = 0;
-  for (const { pid, previousName, previousSource, previousProposalStatus } of rows) {
+  for (const { pid, previousName, previousSource, previousProposalStatus, appliedName } of rows) {
     assertSafeSegment(pid, "productId");
     // THE UNDO NEEDS THE SAME GATE AS THE COMMIT, and for a sharper reason.
     // Time has passed: a product renamed while it was blocked may have been
@@ -133,9 +133,17 @@ if (UNDO) {
     // again against THAT, which is where it matters.
     const scanned = await db.ref(`shopify_publish/${pid}`).once("value").then((sn) => sn.val());
     if (!scanned) { refused += 1; console.warn(`  ✗ ${pid} — no node; nothing to put back`); continue; }
+    let attempt = 0;
     const res = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
-      const base = cur || scanned;
+      const base = cur ?? (attempt++ === 0 ? scanned : null);
+      if (!base) return undefined;                    // deleted since the scan
       if (isOnOrGoingOn(base)) return undefined;
+      // AN UNDO MUST NOT OVERWRITE A LATER CORRECTION. The rollback row records
+      // what this script WROTE; if the node no longer holds that value someone
+      // has renamed the product since, deliberately, and their name wins. The
+      // undo is for reversing THIS run, not for winding the record back past
+      // whatever happened afterwards.
+      if (appliedName != null && base.cleanName !== appliedName) return undefined;
       const next = {
         ...base,
         // null is how RTDB removes a field, which is exactly right when the
@@ -156,7 +164,7 @@ if (UNDO) {
       return next;
     });
     if (res.committed) back += 1;
-    else { refused += 1; console.warn(`  ✗ ${pid} — on the storefront (or published and waiting); NOT put back`); }
+    else { refused += 1; console.warn(`  ✗ ${pid} — renamed again since this run, deleted, or now public; NOT put back`); }
   }
   console.log(`done — ${back} name(s) put back${refused ? `, ${refused} refused (see above)` : ""}.`);
   process.exit(refused ? 2 : 0);
@@ -236,10 +244,17 @@ for (const [pid, node] of Object.entries(publish)) {
 const work = [];
 const refusals = [];
 const seenInBatch = new Map();
+// Two rows for the SAME product is not a collision the handle check can see:
+// both names are unique, both pass, and commit then writes them in sequence so
+// the later one silently wins. The rollback file would record two contradictory
+// operations for one product, and undoing it would restore the wrong name.
+const seenPids = new Set();
 for (const row of rows) {
   const { pid, name } = row;
   const reject = (why) => refusals.push({ pid, name, why });
   if (!pid || typeof pid !== "string") { reject("row has no pid"); continue; }
+  if (seenPids.has(pid)) { reject("this product already has a name earlier in the file — one row per product"); continue; }
+  seenPids.add(pid);
   try { assertSafeSegment(pid, "productId"); } catch (e) { reject(String(e.message)); continue; }
   const node = publish[pid];
   if (!node) { reject("no /shopify_publish node — nothing to rename"); continue; }
@@ -281,13 +296,17 @@ if (!work.length) { console.log("\nnothing to write."); process.exit(refusals.le
 const rollback = [];
 let applied = 0, aborted = 0;
 for (const { pid, node, name } of work) {
+  // The cold-cache null and a genuinely DELETED node look identical from
+  // inside the mutator, and they need opposite answers. RTDB hands the mutator
+  // null on the FIRST attempt even when the node exists — abort on that and
+  // nothing is ever written. But fall back unconditionally and a node someone
+  // deleted between the scan and this write is RECREATED by the rollback.
+  // Count the attempts: the fallback applies to the first call only; a null on
+  // any retry is the server's real answer, and the answer is "it is gone".
+  let attempt = 0;
   const res = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
-    // NEVER abort on a null `cur`. RTDB hands the mutator null on the first
-    // (cold-cache) attempt even when the node exists, so `if (!cur) return`
-    // aborts every transaction and writes nothing. Fall back to the scanned
-    // node and let the server's compare-and-retry supply the real value — the
-    // gate below then runs again against THAT, which is where it matters.
-    const base = cur || node;
+    const base = cur ?? (attempt++ === 0 ? node : null);
+    if (!base) return undefined;                      // deleted since the scan
     if (isOnOrGoingOn(base)) return undefined;        // went live, or was published, since the scan
     const proposal = base[NAME_PROPOSAL_KEY];
     // A pending proposal left pending would be re-applied over this name by

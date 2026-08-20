@@ -39,7 +39,7 @@ import { uploadPublishPhoto } from "./photoTools";
 import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
-  toggleFix, sanitiseNote, buildGenerateRequest, readGenerateResult,
+  toggleFix, fixFits, sanitiseNote, buildGenerateRequest, readGenerateResult,
   resolveEngine, priceLabelFor,
 } from "./aiStudioCore";
 
@@ -281,8 +281,24 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
 
       <div style={SECTION_LABEL}>What needs fixing <span style={{ letterSpacing: 0, textTransform: "none", fontWeight: 500 }}>— tap any</span></div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 5, margin: "6px 0 11px" }}>
-        {FIX_PRESETS.map(([label, instr]) =>
-          chip(label, note.includes(instr), () => setNote((n) => toggleFix(n, instr)), label))}
+        {/* A chip that will not fit is DIMMED and disabled rather than offered.
+            toggleFix refuses to truncate an instruction, so without this the
+            tap would silently do nothing and never tick — which reads as a
+            broken button, not as "the box is full". */}
+        {FIX_PRESETS.map(([label, instr]) => {
+          const on = note.includes(instr);
+          const fits = fixFits(note, instr);
+          return (
+            <button key={label} type="button"
+              disabled={busy || generating || saving || !fits}
+              title={fits ? undefined : `No room left — the instruction is capped at ${NOTE_MAX} characters. Untick one, or shorten what you typed.`}
+              onClick={() => setNote((n) => toggleFix(n, instr))}
+              style={{ ...(on ? tabOn : tabOff), padding: "5px 11px", fontSize: "0.68rem",
+                       opacity: fits ? 1 : 0.4, cursor: fits ? "pointer" : "not-allowed" }}>
+              {on ? "✓ " : ""}{label}
+            </button>
+          );
+        })}
       </div>
 
       <div style={SECTION_LABEL}>Or tell it exactly what you want</div>

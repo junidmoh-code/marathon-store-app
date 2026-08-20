@@ -60,16 +60,32 @@ if (UNDO) {
   const rows = JSON.parse(readFileSync(UNDO, "utf8"));
   console.log(`undoing ${rows.length} approval(s) from ${UNDO}`);
   let back = 0, skippedLive = 0;
-  for (const { pid, previousName, previousSource } of rows) {
+  for (const { pid, previousName, previousSource, appliedName } of rows) {
     assertSafeSegment(pid, "productId");
     // Time has passed since the run this is undoing: a product renamed while
     // it was awaiting may have been PUBLISHED since. Putting the old name back
     // would then rename a live listing — the one thing the apply path refuses
     // to do — and would do it without anyone asking.
     const now = await db.ref(`shopify_publish/${pid}`).once("value").then((sn) => sn.val());
+    if (!now) {
+      skippedLive += 1;
+      console.warn(`  ✗ ${pid} — node is gone; NOT recreated`);
+      continue;
+    }
     if (isOnOrGoingOn(now)) {
       skippedLive += 1;
       console.warn(`  ✗ ${pid} — on the storefront (or published and waiting); NOT put back`);
+      continue;
+    }
+    // AN UNDO MUST NOT OVERWRITE A LATER CORRECTION. The rollback row records
+    // the name this script WROTE. If the node no longer holds it, somebody has
+    // renamed the product since — deliberately — and their name wins. The undo
+    // reverses THIS run; it does not wind the record back past whatever
+    // happened afterwards. (Older rollback files carry no appliedName; those
+    // fall through unconditionally, as they always did.)
+    if (appliedName != null && now.cleanName !== appliedName) {
+      skippedLive += 1;
+      console.warn(`  ✗ ${pid} — renamed again since this run (${JSON.stringify(now.cleanName)}); leaving that name alone`);
       continue;
     }
     await db.ref(`shopify_publish/${pid}`).update({
@@ -149,6 +165,11 @@ async function worker() {
   while (cursor < work.length) {
     const { pid, node, proposal } = work[cursor++];
     assertSafeSegment(pid, "productId");
+    // The cold-cache null and a genuinely DELETED node look identical inside
+    // the mutator and need opposite answers: fall back on the FIRST attempt
+    // only (that null is a lie), and treat a null on any retry as the server's
+    // real answer — the node is gone and must not be recreated.
+    let attempt = 0;
     const res = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
       // NEVER ABORT ON A NULL `cur`. On the first (cold-cache) attempt RTDB
       // hands the mutator null even when the node exists — so `if (!cur)
@@ -160,7 +181,8 @@ async function worker() {
       // Fall back to the scanned node and let the server's compare-and-retry
       // supply the real value; the gates below then run again against THAT,
       // which is where they actually matter.
-      const base = cur || node;
+      const base = cur ?? (attempt++ === 0 ? node : null);
+      if (!base) return undefined;                          // deleted since the scan
       const p = base[NAME_PROPOSAL_KEY];
       if (!p || p.status !== "pending") return undefined;   // decided since the scan
       if (isOnOrGoingOn(base)) return undefined;             // went live, or was published, since the scan

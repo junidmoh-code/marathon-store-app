@@ -2110,7 +2110,9 @@ const PHOTO_CONCURRENCY    = 3;               // image gen is slow + heavy → k
 const PHOTO_DEFAULT_LIMIT  = 12;              // small first batch to eyeball quality + cost
 const PHOTO_MAX_BATCH      = 200;            // hard ceiling per call (cost / timeout safety)
 const PHOTO_PROPOSALS_PATH = "aiAssistant/photoProposals";
-const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
+// The bucket is declared ONCE, in lib/photo-scope.cjs, because the same value
+// also builds the APP_STORAGE_PREFIX that gates an incoming sourceUrl.
+const { STORAGE_BUCKET } = require("./lib/photo-scope.cjs");
 
 // ── House-style ("Style Kit") config ──────────────────────────────────────────
 // Reference-conditioned generations: every house-style call attaches the enabled
@@ -2734,24 +2736,24 @@ exports.generateProductPhotos = onCall(
           // an orphan, which is the honest price of not corrupting a lane that
           // belongs to somebody else.
           if (mayRecordProposal(sourceUrl)) {
-          await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
-            // Unchanged, and deliberately so: this branch only runs when NO
-            // sourceUrl was named, so p.photoUrl is what was read. Prefer the
-            // TRUE original — if this product was already approved once,
-            // p.photoUrl is itself a generated image, and photoUrlOriginal is
-            // the record's only pointer back to the real photograph.
-            originalUrl: p.photoUrlOriginal || p.photoUrl,
-            proposedUrl,
-            name: p.name || "",
-            productType: p.productType || null,
-            engine: engName,                 // which engine made THIS proposal
-            costUSD: +costUSD.toFixed(6),     // its per-image cost
-            status: "pending",          // pending | approved | rejected (set by the review UI)
-            at: Date.now(),
-            by: request.auth.uid,
-            // House-style provenance (absent on white runs — their records are unchanged).
-            ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
-          });
+            await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
+              // Unchanged, and deliberately so: this branch only runs when NO
+              // sourceUrl was named, so p.photoUrl is what was read. Prefer the
+              // TRUE original — if this product was already approved once,
+              // p.photoUrl is itself a generated image, and photoUrlOriginal is
+              // the record's only pointer back to the real photograph.
+              originalUrl: p.photoUrlOriginal || p.photoUrl,
+              proposedUrl,
+              name: p.name || "",
+              productType: p.productType || null,
+              engine: engName,                 // which engine made THIS proposal
+              costUSD: +costUSD.toFixed(6),     // its per-image cost
+              status: "pending",          // pending | approved | rejected (set by the review UI)
+              at: Date.now(),
+              by: request.auth.uid,
+              // House-style provenance (absent on white runs — their records are unchanged).
+              ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
+            });
           }
           processed++;
           // `sourceUrl` echoes back the image this generation was ACTUALLY made

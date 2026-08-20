@@ -37,9 +37,22 @@ describe("the build bakes no spendable key into the bundle", () => {
 
   it("reads no secret-shaped environment variable into the build", () => {
     // `define` substitutes at build time, so a KEY/SECRET/TOKEN env var read
-    // here lands verbatim in the served JavaScript.
-    expect(cfg).not.toMatch(/process\.env\.[A-Z_]*(KEY|SECRET|TOKEN)/);
+    // here lands verbatim in the served JavaScript. Dotted access is the
+    // obvious spelling; bracketed access and import.meta.env are the two that
+    // would slip past a dotted-only check (CodeRabbit, PR #393).
+    expect(cfg).not.toMatch(/process\.env\.[A-Za-z_]*(KEY|SECRET|TOKEN)/i);
+    expect(cfg).not.toMatch(/process\.env\s*\[/);
+    expect(cfg).not.toMatch(/import\.meta\.env/);
     expect(cfg).not.toMatch(/loadEnv/);
+  });
+
+  it("defines nothing whose NAME sounds like a credential, however it is spelled", () => {
+    // The value is what leaks, but the name is what a reviewer scans for. Any
+    // __X_KEY__-shaped define is refused outright rather than judged.
+    const defines = cfg.match(/__[A-Z0-9_]+__/g) || [];
+    for (const d of defines) {
+      expect(d).not.toMatch(/(KEY|SECRET|TOKEN|PASS|CREDENTIAL)/);
+    }
   });
 });
 

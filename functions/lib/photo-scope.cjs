@@ -37,8 +37,11 @@ const SOURCE_URL_MAX = 2000;
 // and the server must not be the looser of the two. It matters because the
 // url is persisted, shown to a human as "Original", and re-fetched later: a
 // foreign URL would become a permanent third-party dependency inside our data.
-const APP_STORAGE_PREFIX =
-  "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
+// ONE declaration of the bucket, exported so functions/index.js uses this and
+// not a second copy of the string. Two copies is one rename away from
+// resolveSourceUrl refusing every legitimate URL (CodeRabbit, PR #393).
+const STORAGE_BUCKET = "marathon-club.firebasestorage.app";
+const APP_STORAGE_PREFIX = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/`;
 
 // A real product id. REJECT, never repair — the same discipline as the
 // browser's uploadPublishPhoto. This is not cosmetic: the id is interpolated
@@ -131,6 +134,6 @@ function mayRecordProposal(sourceUrl) {
 }
 
 module.exports = {
-  PHOTO_MAX_BATCH, SOURCE_URL_MAX, APP_STORAGE_PREFIX, isSafeProductId,
+  PHOTO_MAX_BATCH, SOURCE_URL_MAX, STORAGE_BUCKET, APP_STORAGE_PREFIX, isSafeProductId,
   resolveNamedIds, resolveSourceUrl, needsCatalogueScan, pickIds, mayRecordProposal,
 };
