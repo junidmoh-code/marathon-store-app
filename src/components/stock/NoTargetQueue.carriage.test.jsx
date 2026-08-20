@@ -237,3 +237,24 @@ describe("a row-less size of a carried pair", () => {
     expect(textOf(render())).toMatch(/A tee/);
   });
 });
+
+// ─── THE THIRD PATH: hub2 SIZES SOURCED FROM CENTRAL ─────────────────────────
+// The hub2 card also picks up new sizes stocked at Central with no target
+// anywhere. That push ran AFTER the row-less-size filter and was ungated — the
+// same Exclude-over-carriage defect, one code path over. (CodeRabbit, PR #390.)
+describe("hub2 sizes sourced from Central", () => {
+  beforeEach(() => {
+    // A hub2 card with an S row; M exists only at CENTRAL, no target anywhere.
+    paths["stock"] = { hub2: { [PID]: { S: cell(2) } }, central: { [PID]: { M: cell(5) } } };
+    paths["stock_targets"] = { hub2: { [PID]: { S: { target: 2, minQty: 1 } } } };
+  });
+
+  it("a Central-stocked size the engine already covers at hub2 does not surface", () => {
+    setProv("hub2", { [PID]: { s: 9 } });
+    expect(textOf(render())).not.toMatch(/A tee/);
+  });
+
+  it("DOES surface when hub2 is not carried — the control", () => {
+    expect(textOf(render())).toMatch(/A tee/);
+  });
+});

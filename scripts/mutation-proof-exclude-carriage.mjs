@@ -85,11 +85,16 @@ const MUTATIONS = [
     id: "X8",
     guard: "the size blind-spot loop is gated too — no Exclude over an engine-covered size",
     file: QUEUE,
-    from: `          .filter((s) => !(carriedAt(pid, loc)
-            && ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
-            && (p?.sizes || []).map(String).includes(String(s.size))
-            && runResolves(loc, s.size)));`,
+    from: `          .filter((s) => !engineCoversSize(pid, loc, p, s.size));`,
     to: `          ;`,
+    tests: T,
+  },
+  {
+    id: "X9",
+    guard: "the hub2-from-Central push is gated too — same predicate, third path",
+    file: QUEUE,
+    from: `            if (engineCoversSize(pid, loc, p, size)) continue;`,
+    to: ``,
     tests: T,
   },
 ];
@@ -108,36 +113,21 @@ function runVitest(files) {
     return "PASS";
   } catch (err) {
     const out = `${err.stdout || ""}${err.stderr || ""}`;
+    // A mutant that breaks the module at IMPORT time also prints "Tests N
+    // failed" — crediting that as a kill would prove a guard nothing exercised.
+    // (CodeRabbit, PR #390.)
+    if (/SyntaxError|Failed to resolve import|Transform failed|ERR_MODULE_NOT_FOUND/.test(out)) {
+      return `ERROR(${(out.trim().split("\n").find((l) => /Error|error/.test(l)) || "load crash").slice(0, 120)})`;
+    }
     if (/Tests\s+\d+\s+failed/.test(out)) return "FAIL";
     return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 120)})`;
   }
 }
 
-// node --test prints a TAP tally; "# fail N" with N>0 only when suites ran and
-// assertions failed. A file that fails to LOAD surfaces as "# fail 1" too —
-// so require() each test file's SUBJECT first? No: the load failure of the
-// subject IS an executed failure for node:test (the test file imports it at
-// top level and the runner reports it as a failing test). That would credit a
-// syntax-error mutation. Guard: a run whose stderr shows a module-load crash
-// (ERR_MODULE, SyntaxError) reports ERROR, never FAIL.
-function runNodeTests(files) {
-  try {
-    execFileSync("node", ["--test", ...files], { stdio: "pipe", cwd: "functions", maxBuffer: 64 * 1024 * 1024 });
-    return "PASS";
-  } catch (err) {
-    const out = `${err.stdout || ""}${err.stderr || ""}`;
-    if (/SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module/.test(out)) {
-      return `ERROR(${(out.trim().split("\n").find((l) => /Error/.test(l)) || "load crash").slice(0, 120)})`;
-    }
-    if (/^# fail [1-9]/m.test(out)) return "FAIL";
-    return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 120)})`;
-  }
-}
 
 function runAll(m) {
   const verdicts = [];
   if (m.tests && m.tests.length) verdicts.push(runVitest(m.tests));
-  if (m.nodeTests && m.nodeTests.length) verdicts.push(runNodeTests(m.nodeTests));
   if (verdicts.some((v) => String(v).startsWith("ERROR"))) return verdicts.find((v) => String(v).startsWith("ERROR"));
   // A mutation is KILLED if ANY suite fails; the restored run must have EVERY
   // suite pass.

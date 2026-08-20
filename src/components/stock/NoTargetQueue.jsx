@@ -151,9 +151,20 @@ export default function NoTargetQueue({ products = [] }) {
     // EVERYTHING while the emergency kill switch is off — the exact moment the
     // Decision Queue is the only lever left, since explicit rows survive the
     // switch. So a pair leaves this queue only when the engine demonstrably has
-    // it: switch on, carried, and at least one shown size resolving a run.
+    // it: switch on, carried, and EVERY shown size resolving a run — one
+    // unresolvable size keeps the whole card, because that size is a human's call.
     const run = (loc) => effectiveRun(engineConfig, loc) || {};
     const runResolves = (loc, size) => Number(run(loc)[String(size).toUpperCase()]) > 0;
+    // ONE predicate for "the engine's clothing branch already covers this size
+    // here" — used by the pair-level skip, the row-less-size filter AND the
+    // hub2-from-Central push below. Two of those had it and one did not, which
+    // was the same Exclude-over-carriage defect one code path over.
+    // (CodeRabbit, PR #390.)
+    const engineCoversSize = (pid, loc, product, size) =>
+      carriedAt(pid, loc)
+      && ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
+      && (product?.sizes || []).map(String).includes(String(size))
+      && runResolves(loc, size);
     const engineManages = (pid, loc, sizes) =>
       ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
       && carriedAt(pid, loc)
@@ -253,15 +264,16 @@ export default function NoTargetQueue({ products = [] }) {
           // hole this PR closes in the loop above, one granularity down.
           // (Adversarial review, PR #390.) Sizes the engine can NOT cover — off
           // the catalogue, no run, or the switch is off — remain a human's call.
-          .filter((s) => !(carriedAt(pid, loc)
-            && ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
-            && (p?.sizes || []).map(String).includes(String(s.size))
-            && runResolves(loc, s.size)));
+          .filter((s) => !engineCoversSize(pid, loc, p, s.size));
         if (loc === "hub2") {
           const seen = new Set(sizes.map((s) => encodeSizeKey(s.size)));
           for (const [size, c] of Object.entries(allStock?.central?.[pid] || {})) {
             const sk = encodeSizeKey(size);
             if (seen.has(sk) || byTarget[sk]) continue;
+            // Same gate as the filter above — a Central-stocked size the engine
+            // already covers at hub2 is not a blind spot either. (CodeRabbit,
+            // PR #390: this push ran AFTER the filter and re-offered Exclude.)
+            if (engineCoversSize(pid, loc, p, size)) continue;
             if ((Number(c?.qty) || 0) > 0 && !dests.some((d) => allTargets?.[d]?.[pid]?.[sk])) {
               sizes.push({ size, qty: Math.max(Number(c?.qty) || 0, 0), atCentral: true });
             }
