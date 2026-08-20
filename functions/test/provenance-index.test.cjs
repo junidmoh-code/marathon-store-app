@@ -160,3 +160,54 @@ test("the ESM and CJS predicates cannot drift apart", () => {
   // Pin the expected answers literally too, so a bug present in BOTH is still caught.
   assert.deepStrictEqual(cjsAnswers, [false, true, false, true, false, true]);
 });
+
+// ── THE THIRD COPY — solveCarriage.js (PR #381) ──────────────────────────────
+// Solve's gate duplicates BOTH the predicate (carriesByEntry) and the readiness
+// check (indexReadyAt), plus a private INDEX_VERSION. The adversarial review's
+// finding stands: "the pin is what makes the duplication safe", and the first
+// version of the PR shipped without one. The functions are EXTRACTED FROM THE
+// REAL SOURCE and executed here (the file's extensionless ESM imports keep it
+// from loading directly under node), so a drift in either body fails this test,
+// not just a drift in the lines the regexes happen to name.
+test("solveCarriage.js cannot drift from the engine — predicate, readiness, and version", () => {
+  const src = readFileSync(path.join(__dirname, "../../src/components/stock/solveCarriage.js"), "utf8");
+
+  // The version is a private copy; pin its value to the engine's export.
+  const ver = src.match(/const INDEX_VERSION = (\d+);/);
+  assert.ok(ver, "solveCarriage.js must declare INDEX_VERSION");
+  assert.strictEqual(Number(ver[1]), idx.INDEX_VERSION, "solveCarriage INDEX_VERSION drifted from provenance-index.cjs");
+
+  const extract = (name) => {
+    const m = src.match(new RegExp(`export function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    assert.ok(m, `solveCarriage.js must export ${name}`);
+    // eslint-disable-next-line no-new-func
+    return new Function(`const INDEX_VERSION = ${idx.INDEX_VERSION}; ${m[0].replace("export ", "")}; return ${name};`)();
+  };
+  const carriesByEntry = extract("carriesByEntry");
+  const indexReadyAt = extract("indexReadyAt");
+
+  const entries = [
+    null, {}, [], { s: 1 }, { s: 0 }, { k: 4, u: 4 }, { k: 4, u: 1 }, { u: 3 },
+    { s: "2" }, { k: NaN }, { k: 5, u: -1 }, { s: -1, k: 1 }, { k: Infinity },
+  ];
+  assert.deepStrictEqual(
+    entries.map(carriesByEntry),
+    entries.map((e) => idx.carriesByIndex(Array.isArray(e) ? null : e)),
+    "carriesByEntry disagrees with the engine's carriesByIndex",
+  );
+
+  const metas = [
+    {}, null,
+    { hub2: { at: "x", pairs: 1, version: idx.INDEX_VERSION } },
+    { hub2: { at: "x", pairs: 1, version: idx.INDEX_VERSION + 1 } },
+    { hub2: { at: "", pairs: 1, version: idx.INDEX_VERSION } },
+    { hub2: { at: "x", version: idx.INDEX_VERSION } },
+    { hub2: [] },
+    { hub2: { at: "x", pairs: 0, version: idx.INDEX_VERSION } },
+  ];
+  assert.deepStrictEqual(
+    metas.map((m) => indexReadyAt(m, "hub2")),
+    metas.map((m) => idx.indexReady(m, "hub2")),
+    "indexReadyAt disagrees with the engine's indexReady",
+  );
+});

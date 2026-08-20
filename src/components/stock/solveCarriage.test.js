@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import {
   carriageAt, solveCarriagePlan, introduceUpdates, carriageNotice,
   indexReadyAt, carriesByEntry, introducedAt,
-  CARRIED, INTRODUCE, BLOCKED,
+  CARRIED, INTRODUCE, BLOCKED, EXCLUDED,
 } from "./solveCarriage";
 
 const PID = "p1784206551366";                 // "Nike NOCTA Golf T-Shirt White"
@@ -155,30 +155,36 @@ describe("solveCarriagePlan — all-or-nothing across the seed locations", () =>
 describe("introduceUpdates — the row shape is the design", () => {
   const plan = { introduce: [{ loc: "trophy" }], ok: true };
 
-  it("writes one leaf set per declared size, and NEVER a numeric target", () => {
+  it("writes ONE WHOLE ROW per declared size, and NEVER a numeric target", () => {
+    // Whole rows, not leaves: RTDB evaluates .validate only at the write path and
+    // below, so a leaf write would skip the $size-level row rule entirely and the
+    // widened rule's introducedBy check could never see its sibling field.
     const u = introduceUpdates({ plan, pid: PID, sizes: ["S", "M"], at: "T", by: "uid", note: "n" });
     expect(Object.keys(u).sort()).toEqual([
-      `stock_targets/trophy/${PID}/M/introduce`,
-      `stock_targets/trophy/${PID}/M/introducedAt`,
-      `stock_targets/trophy/${PID}/M/introducedBy`,
-      `stock_targets/trophy/${PID}/M/note`,
-      `stock_targets/trophy/${PID}/S/introduce`,
-      `stock_targets/trophy/${PID}/S/introducedAt`,
-      `stock_targets/trophy/${PID}/S/introducedBy`,
-      `stock_targets/trophy/${PID}/S/note`,
+      `stock_targets/trophy/${PID}/M`,
+      `stock_targets/trophy/${PID}/S`,
     ]);
+    const row = u[`stock_targets/trophy/${PID}/S`];
+    expect(row).toEqual({ introduce: true, introducedAt: "T", introducedBy: "uid", note: "n" });
     // A `target` here would pin the quantities and outrank the size run forever.
-    expect(Object.keys(u).some((k) => k.endsWith("/target") || k.endsWith("/minQty"))).toBe(false);
-    expect(u[`stock_targets/trophy/${PID}/S/introduce`]).toBe(true);
+    expect("target" in row).toBe(false);
+    expect("minQty" in row).toBe(false);
   });
 
   it("writes nothing for a carried location", () => {
     expect(introduceUpdates({ plan: { introduce: [] }, pid: PID, sizes: ["S"], at: "T", by: "u", note: "n" })).toEqual({});
   });
 
+  it("a missing author or note becomes null, never undefined — an undefined leaf kills the whole multi-path write", () => {
+    const u = introduceUpdates({ plan, pid: PID, sizes: ["S"], at: "T", by: undefined, note: undefined });
+    const row = u[`stock_targets/trophy/${PID}/S`];
+    expect(row.introducedBy).toBe(null);
+    expect(row.note).toBe(null);
+  });
+
   it("encodes the size key — a half size must not create a key RTDB rejects", () => {
     const u = introduceUpdates({ plan, pid: PID, sizes: ["5.5"], at: "T", by: "u", note: "n" });
-    expect(Object.keys(u)[0]).toContain("/5_5/");
+    expect(Object.keys(u)[0]).toContain("/5_5");
     expect(Object.keys(u).some((k) => k.includes("5.5"))).toBe(false);
   });
 });
@@ -231,5 +237,51 @@ describe("the live case this shipped for", () => {
     });
     expect(plan.ok).toBe(false);
     expect(introduceUpdates({ plan, pid: PID, sizes: SIZES, at: "T", by: "u", note: "n" })).toEqual({});
+  });
+});
+
+// ─── EXPLICIT ROWS OUTRANK THE INDEX — CARRIED OR EXCLUDED, NEVER "INTRODUCE" ─
+// resolveTarget's explicit branch never consults provenance: a numeric row means
+// the engine already manages the pair. Solve stamping introduce:true over such a
+// row would escalate row-scoped management to whole-line carriage and claim credit
+// for a human's decision (adversarial review, PR #381). An ALL-ZERO row set is the
+// opposite statement — a standing exclusion — and one Solve press must not
+// overrule it.
+describe("carriageAt — explicit target rows", () => {
+  const meta = ready("trophy");
+  const base = { provenance: {}, provenanceMeta: meta, categoryPolicy: {}, categoryKey: "t-shirts", pid: PID, loc: "trophy" };
+
+  it("any target > 0 → CARRIED via explicit-target, no index consulted", () => {
+    const targets = { trophy: { [PID]: { S: { target: 5, minQty: 2 } } } };
+    const a = carriageAt({ ...base, targets, provenanceMeta: {} });   // even UNREADY
+    expect(a.state).toBe(CARRIED);
+    expect(a.via).toBe("explicit-target");
+  });
+
+  it("all numeric targets 0 → EXCLUDED, and the plan refuses the whole solve", () => {
+    const targets = { trophy: { [PID]: { S: { target: 0, minQty: 0 }, M: { target: 0, minQty: 0 } } } };
+    expect(carriageAt({ ...base, targets }).state).toBe(EXCLUDED);
+    const plan = solveCarriagePlan({ locs: ["trophy"], pid: PID, provenance: {}, provenanceMeta: meta, targets, categoryPolicy: {}, categoryKey: "t-shirts", labelFor: (l) => ({ trophy: "Trophy" }[l] || l) });
+    expect(plan.ok).toBe(false);
+    expect(plan.reason).toBe("excluded");
+    expect(plan.message).toMatch(/Trophy/);                 // labelled, not the raw id
+    expect(plan.message).toMatch(/deliberately excluded/);
+    expect(introduceUpdates({ plan, pid: PID, sizes: SIZES, at: "T", by: "u", note: "n" })).toEqual({});
+  });
+
+  it("a mixed row set with any positive target is CARRIED — zeros on some sizes are tuning, not exclusion", () => {
+    const targets = { trophy: { [PID]: { S: { target: 0, minQty: 0 }, M: { target: 2, minQty: 1 } } } };
+    expect(carriageAt({ ...base, targets }).state).toBe(CARRIED);
+  });
+
+  it("rows with no numeric target at all fall through to the index", () => {
+    const targets = { trophy: { [PID]: { S: { minQty: 3 } } } };   // malformed remnant
+    expect(carriageAt({ ...base, targets }).state).toBe(INTRODUCE);
+  });
+
+  it("the BLOCKED message uses labels too", () => {
+    const plan = solveCarriagePlan({ locs: ["trophy"], pid: PID, provenance: {}, provenanceMeta: {}, targets: {}, categoryPolicy: {}, categoryKey: "t-shirts", labelFor: (l) => ({ trophy: "Trophy" }[l] || l) });
+    expect(plan.ok).toBe(false);
+    expect(plan.message).toMatch(/Trophy/);
   });
 });

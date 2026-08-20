@@ -31,7 +31,7 @@ describe("solve → undo wiring", () => {
     expect(merge).toBeGreaterThan(-1);
     expect(capture).toBeLessThan(merge);
     // And the two path sets are recorded separately, never conflated.
-    expect(block).toMatch(/introPaths: Object\.keys\(introPaths\)\.filter\(\(p\) => p\.endsWith\("\/introduce"\)\)/);
+    expect(block).toMatch(/introPaths: Object\.keys\(introPaths\), introAt: now/);
   });
 
   it("the introduce rows ride in the SAME atomic update as the cells", () => {
@@ -39,7 +39,7 @@ describe("solve → undo wiring", () => {
     // sizes". Split across two writes, a failure between them leaves seeded cells
     // with no carriage behind them — cells the engine will never refill, which is
     // precisely the silent lie the carriage gate exists to stop.
-    const solveStart = NETWORK.indexOf("const solve = async (card) => {");
+    const solveStart = NETWORK.indexOf("const solve = async (card, panelPlan = null) => {");
     const body = NETWORK.slice(solveStart, NETWORK.indexOf("\n  };", solveStart));
     expect(body).toMatch(/Object\.assign\(updates, introPaths\);/);
     // Exactly ONE write in the whole solve path.
@@ -69,20 +69,25 @@ describe("solve → undo wiring", () => {
     // so this assertion keeps meaning what it says — a guard you can satisfy by
     // arguing "but MY update is a different kind of path" has stopped being a guard.
     expect(undoBlock).not.toMatch(/update\(ref\(database\)/);
-    expect(undoBlock).toMatch(/await removeIntroducedRows\(u\.introPaths\)/);
+    expect(undoBlock).toMatch(/await removeIntroducedRows\(u\.introPaths, u\.introAt\)/);
   });
 
-  it("the introduce-row cleanup never touches a stock cell, and yields to a real target", () => {
+  it("the introduce-row cleanup never touches a stock cell, and removes ONLY rows this solve wrote", () => {
     const fnStart = NETWORK.indexOf("async function removeIntroducedRows(");
     expect(fnStart).toBeGreaterThan(-1);
     const fn = NETWORK.slice(fnStart, NETWORK.indexOf("\n}", fnStart));
-    // It only ever builds /stock_targets paths — it is handed the introduce paths
-    // and strips one leaf. Nothing here can address /stock.
+    // It only ever addresses the row paths it was handed. Nothing here can
+    // address /stock.
     expect(fn).not.toMatch(/stockCellPath|`stock\//);
-    expect(fn).toMatch(/replace\(\/\\\/introduce\$\/, ""\)/);
-    // A row that acquired a numeric target since the solve is somebody's deliberate
-    // decision; the undo leaves it alone rather than overruling them.
-    expect(fn).toMatch(/typeof rows\[i\]\.target !== "number"/);
+    // Per-row CAS, not read-then-delete: authorship is proven INSIDE the
+    // transaction by the solve's own introducedAt stamp, so a row edited since
+    // (a target added, a later re-introduction) aborts and stays whole. The
+    // first version skipped rows with a numeric target OUTSIDE the transaction
+    // and left introduce:true standing over zero cells — the incident shape this
+    // PR exists to prevent.
+    expect(fn).toMatch(/runTransaction\(ref\(database, p\)/);
+    expect(fn).toMatch(/cur\.introducedAt === introAt/);
+    expect(fn).toMatch(/typeof cur\.target !== "number"/);
   });
 
   it("a PARTIAL undo leaves the introduction standing", () => {
