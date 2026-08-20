@@ -125,7 +125,11 @@ describe("compliance — no brand trigger reaches Shopify through a collection",
   // on the shop until someone noticed.
   it("NO collection carries a description", () => {
     for (const c of COLLECTIONS) {
-      expect({ key: c.key, description: c.description }).toEqual({ key: c.key, description: undefined });
+      // ABSENT, not present-and-undefined. `c.description === undefined` also
+      // passes for an entry that explicitly writes `description: undefined`,
+      // which is not the contract — the property is not there at all.
+      expect({ key: c.key, has: Object.hasOwn(c, "description") })
+        .toEqual({ key: c.key, has: false });
     }
   });
 
@@ -179,7 +183,7 @@ describe("resolveCollection — the join, against the real catalogue", () => {
     const sneakers = COLLECTION_BY_KEY.get("sneakers");
     // The paragraph that used to promise boots and slides is gone with every
     // other description; the SEO metadata is not page copy and stays.
-    expect(sneakers.description).toBeUndefined();
+    expect(Object.hasOwn(sneakers, "description")).toBe(false);
     expect(sneakers.seoDescription).toMatch(/^Sneakers in stock/);
   });
 

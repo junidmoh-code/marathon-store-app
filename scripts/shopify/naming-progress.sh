@@ -51,10 +51,14 @@ elif [ "$DONECHUNKS" -ge 1 ] && [ -n "${LEFT:-}" ]; then
     B=$(date -j -f "%H:%M:%S" "$LAST"  +%s 2>/dev/null)
     SPAN=$(( B - A ))
     if [ "$SPAN" -gt 0 ]; then
+      # The chunk SIZE, not a literal 100: run-naming.sh exports CHUNK=100 but
+      # name-remaining.sh defaults it to 200, so a run started directly from the
+      # driver reported half the pace and double the ETA (reviewer finding).
+      SIZE="${CHUNK:-100}"
       PER=$(( SPAN / DONECHUNKS ))                   # seconds per finished chunk
-      MINS=$(( LEFT * PER / 100 / 60 ))
+      MINS=$(( LEFT * PER / SIZE / 60 ))
       echo
-      echo "pace         : ~$(( 100 * 60 / (PER>0?PER:1) )) products/minute"
+      echo "pace         : ~$(( SIZE * 60 / (PER>0?PER:1) )) products/minute"
       echo "should finish: about $MINS minutes from now (~$(date -v+${MINS}M '+%H:%M'))"
     fi
   fi

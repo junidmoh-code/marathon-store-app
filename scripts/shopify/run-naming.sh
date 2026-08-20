@@ -3,27 +3,45 @@
 # Wraps scripts/shopify/name-remaining.sh so launchd can own it:
 #   · a PID-aware lockfile, so a reboot mid-run (or a manual start) can never
 #     put two copies on the same catalogue — each would pay for the same photos
-#   · caffeinate, because this machine's idle sleep timer is ONE MINUTE and a
-#     launchd job is not a tty, so without it the run stalls the moment nobody
-#     is typing (`pmset -g custom` → sleep 1, ttyskeepawake 1)
-#   · PHOTO_GATE pointed at a copy INSIDE this checkout, not /tmp, which macOS
+#   · caffeinate, because a laptop's idle sleep timer is short and a launchd job
+#     is not a tty, so without it the run stalls the moment nobody is typing
+#     (`pmset -g custom` → sleep 1, ttyskeepawake 1 on the machine this runs on)
+#   · PHOTO_GATE pointed at a copy INSIDE the checkout, not /tmp, which macOS
 #     clears on reboot; without it the scope script dies on every restart
 #   · everything appended to logs/, so progress survives the process
 #
 # Chunked and resumable by construction: each proposal is written the moment it
 # is produced and the scope query excludes anything already proposed, so
 # stopping at any point loses nothing and starting again resumes where it left.
+#
+#   bash run-naming.sh          (from a checkout root, or from scripts/shopify)
 set -u
-cd "$(dirname "$0")"
-mkdir -p logs
-LOG="$PWD/logs/vision-naming.log"
+
+# ── WHERE IS THE CHECKOUT? ───────────────────────────────────────────────────
+# This file lives in TWO places: committed at scripts/shopify/run-naming.sh,
+# and deployed beside a checkout at ~/naming-run/run-naming.sh. A plain
+# `cd "$(dirname "$0")"` is right for exactly one of them — from the committed
+# copy it lands in scripts/shopify and then looks for
+# scripts/shopify/scripts/shopify/name-remaining.sh, which does not exist
+# (reviewer finding). So the root is found by looking for the driver rather
+# than by assuming a depth.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if   [ -f "$HERE/scripts/shopify/name-remaining.sh" ]; then ROOT="$HERE"
+elif [ -f "$HERE/../../scripts/shopify/name-remaining.sh" ]; then ROOT="$(cd "$HERE/../.." && pwd)"
+else
+  echo "run-naming.sh: cannot find scripts/shopify/name-remaining.sh from $HERE" >&2
+  exit 2
+fi
+cd "$ROOT"
+mkdir -p logs                       # BEFORE the first append, or the lock
+LOG="$ROOT/logs/vision-naming.log"  # message below is lost on a fresh checkout
 
 # ── The lock, and how a dead one is recovered ────────────────────────────────
 # mkdir is the atomic part. The PID inside is what makes a lock left behind by
 # a SIGKILL (launchd stopping the job, a hard reboot) recoverable instead of
 # permanent — a lock whose owner is gone is not a lock, and without this the
 # job would refuse to start for ever and the run would silently never resume.
-LOCK="$PWD/.naming-run.lock"
+LOCK="$ROOT/.naming-run.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   OWNER=$(cat "$LOCK/pid" 2>/dev/null || echo "")
   if [ -n "$OWNER" ] && kill -0 "$OWNER" 2>/dev/null; then
@@ -37,7 +55,10 @@ fi
 echo $$ > "$LOCK/pid"
 trap 'rm -f "$LOCK/pid" 2>/dev/null; rmdir "$LOCK" 2>/dev/null' EXIT
 
-export PHOTO_GATE="$PWD/config/groupkind2.json"
+# The gate file must live in the checkout: /tmp is cleared on reboot and the
+# scope script dies without it — which name-remaining.sh reads as a network
+# problem and retries for 200 iterations.
+export PHOTO_GATE="${PHOTO_GATE:-$ROOT/config/groupkind2.json}"
 export CHUNK="${CHUNK:-100}"
 export LOG
 echo "── run-naming.sh started $(date '+%F %T') (pid $$) ──" >> "$LOG"
@@ -46,6 +67,9 @@ echo "── run-naming.sh started $(date '+%F %T') (pid $$) ──" >> "$LOG"
 # The lid is still the owner's call — a closed lid sleeps regardless, and
 # changing that would mean changing his power settings, which this does not do.
 caffeinate -i -m bash scripts/shopify/name-remaining.sh
+# CAPTURED ON ITS OWN LINE. Inside `echo "… rc=$? …"` the $(date …) substitution
+# runs first, so $? would be date's status and every run would log rc=0
+# (reviewer finding).
 RC=$?
 echo "── run-naming.sh finished $(date '+%F %T') rc=$RC ──" >> "$LOG"
-exit $RC
+exit "$RC"

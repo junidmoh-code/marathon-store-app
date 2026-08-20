@@ -226,14 +226,25 @@ if (mapNode) {
     // would refuse every genuine orphan while claiming to protect against a
     // wrong one. The bare form is accepted too, for a single-variant record
     // whose SKU was written without a size suffix.
+    // EVERY variant, not merely one. A candidate whose SKUs are
+    // ["MC100-S", "SOMEONEELSE-M"] has a matching SKU and matching sizes, and
+    // "at least one matches" would adopt it — pointing this record at a
+    // variant that belongs to another product (reviewer finding). The bare
+    // form is accepted only for a single-variant record, where there is no
+    // size suffix to carry.
     const skuPrefix = `${product.sku}-`;
-    const skuOwned = [...candSkus].some((k) => k === String(product.sku) || String(k).startsWith(skuPrefix));
-    if (!skuOwned) {
+    const owns = (k) => String(k).startsWith(skuPrefix) ||
+                        (candVariants.length === 1 && String(k) === String(product.sku));
+    const foreign = [...candSkus].filter((k) => !owns(k));
+    if (candSkus.size === 0) {
+      adoptionProblems.push(`the candidate carries NO SKUs at all (so it was not created from this catalogue)`);
+    } else if (foreign.length) {
       adoptionProblems.push(
-        candSkus.size === 0
-          ? `the candidate carries NO SKUs at all (so it was not created from this catalogue)`
-          : `no candidate SKU is "${product.sku}" or starts with "${skuPrefix}" (${candSkus.size} checked)`
+        `${foreign.length} of the candidate's ${candSkus.size} SKU(s) do not belong to record ` +
+        `${productId} (expected every one to start with "${skuPrefix}"): ${foreign.slice(0, 4).join(", ")}`
       );
+    } else if (candVariants.some((v) => !v.sku)) {
+      adoptionProblems.push(`the candidate has variant(s) with no SKU at all, so ownership cannot be shown for them`);
     }
     if (JSON.stringify(candSizes) !== JSON.stringify(wantSizes)) {
       adoptionProblems.push(

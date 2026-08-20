@@ -131,22 +131,40 @@ export function ProposalRow({ product, node, busy, onOpen, onApply, onDismiss })
   if (!proposal) return null;
   const gate = proposalApplyBlocker(node);
   return (
-    <div style={{ display: "flex", gap: 11, alignItems: "flex-start", padding: "11px 2px",
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "11px 2px",
                   borderBottom: "1px solid rgba(255,255,255,.06)" }}>
-      <div onClick={() => onOpen(product.id)} style={{ cursor: "pointer", flexShrink: 0 }}>
+      {/* THE NAVIGABLE PART, and only it — the same treatment ProductListRow
+          uses, for the same reasons. A keyboard user must be able to reach the
+          product page from this lane; without it the identity guess, the
+          confidence and the photos are mouse-only (reviewer finding). It holds
+          NO other control: role="button" makes its descendants presentational
+          to assistive technology, and a keydown from a nested button bubbles
+          here, where preventDefault would cancel that button's activation. The
+          two decision buttons are therefore SIBLINGS below, not children. */}
+      <div onClick={() => onOpen(product.id)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${proposal.name}`}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+          e.preventDefault();
+          onOpen(product.id);
+        }}
+        style={{ display: "flex", gap: 11, alignItems: "flex-start", minWidth: 0, cursor: "pointer" }}>
         <Thumb p={product} node={node} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", lineHeight: 1.35,
+                        overflowWrap: "break-word" }}>
+            {proposal.name}
+          </div>
+          <div style={{ fontSize: 11, color: GRAY, marginTop: 3, overflowWrap: "break-word" }}>
+            replaces {proposal.previousName ? `“${proposal.previousName}”` : "no listing name"}
+          </div>
+        </div>
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div onClick={() => onOpen(product.id)}
-             style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", lineHeight: 1.35,
-                      cursor: "pointer", overflowWrap: "break-word" }}>
-          {proposal.name}
-        </div>
-        <div style={{ fontSize: 11, color: GRAY, marginTop: 3, overflowWrap: "break-word" }}>
-          replaces {proposal.previousName ? `“${proposal.previousName}”` : "no listing name"}
-        </div>
-        {!gate.ok && <div style={{ fontSize: 10.5, color: RED, marginTop: 3 }}>{gate.reason}</div>}
-        <div style={{ display: "flex", gap: 7, marginTop: 8 }}>
+      <div style={{ paddingLeft: 55 }}>
+        {!gate.ok && <div style={{ fontSize: 10.5, color: RED, marginBottom: 5 }}>{gate.reason}</div>}
+        <div style={{ display: "flex", gap: 7 }}>
           <button disabled={busy || !gate.ok} onClick={() => onApply(product.id, proposal.proposedAt)}
             style={{ ...bBlue, padding: "5px 10px", fontSize: "0.68rem",
                      opacity: busy || !gate.ok ? 0.5 : 1 }}>

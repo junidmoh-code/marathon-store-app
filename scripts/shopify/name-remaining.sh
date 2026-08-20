@@ -41,6 +41,33 @@ for i in $(seq 1 200); do
   PIDS=$(python3 -c "import json;print(','.join(json.load(open('/tmp/naming-scope.json'))[:$N]))")
   echo "── chunk $i · $N products · $(date +%H:%M:%S) ──" | tee -a "$LOG"
   node scripts/shopify/vision-name.mjs --pids "$PIDS" --confirm-batch "$N" >>"$LOG" 2>&1
-  echo "   chunk $i finished ($(grep -c '^✓' "$LOG" 2>/dev/null || echo '?') proposed so far)" | tee -a "$LOG"
+  DONE_NOW=$(grep -c '^✓\|^⚠' "$LOG" 2>/dev/null || :); DONE_NOW=${DONE_NOW:-0}
+  echo "   chunk $i finished ($DONE_NOW decided so far)" | tee -a "$LOG"
+
+  # ── A CHUNK THAT DECIDES NOTHING MUST NOT BE RETRIED FOR EVER ──────────────
+  # The scope is sorted and this driver always takes the HEAD slice, so a
+  # product only leaves the head once a proposal (or a refusal) is written for
+  # it. Two of vision-name.mjs's outcomes write nothing: "unusable" — the call
+  # completed AND WAS CHARGED but the answer did not parse — and "failed", an
+  # exception such as a photo that never downloads.
+  #
+  # So a chunk where every product lands in one of those two selects exactly
+  # the same pids next time, and pays for the unusable ones again, for up to
+  # 200 iterations. That is a bill with nothing to show for it and no message
+  # saying so (reviewer finding). Two consecutive no-progress chunks stop the
+  # run and say what to look at.
+  if [ "$DONE_NOW" -le "${PREV_DECIDED:-0}" ]; then
+    STALL=$(( ${STALL:-0} + 1 ))
+    echo "   ⚠ chunk $i decided nothing (stall $STALL of 2)" | tee -a "$LOG"
+    if [ "$STALL" -ge 2 ]; then
+      echo "STOPPED: two chunks in a row produced no decision. The same products are being" | tee -a "$LOG"
+      echo "retried and any 'unusable' ones are being paid for each time. Look at the last" | tee -a "$LOG"
+      echo "✗/unusable lines above before restarting." | tee -a "$LOG"
+      exit 3
+    fi
+  else
+    STALL=0
+  fi
+  PREV_DECIDED=$DONE_NOW
 done
 echo "reached the chunk ceiling — run it again to continue" | tee -a "$LOG"

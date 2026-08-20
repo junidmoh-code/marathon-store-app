@@ -41,7 +41,7 @@ import {
   VISION_PROMPT, regenerationNote, parseVisionResponse, validateVisionName,
   buildNameProposal, identityTextFrom, projectCost, mayProposeFor,
   NAME_PROPOSAL_KEY, VISION_NAME_SOURCE,
-  visionModel, THINKING_CONFIG, costFromUsage, leadShapeHint,
+  visionModel, THINKING_CONFIG, costFromUsage, leadShapeHint, USD_TO_ZAR,
 } from "../../src/utils/visionNaming.js";
 import {
   SEARCH_IDENTITY_PATH, shouldReplaceIdentity,
@@ -200,6 +200,18 @@ async function callGemini(photoUrl, extraInstruction, shapeHint) {
       break;
     } catch (e) {
       lastErr = e;
+      // A TIMEOUT IS NOT A TRANSPORT FAILURE. The retry above exists for
+      // errors that prove the request never reached the server; a timeout
+      // proves nothing of the kind — the server may have accepted it and
+      // generated an answer, which has already been CHARGED. Retrying then
+      // pays for the same photo twice, which is the exact rule the comment
+      // above states and the abort quietly broke (reviewer finding). One
+      // photo lost is cheaper than an unbounded double-charge, and the next
+      // run picks it up because nothing was written for it.
+      if (e && (e.name === "TimeoutError" || e.name === "AbortError")) {
+        throw new Error(`the request timed out after 90s — not retried, because a timed-out ` +
+                        `generation may already have been charged`);
+      }
       if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * 2 ** attempt));
     }
   }
@@ -223,9 +235,13 @@ let spent = 0;
 let measuredUsd = 0;
 
 for (const [i, { pid, product, node, photo }] of work.entries()) {
-  assertSafeSegment(pid, "productId");
   const previousName = node?.cleanName || null;
   try {
+    // INSIDE the try: thrown out here it is an unhandled rejection at module
+    // top level, the process dies, and the report below never prints — losing
+    // the record of every call already PAID FOR in this chunk (reviewer
+    // finding). Product ids are "p<digits>" so this never fires in practice.
+    assertSafeSegment(pid, "productId");
     // ── attempt 1 ──
     const shapeHint = leadShapeHint(i);
     let raw = await callGemini(photo, null, shapeHint);
@@ -293,16 +309,29 @@ async function writeProposal(pid, proposal, identity, product, node) {
   // overwriting a real state here would let a naming run move a live product
   // out of the pipeline — which is why "absent" is decided on the server below
   // and not from this function's `node` argument.
-  await db.ref(`shopify_publish/${pid}`).update({ [NAME_PROPOSAL_KEY]: proposal });
+  // ── STATE FIRST, PROPOSAL SECOND. The order is the whole safety property. ──
+  // Written the other way round, a connection drop between the two writes
+  // leaves a node carrying a nameProposal and NO state — which is invisible to
+  // the review page (every read is a server-filtered query on the `state`
+  // index) and unwritable by it (the live .validate requires
+  // hasChildren(['state'])). And it is PERMANENT: _scope-unnamed.mjs skips any
+  // node that already carries a proposal, so the product is never named again
+  // and never reviewed. Nobody would ever see it (reviewer finding).
+  //
+  // This way round the same drop leaves a node with a state and no proposal —
+  // which is exactly a product still waiting to be named, and the next run
+  // picks it up.
+  //
   // The state is decided against the SERVER, in a transaction on the `state`
   // child alone — never against `node`, which is the scope snapshot taken when
-  // the run started. name-remaining.sh works through the backlog in chunks
-  // over about four and a half hours, so that snapshot is hours old by the
-  // end: a product Junid published at 10:00 would be stamped back to
-  // "awaiting" at 11:00, dropping it out of the state=="live" index and out of
-  // the Live filter WHILE IT IS STILL ON THE STOREFRONT (reviewer finding).
-  // `undefined` aborts, so an existing state of any value is left alone.
+  // the run started. name-remaining.sh works through the backlog in chunks over
+  // about four and a half hours, so that snapshot is hours old by the end: a
+  // product Junid published at 10:00 would be stamped back to "awaiting" at
+  // 11:00, dropping it out of the state=="live" index and out of the Live
+  // filter WHILE IT IS STILL ON THE STOREFRONT. `undefined` aborts, so an
+  // existing state of any value is left alone.
   await db.ref(`shopify_publish/${pid}/state`).transaction((cur) => (cur ? undefined : "awaiting"));
+  await db.ref(`shopify_publish/${pid}`).update({ [NAME_PROPOSAL_KEY]: proposal });
   if (!identity) return;
   const text = identityTextFrom(identity);
   if (!text) return;
@@ -333,7 +362,7 @@ const tally = {};
 for (const r of results) tally[r.status] = (tally[r.status] ?? 0) + 1;
 console.log(`\n${Object.entries(tally).map(([k, v]) => `${k}: ${v}`).join(" · ") || "nothing done"}`);
 console.log(`model: ${MODEL} · calls made: ${spent} (retries included)`);
-console.log(`MEASURED cost from the model's own usage: $${measuredUsd.toFixed(5)} (~R${(measuredUsd * 18).toFixed(3)})` +
+console.log(`MEASURED cost from the model's own usage: $${measuredUsd.toFixed(5)} (~R${(measuredUsd * USD_TO_ZAR).toFixed(3)})` +
   (spent ? ` · $${(measuredUsd / spent).toFixed(6)}/call vs $${projectCost(1).usd} projected` : ""));
 console.log(`Proposals are PENDING. Nothing is on the storefront until they are approved in the publishing page.`);
 process.exit(results.some((r) => BAD.has(r.status)) ? 1 : 0);

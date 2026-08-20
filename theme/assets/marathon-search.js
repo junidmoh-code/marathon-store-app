@@ -95,6 +95,11 @@
   // storefront: the empty-state sentence ("No results found for “gripshot”…")
   // is a sibling of the grid container, so scoping to the container missed it
   // entirely and the term stayed on screen. (2026-08-17.)
+  // How long the shopper waits for our endpoint before the page settles for
+  // Shopify's own results. Long enough for a Cloud Function cold start, short
+  // enough that a dead endpoint is not a spinner nobody ever clears.
+  var REQUEST_TIMEOUT_MS = 6000;
+
   function stripQueryEcho(root, term) {
     if (!term) return;
     var needle = term.toLowerCase();
@@ -186,18 +191,38 @@
     var ul = grid();
     if (ul) ul.classList.add("ms-loading");
 
+    // ── THE ECHO GOES BEFORE THE REQUEST, NOT AFTER IT ────────────────────────
+    // Shopify renders `0 results found for "gripshot"` server-side, and the
+    // shopper's typed term must not appear on screen. Stripping it inside
+    // render() means it survives for the whole round trip — and survives for
+    // ever if the fetch rejects, because render() never runs on that path
+    // (reviewer finding). It is stripped here, and again in render() because a
+    // theme section swap can put it back.
+    var scopeNow = document.getElementById("MainContent") || document.body;
+    stripQueryEcho(scopeNow, term);
+    if (/results? found for|search:/i.test(document.title)) document.title = "Search results";
+
+    // A DEADLINE. Without one a stalled endpoint never reaches .catch, so
+    // `ms-loading` stays on the grid indefinitely and the documented fail-soft
+    // behaviour — keep Shopify's own results — never happens.
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT_MS) : null;
+
     fetch(ENDPOINT + "?q=" + encodeURIComponent(term) + "&limit=" + LIMIT, {
       headers: { Accept: "application/json" },
+      signal: controller ? controller.signal : undefined,
     })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
       .then(function (data) {
+        if (timer) clearTimeout(timer);
         if (ul) ul.classList.remove("ms-loading");
         render(data.results || [], term);
       })
       .catch(function (err) {
+        if (timer) clearTimeout(timer);
         // FAIL SOFT. If our endpoint is unreachable the shopper keeps whatever
         // Shopify rendered — worse results, but a working page. Never a blank
         // screen because a Cloud Function had a cold start.

@@ -1422,3 +1422,30 @@ test("page: taking the name writes through the store, carrying the proposal that
   // showing a draft that no longer matches the product
   expect(pageNameInput(tree).props.value).toBe("Brushed nubuck low-top in sand");
 });
+
+test("proposals: the row is keyboard-operable, and the navigable element holds no other control", async () => {
+  // Without this the identity guess, the confidence and the photos are
+  // mouse-only from this lane. Same treatment ProductListRow already uses.
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  const nav = tree.root.findAll((n) => n.props && n.props.role === "button" &&
+                                       String(n.props["aria-label"] || "").startsWith("Open "))[0];
+  expect(nav).toBeTruthy();
+  expect(nav.props.tabIndex).toBe(0);
+
+  // Structure FIRST, while the row is still mounted: activating it navigates
+  // and the row goes away with the list.
+  // role="button" makes descendants presentational, so the decision buttons
+  // must be SIBLINGS — a keydown from a nested button would bubble here and
+  // preventDefault would cancel that button's own activation.
+  expect(nav.findAll((n) => n.type === "button").length).toBe(0);
+  // and the two decisions are genuinely still reachable, just not inside it
+  expect(button(tree, "Use this name")).toBeTruthy();
+  expect(button(tree, "Keep the old one")).toBeTruthy();
+
+  let opened = null;
+  hashValue = "";
+  await act(() => { nav.props.onKeyDown({ key: "Enter", preventDefault: () => { opened = true; } }); });
+  await flush();
+  expect(opened).toBe(true);              // it swallowed the default
+  expect(hashValue).toBe("#shopify/p3");  // and it navigated
+});

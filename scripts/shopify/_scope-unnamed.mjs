@@ -9,19 +9,44 @@ const require = createRequire(new URL("../../functions/package.json", import.met
 const admin = require("firebase-admin");
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
-const g = (p) => db.ref(p).once("value").then((s) => s.val());
 const { readMapPaged } = await import("../lib/rtdbPaged.mjs");
 const { isPriceRecord } = await import("../../src/utils/productCategory.js");
 const { mayProposeFor } = await import("../../src/utils/visionNaming.js");
 
-const kinds = JSON.parse(readFileSync(process.env.PHOTO_GATE || "/tmp/groupkind2.json", "utf8"));
+// ── THE GATE FILE IS CHECKED, NOT ASSUMED ────────────────────────────────────
+// A missing or malformed gate file used to throw, and name-remaining.sh reads
+// ANY non-zero exit from this script as a network problem: it sleeps 30
+// seconds and retries, 200 times. So a bad gate file produced about 100
+// minutes of silent no-op instead of a stop (reviewer finding) — and moving
+// the file out of /tmp, which run-naming.sh does, exists precisely because
+// this class of failure survives a reboot.
+const GATE_PATH = process.env.PHOTO_GATE || "/tmp/groupkind2.json";
+let kinds;
+try {
+  kinds = JSON.parse(readFileSync(GATE_PATH, "utf8"));
+} catch (e) {
+  console.error(`STOP: the shared-photo gate at ${GATE_PATH} could not be read (${e?.message || e}).`);
+  console.error(`This is not a network problem and retrying will not fix it. Point PHOTO_GATE at a`);
+  console.error(`readable groupkind2.json, or regenerate it, then start the run again.`);
+  process.exit(3);
+}
+if (!Array.isArray(kinds?.differentProducts) || !Array.isArray(kinds?.crossBrand)) {
+  console.error(`STOP: ${GATE_PATH} is missing the "differentProducts" and/or "crossBrand" arrays.`);
+  console.error(`Without them every shared-photo product would be treated as ungated and named`);
+  console.error(`from a photo that does not describe it. Refusing to guess.`);
+  process.exit(3);
+}
 // Gate: different-products-one-photo AND cross-brand. The 2 genuine
 // one-style groups are NOT gated.
 const gated = new Set([...kinds.differentProducts.flat(), ...kinds.crossBrand.flat()]);
 
+// PAGED, all three. This script runs before EVERY chunk of the backlog — about
+// twenty times in a full run — so a whole-node read here is not paid once, it
+// is paid twenty times (reviewer finding). /shopify_publish is ~1,500 nodes
+// and /stock is larger still.
 const products = await readMapPaged(db, "products", { pageSize: 500 });
-const publish = (await g("shopify_publish")) || {};
-const stock = (await g("stock")) || {};
+const publish = await readMapPaged(db, "shopify_publish", { pageSize: 400 });
+const stock = await readMapPaged(db, "stock", { pageSize: 50 });
 const UNSELLABLE = new Set(["in_transit"]);
 const units = (pid) => {
   let u = 0;
