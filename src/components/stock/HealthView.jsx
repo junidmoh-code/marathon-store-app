@@ -648,7 +648,7 @@ export default function HealthView({ products = [], onExit }) {
           <DetailShell title="Starved — refused, but trading"
             sub="The engine has no stock history for these shops, yet they hold, sell or have asked for the line. Introduce, or fix the history."
             count={count("starved")} onBack={back}>
-            <StarvedList rows={ex.starved?.items || []} byId={byId}
+            <StarvedList rows={ex.starved?.items || []} total={count("starved")} byId={byId}
               canAct={["store", "warehouse", "admin"].includes(actorRole)}
               sizesFor={(pid) => (byId.get(pid)?.sizes || []).map(String)} />
           </DetailShell>
@@ -816,9 +816,15 @@ export default function HealthView({ products = [], onExit }) {
               {/* STARVED sits with the red cards, not among the informational ones.
                   Every other tile counts something the engine DID; this counts what
                   it quietly refused to do, and a quiet refusal has no other symptom
-                  until a shelf is empty. Red at one, because one wrong refusal is a
-                  line that will never be replenished again on its own. */}
-              <StatCard label="Starved" value={count("starved")} tone={count("starved") ? RED : GREEN}
+                  until a shelf is empty. Red at one ACTIVE row, because one wrong
+                  refusal is a line that will never be replenished again on its own.
+                  Standing exclusions (target 0 with contrary evidence) are AMBER and
+                  never counted as alarms — they are explained refusals with no exit
+                  (the engine will never refill them, provenance will never grow), so
+                  counting them red would leave the tile permanently lit and train
+                  everyone to ignore it. (Adversarial review, PR #383.) */}
+              <StatCard label="Starved" value={ex.starved?.active ?? count("starved")}
+                        tone={(ex.starved?.active ?? count("starved")) ? RED : count("starved") ? AMBER : GREEN}
                         sub="Refused for no stock history, but holding, selling or asking" onClick={() => setScreen("starved")} />
               <StatCard label="Missing Sizes" value={count("missingSizes")} tone={count("missingSizes") ? RED : GREEN}
                         sub="Zero stock anywhere — your reorder list" onClick={() => setScreen("missingSizes")} />

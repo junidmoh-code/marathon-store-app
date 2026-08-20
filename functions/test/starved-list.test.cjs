@@ -56,7 +56,7 @@ test("a shop that SELLS a line the index refuses is listed — the POS blind spo
   assert.ok(tee, "the sold-but-refused pair must be listed");
   assert.deepStrictEqual(tee.why, ["sold"]);
   assert.strictEqual(tee.sold, 4);
-  assert.strictEqual(tee.hasRecord, false, "no index record at all is the point");
+  assert.strictEqual(tee.rec, undefined, "no index record at all is the point — and the field is OMITTED, not false (payload diet)");
 });
 
 test("HOLDS and ASKED are evidence too", () => {
@@ -99,7 +99,7 @@ test("k − u netting to zero is distinguishable from no record at all", () => {
   const a = base();
   a.provenance["marathon-pe"] = { ...a.provenance["marathon-pe"], [BAG]: { k: 4, u: 4 } };
   const bag = computeStarved(a).find((r) => r.pid === BAG);
-  assert.strictEqual(bag.hasRecord, true);
+  assert.strictEqual(bag.rec, 1);
   assert.strictEqual(bag.k, 4);
   assert.strictEqual(bag.u, 4);
 });
@@ -226,4 +226,29 @@ test("END TO END: a CARRIED pair is absent from the plan's starved list", () => 
   });
   assert.strictEqual(refusedPlan.exceptions.starved.count, 1);
   assert.strictEqual(refusedPlan.exceptions.starved.items[0].pid, OK);
+});
+
+test("a pair with an explicit target > 0 is NOT listed — the engine arms it without the index", () => {
+  // resolveTarget's explicit branch never consults provenance: such a pair is
+  // being refilled normally, so a Starved row for it would headline a refusal
+  // that is not happening and offer an Introduce that is pure noise.
+  // (Adversarial review, PR #383 — proven against the live planner.)
+  const a = base();
+  a.targets = { "marathon-pe": { [BAG]: { M: { target: 3, minQty: 1 } } } };
+  assert.strictEqual(computeStarved(a).find((r) => r.pid === BAG), undefined);
+  // …and a mixed set with any positive target reads the same way.
+  a.targets = { "marathon-pe": { [BAG]: { M: { target: 0, minQty: 0 }, L: { target: 2, minQty: 1 } } } };
+  assert.strictEqual(computeStarved(a).find((r) => r.pid === BAG), undefined);
+});
+
+test("zero-valued fields are omitted from every row — this node ships 49 times a day", () => {
+  const rows = computeStarved(base());
+  for (const r of rows) {
+    for (const f of ["held", "sold", "openLines", "s", "k", "u"]) {
+      assert.notStrictEqual(r[f], 0, `${f} must be omitted when 0, never written as 0`);
+    }
+    assert.strictEqual("name" in r, false, "name is the client's catalogue lookup, not payload");
+    assert.strictEqual("category" in r, false, "category was never read by the client");
+    assert.strictEqual("hasRecord" in r, false, "rec:1 (present only when true) replaced hasRecord");
+  }
 });

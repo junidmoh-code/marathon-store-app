@@ -2150,7 +2150,10 @@ function computeRefillPlan(snapshot) {
       onlyInHub2: cap(onlyInHub2),
       excess: cap(excess),
       negativeCells: cap(negativeCells),
-      starved: cap(starved, 600),
+      // House cap (300), sorted worst-first with excluded rows LAST, plus the
+      // active/excluded split so the tile can count real alarms separately from
+      // standing exclusions that merely carry contrary evidence.
+      starved: { ...cap(starved), active: starved.filter((r) => !r.excluded).length },
     },
   };
 }

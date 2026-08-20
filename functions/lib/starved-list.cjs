@@ -131,6 +131,20 @@ function computeStarved({ dests, stock, products, provenance, provenanceMeta, mo
     for (const pid of candidates) {
       if (carries(dest, pid)) continue;              // the engine is happy — nothing to see
 
+      // "The index refuses" is NOT "the engine refuses". resolveTarget's explicit
+      // branch never consults provenance: a row with target > 0 is refilled
+      // normally, so listing it here would headline a false refusal and offer an
+      // Introduce that is pure noise (adversarial review, PR #383 — proven against
+      // the live planner: explicit target:3 with no provenance still plans
+      // intents). An ALL-ZERO row set is the opposite — a standing exclusion —
+      // and stays, flagged, because a shop deliberately delisted from a line it
+      // demonstrably trades is worth a human look.
+      const rowsForPid = targets?.[dest]?.[pid];
+      const numericRows = rowsForPid && typeof rowsForPid === "object" && !Array.isArray(rowsForPid)
+        ? Object.values(rowsForPid).filter((r) => r && typeof r.target === "number") : [];
+      if (numericRows.some((r) => r.target > 0)) continue;   // armed without the index
+      const excluded = numericRows.length > 0;
+
       const held = unitsHeld(stock, dest, pid);
       const soldQty = sold.get(`${dest}|${pid}`) || 0;
       const openLines = open.get(`${dest}|${pid}`) || 0;
@@ -140,31 +154,33 @@ function computeStarved({ dests, stock, products, provenance, provenanceMeta, mo
       if (openLines > 0) why.push(ASKED);
       if (!why.length) continue;                     // refused, but nothing contradicts it
 
-      // A zero row EXPLAINS the refusal — it is a standing decision, not a gap in
-      // the record. Flagged so the reader can tell the two apart at a glance.
-      const rowsForPid = targets?.[dest]?.[pid];
-      const excluded = !!rowsForPid && typeof rowsForPid === "object"
-        && Object.keys(rowsForPid).some((k) => rowsForPid[k]?.target === 0);
-
-      const e = provenanceEntry(provenance, dest, pid) || {};
-      rows.push({
-        loc: dest, pid,
-        name: products?.[pid]?.name ?? null,
-        category: products?.[pid]?.categoryKey ?? null,
-        held, sold: soldQty, openLines,
-        why, excluded,
-        // The index's own numbers, so a reader can see WHY it answered no: `k − u`
-        // netting to zero reads very differently from no record at all.
-        s: num(e.s), k: num(e.k), u: num(e.u),
-        hasRecord: !!provenanceEntry(provenance, dest, pid),
-      });
+      // ZERO-VALUED FIELDS ARE OMITTED, exactly as the index itself does (see
+      // provenance-index.cjs SHAPE): this node is rewritten 49 times a day and
+      // re-downloaded by every open Health screen. `name`/`category` are gone for
+      // the same reason — the client already holds the catalogue and falls back
+      // to byId. The index's own counters ride along so a reader can see WHY the
+      // answer was no: `k − u` netting to zero reads very differently from no
+      // record at all; `rec: 1` marks "a record exists" when all counters are 0.
+      const e = provenanceEntry(provenance, dest, pid);
+      const row = { loc: dest, pid, why };
+      if (held > 0) row.held = held;
+      if (soldQty > 0) row.sold = soldQty;
+      if (openLines > 0) row.openLines = openLines;
+      if (excluded) row.excluded = true;
+      if (e) {
+        if (num(e.s) > 0) row.s = num(e.s);
+        if (num(e.k) > 0) row.k = num(e.k);
+        if (num(e.u) > 0) row.u = num(e.u);
+        row.rec = 1;
+      }
+      rows.push(row);
     }
   }
 
   // Worst first: selling it beats holding it beats merely asking, and a deliberate
   // exclusion sorts last whatever its evidence, because it is already explained.
-  const weight = (r) => (r.excluded ? 0 : (r.sold > 0 ? 3 : 0) + (r.held > 0 ? 2 : 0) + (r.openLines > 0 ? 1 : 0));
-  rows.sort((a, b) => weight(b) - weight(a) || b.sold - a.sold || b.held - a.held
+  const weight = (r) => (r.excluded ? 0 : (num(r.sold) > 0 ? 3 : 0) + (num(r.held) > 0 ? 2 : 0) + (num(r.openLines) > 0 ? 1 : 0));
+  rows.sort((a, b) => weight(b) - weight(a) || num(b.sold) - num(a.sold) || num(b.held) - num(a.held)
     || String(a.loc).localeCompare(String(b.loc)) || String(a.pid).localeCompare(String(b.pid)));
   return rows;
 }
