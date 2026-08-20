@@ -56,7 +56,7 @@ import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopif
 // tool on the Shopify product page so the two can never offer different fixes
 // or send differently-shaped requests (src/components/shopify/aiStudioCore.js).
 import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngineStr,
-         photoFailureSuffix, toggleFix } from "./components/shopify/aiStudioCore";
+         photoFailureSuffix, toggleFix, fixFits } from "./components/shopify/aiStudioCore";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
@@ -3344,7 +3344,17 @@ function AdminReviewPhotosTab({ products = [] }) {
   };
   const approveAll = async () => {
     if (!pending.length) return;
-    if (!window.confirm(`Approve ALL ${pending.length} photos? This swaps those products to the white-bg version (originals are kept).`)) return;
+    // The wear rule is a prompt, and a prompt is a request: the model can still
+    // quietly tidy a scuff. On the Shopify product page a reviewer sees one
+    // photo at a time beside its original; here one tap accepts everything, so
+    // the dialog has to say what that means (owner ruling 2026-08-20).
+    if (!window.confirm(
+      `Approve ALL ${pending.length} photos?\n\n` +
+      `This swaps those products to the generated version. Originals are kept.\n\n` +
+      `Wear is part of the goods: the AI is told to leave every scuff, scratch and worn edge exactly ` +
+      `as photographed, but that is an instruction, not a guarantee. Approving all ${pending.length} ` +
+      `without looking accepts any it tidied away.`
+    )) return;
     setBulkBusy(true);
     let okN = 0, failN = 0;
     try { for (const r of pending) { (await approve(r)) ? okN++ : failN++; } }
@@ -3760,10 +3770,15 @@ function RegenerateModal({ row, quality, house = false, product = null, extraCou
         <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
           {FIX_PRESETS.map(([label, instr]) => {
             const on = note.includes(instr);
+            // Without this the chip renders enabled once the note is full, and
+            // the tap silently does nothing — a dead button, not a full box.
+            const fits = fixFits(note, instr);
             return (
-              <button key={label} type="button" onClick={() => toggle(instr)}
+              <button key={label} type="button" onClick={() => toggle(instr)} disabled={!fits}
+                      title={fits ? undefined : `No room left — the instruction is capped at ${NOTE_MAX} characters.`}
                       style={{ background: on ? "rgba(74,127,255,.25)" : "rgba(255,255,255,.05)", color: on ? "#cdddff" : "rgba(255,255,255,.7)",
-                               border:"1px solid "+(on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"6px 12px", fontSize:11.5, fontWeight:700, cursor:"pointer" }}>
+                               border:"1px solid "+(on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.13)"), borderRadius:999, padding:"6px 12px", fontSize:11.5, fontWeight:700,
+                               cursor: fits ? "pointer" : "not-allowed", opacity: fits ? 1 : .4 }}>
                 {on ? "✓ " : ""}{label}
               </button>
             );
@@ -3841,12 +3856,14 @@ const STYLE_KIT_DEFAULT_PROMPTS = {
     "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
     "together in the same configuration, on the same hangers, with the same spacing as the references.",
     "If the product photo shows a single piece, present just that piece in the identical scene and",
-    "position. Garments fully steamed and wrinkle-free with natural drape, squared shoulders and",
-    "straight hems; nothing cropped or cut off.",
-    "Keep the product's TRUE colours at full strength — never washed out, faded or over-exposed. Dark",
-    "colours stay RICH and DEEP. Match the exposure and white balance of the reference scene so the",
-    "product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a flawless,",
-    "photorealistic result indistinguishable from a real photo taken in our studio.",
+    "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
+    "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
+    "or cut off.",
+    "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
+    "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
+    "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
+    "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
+    "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
   ].join(" "),
   sneaker: [
     "You are re-shooting a product photo in our store's signature house style. The STYLE REFERENCE",
@@ -3867,9 +3884,9 @@ const STYLE_KIT_DEFAULT_PROMPTS = {
     "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
     "this exact model's authentic retail box using your knowledge of the real product; keep all box",
     "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-    "True, full-strength colours — dark colours stay rich and deep; match the reference scene's",
-    "exposure and white balance. Tack-sharp focus and detail; a flawless, photorealistic result",
-    "indistinguishable from a real photo taken in our studio.",
+    "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
+    "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
+    "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
   ].join(" "),
 };
 

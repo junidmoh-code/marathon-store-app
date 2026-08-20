@@ -113,13 +113,38 @@ export function priceLabelFor(resolved) {
 // instruction the image engine actually understands. Tap several to combine;
 // free text is added on top. MOVED here from App.jsx so the two surfaces can
 // never drift into offering different fixes.
+// ── FOUR OF THESE USED TO ASK FOR WEAR REMOVAL WITHOUT SAYING SO ─────────────
+// Audited against the owner ruling of 2026-08-20. The chips are injected as
+// "PRIORITY FIX … Apply this above all else", so an instruction here outranks
+// the base prompt by construction — which makes a loose phrase here more
+// dangerous than the same phrase in the prompt body. What was wrong:
+//
+//   "Wrong shape"    "the authentic product's true shape and proportions" — a
+//                    worn shoe's shape IS deformed by wear, so "true shape"
+//                    reads as "the shape it had when new".
+//   "Colour off"     "restore the product's true, full-strength colours" — a
+//                    sun-faded garment's true colour IS faded; "restore" reads
+//                    as un-fading it.
+//   "Blacks weak"    same failure: a genuinely faded black tee would be
+//                    "made richer and deeper" back to how it left the factory.
+//   "Design detail"  "fix the ... stitching to match the authentic product" —
+//                    on a shoe with burst or frayed stitching, that is a
+//                    repair.
+//
+// Each offending phrase is now GONE rather than caveated. Caveating each chip
+// was the first attempt and it was wrong: the qualifiers pushed three chips
+// past 200 characters, and with a 240-character cap that means tapping one
+// leaves room for nothing else — the tool loses its combinability to defend a
+// rule the CONDITION_CLAUSE in buildPhotoPrompt already enforces absolutely,
+// after and above everything typed here. So the chips just stop asking, and
+// stay short enough to combine.
 export const FIX_PRESETS = [
-  ["Wrong shape",   "the shape and silhouette look wrong — correct it to the authentic product's true shape and proportions"],
+  ["Wrong shape",   "the rendered shape and silhouette are wrong for this model — correct the proportions to the real model's"],
   ["Wrong side",    "the wrong side is showing — show the OUTER branded display side, do not flip to the plain inner side"],
-  ["Colour off",    "the colours are off or washed out — restore the product's true, accurate, full-strength colours exactly"],
-  ["Blacks weak",   "the dark areas look weak and greyish — make black, charcoal and navy richer and deeper so they stand out"],
+  ["Colour off",    "exposure and white balance are off — correct the PHOTOGRAPH's colour rendering, not the item's own colour"],
+  ["Blacks weak",   "the darks are lifted and grey from exposure — correct the PHOTOGRAPH's tone so blacks and navy read true"],
   ["Blurry",        "it looks blurry or soft — make it tack-sharp with crisp clean edges and fine detail throughout"],
-  ["Design detail", "minor design details are wrong — fix the logos, patterns, stitching and text to match the authentic product exactly"],
+  ["Design detail", "the design is rendered wrongly — fix the logos, patterns, stitch PATTERN and text to match the real model"],
   ["Framing",       "framing is off — centre the product straight and level with an even margin, fully visible and not cut off"],
   ["Remove bg",     "remove every trace of the original background and props — show only the single product on flat pure white"],
 ];
@@ -146,7 +171,9 @@ export function toggleFix(note, instruction) {
   // The old `.slice(0, NOTE_MAX)` here was worse than a lost tail. The chips
   // are 100-103 characters, so a third one lands exactly on the 240 cap and
   // gets cut mid-sentence: "…the colours are off or washed out" — with
-  // "restore the product's true, accurate, full-strength colours exactly"
+  // the corrective half of a chip — e.g. the fix that follows "the colours are
+  // off" — leaving the paid prompt asserting a fault and never asking for it
+  // to be fixed
   // gone. The paid prompt then TELLS the model the colours are wrong and
   // never says to fix them, which is the opposite of what was tapped. And
   // because `note.includes(instruction)` is then false, the chip renders
@@ -271,4 +298,32 @@ export function readGenerateResult(data, productId) {
     costUSD: Number(d.estCostUSD) || 0,
     costLine: costByEngineStr(d.costByEngine),
   };
+}
+
+/**
+ * Does this condition grade tell the customer there are marks on the item?
+ *
+ * The first version of this test was `/marks|wear/i` against the grade string,
+ * inline in the card. It fired on ALL THREE grades — including "Excellent — no
+ * visible wear", which contains the word "wear" while saying the opposite. A
+ * product cannot go live without a grade, so the warning fired on every
+ * publishable product, and the copy beneath it then told the reviewer that
+ * "the description tells the customer those marks are there" on an item graded
+ * as having none. A banner that fires every time is the banner people learn to
+ * click past, which is the opposite of a backstop.
+ *
+ * Matched on the grade's MEANING, against the three known strings, with an
+ * explicit negation check so a future grade worded "no visible scuffs" cannot
+ * re-open the same hole.
+ */
+export function gradeAdmitsWear(condition) {
+  const c = String(condition ?? "").trim().toLowerCase();
+  if (!c) return false;
+  // The negation list must cover every term the POSITIVE list matches, or a
+  // grade worded "No scuffs" falls through the negation and is caught by the
+  // positive matcher — warning on a grade that promises the opposite. That was
+  // the original bug in a smaller form (CodeRabbit, PR #394): the first fix
+  // covered "wear" and "marks" and forgot the third word it had just added.
+  if (/\bno\b[^.]{0,20}?\b(wear|worn|marks?|scuffs?|scuffing)\b/.test(c)) return false;
+  return /\bmarks?\b|\bwear\b|\bworn\b|\bscuff/.test(c);
 }

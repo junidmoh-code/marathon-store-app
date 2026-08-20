@@ -5,9 +5,10 @@ import { describe, it, expect } from "vitest";
 import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
   toggleFix, fixFits, sanitiseNote, buildGenerateRequest, readGenerateResult,
-  costByEngineStr, photoFailureSuffix, resolveEngine, priceLabelFor,
+  costByEngineStr, photoFailureSuffix, resolveEngine, priceLabelFor, gradeAdmitsWear,
 } from "./aiStudioCore";
 import { triggersInText } from "../../utils/shopifyTriggers";
+import { CONDITIONS } from "./publishShared";
 
 describe("the presets", () => {
   it("offers exactly the two the function understands, in Junid's words", () => {
@@ -268,5 +269,97 @@ describe("usedSourceUrl — the side-by-side must be able to prove itself", () =
   it("reports null — not the requested url — when an older build echoed nothing", () => {
     // Defaulting to the requested url would turn "unknown" into a false "yes".
     expect(readGenerateResult(sample({}), "p1").usedSourceUrl).toBeNull();
+  });
+});
+
+// ─── NO FIX CHIP MAY ASK FOR WEAR REMOVAL ────────────────────────────────────
+// Owner ruling 2026-08-20. The chips are injected as "PRIORITY FIX … Apply
+// this above all else", so a loose phrase HERE outranks the base prompt by
+// construction. The CONDITION_CLAUSE in functions/lib/photo-prompt.cjs is the
+// backstop (and is tested there); this is the guard at the source.
+describe("the fix chips do not ask for the item to be made newer", () => {
+  const BANNED = [
+    [/authentic product's true shape/i, "a worn shoe's true shape IS deformed by wear"],
+    [/restore the product's true/i,     "a faded item's true colour IS faded"],
+    [/richer and deeper/i,              "would deepen colour the item has genuinely lost"],
+    [/fix the logos, patterns, stitching\b/i, "on frayed stitching, that is a repair"],
+    [/\bpristine\b/i,                  "names wear removal outright"],
+    [/\bbrand[- ]new\b/i,              "names wear removal outright"],
+    [/\bscuff/i,                        "wear"],
+    [/\bscratch/i,                      "wear"],
+    [/\bunworn\b/i,                    "wear"],
+    [/\blike[- ]new\b/i,               "wear"],
+  ];
+
+  for (const [label, instruction] of FIX_PRESETS) {
+    it(`"${label}" asks only about the photograph`, () => {
+      for (const [re, why] of BANNED) {
+        expect(instruction, `${label}: ${why}`).not.toMatch(re);
+      }
+    });
+  }
+
+  it("combines exactly two chips — which is the ceiling, not a floor", () => {
+    // Said "two still combine" as though there were headroom. There is not:
+    // the chips are ~100 characters against a 240 cap, so two is the MAXIMUM
+    // and always was, before this change as well. Asserting >= 2 could never
+    // fail and hid that. Pinned to the real number so that raising NOTE_MAX,
+    // or lengthening a chip, shows up here as a change rather than silently.
+    let note = "", added = 0;
+    for (const [, instr] of FIX_PRESETS) {
+      const before = note;
+      note = toggleFix(note, instr);
+      if (note !== before) added += 1;
+    }
+    expect(added).toBe(2);
+    expect(note.length).toBeLessThanOrEqual(NOTE_MAX);
+  });
+
+  it("every chip still fits on its own", () => {
+    for (const [label, instruction] of FIX_PRESETS) {
+      expect(instruction.length, `${label} is too long to tap at all`).toBeLessThanOrEqual(NOTE_MAX);
+    }
+  });
+});
+
+// ─── THE GRADE WARNING FIRED ON ALL THREE GRADES ─────────────────────────────
+// It was `/marks|wear/i` against the grade string, inline in the card. That
+// matches "Excellent — no visible wear" on the word "wear" while the grade
+// says the opposite — so the banner fired on every publishable product, and
+// told the reviewer that "the description tells the customer those marks are
+// there" on an item graded as having none.
+describe("gradeAdmitsWear", () => {
+  it("is quiet on the grade that promises no marks", () => {
+    expect(gradeAdmitsWear("Excellent — no visible wear")).toBe(false);
+  });
+
+  it("warns on the two grades that declare marks", () => {
+    expect(gradeAdmitsWear("Very good — light cosmetic marks")).toBe(true);
+    expect(gradeAdmitsWear("Good — visible wear, priced accordingly")).toBe(true);
+  });
+
+  it("covers exactly two of the three real grades", () => {
+    expect(CONDITIONS.filter(gradeAdmitsWear)).toHaveLength(2);
+  });
+
+  it("stays quiet when no grade is set", () => {
+    for (const v of [undefined, null, "", "   ", 42, {}]) expect(gradeAdmitsWear(v)).toBe(false);
+  });
+
+  it("is not re-opened by a differently-worded negative grade", () => {
+    // Every term the POSITIVE matcher catches must also be catchable by the
+    // negation, or the grade that promises its absence trips the warning.
+    for (const g of [
+      "Mint — no visible scuffs", "No marks at all", "No scuffs", "No scuffing",
+      "no wear", "No worn edges", "Excellent — no scuffs or marks",
+    ]) {
+      expect(gradeAdmitsWear(g), `"${g}" should be quiet`).toBe(false);
+    }
+  });
+
+  it("still warns when the grade only says the marks are light", () => {
+    for (const g of ["Light scuffing", "Some marks", "Shows wear"]) {
+      expect(gradeAdmitsWear(g), `"${g}" should warn`).toBe(true);
+    }
   });
 });

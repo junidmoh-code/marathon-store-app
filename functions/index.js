@@ -2136,53 +2136,12 @@ const OAI_TEXT_IN_PER_MTOK  = 5;
 const OAI_IMAGE_IN_PER_MTOK = 10;
 const OAI_IMAGE_OUT_PER_MTOK = 40;
 
-const PHOTO_PROMPT = [
-  "Reshoot this as a HIGH-END, PROFESSIONAL STUDIO product photograph, expertly retouched and",
-  "colour-graded to premium e-commerce standard — the polished, flawless look of a Nike, adidas,",
-  "SSENSE or Farfetch product listing shot by a commercial product photographer.",
-  "Place the COMPLETE product on a pure white #FFFFFF seamless studio background.",
-  "Orient the product STRAIGHT, upright and LEVEL in a clean, centred e-commerce catalogue pose.",
-  "Footwear: show the OUTER (lateral) display side — the side carrying the main branding and logo",
-  "(e.g. the Nike swoosh / adidas stripes) — facing the camera in a flat, level side profile. Keep",
-  "the SAME side and the SAME left/right facing as the original photo; NEVER flip, mirror or rotate",
-  "the shoe to reveal the plain inner (medial) side.",
-  "Clothing & garments: present like a premium fashion e-commerce listing — a clean, symmetrical",
-  "FLAT-LAY or invisible/ghost-mannequin look, fully STEAMED and wrinkle-free, with natural even fabric",
-  "drape, squared shoulders and straight hems, the WHOLE garment shown front-on and centred. Smooth out",
-  "creases, folds and bunching; no hanger marks. Keep the true fabric texture, colour, print and fit.",
-  "Do NOT tilt, skew, mirror or angle the product awkwardly, even if the source photo is angled.",
-  "The ENTIRE product must stay fully visible — nothing cropped, cut off, or touching any edge.",
-  "Frame it LARGE and centred: the product fills as much of the frame as possible (about 90%) while",
-  "keeping a small, even white margin all around so nothing is cut.",
-  "Show ONLY the single main product. COMPLETELY remove the entire original background and EVERYTHING",
-  "in it — shelving, racks, pegboard, displays, boxes, packaging, props, hands, mannequins, HANGERS,",
-  "clips, hooks, rails, swing tags, hang tags, price tickets/stickers, labels, reflections and clutter.",
-  "Nothing from the original background or packaging may remain — NO hanger and NO tags of any kind.",
-  "Present the product in PRISTINE, brand-new condition: fix lighting problems (harsh glare, hot-spots,",
-  "colour casts, uneven or dim exposure, blown highlights, dark muddy shadows) and clean off dust,",
-  "smudges, fingerprints, scuffs, scratches, lint, stray threads and creases.",
-  "CRITICAL — TRUE COLOUR & CRISP EDGES: keep the product's REAL, accurate, full-saturation colours",
-  "exactly; do NOT wash out, fade, lighten, desaturate or over-expose them. The white background must",
-  "STOP cleanly at the product's outline and must NEVER bleed, spill, glow or blend over the product —",
-  "keep pale, white, cream or light-coloured items clearly separated from the background with sharp,",
-  "well-defined edges.",
-  "Keep DARK products DARK: black, charcoal, graphite, navy and other deep colours must stay RICH, DEEP",
-  "and full-strength — do NOT lift, grey-out, fade or wash them lighter against the white; they must read",
-  "as strong, true, bold dark tones that stand out clearly.",
-  "Keep the product's DESIGN EXACTLY — identical shape, proportions, colour, materials, patterns, logos",
-  "and text. NEVER redesign, restyle, recolour, add or remove real product features, or invent any detail.",
-  "Render every brand wordmark, logo and label CRISPLY and CORRECTLY — correctly spelled, properly",
-  "letter-formed and legible, matching the real brand's exact lettering. NEVER produce garbled, warped,",
-  "misspelled, blurry or fake-looking text.",
-  "TACK-SHARP focus and fine detail throughout — absolutely no blur, softness or smudging.",
-  "Light the PRODUCT with soft, even, professional studio lighting (softbox quality) so it keeps natural",
-  "depth, gentle highlights and soft form — it must look genuinely THREE-DIMENSIONAL and real, NOT a flat",
-  "paper cut-out. But cast NO shadow, reflection, gradient or vignette onto the background: the background",
-  "stays perfectly flat, uniform pure #FFFFFF edge to edge with a crisp, clean outline around the product.",
-  "Finish to PREMIUM e-commerce standard — professionally retouched and immaculately clean, with balanced",
-  "exposure, accurate white balance, rich true-to-life contrast and tack-sharp, high-resolution detail: a",
-  "flawless, photorealistic catalogue hero image.",
-].join(" ");
+// The white-bg prompt, the condition rule and the prompt composer live in
+// lib/photo-prompt.cjs so the compliance rule can be unit-tested. PHOTO_PROMPT
+// is used here ONLY as buildPhotoPrompt's base for the white path — never
+// handed to an engine directly, since the raw body carries no condition rule.
+// DEFAULT_WHITE_PROMPT is the composed one the adapters fall back to.
+const { PHOTO_PROMPT, DEFAULT_WHITE_PROMPT, buildPhotoPrompt } = require("./lib/photo-prompt.cjs");
 
 // DEFAULT house-style locked prompts — code fallbacks only. The live prompt is
 // read from /aiAssistant/styleKit/{template}/prompt (editable in the Style Kit
@@ -2207,12 +2166,14 @@ const HOUSE_PROMPT_CLOTHING = [
   "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
   "together in the same configuration, on the same hangers, with the same spacing as the references.",
   "If the product photo shows a single piece, present just that piece in the identical scene and",
-  "position. Garments fully steamed and wrinkle-free with natural drape, squared shoulders and",
-  "straight hems; nothing cropped or cut off.",
-  "Keep the product's TRUE colours at full strength — never washed out, faded or over-exposed. Dark",
-  "colours stay RICH and DEEP. Match the exposure and white balance of the reference scene so the",
-  "product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a flawless,",
-  "photorealistic result indistinguishable from a real photo taken in our studio.",
+  "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
+  "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
+  "or cut off.",
+  "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
+  "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
+  "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
+  "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
+  "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
 ].join(" ");
 
 const HOUSE_PROMPT_SNEAKER = [
@@ -2234,36 +2195,13 @@ const HOUSE_PROMPT_SNEAKER = [
   "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
   "this exact model's authentic retail box using your knowledge of the real product; keep all box",
   "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-  "True, full-strength colours — dark colours stay rich and deep; match the reference scene's",
-  "exposure and white balance. Tack-sharp focus and detail; a flawless, photorealistic result",
-  "indistinguishable from a real photo taken in our studio.",
+  "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
+  "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
+  "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
 ].join(" ");
 
 const HOUSE_DEFAULT_PROMPTS = { clothing: HOUSE_PROMPT_CLOTHING, sneaker: HOUSE_PROMPT_SNEAKER };
 
-// Prepend product IDENTITY so the model RECOGNISES the exact item (from its saved
-// name) and reproduces its genuine design — using the source photo + its knowledge
-// of that exact product together to correct blur / missing detail, while NEVER
-// substituting a different model, colourway or design. Reviewed before approval.
-// `basePrompt` defaults to the white-bg prompt; house style passes the template's
-// locked prompt (custom from the Style Kit, else the code default above).
-function buildPhotoPrompt(productName, note, basePrompt = PHOTO_PROMPT) {
-  const name = String(productName || "").trim();
-  const base = name
-    ? `This product is: "${name}". Recognise this EXACT product and reproduce its GENUINE, accurate design ` +
-      `— the real product's correct logos, branding, colourway, patterns, materials, text and proportions. ` +
-      `Use the source photo as the primary reference TOGETHER with your knowledge of this exact product; ` +
-      `sharpen, complete and correct anything blurry, low-quality, partial or unclear so it matches the ` +
-      `authentic product. Do NOT substitute a different model, colour or design, and do NOT invent details ` +
-      `the real product does not have. ` + basePrompt
-    : basePrompt;
-  // Per-run fix instruction (studio note / fix chips). Put it FIRST and flag it as
-  // the priority so the engine focuses on exactly what to fix this time, while all
-  // the standard rules below still apply.
-  const hint = String(note || "").trim();
-  if (!hint) return base;
-  return `PRIORITY FIX FOR THIS REGENERATION — ${hint}. Apply this above all else, then: ${base}`;
-}
 
 // PROVIDER BOUNDARY: given image bytes + the per-product prompt, return { buffer,
 // usage } of a white-bg re-shoot. Swap the body to change image providers.
@@ -2274,7 +2212,7 @@ async function generateWhiteBgImage(client, OpenAINS, imageBuffer, contentType, 
   const res = await client.images.edit({
     model: PHOTO_MODEL,
     image: file,
-    prompt: prompt || PHOTO_PROMPT,
+    prompt: prompt || DEFAULT_WHITE_PROMPT,
     size: size || PHOTO_SIZE,
     quality,
     output_format: "jpeg",   // match the .jpg/image-jpeg upload (gpt-image-1 defaults to PNG)
@@ -2371,7 +2309,7 @@ const inlineImagePart = (buffer, contentType) =>
 
 async function generateWhiteBgImageGemini(apiKey, imageBuffer, contentType, prompt) {
   return geminiGenerateImage(apiKey, GEMINI_MODEL, [
-    { text: prompt || PHOTO_PROMPT },
+    { text: prompt || DEFAULT_WHITE_PROMPT },
     inlineImagePart(imageBuffer, contentType),
   ], { outPerMtok: GEMINI_OUT_PER_MTOK, flatUsd: GEMINI_FLAT_IMAGE_USD });
 }
