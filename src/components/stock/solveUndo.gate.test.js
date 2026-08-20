@@ -17,33 +17,7 @@ describe("solve → undo wiring", () => {
     const start = NETWORK.indexOf("if (Object.keys(updates).length) {");
     expect(start).toBeGreaterThan(-1);
     const block = NETWORK.slice(start, NETWORK.indexOf("setSolved", start));
-    expect(block).toMatch(/paths: cellPaths,/);
-    expect(block).toMatch(/priorOpen,?\s*\}/);
-    // `cellPaths` is captured BEFORE the introduce rows are merged into `updates`
-    // (PR: Solve's carriage gate). That is stricter than the old
-    // `paths: Object.keys(updates)`, not looser: `updates` now also carries
-    // /stock_targets leaves, and undo runs `paths` through undoCellTxn — a CAS whose
-    // predicate tests a stock CELL. Feeding a target row into it would abort every
-    // time at best, and evaluate a cell predicate against a row at worst.
-    const capture = NETWORK.indexOf("const cellPaths = Object.keys(updates);");
-    const merge = NETWORK.indexOf("Object.assign(updates, introPaths);");
-    expect(capture).toBeGreaterThan(-1);
-    expect(merge).toBeGreaterThan(-1);
-    expect(capture).toBeLessThan(merge);
-    // And the two path sets are recorded separately, never conflated.
-    expect(block).toMatch(/introPaths: Object\.keys\(introPaths\), introAt: now/);
-  });
-
-  it("the introduce rows ride in the SAME atomic update as the cells", () => {
-    // Two halves of one statement: "this shop stocks this line, and here are its
-    // sizes". Split across two writes, a failure between them leaves seeded cells
-    // with no carriage behind them — cells the engine will never refill, which is
-    // precisely the silent lie the carriage gate exists to stop.
-    const solveStart = NETWORK.indexOf("const solve = async (card, panelPlan = null) => {");
-    const body = NETWORK.slice(solveStart, NETWORK.indexOf("\n  };", solveStart));
-    expect(body).toMatch(/Object\.assign\(updates, introPaths\);/);
-    // Exactly ONE write in the whole solve path.
-    expect(body.match(/await update\(ref\(database\)/g) || []).toHaveLength(1);
+    expect(block).toMatch(/setUndoables\(\(l\) => \[\{ key: `\$\{card\.pid\}_\$\{now\}`, pid: card\.pid, name: card\.name, store, locs, paths: Object\.keys\(updates\), priorOpen \}, \.\.\.l\]\)/);
   });
   it("the prior-lock snapshot is read BEFORE the seed write — identity, never clocks", () => {
     // A lock's createdAt is its scan's START time, so clock comparison
@@ -64,44 +38,7 @@ describe("solve → undo wiring", () => {
     expect(NETWORK).toMatch(/await Promise\.all\(u\.paths\.map\(\(p\) => runTransaction\(ref\(database, p\), undoCellTxn\)\)\)/);
     const undoStart = NETWORK.indexOf("const undoSolve = async (u) => {");
     const undoBlock = NETWORK.slice(undoStart, NETWORK.indexOf("\n  };", undoStart));
-    // STILL LITERALLY TRUE after the carriage gate added a /stock_targets cleanup.
-    // That cleanup lives in removeIntroducedRows(), outside this function, precisely
-    // so this assertion keeps meaning what it says — a guard you can satisfy by
-    // arguing "but MY update is a different kind of path" has stopped being a guard.
     expect(undoBlock).not.toMatch(/update\(ref\(database\)/);
-    expect(undoBlock).toMatch(/await removeIntroducedRows\(u\.introPaths, u\.introAt\)/);
-  });
-
-  it("the introduce-row cleanup never touches a stock cell, and removes ONLY rows this solve wrote", () => {
-    const fnStart = NETWORK.indexOf("async function removeIntroducedRows(");
-    expect(fnStart).toBeGreaterThan(-1);
-    const fn = NETWORK.slice(fnStart, NETWORK.indexOf("\n}", fnStart));
-    // It only ever addresses the row paths it was handed. Nothing here can
-    // address /stock.
-    expect(fn).not.toMatch(/stockCellPath|`stock\//);
-    // Per-row CAS, not read-then-delete: authorship is proven INSIDE the
-    // transaction by the solve's own introducedAt stamp, so a row edited since
-    // (a target added, a later re-introduction) aborts and stays whole. The
-    // first version skipped rows with a numeric target OUTSIDE the transaction
-    // and left introduce:true standing over zero cells — the incident shape this
-    // PR exists to prevent.
-    expect(fn).toMatch(/runTransaction\(ref\(database, p\)/);
-    expect(fn).toMatch(/cur\.introducedAt === introAt/);
-    expect(fn).toMatch(/typeof cur\.target !== "number"/);
-  });
-
-  it("a PARTIAL undo leaves the introduction standing", () => {
-    // Cells that kept real stock are still carried, and revoking the carriage under
-    // them would starve exactly the cells the CAS just proved are in use. So the
-    // cleanup sits in the fully-undone branch only.
-    const undoStart = NETWORK.indexOf("const undoSolve = async (u) => {");
-    const undoBlock = NETWORK.slice(undoStart, NETWORK.indexOf("\n  };", undoStart));
-    const keptBranch = undoBlock.indexOf("if (kept.length) {");
-    const cleanup = undoBlock.indexOf("removeIntroducedRows");
-    const elseBranch = undoBlock.indexOf("} else {", keptBranch);
-    expect(keptBranch).toBeGreaterThan(-1);
-    expect(elseBranch).toBeGreaterThan(-1);
-    expect(cleanup).toBeGreaterThan(elseBranch);
   });
   it("an aborted cell is reported, a full undo clears the stale Solved banner and leaves the strip", () => {
     expect(NETWORK).toMatch(/const kept = u\.paths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);

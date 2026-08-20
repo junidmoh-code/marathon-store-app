@@ -26,64 +26,8 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
-import { solveCarriagePlan, introduceUpdates, carriageNotice } from "./solveCarriage";
 
 const STORES = ["marathon-pe", "trophy"];
-
-// Remove the /stock_targets introduce rows a solve wrote. DELIBERATELY OUTSIDE
-// undoSolve, and deliberately not a cell path.
-//
-// undoSolve's cell deletion is per-cell `runTransaction` — CAS that re-verifies each
-// cell is still an untouched seed, because a count or sale landing mid-undo must abort
-// that delete rather than be erased (the TOCTOU the substitute pair found on PR #361).
-// A source-pinned test asserts undoSolve's body contains no bulk `update(ref(database)`
-// at all, and that assertion is worth keeping literally true — a guard you can satisfy
-// by arguing "but MY update is a different kind of path" has stopped being a guard.
-//
-// A target row genuinely is a different object with different safety properties:
-// there is no `v` to compare and undoCellTxn's cell test would be meaningless
-// against it. So the row cleanup lives here, under its own name, as a per-row CAS:
-// a row is removed only while it is still EXACTLY the row this solve wrote —
-// `introducedAt` equal to the solve's own stamp is the proof of authorship, since
-// introduceUpdates writes whole rows and nothing else writes that field with that
-// value. A row someone has edited since (a target added, the introduction
-// re-stamped by a later solve) aborts and stays whole: revoking or truncating a
-// deliberate act mid-undo is how the first version of this function left
-// `introduce: true` standing over zero cells — the exact incident shape this PR
-// exists to prevent (adversarial review, PR #381).
-async function removeIntroducedRows(rowPaths, introAt) {
-  const results = await Promise.all((rowPaths || []).map((p) =>
-    runTransaction(ref(database, p), (cur) => {
-      if (cur === null) return null;                       // already gone — confirm the delete
-      if (cur.introduce === true && cur.introducedAt === introAt && typeof cur.target !== "number") return null;
-      return;                                              // edited since — abort, keep whole
-    })));
-  return results.filter((r) => r.committed).length;
-}
-
-// { loc → entry } (how this screen fetches it, one pid at a time) → { loc → { pid →
-// entry } } (the shape the engine holds and solveCarriage speaks). Kept as a named
-// function rather than an inline reshape so the two shapes never get confused at a
-// call site: an entry read for the WRONG pid would answer the carriage question
-// about a different product entirely.
-function invertPairs(byLoc, pid) {
-  const out = {};
-  for (const [loc, entry] of Object.entries(byLoc || {})) {
-    // Only real entry objects — null/undefined mean "no record", and the panel's
-    // read-failure sentinel (PROV_READ_FAILED, a string) must never be handed to
-    // the plan as if it were provenance.
-    if (!entry || typeof entry !== "object") continue;
-    out[loc] = { [pid]: entry };
-  }
-  return out;
-}
-
-// Sentinel for a per-pair provenance read that FAILED (denied or errored), kept
-// distinct from null (which genuinely means "no record"). A failed read must not
-// render as "this shop has never stocked this line" — that sentence would be
-// fabricated from a permission error. The panel shows a blocked notice instead,
-// and solve()'s own re-read stays the enforcement (it fails closed on any error).
-const PROV_READ_FAILED = "__prov_read_failed__";
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 // "_" is the catalogue's one-size sentinel — a real cell key, but never shown raw.
 const sizeLabel = (s) => (String(s) === "_" ? "One size" : String(s));
@@ -231,13 +175,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       if (kept.length) {
         setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${u.paths.length - kept.length} of ${u.paths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.` } : x)));
       } else {
-        // Every seeded cell is gone, so the carriage this solve recorded must go
-        // with them. Removing the introduce ROWS only on a FULL undo is deliberate:
-        // a partial undo leaves the product genuinely carrying the sizes that kept
-        // real stock, and revoking the introduction under them would starve exactly
-        // the cells the CAS just told us are in use. Each row is removed by CAS on
-        // the solve's own introducedAt stamp — see removeIntroducedRows.
-        if (u.introPaths?.length) await removeIntroducedRows(u.introPaths, u.introAt);
         // Fully undone: the entry leaves the strip (the card reappearing IS
         // the feedback), and the stale "Solved ✓" banner is cleared so the
         // returning card offers Solve again, not last week's success message.
@@ -271,49 +208,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     (s) => { setCfgErr(false); setCfg(s.val() || {}); },
     () => { setCfgErr(true); setCfg({}); },   // unreadable → no switches → Solve off (fail-safe)
   ), []);
-  // ── THE PROVENANCE READINESS SENTINEL, LIVE ────────────────────────────────
-  // Only `_meta` is subscribed, not the index: the sentinel is seven small records
-  // while the index is ~8,500 pairs, and this screen needs the per-pair entry for at
-  // most the one card whose panel is open. Subscribing to the whole index here would
-  // put a few hundred KB on every Health mount to answer a question asked once per
-  // press. The per-pair reads happen in openSolve()/solve() instead.
-  //
-  // null = not read yet, and carriageAt() treats a missing sentinel as BLOCKED, so
-  // the fail-safe direction is inherited rather than restated: before the read lands,
-  // Solve refuses and says why rather than seeding on an unknown.
-  const [provMeta, setProvMeta] = useState(null);
-  const [provMetaErr, setProvMetaErr] = useState(false);
-  useEffect(() => onValue(
-    ref(database, "stock_provenance/_meta"),
-    (s) => { setProvMetaErr(false); setProvMeta(s.val() || {}); },
-    () => { setProvMetaErr(true); setProvMeta({}); },   // unreadable → nothing ready → Solve blocks
-  ), []);
-
-  // The per-pair provenance for the ONE card whose panel is open. Fetched on open so
-  // the confirm text is computed from the same data the write will re-read, and
-  // keyed by pid so a stale answer from a previously-open card can never be shown
-  // against a different product.
-  const [provPairs, setProvPairs] = useState({});   // pid → { loc → {s,k,u} }
-  const [provPairsFor, setProvPairsFor] = useState(null);
-  useEffect(() => {
-    if (!solvePid) return;
-    let alive = true;
-    const card = (allCards || []).find?.((c) => c.pid === solvePid) || null;
-    const locs = new Set();
-    for (const s of STORES) for (const l of seedLocations(card?.source || "central", s)) locs.add(l);
-    (async () => {
-      const out = {};
-      await Promise.all([...locs].map(async (loc) => {
-        try { out[loc] = (await get(ref(database, `stock_provenance/${loc}/${solvePid}`))).val(); }
-        catch { out[loc] = PROV_READ_FAILED; }   // denied/failed → blocked notice, never "never stocked"
-      }));
-      if (!alive) return;
-      setProvPairs((d) => ({ ...d, [solvePid]: out }));
-      setProvPairsFor(solvePid);
-    })();
-    return () => { alive = false; };
-  }, [solvePid, allCards]);
-
   const std = cfg?.defaultRunByStore;
   const subRun = cfg?.subcategoryRunByLocation;
   // Mirrors the engine's kill switch exactly (solvePlan.js). Absent → off.
@@ -485,13 +379,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
   const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
 
-  // `panelPlan` is the carriage plan the confirm panel RENDERED — the one whose
-  // notice (or absence of one) the user just read. solve() re-reads and decides on
-  // its own fresh plan, but a decision the panel never showed must not be silently
-  // committed: if the fresh plan introduces at locations the panel's did not, the
-  // press aborts, the panel re-renders from the fresh read, and the user confirms
-  // what is actually about to happen. (Adversarial + architect review, PR #381.)
-  const solve = async (card, panelPlan = null) => {
+  const solve = async (card) => {
     const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
     const sizes = qualifyingSizes(card, store);
@@ -505,70 +393,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
-    // ── THE CARRIAGE GATE, DECIDED ON THIS FUNCTION'S OWN READ ────────────────
-    // Re-read rather than trusting the render's copy. The panel may have sat open
-    // for minutes; a backfill completing, or someone introducing the line from
-    // elsewhere, changes the right answer, and the version that writes must be the
-    // version that decided.
-    let carriage;
-    try {
-      const [meta, ...entries] = await Promise.all([
-        get(ref(database, "stock_provenance/_meta")).then((s) => s.val() || {}),
-        ...locs.map((loc) => get(ref(database, `stock_provenance/${loc}/${card.pid}`)).then((s) => s.val())),
-      ]);
-      const provenance = {};
-      locs.forEach((loc, i) => { if (entries[i] != null) provenance[loc] = { [card.pid]: entries[i] }; });
-      carriage = solveCarriagePlan({
-        locs, pid: card.pid, provenance, provenanceMeta: meta,
-        // From the CATALOGUE, not the card: computeMissingProducts() does not put
-        // categoryKey on its cards, so `card.categoryKey` is always undefined and
-        // the categoryPolicy half of introducedAt() would be dead code — Solve
-        // would write duplicate introduce rows over category-level decisions.
-        // (Adversarial review, PR #381.) The engine reads products[pid].categoryKey;
-        // byId is the same catalogue.
-        targets: targetRows, categoryPolicy: cfg?.categoryPolicy, categoryKey: byId.get(card.pid)?.categoryKey,
-        labelFor: (l) => LOC_LABEL[l] || l,
-      });
-    } catch (e) {
-      // A FAILED READ IS NOT A LICENCE TO SEED. It is indistinguishable from an
-      // empty index, and seeding on it is exactly the silent lie this gate exists
-      // to stop.
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: `Couldn't check whether ${LOC_LABEL[store]} stocks this line — nothing was seeded. (${e?.message || "read failed"})` } }));
-      setSolveBusy(null);
-      return;
-    }
-    if (!carriage.ok) {
-      // BLOCKED: say which shop and why, and write nothing. The row stays in
-      // Missing Products, which is the honest state — it is still missing.
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: carriage.message } }));
-      setSolveBusy(null);
-      return;
-    }
-    // A CARRIED→INTRODUCE flip between the panel's render and this press would
-    // commit a standing decision whose warning was never shown. Compare the fresh
-    // introduce set to the one the panel rendered; on any difference, refresh the
-    // panel's data and make the user read the updated notice before pressing again.
-    const freshIntro = carriage.introduce.map((i) => i.loc).sort().join(",");
-    const shownIntro = (panelPlan?.introduce || []).map((i) => i.loc).sort().join(",");
-    if (panelPlan && freshIntro !== shownIntro) {
-      const freshPairs = {};
-      for (const a of carriage.at) freshPairs[a.loc] = a.entry ?? null;
-      setProvPairs((d) => ({ ...d, [card.pid]: freshPairs }));
-      setProvPairsFor(card.pid);
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: "The stock-history picture changed while this panel was open — nothing was written. Review the updated note above and press again." } }));
-      setSolveBusy(null);
-      return;
-    }
-    const introducing = carriage.introduce.map((i) => i.loc);
-    const okMsg = introducing.length
-      ? `Introduced at ${introducing.map((l) => LOC_LABEL[l] || l).join(" and ")} and carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — recorded as newly stocked, so the engine will raise the full run on its next scan.`
-      : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
-    // Declared OUTSIDE the try: the catch reads it to tell an introduce refusal
-    // from a transient failure. A const inside the try is invisible from the
-    // catch's scope entirely — every entry into the catch would ReferenceError,
-    // not just early throws — so the refusal message could never render and the
-    // panel stranded on "Seeding…". (CodeRabbit, PR #381.)
-    let introPaths = {};
+    const okMsg = `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
     try {
       const updates = {};
       // The engine locks that exist BEFORE this solve, snapshotted into the
@@ -586,18 +411,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           }
         }
       }
-      const cellPaths = Object.keys(updates);
-      // The introduce rows ride in the SAME update as the cells. They are two halves
-      // of one statement — "this shop stocks this line, and here are its sizes" — and
-      // splitting them would allow the failure this whole gate exists to prevent:
-      // cells seeded with no carriage behind them, which is a promise the engine will
-      // not keep. Written LAST in the object for readability only; a multi-path
-      // update is atomic, so order carries no meaning.
-      introPaths = introduceUpdates({
-        plan: carriage, pid: card.pid, sizes, at: now, by: uid,
-        note: `Introduced by Solve from Missing Products — ${LOC_LABEL[store] || store}, ${sizes.length} size(s).`,
-      });
-      Object.assign(updates, introPaths);
       // All-or-nothing: one update() writes every absent cell together, so a
       // failure leaves NOTHING seeded and the row stays for a clean retry.
       if (Object.keys(updates).length) {
@@ -605,40 +418,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // Reversible while safe — recorded with the EXACT paths written, so
         // undo can never touch a cell the solve did not create (a cell that
         // already existed was skipped above and must survive an undo).
-        // `introPaths` is tracked SEPARATELY from `paths`: undo removes cells
-        // through a CAS transaction that re-verifies each one is still an
-        // untouched seed, and a target row is not a cell — running it through
-        // undoCellTxn would either abort every time or, worse, evaluate a cell
-        // predicate against a row. They are undone by their own branch.
-        setUndoables((l) => [{
-          key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs,
-          // introduceUpdates writes WHOLE ROWS now, so these are row paths, and
-          // `introAt` is the CAS token: undo removes a row only while its
-          // introducedAt still equals the stamp this solve wrote.
-          paths: cellPaths, introPaths: Object.keys(introPaths), introAt: now, priorOpen,
-        }, ...l]);
+        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths: Object.keys(updates), priorOpen }, ...l]);
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
     } catch (e) {
       // Nothing was written (atomic). Collapse the panel and surface the error on
       // the row so its Solve button reads "Solve" again — one click re-opens the
       // confirm (which clears this) for a clean retry.
-      //
-      // EXCEPT: an INTRODUCE solve refused by the security rules is not a
-      // transient to retry — until the widened /stock_targets rule is published,
-      // introduce-only rows are rejected by design, and because the whole update
-      // is atomic that refusal also takes the carried legs down with it. Saying
-      // "retry" there sends someone in a loop; say what actually happened.
-      const introBlocked = Object.keys(introPaths).length > 0 && /permission|denied/i.test(String(e?.message || e));
       setSolvePid((cur) => (cur === card.pid ? null : cur));
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes, msg: introBlocked
-        ? `This shop isn't recorded as stocking the line, and Solve can't record it yet — the introduce rule for /stock_targets hasn't been published. Nothing was seeded (the whole write is one atomic step). Ask Junid to publish the widened rule, then Solve again.`
-        : `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
-    } finally {
-      // In a finally so no future catch-path bug can strand the panel on
-      // "Seeding…" again — same shape as undoSolve's cleanup.
-      setSolveBusy(null);
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes, msg: `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
     }
+    setSolveBusy(null);
   };
 
   const destOptions = (card) => (card.source === "central" ? ["hub2", ...STORES] : STORES);
@@ -768,45 +558,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const sStore = storeFor(card);
         const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
-        // ── THE CARRIAGE GATE ───────────────────────────────────────────────
-        // Solve seeds a cell and promises a refill. Since PR #376 a seed confers no
-        // carriage — it writes no ledger record — so that promise is only true where
-        // the engine already agrees the shop carries the line, or where this solve
-        // records it as introduced. Computed HERE so the panel says which of the
-        // three it is BEFORE the press, and re-computed inside solve() so the write
-        // decides on its own read rather than on what the render happened to hold.
-        const carriage = sOpen ? solveCarriagePlan({
-          locs: seedLocations(card.source, sStore),
-          pid: card.pid,
-          provenance: provPairsFor === card.pid ? invertPairs(provPairs[card.pid], card.pid) : {},
-          provenanceMeta: provMeta,
-          targets: targetRows, categoryPolicy: cfg?.categoryPolicy,
-          // From the catalogue, not the card — computeMissingProducts() puts no
-          // categoryKey on cards, so card.categoryKey is always undefined and the
-          // categoryPolicy branch of introducedAt() would be dead. (Adversarial
-          // review, PR #381.)
-          categoryKey: byId.get(card.pid)?.categoryKey,
-          labelFor: (l) => LOC_LABEL[l] || l,
-        }) : null;
-        // Not yet read = not yet knowable. Keep the confirm disabled rather than
-        // letting it settle from "blocked" to "fine" under the user's finger.
-        const carriageLoading = sOpen && (provMeta === null || provPairsFor !== card.pid);
-        // A FAILED read is knowable — it is knowably not knowledge. It must not
-        // fall through to the plan as an absent entry, where it would render as
-        // "this shop has never stocked this line" off a permission error.
-        const provReadFailed = sOpen && !carriageLoading && (provMetaErr
-          || Object.values(provPairs[card.pid] || {}).some((v) => v === PROV_READ_FAILED));
-        const notice = provReadFailed ? {
-          tone: "blocked",
-          text: "Couldn't read the stock-history index for this product — Solve is paused for this card. Nothing was seeded. Retry by closing and reopening Solve.",
-        } : sOpen && !carriageLoading ? carriageNotice({
-          plan: carriage,
-          labelFor: (l) => LOC_LABEL[l] || l,
-          // solvePlan already computed both legs: the store's run, and hub2's buffer
-          // run when this is a central-stranded two-leg solve. Reusing them keeps the
-          // number in the warning identical to the number in the estimate above it.
-          unitsFor: (l) => (l === "hub2" && plan.twoLeg ? plan.hubUnits : plan.storeUnits),
-        }) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
         const confirmBlocked = sOpen ? solveConfirmReason({
@@ -944,36 +695,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                   </div>
                   <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — this just marks it carried; the engine raises the refills.</div>
                 </div>
-                {/* ── THE CARRIAGE NOTICE ────────────────────────────────────
-                    Solve's promise is "the engine will refill this". Since PR #376
-                    a seeded cell no longer makes that true on its own, so the panel
-                    has to say which of three situations this is BEFORE the press:
-                    the shop already carries it (no notice — nothing has changed),
-                    it does not and solving will record it as introduced (AMBER,
-                    naming the units that opens), or we cannot tell because the
-                    stock-history index is not built (RED, and the button is
-                    disabled). Silence here is what the regression looked like. */}
-                {carriageLoading && (
-                  <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginTop: 8 }}>
-                    Checking whether {LOC_LABEL[sStore]} stocks this line…
-                  </div>
-                )}
-                {notice && (
-                  <div style={{
-                    fontSize: 11.5, lineHeight: 1.45, marginTop: 8, padding: "9px 11px", borderRadius: 10,
-                    color: notice.tone === "blocked" ? RED : AMBER,
-                    border: `1px solid ${notice.tone === "blocked" ? "rgba(220,38,38,.55)" : "rgba(245,158,11,.45)"}`,
-                    background: notice.tone === "blocked" ? "rgba(220,38,38,.08)" : "rgba(245,158,11,.07)",
-                  }}>
-                    {notice.text}
-                  </div>
-                )}
                 {confirmBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
                 )}
-                <button onClick={() => solve(card, carriage)} disabled={!!confirmBlocked || carriageLoading || provReadFailed || (carriage && !carriage.ok)}
-                        title={confirmBlocked || (carriage && !carriage.ok ? carriage.message : undefined)}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked || carriageLoading || provReadFailed || (carriage && !carriage.ok) ? 0.5 : 1 }}>
+                <button onClick={() => solve(card)} disabled={!!confirmBlocked}
+                        title={confirmBlocked || undefined}
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
                   {solveBusy === card.pid ? "Seeding…" : `Solve — carry at ${LOC_LABEL[sStore]}`}
                 </button>
               </>
