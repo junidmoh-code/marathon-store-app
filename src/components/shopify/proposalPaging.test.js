@@ -14,6 +14,17 @@
 // These tests therefore use the REAL firebase/database query builder (only the
 // network `get` is faked), so an illegal combination throws here instead of in
 // Junid's hands.
+//
+// AND THAT WAS STILL NOT ENOUGH. The second version used `equalTo(v, key)` as
+// the cursor, these tests asserted the query PARAMS it produced, and they all
+// passed — because the params were exactly what I intended. What I intended was
+// wrong: `equalTo(v, k)` expands to startAt(v,k) + endAt(v,k), pinning BOTH
+// ends to one key, so a "page" after the first held a single record and the
+// walk stopped. Measured against the live node: 300 of 1,375 rows, and the lane
+// would have reported no more names with a thousand still waiting.
+//
+// The lesson is in the last test: assert the RANGE, not just the start. A test
+// that only pins what you meant cannot tell you that you meant the wrong thing.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 let captured = null;   // the query the store built
@@ -62,25 +73,28 @@ const params = () => captured._queryParams;
 beforeEach(() => { captured = null; serverPage = []; });
 
 describe("loadProposalPage — the query it actually builds", () => {
-  it("first page: equalTo(awaiting) with a server-side limit, and no explicit cursor", () => {
+  it("first page: the whole awaiting range, with a server-side limit and no cursor", () => {
     serverPage = [["p1", { state: "awaiting" }]];
     return loadProposalPage({ pageSize: 2 }).then(() => {
-      // equalTo expands to an index start AND end pinned to the same value.
       expect(params().getIndexStartValue()).toBe("awaiting");
       expect(params().getIndexEndValue()).toBe("awaiting");
       expect(params().getLimit()).toBe(2);          // bounded BY THE SERVER
-      expect(params().hasStart()).toBe(true);
-      // no key cursor on the first page
       expect(params().getIndexStartName()).toBe("[MIN_NAME]");
+      expect(params().getIndexEndName()).toBe("[MAX_NAME]");
     });
   });
 
-  it("a continued page pins the cursor KEY through equalTo, and asks for one extra", () => {
+  it("a continued page starts at the cursor and still ends at the END of the range", () => {
     serverPage = [["p7", { state: "awaiting" }], ["p8", { state: "awaiting" }]];
     return loadProposalPage({ after: "p7", pageSize: 2 }).then(() => {
       expect(params().getIndexStartValue()).toBe("awaiting");
-      expect(params().getIndexStartName()).toBe("p7");  // the cursor
-      expect(params().getLimit()).toBe(3);              // pageSize + the overlap
+      expect(params().getIndexStartName()).toBe("p7");   // the cursor
+      expect(params().getLimit()).toBe(3);               // pageSize + the overlap
+      // THE ASSERTION THAT WOULD HAVE CAUGHT IT. equalTo(v, key) pins the END
+      // to the cursor too, making the page one record long and the walk stop
+      // after page 1. The end must stay at the top of the range.
+      expect(params().getIndexEndValue()).toBe("awaiting");
+      expect(params().getIndexEndName()).toBe("[MAX_NAME]");
     });
   });
 
@@ -91,9 +105,14 @@ describe("loadProposalPage — the query it actually builds", () => {
     expect(lastKey).toBe("p9");
   });
 
-  it("a short page is the end", async () => {
+  it("a short page is the end, and a finished walk hands back NO cursor", async () => {
     serverPage = [["p1", {}]];
-    expect((await loadProposalPage({ pageSize: 5 })).done).toBe(true);
+    const r = await loadProposalPage({ pageSize: 5 });
+    expect(r.done).toBe(true);
+    // Returning the last key on a finished walk is a footgun, not a fact: a
+    // caller looping on "there is a lastKey" instead of "not done" would
+    // re-request the same page for ever. Make the misuse impossible.
+    expect(r.lastKey).toBe(null);
   });
 
   it("a FULL page is not the end", async () => {
@@ -111,6 +130,7 @@ describe("loadProposalPage — the query it actually builds", () => {
     const r = await loadProposalPage({ after: "p7", pageSize: 2 });
     expect(r.nodes).toEqual({});
     expect(r.done).toBe(true);
+    expect(r.lastKey).toBe(null);   // and it cannot be looped on
   });
 
   it("the default page size is bounded, not the whole node", () => {

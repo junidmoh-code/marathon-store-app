@@ -1449,3 +1449,58 @@ test("proposals: the row is keyboard-operable, and the navigable element holds n
   expect(opened).toBe(true);              // it swallowed the default
   expect(hashValue).toBe("#shopify/p3");  // and it navigated
 });
+
+test("proposals: a finished pass offers to look again — it does not claim the queue is empty", async () => {
+  // The walk moves FORWARD through keys and a product's key is its creation
+  // time, so a suggestion the naming runner writes while this page is open can
+  // land behind where the reading got to. "No names are waiting" full stop
+  // would be a claim the walk cannot support.
+  proposalPages = [{ nodes: {}, lastKey: null, done: true }];
+  keys = new Set();
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("can add more behind what has already been read");
+
+  // and Check again re-walks from the TOP, not from a spent cursor
+  proposalPages = [{ nodes: { p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } }, lastKey: "p3", done: true }];
+  await act(() => { button(tree, "Check again").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null, null]);   // both walks started at the top
+  expect(texts(tree)).toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: Check again re-walks from the TOP, not from where the last pass stopped", async () => {
+  // NOTE ON WHAT THIS DOES AND DOES NOT PIN. It pins that restartProposalWalk
+  // asks for the first page again. It does NOT pin the removal of the
+  // `lastKey ?? p.lastKey` fallback in loadMoreProposals — putting that
+  // fallback back leaves all 61 of these tests green, because Check again
+  // passes fromStart explicitly and the UI never offers Load more once the
+  // walk is done, so the stale cursor is unreachable from the interface.
+  // Removing it was a contract fix (the store returning null MEANS finished,
+  // and the state should not contradict it), not a live-bug fix, and this
+  // comment exists so nobody later reads a passing suite as proof it was.
+  // The store-side contract IS pinned, in proposalPaging.test.js.
+  proposalPages = [
+    { nodes: { p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } }, lastKey: "p3", done: false },
+    { nodes: {}, lastKey: null, done: true },   // the store's finished contract
+  ];
+  keys = new Set(["p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  await act(() => { button(tree, "Load more suggestions").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null, "p3"]);
+
+  // Now finished. Check again must start at the TOP — if the spent cursor had
+  // been kept, this third request would carry "p3".
+  proposalPages = [{ nodes: {}, lastKey: null, done: true }];
+  await act(() => { button(tree, "Check again").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null, "p3", null]);
+});

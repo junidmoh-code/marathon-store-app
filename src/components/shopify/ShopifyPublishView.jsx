@@ -629,12 +629,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // cursor twice. Harmless (the fold is FILL-only) but it is a wasted read of
   // 300 nodes, and this page's whole discipline is not making those.
   const proposalLoading = useRef(false);
-  const loadMoreProposals = useCallback(async () => {
+  const loadMoreProposals = useCallback(async ({ fromStart = false } = {}) => {
     if (proposalLoading.current) return;
     proposalLoading.current = true;
     setProposalPage((p) => (p.loading ? p : { ...p, loading: true }));
     try {
-      const { nodes: got, lastKey, done } = await loadProposalPage({ after: proposalPage.lastKey });
+      const { nodes: got, lastKey, done } = await loadProposalPage({
+        after: fromStart ? null : proposalPage.lastKey,
+      });
       setNodes((prev) => {
         const next = { ...prev };
         // FILL, never overwrite — a write committed while this read was in
@@ -642,8 +644,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         for (const [pid, n] of Object.entries(got)) if (prev[pid] === undefined) next[pid] = n;
         return next;
       });
-      // Functional, so the cursor can never be computed from a stale closure.
-      setProposalPage((p) => ({ lastKey: lastKey ?? p.lastKey, done, loading: false }));
+      // STORED AS RETURNED, null included. The `?? p.lastKey` that used to be
+      // here was written when null meant "no new key"; since loadProposalPage
+      // started returning null to MEAN FINISHED, that fallback quietly put the
+      // spent cursor back — defeating the very contract it was paired with
+      // (reviewer finding). The store is the authority on what the cursor is.
+      setProposalPage({ lastKey, done, loading: false });
       setProposalsLoaded(true);
     } catch (e) {
       setProposalPage((p) => ({ ...p, loading: false }));
@@ -660,11 +666,30 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // committing, a re-render for any other reason re-enters and fetches a
   // second page nobody asked for. A ref flips synchronously and cannot race.
   const proposalsRequested = useRef(false);
+  // A ref so restartProposalWalk can reach the CURRENT loader without taking
+  // it as a dependency (which would rebuild the callback on every page).
+  // ASSIGNED IN AN EFFECT, not during render: React may discard a render, and
+  // a ref written during one keeps a callback that was never committed
+  // (reviewer finding). The effect only runs for renders that survived.
+  const loadMoreProposalsRef = useRef(loadMoreProposals);
+  useEffect(() => { loadMoreProposalsRef.current = loadMoreProposals; }, [loadMoreProposals]);
+
   useEffect(() => {
     if (filter !== "proposed" || proposalsRequested.current) return;
     proposalsRequested.current = true;
     loadMoreProposals();
   }, [filter, loadMoreProposals]);
+
+  // Walk the range again from the top. The only way to see a suggestion whose
+  // product sorts BEHIND wherever the last pass got to — which is every
+  // product the naming runner stamps while this page is open, because a
+  // product's key is its creation time and not its arrival in the queue.
+  const restartProposalWalk = useCallback(() => {
+    if (proposalLoading.current) return;
+    setProposalPage({ lastKey: null, done: false, loading: false });
+    setProposalError(null);
+    loadMoreProposalsRef.current({ fromStart: true });
+  }, []);
 
   // ─── THE PROPOSED-NAMES LANE ───────────────────────────────────────────────
   // Built from NODES, exactly like liveGroups and for the same reason: the
@@ -1261,11 +1286,27 @@ export default function ShopifyPublishView({ products = [], onExit }) {
               <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
                 {q ? "No suggested names match." : (
                   <>
-                    No names are waiting. Suggestions appear here after a naming run
+                    No names are waiting here. Suggestions appear after a naming run
                     reads the product photos — nothing on this page changes until you
                     take one.
+                    {/* NOT "the queue is empty". The walk moves forward through
+                        keys and a product's key is its CREATION time, so a
+                        suggestion written while this page was open can land
+                        behind where the reading got to. Saying it plainly, and
+                        offering the re-walk, is cheaper than pretending the
+                        pass was exhaustive (reviewer finding). */}
+                    <div style={{ marginTop: 6 }}>
+                      A run happening right now can add more behind what has already
+                      been read.
+                    </div>
                   </>
                 )}
+                <div>
+                  <button onClick={restartProposalWalk} disabled={proposalPage.loading}
+                    style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 10 }}>
+                    {proposalPage.loading ? "Checking…" : "Check again"}
+                  </button>
+                </div>
               </div>
             ) : (
               <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
@@ -1299,11 +1340,28 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                   onDismiss={decideProposal.dismiss}
                 />
               ))}
-              {!proposalPage.done && (
+              {!proposalPage.done ? (
                 <button onClick={loadMoreProposals} disabled={proposalPage.loading}
                   style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 12 }}>
                   {proposalPage.loading ? "Loading…" : "Load more suggestions"}
                 </button>
+              ) : (
+                // AVAILABLE WITH ROWS SHOWING, not only on an empty lane. The
+                // walk moves forward through keys, so a suggestion written
+                // while this page was open can sit behind everything already
+                // read — and a reviewer part-way through a full list is
+                // exactly the person it happens to. Offering the re-walk only
+                // when the lane looked empty left them no way to see it.
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: GRAY, marginBottom: 6 }}>
+                    That is everything read so far. A naming run happening now can add
+                    more behind it.
+                  </div>
+                  <button onClick={restartProposalWalk} disabled={proposalPage.loading}
+                    style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem" }}>
+                    {proposalPage.loading ? "Checking…" : "Check again"}
+                  </button>
+                </div>
               )}
             </>
           )

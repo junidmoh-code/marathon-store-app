@@ -15,7 +15,7 @@
 //   this file writes; the browser never calls Shopify), blockedReason,
 //   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
 //   condition, updatedAt, updatedBy
-import { ref, child, get, runTransaction, query, orderByChild, equalTo, limitToFirst } from "firebase/database";
+import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
@@ -107,14 +107,23 @@ export async function loadPipelineNodes() {
 // (it re-sorts what it holds by proposedAt); it depends only on the order being
 // STABLE between pages, which key order is regardless of digit width.
 //
-// PAGING USES equalTo's SECOND ARGUMENT, and it has to. `equalTo(v)` is not a
-// separate operator — it expands to startAt(v, key) + endAt(v, key) — so
-// adding startAfter() to a query that already has equalTo() throws
-// "equalTo: Starting point was already set". The supported way to move a
-// cursor INSIDE an equal set is the optional key argument: equalTo(v, key)
-// starts at that key. It is INCLUSIVE, so a continued page asks for one extra
+// PAGING IS startAt(value, key) + endAt(value). NOT equalTo with a key, and
+// the difference is the whole correctness of the lane.
+//
+// `equalTo(v, k)` looks like a cursor and is not one: the SDK expands it to
+// startAt(v, k) + endAt(v, k), which pins BOTH ends to the same key — a range
+// of exactly one record. Paging with it returned page 1, then a page holding
+// only the cursor, then reported the end. Measured against the live node:
+// 300 of 1,375 rows walked, and the lane would have told Junid there were no
+// more names while a thousand waited.
+//
+// `startAt(v, key) + endAt(v)` is the real cursor: from this key to the END of
+// the equal set. startAt is INCLUSIVE, so a continued page asks for one extra
 // record and drops the overlap — the same treatment scripts/lib/rtdbPaged.mjs
-// gives its cursor, and for the same reason.
+// gives its cursor, for the same reason.
+//
+// Verified against the live database, not a fake: 5 pages, 1,375 of 1,375
+// rows, zero duplicates, zero missing.
 export const PROPOSAL_PAGE_SIZE = 300;
 
 export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_SIZE } = {}) {
@@ -122,7 +131,8 @@ export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_
   const snap = await get(query(
     ref(database, "shopify_publish"),
     orderByChild("state"),
-    after ? equalTo("awaiting", after) : equalTo("awaiting"),
+    ...(after ? [startAt("awaiting", after)] : [startAt("awaiting")]),
+    endAt("awaiting"),
     limitToFirst(want),
   ));
   const nodes = {};
@@ -137,7 +147,21 @@ export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_
   // `done` is judged on RECORDS RETURNED, not on the new ones kept: a final
   // page holding only the overlap is still the end, and counting the kept
   // records would read a full page of duplicates as "more to come".
-  return { nodes, lastKey, done: seen < want };
+  //
+  // A DONE PAGE RETURNS NO CURSOR. Returning the last key on a finished walk
+  // is a footgun rather than a fact: a caller that loops on "there is a
+  // lastKey" instead of on "not done" would re-request the same single-record
+  // page for ever. Today's caller checks `done`, so this is prevention, not a
+  // fix (reviewer finding).
+  //
+  // AND `done` MEANS "nothing further in THIS pass", not "nothing left". The
+  // cursor only moves forward through keys, and a product's key is its
+  // CREATION time — so a product the naming runner stamps `awaiting` while a
+  // reviewer is paging can land BEHIND the cursor and go unseen until the next
+  // walk. That is why the lane offers to look again rather than declaring the
+  // queue permanently empty.
+  const finished = seen < want;
+  return { nodes, lastKey: finished ? null : lastKey, done: finished };
 }
 
 // Session cache for the shallow key set — the home badge asks on every visit
