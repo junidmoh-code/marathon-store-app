@@ -65,19 +65,9 @@ vi.mock("firebase/database", () => ({
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
   get: async (node) => ({ val: () => getPath(node.path), exists: () => getPath(node.path) != null }),
   update: async (node, updates) => {
-    for (const [k, v] of Object.entries(updates)) {
-      const full = node.path ? `${node.path}/${k}` : k;
-      if (v && typeof v === "object" && "__increment" in v) {
-        setPath(full, (Number(getPath(full)) || 0) + v.__increment);
-      } else setPath(full, v);
-    }
+    for (const [k, v] of Object.entries(updates)) setPath(node.path ? `${node.path}/${k}` : k, v);
   },
   push: () => ({ key: `mv${++pushN}` }),
-  // applyMovement now also maintains /stock_provenance in the same atomic update,
-  // using increment(). This fake resolves it eagerly so the resulting store holds
-  // plain numbers; the SENTINEL shape is asserted in provenanceMaintain.test.js,
-  // which captures the raw payload instead.
-  increment: (delta) => ({ __increment: delta }),
 }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "u1" } } }));
 
