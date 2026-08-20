@@ -15,30 +15,37 @@ cd "$(dirname "$0")"
 LOG=logs/vision-naming.log
 [ -f "$LOG" ] || { echo "no log yet — the job has not started"; exit 0; }
 
+# The ✓/⚠/✗ tallies are CUMULATIVE across every run in this log — that is the
+# honest "how many names exist now". The chunk counters are scoped to the
+# CURRENT run, because the driver restarts its own chunk numbering each time it
+# is loaded, and mixing the two read as "4 finished" next to "chunk 1".
 DONE=$(grep -c '^✓' "$LOG" 2>/dev/null || :); DONE=${DONE:-0}
 REF=$(grep -c '^⚠' "$LOG" 2>/dev/null || :);  REF=${REF:-0}
 BAD=$(grep -c '^✗' "$LOG" 2>/dev/null || :);  BAD=${BAD:-0}
-CHUNKS=$(grep -c '^── chunk' "$LOG" 2>/dev/null || :); CHUNKS=${CHUNKS:-0}
-DONECHUNKS=$(grep -c 'finished (' "$LOG" 2>/dev/null || :); DONECHUNKS=${DONECHUNKS:-0}
+RUNLOG=$(mktemp)
+awk '/^── vision naming started/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$LOG" > "$RUNLOG"
+CHUNKS=$(grep -c '^── chunk' "$RUNLOG" 2>/dev/null || :); CHUNKS=${CHUNKS:-0}
+DONECHUNKS=$(grep -c 'finished (' "$RUNLOG" 2>/dev/null || :); DONECHUNKS=${DONECHUNKS:-0}
 # The driver rewrites the worklist before every chunk, so its length IS the
 # live remaining count. (name-remaining.sh sends the scope script's stdout to
 # /dev/null, so the number is not in the log — the file is the source.)
 LEFT=$(python3 -c "import json;print(len(json.load(open('/tmp/naming-scope.json'))))" 2>/dev/null || :)
 
 echo "started      : $(grep '^── vision naming started' "$LOG" | tail -1 | sed 's/^── vision naming started //; s/ ──$//')"
-echo "named so far : $DONE      (counted when a chunk finishes, so it lags by up to one chunk)"
+echo "named so far : $DONE      (all runs; counted when a chunk finishes, so it lags by up to one chunk)"
 echo "refused      : $REF       (name broke a compliance rule — kept for review, never applied)"
 echo "failed       : $BAD"
-echo "chunks       : $DONECHUNKS finished, $CHUNKS started"
+echo "chunks       : $DONECHUNKS finished, $CHUNKS started   (this run)"
 [ -n "${LEFT:-}" ] && echo "still to name: ~$LEFT  (as of the last scope check)"
-echo "current      : $(grep '^── chunk' "$LOG" | tail -1)"
+echo "current      : $(grep '^── chunk' "$RUNLOG" | tail -1)"
+rm -f "$RUNLOG"
 
 if grep -q 'ALL NAMED' "$LOG" 2>/dev/null; then
   echo
   echo "FINISHED — nothing left to name."
 elif [ "$DONECHUNKS" -ge 1 ] && [ -n "${LEFT:-}" ]; then
-  FIRST=$(grep '^── chunk 1 ' "$LOG" | tail -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}')
-  LAST=$(grep '^── chunk' "$LOG" | tail -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}')
+  FIRST=$(grep '^── chunk 1 ' "$RUNLOG" | tail -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}')
+  LAST=$(grep '^── chunk' "$RUNLOG" | tail -1 | grep -oE '[0-9]{2}:[0-9]{2}:[0-9]{2}')
   if [ -n "$FIRST" ] && [ -n "$LAST" ] && [ "$DONECHUNKS" -gt 0 ]; then
     A=$(date -j -f "%H:%M:%S" "$FIRST" +%s 2>/dev/null)
     B=$(date -j -f "%H:%M:%S" "$LAST"  +%s 2>/dev/null)
