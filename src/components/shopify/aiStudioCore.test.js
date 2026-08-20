@@ -270,3 +270,51 @@ describe("usedSourceUrl — the side-by-side must be able to prove itself", () =
     expect(readGenerateResult(sample({}), "p1").usedSourceUrl).toBeNull();
   });
 });
+
+// ─── NO FIX CHIP MAY ASK FOR WEAR REMOVAL ────────────────────────────────────
+// Owner ruling 2026-08-20. The chips are injected as "PRIORITY FIX … Apply
+// this above all else", so a loose phrase HERE outranks the base prompt by
+// construction. The CONDITION_CLAUSE in functions/lib/photo-prompt.cjs is the
+// backstop (and is tested there); this is the guard at the source.
+describe("the fix chips do not ask for the item to be made newer", () => {
+  const BANNED = [
+    [/authentic product's true shape/i, "a worn shoe's true shape IS deformed by wear"],
+    [/restore the product's true/i,     "a faded item's true colour IS faded"],
+    [/richer and deeper/i,              "would deepen colour the item has genuinely lost"],
+    [/fix the logos, patterns, stitching\b/i, "on frayed stitching, that is a repair"],
+    [/\bpristine\b/i,                  "names wear removal outright"],
+    [/\bbrand[- ]new\b/i,              "names wear removal outright"],
+    [/\bscuff/i,                        "wear"],
+    [/\bscratch/i,                      "wear"],
+    [/\bunworn\b/i,                    "wear"],
+    [/\blike[- ]new\b/i,               "wear"],
+  ];
+
+  for (const [label, instruction] of FIX_PRESETS) {
+    it(`"${label}" asks only about the photograph`, () => {
+      for (const [re, why] of BANNED) {
+        expect(instruction, `${label}: ${why}`).not.toMatch(re);
+      }
+    });
+  }
+
+  it("still lets two chips combine — the caveats were kept out of the chips on purpose", () => {
+    // Qualifying each chip individually pushed three past 200 characters, and
+    // with a 240 cap that leaves room for nothing else. The clause does the
+    // defending; the chips stay short enough to be a tool.
+    let note = "", added = 0;
+    for (const [, instr] of FIX_PRESETS) {
+      const before = note;
+      note = toggleFix(note, instr);
+      if (note !== before) added += 1;
+    }
+    expect(added).toBeGreaterThanOrEqual(2);
+    expect(note.length).toBeLessThanOrEqual(NOTE_MAX);
+  });
+
+  it("every chip still fits on its own", () => {
+    for (const [label, instruction] of FIX_PRESETS) {
+      expect(instruction.length, `${label} is too long to tap at all`).toBeLessThanOrEqual(NOTE_MAX);
+    }
+  });
+});

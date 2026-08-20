@@ -102,19 +102,21 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
   const resolved = resolveEngine({ style, engine, product });
   const price = priceLabelFor(resolved);
 
-  // ── WHEN "PRISTINE" CONTRADICTS THE GRADE ────────────────────────────────
-  // The Normal preset's prompt instructs the model, verbatim, to "clean off
-  // dust, smudges, fingerprints, scuffs, scratches, lint, stray threads and
-  // creases". Two of the three condition grades exist precisely to tell a
-  // customer that those marks are there — and the grade is printed in the
-  // description the photo sits beside. A re-shoot that erases the wear on a
-  // product sold as worn shows an item better than the one that ships, which
-  // the owner spec of 2026-08-14 named as misrepresentation of goods.
+  // ── A BACKSTOP, NOT AN ALARM ─────────────────────────────────────────────
+  // This warning used to be routine, and it was right to be: the Normal prompt
+  // asked the model, in one breath, to "clean off dust, smudges, fingerprints,
+  // scuffs, scratches, lint, stray threads and creases" — transient dirt and
+  // actual wear on one list. Junid ruled on 2026-08-20 that the prompt was
+  // what was wrong, not the tool: dirt goes, wear stays, and every generation
+  // now carries a condition rule that overrides anything typed into the note
+  // (CONDITION_CLAUSE, functions/lib/photo-prompt.cjs).
   //
-  // This warns rather than blocks: House re-shoots the scene and does not
-  // carry that instruction, and Junid may still have a reason. But it must
-  // never be silent, and it names the grade so the contradiction is visible
-  // without going and reading the prompt.
+  // So the instruction to erase wear is gone, and this should now be RARE
+  // rather than routine. It stays because the rule is a prompt, and a prompt
+  // is a request: an image model can still quietly tidy a scuff, and on a
+  // product graded as marked or worn that is the one error a reviewer must
+  // not skim past. It names the grade so the check is specific, and it does
+  // not claim a contradiction that no longer exists.
   const gradeAdmitsWear = typeof node?.condition === "string" && /marks|wear/i.test(node.condition);
   const pristineConflict = !house && gradeAdmitsWear;
 
@@ -332,10 +334,10 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
         <div style={{ marginTop: 11, padding: "9px 11px", borderRadius: 10,
                       background: "rgba(251,191,36,.09)", border: "1px solid rgba(251,191,36,.4)",
                       fontSize: 10.5, color: AMBER, lineHeight: 1.5 }}>
-          ⚠ This product is graded <strong>“{node.condition}”</strong>, and the Normal preset tells the
-          model to clean off scuffs, marks and creases along with the background. A photo of an item in
-          better condition than the description promises is a misrepresentation of what ships. Use
-          House, or check the result against the real item before accepting it.
+          ⚠ Graded <strong>“{node.condition}”</strong> — the description tells the customer those marks
+          are there. The AI is instructed to leave every scuff, scratch and worn edge exactly as
+          photographed, but it is an instruction, not a guarantee. Compare the marks against the
+          original before accepting.
         </div>
       )}
 
@@ -360,7 +362,7 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
           <div style={{ fontSize: 10, color: GRAY, marginTop: 6, lineHeight: 1.45 }}>
             Check the product itself, not the background: the item a customer receives has to be the
             item in this picture. If a logo, a colour, a shape or a design detail has changed, throw it
-            away. {!house && "Normal is instructed to clean off scuffs, marks and creases — so if this item's condition is part of what is being sold, that erasure is a reason to reject it too."}
+            away. {!house && "Wear is part of the item, not a fault in the photo: if a scuff, scratch or worn edge has been tidied away, that is a reason to reject it too."}
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
             <button type="button" disabled={saving} onClick={() => setCandidate(null)}
