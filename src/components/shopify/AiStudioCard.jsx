@@ -36,6 +36,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, GRAY, RED, AMBER, BLUE_L, GREEN, bBlue, bGray, bGreen, tabOn, tabOff, input as inputStyle } from "../stock/ui";
 import { uploadPublishPhoto } from "./photoTools";
+import { APP_STORAGE_PREFIX } from "./shopifyPublishStore";
 import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
@@ -203,6 +204,17 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
     savingRef.current = true;
     setSaving(true); setErr(null); setMsg(null);
     try {
+      // WHERE THIS URL POINTS IS NOT TAKEN ON TRUST. It arrived in a server
+      // response, and the next two lines fetch it and put its bytes into the
+      // product's publishing folder — from where the reconciler pushes them to
+      // Shopify. The server already refuses a foreign bucket on the way in
+      // (photo-scope.cjs); refusing one on the way out costs one comparison and
+      // means a compromised or simply changed response cannot make this browser
+      // fetch an arbitrary host and launder the result into the catalogue.
+      if (!String(candidate.proposedUrl).startsWith(APP_STORAGE_PREFIX)) {
+        setErr("The server returned an image from somewhere other than this shop's own storage. Nothing has been saved. This should not happen — tell Junid before using AI Studio again.");
+        return;
+      }
       const res = await fetch(candidate.proposedUrl);
       if (!res.ok) throw new Error(`could not read the generated image back (HTTP ${res.status})`);
       const blob = await res.blob();
