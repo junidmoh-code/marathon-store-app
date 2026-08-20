@@ -117,16 +117,31 @@ exports.cleanProductPhoto = onCall(
     // supplied URL would make this function a fetch proxy for anything the
     // SSRF guard happens to admit, and the whole point of the action is to
     // clean a photo this shop already owns.
-    const product = (await db.ref(`products/${productId}`).get()).val();
+    const [product, publishNode] = await Promise.all([
+      db.ref(`products/${productId}`).get().then((s) => s.val()),
+      db.ref(`shopify_publish/${productId}/photos`).get().then((s) => s.val()),
+    ]);
     if (!product) throw new HttpsError("not-found", "No such product.");
+    // THE PUBLISHING SET COUNTS TOO. The photo strip on the product page works
+    // on the EFFECTIVE set, which is a custom ordered list at
+    // /shopify_publish/{pid}/photos when one exists — and uploadPublishPhoto
+    // writes those files to Storage only, never to /products. Admitting just
+    // the /products URLs meant that uploading a photo and clicking Clean
+    // background always answered "that photo does not belong to this
+    // product", and so did re-cleaning a candidate that had been accepted
+    // (an accepted candidate IS a publishing-set URL). Reviewer finding.
+    const known = [
+      product.photoUrl,
+      product.photoBoxUrl,
+      ...(Array.isArray(product.gallery) ? product.gallery : []),
+      ...(Array.isArray(publishNode) ? publishNode : []),
+    ].map((u) => String(u || "")).filter(Boolean);
     const wanted = String(data.photoUrl || "");
-    const known = [product.photoUrl, product.photoBoxUrl, ...(Array.isArray(product.gallery) ? product.gallery : [])]
-      .map((u) => String(u || "")).filter(Boolean);
-    const photoUrl = wanted && known.includes(wanted) ? wanted : String(product.photoUrl || "");
-    if (!photoUrl) throw new HttpsError("failed-precondition", "That product has no photo to clean.");
     if (wanted && !known.includes(wanted)) {
       throw new HttpsError("invalid-argument", "That photo does not belong to this product.");
     }
+    const photoUrl = wanted || String(product.photoUrl || "");
+    if (!photoUrl) throw new HttpsError("failed-precondition", "That product has no photo to clean.");
 
     const { buffer, contentType } = await fetchImage(photoUrl);
 
