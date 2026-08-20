@@ -41,7 +41,7 @@ import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
   toggleFix, fixFits, sanitiseNote, buildGenerateRequest, readGenerateResult,
-  resolveEngine, priceLabelFor,
+  resolveEngine, priceLabelFor, gradeAdmitsWear,
 } from "./aiStudioCore";
 
 const SECTION_LABEL = {
@@ -67,8 +67,8 @@ const inFlight = new Set();
  * @param product      the product record (needs `id`; `category`/`productType`
  *                     decide the house template and which engine Auto picks)
  * @param node         the /shopify_publish body — read only for the condition
- *                     grade, so the card can warn when "pristine" would
- *                     contradict the grade the description will state
+ *                     grade, so the card can ask for a closer look on the two
+ *                     grades that promise the customer visible marks
  * @param sourceUrl    the publishing photo the reviewer has selected — the
  *                     image to re-shoot, and the one the result is compared to
  * @param photoCount   how many photos the publishing set already holds, so
@@ -117,8 +117,16 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
   // product graded as marked or worn that is the one error a reviewer must
   // not skim past. It names the grade so the check is specific, and it does
   // not claim a contradiction that no longer exists.
-  const gradeAdmitsWear = typeof node?.condition === "string" && /marks|wear/i.test(node.condition);
-  const pristineConflict = !house && gradeAdmitsWear;
+  // Tested in aiStudioCore — the inline version fired on all three grades,
+  // including "Excellent — no visible wear".
+  //
+  // NOT gated on the preset any more. The old gate was `!house`, justified by
+  // "House does not carry that instruction". That justification is gone: the
+  // condition rule now rides on every generation, and House is the heavier
+  // transform of the two — Nano Banana Pro re-renders the product into a
+  // synthetic scene at 2K, and the house path skips the white pipeline
+  // entirely. If the reviewer needs prompting anywhere, it is there.
+  const showWearCheck = gradeAdmitsWear(node?.condition);
 
   // A candidate belongs to ONE source photo. If the selection moves under an
   // open candidate, drop it — accepting a re-shoot of photo A into photo B's
@@ -330,7 +338,7 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
         {sanitiseNote(note).length}/{NOTE_MAX} · goes to the image model only — never to Shopify
       </div>
 
-      {pristineConflict && (
+      {showWearCheck && (
         <div style={{ marginTop: 11, padding: "9px 11px", borderRadius: 10,
                       background: "rgba(251,191,36,.09)", border: "1px solid rgba(251,191,36,.4)",
                       fontSize: 10.5, color: AMBER, lineHeight: 1.5 }}>

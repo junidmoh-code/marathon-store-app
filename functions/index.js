@@ -2138,7 +2138,9 @@ const OAI_IMAGE_OUT_PER_MTOK = 40;
 
 // The white-bg prompt, the condition rule and the prompt composer live in
 // lib/photo-prompt.cjs so the compliance rule can be unit-tested. PHOTO_PROMPT
-// is still referenced here as the engines' fallback prompt.
+// is used here ONLY as buildPhotoPrompt's base for the white path — never
+// handed to an engine directly, since the raw body carries no condition rule.
+// DEFAULT_WHITE_PROMPT is the composed one the adapters fall back to.
 const { PHOTO_PROMPT, DEFAULT_WHITE_PROMPT, buildPhotoPrompt } = require("./lib/photo-prompt.cjs");
 
 // DEFAULT house-style locked prompts — code fallbacks only. The live prompt is
@@ -2164,12 +2166,14 @@ const HOUSE_PROMPT_CLOTHING = [
   "displayed — every piece visible in the product photo (e.g. hoodie and matching joggers) arranged",
   "together in the same configuration, on the same hangers, with the same spacing as the references.",
   "If the product photo shows a single piece, present just that piece in the identical scene and",
-  "position. Garments fully steamed and wrinkle-free with natural drape, squared shoulders and",
-  "straight hems; nothing cropped or cut off.",
-  "Keep the product's TRUE colours at full strength — never washed out, faded or over-exposed. Dark",
-  "colours stay RICH and DEEP. Match the exposure and white balance of the reference scene so the",
-  "product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a flawless,",
-  "photorealistic result indistinguishable from a real photo taken in our studio.",
+  "position. Settle out the creases a garment picks up from packing, folding or a hanger — but anything",
+  "set into the cloth by WEAR stays. Natural drape, squared shoulders and straight hems; nothing cropped",
+  "or cut off.",
+  "Render the product's colours as the ITEM ACTUALLY IS — never washed out or over-exposed by the",
+  "rendering, and never freshened either: colour genuinely lost to fading or yellowing stays lost. Darks",
+  "must not be lifted or greyed by the exposure. Match the exposure and white balance of the reference",
+  "scene so the product sits naturally in its lighting. Tack-sharp focus and fine detail throughout; a",
+  "photorealistic result indistinguishable from a real photo of THIS item taken in our studio.",
 ].join(" ");
 
 const HOUSE_PROMPT_SNEAKER = [
@@ -2191,9 +2195,9 @@ const HOUSE_PROMPT_SNEAKER = [
   "logos and label text, correctly spelled and crisply rendered. If no box image is provided, show",
   "this exact model's authentic retail box using your knowledge of the real product; keep all box",
   "text and branding accurate and legible, and never invent box artwork that doesn't exist.",
-  "True, full-strength colours — dark colours stay rich and deep; match the reference scene's",
-  "exposure and white balance. Tack-sharp focus and detail; a flawless, photorealistic result",
-  "indistinguishable from a real photo taken in our studio.",
+  "Colours as the ITEM ACTUALLY IS — darks not lifted or greyed by the exposure, and colour genuinely",
+  "lost to fading left lost; match the reference scene's exposure and white balance. Tack-sharp focus",
+  "and detail; a photorealistic result indistinguishable from a real photo of THIS item in our studio.",
 ].join(" ");
 
 const HOUSE_DEFAULT_PROMPTS = { clothing: HOUSE_PROMPT_CLOTHING, sneaker: HOUSE_PROMPT_SNEAKER };

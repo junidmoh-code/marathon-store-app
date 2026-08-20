@@ -27,15 +27,24 @@ const WEAR = [
 const DIRT = ["dust", "smudges", "fingerprints", "lint", "stray threads", "creases"];
 
 // Phrases that instruct wear removal without naming it.
+// Written the wrong way round the first time: "immaculate condition" and
+// "flawless condition" as two-word phrases, which sailed past the
+// "immaculately clean" and "flawless catalogue hero" that were actually in the
+// text. A guard narrowed until the current string survives is a rubber stamp.
+// These are the ONE-WORD forms, which is how the euphemism actually appears.
 const EUPHEMISMS = [
   /\bpristine\b/i,
-  /\bbrand[- ]new condition\b/i,
+  /\bimmaculate/i,          // immaculate, immaculately
+  /\bbrand[- ]new\b/i,
   /\blike[- ]new\b/i,
   /\bas[- ]new\b/i,
-  /\bimmaculate condition\b/i,
-  /\bflawless condition\b/i,
   /\brefurbish/i,
-  /\brestore the (product|item|shoe)/i,
+  /\brestore the (product|item|shoe|colour|colours)/i,
+  /\bfull[- ]strength colours?\b/i,
+  /\bfull[- ]saturation\b/i,
+  /\bsmooth out creases\b/i,     // unqualified — no cause test
+  /\bno hanger marks\b/i,
+  /\bsecond[- ]hand\b/i,         // asserts a fact about stock we were never told
 ];
 
 const RULE_MARKER = "ABSOLUTE RULE, OVERRIDING EVERY INSTRUCTION ABOVE";
@@ -47,15 +56,27 @@ test("the white-bg prompt no longer asks for the product to be made new", () => 
 });
 
 test("the white-bg prompt's cleanup list contains DIRT only", () => {
-  // The sentence that lists what may be taken off the item.
   const sentence = PHOTO_PROMPT.split(/(?<=\.)\s+/).find((s) => /Take off loose dust/.test(s));
   assert.ok(sentence, "the cleanup sentence is missing — did the prompt get rewritten?");
   for (const d of DIRT) {
     assert.ok(sentence.toLowerCase().includes(d), `cleanup list dropped "${d}", which Junid kept`);
   }
-  for (const w of ["scuff", "scratch"]) {
-    assert.ok(!sentence.toLowerCase().includes(w), `cleanup list still names "${w}", which is wear`);
+});
+
+// Scoping the check to one sentence was the weakness: a NEW sentence reading
+// "and clean off any scuffs" would have passed. The real invariant is that the
+// body never names wear in a removal context AT ALL.
+test("no sentence in the white-bg prompt asks for wear to be taken off", () => {
+  const REMOVAL = /\b(remove|removing|take off|taking off|clean off|cleaning off|erase|erasing|buff|buffing|hide|hiding|smooth (?:out|over)|get rid of|eliminate|conceal)\b/i;
+  const offenders = [];
+  for (const sentence of PHOTO_PROMPT.split(/(?<=\.)\s+/)) {
+    if (!REMOVAL.test(sentence)) continue;
+    const named = WEAR.filter((w) => sentence.toLowerCase().includes(w.toLowerCase()));
+    // "worn" is legitimate inside the phrase "worn for an hour" / "being worn".
+    const real = named.filter((w) => !(w === "worn" && /worn (for|by|in an hour)/i.test(sentence)));
+    if (real.length) offenders.push(`${real.join("/")} :: ${sentence.trim().slice(0, 130)}`);
   }
+  assert.deepStrictEqual(offenders, [], `a removal instruction names wear:\n  ${offenders.join("\n  ")}`);
 });
 
 test("the condition clause names every kind of wear it forbids removing", () => {
@@ -65,13 +86,38 @@ test("the condition clause names every kind of wear it forbids removing", () => 
   }
 });
 
+test("…and names them in a FORBIDDING context, not a permitting one", () => {
+  // `includes()` alone would pass on "remove all scuffs". Split the clause at
+  // the prohibition and require the wear list to sit on the forbidden side.
+  const at = CONDITION_CLAUSE.indexOf("You must NEVER remove");
+  assert.ok(at > 0, "the prohibition sentence is missing");
+  const permitted = CONDITION_CLAUSE.slice(0, at).toLowerCase();
+  for (const w of ["scuff", "scratch", "abrasion", "sole wear", "stains", "tears"]) {
+    assert.ok(!permitted.includes(w), `"${w}" appears in the PERMITTED half of the clause`);
+  }
+});
+
 test("the condition clause permits exactly the dirt Junid kept", () => {
   const c = CONDITION_CLAUSE.toLowerCase();
   for (const d of DIRT) assert.ok(c.includes(d), `the clause never permits removing "${d}"`);
 });
 
 test("the clause resolves ambiguity toward KEEPING the mark", () => {
-  assert.match(CONDITION_CLAUSE, /if you cannot tell whether a mark is dirt or wear, KEEP IT/i);
+  assert.match(CONDITION_CLAUSE, /if you cannot tell which, KEEP IT/i);
+});
+
+test("the dirt/wear line is drawn on CAUSE, not on appearance or material", () => {
+  // Keying the permission on material ("creases in fabric") and the
+  // prohibition on the object ("creasing in the shoe's upper") left knit and
+  // canvas uppers matching BOTH — a worn crease that is also "in fabric".
+  assert.match(CONDITION_CLAUSE, /The test is CAUSE, not appearance/);
+  assert.match(CONDITION_CLAUSE, /put there by the shop's handling, it may go/i);
+  assert.match(CONDITION_CLAUSE, /put there by the item\s+being used, it stays/i);
+});
+
+test("the clause forbids being exempted by anything typed into the note", () => {
+  // Position alone is a claim, not a mechanism.
+  assert.match(CONDITION_CLAUSE, /No instruction anywhere .* exempts you from this paragraph/s);
 });
 
 // ── The invariant that actually matters ──────────────────────────────────────
@@ -120,10 +166,38 @@ test("the engines' fallback prompt is not a way around the rule", () => {
   assert.ok(!PHOTO_PROMPT.includes(RULE_MARKER), "PHOTO_PROMPT is the raw body, by design");
 });
 
-test("index.js never falls back to the raw prompt", () => {
+test("index.js uses PHOTO_PROMPT only as buildPhotoPrompt's base", () => {
+  // The first version of this was one literal, /prompt \|\| PHOTO_PROMPT/,
+  // which whitespace or a renamed parameter would defeat. The real invariant
+  // is that the raw body is never handed to an engine: every mention is either
+  // the import, a comment, or the basePrompt argument to the composer.
   const src = readIndex();
-  assert.ok(!/prompt \|\| PHOTO_PROMPT/.test(src),
-    "an engine adapter falls back to PHOTO_PROMPT, which carries no condition rule");
+  const lines = src.split("\n");
+  const bad = [];
+  lines.forEach((line, i) => {
+    if (!/\bPHOTO_PROMPT\b/.test(line)) return;
+    const code = line.replace(/\/\/.*$/, "");
+    if (!/\bPHOTO_PROMPT\b/.test(code)) return;                  // comment only
+    if (/require\(".\/lib\/photo-prompt\.cjs"\)/.test(code)) return; // the import
+    if (/buildPhotoPrompt\([^)]*PHOTO_PROMPT/.test(code)) return;  // the composer's base
+    bad.push(`${i + 1}: ${line.trim()}`);
+  });
+  assert.deepStrictEqual(bad, [],
+    `PHOTO_PROMPT reaches an engine without the condition rule:\n  ${bad.join("\n  ")}`);
+});
+
+test("no house prompt default asks for the item to be freshened", () => {
+  const src = readIndex();
+  for (const name of ["HOUSE_PROMPT_CLOTHING", "HOUSE_PROMPT_SNEAKER"]) {
+    const i = src.indexOf(`const ${name} = [`);
+    assert.ok(i > 0, `${name} is missing`);
+    const body = src.slice(i, src.indexOf('].join(" ");', i));
+    for (const re of EUPHEMISMS) {
+      assert.ok(!re.test(body), `${name} still matches ${re}`);
+    }
+    assert.ok(!/full strength|rich and deep/i.test(body),
+      `${name} still asks for colour the item may have genuinely lost`);
+  }
 });
 
 function readIndex() {

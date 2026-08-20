@@ -5,9 +5,10 @@ import { describe, it, expect } from "vitest";
 import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
   toggleFix, fixFits, sanitiseNote, buildGenerateRequest, readGenerateResult,
-  costByEngineStr, photoFailureSuffix, resolveEngine, priceLabelFor,
+  costByEngineStr, photoFailureSuffix, resolveEngine, priceLabelFor, gradeAdmitsWear,
 } from "./aiStudioCore";
 import { triggersInText } from "../../utils/shopifyTriggers";
+import { CONDITIONS } from "./publishShared";
 
 describe("the presets", () => {
   it("offers exactly the two the function understands, in Junid's words", () => {
@@ -298,17 +299,19 @@ describe("the fix chips do not ask for the item to be made newer", () => {
     });
   }
 
-  it("still lets two chips combine — the caveats were kept out of the chips on purpose", () => {
-    // Qualifying each chip individually pushed three past 200 characters, and
-    // with a 240 cap that leaves room for nothing else. The clause does the
-    // defending; the chips stay short enough to be a tool.
+  it("combines exactly two chips — which is the ceiling, not a floor", () => {
+    // Said "two still combine" as though there were headroom. There is not:
+    // the chips are ~100 characters against a 240 cap, so two is the MAXIMUM
+    // and always was, before this change as well. Asserting >= 2 could never
+    // fail and hid that. Pinned to the real number so that raising NOTE_MAX,
+    // or lengthening a chip, shows up here as a change rather than silently.
     let note = "", added = 0;
     for (const [, instr] of FIX_PRESETS) {
       const before = note;
       note = toggleFix(note, instr);
       if (note !== before) added += 1;
     }
-    expect(added).toBeGreaterThanOrEqual(2);
+    expect(added).toBe(2);
     expect(note.length).toBeLessThanOrEqual(NOTE_MAX);
   });
 
@@ -316,5 +319,35 @@ describe("the fix chips do not ask for the item to be made newer", () => {
     for (const [label, instruction] of FIX_PRESETS) {
       expect(instruction.length, `${label} is too long to tap at all`).toBeLessThanOrEqual(NOTE_MAX);
     }
+  });
+});
+
+// ─── THE GRADE WARNING FIRED ON ALL THREE GRADES ─────────────────────────────
+// It was `/marks|wear/i` against the grade string, inline in the card. That
+// matches "Excellent — no visible wear" on the word "wear" while the grade
+// says the opposite — so the banner fired on every publishable product, and
+// told the reviewer that "the description tells the customer those marks are
+// there" on an item graded as having none.
+describe("gradeAdmitsWear", () => {
+  it("is quiet on the grade that promises no marks", () => {
+    expect(gradeAdmitsWear("Excellent — no visible wear")).toBe(false);
+  });
+
+  it("warns on the two grades that declare marks", () => {
+    expect(gradeAdmitsWear("Very good — light cosmetic marks")).toBe(true);
+    expect(gradeAdmitsWear("Good — visible wear, priced accordingly")).toBe(true);
+  });
+
+  it("covers exactly two of the three real grades", () => {
+    expect(CONDITIONS.filter(gradeAdmitsWear)).toHaveLength(2);
+  });
+
+  it("stays quiet when no grade is set", () => {
+    for (const v of [undefined, null, "", "   ", 42, {}]) expect(gradeAdmitsWear(v)).toBe(false);
+  });
+
+  it("is not re-opened by a differently-worded negative grade", () => {
+    expect(gradeAdmitsWear("Mint — no visible scuffs")).toBe(false);
+    expect(gradeAdmitsWear("No marks at all")).toBe(false);
   });
 });

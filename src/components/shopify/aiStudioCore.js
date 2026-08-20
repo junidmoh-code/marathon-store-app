@@ -171,7 +171,9 @@ export function toggleFix(note, instruction) {
   // The old `.slice(0, NOTE_MAX)` here was worse than a lost tail. The chips
   // are 100-103 characters, so a third one lands exactly on the 240 cap and
   // gets cut mid-sentence: "…the colours are off or washed out" — with
-  // "restore the product's true, accurate, full-strength colours exactly"
+  // the corrective half of a chip — e.g. the fix that follows "the colours are
+  // off" — leaving the paid prompt asserting a fault and never asking for it
+  // to be fixed
   // gone. The paid prompt then TELLS the model the colours are wrong and
   // never says to fix them, which is the opposite of what was tapped. And
   // because `note.includes(instruction)` is then false, the chip renders
@@ -296,4 +298,27 @@ export function readGenerateResult(data, productId) {
     costUSD: Number(d.estCostUSD) || 0,
     costLine: costByEngineStr(d.costByEngine),
   };
+}
+
+/**
+ * Does this condition grade tell the customer there are marks on the item?
+ *
+ * The first version of this test was `/marks|wear/i` against the grade string,
+ * inline in the card. It fired on ALL THREE grades — including "Excellent — no
+ * visible wear", which contains the word "wear" while saying the opposite. A
+ * product cannot go live without a grade, so the warning fired on every
+ * publishable product, and the copy beneath it then told the reviewer that
+ * "the description tells the customer those marks are there" on an item graded
+ * as having none. A banner that fires every time is the banner people learn to
+ * click past, which is the opposite of a backstop.
+ *
+ * Matched on the grade's MEANING, against the three known strings, with an
+ * explicit negation check so a future grade worded "no visible scuffs" cannot
+ * re-open the same hole.
+ */
+export function gradeAdmitsWear(condition) {
+  const c = String(condition ?? "").trim().toLowerCase();
+  if (!c) return false;
+  if (/\bno visible\b|\bno\s+\w*\s*(wear|marks)\b/.test(c)) return false;
+  return /\bmarks?\b|\bwear\b|\bworn\b|\bscuff/.test(c);
 }
