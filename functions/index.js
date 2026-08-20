@@ -1,6 +1,7 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onValueWritten } = require("firebase-functions/v2/database");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -9,6 +10,7 @@ const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
+const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
 // analyzeReorderNeeds, which reads /products, /orders, /insights_log and writes
@@ -24,11 +26,30 @@ const WA_PHONE_ID = "1100352259829109";
 const metaToken   = defineSecret("meta-whatsapp-token");
 
 // ── Meta fallback sweep config ──────────────────────────────────────────────
-// The self-hosted gateway is the primary sender; this fallback delivers via
-// Meta only when the gateway hasn't sent a doc in time (e.g. the mini is down).
+// HISTORY: the self-hosted gateway VM these settings were written for no
+// longer exists (instance deleted; its static IP sits reserved). The primary
+// sender is now the event-driven outboxInstantSend trigger below; this sweep
+// is the retry lane and backstop, and FALLBACK_GRACE_SECONDS survives only as
+// the sweep's minimum doc age — the "head start" it grants is now the instant
+// trigger's window, no longer a gateway's.
 const META_FALLBACK_ENABLED  = process.env.META_FALLBACK_ENABLED !== "false";        // default true
-const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // gateway's head start
+const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // sweep's minimum doc age (see block above)
 const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS, 10) || 2;       // Meta tries before "failed"
+// Separate cap for preflight (infra) failures — sends that provably never
+// left the building (e.g. secret binding missing). These refund the Meta
+// attempt and revert to pending, so without their own cap a permanently
+// broken binding would grow the pending pool without bound and starve the
+// sweep's stable limit(50) window. 240 ≈ 4 hours at the sweep's cadence.
+const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10) || 240;
+// Kill switch for the event-driven outboxInstantSend trigger (default ON).
+// Set INSTANT_SEND_ENABLED=false — e.g. if a self-hosted gateway ever comes
+// back and should get its FALLBACK_GRACE_SECONDS head start again — and the
+// system degrades to exactly the pre-trigger behaviour: the sweep alone.
+// NOTE this is a BUILD-TIME switch, not a live flag: flipping it means
+// creating functions/.env with the value and redeploying
+// functions:outboxInstantSend. No .env file exists today, so the default is
+// genuinely ON. (The other env flags above share this property.)
+const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -94,11 +115,14 @@ function renderWhatsAppText(templateName, params = []) {
   return { ok: true, text: entry.render(params.map(String)) };
 }
 
-// Send a WhatsApp template via the Meta Graph API. This is the fallback send
-// path, driven by metaFallbackSweep when the self-hosted gateway hasn't
-// delivered an outbox doc in time. `to` must already be E.164-normalized (the
-// producer stores it that way). Returns { ok: true, messageId } on success, or
-// { ok: false, error, metaCode } on failure — it never throws for Meta errors,
+// Send a WhatsApp template via the Meta Graph API — the actual sender behind
+// both outbox lanes (outboxInstantSend and metaFallbackSweep). `to` must
+// already be E.164-normalized (the producer stores it that way). Returns
+// { ok: true, messageId } on success; { ok: false, error, metaCode } on a
+// failure that reached (or tried to reach) Meta; or
+// { ok: false, preflight: true, error } when it can prove NOTHING was sent
+// (see the guard below) — that third shape exempts the doc from the Meta
+// attempt cap, so it carries a strict contract. Never throws for Meta errors,
 // so the caller can decide whether to retry or fail the doc.
 // NOTE: token handling (metaToken secret + hardcoded WA_PHONE_ID) is unchanged;
 // moving the token to Secret Manager properly is a separate follow-up.
@@ -118,15 +142,39 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
 
   console.log("Meta API payload:", JSON.stringify({ ...payload, to: maskPhone(to) }));
 
+  // Guard against the silently-empty secret: SecretParam.value() degrades to
+  // "" (with only a warning) when the binding or its IAM grant is missing —
+  // most plausibly on a freshly deployed function whose service-account grant
+  // lags. Without this check the request goes out as "Bearer " and Meta's 401
+  // (code 190) triggers the TOKEN EXPIRED log below, sending the operator to
+  // rotate a perfectly good token.
+  // preflight:true — an INFRA failure detected BEFORE any bytes reach Meta,
+  // not a message failure: the doc must not burn its Meta retry budget or go
+  // terminally "failed" over it (CodeRabbit, PR #388). The delivery ladder
+  // refunds the attempt and reverts to "pending" under a separate infra cap.
+  // ⚠ preflight may ONLY mark failures where provably NOTHING was sent — a
+  // post-request failure (429, socket timeout) must never carry it, because
+  // Meta may have accepted the message and a refunded retry would duplicate.
+  if (!metaToken.value()) {
+    return { ok: false, preflight: true, error: "meta-whatsapp-token secret not available to this function (check secret binding / IAM grant)" };
+  }
+
   let waRes, json;
   try {
+    // Explicit 30s timeout, well under the 120s invocation limit: a hung Meta
+    // fetch must fail as a VALUE (revert → sweep retry, capped by
+    // META_MAX_ATTEMPTS) — riding to the function kill instead would strand
+    // the claimed doc in "sending" forever. Deliberately NOT preflight: the
+    // request went out, Meta may have accepted, so this failure must burn the
+    // Meta budget — an uncapped refund here would mint duplicates.
     waRes = await fetch(`https://graph.facebook.com/v20.0/${WA_PHONE_ID}/messages`, {
       method:  "POST",
       headers: {
         "Authorization": `Bearer ${metaToken.value()}`,
         "Content-Type":  "application/json",
       },
-      body: JSON.stringify(payload),
+      body:   JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
     });
     json = await waRes.json();
   } catch (err) {
@@ -268,76 +316,27 @@ exports.sendWhatsApp = onCall(
   }
 );
 
-// Claim a single stale outbox doc and deliver it via Meta. The claim is a
-// Firestore transaction acting as a mutex against the gateway: it proceeds only
-// if the doc is still "pending", so we can never double-send a doc the gateway
-// already grabbed. Resolves quietly (no throw) so one bad doc can't abort the sweep.
-async function processFallbackDoc(db, docRef, docId) {
-  let claimed;
-  try {
-    claimed = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(docRef);
-      if (!snap.exists) return null;
-      const data = snap.data();
-      if (data.status !== "pending") return null;   // gateway grabbed it (or it failed) — skip
-      const attempts = (data.attempts || 0) + 1;
-      tx.update(docRef, {
-        status:    "sending",
-        provider:  "meta",
-        attempts,
-        claimedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return { ...data, attempts };
-    });
-  } catch (err) {
-    console.error("metaFallbackSweep claim failed:", JSON.stringify({ docId, error: err.message }));
-    return;
-  }
-  if (!claimed) return;  // no longer pending — the gateway won the race
-
-  const to           = claimed.to;
-  const templateName = claimed.templateName;
-  const templateParams = claimed.variables || claimed.templateParams || [];
-
-  const result = await sendViaMetaTemplate(to, templateName, templateParams);
-
-  if (result.ok) {
-    await docRef.update({
-      status:    "sent",
-      provider:  "meta",
-      sentAt:    admin.firestore.FieldValue.serverTimestamp(),
-      messageId: result.messageId,
-    });
-    console.log("metaFallbackSweep meta-send:", JSON.stringify({
-      docId, recipient: maskPhone(to), templateName, outcome: "sent", messageId: result.messageId,
-    }));
-    return;
-  }
-
-  // Meta send failed. The fallback is the last resort, so it's the only path
-  // that ever sets "failed" — but only once we've exhausted META_MAX_ATTEMPTS.
-  if (claimed.attempts >= META_MAX_ATTEMPTS) {
-    await docRef.update({
-      status:    "failed",
-      lastError: result.error || "Meta send failed",
-    });
-    console.error("metaFallbackSweep meta-send:", JSON.stringify({
-      docId, recipient: maskPhone(to), templateName, outcome: "failed",
-      attempts: claimed.attempts, error: result.error,
-    }));
-  } else {
-    // Revert to pending so a later sweep retries — or the gateway sends it if
-    // it recovers. Clearing provider hands it back to whoever claims next.
-    await docRef.update({
-      status:    "pending",
-      provider:  null,
-      lastError: result.error || "Meta send failed",
-    });
-    console.warn("metaFallbackSweep meta-send:", JSON.stringify({
-      docId, recipient: maskPhone(to), templateName, outcome: "retry",
-      attempts: claimed.attempts, error: result.error,
-    }));
-  }
+// Claim a single outbox doc and deliver it via Meta. The claim-then-send body
+// moved VERBATIM to lib/outbox-deliver.cjs so the instant trigger and the
+// sweep share ONE code path and the duplicate-safety tests
+// (test/outbox-deliver.test.cjs) can drive it without firebase-admin. The
+// claim is a Firestore transaction acting as a mutex against every other
+// claimer: it proceeds only if the doc is still "pending", so we can never
+// double-send a doc someone else already grabbed. Resolves quietly — send
+// errors are values and the lib catches its own status-write failures — so
+// one bad doc can't abort the sweep. logPrefix labels the calling lane in
+// every log line; the sweep's value keeps its historical log strings
+// byte-identical for any external Cloud Logging filters.
+async function processFallbackDoc(db, docRef, docId, logPrefix) {
+  await deliverOutboxDoc({
+    db, docRef, docId,
+    sendTemplate:     sendViaMetaTemplate,
+    maxAttempts:      META_MAX_ATTEMPTS,
+    maxInfraAttempts: META_MAX_INFRA_ATTEMPTS,
+    serverTimestamp:  () => admin.firestore.FieldValue.serverTimestamp(),
+    maskPhone,
+    logPrefix,
+  });
 }
 
 // Scheduled Meta fallback for the WhatsApp outbox. Runs every minute and
@@ -381,8 +380,75 @@ exports.metaFallbackSweep = onSchedule(
     console.log("metaFallbackSweep: claiming stale pending docs", { stale: stale.length, scanned: snap.size });
 
     for (const docSnap of stale) {
-      await processFallbackDoc(db, docSnap.ref, docSnap.id);
+      await processFallbackDoc(db, docSnap.ref, docSnap.id, "metaFallbackSweep");
     }
+  }
+);
+
+// ─── INSTANT OUTBOX SEND — event-driven delivery (kills the polling delay) ───
+// Fires the moment a doc lands in whatsapp_outbox and delivers it via Meta
+// immediately, instead of leaving it for the every-minute sweep.
+//
+// WHY: the self-hosted gateway VM this outbox was built for NO LONGER EXISTS —
+// project marathon-club has zero Compute instances and its static IP
+// (marathon-broadcast-ip, 34.59.92.37) sits RESERVED, attached to nothing.
+// Every one of the last 3,200 outbox docs was delivered by metaFallbackSweep,
+// which by design waits FALLBACK_GRACE_SECONDS (60s, the dead gateway's head
+// start) and then polls each minute — a measured 60-126s (median ~95s) added
+// to EVERY customer message. This trigger removes that penalty; the sweep
+// stays deployed, untouched, as the retry lane and backstop.
+//
+// DUPLICATE SAFETY (do not weaken): delivery goes through the SAME
+// processFallbackDoc → deliverOutboxDoc claim transaction the sweep uses —
+// only a "pending" doc can be claimed, and the flip to "sending" commits
+// atomically, so a trigger re-fire (Firestore create events are delivered
+// at-least-once), an overlapping sweep run, or any future claimer finds the
+// doc non-pending and walks away. The producer-side 90s dedupe in
+// enqueueWhatsApp is a separate, untouched guard on doc CREATION. retry:false
+// below keeps the platform from re-running a crashed invocation on its own.
+//
+// CRASH WINDOWS, stated honestly: a crash BEFORE the claim commits leaves the
+// doc "pending" and the sweep sends it within ~2 min. A crash AFTER the claim
+// commits but before the terminal update strands the doc in "sending" — no
+// claimer ever touches "sending", so there is NO duplicate, but that doc needs
+// manual discovery. This gap is inherited from the sweep (same window existed
+// per sweep run); per-message invocations mean more, smaller windows, not a
+// new failure mode. DO NOT "fix" it by reverting stale "sending" docs to
+// pending: Meta may have accepted the send just before the crash, and a
+// revert would then double-send. Recovery must stay a human decision.
+//
+// Failure semantics are the lib's: a failed Meta send reverts the doc to
+// "pending" for the SWEEP to retry (an update never re-fires this create
+// trigger), terminal "failed" past META_MAX_ATTEMPTS — as before — or, for a
+// preflight (infra) failure that provably sent nothing, past the separate
+// META_MAX_INFRA_ATTEMPTS budget.
+exports.outboxInstantSend = onDocumentCreated(
+  {
+    document: "whatsapp_outbox/{docId}",
+    region:         "europe-west1",   // verified live: the (default) Firestore DB's locationId is europe-west1
+    memory:         "256MiB",
+    timeoutSeconds: 120,              // match the sweep; the 60s default would kill a slow Meta call mid-claim
+    // The serial sweep was an accidental rate limiter (~1-3 Meta calls/sec,
+    // one instance). Without a cap, a bulk enqueue would fan out to ~100
+    // concurrent instances hammering one WhatsApp number — Meta throttles,
+    // failures burn both attempts, and client-timeout-but-delivered
+    // duplicates become load-correlated. 3 instances keeps Meta throughput
+    // near the old profile while preserving virtually all of the latency win.
+    maxInstances:   3,
+    retry:          false,            // the SDK default, stated for the record — see the crash-window note above
+    secrets:        [metaToken],
+  },
+  async (event) => {
+    if (!INSTANT_SEND_ENABLED) {
+      console.log("outboxInstantSend: disabled (INSTANT_SEND_ENABLED=false)");
+      return;
+    }
+    const db = admin.firestore();
+    const docId = event.params.docId;
+    // Re-resolve the ref from params rather than trusting the event snapshot:
+    // the claim transaction re-reads the doc anyway, so a stale snapshot can
+    // never cause a send the current doc state doesn't justify.
+    await processFallbackDoc(db, db.collection("whatsapp_outbox").doc(docId), docId, "outboxInstantSend");
   }
 );
 
