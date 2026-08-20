@@ -28,8 +28,22 @@ mkdir -p "$(dirname "$LOG")"
 echo "── vision naming started $(date) ──" | tee -a "$LOG"
 
 for i in $(seq 1 200); do
-  if ! node scripts/shopify/_scope-unnamed.mjs > /dev/null 2>>"$LOG"; then
-    echo "scope read failed (network?); waiting 30s" | tee -a "$LOG"
+  # ── TERMINAL FAILURES ARE NOT RETRIED ─────────────────────────────────────
+  # _scope-unnamed.mjs exits 3 for a gate file that is missing or malformed —
+  # a thing no amount of waiting fixes. Treating every nonzero exit as "network"
+  # (which this did) sleeps 30s and goes round again, 200 times: about 100
+  # minutes of silent no-op, which is precisely the failure mode the gate
+  # validation was added to STOP (reviewer finding — the validation and this
+  # loop were fixed in the same breath and only one of them landed).
+  # The STOP: diagnostics are already in the log; this adds the exit.
+  node scripts/shopify/_scope-unnamed.mjs > /dev/null 2>>"$LOG"
+  SCOPE_RC=$?
+  if [ "$SCOPE_RC" -eq 3 ]; then
+    echo "STOPPED: the naming scope refused to build (see the STOP: lines above). Not retrying." | tee -a "$LOG"
+    exit 3
+  fi
+  if [ "$SCOPE_RC" -ne 0 ]; then
+    echo "scope read failed rc=$SCOPE_RC (network?); waiting 30s" | tee -a "$LOG"
     sleep 30
     continue
   fi
