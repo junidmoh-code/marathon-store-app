@@ -1449,3 +1449,25 @@ test("proposals: the row is keyboard-operable, and the navigable element holds n
   expect(opened).toBe(true);              // it swallowed the default
   expect(hashValue).toBe("#shopify/p3");  // and it navigated
 });
+
+test("proposals: a finished pass offers to look again — it does not claim the queue is empty", async () => {
+  // The walk moves FORWARD through keys and a product's key is its creation
+  // time, so a suggestion the naming runner writes while this page is open can
+  // land behind where the reading got to. "No names are waiting" full stop
+  // would be a claim the walk cannot support.
+  proposalPages = [{ nodes: {}, lastKey: null, done: true }];
+  keys = new Set();
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("can add more behind what has already been read");
+
+  // and Check again re-walks from the TOP, not from a spent cursor
+  proposalPages = [{ nodes: { p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } }, lastKey: "p3", done: true }];
+  await act(() => { button(tree, "Check again").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null, null]);   // both walks started at the top
+  expect(texts(tree)).toContain("Brushed nubuck low-top in sand");
+});

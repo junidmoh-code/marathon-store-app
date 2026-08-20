@@ -105,9 +105,14 @@ describe("loadProposalPage — the query it actually builds", () => {
     expect(lastKey).toBe("p9");
   });
 
-  it("a short page is the end", async () => {
+  it("a short page is the end, and a finished walk hands back NO cursor", async () => {
     serverPage = [["p1", {}]];
-    expect((await loadProposalPage({ pageSize: 5 })).done).toBe(true);
+    const r = await loadProposalPage({ pageSize: 5 });
+    expect(r.done).toBe(true);
+    // Returning the last key on a finished walk is a footgun, not a fact: a
+    // caller looping on "there is a lastKey" instead of "not done" would
+    // re-request the same page for ever. Make the misuse impossible.
+    expect(r.lastKey).toBe(null);
   });
 
   it("a FULL page is not the end", async () => {
@@ -125,6 +130,7 @@ describe("loadProposalPage — the query it actually builds", () => {
     const r = await loadProposalPage({ after: "p7", pageSize: 2 });
     expect(r.nodes).toEqual({});
     expect(r.done).toBe(true);
+    expect(r.lastKey).toBe(null);   // and it cannot be looped on
   });
 
   it("the default page size is bounded, not the whole node", () => {

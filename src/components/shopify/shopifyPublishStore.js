@@ -147,7 +147,21 @@ export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_
   // `done` is judged on RECORDS RETURNED, not on the new ones kept: a final
   // page holding only the overlap is still the end, and counting the kept
   // records would read a full page of duplicates as "more to come".
-  return { nodes, lastKey, done: seen < want };
+  //
+  // A DONE PAGE RETURNS NO CURSOR. Returning the last key on a finished walk
+  // is a footgun rather than a fact: a caller that loops on "there is a
+  // lastKey" instead of on "not done" would re-request the same single-record
+  // page for ever. Today's caller checks `done`, so this is prevention, not a
+  // fix (reviewer finding).
+  //
+  // AND `done` MEANS "nothing further in THIS pass", not "nothing left". The
+  // cursor only moves forward through keys, and a product's key is its
+  // CREATION time — so a product the naming runner stamps `awaiting` while a
+  // reviewer is paging can land BEHIND the cursor and go unseen until the next
+  // walk. That is why the lane offers to look again rather than declaring the
+  // queue permanently empty.
+  const finished = seen < want;
+  return { nodes, lastKey: finished ? null : lastKey, done: finished };
 }
 
 // Session cache for the shallow key set — the home badge asks on every visit
