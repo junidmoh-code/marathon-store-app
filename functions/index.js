@@ -35,6 +35,12 @@ const metaToken   = defineSecret("meta-whatsapp-token");
 const META_FALLBACK_ENABLED  = process.env.META_FALLBACK_ENABLED !== "false";        // default true
 const FALLBACK_GRACE_SECONDS = parseInt(process.env.FALLBACK_GRACE_SECONDS, 10) || 60; // sweep's minimum doc age (see block above)
 const META_MAX_ATTEMPTS      = parseInt(process.env.META_MAX_ATTEMPTS, 10) || 2;       // Meta tries before "failed"
+// Separate cap for preflight (infra) failures — sends that provably never
+// left the building (e.g. secret binding missing). These refund the Meta
+// attempt and revert to pending, so without their own cap a permanently
+// broken binding would grow the pending pool without bound and starve the
+// sweep's stable limit(50) window. 240 ≈ 4 hours at the sweep's cadence.
+const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10) || 240;
 // Kill switch for the event-driven outboxInstantSend trigger (default ON).
 // Set INSTANT_SEND_ENABLED=false — e.g. if a self-hosted gateway ever comes
 // back and should get its FALLBACK_GRACE_SECONDS head start again — and the
@@ -109,11 +115,14 @@ function renderWhatsAppText(templateName, params = []) {
   return { ok: true, text: entry.render(params.map(String)) };
 }
 
-// Send a WhatsApp template via the Meta Graph API. This is the fallback send
-// path, driven by metaFallbackSweep when the self-hosted gateway hasn't
-// delivered an outbox doc in time. `to` must already be E.164-normalized (the
-// producer stores it that way). Returns { ok: true, messageId } on success, or
-// { ok: false, error, metaCode } on failure — it never throws for Meta errors,
+// Send a WhatsApp template via the Meta Graph API — the actual sender behind
+// both outbox lanes (outboxInstantSend and metaFallbackSweep). `to` must
+// already be E.164-normalized (the producer stores it that way). Returns
+// { ok: true, messageId } on success; { ok: false, error, metaCode } on a
+// failure that reached (or tried to reach) Meta; or
+// { ok: false, preflight: true, error } when it can prove NOTHING was sent
+// (see the guard below) — that third shape exempts the doc from the Meta
+// attempt cap, so it carries a strict contract. Never throws for Meta errors,
 // so the caller can decide whether to retry or fail the doc.
 // NOTE: token handling (metaToken secret + hardcoded WA_PHONE_ID) is unchanged;
 // moving the token to Secret Manager properly is a separate follow-up.
@@ -139,12 +148,15 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
   // lags. Without this check the request goes out as "Bearer " and Meta's 401
   // (code 190) triggers the TOKEN EXPIRED log below, sending the operator to
   // rotate a perfectly good token.
-  // retryable:true — this is an INFRA failure, not a message failure: the doc
-  // must never go terminally "failed" over it (CodeRabbit, PR #388). The
-  // delivery ladder keeps reverting a retryable failure to "pending" past the
-  // attempts cap, so the message survives until the binding is fixed.
+  // preflight:true — an INFRA failure detected BEFORE any bytes reach Meta,
+  // not a message failure: the doc must not burn its Meta retry budget or go
+  // terminally "failed" over it (CodeRabbit, PR #388). The delivery ladder
+  // refunds the attempt and reverts to "pending" under a separate infra cap.
+  // ⚠ preflight may ONLY mark failures where provably NOTHING was sent — a
+  // post-request failure (429, socket timeout) must never carry it, because
+  // Meta may have accepted the message and a refunded retry would duplicate.
   if (!metaToken.value()) {
-    return { ok: false, retryable: true, error: "meta-whatsapp-token secret not available to this function (check secret binding / IAM grant)" };
+    return { ok: false, preflight: true, error: "meta-whatsapp-token secret not available to this function (check secret binding / IAM grant)" };
   }
 
   let waRes, json;
@@ -311,9 +323,10 @@ exports.sendWhatsApp = onCall(
 async function processFallbackDoc(db, docRef, docId, logPrefix) {
   await deliverOutboxDoc({
     db, docRef, docId,
-    sendTemplate:    sendViaMetaTemplate,
-    maxAttempts:     META_MAX_ATTEMPTS,
-    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    sendTemplate:     sendViaMetaTemplate,
+    maxAttempts:      META_MAX_ATTEMPTS,
+    maxInfraAttempts: META_MAX_INFRA_ATTEMPTS,
+    serverTimestamp:  () => admin.firestore.FieldValue.serverTimestamp(),
     maskPhone,
     logPrefix,
   });

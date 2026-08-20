@@ -65,7 +65,8 @@ const pendingDoc = () => ({
 
 const deliver = (fake, sendTemplate, overrides = {}) => deliverOutboxDoc({
   db: fake.db, docRef: fake.docRef, docId: "doc1",
-  sendTemplate, maxAttempts: 2, serverTimestamp: () => SERVER_TS, maskPhone,
+  sendTemplate, maxAttempts: 2, maxInfraAttempts: 240,
+  serverTimestamp: () => SERVER_TS, maskPhone,
   logPrefix: "testLane", log: quietLog, ...overrides,
 });
 
@@ -157,28 +158,55 @@ test("reverted doc retried once by the sweep, then terminal failed at maxAttempt
   assert.equal(sends, 2, "a failed doc must never be sent");
 });
 
-test("retryable (infra) failure NEVER goes terminal, even past the attempts cap", async () => {
-  // retryable:true marks an infra fault (missing secret binding after a fresh
-  // deploy), not a message fault. The doc must keep reverting to pending —
-  // alive for the sweep — no matter how many attempts have burned, so a
-  // customer's message survives until an operator fixes the infra.
+test("preflight (infra) failure refunds the Meta budget and survives well past the attempts cap", async () => {
+  // preflight:true marks a failure that provably sent nothing (missing secret
+  // binding after a fresh deploy) — not a message fault. The doc must keep
+  // reverting to pending with its Meta budget UNTOUCHED, so surviving an
+  // outage can't spend the message's real retries.
   const fake = fakeDoc(pendingDoc());
-  const infraFail = async () => ({ ok: false, retryable: true, error: "secret unavailable" });
+  const infraFail = async () => ({ ok: false, preflight: true, error: "secret unavailable" });
   for (let i = 0; i < 4; i++) await deliver(fake, infraFail);  // well past maxAttempts=2
   assert.equal(fake.state.data.status, "pending", "an infra failure must never terminal-fail a message");
-  assert.equal(fake.state.data.attempts, 4);
-  // and once the infra recovers, the message still goes out exactly once
+  assert.equal(fake.state.data.attempts, 0, "every refunded claim leaves the Meta budget untouched");
+  assert.equal(fake.state.data.infraAttempts, 4, "the infra budget burns instead");
+  // once the infra recovers: the message sends exactly once, on a fresh budget
   let sends = 0;
   await deliver(fake, async () => { sends++; return { ok: true, messageId: "wamid.rec" }; });
   assert.equal(sends, 1);
   assert.equal(fake.state.data.status, "sent");
+  assert.equal(fake.state.data.attempts, 1);
 });
 
-test("a rejecting sender is converted to a failure value — no throw, ladder still applies", async () => {
+test("infra budget exhaustion IS terminal, with a distinguishing lastError", async () => {
+  // Without its own cap, a permanently broken binding would cycle the doc
+  // pending↔sending forever and the growing pool would starve the sweep's
+  // stable limit(50) window. The cap ends it loudly.
+  const fake = fakeDoc(pendingDoc());
+  const infraFail = async () => ({ ok: false, preflight: true, error: "secret unavailable" });
+  for (let i = 0; i < 3; i++) await deliver(fake, infraFail, { maxInfraAttempts: 3 });
+  assert.equal(fake.state.data.status, "failed");
+  assert.match(fake.state.data.lastError, /infra budget exhausted/);
+  // terminal means terminal — nothing sends it later
+  let sends = 0;
+  await deliver(fake, async () => { sends++; return { ok: true, messageId: "x" }; });
+  assert.equal(sends, 0);
+});
+
+test("a rejecting sender is converted to a failure value — no throw, capped like any send failure", async () => {
   const fake = fakeDoc(pendingDoc());
   await deliver(fake, async () => { throw new Error("boom"); });   // must not reject
   assert.equal(fake.state.data.status, "pending", "rejection below cap reverts like any send failure");
+  assert.equal(fake.state.data.attempts, 1, "a rejection burns the Meta budget — it is NOT preflight");
   assert.match(fake.state.data.lastError, /sendTemplate threw: boom/);
+});
+
+test("a bare Promise.reject() (no Error object) still cannot escape", async () => {
+  // err?.message on a non-object must not make the catch block itself throw —
+  // that would strand the claimed doc in "sending" and abort a sweep batch.
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => Promise.reject());              // rejects with undefined
+  assert.equal(fake.state.data.status, "pending");
+  assert.match(fake.state.data.lastError, /sendTemplate threw: undefined/);
 });
 
 test("doc deleted before delivery → quiet no-op", async () => {
