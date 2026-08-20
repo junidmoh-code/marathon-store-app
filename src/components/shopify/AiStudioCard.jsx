@@ -370,7 +370,9 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
           <div style={{ fontSize: 10, color: GRAY, marginTop: 6, lineHeight: 1.45 }}>
             Check the product itself, not the background: the item a customer receives has to be the
             item in this picture. If a logo, a colour, a shape or a design detail has changed, throw it
-            away. {!house && "Wear is part of the item, not a fault in the photo: if a scuff, scratch or worn edge has been tidied away, that is a reason to reject it too."}
+            away. Wear is part of the item, not a fault in the photo: if a scuff, scratch or worn edge
+            has been tidied away, that is a reason to reject it too — on either preset, and whatever
+            the grade says.
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
             <button type="button" disabled={saving} onClick={() => setCandidate(null)}

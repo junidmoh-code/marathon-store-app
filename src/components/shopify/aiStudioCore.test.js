@@ -347,7 +347,19 @@ describe("gradeAdmitsWear", () => {
   });
 
   it("is not re-opened by a differently-worded negative grade", () => {
-    expect(gradeAdmitsWear("Mint — no visible scuffs")).toBe(false);
-    expect(gradeAdmitsWear("No marks at all")).toBe(false);
+    // Every term the POSITIVE matcher catches must also be catchable by the
+    // negation, or the grade that promises its absence trips the warning.
+    for (const g of [
+      "Mint — no visible scuffs", "No marks at all", "No scuffs", "No scuffing",
+      "no wear", "No worn edges", "Excellent — no scuffs or marks",
+    ]) {
+      expect(gradeAdmitsWear(g), `"${g}" should be quiet`).toBe(false);
+    }
+  });
+
+  it("still warns when the grade only says the marks are light", () => {
+    for (const g of ["Light scuffing", "Some marks", "Shows wear"]) {
+      expect(gradeAdmitsWear(g), `"${g}" should warn`).toBe(true);
+    }
   });
 });

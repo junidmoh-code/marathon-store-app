@@ -319,6 +319,11 @@ export function readGenerateResult(data, productId) {
 export function gradeAdmitsWear(condition) {
   const c = String(condition ?? "").trim().toLowerCase();
   if (!c) return false;
-  if (/\bno visible\b|\bno\s+\w*\s*(wear|marks)\b/.test(c)) return false;
+  // The negation list must cover every term the POSITIVE list matches, or a
+  // grade worded "No scuffs" falls through the negation and is caught by the
+  // positive matcher — warning on a grade that promises the opposite. That was
+  // the original bug in a smaller form (CodeRabbit, PR #394): the first fix
+  // covered "wear" and "marks" and forgot the third word it had just added.
+  if (/\bno\b[^.]{0,20}?\b(wear|worn|marks?|scuffs?|scuffing)\b/.test(c)) return false;
   return /\bmarks?\b|\bwear\b|\bworn\b|\bscuff/.test(c);
 }
