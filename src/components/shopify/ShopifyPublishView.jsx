@@ -36,15 +36,17 @@
 // treatment (RoleCard in App.jsx), and every colour/spacing value comes from
 // stock/ui.js. Writes go ONLY to /shopify_publish, through the store.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bGray, bGreen } from "../stock/ui";
+import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
   CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
+  pendingProposal, proposalApplyBlocker,
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
   isPublishableProduct,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
+  applyNameProposal, dismissNameProposal, loadProposalPage,
 } from "./shopifyPublishStore";
 import ShopifyProductPage from "./ShopifyProductPage";
 
@@ -111,6 +113,71 @@ function Thumb({ p, node }) {
   }
   return <div style={{ width: 44, height: 44, borderRadius: 10, background: "rgba(120,150,255,.08)",
                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{p?.photo || "👟"}</div>;
+}
+
+// ─── PROPOSED-NAME ROW ───────────────────────────────────────────────────────
+// One product under the "Proposed names" filter: the photo, the name it has
+// now, the name read off that photo, and the two decisions. Deliberately NOT
+// ProductListRow — that row is built around publishing (state chip, condition
+// chips, batch checkbox) and none of it is the question being asked here. The
+// question is only ever "is this name better than that one", and the row shows
+// exactly the two strings that answer it.
+//
+// The thumbnail is not decoration: the proposal was written from that photo,
+// so the photo is the evidence. Tapping the row still opens the product page
+// for anyone who wants the rest of the picture.
+export function ProposalRow({ product, node, busy, onOpen, onApply, onDismiss }) {
+  const proposal = pendingProposal(node);
+  if (!proposal) return null;
+  const gate = proposalApplyBlocker(node);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "11px 2px",
+                  borderBottom: "1px solid rgba(255,255,255,.06)" }}>
+      {/* THE NAVIGABLE PART, and only it — the same treatment ProductListRow
+          uses, for the same reasons. A keyboard user must be able to reach the
+          product page from this lane; without it the identity guess, the
+          confidence and the photos are mouse-only (reviewer finding). It holds
+          NO other control: role="button" makes its descendants presentational
+          to assistive technology, and a keydown from a nested button bubbles
+          here, where preventDefault would cancel that button's activation. The
+          two decision buttons are therefore SIBLINGS below, not children. */}
+      <div onClick={() => onOpen(product.id)}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${proposal.name}`}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+          e.preventDefault();
+          onOpen(product.id);
+        }}
+        style={{ display: "flex", gap: 11, alignItems: "flex-start", minWidth: 0, cursor: "pointer" }}>
+        <Thumb p={product} node={node} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", lineHeight: 1.35,
+                        overflowWrap: "break-word" }}>
+            {proposal.name}
+          </div>
+          <div style={{ fontSize: 11, color: GRAY, marginTop: 3, overflowWrap: "break-word" }}>
+            replaces {proposal.previousName ? `“${proposal.previousName}”` : "no listing name"}
+          </div>
+        </div>
+      </div>
+      <div style={{ paddingLeft: 55 }}>
+        {!gate.ok && <div style={{ fontSize: 10.5, color: RED, marginBottom: 5 }}>{gate.reason}</div>}
+        <div style={{ display: "flex", gap: 7 }}>
+          <button disabled={busy || !gate.ok} onClick={() => onApply(product.id, proposal.proposedAt)}
+            style={{ ...bBlue, padding: "5px 10px", fontSize: "0.68rem",
+                     opacity: busy || !gate.ok ? 0.5 : 1 }}>
+            Use this name
+          </button>
+          <button disabled={busy} onClick={() => onDismiss(product.id, proposal.proposedAt)}
+            style={{ ...bGray, padding: "5px 10px", fontSize: "0.68rem" }}>
+            Keep the old one
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── BATCH CONFIRMATION ──────────────────────────────────────────────────────
@@ -547,6 +614,89 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     ];
   }, [filter, productById, nodes, q]);
 
+  // ─── THE PROPOSED-NAMES LANE: ITS OWN READ, ON DEMAND AND BOUNDED ──────────
+  // Selecting the lane is what fetches it, and it fetches in pages. Awaiting
+  // nodes are the big set (one per proposal, growing toward one per catalogue
+  // product); pulling them at mount for every visit to this page would be the
+  // whole node arriving through the index, which is the exact bandwidth class
+  // this page is built to avoid. Pages fold into `nodes`, so a decided row
+  // leaves the lane through the same path every other write uses.
+  const [proposalsLoaded, setProposalsLoaded] = useState(false);
+  const [proposalPage, setProposalPage] = useState({ lastKey: null, done: false, loading: false });
+  // In-flight guard as a REF for the same reason the auto-load uses one: the
+  // `loading` flag commits asynchronously, so between a click and the re-render
+  // that disables the button a second click gets through and fetches the same
+  // cursor twice. Harmless (the fold is FILL-only) but it is a wasted read of
+  // 300 nodes, and this page's whole discipline is not making those.
+  const proposalLoading = useRef(false);
+  const loadMoreProposals = useCallback(async () => {
+    if (proposalLoading.current) return;
+    proposalLoading.current = true;
+    setProposalPage((p) => (p.loading ? p : { ...p, loading: true }));
+    try {
+      const { nodes: got, lastKey, done } = await loadProposalPage({ after: proposalPage.lastKey });
+      setNodes((prev) => {
+        const next = { ...prev };
+        // FILL, never overwrite — a write committed while this read was in
+        // flight holds the newer node, exactly as the section fetch does.
+        for (const [pid, n] of Object.entries(got)) if (prev[pid] === undefined) next[pid] = n;
+        return next;
+      });
+      // Functional, so the cursor can never be computed from a stale closure.
+      setProposalPage((p) => ({ lastKey: lastKey ?? p.lastKey, done, loading: false }));
+      setProposalsLoaded(true);
+    } catch (e) {
+      setProposalPage((p) => ({ ...p, loading: false }));
+      setProposalError(String(e?.message || e));
+      setProposalsLoaded(true);
+    } finally {
+      proposalLoading.current = false;
+    }
+  }, [proposalPage.lastKey]);
+
+  // A REF, not the state flags. The auto-load must fire exactly once, and the
+  // state it would have to guard on (loading, loaded, lastKey) is set
+  // asynchronously — so between the effect firing and its first setState
+  // committing, a re-render for any other reason re-enters and fetches a
+  // second page nobody asked for. A ref flips synchronously and cannot race.
+  const proposalsRequested = useRef(false);
+  useEffect(() => {
+    if (filter !== "proposed" || proposalsRequested.current) return;
+    proposalsRequested.current = true;
+    loadMoreProposals();
+  }, [filter, loadMoreProposals]);
+
+  // ─── THE PROPOSED-NAMES LANE ───────────────────────────────────────────────
+  // Built from NODES, exactly like liveGroups and for the same reason: the
+  // question "which products have a name waiting" is answered by the node, and
+  // walking the catalogue's category sections to find them would need a body
+  // for every product on the page. The pipeline query already holds every
+  // proposal-carrying node — the runner stamps state:"awaiting" on any node it
+  // touches that has none, so all of them land inside the ONE index that
+  // exists (.indexOn ["state"]) and the lane costs no extra read.
+  //
+  // Sorted by when the proposal was made, oldest first: a run's output is
+  // reviewed in the order it was produced, so a session that stops halfway
+  // resumes where it stopped instead of re-reading the same names.
+  const proposedList = useMemo(() => {
+    if (filter !== "proposed") return null;
+    if (!proposalsLoaded) return [];
+    const out = [];
+    for (const [pid, n] of Object.entries(nodes)) {
+      if (!pendingProposal(n)) continue;
+      const p = productById.get(pid);
+      if (!p) continue;
+      if (q && !(String(p.name || "").toLowerCase().includes(q) ||
+                 String(n.cleanName || "").toLowerCase().includes(q) ||
+                 String(n.nameProposal?.name || "").toLowerCase().includes(q))) continue;
+      out.push(p);
+    }
+    out.sort((a, b) =>
+      (Number(nodes[a.id]?.nameProposal?.proposedAt) || 0) -
+      (Number(nodes[b.id]?.nameProposal?.proposedAt) || 0));
+    return out;
+  }, [filter, productById, nodes, q, proposalsLoaded]);
+
   // A section is effectively open when toggled open, or when a search has
   // narrowed the page far enough that showing the matches outright is cheap.
   // A broad search (a one-letter query can match most of the catalogue)
@@ -770,6 +920,31 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         .catch(() => {});
     }
   };
+
+  // ─── Proposed-name decisions ───────────────────────────────────────────────
+  // One in flight at a time, tracked by pid so only the row being decided goes
+  // busy. The write returns the new node and applyWrite folds it in, which is
+  // what makes the row leave the lane — the lane's membership test is the
+  // node's own pending-proposal flag, so nothing has to be removed by hand.
+  const [proposalBusy, setProposalBusy] = useState(null);
+  const [proposalError, setProposalError] = useState(null);
+  const decideProposal = useMemo(() => {
+    const run = (write) => async (pid, seenProposedAt) => {
+      if (proposalBusy) return;
+      setProposalBusy(pid);
+      setProposalError(null);
+      try {
+        const res = await write(pid, nodesRef.current[pid] || null, seenProposedAt);
+        if (!res?.ok) { setProposalError(res?.message || "Not saved."); return; }
+        applyWrite(pid, res.node);
+      } catch (e) {
+        setProposalError(String(e?.message || e));
+      } finally {
+        setProposalBusy(null);
+      }
+    };
+    return { apply: run(applyNameProposal), dismiss: run(dismissNameProposal) };
+  }, [proposalBusy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Batch-publish selection ───────────────────────────────────────────────
   // Only awaiting-review rows in the CATEGORY sections are selectable — every
@@ -1060,6 +1235,80 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading pipeline…</div>
         )}
 
+        {/* PROPOSED NAMES — the vision run's output, one decision per row */}
+        {proposedList && proposalError && (
+          <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
+            {proposalError}
+          </div>
+        )}
+        {proposedList && !proposalsLoaded && (
+          <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading suggested names…</div>
+        )}
+        {keys && pipeline && proposedList && proposalsLoaded && (
+          proposedList.length === 0 ? (
+            // AN EMPTY PAGE IS NOT AN EMPTY LANE. The pages come from the
+            // `state == "awaiting"` index, which holds every product in the
+            // review queue — not only the ones carrying a pending suggestion.
+            // A product whose name has been decided keeps its awaiting state
+            // and drops out of this lane, so once Junid has worked through the
+            // first few hundred, the FIRST page is all decided while thousands
+            // still wait behind it. Saying "no names are waiting" there would
+            // be a flat lie with no way forward, because the Load more button
+            // used to live only in the non-empty branch (reviewer finding).
+            // So the terminal message is gated on the paging actually being
+            // finished, and the lane keeps offering the next page until it is.
+            proposalPage.done ? (
+              <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
+                {q ? "No suggested names match." : (
+                  <>
+                    No names are waiting. Suggestions appear here after a naming run
+                    reads the product photos — nothing on this page changes until you
+                    take one.
+                  </>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
+                {q
+                  ? "No suggested names match so far — there are more to look through."
+                  : "Nothing waiting in the first stretch of the queue — there are more to look through."}
+                <div>
+                  <button onClick={loadMoreProposals} disabled={proposalPage.loading}
+                    style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 10 }}>
+                    {proposalPage.loading ? "Looking…" : "Keep looking"}
+                  </button>
+                </div>
+              </div>
+            )
+          ) : (
+            <>
+              <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px 4px", lineHeight: 1.6 }}>
+                {proposedList.length} name{proposedList.length === 1 ? "" : "s"} read from the
+                product photos, waiting for a decision. Taking one changes only the listing
+                name — it never puts anything on the storefront, and the old name is kept so
+                the change can be undone.
+              </div>
+              {proposedList.map((p) => (
+                <ProposalRow
+                  key={p.id}
+                  product={p}
+                  node={nodes[p.id] || null}
+                  busy={proposalBusy === p.id}
+                  onOpen={openProduct}
+                  onApply={decideProposal.apply}
+                  onDismiss={decideProposal.dismiss}
+                />
+              ))}
+              {!proposalPage.done && (
+                <button onClick={loadMoreProposals} disabled={proposalPage.loading}
+                  style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 12 }}>
+                  {proposalPage.loading ? "Loading…" : "Load more suggestions"}
+                </button>
+              )}
+            </>
+          )
+        )}
+
         {/* LIVE FILTER — the On / Off groups replace the category sections */}
         {keys && pipeline && liveGroups && (
           liveGroups.every((g) => g.list.length === 0) ? (
@@ -1090,13 +1339,13 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           )
         )}
 
-        {keys && pipeline && !liveGroups && viewSections.length === 0 && (
+        {keys && pipeline && !liveGroups && !proposedList && viewSections.length === 0 && (
           <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>
             {q ? "No products match." : "Nothing to show under this filter."}
           </div>
         )}
 
-        {keys && pipeline && !liveGroups && viewSections.map(({ cat, matched, count, pending }) => {
+        {keys && pipeline && !liveGroups && !proposedList && viewSections.map(({ cat, matched, count, pending }) => {
           const opened = isOpen(cat);
           // The category's select-all: only rows that would render under the
           // current filter, are awaiting review, and pass the batch gates.

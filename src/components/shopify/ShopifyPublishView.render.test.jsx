@@ -10,6 +10,7 @@
 // Store fully mocked — no live data, no network, no DOM (minimal window stub,
 // same pattern as UserManagement.gate.test.jsx).
 import { test, expect, vi, beforeEach } from "vitest";
+import { NAME_PROPOSAL_KEY } from "../../utils/visionNaming";
 import React from "react";
 import { create, act } from "react-test-renderer";
 
@@ -41,16 +42,41 @@ const fakeWindow = {
 globalThis.window = fakeWindow;
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
 
-const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [] };
+const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [],
+                applyProposal: [], dismissProposal: [], proposalPages: [] };
 let keys = new Set();
 let pipeline = {};
 let bodies = {};
 let approveResult = { ok: true };
+let proposalWriteResult = { ok: true };
+let proposalPages = [];
 // Read-in-flight control — see loadNodesFor below.
 let holdNodesFor = false;
 const heldReads = [];
 
 vi.mock("./shopifyPublishStore", () => ({
+  PROPOSAL_PAGE_SIZE: 300,
+  // The lane's OWN read: lazy (only when the lane is selected) and bounded
+  // (one page per call). `proposalPages` is the fake server's pages.
+  loadProposalPage: ({ after = null } = {}) => {
+    calls.proposalPages.push(after);
+    const page = proposalPages.shift() || { nodes: {}, lastKey: null, done: true };
+    return Promise.resolve(page);
+  },
+  applyNameProposal: (pid, node) => {
+    calls.applyProposal.push(pid);
+    const proposal = (node || {})[NAME_PROPOSAL_KEY];
+    return Promise.resolve(proposalWriteResult.ok
+      ? { ok: true, node: { ...(node || {}), cleanName: proposal.name, cleanNameSource: "ai",
+                            nameApprovedAt: 1, [NAME_PROPOSAL_KEY]: { ...proposal, status: "applied" } } }
+      : { ok: false, message: proposalWriteResult.message });
+  },
+  dismissNameProposal: (pid, node) => {
+    calls.dismissProposal.push(pid);
+    const proposal = (node || {})[NAME_PROPOSAL_KEY];
+    return Promise.resolve({ ok: true,
+      node: { ...(node || {}), [NAME_PROPOSAL_KEY]: { ...proposal, status: "rejected" } } });
+  },
   loadPublishKeys: () => Promise.resolve(keys),
   loadPipelineNodes: () => Promise.resolve(pipeline),
   loadNodesFor: (pids) => {
@@ -103,6 +129,18 @@ const PRODUCTS = [
   { id: "p2", name: "Plain tee white", category: "Clothing", subcategory: "Tees", photoUrl: "https://x/p2.jpg" },
   { id: "p3", name: "Court sneaker grey", category: "Footwear", subcategory: "Sneakers", retailPrice: 899, photoUrl: "https://x/p3.jpg" },
 ];
+
+const PROPOSAL = {
+  name: "Brushed nubuck low-top in sand",
+  source: "vision",
+  previousName: "Sneaker",
+  identity: { brand: "Nike", model: "Air Force 1", colourway: "Sand", confidence: 0.82,
+              text: "Nike Air Force 1 Sand" },
+  attempts: 1,
+  visionModel: "gemini-3.7-flash",
+  proposedAt: 1787000000000,
+  status: "pending",
+};
 
 const flush = async () => { await act(() => Promise.resolve()); await act(() => Promise.resolve()); };
 const texts = (tree) => JSON.stringify(tree.toJSON());
@@ -175,6 +213,11 @@ beforeEach(() => {
   pipeline = {};
   bodies = {};
   approveResult = { ok: true };
+  proposalWriteResult = { ok: true };
+  proposalPages = [];
+  calls.applyProposal.length = 0;
+  calls.dismissProposal.length = 0;
+  calls.proposalPages.length = 0;
   holdNodesFor = false;
   heldReads.length = 0;
 });
@@ -1186,4 +1229,223 @@ test("a selected product that stops being publishable leaves the selection", asy
   expect(out).toContain('"1"," of ","25"," selected"'); // p2 survives, p1 is gone
   expect(out).not.toContain("Plain tee black");
   bodies = {};
+});
+
+// ─── PROPOSED NAMES — the vision run's review lane ───────────────────────────
+// The reason this lane exists: 663 names had already been read off product
+// photos and written to /shopify_publish/{pid}/nameProposal with NO surface in
+// the app to decide any of them. These tests pin the surface, not the model.
+
+
+// The lane reads from the PIPELINE query, not from an expanded section — that
+// is the whole point of the runner stamping state:"awaiting" on the nodes it
+// touches. A proposal must therefore be visible with nothing expanded at all.
+const mountProposals = async (nodes, { viaPipeline = false } = {}) => {
+  // A live/blocked product's node arrives with the pipeline query as before;
+  // an AWAITING one arrives only from the lane's own paged read.
+  if (viaPipeline) pipeline = nodes;
+  else proposalPages = [{ nodes, lastKey: Object.keys(nodes).slice(-1)[0] || null, done: true }];
+  keys = new Set(Object.keys(nodes));
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  const chip = button(tree, "Proposed names");
+  await act(() => { chip.props.onClick(); });
+  await flush();
+  return tree;
+};
+
+test("proposals: the lane lists a waiting name with NOTHING expanded, and both names are shown", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  const out = texts(tree);
+  expect(out).toContain("Brushed nubuck low-top in sand"); // the proposal
+  expect(out).toContain("Sneaker");                       // what it replaces
+  expect(calls.nodesFor.length).toBe(0);                  // no section body fetch was needed
+  // and it came from the lane's OWN bounded read, not from the pipeline
+  expect(calls.proposalPages).toEqual([null]);
+});
+
+test("proposals: the lane is not read until it is selected, and it pages", async () => {
+  proposalPages = [
+    { nodes: { p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } }, lastKey: "p3", done: false },
+    { nodes: { p2: { state: "awaiting", cleanName: "Tee", nameProposal: { ...PROPOSAL, name: "Ribbed cotton crew tee in bone", proposedAt: 1787000000001 } } }, lastKey: "p2", done: true },
+  ];
+  keys = new Set(["p2", "p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  // MOUNTED ON ANOTHER FILTER: the awaiting set has not been touched. This is
+  // the whole point — it is the big set and it is not free.
+  expect(calls.proposalPages).toEqual([]);
+
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null]);            // first page only
+  expect(texts(tree)).toContain("Brushed nubuck low-top in sand");
+  expect(texts(tree)).not.toContain("Ribbed cotton crew tee in bone");
+
+  await act(() => { button(tree, "Load more suggestions").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null, "p3"]);       // continued from the last key
+  expect(texts(tree)).toContain("Ribbed cotton crew tee in bone");
+});
+
+test("proposals: Use this name writes through the store and the row leaves the lane", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  await act(() => { button(tree, "Use this name").props.onClick(); });
+  await flush();
+  expect(calls.applyProposal).toEqual(["p3"]);
+  // The lane's membership test is the node's own pending flag; the applied
+  // node is no longer pending, so the row is gone with no bookkeeping.
+  expect(texts(tree)).not.toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: Keep the old one dismisses without touching the name", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  await act(() => { button(tree, "Keep the old one").props.onClick(); });
+  await flush();
+  expect(calls.dismissProposal).toEqual(["p3"]);
+  expect(calls.applyProposal).toEqual([]);
+});
+
+test("proposals: a refused write surfaces its message and the row stays", async () => {
+  proposalWriteResult = { ok: false, message: "Listing is ON the storefront — switch it off before taking a new name." };
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  await act(() => { button(tree, "Use this name").props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain("switch it off before taking a new name");
+  expect(out).toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: a name that is a brand trigger TODAY cannot be taken, and says why", async () => {
+  // A proposal written before the lexicon grew. The lane must not be a softer
+  // door than the hand-typed name editor.
+  const tree = await mountProposals({
+    p3: { state: "awaiting", cleanName: "Sneaker",
+          nameProposal: { ...PROPOSAL, name: "Nike low-top in sand" } },
+  });
+  const use = button(tree, "Use this name");
+  expect(use.props.disabled).toBe(true);
+  expect(texts(tree)).toContain("brand trigger");
+});
+
+test("proposals: a listing that is ON cannot take a new name from the lane", async () => {
+  const tree = await mountProposals({
+    p3: { state: "live", liveState: "on", cleanName: "Sneaker", nameProposal: PROPOSAL },
+  }, { viaPipeline: true });
+  expect(button(tree, "Use this name").props.disabled).toBe(true);
+  expect(texts(tree)).toContain("switch it off");
+});
+
+test("proposals: an already-decided proposal never appears in the lane", async () => {
+  const tree = await mountProposals({
+    p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: { ...PROPOSAL, status: "applied" } },
+  });
+  expect(texts(tree)).toContain("No names are waiting");
+});
+
+test("proposals: the lane is empty-stated, not blank, when nothing is waiting", async () => {
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker" } });
+  expect(texts(tree)).toContain("No names are waiting");
+});
+
+test("proposals: a page with nothing pending does NOT claim the lane is empty while more pages remain", async () => {
+  // The realistic shape once Junid has worked through the front of the queue:
+  // the first page is products whose names he has already decided, and the
+  // ones still waiting are behind them. Claiming "no names are waiting" here
+  // — with no way forward — is the dead end this guards.
+  proposalPages = [
+    { nodes: { p3: { state: "awaiting", cleanName: "Sneaker" } }, lastKey: "p3", done: false },
+    { nodes: { p2: { state: "awaiting", cleanName: "Tee", nameProposal: PROPOSAL } }, lastKey: "p2", done: true },
+  ];
+  keys = new Set(["p2", "p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).not.toContain("No names are waiting");     // it would be a lie
+  expect(out).toContain("more to look through");
+
+  await act(() => { button(tree, "Keep looking").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: the terminal message appears once the paging really is finished", async () => {
+  proposalPages = [{ nodes: { p3: { state: "awaiting", cleanName: "Sneaker" } }, lastKey: "p3", done: true }];
+  keys = new Set(["p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("No names are waiting");
+});
+
+// ─── THE SAME DECISION, ON THE PRODUCT'S OWN PAGE ────────────────────────────
+// The lane is where a batch of names gets worked through; this card is for the
+// reviewer who arrived at one product instead. Both must offer the same
+// decision, and both must pass the proposal they DISPLAYED so a re-run's newer
+// name cannot be approved sight unseen.
+test("page: the photo-read name appears under Listing name, with the identity guess and its confidence", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Plain tee", nameProposal: PROPOSAL };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await openProductPage(tree, "Plain tee black");
+  const out = texts(tree);
+  expect(out).toContain("Suggested from the photo");
+  expect(out).toContain("Brushed nubuck low-top in sand");
+  expect(out).toContain("Nike Air Force 1 Sand");   // the identity guess, shown as a guess
+  expect(out).toContain("82");                      // its confidence, as a percentage
+  // and the guess is labelled as internal-only — it must never read as a title
+  expect(out).toContain("never goes on the storefront");
+});
+
+test("page: taking the name writes through the store, carrying the proposal that was displayed", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Plain tee", nameProposal: PROPOSAL };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await openProductPage(tree, "Plain tee black");
+  await act(() => { button(tree, "Use this name").props.onClick(); });
+  await flush();
+  expect(calls.applyProposal).toEqual(["p1"]);
+  // the editor follows the name that was just saved, so the page is not left
+  // showing a draft that no longer matches the product
+  expect(pageNameInput(tree).props.value).toBe("Brushed nubuck low-top in sand");
+});
+
+test("proposals: the row is keyboard-operable, and the navigable element holds no other control", async () => {
+  // Without this the identity guess, the confidence and the photos are
+  // mouse-only from this lane. Same treatment ProductListRow already uses.
+  const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } });
+  const nav = tree.root.findAll((n) => n.props && n.props.role === "button" &&
+                                       String(n.props["aria-label"] || "").startsWith("Open "))[0];
+  expect(nav).toBeTruthy();
+  expect(nav.props.tabIndex).toBe(0);
+
+  // Structure FIRST, while the row is still mounted: activating it navigates
+  // and the row goes away with the list.
+  // role="button" makes descendants presentational, so the decision buttons
+  // must be SIBLINGS — a keydown from a nested button would bubble here and
+  // preventDefault would cancel that button's own activation.
+  expect(nav.findAll((n) => n.type === "button").length).toBe(0);
+  // and the two decisions are genuinely still reachable, just not inside it
+  expect(button(tree, "Use this name")).toBeTruthy();
+  expect(button(tree, "Keep the old one")).toBeTruthy();
+
+  let opened = null;
+  hashValue = "";
+  await act(() => { nav.props.onKeyDown({ key: "Enter", preventDefault: () => { opened = true; } }); });
+  await flush();
+  expect(opened).toBe(true);              // it swallowed the default
+  expect(hashValue).toBe("#shopify/p3");  // and it navigated
 });

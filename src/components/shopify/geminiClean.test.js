@@ -6,7 +6,8 @@
 // exact: same subject over a new background must pass; any change to the
 // subject must fail.
 import { describe, it, expect } from "vitest";
-import { assessSubjectPreservation, isCleanBackgroundAvailable } from "./geminiClean";
+import { readFileSync } from "node:fs";
+import { assessSubjectPreservation } from "./geminiClean";
 
 const W = 100, H = 100;
 
@@ -70,7 +71,7 @@ describe("assessSubjectPreservation", () => {
     drawRect(cand, 45, 45, 55, 55, STUDIO); // mark painted out with the studio backdrop
     const v = assessSubjectPreservation(orig, cand);
     expect(v.pass).toBe(false);
-    expect(v.reason).toMatch(/inside the product/);
+    expect(v.reason).toMatch(/does not line up with the original/);
   });
   it("fails when even a TINY mark was cleaned off — the changed-area gate closes the p95 tail hole", () => {
     // A 4×4 scuff on the body (~1% of the subject): erasing it barely moves
@@ -108,8 +109,30 @@ describe("assessSubjectPreservation", () => {
   });
 });
 
-describe("availability", () => {
-  it("no GEMINI_API_KEY at build ⇒ the action reports unavailable (disabled, no stub)", () => {
-    expect(isCleanBackgroundAvailable()).toBe(false);
+// ─── THE KEY IS NOT IN THE BROWSER ───────────────────────────────────────────
+// The action used to hold a Gemini key baked into the bundle by vite, which
+// made it readable by anyone who viewed the site's JavaScript. It now calls a
+// Cloud Function that holds the key as a secret. These two tests are the
+// regression guard: not "does the key work", but "is there a key here at all".
+describe("no API key reaches the browser", () => {
+  it("geminiClean.js reads no baked key and talks to no Google endpoint directly", () => {
+    const src = readFileSync(new URL("./geminiClean.js", import.meta.url), "utf8");
+    // In code, not in the comments that explain the history — strip those first.
+    const code = src.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(code).not.toMatch(/__GEMINI_API_KEY__/);
+    expect(code).not.toMatch(/x-goog-api-key/);
+    expect(code).not.toMatch(/generativelanguage\.googleapis\.com/);
+    // and it DOES go through the callable
+    expect(code).toMatch(/httpsCallable/);
+    expect(code).toMatch(/cleanProductPhoto/);
+  });
+
+  it("vite.config.js defines no API key into the bundle", () => {
+    const cfg = readFileSync(new URL("../../../vite.config.js", import.meta.url), "utf8");
+    const code = cfg.replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toMatch(/__GEMINI_API_KEY__/);
+    expect(code).not.toMatch(/API_KEY/);
+    // Nothing in `define` may read a secret-shaped env var.
+    expect(code).not.toMatch(/process\.env\.[A-Z_]*(KEY|SECRET|TOKEN)/);
   });
 });

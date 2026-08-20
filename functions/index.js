@@ -3353,3 +3353,16 @@ exports.styleCodeSibling = require("./styleCode/styleCodeSibling.js").styleCodeS
 // is an allow-list, and the query is not echoed.
 // DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:storefrontSearch
 exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").storefrontSearch;
+
+// ── cleanProductPhoto — ONE background swap, key held server-side ────────────
+// The per-photo "clean background" action on the Shopify product page. PR #368
+// shipped it calling Gemini from the BROWSER with the key baked into the bundle
+// by vite, which put a spendable key in front of anyone who viewed the site's
+// JavaScript — and it shipped DISABLED because no key existed at build time.
+// Both problems have the same answer: the call lives on the server and the key
+// is a Cloud Functions secret the build never sees. The bundle now carries no
+// key at all.
+// The subject-preservation gate stays in the browser, where both images are
+// already decoded — only the paid call moved.
+// DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:cleanProductPhoto
+exports.cleanProductPhoto = require("./photoClean/cleanProductPhoto.js").cleanProductPhoto;

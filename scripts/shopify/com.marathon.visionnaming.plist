@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the vision-naming backlog run. Deliberately the SAME
+  mechanism as the machine's existing marathon background job
+  (com.marathon.photograbber): a user LaunchAgent running a script against a
+  repo checkout, with its logs under that checkout. No second scheduling
+  system is introduced.
+
+  WHY IT EXISTS: the backlog is ~2,000 product photos at roughly nine a
+  minute — about four hours, longer than any session reliably lasts, and
+  longer than the machine reliably stays awake. RunAtLoad restarts it after a
+  reboot; the run itself is chunked and resumable, so a restart resumes where
+  it stopped and never pays for a photo twice.
+
+  KeepAlive is SuccessfulExit-only: a crash restarts, a clean finish does NOT.
+  The driver exits 0 when the scope is empty ("ALL NAMED"), and a plain
+  KeepAlive would then restart it in a hot loop for ever.
+
+  Single-flight is the wrapper's own lockfile, not launchd's, so a manual run
+  can never overlap a scheduled one either.
+
+  CREDENTIALS: nothing secret is in this file. GEMINI_API_KEY is read from the
+  git-ignored .env in the checkout; Firebase Admin uses Application Default
+  Credentials. Only PATHS appear here, never values.
+
+  Stop it:    launchctl unload ~/Library/LaunchAgents/com.marathon.visionnaming.plist
+  Start it:   launchctl load   ~/Library/LaunchAgents/com.marathon.visionnaming.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.visionnaming</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/junidmohammed/naming-run/run-naming.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/junidmohammed/naming-run</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>HOME</key><string>/Users/junidmohammed</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>StandardOutPath</key><string>/Users/junidmohammed/naming-run/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/junidmohammed/naming-run/logs/launchd.err.log</string>
+</dict>
+</plist>
