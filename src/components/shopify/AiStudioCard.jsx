@@ -33,7 +33,8 @@
 // aiStudioCore.test.js pins that.
 import React, { useEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
-import { functions } from "../../firebase";
+import { ref, get } from "firebase/database";
+import { functions, database } from "../../firebase";
 import { FONT, GRAY, RED, BLUE_L, GREEN, bBlue, bGray, bGreen, tabOn, tabOff, input as inputStyle } from "../stock/ui";
 import { uploadPublishPhoto } from "./photoTools";
 import { MAX_PUBLISH_PHOTOS } from "./publishShared";
@@ -104,6 +105,22 @@ export default function AiStudioCard({ product, sourceUrl, photoCount = 0, busy 
       }));
       const out = readGenerateResult(res?.data, product.id);
       if (!out.ok) { setErr(out.problem); return; }
+      // ── THE SIDE-BY-SIDE MUST NOT LIE ────────────────────────────────────
+      // `sourceUrl` is a new argument. A deployed function that predates it
+      // ignores it silently and re-shoots the product record's hero instead —
+      // and then this card would put the SELECTED photo next to a generation
+      // made from a DIFFERENT one, which is exactly the comparison the accept
+      // step depends on being true. The function records what it actually
+      // read as the proposal's originalUrl, so ask it, rather than trusting
+      // that the deploy went out in the right order (or was never rolled
+      // back). One leaf read, not a node.
+      const seen = await get(ref(database, `aiAssistant/photoProposals/${product.id}/originalUrl`))
+        .then((snap) => snap.val())
+        .catch(() => null);
+      if (seen && seen !== sourceUrl) {
+        setErr("The server re-shot a different photo from the one selected, so there is nothing honest to compare — this build of generateProductPhotos is older than the app and ignores which photo was picked. The image was still generated and is waiting in AI Studio; nothing here has changed. Deploy functions:generateProductPhotos and try again.");
+        return;
+      }
       setCandidate({ proposedUrl: out.proposedUrl, sourceUrl, engine: out.engine, costUSD: out.costUSD });
       setMsg(`Generated${out.engine ? ` on ${out.engine}` : ""} — about $${out.costUSD.toFixed(4)}${out.costLine}. Nothing has changed yet.`);
     } catch (e) {
