@@ -2094,8 +2094,11 @@ exports.cleanProductNames = onCall(
 //
 // request.data (all optional): { limit=12, productIds:[...], category, reprocess=false,
 // style: "white" (default, existing behavior) | "house" (Marathon house-style scene,
-// conditioned on the Style Kit reference images — see STYLE_KIT_PATH below) }.
-// Returns { processed, failed, total, estCostUSD, sample }.
+// conditioned on the Style Kit reference images — see STYLE_KIT_PATH below),
+// note: "…" (a per-run fix instruction folded into the prompt),
+// sourceUrl: "https://…" (SINGLE-product calls only — the photo to re-shoot when
+// it is not the record's hero; Shopify Publishing's photo set is its own list) }.
+// Returns { processed, failed, total, estCostUSD, costByEngine, sample, failures }.
 
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
@@ -2107,7 +2110,9 @@ const PHOTO_CONCURRENCY    = 3;               // image gen is slow + heavy → k
 const PHOTO_DEFAULT_LIMIT  = 12;              // small first batch to eyeball quality + cost
 const PHOTO_MAX_BATCH      = 200;            // hard ceiling per call (cost / timeout safety)
 const PHOTO_PROPOSALS_PATH = "aiAssistant/photoProposals";
-const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
+// The bucket is declared ONCE, in lib/photo-scope.cjs, because the same value
+// also builds the APP_STORAGE_PREFIX that gates an incoming sourceUrl.
+const { STORAGE_BUCKET } = require("./lib/photo-scope.cjs");
 
 // ── House-style ("Style Kit") config ──────────────────────────────────────────
 // Reference-conditioned generations: every house-style call attaches the enabled
@@ -2117,6 +2122,12 @@ const STORAGE_BUCKET       = "marathon-club.firebasestorage.app";
 // and is managed from the AI Studio Style Kit panel — prompt + refs are re-read
 // on every call, so edits take effect next generation with NO redeploy.
 const STYLE_KIT_PATH = "aiAssistant/styleKit";
+
+// Scoping decisions live in lib/ so they can be proved without a runtime, a
+// secret or a paid image call — the same split every other function here uses.
+const {
+  resolveNamedIds, resolveSourceUrl, needsCatalogueScan, pickIds, mayRecordProposal,
+} = require("./lib/photo-scope.cjs");
 const HOUSE_MAX_REFS = 6;   // refs sent per generation (kit can hold more; more refs = more latency)
 
 // gpt-image-1 token pricing (USD per 1M tokens) — used only for an ESTIMATE; the
@@ -2606,29 +2617,43 @@ exports.generateProductPhotos = onCall(
       ? data.note.replace(/[^\x20-\x7E\u00A0-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
       : "";
 
-    const [prodSnap, propSnap] = await Promise.all([
-      db.ref("products").once("value"),
-      db.ref(PHOTO_PROPOSALS_PATH).once("value"),
-    ]);
-    const products = prodSnap.val() || {};
-    const existing = propSnap.val() || {};
-
-    let ids;
-    if (Array.isArray(data.productIds) && data.productIds.length) {
-      ids = [...new Set(data.productIds)].filter((id) => products[id] && products[id].photoUrl).slice(0, PHOTO_MAX_BATCH);
+    // ── SCOPE, WITHOUT READING THE CATALOGUE FOR ONE PRODUCT ─────────────────
+    // A named-ids call (the Studio's Regenerate, and every call from the
+    // Shopify product page) used to read ALL of /products and ALL of
+    // /aiAssistant/photoProposals to re-shoot ONE photo — 4,275 records and
+    // ~3,500 proposal nodes off the wire for a single image. Those two reads
+    // exist for the unattended sweep, which genuinely has to scan to find the
+    // next N products missing a photo; a caller that already knows the id
+    // needs neither. Fetch exactly the named records instead.
+    let products, existing = {};
+    const namedIds = resolveNamedIds(data, PHOTO_MAX_BATCH);
+    if (!needsCatalogueScan(namedIds)) {
+      const snaps = await Promise.all(namedIds.map((id) => db.ref(`products/${id}`).once("value")));
+      products = {};
+      snaps.forEach((s, i) => { const v = s.val(); if (v) products[namedIds[i]] = v; });
     } else {
-      ids = Object.keys(products).filter((id) => {
-        const p = products[id];
-        if (!p || !p.photoUrl) return false;
-        // Match either the new `category` (e.g. "Footwear") OR the legacy productType
-        // (e.g. "clothing"), so old and new callers both work.
-        if (data.category && p.category !== data.category && (p.productType || "") !== data.category) return false;
-        if (!data.reprocess && existing[id]) return false;
-        return true;
-      });
-      ids.sort();
-      ids = ids.slice(0, limit);
+      const [prodSnap, propSnap] = await Promise.all([
+        db.ref("products").once("value"),
+        db.ref(PHOTO_PROPOSALS_PATH).once("value"),
+      ]);
+      products = prodSnap.val() || {};
+      existing = propSnap.val() || {};
     }
+
+    // ── THE PHOTO TO RE-SHOOT ────────────────────────────────────────────────
+    // Normally the product record's hero. Shopify Publishing needs an override
+    // because its photo set is NOT the record's: the reviewer taps a slot in
+    // the publishing strip and expects that image re-shot, and a custom
+    // publishing set may not contain the hero at all. Single-product calls
+    // only — a source photo means nothing applied across a batch. Untrusted
+    // input, so it is bounded here and fetched through fetchImageBuffer's
+    // existing SSRF guard (https + *.googleapis.com, no redirects) like any
+    // other URL.
+    const sourceUrl = resolveSourceUrl(data, namedIds);
+
+    // Named ids keep the caller's order; the sweep filters, sorts and caps.
+    // Both branches live in lib/photo-scope.cjs and are node-tested.
+    const ids = pickIds({ namedIds, products, existing, sourceUrl, data, limit });
 
     const OpenAINS = require("openai");
     const OpenAI = OpenAINS.default || OpenAINS;
@@ -2656,7 +2681,9 @@ exports.generateProductPhotos = onCall(
         const template = isClothing ? "clothing" : "sneaker";
         const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
         try {
-          const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
+          // The override when the caller named one, else the record's hero.
+          const srcUrl = sourceUrl || p.photoUrl;
+          const { buffer, contentType } = await fetchImageBuffer(srcUrl);
           // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
           const size = isClothing ? "1024x1536" : PHOTO_SIZE;
           const kit = styleKit ? styleKit[template] : null;
@@ -2687,23 +2714,54 @@ exports.generateProductPhotos = onCall(
           const proposedUrl = await uploadProposalImage(id, outBuf, mime);
           estCostUSD += costUSD;
           costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
-          await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
-            // Prefer the TRUE original: if this product was already approved once,
-            // p.photoUrl is a generated image — keep the real original from photoUrlOriginal.
-            originalUrl: p.photoUrlOriginal || p.photoUrl,
-            proposedUrl,
-            name: p.name || "",
-            productType: p.productType || null,
-            engine: engName,                 // which engine made THIS proposal
-            costUSD: +costUSD.toFixed(6),     // its per-image cost
-            status: "pending",          // pending | approved | rejected (set by the review UI)
-            at: Date.now(),
-            by: request.auth.uid,
-            // House-style provenance (absent on white runs — their records are unchanged).
-            ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
-          });
+          // ── A sourceUrl CALL WRITES NO PROPOSAL NODE ─────────────────────
+          // /aiAssistant/photoProposals is keyed by product id and written
+          // with .set() — a whole-node REPLACE. It belongs to the AI Studio
+          // review lane, and a caller that re-shoots one slot of a Shopify
+          // publishing set must not write into it, for two reasons that both
+          // end in real damage:
+          //
+          //   · It would silently destroy an unreviewed AI Studio candidate
+          //     for the same product — already generated, already paid for.
+          //   · Worse, `originalUrl` on that node is what AI Studio's approve
+          //     writes into products/{id}/photoUrlOriginal. A publishing photo
+          //     can itself be a generated image, so approving such a proposal
+          //     in the OTHER surface would overwrite the record's pointer to
+          //     the TRUE original with a generated one — the file survives in
+          //     Storage with nothing left referencing it. "Originals are never
+          //     overwritten" has to hold across both surfaces, not one.
+          //
+          // So the image is returned and nothing is recorded. It stays in
+          // Storage as an immutable object; if the caller discards it, it is
+          // an orphan, which is the honest price of not corrupting a lane that
+          // belongs to somebody else.
+          if (mayRecordProposal(sourceUrl)) {
+            await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
+              // Unchanged, and deliberately so: this branch only runs when NO
+              // sourceUrl was named, so p.photoUrl is what was read. Prefer the
+              // TRUE original — if this product was already approved once,
+              // p.photoUrl is itself a generated image, and photoUrlOriginal is
+              // the record's only pointer back to the real photograph.
+              originalUrl: p.photoUrlOriginal || p.photoUrl,
+              proposedUrl,
+              name: p.name || "",
+              productType: p.productType || null,
+              engine: engName,                 // which engine made THIS proposal
+              costUSD: +costUSD.toFixed(6),     // its per-image cost
+              status: "pending",          // pending | approved | rejected (set by the review UI)
+              at: Date.now(),
+              by: request.auth.uid,
+              // House-style provenance (absent on white runs — their records are unchanged).
+              ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
+            });
+          }
           processed++;
-          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName });
+          // `sourceUrl` echoes back the image this generation was ACTUALLY made
+          // from. A caller that asked for a specific photo can compare it and
+          // refuse to show a side-by-side against a different one — which is
+          // what a deployed build older than this argument would produce, and
+          // what a rollback would produce again.
+          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl });
         } catch (err) {
           failed++;
           if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });
@@ -3420,15 +3478,24 @@ exports.styleCodeSibling = require("./styleCode/styleCodeSibling.js").styleCodeS
 // DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:storefrontSearch
 exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").storefrontSearch;
 
-// ── cleanProductPhoto — ONE background swap, key held server-side ────────────
-// The per-photo "clean background" action on the Shopify product page. PR #368
-// shipped it calling Gemini from the BROWSER with the key baked into the bundle
-// by vite, which put a spendable key in front of anyone who viewed the site's
-// JavaScript — and it shipped DISABLED because no key existed at build time.
-// Both problems have the same answer: the call lives on the server and the key
-// is a Cloud Functions secret the build never sees. The bundle now carries no
-// key at all.
-// The subject-preservation gate stays in the browser, where both images are
-// already decoded — only the paid call moved.
-// DEPLOY SCOPED, BY NAME:  firebase deploy --only functions:cleanProductPhoto
-exports.cleanProductPhoto = require("./photoClean/cleanProductPhoto.js").cleanProductPhoto;
+// ── cleanProductPhoto — REMOVED (2026-08-20) ────────────────────────────────
+// The per-photo "clean background" action is gone, and the callable with it.
+// It was not broken: the truthfulness gate in the browser compared the product
+// region pixel-for-pixel and discarded any result where the model had redrawn
+// the item. The trouble was that on real shop photographs — a shoe on a rack
+// against a painted backdrop — replacing that much of the frame IS a re-render,
+// and a re-render never survives a pixel comparison. Measured on 2026-08-19:
+// seven generations, one deliberately tampered (correctly discarded) and six
+// honest ones (all discarded). The action was safe and it produced nothing.
+//
+// What replaced it is the AI Studio regenerator, already in this file as
+// generateProductPhotos, now reachable from the Shopify product page with a
+// `sourceUrl` naming the publishing photo to re-shoot. Its guard is not a pixel
+// gate — a house-style re-shoot changes the whole scene by design — it is an
+// explicit human accept against a side-by-side, which is how AI Studio has
+// always worked.
+//
+// THE DEPLOYED FUNCTION MUST STILL BE DELETED. Removing the export stops it
+// being redeployed; it does NOT remove the running instance, which still holds
+// the GEMINI_API_KEY secret binding and is still callable by any admin:
+//   firebase functions:delete cleanProductPhoto --region europe-west1

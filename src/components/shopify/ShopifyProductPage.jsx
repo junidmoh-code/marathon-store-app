@@ -9,7 +9,7 @@
 // listScrollRef treatment).
 //
 // The page carries: the publishing photo set (reorder / primary / remove /
-// upload / clean-background — everything that was the row's on-demand strip),
+// upload / AI Studio re-shoot — everything that was the row's on-demand strip),
 // the editable cleaned name with the live trigger check, the original name
 // for reference, the three condition chips, the generated description
 // EXACTLY as it will appear on Shopify (same buildDescriptionHtml the
@@ -31,7 +31,7 @@ import { MAX_PUBLISH_PHOTOS, buildDescriptionHtml } from "./publishShared";
 import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos,
          applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
 import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
-import { cleanBackground } from "./geminiClean";
+import AiStudioCard from "./AiStudioCard";
 
 // The uppercase section label used across the full-page views.
 const SECTION_LABEL = {
@@ -305,120 +305,15 @@ export function PhotoStrip({ product, node, locked, onChanged }) {
           {chip("Move ›", () => move(sel, 1), sel === photos.length - 1)}
           {chip("Make primary", () => makePrimary(sel), sel === 0)}
           {chip("Remove from publish set", () => removeAt(sel))}
-          <CleanBackgroundAction
-            productId={product.id} originalUrl={photos[sel]}
-            busy={busy || uploading} setErr={setErr}
-            onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))} />
+          <AiStudioCard
+            product={product} node={node} sourceUrl={photos[sel]} photoCount={photos.length}
+            busy={busy || uploading}
+            onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))}
+            onAdd={(url) => write([...photos, url], () => setSel(photos.length))} />
         </div>
       )}
       {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}
     </div>
-  );
-}
-
-// ─── CLEAN BACKGROUND (Gemini) ───────────────────────────────────────────────
-// One photo at a time, no bulk generate. The flow the truthfulness rule
-// demands (see geminiClean.js): generate → AUTOMATIC subject-preservation
-// gate (a result whose product region changed is discarded with a logged
-// reason and never shown) → side-by-side against the original → EXPLICIT
-// accept. Accepting uploads a NEW Storage object beside the original
-// (derivedFrom recorded) and swaps only this slot of the publishing set —
-// the original photo survives in the record, in Storage, everywhere.
-// The key lives on the SERVER now (functions/photoClean/cleanProductPhoto.js),
-// so there is no build-time condition left to disable the chip on. A server
-// that has no secret configured answers with one plain sentence saying so, and
-// that sentence is shown like any other failure.
-function CleanBackgroundAction({ productId, originalUrl, busy, setErr, onReplace }) {
-  const [generating, setGenerating] = useState(false);
-  const [candidate, setCandidate] = useState(null); // { blob, previewUrl, metrics, sourceUrl }
-  const [saving, setSaving] = useState(false);
-
-  const discardCandidate = () => {
-    setCandidate((cur) => {
-      if (cur) URL.revokeObjectURL(cur.previewUrl);
-      return null;
-    });
-  };
-
-  // A candidate belongs to ONE source photo. If the selection moves under an
-  // open candidate, drop it — accepting a cleaned copy of photo A into photo
-  // B's slot would be exactly the mix-up the side-by-side exists to prevent.
-  useEffect(() => {
-    if (candidate && candidate.sourceUrl !== originalUrl) discardCandidate();
-  }, [originalUrl]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Unmount revokes an un-actioned candidate's object URL (state updaters
-  // don't run after unmount, so track the URL in a ref).
-  const previewRef = useRef(null);
-  previewRef.current = candidate?.previewUrl || null;
-  useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current); }, []);
-
-  const generate = async () => {
-    if (generating || busy) return;
-    setGenerating(true); setErr(null);
-    try {
-      const res = await cleanBackground(originalUrl, productId);
-      if (!res.ok) {
-        setErr(`The generated image changed the product and was discarded (${res.reason}). The original stays as it is — you can try again.`);
-        return;
-      }
-      // A regenerate replaces any open candidate — revoke its URL first.
-      setCandidate((prev) => {
-        if (prev) URL.revokeObjectURL(prev.previewUrl);
-        return { ...res, sourceUrl: originalUrl };
-      });
-    } catch (e) {
-      setErr(String(e?.message || e));
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  const accept = async () => {
-    if (!candidate || saving) return;
-    setSaving(true); setErr(null);
-    try {
-      const url = await uploadPublishPhoto(productId, candidate.blob, { kind: "gen", derivedFrom: candidate.sourceUrl });
-      // Only a COMMITTED list write consumes the candidate — a refused write
-      // shows its error and keeps the side-by-side up for a retry.
-      if (await onReplace(url, candidate.sourceUrl)) discardCandidate();
-    } catch (e) {
-      setErr(String(e?.message || e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <>
-      <button disabled={busy || generating}
-        onClick={generate}
-        style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem" }}>
-        {generating ? "Generating…" : "Clean background"}
-      </button>
-      {candidate && (
-        <div style={{ width: "100%", marginTop: 7 }}>
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ ...SECTION_LABEL, fontSize: 9.5, marginBottom: 3 }}>Original</div>
-              <img src={candidate.sourceUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ ...SECTION_LABEL, fontSize: 9.5, marginBottom: 3 }}>Cleaned background</div>
-              <img src={candidate.previewUrl} alt="" style={{ width: "100%", borderRadius: 9, background: "rgba(255,255,255,.08)" }} />
-            </div>
-          </div>
-          <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
-            The product region matched the original (checked automatically). Look once more — accept only if the item is untouched.
-          </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <button disabled={saving} onClick={discardCandidate} style={{ ...bGray, padding: "7px 11px", fontSize: "0.72rem" }}>Discard</button>
-            <button disabled={saving} onClick={accept} style={{ ...bBlue, padding: "7px 11px", fontSize: "0.72rem" }}>
-              {saving ? "Saving…" : "Use cleaned photo"}
-            </button>
-          </div>
-        </div>
-      )}
-    </>
   );
 }
 
