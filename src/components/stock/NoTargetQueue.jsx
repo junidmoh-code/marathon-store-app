@@ -317,6 +317,17 @@ export default function NoTargetQueue({ products = [] }) {
     const now = serverNowIso();
     const upd = {};
     const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
+    // A size is not a product: zeroing SOME sizes of a line is legitimate tuning
+    // (provenance is pid-level, so a size at 0 contradicts nothing). But a save
+    // where EVERY size is 0 at a location is a product delisting disguised as a
+    // size edit — it writes the same permanent `target: 0` rows as Exclude while
+    // labelled `source: "manual"`, indistinguishable from ordinary tuning forever
+    // after. That one case is refused and pointed at the button that says what it
+    // does. (Owner decision, 2026-08-20.)
+    const zeroed = locs.filter((loc) => card.sizes.every((s) => targetFor(card, s.size, loc) === 0));
+    if (zeroed.length) {
+      return finish(card, `every size is 0 for ${zeroed.map((l) => LOC_LABEL[l]).join(", ")} — that is an exclusion, not a size edit. Use Exclude so the row says so.`);
+    }
     for (const loc of locs) {
       for (const s of card.sizes) {
         const t = targetFor(card, s.size, loc);

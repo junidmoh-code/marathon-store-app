@@ -119,3 +119,50 @@ describe("the hooks are actually wired", () => {
     expect(() => render()).not.toThrow();
   });
 });
+
+// ─── AN ALL-ZERO SAVE IS A DELISTING, NOT A SIZE EDIT ────────────────────────
+//
+// A size is not a product: zeroing SOME sizes of a line is legitimate tuning —
+// provenance is pid-level, so a size at 0 contradicts nothing, and it is allowed.
+// The ONE guarded case is a save where EVERY size computes to 0 at a destination:
+// that writes the same permanent `target: 0` rows as Exclude, but labelled
+// `source: "manual"` — a delisting disguised as a size edit, indistinguishable
+// from ordinary tuning forever after. Such a save is refused with nothing written
+// and the user pointed at Exclude, whose rows say what they are.
+describe("the size-loop guard on saveTargets", () => {
+  const clickByText = (tree, text) => {
+    const btn = tree.root.findAll(
+      (n) => n.type === "button" && JSON.stringify(n.children ?? []).includes(text),
+    )[0];
+    expect(btn, `button "${text}" must exist`).toBeTruthy();
+    act(() => { btn.props.onClick(); });
+  };
+  const openTargets = (tree) => {
+    clickByText(tree, "Decide");
+    clickByText(tree, "Set targets");
+  };
+  const steppers = (tree) => tree.root.findAll((n) => typeof n.type === "function" && n.type.name === "SizeStepperChip");
+
+  it("refuses when every size is 0, writes nothing, and names Exclude", async () => {
+    const tree = render();
+    openTargets(tree);
+    for (const chip of steppers(tree)) act(() => { chip.props.onChange(0); });
+    clickByText(tree, "Targets only");
+    await act(async () => {});
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(textOf(tree)).toMatch(/exclusion, not a size edit/);
+  });
+
+  it("allows zeroing SOME sizes — the control that keeps this a guard, not a redesign", async () => {
+    const tree = render();
+    openTargets(tree);
+    act(() => { steppers(tree)[0].props.onChange(0); });   // S → 0, M keeps its prefill
+    clickByText(tree, "Targets only");
+    await act(async () => {});
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const written = updateMock.mock.calls[0][1];
+    const targets = Object.values(written).map((row) => row.target).sort();
+    expect(targets).toContain(0);                          // the zeroed size went through
+    expect(targets.some((t) => t > 0)).toBe(true);         // and the line is still listed
+  });
+});

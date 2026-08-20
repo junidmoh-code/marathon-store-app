@@ -52,6 +52,17 @@ const MUTATIONS = [
     to: `  return n(entry.k) > 0;`,
     tests: T,
   },
+  {
+    id: "X5",
+    guard: "an all-zero save is refused as a delisting disguised as a size edit — nothing written",
+    file: QUEUE,
+    from: `    const zeroed = locs.filter((loc) => card.sizes.every((s) => targetFor(card, s.size, loc) === 0));
+    if (zeroed.length) {
+      return finish(card, \`every size is 0 for \${zeroed.map((l) => LOC_LABEL[l]).join(", ")} — that is an exclusion, not a size edit. Use Exclude so the row says so.\`);
+    }`,
+    to: ``,
+    tests: T,
+  },
 ];
 
 // THE REPOSITORY'S vitest, resolved explicitly — never `npx`.
