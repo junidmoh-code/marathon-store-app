@@ -659,6 +659,36 @@ describe("Solve's carriage gate — it must not seed and lie", () => {
     expect(keys.some((k) => k.startsWith("stock_targets/"))).toBe(false);
   });
 
+  it("a THROW inside the write assembly reaches the row as a message, and the panel recovers", async () => {
+    // The Critical CodeRabbit found: the catch used to reference a const declared
+    // inside the try — invisible from the catch's scope — so ANY entry into the
+    // catch was a ReferenceError: no message, busy never cleared, panel stranded
+    // on "Seeding…". This drives the real failure (the rule-gated per-loc stock
+    // read rejecting) through the real component and pins the recovery.
+    carries(JERSEY, "hub2", "trophy");
+    const tree = jersey();
+    await act(async () => { solveButton(tree).props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    getFails.add(`stock/hub2/${JERSEY}`);
+    await act(async () => { buttonSaying(tree, "Solve — carry at").props.onClick(); });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(textOf(tree)).toMatch(/Couldn't seed — nothing changed/);
+    // Busy cleared (the finally): the confirm button offers the retry, not "Seeding…".
+    expect(textOf(tree)).not.toMatch(/Seeding…/);
+  });
+
+  it("an INTRODUCE write refused by the rules names the rule, not 'retry'", async () => {
+    // Until the widened /stock_targets rule is published, an introduce-only row is
+    // rejected — and the whole atomic update goes with it. The message must say
+    // that, because a bare 'retry' loops forever.
+    updateMock.mockImplementationOnce(() => Promise.reject(new Error("PERMISSION_DENIED: Permission denied")));
+    const tree = jersey();
+    await openAndConfirm(tree);
+    const txt = textOf(tree);
+    expect(txt).toMatch(/hasn't been published/);
+    expect(txt).toMatch(/Nothing was seeded/);
+  });
+
   it("A FAILED READ is not a licence to seed", async () => {
     // /stock_provenance is rule-gated, so a denied read is a live possibility — and
     // it is indistinguishable from an empty index. Seeding on it would be the same

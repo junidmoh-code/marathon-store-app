@@ -151,6 +151,14 @@ const MUTATIONS = [
     to: `  return null;`,
     tests: [CORE_T, RENDER_T],
   },
+  {
+    id: "M15",
+    guard: "A rules-refused INTRODUCE names the unpublished rule, never a bare retry",
+    file: NETWORK,
+    from: `      const introBlocked = Object.keys(introPaths).length > 0 && /permission|denied/i.test(String(e?.message || e));`,
+    to: `      const introBlocked = false;`,
+    tests: [RENDER_T],
+  },
 ];
 
 // THE REPOSITORY'S vitest, resolved explicitly — never `npx`.
