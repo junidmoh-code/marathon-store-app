@@ -23,19 +23,28 @@ const quietLog = { log: () => {}, warn: () => {}, error: () => {} };
 
 // ── Fake Firestore ───────────────────────────────────────────────────────────
 // Models exactly what deliverOutboxDoc uses: runTransaction with tx.get/
-// tx.update against a single doc, plus docRef.update. Transactions are
-// serialised the way Firestore serialises writers on one doc: the update
-// COMMITS atomically with the read (no interleaving inside a transaction),
-// which is precisely the property the claim mutex depends on.
-function fakeDoc(initialData) {
+// tx.update against a single doc, plus docRef.update. The fake runs the
+// transaction callback once and commits its update atomically with the read.
+// Real Firestore transactions are OPTIMISTIC with automatic retry — on
+// contention the callback re-runs against the committed state — so these
+// tests prove the claim logic is correct GIVEN that guarantee (one commit
+// wins, losers re-read non-pending state); they do not exercise the retry
+// machinery itself. `failDirectUpdates` makes the NON-transactional
+// docRef.update() throw, modelling a deleted doc or transient Firestore
+// error after the send.
+function fakeDoc(initialData, { failDirectUpdates = false } = {}) {
   const state = { data: initialData ? structuredClone(initialData) : null };
   const writes = [];
   const applyUpdate = (fields) => {
-    assert.ok(state.data, "update on a missing doc should never happen");
-    Object.assign(state.data, fields);
+    Object.assign(state.data ?? (state.data = {}), fields);
     writes.push(structuredClone(fields));
   };
-  const docRef = { update: async (fields) => applyUpdate(fields) };
+  const docRef = {
+    update: async (fields) => {
+      if (failDirectUpdates) throw new Error("simulated NOT_FOUND / transient error");
+      applyUpdate(fields);
+    },
+  };
   const db = {
     runTransaction: async (fn) => fn({
       get: async (ref) => {
@@ -57,7 +66,7 @@ const pendingDoc = () => ({
 const deliver = (fake, sendTemplate, overrides = {}) => deliverOutboxDoc({
   db: fake.db, docRef: fake.docRef, docId: "doc1",
   sendTemplate, maxAttempts: 2, serverTimestamp: () => SERVER_TS, maskPhone,
-  log: quietLog, ...overrides,
+  logPrefix: "testLane", log: quietLog, ...overrides,
 });
 
 test("pending doc → exactly one send, recorded as sent", async () => {
@@ -98,11 +107,14 @@ test("doc already claimed by another worker (status sending) → no send, no wri
 });
 
 test("trigger and sweep racing the same doc → one send total", async () => {
-  // The instant trigger and the sweep both call this path. Firestore
-  // serialises the two claim transactions; whichever commits second reads the
-  // non-pending status the winner wrote. Interleave them the worst way the
-  // serialisation allows: loser's transaction starts only after the winner's
-  // claim committed, but BEFORE the winner's send finished.
+  // The instant trigger and the sweep both call this path. In real Firestore
+  // the two claim transactions contend and exactly one commit lands; the
+  // loser's callback re-runs against the committed state and reads
+  // non-pending. This test pins the post-contention half of that story — the
+  // loser runs strictly after the winner's claim committed but while the
+  // winner's SEND is still in flight — which is the strongest interleaving
+  // this retry-free fake can express (it cannot model the optimistic-retry
+  // machinery itself; that guarantee is Firestore's).
   const fake = fakeDoc(pendingDoc());
   const sends = [];
   let releaseWinnerSend;
@@ -151,6 +163,30 @@ test("doc deleted before delivery → quiet no-op", async () => {
   await deliver(fake, async () => { sends++; return { ok: true, messageId: "x" }; });
   assert.equal(sends, 0);
   assert.equal(fake.writes.length, 0);
+});
+
+test("post-send status write failing → resolves quietly, doc stuck in sending, NEVER re-sent", async () => {
+  // docRef.update() can throw for real (doc deleted mid-flight, transient
+  // Firestore error). The lib must swallow it — an escaped rejection would
+  // abort the sweep's remaining batch — and the doc stays "sending", which no
+  // claimer ever touches, so the delivered message can never go out twice.
+  const fake = fakeDoc(pendingDoc(), { failDirectUpdates: true });
+  let sends = 0;
+  await deliver(fake, async () => { sends++; return { ok: true, messageId: "wamid.1" }; });
+  assert.equal(sends, 1);
+  assert.equal(fake.state.data.status, "sending", "the failed outcome write leaves the doc claimed");
+  // a later claimer (sweep, re-fire) must not send the already-delivered message again
+  await deliver(fake, async () => { sends++; return { ok: true, messageId: "wamid.2" }; });
+  assert.equal(sends, 1, "a stuck 'sending' doc must never be re-sent");
+});
+
+test("status write failing on the RETRY path also resolves quietly", async () => {
+  // Same guard on the revert-to-pending write: the send failed AND the
+  // bookkeeping write failed. The doc stays "sending" (stuck, logged), and
+  // the sweep loop it was called from survives to process its next doc.
+  const fake = fakeDoc(pendingDoc(), { failDirectUpdates: true });
+  await deliver(fake, async () => ({ ok: false, error: "meta 429" }));
+  assert.equal(fake.state.data.status, "sending");
 });
 
 test("claim transaction throwing → no send, resolves quietly", async () => {

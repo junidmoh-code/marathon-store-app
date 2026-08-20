@@ -10,15 +10,24 @@
 //      backstop that retries reverted docs and catches any doc the trigger
 //      missed (trigger outage, deploy gap).
 //
+// Each caller passes its own logPrefix so Cloud Logging can tell the lanes
+// apart — and so the sweep's historical log strings ("metaFallbackSweep
+// claim failed:", "metaFallbackSweep meta-send:") stay byte-identical for any
+// saved queries or log-based alerts that predate this file.
+//
 // ── WHY THE CLAIM TRANSACTION IS THE WHOLE DEDUPE ────────────────────────────
 // The Firestore transaction claims a doc ONLY while status === "pending" and
-// flips it to "sending" in the same commit. Firestore serialises transactions
-// on the doc, so of any number of concurrent claimers — the instant trigger,
-// a trigger re-fire (Firestore delivers create events at-least-once), the
-// sweep, an overlapping sweep run — exactly ONE wins; every loser sees a
-// non-pending status and walks away without sending. Speeding delivery up by
-// racing the sweep therefore cannot mint a duplicate: the mutex does not know
-// or care who is asking. DO NOT add a send path that skips this claim.
+// flips it to "sending" in the same commit. Firestore transactions are
+// optimistic with automatic retry: when claimers contend on one doc, exactly
+// ONE commit lands, and every other attempt is re-run against the committed
+// state, re-reads a non-pending status, and walks away without sending. So of
+// any number of concurrent claimers — the instant trigger, a trigger re-fire
+// (Firestore delivers create events at-least-once), the sweep, an overlapping
+// sweep run — exactly one sends. And because `attempts` is incremented INSIDE
+// the claim commit, total live sends per doc stay bounded by maxAttempts no
+// matter how many claimers exist. Speeding delivery up by racing the sweep
+// therefore cannot mint a duplicate: the mutex does not know or care who is
+// asking. DO NOT add a send path that skips this claim.
 //
 // The producer-side 90-second dedupe (enqueueWhatsApp) is a SEPARATE guard on
 // doc creation and is untouched by anything in this file.
@@ -28,7 +37,10 @@
 // cleared) so a LATER sweep retries — the create trigger never re-fires on an
 // update, so the sweep owns every retry. Send failed at attempts >= maxAttempts
 // → "failed", terminal. Doc deleted mid-flight → quiet no-op. The function
-// never throws for send errors, so one bad doc can't abort a sweep loop.
+// never throws — send errors are values, and the post-send status writes are
+// each caught and logged — so one bad doc can't abort a sweep loop. A doc
+// whose post-send write failed is left in "sending": stuck and needing manual
+// discovery, but never re-sent (nothing claims a non-pending doc).
 "use strict";
 
 // Deliver one outbox doc: claim it (transactional mutex against every other
@@ -41,10 +53,11 @@
 //   maxAttempts     — attempts before a failing doc goes terminal ("failed")
 //   serverTimestamp — () => sentinel for claimedAt / sentAt
 //   maskPhone       — PII masker for logs
+//   logPrefix       — lane label for every log line ("metaFallbackSweep" | "outboxInstantSend")
 //   log             — console-like (log / warn / error)
 async function deliverOutboxDoc({
   db, docRef, docId, sendTemplate, maxAttempts, serverTimestamp, maskPhone,
-  log = console,
+  logPrefix, log = console,
 }) {
   let claimed;
   try {
@@ -63,7 +76,7 @@ async function deliverOutboxDoc({
       return { ...data, attempts };
     });
   } catch (err) {
-    log.error("outbox deliver claim failed:", JSON.stringify({ docId, error: err.message }));
+    log.error(`${logPrefix} claim failed:`, JSON.stringify({ docId, error: err.message }));
     return;
   }
   if (!claimed) return;  // no longer pending — someone else won the race
@@ -74,14 +87,30 @@ async function deliverOutboxDoc({
 
   const result = await sendTemplate(to, templateName, templateParams);
 
+  // Every post-send status write is guarded: docRef.update() can throw (doc
+  // deleted mid-flight, transient Firestore error), and an escaped rejection
+  // here would abort the sweep's remaining batch. A failed write leaves the
+  // doc in "sending" — stuck, logged loudly below, but never double-sent.
+  const recordOutcome = async (fields, context) => {
+    try {
+      await docRef.update(fields);
+      return true;
+    } catch (err) {
+      log.error(`${logPrefix} outcome write failed (doc left in "sending"):`, JSON.stringify({
+        docId, recipient: maskPhone(to), templateName, context, error: err.message,
+      }));
+      return false;
+    }
+  };
+
   if (result.ok) {
-    await docRef.update({
+    await recordOutcome({
       status:    "sent",
       provider:  "meta",
       sentAt:    serverTimestamp(),
       messageId: result.messageId,
-    });
-    log.log("outbox deliver meta-send:", JSON.stringify({
+    }, "record-sent");
+    log.log(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "sent", messageId: result.messageId,
     }));
     return;
@@ -90,23 +119,23 @@ async function deliverOutboxDoc({
   // Meta send failed. This is the last-resort path, so it's the only one that
   // ever sets "failed" — but only once we've exhausted maxAttempts.
   if (claimed.attempts >= maxAttempts) {
-    await docRef.update({
+    await recordOutcome({
       status:    "failed",
       lastError: result.error || "Meta send failed",
-    });
-    log.error("outbox deliver meta-send:", JSON.stringify({
+    }, "record-failed");
+    log.error(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "failed",
       attempts: claimed.attempts, error: result.error,
     }));
   } else {
     // Revert to pending so a later sweep retries. Clearing provider hands it
     // back to whoever claims next.
-    await docRef.update({
+    await recordOutcome({
       status:    "pending",
       provider:  null,
       lastError: result.error || "Meta send failed",
-    });
-    log.warn("outbox deliver meta-send:", JSON.stringify({
+    }, "record-retry");
+    log.warn(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "retry",
       attempts: claimed.attempts, error: result.error,
     }));
