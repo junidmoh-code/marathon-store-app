@@ -23,6 +23,7 @@ DONE=$(grep -c '^✓' "$LOG" 2>/dev/null || :); DONE=${DONE:-0}
 REF=$(grep -c '^⚠' "$LOG" 2>/dev/null || :);  REF=${REF:-0}
 BAD=$(grep -c '^✗' "$LOG" 2>/dev/null || :);  BAD=${BAD:-0}
 RUNLOG=$(mktemp)
+trap 'rm -f "$RUNLOG"' EXIT   # one place, so its lifetime cannot be got wrong
 awk '/^── vision naming started/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$LOG" > "$RUNLOG"
 CHUNKS=$(grep -c '^── chunk' "$RUNLOG" 2>/dev/null || :); CHUNKS=${CHUNKS:-0}
 DONECHUNKS=$(grep -c 'finished (' "$RUNLOG" 2>/dev/null || :); DONECHUNKS=${DONECHUNKS:-0}
@@ -44,7 +45,6 @@ echo "refused      : $REF       (name broke a compliance rule — kept for revie
 echo "failed       : $BAD"
 echo "chunks       : $DONECHUNKS finished, $CHUNKS started   (this run)"
 echo "current      : $(grep '^── chunk' "$RUNLOG" | tail -1)"
-rm -f "$RUNLOG"
 
 if grep -q 'ALL NAMED' "$LOG" 2>/dev/null; then
   echo
