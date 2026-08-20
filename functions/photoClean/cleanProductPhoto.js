@@ -81,7 +81,13 @@ async function assertPublisher(request, db) {
 async function fetchImage(url) {
   let u;
   try { u = new URL(String(url)); } catch { throw new HttpsError("invalid-argument", "That photo URL is not a URL."); }
-  if (u.protocol !== "https:" || !/\.googleapis\.com$/.test(u.hostname)) {
+  // Pinned to the hosts this shop's photos actually live on, not to
+  // *.googleapis.com. The broader pattern was not exploitable — only a stock
+  // admin can call this and the URL must already appear on the product record
+  // or its publishing set — but it was looser than the client's own check and
+  // there is no reason for the server's to be the weaker of the two.
+  const ALLOWED_HOSTS = new Set(["firebasestorage.googleapis.com", "storage.googleapis.com"]);
+  if (u.protocol !== "https:" || !ALLOWED_HOSTS.has(u.hostname)) {
     throw new HttpsError("invalid-argument", "That photo is not hosted where this app stores photos.");
   }
   const res = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30000) });

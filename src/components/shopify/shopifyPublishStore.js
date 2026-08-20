@@ -100,6 +100,13 @@ export async function loadPipelineNodes() {
 // "p<epoch-ms>" ids is oldest product first; the lane re-sorts what it holds
 // by when the proposal was made.
 //
+// ORDERING NOTE: inside an equal set RTDB orders by KEY, lexicographically.
+// Product ids are "p" + epoch-ms, which is a fixed 13-digit decimal today, so
+// lexicographic and chronological order coincide — and will until the year
+// 2286 adds a digit. The lane does not depend on the order being chronological
+// (it re-sorts what it holds by proposedAt); it depends only on the order being
+// STABLE between pages, which key order is regardless of digit width.
+//
 // PAGING USES equalTo's SECOND ARGUMENT, and it has to. `equalTo(v)` is not a
 // separate operator — it expands to startAt(v, key) + endAt(v, key) — so
 // adding startAfter() to a query that already has equalTo() throws

@@ -1217,15 +1217,40 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         )}
         {keys && pipeline && proposedList && proposalsLoaded && (
           proposedList.length === 0 ? (
-            <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
-              {q ? "No suggested names match." : (
-                <>
-                  No names are waiting. Suggestions appear here after a naming run
-                  reads the product photos — nothing on this page changes until you
-                  take one.
-                </>
-              )}
-            </div>
+            // AN EMPTY PAGE IS NOT AN EMPTY LANE. The pages come from the
+            // `state == "awaiting"` index, which holds every product in the
+            // review queue — not only the ones carrying a pending suggestion.
+            // A product whose name has been decided keeps its awaiting state
+            // and drops out of this lane, so once Junid has worked through the
+            // first few hundred, the FIRST page is all decided while thousands
+            // still wait behind it. Saying "no names are waiting" there would
+            // be a flat lie with no way forward, because the Load more button
+            // used to live only in the non-empty branch (reviewer finding).
+            // So the terminal message is gated on the paging actually being
+            // finished, and the lane keeps offering the next page until it is.
+            proposalPage.done ? (
+              <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
+                {q ? "No suggested names match." : (
+                  <>
+                    No names are waiting. Suggestions appear here after a naming run
+                    reads the product photos — nothing on this page changes until you
+                    take one.
+                  </>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
+                {q
+                  ? "No suggested names match so far — there are more to look through."
+                  : "Nothing waiting in the first stretch of the queue — there are more to look through."}
+                <div>
+                  <button onClick={loadMoreProposals} disabled={proposalPage.loading}
+                    style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 10 }}>
+                    {proposalPage.loading ? "Looking…" : "Keep looking"}
+                  </button>
+                </div>
+              </div>
+            )
           ) : (
             <>
               <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px 4px", lineHeight: 1.6 }}>

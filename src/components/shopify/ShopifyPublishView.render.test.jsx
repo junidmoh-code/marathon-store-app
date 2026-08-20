@@ -1348,3 +1348,38 @@ test("proposals: the lane is empty-stated, not blank, when nothing is waiting", 
   const tree = await mountProposals({ p3: { state: "awaiting", cleanName: "Sneaker" } });
   expect(texts(tree)).toContain("No names are waiting");
 });
+
+test("proposals: a page with nothing pending does NOT claim the lane is empty while more pages remain", async () => {
+  // The realistic shape once Junid has worked through the front of the queue:
+  // the first page is products whose names he has already decided, and the
+  // ones still waiting are behind them. Claiming "no names are waiting" here
+  // — with no way forward — is the dead end this guards.
+  proposalPages = [
+    { nodes: { p3: { state: "awaiting", cleanName: "Sneaker" } }, lastKey: "p3", done: false },
+    { nodes: { p2: { state: "awaiting", cleanName: "Tee", nameProposal: PROPOSAL } }, lastKey: "p2", done: true },
+  ];
+  keys = new Set(["p2", "p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  const out = texts(tree);
+  expect(out).not.toContain("No names are waiting");     // it would be a lie
+  expect(out).toContain("more to look through");
+
+  await act(() => { button(tree, "Keep looking").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("Brushed nubuck low-top in sand");
+});
+
+test("proposals: the terminal message appears once the paging really is finished", async () => {
+  proposalPages = [{ nodes: { p3: { state: "awaiting", cleanName: "Sneaker" } }, lastKey: "p3", done: true }];
+  keys = new Set(["p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("No names are waiting");
+});
