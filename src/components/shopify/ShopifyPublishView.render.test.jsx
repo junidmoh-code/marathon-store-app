@@ -130,6 +130,18 @@ const PRODUCTS = [
   { id: "p3", name: "Court sneaker grey", category: "Footwear", subcategory: "Sneakers", retailPrice: 899, photoUrl: "https://x/p3.jpg" },
 ];
 
+const PROPOSAL = {
+  name: "Brushed nubuck low-top in sand",
+  source: "vision",
+  previousName: "Sneaker",
+  identity: { brand: "Nike", model: "Air Force 1", colourway: "Sand", confidence: 0.82,
+              text: "Nike Air Force 1 Sand" },
+  attempts: 1,
+  visionModel: "gemini-3.7-flash",
+  proposedAt: 1787000000000,
+  status: "pending",
+};
+
 const flush = async () => { await act(() => Promise.resolve()); await act(() => Promise.resolve()); };
 const texts = (tree) => JSON.stringify(tree.toJSON());
 const focused = [];
@@ -1224,17 +1236,6 @@ test("a selected product that stops being publishable leaves the selection", asy
 // photos and written to /shopify_publish/{pid}/nameProposal with NO surface in
 // the app to decide any of them. These tests pin the surface, not the model.
 
-const PROPOSAL = {
-  name: "Brushed nubuck low-top in sand",
-  source: "vision",
-  previousName: "Sneaker",
-  identity: { brand: "Nike", model: "Air Force 1", colourway: "Sand", confidence: 0.82,
-              text: "Nike Air Force 1 Sand" },
-  attempts: 1,
-  visionModel: "gemini-3.7-flash",
-  proposedAt: 1787000000000,
-  status: "pending",
-};
 
 // The lane reads from the PIPELINE query, not from an expanded section — that
 // is the whole point of the runner stamping state:"awaiting" on the nodes it
@@ -1382,4 +1383,42 @@ test("proposals: the terminal message appears once the paging really is finished
   await act(() => { button(tree, "Proposed names").props.onClick(); });
   await flush();
   expect(texts(tree)).toContain("No names are waiting");
+});
+
+// ─── THE SAME DECISION, ON THE PRODUCT'S OWN PAGE ────────────────────────────
+// The lane is where a batch of names gets worked through; this card is for the
+// reviewer who arrived at one product instead. Both must offer the same
+// decision, and both must pass the proposal they DISPLAYED so a re-run's newer
+// name cannot be approved sight unseen.
+test("page: the photo-read name appears under Listing name, with the identity guess and its confidence", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Plain tee", nameProposal: PROPOSAL };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await openProductPage(tree, "Plain tee black");
+  const out = texts(tree);
+  expect(out).toContain("Suggested from the photo");
+  expect(out).toContain("Brushed nubuck low-top in sand");
+  expect(out).toContain("Nike Air Force 1 Sand");   // the identity guess, shown as a guess
+  expect(out).toContain("82");                      // its confidence, as a percentage
+  // and the guess is labelled as internal-only — it must never read as a title
+  expect(out).toContain("never goes on the storefront");
+});
+
+test("page: taking the name writes through the store, carrying the proposal that was displayed", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Plain tee", nameProposal: PROPOSAL };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await openProductPage(tree, "Plain tee black");
+  await act(() => { button(tree, "Use this name").props.onClick(); });
+  await flush();
+  expect(calls.applyProposal).toEqual(["p1"]);
+  // the editor follows the name that was just saved, so the page is not left
+  // showing a draft that no longer matches the product
+  expect(pageNameInput(tree).props.value).toBe("Brushed nubuck low-top in sand");
 });
