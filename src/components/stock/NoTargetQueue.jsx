@@ -31,7 +31,7 @@
 import React, { useMemo, useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
-import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig, useProvenanceAt, useProvenanceMeta } from "./useStock";
+import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig, useProvenance } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
@@ -39,7 +39,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
 import { carriesByEntry, indexReadyAt } from "./solveCarriage";
-import { categoryPolicyLocs } from "./solvePlan";
+import { categoryPolicyLocs, ruleTargetsEnabledFor } from "./solvePlan";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
 
@@ -85,17 +85,12 @@ export default function NoTargetQueue({ products = [] }) {
   const allTargets = allTargetsRaw || {};
   const decisions = useTargetDecisions() || {};
   const engineConfig = useEngineConfig();
-  // The carries index, per destination. See the hook for why this is not one read of
-  // the whole node.
-  const provMeta = useProvenanceMeta();
-  const provPE = useProvenanceAt("marathon-pe");
-  const provTrophy = useProvenanceAt("trophy");
-  const provHub2 = useProvenanceAt("hub2");
-  const provHub1 = useProvenanceAt("hub1");
-  const provenance = useMemo(
-    () => ({ "marathon-pe": provPE, trophy: provTrophy, hub2: provHub2, hub1: provHub1 }),
-    [provPE, provTrophy, provHub2, provHub1],
-  );
+  // The carries index — the WHOLE node, one subscription, so every destination in
+  // config.routes is covered including ones added after this ships. See the hook
+  // for why that beats a hand-written per-location list here.
+  const provAll = useProvenance();
+  const provenance = provAll || {};
+  const provMeta = provenance._meta || null;
   const dests = useMemo(() => destsFrom(engineConfig), [engineConfig]);
   // Never classify against half-loaded data: with targets still null EVERY
   // product would render as a wrong card for a moment.
@@ -147,6 +142,23 @@ export default function NoTargetQueue({ products = [] }) {
     // silent direction, which is the whole failure mode this cutover is fighting.
     const carriedAt = (pid, loc) => indexReadyAt(provMeta, loc)
       && carriesByEntry(provenance?.[loc]?.[pid]);
+    // CARRIAGE ALONE IS NOT MANAGEMENT. The engine's own "decided here" is the
+    // rule branch's WHOLE conjunction: the kill switch is on for this destination,
+    // the index says carried, AND the size actually resolves a positive run there.
+    // Hiding a card on carriage alone hid two real decision classes (adversarial
+    // review, PR #390): numeric-size clothing (jeans — letter-keyed runs resolve
+    // nothing, the engine can never refill them, a human must set targets) and
+    // EVERYTHING while the emergency kill switch is off — the exact moment the
+    // Decision Queue is the only lever left, since explicit rows survive the
+    // switch. So a pair leaves this queue only when the engine demonstrably has
+    // it: switch on, carried, and at least one shown size resolving a run.
+    const run = (loc) => effectiveRun(engineConfig, loc) || {};
+    const runResolves = (loc, size) => Number(run(loc)[String(size).toUpperCase()]) > 0;
+    const engineManages = (pid, loc, sizes) =>
+      ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
+      && carriedAt(pid, loc)
+      && sizes.length > 0
+      && sizes.every((s) => runResolves(loc, s.size));
     const mappedAnywhere = (pid) => categoryPolicyLocs(policy, byId.get(pid)?.categoryKey).length > 0;
     const mappedPerSize = (pid) => policy?.[byId.get(pid)?.categoryKey]?.perSize === true;
     // GENUINELY NEW at Central — no targets anywhere AND never circulated.
@@ -180,28 +192,32 @@ export default function NoTargetQueue({ products = [] }) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
         if (mappedAt(pid, loc)) continue;   // the category already decided here
-        // ── CARRIED = ALREADY DECIDED (the same reasoning, one source along) ──
-        // Since PR #376 the engine arms a location from /stock_provenance. A pair
-        // it CARRIES is being managed right now — the size run resolves for it on
-        // every scan — so it is no more an open decision than a category-mapped one,
-        // and offering it here is actively dangerous rather than merely noisy:
-        // the panel's Exclude writes an explicit `target: 0`, which OUTRANKS the
-        // index permanently. One tap on a shop with real recorded sales would
-        // silently stop replenishing a line it demonstrably trades, and nothing
-        // would say so.
-        //
-        // Surfaced by the substitute reviewer on PR #380: writing introduce rows at
-        // hub2 flips `introducedElsewhere` for the product, which is what routes it
-        // into this queue at the OTHER shops in the first place.
-        if (carriedAt(pid, loc)) continue;
-        if (allTargets?.[loc]?.[pid]) continue;
-        const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
-        if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
-        if (decisionActive(loc, pid)) continue;
         const sizes = Object.entries(bySize || {})
           .map(([size, c]) => ({ size, qty: Math.max(Number(c?.qty) || 0, 0) }))
           .filter((s) => s.qty > 0).sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
         if (!sizes.length) continue;
+        // ── ENGINE-MANAGED = ALREADY DECIDED (the same reasoning, one source along)
+        // Since PR #376 the engine arms a location from /stock_provenance. A pair
+        // it is MANAGING — kill switch on, carried, every shown size resolving a
+        // run — is no more an open decision than a category-mapped one, and
+        // offering it here is actively dangerous rather than merely noisy: the
+        // panel's Exclude writes an explicit `target: 0`, which OUTRANKS the
+        // index permanently. One tap on a shop with real recorded sales would
+        // silently stop replenishing a line it demonstrably trades, and nothing
+        // would say so.
+        //
+        // Carriage ALONE is deliberately not enough (see engineManages above):
+        // jeans the engine cannot size-resolve, and every pair while the kill
+        // switch is off, are genuinely open decisions and stay.
+        //
+        // Surfaced by the substitute reviewer on PR #380: writing introduce rows at
+        // hub2 flips `introducedElsewhere` for the product, which is what routes it
+        // into this queue at the OTHER shops in the first place.
+        if (engineManages(pid, loc, sizes)) continue;
+        if (allTargets?.[loc]?.[pid]) continue;
+        const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
+        if (!introducedElsewhere && stockedStandardSizes(allStock, pid).length) continue; // → migration
+        if (decisionActive(loc, pid)) continue;
         out.push({
           key: `${loc}|${pid}`, loc, pid, isNew: false, noStandard: !introducedElsewhere,
           name: p?.name || pid, photo: p?.photoUrl, sizes,
@@ -228,7 +244,19 @@ export default function NoTargetQueue({ products = [] }) {
           .filter((s) => s.qty > 0 && !byTarget[encodeSizeKey(s.size)])
           // a one-size map entry decides the "_" cell — its letter cells stay
           // the run's business exactly as before.
-          .filter((s) => !(mappedAt(pid, loc) && encodeSizeKey(s.size) === "_"));
+          .filter((s) => !(mappedAt(pid, loc) && encodeSizeKey(s.size) === "_"))
+          // A row-less size of a CARRIED pair is not a blind spot when the
+          // engine's clothing branch already covers it: with the switch on and
+          // carriage in the index, sizesFor() seeds every declared catalogue
+          // size, so a size that also resolves a run refills without a row.
+          // Leaving it here re-offered an Exclude over live carriage — the same
+          // hole this PR closes in the loop above, one granularity down.
+          // (Adversarial review, PR #390.) Sizes the engine can NOT cover — off
+          // the catalogue, no run, or the switch is off — remain a human's call.
+          .filter((s) => !(carriedAt(pid, loc)
+            && ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
+            && (p?.sizes || []).map(String).includes(String(s.size))
+            && runResolves(loc, s.size)));
         if (loc === "hub2") {
           const seen = new Set(sizes.map((s) => encodeSizeKey(s.size)));
           for (const [size, c] of Object.entries(allStock?.central?.[pid] || {})) {
@@ -250,7 +278,7 @@ export default function NoTargetQueue({ products = [] }) {
       }
     }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
-  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig, provenance, provMeta]);
+  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig, provAll]);
 
   // Pointer only — migration lives on the Health screen, not in this queue.
   const migratableCount = useMemo(
@@ -317,16 +345,25 @@ export default function NoTargetQueue({ products = [] }) {
     const now = serverNowIso();
     const upd = {};
     const locs = card.isNew ? dests.filter((l) => locEnabled(card, l)) : [card.loc];
+    // Every location unticked writes an empty update that resolves — which would
+    // report "targets set" having set nothing.
+    if (!locs.length) return finish(card, "no shops ticked — nothing written.");
     // A size is not a product: zeroing SOME sizes of a line is legitimate tuning
     // (provenance is pid-level, so a size at 0 contradicts nothing). But a save
     // where EVERY size is 0 at a location is a product delisting disguised as a
     // size edit — it writes the same permanent `target: 0` rows as Exclude while
     // labelled `source: "manual"`, indistinguishable from ordinary tuning forever
-    // after. That one case is refused and pointed at the button that says what it
-    // does. (Owner decision, 2026-08-20.)
+    // after. That one case is refused. (Owner decision, 2026-08-20.)
+    //
+    // The pointer depends on scope: Exclude writes to EVERY enabled location, so
+    // recommending it for a PARTIAL zeroing would delist shops the user meant to
+    // keep — there, the honest advice is to untick the zeroed shops instead.
     const zeroed = locs.filter((loc) => card.sizes.every((s) => targetFor(card, s.size, loc) === 0));
     if (zeroed.length) {
-      return finish(card, `every size is 0 for ${zeroed.map((l) => LOC_LABEL[l]).join(", ")} — that is an exclusion, not a size edit. Use Exclude so the row says so.`);
+      const names = zeroed.map((l) => LOC_LABEL[l] || l).join(", ");
+      return finish(card, zeroed.length === locs.length
+        ? `every size is 0 for ${names} — that is an exclusion, not a size edit. Use Exclude so the row says so.`
+        : `every size is 0 for ${names} — untick ${zeroed.length === 1 ? "that shop" : "those shops"} instead of zeroing them (Exclude would delist the others too).`);
     }
     for (const loc of locs) {
       for (const s of card.sizes) {

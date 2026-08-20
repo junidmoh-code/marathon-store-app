@@ -20,7 +20,7 @@ const MUTATIONS = [
     id: "X1",
     guard: "A CARRIED pair is skipped — the Exclude button never appears over live carriage",
     file: QUEUE,
-    from: `        if (carriedAt(pid, loc)) continue;`,
+    from: `        if (engineManages(pid, loc, sizes)) continue;`,
     to: ``,
     tests: T,
   },
@@ -50,17 +50,45 @@ const MUTATIONS = [
     file: CARRIAGE,
     from: `  return n(entry.k) - n(entry.u) > 0;`,
     to: `  return n(entry.k) > 0;`,
-    tests: T,
+    // The predicate is SHARED with the solve suites — a mutation here must be
+    // caught by every consumer, not just this queue's tests. (Review, PR #390.)
+    tests: [...T, "src/components/stock/solveCarriage.test.js"],
   },
   {
     id: "X5",
     guard: "an all-zero save is refused as a delisting disguised as a size edit — nothing written",
     file: QUEUE,
-    from: `    const zeroed = locs.filter((loc) => card.sizes.every((s) => targetFor(card, s.size, loc) === 0));
-    if (zeroed.length) {
-      return finish(card, \`every size is 0 for \${zeroed.map((l) => LOC_LABEL[l]).join(", ")} — that is an exclusion, not a size edit. Use Exclude so the row says so.\`);
-    }`,
-    to: ``,
+    from: `    const zeroed = locs.filter((loc) => card.sizes.every((s) => targetFor(card, s.size, loc) === 0));`,
+    to: `    const zeroed = [];`,
+    tests: T,
+  },
+  {
+    id: "X6",
+    guard: "the kill switch is mirrored — with rules off, a carried card STAYS (it is the only lever left)",
+    file: QUEUE,
+    from: `      ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
+      && carriedAt(pid, loc)`,
+    to: `      carriedAt(pid, loc)`,
+    tests: T,
+  },
+  {
+    id: "X7",
+    guard: "carriage without run resolution is NOT management — jeans stay visible",
+    file: QUEUE,
+    from: `      && sizes.length > 0
+      && sizes.every((s) => runResolves(loc, s.size));`,
+    to: `      && sizes.length > 0;`,
+    tests: T,
+  },
+  {
+    id: "X8",
+    guard: "the size blind-spot loop is gated too — no Exclude over an engine-covered size",
+    file: QUEUE,
+    from: `          .filter((s) => !(carriedAt(pid, loc)
+            && ruleTargetsEnabledFor(engineConfig?.ruleBasedTargets, loc)
+            && (p?.sizes || []).map(String).includes(String(s.size))
+            && runResolves(loc, s.size)));`,
+    to: `          ;`,
     tests: T,
   },
 ];

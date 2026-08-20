@@ -211,20 +211,20 @@ export function useStockTargetsState(locationId) {
 // /stock_provenance → { loc: { pid: {s,k,u} } } plus the `_meta` sentinels — the
 // derived carries index the refill engine arms from (functions/lib/provenance-index).
 //
-// SUBSCRIBE PER LOCATION, NEVER THE WHOLE NODE. The full node is ~217 KB and includes
-// three locations that are not refill destinations at all; the destinations alone are
-// ~177 KB. A screen only ever asks about places the engine can arm, so it should only
-// pay for those. (The same distinction, measured, is why refill-scan reads
-// Object.keys(routes) rather than its wider `locs` set — PR #382.)
-export function useProvenanceAt(loc) {
-  return usePath(loc ? `stock_provenance/${loc}` : null);
-}
-
-// The readiness sentinels — tiny, and the thing that decides whether the index may be
-// believed at all. An absent sentinel means "arms nothing here", NOT "carries nothing
-// here", and callers must keep those apart.
-export function useProvenanceMeta() {
-  return usePath("stock_provenance/_meta");
+// THE WHOLE NODE, ONE SUBSCRIPTION — deliberately, and against this codebase's
+// usual per-location instinct (PR #382 narrowed the ENGINE's read that way, 49
+// times a day, and was right to). A human-opened screen pays ~40 KB extra once
+// per open; a per-location list hand-written in a component silently stops
+// covering a destination the moment one is added to config.routes, and the
+// failure lands in the ARMING direction — a carried pair at the new shop renders
+// with an Exclude button again, which is the exact defect PR #390 closes.
+// Correct-by-construction beats 40 KB here. (Adversarial + architect review.)
+//
+// `_meta` rides along as a key of the same node: the readiness sentinels, which
+// decide whether the index may be believed at all. An absent sentinel means
+// "arms nothing here", NOT "carries nothing here" — callers keep those apart.
+export function useProvenance() {
+  return usePath("stock_provenance");
 }
 
 export function useTargetDecisions() {

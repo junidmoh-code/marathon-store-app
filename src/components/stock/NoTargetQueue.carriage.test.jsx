@@ -37,8 +37,6 @@ vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u
 const perm = { permRecord: { stockRole: "admin" }, isSuperAdmin: false };
 vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perm }) }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => Date.parse("2026-08-18T09:00:00.000Z"), serverNowIso: () => "2026-08-18T09:00:00.000Z" }));
-// The auth-ready gate the useStock hooks sit behind.
-vi.mock("./useAuthReady", () => ({ default: () => true, useAuthReady: () => true }), { virtual: true });
 
 const { default: NoTargetQueue } = await import("./NoTargetQueue.jsx");
 
@@ -67,19 +65,19 @@ beforeEach(() => {
   paths["stock"] = { "marathon-pe": { [PID]: { S: cell(2), M: cell(1) } } };
   paths["stock_targets"] = { hub2: { [PID]: { S: { introduce: true } } } };
   paths["stock_targets_decisions"] = {};
-  paths["stock_provenance/_meta"] = ready("hub2", "marathon-pe", "trophy", "hub1");
-  paths["stock_provenance/marathon-pe"] = null;
-  paths["stock_provenance/trophy"] = null;
-  paths["stock_provenance/hub2"] = null;
-  paths["stock_provenance/hub1"] = null;
+  // ONE node, whole: the component subscribes to /stock_provenance in a single
+  // usePath so any destination in config.routes is covered by construction.
+  paths["stock_provenance"] = { _meta: ready("hub2", "marathon-pe", "trophy", "hub1") };
 });
+const setProv = (loc, val) => { paths["stock_provenance"] = { ...paths["stock_provenance"], [loc]: val }; };
+const setMeta = (m) => { paths["stock_provenance"] = { ...paths["stock_provenance"], _meta: m }; };
 
 describe("a pair the engine CARRIES is already decided", () => {
   it("does NOT appear in the queue when provenance says the shop sells it", () => {
     // The defect. marathon-pe has 9 recorded sales — the engine resolves its size
     // run every scan — so this is not an open decision, and must not be offered
     // with an Exclude button that would overrule the index forever.
-    paths["stock_provenance/marathon-pe"] = { [PID]: { s: 9 } };
+    setProv("marathon-pe", { [PID]: { s: 9 } });
     expect(textOf(render())).not.toMatch(/A tee/);
   });
 
@@ -90,7 +88,7 @@ describe("a pair the engine CARRIES is already decided", () => {
   it("net-zero carriage (stocked then all undone) still appears — it is a real decision", () => {
     // k − u == 0 is NOT carriage. The engine refuses this pair, so a human really
     // does have to decide, and hiding it would be the silent direction.
-    paths["stock_provenance/marathon-pe"] = { [PID]: { k: 4, u: 4 } };
+    setProv("marathon-pe", { [PID]: { k: 4, u: 4 } });
     expect(textOf(render())).toMatch(/A tee/);
   });
 
@@ -100,13 +98,13 @@ describe("a pair the engine CARRIES is already decided", () => {
     // is whether to show someone a decision, and unready means we do not know — so a
     // person looks. Hiding on a failed read is the silent failure this whole cutover
     // is fighting.
-    paths["stock_provenance/marathon-pe"] = { [PID]: { s: 9 } };
-    paths["stock_provenance/_meta"] = ready("hub2");        // marathon-pe unready
+    setProv("marathon-pe", { [PID]: { s: 9 } });
+    setMeta(ready("hub2"));        // marathon-pe unready
     expect(textOf(render())).toMatch(/A tee/);
   });
 
   it("carriage at ANOTHER shop does not hide this shop's card", () => {
-    paths["stock_provenance/trophy"] = { [PID]: { s: 9 } };
+    setProv("trophy", { [PID]: { s: 9 } });
     expect(textOf(render())).toMatch(/A tee/);
   });
 });
@@ -164,5 +162,78 @@ describe("the size-loop guard on saveTargets", () => {
     const targets = Object.values(written).map((row) => row.target).sort();
     expect(targets).toContain(0);                          // the zeroed size went through
     expect(targets.some((t) => t > 0)).toBe(true);         // and the line is still listed
+  });
+});
+
+// ─── CARRIAGE ALONE IS NOT MANAGEMENT — the engine's whole conjunction ────────
+// Hiding a card on carriage alone hid two real decision classes (adversarial
+// review, PR #390): products the engine cannot size-resolve, and everything the
+// moment the emergency kill switch goes off — precisely when the Decision Queue
+// is the only lever left, because explicit rows survive the switch.
+describe("carried but NOT managed — the card must stay", () => {
+  it("kill switch OFF → the carried card shows: explicit rows are the only lever left", () => {
+    setProv("marathon-pe", { [PID]: { s: 9 } });
+    paths["config/refillEngine"] = { ...paths["config/refillEngine"], ruleBasedTargets: false };
+    expect(textOf(render())).toMatch(/A tee/);
+  });
+
+  it("kill switch off for THIS destination only → still shows here", () => {
+    setProv("marathon-pe", { [PID]: { s: 9 } });
+    paths["config/refillEngine"] = { ...paths["config/refillEngine"], ruleBasedTargets: { hub2: true } };
+    expect(textOf(render())).toMatch(/A tee/);
+  });
+
+  it("numeric sizes the run cannot resolve (jeans) → carried, but still a human's decision", () => {
+    // defaultRunByStore is letter-keyed; waist sizes resolve nothing, so the
+    // engine can never refill this pair no matter what the index says. Before
+    // this fix the card vanished and the pair was unarmed AND invisible — the
+    // silent-starvation failure this whole cutover is fighting.
+    paths["stock"] = { "marathon-pe": { p_jeans: { 30: cell(2), 32: cell(1) } } };
+    setProv("marathon-pe", { p_jeans: { s: 9 } });
+    paths["stock_targets"] = { hub2: { p_jeans: { S: { introduce: true } } } };
+    const jeans = [{ id: "p_jeans", name: "Levi jeans", productType: "clothing", subcategory: "Jeans", categoryKey: "jeans", sizes: ["30", "32"] }];
+    let tree;
+    act(() => { tree = TestRenderer.create(<NoTargetQueue products={jeans} />); });
+    expect(textOf(tree)).toMatch(/Levi jeans/);
+  });
+
+  it("a destination missing from the four old hard-coded ids is still covered — whole-node subscription", () => {
+    // The old per-location hook list silently dropped any destination added to
+    // config.routes later; the card would re-offer Exclude over live carriage
+    // there. With the whole-node subscription this cannot happen by construction.
+    paths["config/refillEngine"] = {
+      ...paths["config/refillEngine"],
+      routes: { ...paths["config/refillEngine"].routes, "marathon-pine": "hub2" },
+      defaultRunByStore: { ...paths["config/refillEngine"].defaultRunByStore, "marathon-pine": { S: 2, M: 2 } },
+    };
+    paths["stock"] = { "marathon-pine": { [PID]: { S: cell(2), M: cell(1) } } };
+    setMeta(ready("hub2", "marathon-pe", "trophy", "hub1", "marathon-pine"));
+    setProv("marathon-pine", { [PID]: { s: 40 } });
+    expect(textOf(render())).not.toMatch(/A tee/);
+  });
+});
+
+// ─── THE SIZE BLIND-SPOT LOOP IS GATED TOO ───────────────────────────────────
+describe("a row-less size of a carried pair", () => {
+  it("does not surface when the engine's clothing branch already covers it", () => {
+    // marathon-pe has an S row and M stocked without one; the pair is carried and
+    // M is a declared catalogue size with a positive run — sizesFor() seeds it on
+    // every scan, so it is not a blind spot, and offering Exclude over it was the
+    // same hole one granularity down. (Adversarial review, PR #390.)
+    paths["stock_targets"] = { "marathon-pe": { [PID]: { S: { target: 2, minQty: 1 } } } };
+    setProv("marathon-pe", { [PID]: { s: 9 } });
+    expect(textOf(render())).not.toMatch(/A tee/);
+  });
+
+  it("DOES surface when the pair is not carried — the control", () => {
+    paths["stock_targets"] = { "marathon-pe": { [PID]: { S: { target: 2, minQty: 1 } } } };
+    expect(textOf(render())).toMatch(/A tee/);
+  });
+
+  it("DOES surface for a size off the catalogue even on a carried pair", () => {
+    paths["stock_targets"] = { "marathon-pe": { [PID]: { S: { target: 2, minQty: 1 } } } };
+    paths["stock"] = { "marathon-pe": { [PID]: { S: cell(2), XL: cell(1) } } };   // XL not in sizes:["S","M"]
+    setProv("marathon-pe", { [PID]: { s: 9 } });
+    expect(textOf(render())).toMatch(/A tee/);
   });
 });
