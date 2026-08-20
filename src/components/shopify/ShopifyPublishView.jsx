@@ -644,8 +644,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         for (const [pid, n] of Object.entries(got)) if (prev[pid] === undefined) next[pid] = n;
         return next;
       });
-      // Functional, so the cursor can never be computed from a stale closure.
-      setProposalPage((p) => ({ lastKey: lastKey ?? p.lastKey, done, loading: false }));
+      // STORED AS RETURNED, null included. The `?? p.lastKey` that used to be
+      // here was written when null meant "no new key"; since loadProposalPage
+      // started returning null to MEAN FINISHED, that fallback quietly put the
+      // spent cursor back — defeating the very contract it was paired with
+      // (reviewer finding). The store is the authority on what the cursor is.
+      setProposalPage({ lastKey, done, loading: false });
       setProposalsLoaded(true);
     } catch (e) {
       setProposalPage((p) => ({ ...p, loading: false }));
@@ -664,8 +668,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const proposalsRequested = useRef(false);
   // A ref so restartProposalWalk can reach the CURRENT loader without taking
   // it as a dependency (which would rebuild the callback on every page).
+  // ASSIGNED IN AN EFFECT, not during render: React may discard a render, and
+  // a ref written during one keeps a callback that was never committed
+  // (reviewer finding). The effect only runs for renders that survived.
   const loadMoreProposalsRef = useRef(loadMoreProposals);
-  loadMoreProposalsRef.current = loadMoreProposals;
+  useEffect(() => { loadMoreProposalsRef.current = loadMoreProposals; }, [loadMoreProposals]);
 
   useEffect(() => {
     if (filter !== "proposed" || proposalsRequested.current) return;
@@ -1333,11 +1340,28 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                   onDismiss={decideProposal.dismiss}
                 />
               ))}
-              {!proposalPage.done && (
+              {!proposalPage.done ? (
                 <button onClick={loadMoreProposals} disabled={proposalPage.loading}
                   style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 12 }}>
                   {proposalPage.loading ? "Loading…" : "Load more suggestions"}
                 </button>
+              ) : (
+                // AVAILABLE WITH ROWS SHOWING, not only on an empty lane. The
+                // walk moves forward through keys, so a suggestion written
+                // while this page was open can sit behind everything already
+                // read — and a reviewer part-way through a full list is
+                // exactly the person it happens to. Offering the re-walk only
+                // when the lane looked empty left them no way to see it.
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: GRAY, marginBottom: 6 }}>
+                    That is everything read so far. A naming run happening now can add
+                    more behind it.
+                  </div>
+                  <button onClick={restartProposalWalk} disabled={proposalPage.loading}
+                    style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem" }}>
+                    {proposalPage.loading ? "Checking…" : "Check again"}
+                  </button>
+                </div>
               )}
             </>
           )
