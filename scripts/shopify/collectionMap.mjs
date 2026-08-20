@@ -10,9 +10,18 @@
 // TWO tables, both pure data:
 //
 //   COLLECTIONS  — every collection that may exist on the shop: its title,
-//                  handle, customer-facing description, SEO, sort order, and
-//                  whether Shopify evaluates its membership itself (kind
-//                  "smart") or this map drives it (kind "manual").
+//                  handle, SEO, sort order, and whether Shopify evaluates its
+//                  membership itself (kind "smart") or this map drives it
+//                  (kind "manual").
+//                  NO DESCRIPTION. Junid does not want a paragraph on his
+//                  category pages (owner decision 2026-08-19): the shop's
+//                  headings say what the section is, and prose underneath them
+//                  is copy nobody asked for and nobody maintains. The field is
+//                  gone from every entry, the reconciler pushes an empty
+//                  descriptionHtml so the copy already on the shop is CLEARED,
+//                  and the validator refuses a description if one reappears.
+//                  SEO title and description stay — those are search-engine
+//                  metadata, not page copy.
 //   CATEGORY_MAP — internal `${category}|${subcategory}` → exactly ONE manual
 //                  collection key. Plus a `${category}|*` row per category so a
 //                  record with no subcategory still lands somewhere.
@@ -24,7 +33,7 @@
 // of its six children. The menu still nests them; the collections do not.
 //
 // ── COMPLIANCE ───────────────────────────────────────────────────────────────
-// Collection titles, handles, descriptions, SEO fields and menu labels are
+// Collection titles, handles, SEO fields and menu labels are
 // catalogue fields: the payment gateway keyword-flags brand terms wherever they
 // appear. Every string in this file goes through the SAME brand-trigger
 // validator the product push uses (src/utils/shopifyTriggers.js) before
@@ -105,12 +114,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    // Copy rewritten for the split: this lane no longer holds boots or slides,
-    // and a description that still promised them would be a lie on the page.
-    description:
-      "Sneakers in the sizes we hold. Every pair is checked by hand and graded " +
-      "before it is listed, and the grade is written on the product page. " +
-      "Boots, soccer boots and slides have sections of their own.",
     seoTitle: "Sneakers | Marathon Club",
     seoDescription:
       "Sneakers in stock at Marathon Club — checked by hand, graded, and listed only in the sizes we hold.",
@@ -122,9 +125,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Boots — lace-ups, hikers and waterproof pairs, in the sizes we hold. " +
-      "Checked by hand and graded before listing; the grade is on each product page.",
     seoTitle: "Boots | Marathon Club",
     seoDescription:
       "Boots in stock at Marathon Club — hand-checked, graded, and listed only in the sizes we hold.",
@@ -136,9 +136,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Soccer boots in the sizes we hold — firm ground, turf and indoor. " +
-      "Each pair is checked by hand and carries a condition grade on its product page.",
     seoTitle: "Soccer Boots | Marathon Club",
     seoDescription:
       "Soccer boots in stock at Marathon Club — hand-checked and graded before listing.",
@@ -150,9 +147,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Slides and sandals in the sizes we hold. Checked by hand and graded before " +
-      "listing — the grade is written on each product page.",
     seoTitle: "Sandals & Slides | Marathon Club",
     seoDescription:
       "Slides and sandals in stock at Marathon Club — hand-checked, graded, and listed in the sizes we hold.",
@@ -164,10 +158,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Jerseys, golf and polo shirts, underwear and socks, and pieces still being " +
-      "sorted. T-shirts, hoodies, tracksuits, jackets, shorts and pants have " +
-      "sections of their own. Each item carries a condition grade on its product page.",
     seoTitle: "Clothing | Marathon Club",
     seoDescription:
       "Jerseys, polo shirts, underwear and more at Marathon Club. Every piece graded by hand before listing.",
@@ -179,9 +169,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Caps, fitted caps, beanies and visors. Each listing shows the sizes it is " +
-      "actually available in. Condition is graded on each product page.",
     seoTitle: "Caps & Hats | Marathon Club",
     seoDescription:
       "Caps, fitted caps and beanies at Marathon Club — graded by hand, listed in the sizes we hold.",
@@ -193,9 +180,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Backpacks, holdalls, slings and totes. Most are one size. " +
-      "Condition is graded on each product page — read it before you buy.",
     seoTitle: "Bags | Marathon Club",
     seoDescription:
       "Backpacks, holdalls and totes at Marathon Club. Hand-checked and graded before listing.",
@@ -207,9 +191,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Fragrance in stock. Bottles are sold as they are described — the condition " +
-      "grade on the product page covers the box and the bottle, not the scent.",
     seoTitle: "Fragrance | Marathon Club",
     seoDescription: "Fragrance in stock at Marathon Club, graded and described by hand.",
   },
@@ -220,9 +201,6 @@ export const COLLECTIONS = [
     parent: null,
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Watches, belts, eyewear, jewellery, gloves and balaclavas. Small pieces, " +
-      "limited runs, each with its own condition grade on the product page.",
     seoTitle: "Accessories | Marathon Club",
     seoDescription:
       "Watches, belts, eyewear and more at Marathon Club — hand-checked and graded before listing.",
@@ -236,8 +214,6 @@ export const COLLECTIONS = [
     parent: "clothing",
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "T-shirts in the sizes we hold. Condition is graded on each product page.",
     seoTitle: "T-shirts | Marathon Club",
     seoDescription: "T-shirts at Marathon Club — graded by hand, listed in the sizes we hold.",
   },
@@ -248,8 +224,6 @@ export const COLLECTIONS = [
     parent: "clothing",
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Hoodies, sweatshirts and pullovers. Condition is graded on each product page.",
     seoTitle: "Hoodies & Sweats | Marathon Club",
     seoDescription:
       "Hoodies and sweatshirts at Marathon Club — hand-checked and graded before listing.",
@@ -261,8 +235,6 @@ export const COLLECTIONS = [
     parent: "clothing",
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Tracksuits and two-piece sets. Condition is graded on each product page.",
     seoTitle: "Tracksuits | Marathon Club",
     seoDescription: "Tracksuits and sets at Marathon Club, graded by hand before listing.",
   },
@@ -273,8 +245,6 @@ export const COLLECTIONS = [
     parent: "clothing",
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Jackets, coats, puffers and gilets. Condition is graded on each product page.",
     seoTitle: "Jackets | Marathon Club",
     seoDescription: "Jackets and coats at Marathon Club — hand-checked and graded before listing.",
   },
@@ -285,7 +255,6 @@ export const COLLECTIONS = [
     parent: "clothing",
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description: "Shorts and vests. Condition is graded on each product page.",
     seoTitle: "Shorts | Marathon Club",
     seoDescription: "Shorts and vests at Marathon Club, graded by hand before listing.",
   },
@@ -296,8 +265,6 @@ export const COLLECTIONS = [
     parent: "clothing",
     kind: "manual",
     sortOrder: "CREATED_DESC",
-    description:
-      "Pants, cargos, joggers and denim. Condition is graded on each product page.",
     seoTitle: "Pants | Marathon Club",
     seoDescription: "Pants, cargos and denim at Marathon Club — graded by hand before listing.",
   },
@@ -320,14 +287,13 @@ export const COLLECTIONS = [
     // something Shopify can evaluate for itself. A tag we stamp and sweep
     // would be OUR clock, not Shopify's, and would rot the moment a sweep is
     // missed. So New In is every listed product ordered newest-first — which
-    // is both self-maintaining and exactly what the description promises. Note
+    // is both self-maintaining and exactly what the heading promises. Note
     // it is also the safety net for an UNMAPPED product (see UNMAPPED below):
     // a product in no manual collection is still reachable from here.
     conditions: {
       matchType: "ALL",
       all: [{ productStatus: { relation: "EQUALS", values: ["ACTIVE"] } }],
     },
-    description: "Everything on the store, newest first.",
     seoTitle: "New In | Marathon Club",
     seoDescription: "The newest listings at Marathon Club, most recent first.",
   },
@@ -358,9 +324,6 @@ export const COLLECTIONS = [
         { variantCompareAtPrice: { relation: "IS_SET" } },
       ],
     },
-    description:
-      "Items marked down from their earlier price. The previous price is shown " +
-      "struck through on the product page.",
     seoTitle: "Sale | Marathon Club",
     seoDescription: "Marked-down items at Marathon Club, cheapest first.",
   },
@@ -378,9 +341,6 @@ export const COLLECTIONS = [
         { variantPrice: { relation: "LESS_THAN", amount: "500.00" } },
       ],
     },
-    description:
-      "Everything priced under R500. Prices include VAT. A product appears here " +
-      "as soon as any of its sizes is under R500.",
     seoTitle: "Under R500 | Marathon Club",
     seoDescription: "Everything under R500 at Marathon Club, cheapest first.",
   },
@@ -548,7 +508,7 @@ export function resolveCollection(product) {
 
 // ── THE COMPLIANCE VALIDATOR FOR COLLECTIONS ─────────────────────────────────
 // The sibling of compliance.mjs `validatePayload`, for the fields a collection
-// pushes: title, handle, description, SEO title, SEO description — and, when a
+// pushes: title, handle, SEO title, SEO description — and, when a
 // menu is built from this map, the menu label too (which is the title).
 // Structural guards mirror the product validator: handle must be a clean
 // lowercase-hyphen slug, title non-empty and inside Shopify's limits.
@@ -576,10 +536,15 @@ export function validateCollectionPayload(collection) {
   }
   check("handle", collection?.handle);
 
-  if (!collection?.description || String(collection.description).trim() === "") {
-    violations.push({ field: "description", problem: "empty — collections are customer-facing" });
+  // NO DESCRIPTION IS CHECKED, because none is pushed. Junid does not want a
+  // paragraph on his category pages (owner decision 2026-08-19), so COLLECTIONS
+  // carries no `description` and the reconciler pushes an EMPTY descriptionHtml
+  // — which also clears the copy already on the shop. A collection that somehow
+  // arrives here carrying one is a mistake, and it is refused rather than
+  // quietly pushed.
+  if (collection?.description != null && String(collection.description).trim() !== "") {
+    violations.push({ field: "description", problem: "collections carry no description — it is not pushed and must not be set" });
   }
-  check("description", collection?.description);
   check("seoTitle", collection?.seoTitle);
   check("seoDescription", collection?.seoDescription);
 

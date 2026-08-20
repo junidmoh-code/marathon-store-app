@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const CARRIAGE = "src/components/stock/solveCarriage.js";
 const NETWORK = "src/components/stock/NetworkTransfer.jsx";
@@ -150,6 +151,14 @@ const MUTATIONS = [
     to: `  return null;`,
     tests: [CORE_T, RENDER_T],
   },
+  {
+    id: "M15",
+    guard: "A rules-refused INTRODUCE names the unpublished rule, never a bare retry",
+    file: NETWORK,
+    from: `      const introBlocked = Object.keys(introPaths).length > 0 && /permission|denied/i.test(String(e?.message || e));`,
+    to: `      const introBlocked = false;`,
+    tests: [RENDER_T],
+  },
 ];
 
 // THE REPOSITORY'S vitest, resolved explicitly — never `npx`.
@@ -158,7 +167,7 @@ const MUTATIONS = [
 // (or a fetched) binary when local resolution misses, and the failure mode is a
 // silent PASS on a mutation that a correct run would have killed. `process.execPath`
 // plus the local entry point removes the choice. (CodeRabbit, PR #381.)
-const VITEST = new URL("../node_modules/vitest/vitest.mjs", import.meta.url).pathname;
+const VITEST = fileURLToPath(new URL("../node_modules/vitest/vitest.mjs", import.meta.url));
 
 function runVitest(files) {
   try {
@@ -238,6 +247,14 @@ for (const m of MUTATIONS) {
     writeFileSync(m.file, original.replace(m.from, () => m.to));
     mutated = runAll(m);
     restore();
+    // Trust nothing about the restore that the disk cannot confirm: a swallowed
+    // write failure here would leave the MUTANT in the working tree while the
+    // verdict prints as if the original were back. (CodeRabbit, PR #381 — same
+    // check as mutation-proof-headwear-collapse.mjs.)
+    if (readFileSync(m.file, "utf8") !== original) {
+      console.error(`\n*** ${m.file} DID NOT RESTORE — restore it from git before doing anything else. ***`);
+      process.exit(2);
+    }
     restored = runAll(m);
   } finally {
     restore();

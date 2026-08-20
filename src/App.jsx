@@ -10152,8 +10152,13 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Hold order handled by a human — see onHoldRefill.js. Create-if-absent
     // so a re-tap can neither duplicate the ask nor reopen one the source
     // already rejected. The customer-facing hold status (warehouse tab, TV
-    // row, status page) is untouched; the "available tomorrow" WhatsApp is
-    // GONE — no customer notification for holds is sent any more.
+    // row, status page) is untouched, and NOTHING is messaged HERE — but the
+    // customer IS messaged, twice, by two server triggers hanging off the
+    // writes this handler makes:
+    //   orderTomorrowNotify     off /orders/{id}/status → coming_tomorrow
+    //   holdAvailabilityNotify  off the holdLink this record carries, at FULFIL
+    // See the note at the WhatsApp section below for which says what. No client
+    // fires either one.
     if (status === STATUS.COMING_TOMORROW) {
       const plan = onHoldRefillPlan(order, { nowIso: now, saDate: getSADateString() });
       if (plan.ok) {
@@ -10251,10 +10256,33 @@ function WarehouseView({ products = [], orders, onExit }) {
       sendWhatsAppTemplate(order.customerPhone, "order_ready", [order.customerName || "there", order.id]);
     if (status === STATUS.OUT_OF_STOCK)
       sendWhatsAppTemplate(order.customerPhone, "rder_out_of_stock", [order.id]);
-    // NO WhatsApp on COMING_TOMORROW (owner spec 2026-08-08): a hold is an
-    // ordinary refill request now, and the customer notification for holds is
-    // not sent any more. The order status itself (warehouse tab, TV row,
-    // status page) is unchanged — this removed only the outbound message.
+    // NO CLIENT WhatsApp on COMING_TOMORROW — and that is not the same thing as
+    // no message. The send is the SERVER's: functions orderTomorrowNotify fires
+    // order_tomorrow ("scheduled for tomorrow, we will notify you when it is
+    // ready") off /orders/{id}/status the moment this handler writes it.
+    //
+    // It hangs off the WRITE rather than the button because the client
+    // fire-and-forget e115cde deleted is the shape that once sent the same
+    // message 2-5 times and got the gateway number banned. It is behind a
+    // create-once claim, so a sleeping tablet can neither lose it nor repeat
+    // it. Nothing to add here: updateOrder(patch) above IS the trigger.
+    //
+    // ── WHO ELSE SENDS order_ready, AND THE ONE KNOWN OVERLAP ────────────────
+    // order_ready has THREE producers, and they are NOT all server-side:
+    //   1. the client, four lines up — every non-held Ready, immediately;
+    //   2. dispatchHoldRevealSweep — a Hub 2 Ready, deferred to notifyReadyAt;
+    //   3. holdAvailabilityNotify (PR #385) — a HELD order's refill line
+    //      reaching `fulfilled`, i.e. the stock physically arriving.
+    //
+    // order_tomorrow and (3) are not duplicates of each other: the first
+    // promises the second, in those words. But (1) and (3) CAN both fire for
+    // one held order — #385 messages "ready to collect" when the refill
+    // fulfils, and staff then marking that same order Ready sends the identical
+    // text again from (1). The producer's 90s dedupe only catches it if those
+    // two happen within 90 seconds, which the real workflow does not guarantee.
+    // NOT FIXED HERE — out of scope for the order_tomorrow restoration (#386),
+    // and as of this writing no held order has completed that path in
+    // production yet. Flagged for the owner; the fix belongs with #385.
   };
 
   // Mark an order Sent AND auto-print its dispatch label — but ONLY when the hub→shop

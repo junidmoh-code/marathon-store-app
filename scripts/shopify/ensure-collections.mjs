@@ -10,9 +10,16 @@
 // the Online Store channel. It never touches a product, never touches
 // membership, and never touches /products or /stock.
 //
-// Every collection's title, handle, description and SEO fields run through the
-// brand-trigger validator BEFORE any mutation — and the run refuses WHOLE if
-// any one of them fails, because a half-built navigation is worse than none.
+// Every collection's title, handle and SEO fields run through the brand-trigger
+// validator BEFORE any mutation — and the run refuses WHOLE if any one of them
+// fails, because a half-built navigation is worse than none.
+//
+// THIS IS ALSO THE RUN THAT CLEARS THE OLD CATEGORY-PAGE COPY. Junid does not
+// want a paragraph on his category pages (owner decision 2026-08-19), so the
+// map carries no description and the pushed descriptionHtml is the empty
+// string. That is a DIFF against every collection that still has copy on the
+// shop, so a --commit run rewrites each of them to empty and the paragraphs
+// stop existing rather than merely stopping being regenerated.
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { COLLECTIONS } from "./collectionMap.mjs";

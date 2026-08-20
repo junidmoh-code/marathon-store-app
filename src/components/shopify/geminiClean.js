@@ -1,8 +1,8 @@
 // ─── SHOPIFY PUBLISHING — BACKGROUND CLEANUP (Gemini) ────────────────────────
-// One photo at a time: send the original to Google's Gemini image model with
-// a background-replacement-ONLY instruction, then run an AUTOMATIC
-// subject-preservation check before anything is shown. The truthfulness rule
-// this file exists to enforce (owner spec 2026-08-14):
+// One photo at a time: ask the SERVER to send the original to Google's Gemini
+// image model with a background-replacement-ONLY instruction, then run an
+// AUTOMATIC subject-preservation check here before anything is shown. The
+// truthfulness rule this file exists to enforce (owner spec 2026-08-14):
 //
 //   The photo a customer sees must be a truthful depiction of the item they
 //   will receive. Background replacement and cutout are permitted. The
@@ -19,38 +19,60 @@
 // Storage object beside the original (photoTools records derivedFrom); the
 // original is never overwritten or deleted.
 //
-// API key: __GEMINI_API_KEY__ is baked at build time from env GEMINI_API_KEY
-// (vite.config.js). Absent ⇒ the action is disabled with a plain message and
-// everything else works — no stub, no silent no-op, no fallback provider.
-// The baked key is publicly visible in the bundle and MUST be treated as
-// spendable by anyone who extracts it: an HTTP-referrer allowlist helps
-// against casual reuse but Referer is client-supplied and forgeable, so the
-// real containment is a hard QUOTA CAP on the key in the Google console. Do
-// not put an uncapped or shared key in GEMINI_API_KEY.
+// ── THE KEY IS NOT HERE, AND MUST NEVER BE ───────────────────────────────────
+// This file used to hold `__GEMINI_API_KEY__`, baked into the bundle at build
+// time by vite. Its own comment admitted the consequence: the key is publicly
+// visible in the bundle and spendable by anyone who extracts it, with a quota
+// cap as the only real containment. Junid's instruction is that the key is
+// never exposed to the browser, so the paid call moved to a Cloud Function
+// (functions/photoClean/cleanProductPhoto.js) where a Cloud Functions secret
+// holds it. The action also shipped DISABLED for want of a build-time key;
+// with the key on the server there is nothing left to disable.
 //
-// Cost per image (Gemini 2.5 Flash Image pricing, 2026-08): output is a flat
-// 1290 tokens/image at $30/1M ⇒ ~$0.039 (~R0.70); the input image + prompt
-// add well under $0.001. One image per click, no bulk generate.
+// WHAT STAYED HERE, AND WHY: the subject-preservation gate. Both images are
+// already decoded onto a canvas in this process; running the same comparison
+// server-side would mean decoding both again to reach the same verdict with
+// the same code. The gate is unchanged — the same three pixel thresholds, the
+// same interior-hole check, the same aspect gate, the same tests.
+//
+// Cost per image is charged to the project, not the browser: ~$0.067 (~R1.20)
+// on gemini-3.1-flash-image. One image per click, no bulk generate — Junid's
+// painted backdrop stays the default for ordinary catalogue photos and is
+// never bulk-regenerated.
+//
+// ── WHAT THE GATE ACTUALLY DOES ON A REAL PHOTO (measured 2026-08-19) ────────
+// The gate had never been run against a real product image before this. It has
+// now, on p1777895620932 (a live cream/black/grey low-top on the shop's painted
+// backdrop, 592x800), seven real generations:
+//
+//   · ONE deliberately tampered prompt — "recolour the shoe deep red, remove
+//     every logo, clean off all scuffs". The model did exactly that. DISCARDED,
+//     never shown. That is the check doing the job it exists for.
+//   · SIX honest background-swap prompts, the wording below verbatim, twice
+//     with the output size pinned to the original's aspect. ALL SIX DISCARDED.
+//
+// The six are not a false alarm — they are the model re-rendering rather than
+// editing. It returns its own resolution (880x1189 for a 592x800 input),
+// reframes and rescales the shoe inside the frame, and redraws detail it
+// cannot reproduce: on the first run the shoe's printed side text came back as
+// "NAKE AND THE SWOOTH … SNOOSH". A customer shown that would be looking at a
+// shoe that does not exist. The gate was right every time.
+//
+// SO: THE ACTION IS SAFE, AND ON PHOTOS LIKE THESE IT CURRENTLY PRODUCES
+// NOTHING. Expect "discarded" on a photo shot against the shop backdrop with
+// the rack visible — replacing that much of the frame is a re-render, and a
+// re-render never survives a pixel comparison. A photo already on a plain
+// field, where the model has little to invent, is the case with a chance.
+// Pixel-preserving background replacement is a SEGMENTATION-AND-COMPOSITE job,
+// not a generation job; if this action is ever wanted as a working tool rather
+// than a safe one, that is the change to make, and it is not a prompt tweak.
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../../firebase";
 
-const MODEL = "gemini-2.5-flash-image";
-const API_KEY = typeof __GEMINI_API_KEY__ !== "undefined" ? __GEMINI_API_KEY__ : "";
-
-export function isCleanBackgroundAvailable() {
-  return API_KEY !== "";
-}
-
-// Background replacement ONLY. The preservation language is load-bearing —
-// and deliberately NOT trusted: the pixel gate below is what actually holds
-// the line.
-const PROMPT =
-  "Replace the background of this product photo with a plain, neutral, evenly lit " +
-  "studio background in soft light grey. This is a background replacement ONLY. " +
-  "The product itself must be preserved exactly as photographed: identical position, " +
-  "scale, angle, colours and every pixel of its surface. Do not redraw, regenerate, " +
-  "restyle, enhance or improve the product in any way. Do not remove, soften or hide " +
-  "any logo, brand mark, label, tag, scuff, scratch, stain, crease, wear or damage — " +
-  "this photo is a truthful record of a real second-hand item and every mark on it " +
-  "must remain exactly visible. Return only the edited image.";
+// The instruction the model is given lives with the call, on the server
+// (functions/photoClean/cleanProductPhoto.js). It is load-bearing wording and
+// it is deliberately NOT trusted — the pixel gate below is what holds the line.
+const cleanPhotoCall = httpsCallable(functions, "cleanProductPhoto");
 
 // Comparison frame: both images resampled onto this square grid. Stretching
 // ignores aspect — safe because an aspect change is rejected before this.
@@ -136,9 +158,18 @@ export function assessSubjectPreservation(orig, cand) {
   for (let p = 0; p < w * h; p++) if (!mask[p] && !seen[p]) holeArea++;
   const holeFrac = holeArea / subjectArea;
   if (holeFrac > 0.005) {
+    // The reason names BOTH readings, because in practice the second one is
+    // the common cause and the first alone reads as a false accusation. A
+    // background-coloured island inside the silhouette is either a mark
+    // painted out, or — far more often — a whole re-render whose subject sits
+    // somewhere else in the frame, so the two silhouettes do not line up at
+    // all. Naming only "a mark may have been painted out" sent a reader
+    // hunting for an erasure that was not there (measured 2026-08-19).
     return {
       pass: false,
-      reason: `background-coloured region inside the product (${(holeFrac * 100).toFixed(2)}% of the subject — a mark may have been painted out)`,
+      reason: `the product region does not line up with the original ` +
+              `(${(holeFrac * 100).toFixed(2)}% of it reads as background — either a mark was painted out, ` +
+              `or the whole photo was re-rendered and the item moved)`,
       metrics: { areaFrac: Number(areaFrac.toFixed(4)), holeFrac: Number(holeFrac.toFixed(4)) },
     };
   }
@@ -208,29 +239,20 @@ function imageDataAt(img, size) {
   return ctx.getImageData(0, 0, size, size);
 }
 
-async function callGemini(base64, mimeType) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
-      body: JSON.stringify({
-        contents: [{ parts: [{ inlineData: { mimeType, data: base64 } }, { text: PROMPT }] }],
-      }),
-      signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(90000) : undefined,
-    }
-  );
-  if (!res.ok) {
-    throw new Error(`Gemini HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+// The paid call, made by the server. Returns { mimeType, data } exactly as the
+// browser version did, so everything downstream is untouched.
+async function callCleanFunction(productId, photoUrl) {
+  let res;
+  try {
+    res = await cleanPhotoCall({ productId, photoUrl });
+  } catch (e) {
+    // httpsCallable wraps the function's HttpsError; its `message` is the
+    // plain sentence the function wrote for exactly this purpose.
+    throw new Error(String(e?.message || e));
   }
-  const json = await res.json();
-  const parts = json?.candidates?.[0]?.content?.parts || [];
-  const imgPart = parts.find((p) => p?.inlineData?.data);
-  if (!imgPart) {
-    const why = json?.promptFeedback?.blockReason || json?.candidates?.[0]?.finishReason || "no image in response";
-    throw new Error(`Gemini returned no image (${why})`);
-  }
-  return imgPart.inlineData; // { mimeType, data }
+  const out = res?.data;
+  if (!out?.data) throw new Error("The image service returned no image.");
+  return { mimeType: out.mimeType || "image/png", data: out.data };
 }
 
 /**
@@ -239,18 +261,20 @@ async function callGemini(base64, mimeType) {
  *   { ok: false, discarded: true, reason }     — generated but failed; logged, never shown
  * Throws on transport/API errors (the caller shows the message).
  * The caller owns previewUrl (URL.revokeObjectURL when done).
+ *
+ * `productId` is what the SERVER uses to look the photo up: the function reads
+ * the URL off the product record rather than trusting one from the browser, so
+ * this cannot become a fetch proxy. `originalUrl` is still fetched here too —
+ * the gate needs the original's own pixels to compare against.
  */
-export async function cleanBackground(originalUrl) {
-  if (!isCleanBackgroundAvailable()) throw new Error("GEMINI_API_KEY was not set at build time — the action is disabled.");
+export async function cleanBackground(originalUrl, productId) {
   const srcRes = await fetch(originalUrl,
     typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { signal: AbortSignal.timeout(20000) } : {});
   if (!srcRes.ok) throw new Error(`could not fetch the original photo (HTTP ${srcRes.status})`);
   const srcBlob = await srcRes.blob();
   const srcDataUrl = await blobToDataURL(srcBlob);
-  const [, srcB64] = String(srcDataUrl).split(",");
-  const srcMime = srcBlob.type || "image/jpeg";
 
-  const out = await callGemini(srcB64, srcMime);
+  const out = await callCleanFunction(productId, originalUrl);
   const outBlob = await (await fetch(`data:${out.mimeType};base64,${out.data}`)).blob();
 
   const candUrl = URL.createObjectURL(outBlob);
