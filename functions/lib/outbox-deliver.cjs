@@ -168,9 +168,13 @@ async function deliverOutboxDoc({
   const metaExhausted  = !result.preflight && claimed.attempts >= maxAttempts;
   const infraExhausted = result.preflight && infraAttempts >= maxInfraAttempts;
   if (metaExhausted || infraExhausted) {
+    // "(cumulative)" because the infra budget is lifetime-cumulative, never
+    // reset: a doc that survived a long outage can exhaust it on a later,
+    // shorter blip — the doc should say so honestly.
     await recordOutcome({
       status:    "failed",
-      lastError: (infraExhausted ? "infra budget exhausted: " : "") + (result.error || "Meta send failed"),
+      infraAttempts,
+      lastError: (infraExhausted ? "infra budget exhausted (cumulative): " : "") + (result.error || "Meta send failed"),
     }, "record-failed");
     log.error(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "failed",
@@ -184,7 +188,7 @@ async function deliverOutboxDoc({
       provider:      null,
       attempts:      claimed.attempts - 1,
       infraAttempts,
-      lastError:     result.error,
+      lastError:     result.error || "Meta send failed",
     }, "record-infra-retry");
     log.error(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "retry-infra",

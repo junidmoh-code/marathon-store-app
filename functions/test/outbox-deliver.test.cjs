@@ -185,7 +185,7 @@ test("infra budget exhaustion IS terminal, with a distinguishing lastError", asy
   const infraFail = async () => ({ ok: false, preflight: true, error: "secret unavailable" });
   for (let i = 0; i < 3; i++) await deliver(fake, infraFail, { maxInfraAttempts: 3 });
   assert.equal(fake.state.data.status, "failed");
-  assert.match(fake.state.data.lastError, /infra budget exhausted/);
+  assert.match(fake.state.data.lastError, /infra budget exhausted \(cumulative\)/);
   // terminal means terminal — nothing sends it later
   let sends = 0;
   await deliver(fake, async () => { sends++; return { ok: true, messageId: "x" }; });
