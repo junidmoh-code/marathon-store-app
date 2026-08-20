@@ -9,7 +9,7 @@ const require = createRequire(new URL("../../functions/package.json", import.met
 const admin = require("firebase-admin");
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
-const { readMapPaged } = await import("../lib/rtdbPaged.mjs");
+const { readMapPaged, shallowKeys } = await import("../lib/rtdbPaged.mjs");
 const { isPriceRecord } = await import("../../src/utils/productCategory.js");
 const { mayProposeFor } = await import("../../src/utils/visionNaming.js");
 
@@ -40,13 +40,22 @@ if (!Array.isArray(kinds?.differentProducts) || !Array.isArray(kinds?.crossBrand
 // one-style groups are NOT gated.
 const gated = new Set([...kinds.differentProducts.flat(), ...kinds.crossBrand.flat()]);
 
-// PAGED, all three. This script runs before EVERY chunk of the backlog — about
-// twenty times in a full run — so a whole-node read here is not paid once, it
-// is paid twenty times (reviewer finding). /shopify_publish is ~1,500 nodes
-// and /stock is larger still.
+// PAGED. This script runs before EVERY chunk of the backlog — about twenty
+// times in a full run — so a whole-node read here is not paid once, it is paid
+// twenty times (reviewer finding).
 const products = await readMapPaged(db, "products", { pageSize: 500 });
 const publish = await readMapPaged(db, "shopify_publish", { pageSize: 400 });
-const stock = await readMapPaged(db, "stock", { pageSize: 50 });
+
+// /stock IS PAGED PER LOCATION, and that distinction is the whole point.
+// Paging it by its own top-level keys does NOTHING: there are ten of them
+// (the locations), so any page size over ten fetches the entire node in one
+// request — the same bytes, dressed as a paged read. The depth is where the
+// data is: stock/in_transit alone holds 561 products. So the locations are
+// listed shallowly and each one is paged on its own.
+const stock = {};
+for (const loc of await shallowKeys(admin.app(), "stock")) {
+  stock[loc] = await readMapPaged(db, `stock/${loc}`, { pageSize: 500 });
+}
 const UNSELLABLE = new Set(["in_transit"]);
 const units = (pid) => {
   let u = 0;
