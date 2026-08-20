@@ -134,7 +134,11 @@ async function deliverOutboxDoc({
   };
 
   if (result.ok) {
-    await recordOutcome({
+    // `persisted` keeps both facts in one line: the message DID reach Meta
+    // (outcome "sent" is true either way), but persisted:false flags that the
+    // status write failed and the doc is stuck in "sending" — findable from
+    // the same log query that counts sends.
+    const persisted = await recordOutcome({
       status:    "sent",
       provider:  "meta",
       sentAt:    serverTimestamp(),
@@ -142,6 +146,7 @@ async function deliverOutboxDoc({
     }, "record-sent");
     log.log(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "sent", messageId: result.messageId,
+      persisted,
     }));
     return;
   }

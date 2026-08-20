@@ -161,13 +161,20 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
 
   let waRes, json;
   try {
+    // Explicit 30s timeout, well under the 120s invocation limit: a hung Meta
+    // fetch must fail as a VALUE (revert → sweep retry, capped by
+    // META_MAX_ATTEMPTS) — riding to the function kill instead would strand
+    // the claimed doc in "sending" forever. Deliberately NOT preflight: the
+    // request went out, Meta may have accepted, so this failure must burn the
+    // Meta budget — an uncapped refund here would mint duplicates.
     waRes = await fetch(`https://graph.facebook.com/v20.0/${WA_PHONE_ID}/messages`, {
       method:  "POST",
       headers: {
         "Authorization": `Bearer ${metaToken.value()}`,
         "Content-Type":  "application/json",
       },
-      body: JSON.stringify(payload),
+      body:   JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
     });
     json = await waRes.json();
   } catch (err) {

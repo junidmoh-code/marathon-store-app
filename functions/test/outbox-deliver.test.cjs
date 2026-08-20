@@ -209,6 +209,42 @@ test("a bare Promise.reject() (no Error object) still cannot escape", async () =
   assert.match(fake.state.data.lastError, /sendTemplate threw: undefined/);
 });
 
+test("sweep log strings stay byte-identical for saved Cloud Logging queries", async () => {
+  // The lane's log strings are a CONTRACT: external Cloud Logging saved
+  // queries and alerts key on the sweep-era "metaFallbackSweep meta-send:"
+  // prefix. A logPrefix rename or a change to the message/outcome would pass
+  // the rest of the suite and silently break those filters — this pins it.
+  const lines = [];
+  const capture = {
+    log:   (...a) => lines.push(["log", ...a]),
+    warn:  (...a) => lines.push(["warn", ...a]),
+    error: (...a) => lines.push(["error", ...a]),
+  };
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => ({ ok: true, messageId: "wamid.1" }), {
+    logPrefix: "metaFallbackSweep", log: capture,
+  });
+  assert.deepEqual(lines[0].slice(0, 2), ["log", "metaFallbackSweep meta-send:"]);
+  const payload = JSON.parse(lines[0][2]);
+  assert.equal(payload.outcome, "sent");
+  assert.equal(payload.persisted, true, "a successful outcome write reports persisted:true");
+  // and the failure lane keeps its string too
+  const fake2 = fakeDoc(pendingDoc());
+  await deliver(fake2, async () => ({ ok: false, error: "x" }), {
+    logPrefix: "metaFallbackSweep", log: capture,
+  });
+  assert.deepEqual(lines[1].slice(0, 2), ["warn", "metaFallbackSweep meta-send:"]);
+  assert.equal(JSON.parse(lines[1][2]).outcome, "retry");
+});
+
+test("a failed sent-write is visible as persisted:false on the success log line", async () => {
+  const lines = [];
+  const capture = { log: (...a) => lines.push(a), warn: () => {}, error: () => {} };
+  const fake = fakeDoc(pendingDoc(), { failDirectUpdates: true });
+  await deliver(fake, async () => ({ ok: true, messageId: "wamid.1" }), { log: capture });
+  assert.equal(JSON.parse(lines[0][1]).persisted, false);
+});
+
 test("doc deleted before delivery → quiet no-op", async () => {
   const fake = fakeDoc(null);
   let sends = 0;
