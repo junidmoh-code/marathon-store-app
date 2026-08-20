@@ -563,6 +563,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const okMsg = introducing.length
       ? `Introduced at ${introducing.map((l) => LOC_LABEL[l] || l).join(" and ")} and carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — recorded as newly stocked, so the engine will raise the full run on its next scan.`
       : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
+    // Declared OUTSIDE the try: the catch reads it to tell an introduce refusal
+    // from a transient failure, and the rule-gated reads above its assignment can
+    // throw first — a const inside the try would be in the temporal dead zone
+    // there, and the ReferenceError would strand the panel on "Seeding…".
+    // (CodeRabbit, PR #381.)
+    let introPaths = {};
     try {
       const updates = {};
       // The engine locks that exist BEFORE this solve, snapshotted into the
@@ -587,7 +593,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // cells seeded with no carriage behind them, which is a promise the engine will
       // not keep. Written LAST in the object for readability only; a multi-path
       // update is atomic, so order carries no meaning.
-      const introPaths = introduceUpdates({
+      introPaths = introduceUpdates({
         plan: carriage, pid: card.pid, sizes, at: now, by: uid,
         note: `Introduced by Solve from Missing Products — ${LOC_LABEL[store] || store}, ${sizes.length} size(s).`,
       });
@@ -964,7 +970,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 )}
                 <button onClick={() => solve(card, carriage)} disabled={!!confirmBlocked || carriageLoading || provReadFailed || (carriage && !carriage.ok)}
                         title={confirmBlocked || (carriage && !carriage.ok ? carriage.message : undefined)}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked || carriageLoading || (carriage && !carriage.ok) ? 0.5 : 1 }}>
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked || carriageLoading || provReadFailed || (carriage && !carriage.ok) ? 0.5 : 1 }}>
                   {solveBusy === card.pid ? "Seeding…" : `Solve — carry at ${LOC_LABEL[sStore]}`}
                 </button>
               </>
