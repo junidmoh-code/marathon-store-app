@@ -32,11 +32,17 @@ DONECHUNKS=$(grep -c 'finished (' "$RUNLOG" 2>/dev/null || :); DONECHUNKS=${DONE
 LEFT=$(python3 -c "import json;print(len(json.load(open('/tmp/naming-scope.json'))))" 2>/dev/null || :)
 
 echo "started      : $(grep '^── vision naming started' "$LOG" | tail -1 | sed 's/^── vision naming started //; s/ ──$//')"
-echo "named so far : $DONE      (all runs; counted when a chunk finishes, so it lags by up to one chunk)"
+# THE HONEST HEADLINE IS WHAT IS LEFT, NOT WHAT THE LOG COUNTED.
+# The ✓ lines are printed by a chunk when it FINISHES, so a chunk killed part
+# way through (a reboot, a restart, launchd stopping the job) writes its
+# proposals to the database and prints none of them. Measured 2026-08-20 after
+# three restarts: the log said 399, the database held 1,202. The worklist below
+# is rebuilt from the database before every chunk, so it is the number to trust.
+echo "still to do  : ${LEFT:-?}   ← the real one; rebuilt from the database each chunk"
+echo "named (log)  : $DONE      (UNDERCOUNTS — a chunk stopped part way prints none of its names)"
 echo "refused      : $REF       (name broke a compliance rule — kept for review, never applied)"
 echo "failed       : $BAD"
 echo "chunks       : $DONECHUNKS finished, $CHUNKS started   (this run)"
-[ -n "${LEFT:-}" ] && echo "still to name: ~$LEFT  (as of the last scope check)"
 echo "current      : $(grep '^── chunk' "$RUNLOG" | tail -1)"
 rm -f "$RUNLOG"
 
