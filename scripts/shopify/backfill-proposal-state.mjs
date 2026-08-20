@@ -19,11 +19,21 @@
 //   node scripts/shopify/backfill-proposal-state.mjs            dry run
 //   node scripts/shopify/backfill-proposal-state.mjs --commit   writes
 //
-// WRITES: /shopify_publish/{pid}/state = "awaiting", and ONLY where the node
-// has no state at all. "awaiting" is not a new claim about the product — it is
-// what a stateless node already means to normalizedState() in the app, written
-// down. A node that carries any state is never touched, so a live product
-// cannot be moved out of the pipeline by this.
+// WRITES: /shopify_publish/{pid}/state = "awaiting", and ONLY on a node that
+// CARRIES A PROPOSAL and still has no state ON THE SERVER at write time.
+// "awaiting" is not a new claim about the product — it is what a stateless node
+// already means to normalizedState() in the app, written down.
+//
+// Two deliberate narrowings, both reviewer findings:
+//   · Only proposal-carrying nodes. A stateless node with no proposal has
+//     nothing to review, and stamping it would drop it into the "Awaiting
+//     review" filter as a product nobody ever nominated. (Measured today the
+//     two sets are identical — every stateless node carries a proposal — but
+//     the run must not depend on that staying true.)
+//   · The absence is re-tested on the SERVER, in a transaction on the `state`
+//     child, not against the paged snapshot this script opened with. The page
+//     read takes a while and the reconciler runs every two minutes; a product
+//     that went live in between must not be stamped back to "awaiting".
 import { createRequire } from "module";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
@@ -49,24 +59,30 @@ console.log(`    carrying a name proposal      : ${withProposal.length}   ← th
 console.log(`    carrying no proposal          : ${withoutProposal.length}`);
 
 if (!COMMIT) {
-  console.log(`\nDRY RUN — nothing written. Re-run with --commit to stamp state:"awaiting" on ${stateless.length} node(s).`);
+  console.log(`\nDRY RUN — nothing written. Re-run with --commit to stamp state:"awaiting" on the ${withProposal.length} proposal-carrying node(s).`);
+  console.log(`(The ${withoutProposal.length} stateless node(s) with no proposal are deliberately NOT touched.)`);
   process.exit(0);
 }
 
-// Batched multi-path updates. Each key is a per-node CHILD path, so this can
-// never clobber a sibling field written between the read and the write.
-const BATCH = 200;
-let done = 0;
-for (let i = 0; i < stateless.length; i += BATCH) {
-  const slice = stateless.slice(i, i + BATCH);
-  const updates = {};
-  for (const [pid] of slice) {
+// One transaction per node on the `state` CHILD. Not a batched multi-path
+// update: a batch would write the value decided at page-read time, and the
+// whole point is that the decision must be made against the server value at
+// write time. A transaction returning undefined aborts, so a node that gained
+// a state in the meantime is left exactly as it is.
+const CONCURRENCY = 12;
+let done = 0, stamped = 0, skipped = 0;
+let cursor = 0;
+async function worker() {
+  while (cursor < withProposal.length) {
+    const [pid] = withProposal[cursor++];
     assertSafeSegment(pid, "productId");
-    updates[`${pid}/state`] = "awaiting";
+    const res = await db.ref(`shopify_publish/${pid}/state`).transaction((cur) => (cur ? undefined : "awaiting"));
+    if (res.committed) stamped += 1; else skipped += 1;
+    done += 1;
+    if (done % 100 === 0) console.log(`  ${done}/${withProposal.length} (stamped ${stamped}, already had a state ${skipped})`);
   }
-  await db.ref("shopify_publish").update(updates);
-  done += slice.length;
-  console.log(`  stamped ${done}/${stateless.length}`);
 }
-console.log(`\nDone. ${done} node(s) now carry state:"awaiting" — ${withProposal.length} proposal(s) are reachable in the app.`);
+await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+console.log(`\nDone. ${stamped} node(s) stamped state:"awaiting"; ${skipped} already carried one and were left alone.`);
+console.log(`${stamped} proposal(s) that were unreachable are now reviewable in the app.`);
 process.exit(0);

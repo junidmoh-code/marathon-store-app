@@ -87,12 +87,12 @@ export function NameProposalCard({ product, node, busy, onApply, onDismiss }) {
         <div style={{ fontSize: 10.5, color: RED, marginTop: 7 }}>{gate.reason}</div>
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 11 }}>
-        <button disabled={busy || !gate.ok} onClick={onApply}
+        <button disabled={busy || !gate.ok} onClick={() => onApply(proposal.proposedAt)}
           style={{ ...bBlue, padding: "7px 12px", fontSize: "0.72rem",
                    opacity: busy || !gate.ok ? 0.5 : 1 }}>
           Use this name
         </button>
-        <button disabled={busy} onClick={onDismiss}
+        <button disabled={busy} onClick={() => onDismiss(proposal.proposedAt)}
           style={{ ...bGray, padding: "7px 12px", fontSize: "0.72rem" }}>
           Keep the old one
         </button>
@@ -635,13 +635,13 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
             ) : null}
             <NameProposalCard
               product={product} node={node} busy={busy}
-              onApply={() => run(() => applyNameProposal(product.id, node), (res) => {
+              onApply={(seenProposedAt) => run(() => applyNameProposal(product.id, node, seenProposedAt), (res) => {
                 // The input is a draft the reviewer may have typed into; the
                 // saved name has just changed under it, so it follows.
                 setDraft(res.node?.cleanName || draft);
                 onChanged(product.id, res.node);
               })}
-              onDismiss={() => run(() => dismissNameProposal(product.id, node),
+              onDismiss={(seenProposedAt) => run(() => dismissNameProposal(product.id, node, seenProposedAt),
                                    (res) => onChanged(product.id, res.node))}
             />
           </>

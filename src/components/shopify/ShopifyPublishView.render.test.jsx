@@ -43,17 +43,26 @@ globalThis.window = fakeWindow;
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
 
 const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [],
-                applyProposal: [], dismissProposal: [] };
+                applyProposal: [], dismissProposal: [], proposalPages: [] };
 let keys = new Set();
 let pipeline = {};
 let bodies = {};
 let approveResult = { ok: true };
 let proposalWriteResult = { ok: true };
+let proposalPages = [];
 // Read-in-flight control — see loadNodesFor below.
 let holdNodesFor = false;
 const heldReads = [];
 
 vi.mock("./shopifyPublishStore", () => ({
+  PROPOSAL_PAGE_SIZE: 300,
+  // The lane's OWN read: lazy (only when the lane is selected) and bounded
+  // (one page per call). `proposalPages` is the fake server's pages.
+  loadProposalPage: ({ after = null } = {}) => {
+    calls.proposalPages.push(after);
+    const page = proposalPages.shift() || { nodes: {}, lastKey: null, done: true };
+    return Promise.resolve(page);
+  },
   applyNameProposal: (pid, node) => {
     calls.applyProposal.push(pid);
     const proposal = (node || {})[NAME_PROPOSAL_KEY];
@@ -193,8 +202,10 @@ beforeEach(() => {
   bodies = {};
   approveResult = { ok: true };
   proposalWriteResult = { ok: true };
+  proposalPages = [];
   calls.applyProposal.length = 0;
   calls.dismissProposal.length = 0;
+  calls.proposalPages.length = 0;
   holdNodesFor = false;
   heldReads.length = 0;
 });
@@ -1228,8 +1239,11 @@ const PROPOSAL = {
 // The lane reads from the PIPELINE query, not from an expanded section — that
 // is the whole point of the runner stamping state:"awaiting" on the nodes it
 // touches. A proposal must therefore be visible with nothing expanded at all.
-const mountProposals = async (nodes) => {
-  pipeline = nodes;
+const mountProposals = async (nodes, { viaPipeline = false } = {}) => {
+  // A live/blocked product's node arrives with the pipeline query as before;
+  // an AWAITING one arrives only from the lane's own paged read.
+  if (viaPipeline) pipeline = nodes;
+  else proposalPages = [{ nodes, lastKey: Object.keys(nodes).slice(-1)[0] || null, done: true }];
   keys = new Set(Object.keys(nodes));
   let tree;
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
@@ -1246,6 +1260,33 @@ test("proposals: the lane lists a waiting name with NOTHING expanded, and both n
   expect(out).toContain("Brushed nubuck low-top in sand"); // the proposal
   expect(out).toContain("Sneaker");                       // what it replaces
   expect(calls.nodesFor.length).toBe(0);                  // no section body fetch was needed
+  // and it came from the lane's OWN bounded read, not from the pipeline
+  expect(calls.proposalPages).toEqual([null]);
+});
+
+test("proposals: the lane is not read until it is selected, and it pages", async () => {
+  proposalPages = [
+    { nodes: { p3: { state: "awaiting", cleanName: "Sneaker", nameProposal: PROPOSAL } }, lastKey: "p3", done: false },
+    { nodes: { p2: { state: "awaiting", cleanName: "Tee", nameProposal: { ...PROPOSAL, name: "Ribbed cotton crew tee in bone", proposedAt: 1787000000001 } } }, lastKey: "p2", done: true },
+  ];
+  keys = new Set(["p2", "p3"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  // MOUNTED ON ANOTHER FILTER: the awaiting set has not been touched. This is
+  // the whole point — it is the big set and it is not free.
+  expect(calls.proposalPages).toEqual([]);
+
+  await act(() => { button(tree, "Proposed names").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null]);            // first page only
+  expect(texts(tree)).toContain("Brushed nubuck low-top in sand");
+  expect(texts(tree)).not.toContain("Ribbed cotton crew tee in bone");
+
+  await act(() => { button(tree, "Load more suggestions").props.onClick(); });
+  await flush();
+  expect(calls.proposalPages).toEqual([null, "p3"]);       // continued from the last key
+  expect(texts(tree)).toContain("Ribbed cotton crew tee in bone");
 });
 
 test("proposals: Use this name writes through the store and the row leaves the lane", async () => {
@@ -1291,7 +1332,7 @@ test("proposals: a name that is a brand trigger TODAY cannot be taken, and says 
 test("proposals: a listing that is ON cannot take a new name from the lane", async () => {
   const tree = await mountProposals({
     p3: { state: "live", liveState: "on", cleanName: "Sneaker", nameProposal: PROPOSAL },
-  });
+  }, { viaPipeline: true });
   expect(button(tree, "Use this name").props.disabled).toBe(true);
   expect(texts(tree)).toContain("switch it off");
 });

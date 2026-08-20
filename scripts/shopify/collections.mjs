@@ -368,7 +368,11 @@ export async function ensureCollection(graphql, db, spec, { commit = false, reco
   const diffs = [];
   if (existing.title !== spec.title) diffs.push("title");
   if (existing.handle !== spec.handle) diffs.push("handle");
-  if (existing.descriptionHtml !== descriptionHtml) diffs.push("description");
+  // Normalised, because the pushed value is now the EMPTY STRING and Shopify
+  // reads some emptied fields back as null. Comparing raw would leave every
+  // collection reporting a "description" diff on every run for ever — noise
+  // that also masks the real diffs in the report.
+  if ((existing.descriptionHtml || "") !== descriptionHtml) diffs.push("description");
   if (existing.seo?.title !== seo.title) diffs.push("seo.title");
   if (existing.seo?.description !== seo.description) diffs.push("seo.description");
   if (existing.sortOrder !== spec.sortOrder) diffs.push("sortOrder");

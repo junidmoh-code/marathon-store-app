@@ -219,11 +219,20 @@ if (mapNode) {
     const candSizes = candVariants.map((v) => v.title).filter(Boolean).sort();
     const wantSizes = input.variants.map((v) => v.optionValues?.[0]?.name ?? v.title).filter(Boolean).sort();
     const adoptionProblems = [];
-    if (!candSkus.has(String(product.sku))) {
+    // PREFIX, not equality. This script creates variants as
+    // `${product.sku}-${encodeSizeKey(size)}` (see the payload above), and the
+    // post-adoption read-back below already asserts that prefix — so an
+    // exact-match test could never fire on a product this script created, and
+    // would refuse every genuine orphan while claiming to protect against a
+    // wrong one. The bare form is accepted too, for a single-variant record
+    // whose SKU was written without a size suffix.
+    const skuPrefix = `${product.sku}-`;
+    const skuOwned = [...candSkus].some((k) => k === String(product.sku) || String(k).startsWith(skuPrefix));
+    if (!skuOwned) {
       adoptionProblems.push(
         candSkus.size === 0
           ? `the candidate carries NO SKUs at all (so it was not created from this catalogue)`
-          : `record SKU "${product.sku}" is on none of the candidate's ${candSkus.size} SKU(s)`
+          : `no candidate SKU is "${product.sku}" or starts with "${skuPrefix}" (${candSkus.size} checked)`
       );
     }
     if (JSON.stringify(candSizes) !== JSON.stringify(wantSizes)) {

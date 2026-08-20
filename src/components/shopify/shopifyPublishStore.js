@@ -15,7 +15,7 @@
 //   this file writes; the browser never calls Shopify), blockedReason,
 //   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
 //   condition, updatedAt, updatedBy
-import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "firebase/database";
+import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAfter, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
@@ -68,19 +68,54 @@ export async function loadPipelineNodes() {
   // unmigrated draft/nominated node must not vanish from the page. Each is
   // one cheap indexed query returning at most a handful of rows.
   //
-  // "awaiting" joins them because of the PROPOSED-NAMES lane. A vision
-  // proposal lands on products that are not live and not blocked, and the
-  // page has to be able to list them without reading the whole node — so the
-  // runner stamps state:"awaiting" on any node it touches that has none (see
-  // scripts/shopify/vision-name.mjs and the one-off backfill), which puts
-  // every proposal-carrying product inside the ONE index that already exists
-  // (.indexOn ["state"]). No new index, no rule paste, no whole-node read.
-  const states = ["awaiting", "live", "blocked", "nominated", "draft"];
+  // "awaiting" is deliberately NOT here. It was, and it was wrong: once the
+  // runner and the backfill stamp state:"awaiting" on every proposal-carrying
+  // node, that query returns ~1,400 bodies today and grows toward one per
+  // catalogue product — so every open of this page would pull the whole node
+  // through the index. That passes the letter of the read rule and breaks the
+  // thing the rule protects (reviewer finding). The proposed-names lane loads
+  // its own page of awaiting nodes, on demand and bounded — see
+  // loadProposalPage below.
+  const states = ["live", "blocked", "nominated", "draft"];
   const snaps = await Promise.all(states.map((s) =>
     get(query(ref(database, "shopify_publish"), orderByChild("state"), equalTo(s)))));
   const merged = {};
   for (const snap of snaps) Object.assign(merged, snap.val() || {});
   return merged;
+}
+
+// ─── THE PROPOSED-NAMES LANE'S OWN READ ──────────────────────────────────────
+// Bounded and lazy, and both words are load-bearing.
+//
+// LAZY: nothing here runs until Junid actually selects the lane. The page's
+// other filters are answered by loadPipelineNodes (live + blocked — the
+// products actually on the shop, a small set) and by the shallow key list.
+// Awaiting nodes are neither small nor needed until someone is reviewing
+// names, so they are not fetched until then.
+//
+// BOUNDED: `limitToFirst` on an INDEXED query is applied by the server, so a
+// page costs one page, not the whole node. The index exists (.indexOn
+// ["state"]) — this is the one query shape that can be bounded without a new
+// rule. Ordering inside `state == "awaiting"` is by key, which for
+// "p<epoch-ms>" ids is oldest product first; the lane re-sorts what it holds
+// by when the proposal was made.
+//
+// `after` is the last key of the previous page; RTDB's startAt is inclusive,
+// so the overlap record is dropped by the caller.
+export const PROPOSAL_PAGE_SIZE = 300;
+
+export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_SIZE } = {}) {
+  let q = query(ref(database, "shopify_publish"), orderByChild("state"), equalTo("awaiting"));
+  // startAt/endAt on the ORDER-BY value are already fixed by equalTo; paging
+  // therefore uses the key range, which RTDB applies within the equal set.
+  const snap = await get(after
+    ? query(q, startAfter(null, after), limitToFirst(pageSize))
+    : query(q, limitToFirst(pageSize)));
+  const nodes = {};
+  let lastKey = null;
+  snap.forEach((child) => { nodes[child.key] = child.val(); lastKey = child.key; });
+  const count = Object.keys(nodes).length;
+  return { nodes, lastKey, done: count < pageSize };
 }
 
 // Session cache for the shallow key set — the home badge asks on every visit
@@ -197,14 +232,29 @@ export async function approveName(productId, node, name, source = "manual") {
  * the transaction, not against the row snapshot: the reconciler may have put
  * the product live since the page loaded, and renaming a live listing is
  * exactly what approveName refuses.
+ *
+ * `seenProposedAt` is the proposal the caller actually DISPLAYED. Pass it —
+ * it is what stops a re-run's newer proposal being approved sight unseen.
  */
-export async function applyNameProposal(productId, node) {
+export async function applyNameProposal(productId, node, seenProposedAt = null) {
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
     const gate = proposalApplyBlocker(base);
     if (!gate.ok) { refusal = gate.reason; return undefined; }
     const proposal = base[NAME_PROPOSAL_KEY];
+    // THE REVIEWER MAY ONLY APPROVE THE NAME HE WAS SHOWN. The mutator applies
+    // whatever the SERVER holds, and a naming re-run overwrites nameProposal
+    // outright — so between the row rendering and the click, proposal A can
+    // become proposal B, and the click would put B on the product under the
+    // impression it was A. That is the "a human approves each one" rule broken
+    // in the only direction that matters (reviewer finding). The row passes the
+    // proposedAt it displayed; a mismatch refuses and the reader gets the new
+    // name to look at. Same basis-check shape as setPublishPhotos.
+    if (seenProposedAt != null && Number(proposal?.proposedAt) !== Number(seenProposedAt)) {
+      refusal = "A newer suggestion arrived for this product while you were reading — nothing was changed. The name shown now is the new one.";
+      return undefined;
+    }
     const cleanName = String(proposal.name).trim();
     return {
       ...base,
@@ -226,13 +276,19 @@ export async function applyNameProposal(productId, node) {
  * was never made, and the next run would spend real money re-reading the same
  * photo to produce the same answer Junid has already turned down.
  */
-export async function dismissNameProposal(productId, node) {
+export async function dismissNameProposal(productId, node, seenProposedAt = null) {
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
     const base = cur || node || {};
     const proposal = base[NAME_PROPOSAL_KEY];
     if (!proposal || proposal.status !== "pending") {
       refusal = "That suggestion has already been decided.";
+      return undefined;
+    }
+    // Same basis check as apply. Turning down a name he never read would bury
+    // a fresh suggestion under a decision that was never about it.
+    if (seenProposedAt != null && Number(proposal.proposedAt) !== Number(seenProposedAt)) {
+      refusal = "A newer suggestion arrived for this product while you were reading — nothing was changed. The name shown now is the new one.";
       return undefined;
     }
     return {

@@ -46,7 +46,7 @@ import {
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
-  applyNameProposal, dismissNameProposal,
+  applyNameProposal, dismissNameProposal, loadProposalPage,
 } from "./shopifyPublishStore";
 import ShopifyProductPage from "./ShopifyProductPage";
 
@@ -147,12 +147,12 @@ export function ProposalRow({ product, node, busy, onOpen, onApply, onDismiss })
         </div>
         {!gate.ok && <div style={{ fontSize: 10.5, color: RED, marginTop: 3 }}>{gate.reason}</div>}
         <div style={{ display: "flex", gap: 7, marginTop: 8 }}>
-          <button disabled={busy || !gate.ok} onClick={() => onApply(product.id)}
+          <button disabled={busy || !gate.ok} onClick={() => onApply(product.id, proposal.proposedAt)}
             style={{ ...bBlue, padding: "5px 10px", fontSize: "0.68rem",
                      opacity: busy || !gate.ok ? 0.5 : 1 }}>
             Use this name
           </button>
-          <button disabled={busy} onClick={() => onDismiss(product.id)}
+          <button disabled={busy} onClick={() => onDismiss(product.id, proposal.proposedAt)}
             style={{ ...bGray, padding: "5px 10px", fontSize: "0.68rem" }}>
             Keep the old one
           </button>
@@ -596,6 +596,47 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     ];
   }, [filter, productById, nodes, q]);
 
+  // ─── THE PROPOSED-NAMES LANE: ITS OWN READ, ON DEMAND AND BOUNDED ──────────
+  // Selecting the lane is what fetches it, and it fetches in pages. Awaiting
+  // nodes are the big set (one per proposal, growing toward one per catalogue
+  // product); pulling them at mount for every visit to this page would be the
+  // whole node arriving through the index, which is the exact bandwidth class
+  // this page is built to avoid. Pages fold into `nodes`, so a decided row
+  // leaves the lane through the same path every other write uses.
+  const [proposalsLoaded, setProposalsLoaded] = useState(false);
+  const [proposalPage, setProposalPage] = useState({ lastKey: null, done: false, loading: false });
+  const loadMoreProposals = useCallback(async () => {
+    setProposalPage((p) => (p.loading ? p : { ...p, loading: true }));
+    try {
+      const { nodes: got, lastKey, done } = await loadProposalPage({ after: proposalPage.lastKey });
+      setNodes((prev) => {
+        const next = { ...prev };
+        // FILL, never overwrite — a write committed while this read was in
+        // flight holds the newer node, exactly as the section fetch does.
+        for (const [pid, n] of Object.entries(got)) if (prev[pid] === undefined) next[pid] = n;
+        return next;
+      });
+      setProposalPage({ lastKey: lastKey ?? proposalPage.lastKey, done, loading: false });
+      setProposalsLoaded(true);
+    } catch (e) {
+      setProposalPage((p) => ({ ...p, loading: false }));
+      setProposalError(String(e?.message || e));
+      setProposalsLoaded(true);
+    }
+  }, [proposalPage.lastKey]);
+
+  // A REF, not the state flags. The auto-load must fire exactly once, and the
+  // state it would have to guard on (loading, loaded, lastKey) is set
+  // asynchronously — so between the effect firing and its first setState
+  // committing, a re-render for any other reason re-enters and fetches a
+  // second page nobody asked for. A ref flips synchronously and cannot race.
+  const proposalsRequested = useRef(false);
+  useEffect(() => {
+    if (filter !== "proposed" || proposalsRequested.current) return;
+    proposalsRequested.current = true;
+    loadMoreProposals();
+  }, [filter, loadMoreProposals]);
+
   // ─── THE PROPOSED-NAMES LANE ───────────────────────────────────────────────
   // Built from NODES, exactly like liveGroups and for the same reason: the
   // question "which products have a name waiting" is answered by the node, and
@@ -610,6 +651,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // resumes where it stopped instead of re-reading the same names.
   const proposedList = useMemo(() => {
     if (filter !== "proposed") return null;
+    if (!proposalsLoaded) return [];
     const out = [];
     for (const [pid, n] of Object.entries(nodes)) {
       if (!pendingProposal(n)) continue;
@@ -624,7 +666,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       (Number(nodes[a.id]?.nameProposal?.proposedAt) || 0) -
       (Number(nodes[b.id]?.nameProposal?.proposedAt) || 0));
     return out;
-  }, [filter, productById, nodes, q]);
+  }, [filter, productById, nodes, q, proposalsLoaded]);
 
   // A section is effectively open when toggled open, or when a search has
   // narrowed the page far enough that showing the matches outright is cheap.
@@ -858,12 +900,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const [proposalBusy, setProposalBusy] = useState(null);
   const [proposalError, setProposalError] = useState(null);
   const decideProposal = useMemo(() => {
-    const run = (write) => async (pid) => {
+    const run = (write) => async (pid, seenProposedAt) => {
       if (proposalBusy) return;
       setProposalBusy(pid);
       setProposalError(null);
       try {
-        const res = await write(pid, nodesRef.current[pid] || null);
+        const res = await write(pid, nodesRef.current[pid] || null, seenProposedAt);
         if (!res?.ok) { setProposalError(res?.message || "Not saved."); return; }
         applyWrite(pid, res.node);
       } catch (e) {
@@ -1170,7 +1212,10 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             {proposalError}
           </div>
         )}
-        {keys && pipeline && proposedList && (
+        {proposedList && !proposalsLoaded && (
+          <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading suggested names…</div>
+        )}
+        {keys && pipeline && proposedList && proposalsLoaded && (
           proposedList.length === 0 ? (
             <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
               {q ? "No suggested names match." : (
@@ -1200,6 +1245,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
                   onDismiss={decideProposal.dismiss}
                 />
               ))}
+              {!proposalPage.done && (
+                <button onClick={loadMoreProposals} disabled={proposalPage.loading}
+                  style={{ ...tabOff, padding: "8px 14px", fontSize: "0.72rem", marginTop: 12 }}>
+                  {proposalPage.loading ? "Loading…" : "Load more suggestions"}
+                </button>
+              )}
             </>
           )
         )}

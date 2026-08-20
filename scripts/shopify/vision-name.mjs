@@ -291,10 +291,18 @@ async function writeProposal(pid, proposal, identity, product, node) {
   // So the state is supplied when it is ABSENT, and never otherwise: "awaiting"
   // is what a node with no state already means (normalizedState), and
   // overwriting a real state here would let a naming run move a live product
-  // out of the pipeline.
-  const patch = { [NAME_PROPOSAL_KEY]: proposal };
-  if (!node?.state) patch.state = "awaiting";
-  await db.ref(`shopify_publish/${pid}`).update(patch);
+  // out of the pipeline — which is why "absent" is decided on the server below
+  // and not from this function's `node` argument.
+  await db.ref(`shopify_publish/${pid}`).update({ [NAME_PROPOSAL_KEY]: proposal });
+  // The state is decided against the SERVER, in a transaction on the `state`
+  // child alone — never against `node`, which is the scope snapshot taken when
+  // the run started. name-remaining.sh works through the backlog in chunks
+  // over about four and a half hours, so that snapshot is hours old by the
+  // end: a product Junid published at 10:00 would be stamped back to
+  // "awaiting" at 11:00, dropping it out of the state=="live" index and out of
+  // the Live filter WHILE IT IS STILL ON THE STOREFRONT (reviewer finding).
+  // `undefined` aborts, so an existing state of any value is left alone.
+  await db.ref(`shopify_publish/${pid}/state`).transaction((cur) => (cur ? undefined : "awaiting"));
   if (!identity) return;
   const text = identityTextFrom(identity);
   if (!text) return;

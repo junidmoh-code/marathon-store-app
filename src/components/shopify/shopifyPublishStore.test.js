@@ -235,3 +235,46 @@ describe("applyNameProposal / dismissNameProposal", () => {
     expect(res.message).toMatch(/already been decided/i);
   });
 });
+
+// ─── THE REVIEWER MAY ONLY APPROVE THE NAME HE WAS SHOWN ─────────────────────
+// The mutator applies whatever the SERVER holds, and vision-name.mjs overwrites
+// nameProposal outright on a re-run. Without a basis check the sequence is:
+// reviewer reads proposal A, an overnight run replaces it with B, reviewer
+// clicks "Use this name", and B goes onto the product — a name no human ever
+// read. That is the one rule this whole surface exists to keep.
+describe("a proposal that changed under the reviewer", () => {
+  const A = { name: "Brushed nubuck low-top in sand", source: "vision", previousName: "Sneaker",
+              status: "pending", proposedAt: 1787000000000 };
+  const B = { ...A, name: "Perforated leather trainer in bone", proposedAt: 1787000009999 };
+
+  it("apply refuses when the server holds a NEWER proposal than the one displayed", async () => {
+    serverNode = { state: "awaiting", cleanName: "Sneaker", nameProposal: B };
+    const res = await applyNameProposal("p1", { state: "awaiting", nameProposal: A }, A.proposedAt);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/newer suggestion/i);
+    expect(serverNode.cleanName).toBe("Sneaker");            // nothing applied
+    expect(serverNode.nameProposal.status).toBe("pending");  // B still waiting to be read
+  });
+
+  it("dismiss refuses the same way — a name he never read is not turned down either", async () => {
+    serverNode = { state: "awaiting", cleanName: "Sneaker", nameProposal: B };
+    const res = await dismissNameProposal("p1", { state: "awaiting", nameProposal: A }, A.proposedAt);
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/newer suggestion/i);
+    expect(serverNode.nameProposal.status).toBe("pending");
+  });
+
+  it("applies normally when the displayed proposal is still the one on the server", async () => {
+    serverNode = { state: "awaiting", cleanName: "Sneaker", nameProposal: A };
+    const res = await applyNameProposal("p1", serverNode, A.proposedAt);
+    expect(res.ok).toBe(true);
+    expect(res.node.cleanName).toBe(A.name);
+  });
+
+  it("omitting the basis still works — the check is opt-in for callers that have no displayed value", async () => {
+    serverNode = { state: "awaiting", cleanName: "Sneaker", nameProposal: B };
+    const res = await applyNameProposal("p1", serverNode);
+    expect(res.ok).toBe(true);
+    expect(res.node.cleanName).toBe(B.name);
+  });
+});
