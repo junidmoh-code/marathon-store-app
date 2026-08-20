@@ -605,7 +605,15 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // leaves the lane through the same path every other write uses.
   const [proposalsLoaded, setProposalsLoaded] = useState(false);
   const [proposalPage, setProposalPage] = useState({ lastKey: null, done: false, loading: false });
+  // In-flight guard as a REF for the same reason the auto-load uses one: the
+  // `loading` flag commits asynchronously, so between a click and the re-render
+  // that disables the button a second click gets through and fetches the same
+  // cursor twice. Harmless (the fold is FILL-only) but it is a wasted read of
+  // 300 nodes, and this page's whole discipline is not making those.
+  const proposalLoading = useRef(false);
   const loadMoreProposals = useCallback(async () => {
+    if (proposalLoading.current) return;
+    proposalLoading.current = true;
     setProposalPage((p) => (p.loading ? p : { ...p, loading: true }));
     try {
       const { nodes: got, lastKey, done } = await loadProposalPage({ after: proposalPage.lastKey });
@@ -616,12 +624,15 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         for (const [pid, n] of Object.entries(got)) if (prev[pid] === undefined) next[pid] = n;
         return next;
       });
-      setProposalPage({ lastKey: lastKey ?? proposalPage.lastKey, done, loading: false });
+      // Functional, so the cursor can never be computed from a stale closure.
+      setProposalPage((p) => ({ lastKey: lastKey ?? p.lastKey, done, loading: false }));
       setProposalsLoaded(true);
     } catch (e) {
       setProposalPage((p) => ({ ...p, loading: false }));
       setProposalError(String(e?.message || e));
       setProposalsLoaded(true);
+    } finally {
+      proposalLoading.current = false;
     }
   }, [proposalPage.lastKey]);
 
