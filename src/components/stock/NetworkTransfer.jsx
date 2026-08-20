@@ -40,19 +40,25 @@ const STORES = ["marathon-pe", "trophy"];
 // at all, and that assertion is worth keeping literally true — a guard you can satisfy
 // by arguing "but MY update is a different kind of path" has stopped being a guard.
 //
-// A target row genuinely is a different object with different safety properties: there
-// is no `v` to compare, no seed predicate to re-check, and undoCellTxn's cell test
-// would be meaningless against it. So the row cleanup lives here, under its own name,
-// with its own rule: read the row first and skip any that has acquired a numeric
-// `target`, because that is a deliberate act by someone else and revoking it would
-// silently overrule them.
-async function removeIntroducedRows(introPaths) {
-  const rowPaths = (introPaths || []).map((p) => p.replace(/\/introduce$/, ""));
-  const rows = await Promise.all(rowPaths.map((p) => get(ref(database, p)).then((s) => s.val())));
-  const del = {};
-  rowPaths.forEach((p, i) => { if (rows[i] && typeof rows[i].target !== "number") del[p] = null; });
-  if (Object.keys(del).length) await update(ref(database), del);
-  return Object.keys(del).length;
+// A target row genuinely is a different object with different safety properties:
+// there is no `v` to compare and undoCellTxn's cell test would be meaningless
+// against it. So the row cleanup lives here, under its own name, as a per-row CAS:
+// a row is removed only while it is still EXACTLY the row this solve wrote —
+// `introducedAt` equal to the solve's own stamp is the proof of authorship, since
+// introduceUpdates writes whole rows and nothing else writes that field with that
+// value. A row someone has edited since (a target added, the introduction
+// re-stamped by a later solve) aborts and stays whole: revoking or truncating a
+// deliberate act mid-undo is how the first version of this function left
+// `introduce: true` standing over zero cells — the exact incident shape this PR
+// exists to prevent (adversarial review, PR #381).
+async function removeIntroducedRows(rowPaths, introAt) {
+  const results = await Promise.all((rowPaths || []).map((p) =>
+    runTransaction(ref(database, p), (cur) => {
+      if (cur === null) return null;                       // already gone — confirm the delete
+      if (cur.introduce === true && cur.introducedAt === introAt && typeof cur.target !== "number") return null;
+      return;                                              // edited since — abort, keep whole
+    })));
+  return results.filter((r) => r.committed).length;
 }
 
 // { loc → entry } (how this screen fetches it, one pid at a time) → { loc → { pid →
@@ -63,11 +69,21 @@ async function removeIntroducedRows(introPaths) {
 function invertPairs(byLoc, pid) {
   const out = {};
   for (const [loc, entry] of Object.entries(byLoc || {})) {
-    if (entry === undefined || entry === null) continue;
+    // Only real entry objects — null/undefined mean "no record", and the panel's
+    // read-failure sentinel (PROV_READ_FAILED, a string) must never be handed to
+    // the plan as if it were provenance.
+    if (!entry || typeof entry !== "object") continue;
     out[loc] = { [pid]: entry };
   }
   return out;
 }
+
+// Sentinel for a per-pair provenance read that FAILED (denied or errored), kept
+// distinct from null (which genuinely means "no record"). A failed read must not
+// render as "this shop has never stocked this line" — that sentence would be
+// fabricated from a permission error. The panel shows a blocked notice instead,
+// and solve()'s own re-read stays the enforcement (it fails closed on any error).
+const PROV_READ_FAILED = "__prov_read_failed__";
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 // "_" is the catalogue's one-size sentinel — a real cell key, but never shown raw.
 const sizeLabel = (s) => (String(s) === "_" ? "One size" : String(s));
@@ -219,14 +235,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // with them. Removing the introduce ROWS only on a FULL undo is deliberate:
         // a partial undo leaves the product genuinely carrying the sizes that kept
         // real stock, and revoking the introduction under them would starve exactly
-        // the cells the CAS just told us are in use.
-        //
-        // The row is removed whole rather than just its `introduce` leaf — Solve
-        // wrote the whole row and nothing else has reason to add a target to it in
-        // the seconds an undo lives. If one has appeared, that is a deliberate act
-        // by someone else and the delete is still correct to leave alone, so this
-        // reads the row first and skips any that gained a numeric target.
-        if (u.introPaths?.length) await removeIntroducedRows(u.introPaths);
+        // the cells the CAS just told us are in use. Each row is removed by CAS on
+        // the solve's own introducedAt stamp — see removeIntroducedRows.
+        if (u.introPaths?.length) await removeIntroducedRows(u.introPaths, u.introAt);
         // Fully undone: the entry leaves the strip (the card reappearing IS
         // the feedback), and the stale "Solved ✓" banner is cleared so the
         // returning card offers Solve again, not last week's success message.
@@ -294,7 +305,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const out = {};
       await Promise.all([...locs].map(async (loc) => {
         try { out[loc] = (await get(ref(database, `stock_provenance/${loc}/${solvePid}`))).val(); }
-        catch { out[loc] = undefined; }   // denied/failed → absent → BLOCKED via the sentinel path
+        catch { out[loc] = PROV_READ_FAILED; }   // denied/failed → blocked notice, never "never stocked"
       }));
       if (!alive) return;
       setProvPairs((d) => ({ ...d, [solvePid]: out }));
@@ -474,7 +485,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
   const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
 
-  const solve = async (card) => {
+  // `panelPlan` is the carriage plan the confirm panel RENDERED — the one whose
+  // notice (or absence of one) the user just read. solve() re-reads and decides on
+  // its own fresh plan, but a decision the panel never showed must not be silently
+  // committed: if the fresh plan introduces at locations the panel's did not, the
+  // press aborts, the panel re-renders from the fresh read, and the user confirms
+  // what is actually about to happen. (Adversarial + architect review, PR #381.)
+  const solve = async (card, panelPlan = null) => {
     const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
     const sizes = qualifyingSizes(card, store);
@@ -503,7 +520,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       locs.forEach((loc, i) => { if (entries[i] != null) provenance[loc] = { [card.pid]: entries[i] }; });
       carriage = solveCarriagePlan({
         locs, pid: card.pid, provenance, provenanceMeta: meta,
-        targets: targetRows, categoryPolicy: cfg?.categoryPolicy, categoryKey: card.categoryKey,
+        // From the CATALOGUE, not the card: computeMissingProducts() does not put
+        // categoryKey on its cards, so `card.categoryKey` is always undefined and
+        // the categoryPolicy half of introducedAt() would be dead code — Solve
+        // would write duplicate introduce rows over category-level decisions.
+        // (Adversarial review, PR #381.) The engine reads products[pid].categoryKey;
+        // byId is the same catalogue.
+        targets: targetRows, categoryPolicy: cfg?.categoryPolicy, categoryKey: byId.get(card.pid)?.categoryKey,
+        labelFor: (l) => LOC_LABEL[l] || l,
       });
     } catch (e) {
       // A FAILED READ IS NOT A LICENCE TO SEED. It is indistinguishable from an
@@ -520,10 +544,31 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       setSolveBusy(null);
       return;
     }
+    // A CARRIED→INTRODUCE flip between the panel's render and this press would
+    // commit a standing decision whose warning was never shown. Compare the fresh
+    // introduce set to the one the panel rendered; on any difference, refresh the
+    // panel's data and make the user read the updated notice before pressing again.
+    const freshIntro = carriage.introduce.map((i) => i.loc).sort().join(",");
+    const shownIntro = (panelPlan?.introduce || []).map((i) => i.loc).sort().join(",");
+    if (panelPlan && freshIntro !== shownIntro) {
+      const freshPairs = {};
+      for (const a of carriage.at) freshPairs[a.loc] = a.entry ?? null;
+      setProvPairs((d) => ({ ...d, [card.pid]: freshPairs }));
+      setProvPairsFor(card.pid);
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: "The stock-history picture changed while this panel was open — nothing was written. Review the updated note above and press again." } }));
+      setSolveBusy(null);
+      return;
+    }
     const introducing = carriage.introduce.map((i) => i.loc);
     const okMsg = introducing.length
       ? `Introduced at ${introducing.map((l) => LOC_LABEL[l] || l).join(" and ")} and carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — recorded as newly stocked, so the engine will raise the full run on its next scan.`
       : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
+    // Declared OUTSIDE the try: the catch reads it to tell an introduce refusal
+    // from a transient failure. A const inside the try is invisible from the
+    // catch's scope entirely — every entry into the catch would ReferenceError,
+    // not just early throws — so the refusal message could never render and the
+    // panel stranded on "Seeding…". (CodeRabbit, PR #381.)
+    let introPaths = {};
     try {
       const updates = {};
       // The engine locks that exist BEFORE this solve, snapshotted into the
@@ -548,7 +593,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // cells seeded with no carriage behind them, which is a promise the engine will
       // not keep. Written LAST in the object for readability only; a multi-path
       // update is atomic, so order carries no meaning.
-      const introPaths = introduceUpdates({
+      introPaths = introduceUpdates({
         plan: carriage, pid: card.pid, sizes, at: now, by: uid,
         note: `Introduced by Solve from Missing Products — ${LOC_LABEL[store] || store}, ${sizes.length} size(s).`,
       });
@@ -567,7 +612,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // predicate against a row. They are undone by their own branch.
         setUndoables((l) => [{
           key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs,
-          paths: cellPaths, introPaths: Object.keys(introPaths).filter((p) => p.endsWith("/introduce")), priorOpen,
+          // introduceUpdates writes WHOLE ROWS now, so these are row paths, and
+          // `introAt` is the CAS token: undo removes a row only while its
+          // introducedAt still equals the stamp this solve wrote.
+          paths: cellPaths, introPaths: Object.keys(introPaths), introAt: now, priorOpen,
         }, ...l]);
       }
       setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
@@ -575,10 +623,22 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // Nothing was written (atomic). Collapse the panel and surface the error on
       // the row so its Solve button reads "Solve" again — one click re-opens the
       // confirm (which clears this) for a clean retry.
+      //
+      // EXCEPT: an INTRODUCE solve refused by the security rules is not a
+      // transient to retry — until the widened /stock_targets rule is published,
+      // introduce-only rows are rejected by design, and because the whole update
+      // is atomic that refusal also takes the carried legs down with it. Saying
+      // "retry" there sends someone in a loop; say what actually happened.
+      const introBlocked = Object.keys(introPaths).length > 0 && /permission|denied/i.test(String(e?.message || e));
       setSolvePid((cur) => (cur === card.pid ? null : cur));
-      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes, msg: `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes, msg: introBlocked
+        ? `This shop isn't recorded as stocking the line, and Solve can't record it yet — the introduce rule for /stock_targets hasn't been published. Nothing was seeded (the whole write is one atomic step). Ask Junid to publish the widened rule, then Solve again.`
+        : `Couldn't seed — nothing changed, retry. (${e?.message || "error"})` } }));
+    } finally {
+      // In a finally so no future catch-path bug can strand the panel on
+      // "Seeding…" again — same shape as undoSolve's cleanup.
+      setSolveBusy(null);
     }
-    setSolveBusy(null);
   };
 
   const destOptions = (card) => (card.source === "central" ? ["hub2", ...STORES] : STORES);
@@ -721,12 +781,25 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           provenance: provPairsFor === card.pid ? invertPairs(provPairs[card.pid], card.pid) : {},
           provenanceMeta: provMeta,
           targets: targetRows, categoryPolicy: cfg?.categoryPolicy,
-          categoryKey: card.categoryKey,
+          // From the catalogue, not the card — computeMissingProducts() puts no
+          // categoryKey on cards, so card.categoryKey is always undefined and the
+          // categoryPolicy branch of introducedAt() would be dead. (Adversarial
+          // review, PR #381.)
+          categoryKey: byId.get(card.pid)?.categoryKey,
+          labelFor: (l) => LOC_LABEL[l] || l,
         }) : null;
         // Not yet read = not yet knowable. Keep the confirm disabled rather than
         // letting it settle from "blocked" to "fine" under the user's finger.
         const carriageLoading = sOpen && (provMeta === null || provPairsFor !== card.pid);
-        const notice = sOpen && !carriageLoading ? carriageNotice({
+        // A FAILED read is knowable — it is knowably not knowledge. It must not
+        // fall through to the plan as an absent entry, where it would render as
+        // "this shop has never stocked this line" off a permission error.
+        const provReadFailed = sOpen && !carriageLoading && (provMetaErr
+          || Object.values(provPairs[card.pid] || {}).some((v) => v === PROV_READ_FAILED));
+        const notice = provReadFailed ? {
+          tone: "blocked",
+          text: "Couldn't read the stock-history index for this product — Solve is paused for this card. Nothing was seeded. Retry by closing and reopening Solve.",
+        } : sOpen && !carriageLoading ? carriageNotice({
           plan: carriage,
           labelFor: (l) => LOC_LABEL[l] || l,
           // solvePlan already computed both legs: the store's run, and hub2's buffer
@@ -898,9 +971,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {confirmBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
                 )}
-                <button onClick={() => solve(card)} disabled={!!confirmBlocked || carriageLoading || (carriage && !carriage.ok)}
+                <button onClick={() => solve(card, carriage)} disabled={!!confirmBlocked || carriageLoading || provReadFailed || (carriage && !carriage.ok)}
                         title={confirmBlocked || (carriage && !carriage.ok ? carriage.message : undefined)}
-                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked || carriageLoading || (carriage && !carriage.ok) ? 0.5 : 1 }}>
+                        style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked || carriageLoading || provReadFailed || (carriage && !carriage.ok) ? 0.5 : 1 }}>
                   {solveBusy === card.pid ? "Seeding…" : `Solve — carry at ${LOC_LABEL[sStore]}`}
                 </button>
               </>

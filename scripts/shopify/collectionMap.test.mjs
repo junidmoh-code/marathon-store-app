@@ -85,7 +85,7 @@ describe("compliance — no brand trigger reaches Shopify through a collection",
 
   it("every pushed string is trigger-free, field by field", () => {
     for (const c of COLLECTIONS) {
-      for (const field of ["title", "handle", "description", "seoTitle", "seoDescription"]) {
+      for (const field of ["title", "handle", "seoTitle", "seoDescription"]) {
         expect({ key: c.key, field, hits: triggersInText(c[field]) })
           .toEqual({ key: c.key, field, hits: [] });
       }
@@ -98,7 +98,7 @@ describe("compliance — no brand trigger reaches Shopify through a collection",
 
   it("refuses a title carrying a brand", () => {
     const v = validateCollectionPayload({
-      title: "Nike Sneakers", handle: "nike-sneakers", description: "x",
+      title: "Nike Sneakers", handle: "nike-sneakers",
     });
     expect(v.ok).toBe(false);
     expect(v.violations.some((x) => x.field === "title")).toBe(true);
@@ -107,16 +107,38 @@ describe("compliance — no brand trigger reaches Shopify through a collection",
 
   it("refuses a brand hidden in a smart-collection condition value", () => {
     const v = validateCollectionPayload({
-      title: "Clean", handle: "clean", description: "clean",
+      title: "Clean", handle: "clean",
       conditions: { matchType: "ALL", all: [{ productTag: { relation: "TAGGED_WITH", values: ["yeezy"] } }] },
     });
     expect(v.ok).toBe(false);
     expect(v.violations[0].field).toBe("conditions[0].productTag.values");
   });
 
-  it("refuses a dirty handle and an empty description", () => {
-    expect(validateCollectionPayload({ title: "A B", handle: "A B", description: "d" }).ok).toBe(false);
-    expect(validateCollectionPayload({ title: "A B", handle: "a-b", description: "" }).ok).toBe(false);
+  it("refuses a dirty handle", () => {
+    expect(validateCollectionPayload({ title: "A B", handle: "A B" }).ok).toBe(false);
+  });
+
+  // ── NO COPY ON THE CATEGORY PAGES (owner decision 2026-08-19) ──────────────
+  // Junid does not want a paragraph under his category headings. The map
+  // carries no description at all, and the validator refuses one if it comes
+  // back — because a description that reappears would be pushed and would sit
+  // on the shop until someone noticed.
+  it("NO collection carries a description", () => {
+    for (const c of COLLECTIONS) {
+      // ABSENT, not present-and-undefined. `c.description === undefined` also
+      // passes for an entry that explicitly writes `description: undefined`,
+      // which is not the contract — the property is not there at all.
+      expect({ key: c.key, has: Object.hasOwn(c, "description") })
+        .toEqual({ key: c.key, has: false });
+    }
+  });
+
+  it("the validator refuses a description if one is reintroduced", () => {
+    const v = validateCollectionPayload({ title: "Clean", handle: "clean", description: "Some copy." });
+    expect(v.ok).toBe(false);
+    expect(v.violations.some((x) => x.field === "description")).toBe(true);
+    // and an absent one is fine
+    expect(validateCollectionPayload({ title: "Clean", handle: "clean" }).ok).toBe(true);
   });
 });
 
@@ -157,12 +179,11 @@ describe("resolveCollection — the join, against the real catalogue", () => {
     expect(["Boots", "Soccer Boots", "Sandals & Slides"].map(lane)).not.toContain("sneakers");
   });
 
-  it("the Sneakers copy no longer promises boots and slides it does not hold", () => {
+  it("Sneakers keeps its SEO line and carries no page copy at all", () => {
     const sneakers = COLLECTION_BY_KEY.get("sneakers");
-    // It may still NAME them — to point the shopper at the new lanes — but it
-    // must not read as though this collection contains them.
-    expect(sneakers.description).not.toMatch(/Shoes — sneakers, boots/i);
-    expect(sneakers.description).toMatch(/sections of their own/i);
+    // The paragraph that used to promise boots and slides is gone with every
+    // other description; the SEO metadata is not page copy and stays.
+    expect(Object.hasOwn(sneakers, "description")).toBe(false);
     expect(sneakers.seoDescription).toMatch(/^Sneakers in stock/);
   });
 

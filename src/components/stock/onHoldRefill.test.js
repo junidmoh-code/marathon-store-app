@@ -3,7 +3,7 @@
 // guessed hub moves real stock to the wrong building — the failure mode this
 // whole module exists to prevent.
 import { describe, it, expect } from "vitest";
-import { onHoldRefillPlan } from "./onHoldRefill.js";
+import { onHoldRefillPlan, holdCustomerLink } from "./onHoldRefill.js";
 
 const CTX = { nowIso: "2026-08-08T10:00:00.000Z", saDate: "2026-08-08" };
 const ORDER = { id: "042", productId: "p1778841820730", size: "9", qty: 1, placedAtHub: "hub1", hub: "hub1" };
@@ -112,5 +112,67 @@ describe("holdReleaseUpdate — leaving on-hold withdraws the still-open ask", (
   it("no-op when the order stays on hold or never raised a request", () => {
     expect(holdReleaseUpdate(HELD, "coming_tomorrow", CTX2)).toBeNull();
     expect(holdReleaseUpdate({ id: "042" }, "ready", CTX2)).toBeNull();
+  });
+});
+
+// ─── THE RE-LINK (owner reinstatement 2026-08-19) ────────────────────────────
+// The fulfil notification is sent hours or days after the hold, by a server
+// trigger that cannot go looking for the order (daily-recycled numbers,
+// ephemeral /orders). Everything it needs is on the request record or the
+// customer is never told — so the shape of holdLink IS the promise.
+describe("holdCustomerLink — the invisible re-link stored on the request", () => {
+  const HELD_ORDER = {
+    id: "042", productId: "p1", size: "9", qty: 1, placedAtHub: "hub1",
+    customerId: "c0821234567", customerName: "Thandi", customerPhone: "0821234567",
+  };
+
+  it("carries customer id, name, phone and the order reference", () => {
+    expect(holdCustomerLink(HELD_ORDER, "2026-08-19")).toEqual({
+      orderId: "042",
+      orderDate: "2026-08-19",
+      customerId: "c0821234567",
+      customerName: "Thandi",
+      customerPhone: "0821234567",
+      notifyOnFulfil: true,
+    });
+  });
+
+  it("the plan stores it on the record — and nothing else about the customer", () => {
+    const plan = onHoldRefillPlan(HELD_ORDER, CTX);
+    expect(plan.record.holdLink.customerPhone).toBe("0821234567");
+    expect(plan.record.holdLink.notifyOnFulfil).toBe(true);
+    // The rest of the record is byte-identical to any other refill request:
+    // nothing about the customer leaks into a field the queue reads.
+    const { holdLink, ...rest } = plan.record;
+    expect(JSON.stringify(rest)).not.toMatch(/Thandi|0821234567/);
+  });
+
+  it("NO PHONE disarms the send but still raises the refill row", () => {
+    // The stock need is real and independent of the message. Arming a send with
+    // nowhere to go is how a notifier ends up retrying forever.
+    for (const phone of [undefined, null, "", "   ", {}, []]) {
+      const link = holdCustomerLink({ ...HELD_ORDER, customerPhone: phone }, "2026-08-19");
+      expect(link.customerPhone).toBeNull();
+      expect(link.notifyOnFulfil).toBe(false);
+    }
+    const plan = onHoldRefillPlan({ ...HELD_ORDER, customerPhone: null }, CTX);
+    expect(plan.ok).toBe(true);
+    expect(plan.record.holdLink.notifyOnFulfil).toBe(false);
+  });
+
+  it("never emits undefined — an undefined leaf makes RTDB set() throw (PR #327)", () => {
+    const link = holdCustomerLink({}, undefined);
+    for (const [k, v] of Object.entries(link)) {
+      expect(v, `${k} must not be undefined`).not.toBe(undefined);
+    }
+    expect(link.orderId).toBe("");
+    expect(link.customerId).toBeNull();
+    expect(link.orderDate).toBeNull();
+  });
+
+  it("a numeric phone survives as digits, not as \"undefined\" or NaN", () => {
+    const link = holdCustomerLink({ ...HELD_ORDER, customerPhone: 27821234567 }, "2026-08-19");
+    expect(link.customerPhone).toBe("27821234567");
+    expect(link.notifyOnFulfil).toBe(true);
   });
 });

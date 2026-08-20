@@ -5,6 +5,7 @@
 // from here; scripts/shopify/* has its own server-side twin of the condition
 // list (compliance.mjs) — the two are pinned equal by the tests.
 import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers";
+import { NAME_PROPOSAL_KEY, isPendingProposal, isRefusedProposal, validateVisionName } from "../../utils/visionNaming";
 import { isPriceRecord } from "../../utils/productCategory";
 import { normalizePhotoList, CONDITIONS } from "./publishShared";
 
@@ -189,6 +190,7 @@ export function effectivePhotoList(product, node) {
 export const STATE_FILTERS = [
   { key: "all",      label: "All" },
   { key: "awaiting", label: "Awaiting review" },
+  { key: "proposed", label: "Proposed names" },
   { key: "live",     label: "Live" },
   { key: "blocked",  label: "Blocked" },
 ];
@@ -206,7 +208,63 @@ export function reviewStateFor(node) {
 
 // Does a review state pass the header filter? "approved" products appear
 // under All only — their names are done and they are not yet on Shopify.
-export function matchesStateFilter(filterKey, reviewState) {
+//
+// "proposed" is the one filter that is NOT a review state: a vision proposal
+// can sit on an awaiting product, a blocked one, or one already live and
+// switched off. It is therefore answered from the NODE, not from the review
+// state — the third argument. Callers that pass two arguments (every caller
+// that predates the vision lane, and the tests that pin them) get `undefined`
+// and the lane simply never matches, which is correct for them.
+export function matchesStateFilter(filterKey, reviewState, node) {
   if (filterKey === "all") return true;
+  if (filterKey === "proposed") return isPendingProposal(node);
   return reviewState === filterKey;
+}
+
+// ─── VISION NAME PROPOSALS — the review lane ─────────────────────────────────
+// scripts/shopify/vision-name.mjs reads a product's PHOTO and writes a
+// PROPOSED listing name to /shopify_publish/{pid}/nameProposal. Nothing is
+// applied by the script; this is the surface where a proposal becomes the
+// product's name, and these are the predicates that surface drives.
+//
+// Re-exported from src/utils/visionNaming.js so the page keeps one import
+// path for everything publishing-related — the same treatment CONDITIONS gets.
+export { NAME_PROPOSAL_KEY, isPendingProposal, isRefusedProposal };
+
+// THE PROVENANCE VALUE AN APPROVED PROPOSAL RECORDS, and why it is not
+// "vision". The LIVE console rule on /shopify_publish/$pid/cleanNameSource is
+//   ".validate": "newData.isString() && newData.val().matches(/^(lexicon|ai|manual)$/)"
+// so a browser write of "vision" is refused by the database — the page would
+// show a permission error and the name would never save. "ai" is the value
+// that rule already admits and it is honest: a vision name IS an AI name.
+// The finer provenance is not lost — the proposal record keeps source
+// "vision", the model id and the confidence, and it stays on the node after
+// approval. Widening the rule to admit "vision" is optional and is printed in
+// the PR; nothing here waits on it.
+export const PROPOSAL_APPROVED_SOURCE = "ai";
+
+/** The pending proposal on a node, or null. */
+export function pendingProposal(node) {
+  return isPendingProposal(node) ? node[NAME_PROPOSAL_KEY] : null;
+}
+
+/**
+ * May this pending proposal be applied right now, and if not, why?
+ * → { ok, reason }
+ *
+ * Two gates, both of which the write would hit anyway — surfaced here so the
+ * button explains itself instead of failing:
+ *   · a listing that is ON must be switched off first (approveName's rule —
+ *     renaming a live product diverges from what customers already see);
+ *   · the proposed name must pass the SAME check a hand-typed name passes.
+ *     A proposal written before a lexicon change can carry a term that is a
+ *     trigger today, and the proposal lane must never be a softer door.
+ */
+export function proposalApplyBlocker(node) {
+  const p = pendingProposal(node);
+  if (!p) return { ok: false, reason: "no proposal to apply" };
+  if (isOn(node)) return { ok: false, reason: "Listing is ON the storefront — switch it off before taking a new name." };
+  const verdict = validateVisionName(p.name);
+  if (!verdict.ok) return { ok: false, reason: verdict.problems.join(" · ") };
+  return { ok: true, reason: null };
 }

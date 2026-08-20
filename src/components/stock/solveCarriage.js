@@ -40,6 +40,14 @@
 //               same silent lie in a new costume, and introducing on an unknown would
 //               arm a shop against a picture nobody has built yet.
 //
+//   EXCLUDED    (the fourth outcome, added in review) every numeric target row at
+//               this location is 0 — a standing "this shop does not stock this line"
+//               decision, e.g. the 443 protective bag rows at marathon-pe. Solve
+//               refuses and writes nothing: one tap must never overrule a decision
+//               someone recorded deliberately. Rows with a target > 0 are the
+//               opposite — the engine already manages them without the index — and
+//               classify as CARRIED via "explicit-target".
+//
 // ── WHY INTRODUCE, AND NOT "JUST SEED ANYWAY" ────────────────────────────────
 // An introduce row is a visible, attributable standing decision on a path the owner
 // already reviews. A seed is an invisible cell indistinguishable from 539 others. The
@@ -49,8 +57,17 @@
 // ⚠ THE ROW CARRIES NO `target`. resolveTarget's explicit branch fires on
 // `typeof explicit.target === "number"`, so a number here would PIN the quantities and
 // outrank the size run forever. The row says only "this shop stocks this line"; the
-// numbers stay in defaultRunByStore. Same shape as scripts/stage-introduce-set.mjs,
+// numbers stay in defaultRunByStore. Same shape as the introduce set (PR #380),
 // and `explicitTarget()` in solvePlan.js agrees by the same test.
+//
+// ── THREE CONSUMERS, THREE FAILURE DIRECTIONS — ON PURPOSE ───────────────────
+// The provenance index has three readers and each fails in a different direction,
+// because each is answering a different question on doubt:
+//   engine (provenance-index.cjs)  unready → arm NOTHING     (question: move stock?)
+//   Solve (this module)            unready → BLOCKED, no write (question: promise a refill?)
+//   Decision Queue (NoTargetQueue) unready → SHOW the card    (question: hide a decision from a human?)
+// A reviewer meeting one of these alone should know the other two disagree by
+// design, not by accident.
 //
 // ⚠ THIS REQUIRES THE WIDENED /stock_targets RULE. The rule as it stood validated
 // `newData.hasChildren(['target','minQty'])`, which refuses an introduce-only row from
@@ -64,6 +81,7 @@ import { encodeSizeKey } from "../../utils/sizeKey";
 export const CARRIED = "carried";
 export const INTRODUCE = "introduce";
 export const BLOCKED = "blocked";
+export const EXCLUDED = "excluded";
 
 const INDEX_VERSION = 1;
 
@@ -124,6 +142,23 @@ export function carriageAt({ provenance, provenanceMeta, targets, categoryPolicy
   if (introducedAt(targets, categoryPolicy, categoryKey, loc, pid)) {
     return { loc, state: CARRIED, via: "introduce" };
   }
+  // EXPLICIT ROWS NEXT, before the index — the engine's resolveTarget never
+  // consults provenance for a row with a numeric target, so a pair with one is
+  // already the engine's business and Solve must not "introduce" it (that would
+  // stamp introduce:true over a human's row and escalate row-scoped management
+  // to whole-line carriage — adversarial review, PR #381). Any target > 0 means
+  // CARRIED. All-zero numeric rows are the opposite: a standing EXCLUSION (the
+  // 443 protective bag rows at marathon-pe are this shape), and overruling one
+  // with a Solve press would be the same one-tap silent override the Decision
+  // Queue's carriage gate exists to prevent. Rows with no numeric target at all
+  // (introduce-only was handled above; anything else is a malformed remnant)
+  // fall through to the index.
+  const rows = targets?.[loc]?.[pid];
+  if (rows && typeof rows === "object" && !Array.isArray(rows)) {
+    const numeric = Object.values(rows).filter((r) => r && typeof r.target === "number");
+    if (numeric.some((r) => r.target > 0)) return { loc, state: CARRIED, via: "explicit-target" };
+    if (numeric.length > 0) return { loc, state: EXCLUDED, via: "explicit-zero" };
+  }
   if (!indexReadyAt(provenanceMeta, loc)) {
     return { loc, state: BLOCKED, via: null, reason: "index-unready" };
   }
@@ -145,21 +180,32 @@ export function carriageAt({ provenance, provenanceMeta, targets, categoryPolicy
  * that can never complete, which is a subtler version of the same false promise. If
  * any location is BLOCKED the whole solve is refused.
  */
-export function solveCarriagePlan({ locs, pid, provenance, provenanceMeta, targets, categoryPolicy, categoryKey }) {
+export function solveCarriagePlan({ locs, pid, provenance, provenanceMeta, targets, categoryPolicy, categoryKey, labelFor = (l) => l }) {
   const at = (locs || []).map((loc) => carriageAt({ provenance, provenanceMeta, targets, categoryPolicy, categoryKey, loc, pid }));
   const blocked = at.filter((a) => a.state === BLOCKED);
+  const excluded = at.filter((a) => a.state === EXCLUDED);
   const introduce = at.filter((a) => a.state === INTRODUCE);
   const carried = at.filter((a) => a.state === CARRIED);
 
   if (blocked.length) {
     return {
-      ok: false, at, blocked, introduce: [], carried,
+      ok: false, at, blocked, excluded, introduce: [], carried,
       reason: "index-unready",
-      message: `Can't confirm ${blocked.map((b) => b.loc).join(" and ")} stock${blocked.length === 1 ? "s" : ""} this line yet — the stock-history index hasn't been built for ${blocked.length === 1 ? "that shop" : "those shops"}. Nothing was seeded. Try again once it's ready; seeding now would look solved without being refillable.`,
+      message: `Can't confirm ${blocked.map((b) => labelFor(b.loc)).join(" and ")} stock${blocked.length === 1 ? "s" : ""} this line yet — the stock-history index hasn't been built for ${blocked.length === 1 ? "that shop" : "those shops"}. Nothing was seeded. Try again once it's ready; seeding now would look solved without being refillable.`,
+    };
+  }
+  // An exclusion refuses the WHOLE solve, same all-or-nothing as BLOCKED: the
+  // legs are one causal chain, and a standing target-0 decision is not Solve's
+  // to overrule — that takes an admin editing the row that says so.
+  if (excluded.length) {
+    return {
+      ok: false, at, blocked: [], excluded, introduce: [], carried,
+      reason: "excluded",
+      message: `${excluded.map((e) => labelFor(e.loc)).join(" and ")} ${excluded.length === 1 ? "is" : "are"} deliberately excluded from this line (a standing target-0 decision). Nothing was seeded — solving here would overrule that decision silently. If it should be stocked again, an admin edits the target row that excludes it.`,
     };
   }
   return {
-    ok: true, at, blocked: [], introduce, carried,
+    ok: true, at, blocked: [], excluded: [], introduce, carried,
     reason: introduce.length ? "introduce" : "carried",
     message: null,
   };
@@ -173,14 +219,23 @@ export function solveCarriagePlan({ locs, pid, provenance, provenanceMeta, targe
  * matches what the user was actually shown.
  */
 export function introduceUpdates({ plan, pid, sizes, at, by, note }) {
+  // ONE OBJECT PER ROW, not four leaf paths — and this is load-bearing, not
+  // style. RTDB evaluates `.validate` at the write path and below, NEVER at
+  // ancestors: a multi-path update of `${base}/introduce`, `${base}/introducedAt`…
+  // writes four leaves whose $size-level `.validate` is simply skipped, so the
+  // rule that says what an introduce row must look like would never run at all —
+  // an admin's leaf-write would slip a shapeless row past the published contract,
+  // and the widened rule's `introducedBy === auth.uid` check could not see its
+  // sibling leaf. Writing `${base}` as one object makes $size the write path, so
+  // the row rule sees the WHOLE row every time. It also means the write REPLACES
+  // any junk remnant at that key — safe, because carriageAt() only answers
+  // INTRODUCE when the row has no numeric target and no introduce flag.
   const updates = {};
   for (const entry of plan?.introduce || []) {
     for (const size of sizes || []) {
-      const base = `stock_targets/${entry.loc}/${pid}/${encodeSizeKey(size)}`;
-      updates[`${base}/introduce`] = true;
-      updates[`${base}/introducedAt`] = at;
-      updates[`${base}/introducedBy`] = by;
-      updates[`${base}/note`] = note;
+      updates[`stock_targets/${entry.loc}/${pid}/${encodeSizeKey(size)}`] = {
+        introduce: true, introducedAt: at, introducedBy: by ?? null, note: note ?? null,
+      };
     }
   }
   return updates;

@@ -179,11 +179,15 @@ describe("reviewStateFor — the page's row/filter state", () => {
     expect(reviewStateFor({ state: "live", liveState: "off" })).toBe("live");
     expect(reviewStateFor({ state: "blocked" })).toBe("blocked");
   });
-  it("every non-all filter key is a reachable review state", () => {
+  it("every non-all filter key is a reachable review state, or the node-answered proposal lane", () => {
     const reachable = new Set(["awaiting", "approved", "live", "blocked"]);
     for (const { key } of STATE_FILTERS) {
-      if (key !== "all") expect(reachable.has(key)).toBe(true);
+      if (key === "all" || key === "proposed") continue; // "proposed" is answered from the NODE, not a review state
+      expect(reachable.has(key)).toBe(true);
     }
+    // and the lane IS in the list — the filter chip has to exist for the
+    // vision run's output to be reachable at all.
+    expect(STATE_FILTERS.some((f) => f.key === "proposed")).toBe(true);
   });
   it("matchesStateFilter — all matches everything, others match exactly", () => {
     expect(matchesStateFilter("all", "awaiting")).toBe(true);

@@ -15,6 +15,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const CARRIAGE = "src/components/stock/solveCarriage.js";
 const NETWORK = "src/components/stock/NetworkTransfer.jsx";
@@ -42,9 +43,8 @@ const MUTATIONS = [
     file: CARRIAGE,
     from: `  if (introducedAt(targets, categoryPolicy, categoryKey, loc, pid)) {
     return { loc, state: CARRIED, via: "introduce" };
-  }
-  if (!indexReadyAt(provenanceMeta, loc)) {`,
-    to: `  if (!indexReadyAt(provenanceMeta, loc)) {`,
+  }`,
+    to: ``,
     tests: [CORE_T, RENDER_T],
   },
   {
@@ -68,10 +68,8 @@ const MUTATIONS = [
     guard: "The introduce row NEVER carries a numeric target",
     // A target here pins the quantities and outranks the size run forever.
     file: CARRIAGE,
-    from: `      updates[\`\${base}/introduce\`] = true;`,
-    to: `      updates[\`\${base}/introduce\`] = true;
-      updates[\`\${base}/target\`] = 2;
-      updates[\`\${base}/minQty\`] = 1;`,
+    from: `        introduce: true, introducedAt: at, introducedBy: by ?? null, note: note ?? null,`,
+    to: `        introduce: true, target: 2, minQty: 1, introducedAt: at, introducedBy: by ?? null, note: note ?? null,`,
     tests: [CORE_T, RENDER_T],
   },
   {
@@ -133,16 +131,16 @@ const MUTATIONS = [
     id: "M12",
     guard: "Undo records the CELL paths only — a target row must never reach undoCellTxn",
     file: NETWORK,
-    from: `          paths: cellPaths, introPaths: Object.keys(introPaths).filter((p) => p.endsWith("/introduce")), priorOpen,`,
-    to: `          paths: Object.keys(updates), introPaths: Object.keys(introPaths).filter((p) => p.endsWith("/introduce")), priorOpen,`,
+    from: `          paths: cellPaths, introPaths: Object.keys(introPaths), introAt: now, priorOpen,`,
+    to: `          paths: Object.keys(updates), introPaths: Object.keys(introPaths), introAt: now, priorOpen,`,
     tests: [GATE_T],
   },
   {
     id: "M13",
     guard: "The row cleanup yields to a row that has since acquired a real target",
     file: NETWORK,
-    from: `  rowPaths.forEach((p, i) => { if (rows[i] && typeof rows[i].target !== "number") del[p] = null; });`,
-    to: `  rowPaths.forEach((p, i) => { if (rows[i]) del[p] = null; });`,
+    from: `      if (cur.introduce === true && cur.introducedAt === introAt && typeof cur.target !== "number") return null;`,
+    to: `      if (cur.introduce === true && cur.introducedAt === introAt) return null;`,
     tests: [GATE_T],
   },
   {
@@ -153,6 +151,14 @@ const MUTATIONS = [
     to: `  return null;`,
     tests: [CORE_T, RENDER_T],
   },
+  {
+    id: "M15",
+    guard: "A rules-refused INTRODUCE names the unpublished rule, never a bare retry",
+    file: NETWORK,
+    from: `      const introBlocked = Object.keys(introPaths).length > 0 && /permission|denied/i.test(String(e?.message || e));`,
+    to: `      const introBlocked = false;`,
+    tests: [RENDER_T],
+  },
 ];
 
 // THE REPOSITORY'S vitest, resolved explicitly — never `npx`.
@@ -161,7 +167,7 @@ const MUTATIONS = [
 // (or a fetched) binary when local resolution misses, and the failure mode is a
 // silent PASS on a mutation that a correct run would have killed. `process.execPath`
 // plus the local entry point removes the choice. (CodeRabbit, PR #381.)
-const VITEST = new URL("../node_modules/vitest/vitest.mjs", import.meta.url).pathname;
+const VITEST = fileURLToPath(new URL("../node_modules/vitest/vitest.mjs", import.meta.url));
 
 function runVitest(files) {
   try {
@@ -241,6 +247,14 @@ for (const m of MUTATIONS) {
     writeFileSync(m.file, original.replace(m.from, () => m.to));
     mutated = runAll(m);
     restore();
+    // Trust nothing about the restore that the disk cannot confirm: a swallowed
+    // write failure here would leave the MUTANT in the working tree while the
+    // verdict prints as if the original were back. (CodeRabbit, PR #381 — same
+    // check as mutation-proof-headwear-collapse.mjs.)
+    if (readFileSync(m.file, "utf8") !== original) {
+      console.error(`\n*** ${m.file} DID NOT RESTORE — restore it from git before doing anything else. ***`);
+      process.exit(2);
+    }
     restored = runAll(m);
   } finally {
     restore();

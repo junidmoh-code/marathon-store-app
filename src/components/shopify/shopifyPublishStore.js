@@ -15,10 +15,11 @@
 //   this file writes; the browser never calls Shopify), blockedReason,
 //   cleanName, cleanNameSource (lexicon|ai|manual), nameApprovedAt,
 //   condition, updatedAt, updatedBy
-import { ref, child, get, runTransaction, query, orderByChild, equalTo } from "firebase/database";
+import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields } from "./shopifyPublishCore";
+import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
+         NAME_PROPOSAL_KEY, PROPOSAL_APPROVED_SOURCE, proposalApplyBlocker } from "./shopifyPublishCore";
 import { MAX_PUBLISH_PHOTOS, normalizePhotoList } from "./publishShared";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
@@ -66,12 +67,101 @@ export async function loadPipelineNodes() {
   // The four legacy states ride along until every node is migrated — an
   // unmigrated draft/nominated node must not vanish from the page. Each is
   // one cheap indexed query returning at most a handful of rows.
+  //
+  // "awaiting" is deliberately NOT here. It was, and it was wrong: once the
+  // runner and the backfill stamp state:"awaiting" on every proposal-carrying
+  // node, that query returns ~1,400 bodies today and grows toward one per
+  // catalogue product — so every open of this page would pull the whole node
+  // through the index. That passes the letter of the read rule and breaks the
+  // thing the rule protects (reviewer finding). The proposed-names lane loads
+  // its own page of awaiting nodes, on demand and bounded — see
+  // loadProposalPage below.
   const states = ["live", "blocked", "nominated", "draft"];
   const snaps = await Promise.all(states.map((s) =>
     get(query(ref(database, "shopify_publish"), orderByChild("state"), equalTo(s)))));
   const merged = {};
   for (const snap of snaps) Object.assign(merged, snap.val() || {});
   return merged;
+}
+
+// ─── THE PROPOSED-NAMES LANE'S OWN READ ──────────────────────────────────────
+// Bounded and lazy, and both words are load-bearing.
+//
+// LAZY: nothing here runs until Junid actually selects the lane. The page's
+// other filters are answered by loadPipelineNodes (live + blocked — the
+// products actually on the shop, a small set) and by the shallow key list.
+// Awaiting nodes are neither small nor needed until someone is reviewing
+// names, so they are not fetched until then.
+//
+// BOUNDED: `limitToFirst` on an INDEXED query is applied by the server, so a
+// page costs one page, not the whole node. The index exists (.indexOn
+// ["state"]) — this is the one query shape that can be bounded without a new
+// rule. Ordering inside `state == "awaiting"` is by key, which for
+// "p<epoch-ms>" ids is oldest product first; the lane re-sorts what it holds
+// by when the proposal was made.
+//
+// ORDERING NOTE: inside an equal set RTDB orders by KEY, lexicographically.
+// Product ids are "p" + epoch-ms, which is a fixed 13-digit decimal today, so
+// lexicographic and chronological order coincide — and will until the year
+// 2286 adds a digit. The lane does not depend on the order being chronological
+// (it re-sorts what it holds by proposedAt); it depends only on the order being
+// STABLE between pages, which key order is regardless of digit width.
+//
+// PAGING IS startAt(value, key) + endAt(value). NOT equalTo with a key, and
+// the difference is the whole correctness of the lane.
+//
+// `equalTo(v, k)` looks like a cursor and is not one: the SDK expands it to
+// startAt(v, k) + endAt(v, k), which pins BOTH ends to the same key — a range
+// of exactly one record. Paging with it returned page 1, then a page holding
+// only the cursor, then reported the end. Measured against the live node:
+// 300 of 1,375 rows walked, and the lane would have told Junid there were no
+// more names while a thousand waited.
+//
+// `startAt(v, key) + endAt(v)` is the real cursor: from this key to the END of
+// the equal set. startAt is INCLUSIVE, so a continued page asks for one extra
+// record and drops the overlap — the same treatment scripts/lib/rtdbPaged.mjs
+// gives its cursor, for the same reason.
+//
+// Verified against the live database, not a fake: 5 pages, 1,375 of 1,375
+// rows, zero duplicates, zero missing.
+export const PROPOSAL_PAGE_SIZE = 300;
+
+export async function loadProposalPage({ after = null, pageSize = PROPOSAL_PAGE_SIZE } = {}) {
+  const want = after ? pageSize + 1 : pageSize; // +1 covers the inclusive overlap
+  const snap = await get(query(
+    ref(database, "shopify_publish"),
+    orderByChild("state"),
+    ...(after ? [startAt("awaiting", after)] : [startAt("awaiting")]),
+    endAt("awaiting"),
+    limitToFirst(want),
+  ));
+  const nodes = {};
+  let lastKey = null;
+  let seen = 0;
+  snap.forEach((child) => {
+    seen += 1;
+    lastKey = child.key;
+    if (child.key === after) return; // the overlap record, already delivered
+    nodes[child.key] = child.val();
+  });
+  // `done` is judged on RECORDS RETURNED, not on the new ones kept: a final
+  // page holding only the overlap is still the end, and counting the kept
+  // records would read a full page of duplicates as "more to come".
+  //
+  // A DONE PAGE RETURNS NO CURSOR. Returning the last key on a finished walk
+  // is a footgun rather than a fact: a caller that loops on "there is a
+  // lastKey" instead of on "not done" would re-request the same single-record
+  // page for ever. Today's caller checks `done`, so this is prevention, not a
+  // fix (reviewer finding).
+  //
+  // AND `done` MEANS "nothing further in THIS pass", not "nothing left". The
+  // cursor only moves forward through keys, and a product's key is its
+  // CREATION time — so a product the naming runner stamps `awaiting` while a
+  // reviewer is paging can land BEHIND the cursor and go unseen until the next
+  // walk. That is why the lane offers to look again rather than declaring the
+  // queue permanently empty.
+  const finished = seen < want;
+  return { nodes, lastKey: finished ? null : lastKey, done: finished };
 }
 
 // Session cache for the shallow key set — the home badge asks on every visit
@@ -168,6 +258,91 @@ export async function approveName(productId, node, name, source = "manual") {
     }
     return { ...base, ...normalizedFields(base), cleanName, cleanNameSource: source,
              nameApprovedAt: serverNowMs(), ...stamp() };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
+// ─── VISION NAME PROPOSALS ───────────────────────────────────────────────────
+// scripts/shopify/vision-name.mjs proposes; THIS is where a proposal becomes
+// the product's listing name, or is put away. Both writes are the same
+// transaction every other write here uses, and both keep the proposal record
+// on the node — an applied proposal is the audit trail for where the name
+// came from, and a dismissed one is the record that the photo was read and
+// the answer was not wanted (so a later run does not re-propose it blind).
+
+/**
+ * Take the proposed name. Writes cleanName + cleanNameSource "ai" (the value
+ * the LIVE console rule admits — see PROPOSAL_APPROVED_SOURCE) and stamps the
+ * proposal applied. The gates are re-checked against the SERVER's node inside
+ * the transaction, not against the row snapshot: the reconciler may have put
+ * the product live since the page loaded, and renaming a live listing is
+ * exactly what approveName refuses.
+ *
+ * `seenProposedAt` is the proposal the caller actually DISPLAYED. Pass it —
+ * it is what stops a re-run's newer proposal being approved sight unseen.
+ */
+export async function applyNameProposal(productId, node, seenProposedAt = null) {
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    const gate = proposalApplyBlocker(base);
+    if (!gate.ok) { refusal = gate.reason; return undefined; }
+    const proposal = base[NAME_PROPOSAL_KEY];
+    // THE REVIEWER MAY ONLY APPROVE THE NAME HE WAS SHOWN. The mutator applies
+    // whatever the SERVER holds, and a naming re-run overwrites nameProposal
+    // outright — so between the row rendering and the click, proposal A can
+    // become proposal B, and the click would put B on the product under the
+    // impression it was A. That is the "a human approves each one" rule broken
+    // in the only direction that matters (reviewer finding). The row passes the
+    // proposedAt it displayed; a mismatch refuses and the reader gets the new
+    // name to look at. Same basis-check shape as setPublishPhotos.
+    if (seenProposedAt != null && Number(proposal?.proposedAt) !== Number(seenProposedAt)) {
+      refusal = "A newer suggestion arrived for this product while you were reading — nothing was changed. The name shown now is the new one.";
+      return undefined;
+    }
+    const cleanName = String(proposal.name).trim();
+    return {
+      ...base,
+      ...normalizedFields(base),
+      cleanName,
+      cleanNameSource: PROPOSAL_APPROVED_SOURCE,
+      nameApprovedAt: serverNowMs(),
+      [NAME_PROPOSAL_KEY]: { ...proposal, status: "applied", decidedAt: serverNowMs() },
+      ...stamp(),
+    };
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
+/**
+ * Keep the name the product already has. The proposal is marked rejected and
+ * KEPT — never deleted. A deleted proposal is indistinguishable from one that
+ * was never made, and the next run would spend real money re-reading the same
+ * photo to produce the same answer Junid has already turned down.
+ */
+export async function dismissNameProposal(productId, node, seenProposedAt = null) {
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const base = cur || node || {};
+    const proposal = base[NAME_PROPOSAL_KEY];
+    if (!proposal || proposal.status !== "pending") {
+      refusal = "That suggestion has already been decided.";
+      return undefined;
+    }
+    // Same basis check as apply. Turning down a name he never read would bury
+    // a fresh suggestion under a decision that was never about it.
+    if (seenProposedAt != null && Number(proposal.proposedAt) !== Number(seenProposedAt)) {
+      refusal = "A newer suggestion arrived for this product while you were reading — nothing was changed. The name shown now is the new one.";
+      return undefined;
+    }
+    return {
+      ...base,
+      ...normalizedFields(base),
+      [NAME_PROPOSAL_KEY]: { ...proposal, status: "rejected", decidedAt: serverNowMs() },
+      ...stamp(),
+    };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;
