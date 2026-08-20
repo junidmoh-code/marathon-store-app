@@ -208,6 +208,25 @@ export function useStockTargetsState(locationId) {
 // /stock_targets_decisions → { loc: { pid: {decision,decidedAt} } } — postpone
 // decisions from the Decision Queue (keep / snooze / until_change); the engine
 // skips products while a decision is active.
+// /stock_provenance → { loc: { pid: {s,k,u} } } plus the `_meta` sentinels — the
+// derived carries index the refill engine arms from (functions/lib/provenance-index).
+//
+// THE WHOLE NODE, ONE SUBSCRIPTION — deliberately, and against this codebase's
+// usual per-location instinct (PR #382 narrowed the ENGINE's read that way, 49
+// times a day, and was right to). A human-opened screen pays ~40 KB extra once
+// per open; a per-location list hand-written in a component silently stops
+// covering a destination the moment one is added to config.routes, and the
+// failure lands in the ARMING direction — a carried pair at the new shop renders
+// with an Exclude button again, which is the exact defect PR #390 closes.
+// Correct-by-construction beats 40 KB here. (Adversarial + architect review.)
+//
+// `_meta` rides along as a key of the same node: the readiness sentinels, which
+// decide whether the index may be believed at all. An absent sentinel means
+// "arms nothing here", NOT "carries nothing here" — callers keep those apart.
+export function useProvenance() {
+  return usePath("stock_provenance");
+}
+
 export function useTargetDecisions() {
   return usePath("stock_targets_decisions");
 }
