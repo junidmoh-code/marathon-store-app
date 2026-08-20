@@ -5440,6 +5440,11 @@ function AdminView({ products, orders, onExit }) {
       return;
     }
     setSaving(true);
+    // Set the moment /products/{id} lands. Read by the catch and the finally, so
+    // a throw AFTER the write is reported as "saved, but…" instead of "failed",
+    // and so the form is always left clean.
+    let savedProductId = null;
+    let savedProductName = null;
     try {
       const id = "p" + serverNowMs();
       let photoUrl = form.photoUrl; // may be null or a preview data-URL
@@ -5590,6 +5595,18 @@ function AdminView({ products, orders, onExit }) {
       // the claim-first ordering, and false ever since it flipped. CodeRabbit,
       // PR #327.)
       await addProductToFirebase(newProduct);
+      // ── FROM HERE ON, THE PRODUCT EXISTS ───────────────────────────────────
+      // Everything after this point is follow-up work — a style-code claim, a
+      // barcode, opening stock. None of it can un-create the product, so a
+      // failure in any of it is a HALF-SUCCESS, not a failed save, and the two
+      // must not look the same to the operator.
+      savedProductId = id;
+      savedProductName = newProduct.name;
+      // The photo is released the moment it is no longer needed, not at the end
+      // of the happy path 240 lines below. A blob still sitting in form state is
+      // a blob the next save can upload: whatever else goes wrong after this,
+      // the next product must not inherit this one's photograph.
+      setForm((f) => ({ ...f, photo: "", photoUrl: null, photoBlob: null }));
 
       // ── CLAIM THE STYLE CODE — after the product, and NEVER fatal ──────────
       // The product is already saved by this point, so a failed claim must not
@@ -5841,13 +5858,35 @@ function AdminView({ products, orders, onExit }) {
       setShowAdd(false);
     } catch (err) {
       console.error("addProduct failed:", err);
-      // Never the bare "please try again" — that swallowed the real error and
-      // staff retried saves that could never succeed. saveFailureMessage shows
-      // operator-flagged messages verbatim, gives recognised failure classes
-      // their instruction, and surfaces the underlying error text for the rest.
-      alert(saveFailureMessage(err));
+      if (savedProductId) {
+        // A HALF-SUCCESS. The product is saved; something after it was not.
+        // This used to reach console.error and nothing else — so the operator
+        // saw no error at all, or read a failure message about a save that had
+        // in fact succeeded, and the natural response to either is to save
+        // again. Say plainly what landed and what did not, and say NOT to retry.
+        alert(
+          `SAVED — but one step after it did not finish.\n\n` +
+          `“${savedProductName || savedProductId}” IS in the catalogue. What failed was the ` +
+          `follow-up work (its barcode, style code, or opening stock).\n\n` +
+          `DO NOT add this product again — you would create a second copy of it. ` +
+          `Open it from Admin → Products and finish the missing step there.\n\n` +
+          `Details: ${saveFailureMessage(err)}`
+        );
+      } else {
+        // Nothing was written. Never the bare "please try again" — that
+        // swallowed the real error and staff retried saves that could never
+        // succeed. saveFailureMessage shows operator-flagged messages verbatim,
+        // gives recognised failure classes their instruction, and surfaces the
+        // underlying error text for the rest.
+        alert(saveFailureMessage(err));
+      }
     } finally {
       setSaving(false);
+      // THE PHOTO IS NEVER LEFT BEHIND. The happy path clears the whole form
+      // further down; this is the backstop for every other path out of the
+      // function. A retained blob is uploadable by the next save, so releasing
+      // it belongs in a finally, not in the branch that happened to succeed.
+      if (savedProductId) setForm((f) => ({ ...f, photo: "", photoUrl: null, photoBlob: null }));
     }
   };
 
