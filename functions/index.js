@@ -3451,10 +3451,12 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // wrapper and nothing else.
 //
 // GATE 3 OF 3, and read the module header for the honest limits of it: live
-// RTDB rules already gate /config/refillEngine on stockRole 'admin', so four
-// staff accounts can write the policy node directly through the SDK today and
-// never reach this function. It becomes a real boundary when the console rule
-// printed by scripts/print-engine-policy-rule.mjs narrows those four to one.
+// RTDB rules already gate /config/refillEngine on stockRole 'admin' (as does
+// the repo's own database.rules.json — an earlier comment here claimed
+// otherwise, repeating an unverified premise from the brief). So four staff
+// accounts can write the policy node directly through the SDK today and never
+// reach this function. It becomes a real boundary when the console rule printed
+// by scripts/print-engine-policy-rule.mjs narrows those four to one.
 //
 // DEPLOY BY NAME. functions/ is shared with marathon-pos-app:
 //   firebase deploy --only functions:setCategoryPolicy

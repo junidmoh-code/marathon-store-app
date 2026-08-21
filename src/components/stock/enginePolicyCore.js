@@ -77,7 +77,15 @@ export function armedLocations(entry) {
 // a policy the engine has no destination for.
 export function editorRows({ entry, carriage, destinations }) {
   const armed = new Set(armedLocations(entry));
-  return (destinations || []).map((loc) => {
+  // ARMED LOCATIONS ARE ALWAYS ROWS, even ones absent from config.mode.
+  // Without this, a location armed in the map but not a configured destination
+  // got no row, was therefore absent from the draft, and the save — which
+  // .set()s the whole entry — DELETED ITS ARMING. Worse, if the only armed
+  // location were a non-destination the draft would be empty, policyFromDraft
+  // would return null, and the card would silently un-arm the whole category.
+  // The drift check cannot catch either: live still matched what was rendered.
+  const locs = [...new Set([...(destinations || []), ...armed])];
+  return locs.map((loc) => {
     const c = carriage?.[loc] || {};
     const e = isObj(entry?.[loc]) ? entry[loc] : null;
     return {

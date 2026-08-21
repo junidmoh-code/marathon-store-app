@@ -23,10 +23,14 @@
 //   M-CARRIAGE   let an uncarried location be edited       (enginePolicyCore.js)
 //   M-BLANK      turn a blank "Ask at" into 0              (enginePolicyCore.js)
 //   M-SOURCE     drop the model's source-availability gate (category-policy.cjs)
+//   M-ARMED-ROW  drop an armed non-destination's editor row (enginePolicyCore.js)
 //
-// The last one is not an access gate but earns its place: without it the model
-// reported 293 day-one requests where the real engine creates 0, which is the
-// difference between shipping a change and abandoning it.
+// The last two are not access gates and earn their place anyway. Without
+// M-SOURCE the model reported 293 day-one requests where the real engine
+// creates 0 — the difference between shipping a change and abandoning it.
+// M-ARMED-ROW guards a DATA-LOSS path: a save writes the whole entry with
+// .set(), so a location the editor never rendered is deleted by it, and the
+// drift check cannot notice because live still matches what was rendered.
 //
 // Same discipline as scripts/mutation-proof-hold-notify.mjs — ERROR is not
 // FAIL, anchors must be unique, restore is signal-safe, and the tree must be
@@ -166,6 +170,20 @@ const MUTATIONS = [
     file: CORE,
     from: `      editable: c.carries === true || armed.has(loc),`,
     to: `      editable: true,`,
+    tests: CORE_TESTS,
+  },
+  // ── THE DATA-LOSS PATH ────────────────────────────────────────────────────
+  // A save .set()s the whole entry, so anything missing from the editor is
+  // DELETED. An armed location absent from config.mode used to get no row —
+  // and editing any other location silently un-armed it, invisibly to the
+  // drift check, because live still matched what had been rendered.
+  {
+    id: "M-ARMED-ROW",
+    guard: "An armed location outside config.mode still gets an editor row, so a save cannot delete it",
+    file: CORE,
+    from: `  const locs = [...new Set([...(destinations || []), ...armed])];
+  return locs.map((loc) => {`,
+    to: `  return (destinations || []).map((loc) => {`,
     tests: CORE_TESTS,
   },
   // ── ABSENT vs ZERO ────────────────────────────────────────────────────────

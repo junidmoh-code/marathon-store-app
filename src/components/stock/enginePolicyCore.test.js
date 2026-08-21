@@ -283,3 +283,40 @@ it("the client's Minimum default is byte-for-byte the server's", async () => {
     expect(defaultMinQty(t), `target ${t}`).toBe(server(t));
   }
 });
+
+// ── AN ARMED LOCATION OUTSIDE config.mode ────────────────────────────────────
+// The save writes the WHOLE entry with .set(), so anything missing from the
+// editor is deleted. A location armed in the map but absent from config.mode
+// used to get no row at all — so editing any other location silently un-armed
+// it, and the drift check could not catch that because live still matched what
+// the card had rendered.
+describe("an armed location that is not a configured destination", () => {
+  const ENTRY_WITH_TROPHY = { ...ENTRY, trophy: { target: 4, minQty: 2 } };
+  const DESTS_WITHOUT_TROPHY = ["hub2", "marathon-pe"];
+
+  it("still gets an editor row", () => {
+    const rows = editorRows({ entry: ENTRY_WITH_TROPHY, carriage: CARRIAGE, destinations: DESTS_WITHOUT_TROPHY });
+    const t = rows.find((r) => r.loc === "trophy");
+    expect(t).toBeTruthy();
+    expect(t.armed).toBe(true);
+    expect(t.target).toBe(4);
+    expect(t.editable).toBe(true);
+  });
+
+  it("survives a save that edits a different location", () => {
+    const draft = draftFromEntry({ entry: ENTRY_WITH_TROPHY, carriage: CARRIAGE, destinations: DESTS_WITHOUT_TROPHY });
+    expect(Object.keys(draft).sort()).toEqual(["hub2", "marathon-pe", "trophy"]);
+    draft.hub2 = { ...draft.hub2, target: "12" };
+    const out = policyFromDraft(draft);
+    expect(out.trophy).toEqual({ target: 4, minQty: 2 });
+    expect(out.hub2.target).toBe(12);
+  });
+
+  it("does not turn a category with ONLY a non-destination leg into a full un-arm", () => {
+    // policyFromDraft returning null here would have made the card send
+    // `policy: null` and delete the whole category entry.
+    const only = { trophy: { target: 4, minQty: 2 } };
+    const draft = draftFromEntry({ entry: only, carriage: CARRIAGE, destinations: DESTS_WITHOUT_TROPHY });
+    expect(policyFromDraft(draft)).toEqual({ trophy: { target: 4, minQty: 2 } });
+  });
+});

@@ -159,7 +159,11 @@ const line = (n = 92) => "─".repeat(n);
       unitsByLocation: Object.fromEntries(Object.entries(byLocation).filter(([, v]) => v.units || v.carries)
         .map(([loc, v]) => [loc, v.units])),
       carriedAt: Object.entries(byLocation).filter(([, v]) => v.carries).map(([loc]) => loc).sort(),
-      resolvesMap: model ? model.legs.reduce((n, l) => n + (l.cells - l.overrides), 0) : 0,
+      // Cells the MAP actually resolves: total minus every explicit-resolved
+      // cell, both overrides and legacy rows. Subtracting only overrides
+      // counted legacy rows as map-resolved and overstated this column by 188
+      // on caps-beanies alone.
+      resolvesMap: model ? model.legs.reduce((n, l) => n + (l.cells - l.overrides - l.legacyRows), 0) : 0,
       overriddenCells: model ? model.legs.reduce((n, l) => n + l.overrides, 0) : 0,
       overriddenProducts: model ? model.overriddenProducts : 0,
       overrideRows: model ? model.legs.flatMap((l) => l.overrideRows.map((r) => ({ loc: l.loc, ...r }))) : [],

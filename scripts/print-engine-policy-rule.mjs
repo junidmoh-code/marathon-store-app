@@ -7,9 +7,11 @@
 // ── WHAT IS ACTUALLY LIVE (read 2026-08-21, from /.settings/rules.json) ──────
 // An earlier version of this file — and four other headers in this feature —
 // claimed the root rules were `".read": "auth !== null", ".write": "auth !== null"`
-// and that /config carried no tighter rule of its own. THAT WAS WRONG. It was
-// taken from the stale repo copy instead of from live, and it was wrong in both
-// directions at once. What is actually live:
+// and that /config carried no tighter rule of its own. THAT WAS WRONG, and the
+// first correction was wrong about WHY: it blamed the stale repo copy. The repo
+// copy already says the right thing. The claim came from the brief this feature
+// was built to and was repeated without being checked against either source.
+// What is actually live:
 //
 //   • The rules object has NO root ".read" and NO root ".write" at all.
 //     Unmatched paths therefore DENY by default, rather than allow.

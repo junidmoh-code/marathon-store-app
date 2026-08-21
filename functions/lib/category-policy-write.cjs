@@ -15,29 +15,31 @@
 // and any Google account that is not the owner's.
 //
 // ── AND IT IS STILL NOT A SECURITY BOUNDARY, TODAY ───────────────────────────
-// STATE THIS PRECISELY, BECAUSE AN EARLIER VERSION OF THIS COMMENT STATED IT
-// CONFIDENTLY AND WRONGLY. It claimed the root RTDB rules were `auth !== null`
-// for read and write and that /config had no tighter rule. That was read off
-// the STALE repo copy of database.rules.json, not off live. Live (checked
-// 2026-08-21 via /.settings/rules.json) has NO root ".read" and NO root
-// ".write" at all — unmatched paths deny — and /config/refillEngine already
-// carries:
+// STATE THIS PRECISELY, BECAUSE an earlier version of this comment
+// asserted that the root RTDB rules were `auth !== null` for read AND write and
+// that /config carried no tighter rule. That was never verified against
+// anything: it was repeated from the brief this feature was built to, and BOTH
+// the live rules AND the repo's own database.rules.json already said otherwise.
+// Checked 2026-08-21 via /.settings/rules.json:
 //
-//     ".write": auth != null && sign_in_provider != 'anonymous'
-//               && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'
+//   • no root ".read" and no root ".write" at all — unmatched paths DENY
+//   • /config          ".read":  auth != null && sign_in_provider != 'anonymous'
+//   • /config/refillEngine ".write": …the same, AND
+//     root.child('users').child(auth.uid).child('stockRole').val() === 'admin'
 //
 // So the policy node is writable by any stockRole 'admin' account — four of
 // them on the live /users node today (Ibrahim, Ahmed, Mike, 2POS) — not by
-// every signed-in staff member, and not by nobody. Any of those four can write
-// it straight from a tablet, bypassing this function entirely, and none of the
-// validation, drift checks, rollback snapshot or audit entry below would run.
+// every signed-in staff member, and not by nobody.
+//
+// Any of those four can write it straight from a tablet, bypassing this
+// function entirely, and none of the validation, drift checks, rollback
+// snapshot or audit entry below would run.
 //
 // This function is therefore the only SUPPORTED way to change the policy, and
 // the only one that leaves evidence — but it is not yet the only POSSIBLE way.
 // The console rule printed by scripts/print-engine-policy-rule.mjs narrows
 // those four accounts to one. Until it is pasted, treat every gate in this
-// feature as an operational control, not a security control, and do not tell
-// anyone otherwise.
+// feature as an operational control, not a security control.
 //
 // ── WHY THE HISTORY IS WRITTEN BEFORE THE MUTATION ───────────────────────────
 // A rollback snapshot written afterwards is a snapshot you do not have when the
@@ -304,7 +306,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       // reporting only one of them invited the wrong comparison: the override
       // figure next to it is per PRODUCT, so a cells-only number here read as
       // though the two could be subtracted.
-      resolvesMapCells: m ? m.legs.reduce((n, l) => n + (l.cells - l.overrides), 0) : 0,
+      // cells MINUS both kinds of explicit row. A legacy row resolves
+      // source:"explicit" just as an override does — it simply sits on a size
+      // the map does not speak for — so subtracting only overrides counted
+      // every one of them as "resolving the map". On caps-beanies that
+      // overstated the figure by exactly 188.
+      resolvesMapCells: m ? m.legs.reduce((n, l) => n + (l.cells - l.overrides - l.legacyRows), 0) : 0,
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
     });
   }

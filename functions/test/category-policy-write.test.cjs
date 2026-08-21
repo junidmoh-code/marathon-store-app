@@ -649,3 +649,51 @@ test("the fake leaves array holes rather than re-indexing, as RTDB does", () => 
   assert.equal(out[2].c, 3);
   assert.equal(normalize([null, null]), null);
 });
+
+// ── A LEG THE SCAN WILL NOT WRITE ────────────────────────────────────────────
+test("a non-live destination's requests are reported separately from the live ones", async () => {
+  invalidateCensusCache();
+  const w = world();
+  w.config.refillEngine.mode.hub1 = "shadow";
+  w.config.refillEngine.routes.hub1 = "central";
+  w.config.refillEngine.categoryPolicy["caps-beanies"].hub1 = { target: 6, minQty: 3 };
+  w.locations.hub1 = { kind: "hub" };
+  w.stock.hub1 = { c1: { _: { qty: 0 } } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { hub2: { target: 10, minQty: 5 }, "marathon-pe": { target: 5, minQty: 3 }, hub1: { target: 6, minQty: 3 } } });
+  const m = res.preview.after;
+  const hub1 = m.legs.find((l) => l.loc === "hub1");
+  assert.equal(hub1.mode, "shadow");
+  assert.ok(hub1.wouldRequest > 0, "the engine still computes intents for a shadow destination");
+  // …but the scan writes nothing for it, so the two numbers must differ and the
+  // caller must be able to say so.
+  assert.ok(m.liveRequests < m.totalRequests);
+  assert.deepEqual(m.nonLiveLegs.map((l) => l.loc), ["hub1"]);
+  assert.equal(m.nonLiveLegs[0].mode, "shadow");
+});
+
+// ── resolvesMapCells EXCLUDES BOTH KINDS OF EXPLICIT ROW ─────────────────────
+test("a legacy row does not count as resolving the map", async () => {
+  invalidateCensusCache();
+  const w = world();
+  w.products.c1.sizes = ["_", "L"];
+  w.stock["marathon-pe"].c1 = { _: { qty: 1 }, L: { qty: 0 } };
+  w.stock_targets = { "marathon-pe": { c1: { L: { target: 6, minQty: 3 } } } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { action: "census" });
+  const cb = res.categories.find((c) => c.key === "caps-beanies");
+  // A legacy row resolves source:"explicit" exactly as an override does. It is
+  // not the map answering, so it must not be counted as the map answering.
+  assert.equal(cb.legacyRowCells, 1);
+  assert.equal(cb.overriddenCells, 0);
+  const totalCells = res.categories.find((c) => c.key === "caps-beanies");
+  assert.ok(totalCells.resolvesMapCells >= 0);
+  // The identity that must hold: map-resolved + overrides + legacy = all cells.
+  const m = (await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { hub2: { target: 10, minQty: 5 }, "marathon-pe": { target: 5, minQty: 3 } } })).preview.after;
+  const cells = m.legs.reduce((n, l) => n + l.cells, 0);
+  const ovr = m.legs.reduce((n, l) => n + l.overrides, 0);
+  const leg = m.legs.reduce((n, l) => n + l.legacyRows, 0);
+  assert.equal(cells - ovr - leg, cb.resolvesMapCells);
+});

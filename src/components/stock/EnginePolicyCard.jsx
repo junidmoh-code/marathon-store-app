@@ -33,14 +33,27 @@
 // subscription and start no fetch, and a hook cannot live below a conditional
 // return without changing the hook count between renders.
 //
-// NONE OF THAT IS A SECURITY BOUNDARY YET, and the precise reason is worth
-// stating because an earlier version of this comment got it wrong: live RTDB
-// rules (checked 2026-08-21) have no root ".read" or ".write", and
-// /config/refillEngine is already gated on stockRole 'admin'. So the policy
-// node is writable today by four staff accounts, bypassing all three gates and
-// every safeguard behind them. The console rule printed by
-// scripts/print-engine-policy-rule.mjs narrows those four to one; it is not
-// live. Do not describe these gates as security until it is.
+// NONE OF THAT IS A SECURITY BOUNDARY YET, and the precise reason matters
+// because an earlier version of this comment
+// asserted that the root RTDB rules were `auth !== null` for read AND write and
+// that /config carried no tighter rule. That was never verified against
+// anything: it was repeated from the brief this feature was built to, and BOTH
+// the live rules AND the repo's own database.rules.json already said otherwise.
+// Checked 2026-08-21 via /.settings/rules.json:
+//
+//   • no root ".read" and no root ".write" at all — unmatched paths DENY
+//   • /config          ".read":  auth != null && sign_in_provider != 'anonymous'
+//   • /config/refillEngine ".write": …the same, AND
+//     root.child('users').child(auth.uid).child('stockRole').val() === 'admin'
+//
+// So the policy node is writable by any stockRole 'admin' account — four of
+// them on the live /users node today (Ibrahim, Ahmed, Mike, 2POS) — not by
+// every signed-in staff member, and not by nobody.
+//
+// So the policy node is writable today by four staff accounts, bypassing all
+// three gates. The console rule printed by scripts/print-engine-policy-rule.mjs
+// narrows those four to one; it is not live. Do not describe these gates as
+// security until it is.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";

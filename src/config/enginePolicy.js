@@ -27,17 +27,26 @@
 // JavaScript. It stops the wrong person opening the screen; it does not stop a
 // determined one writing the policy node.
 //
-// Be precise about what that hole actually is, because an earlier version of
-// this comment was confidently wrong about it. Live RTDB rules (checked
-// 2026-08-21) have NO root ".read" or ".write" — unmatched paths deny — and
-// /config/refillEngine is already gated on stockRole 'admin'. So the node is
-// writable by four staff accounts, not by everyone and not by nobody. The
-// console rule printed by scripts/print-engine-policy-rule.mjs narrows those
-// four to one; it is not live yet.
+// Be precise about what that hole is, because an earlier version of this comment
+// asserted that the root RTDB rules were `auth !== null` for read AND write and
+// that /config carried no tighter rule. That was never verified against
+// anything: it was repeated from the brief this feature was built to, and BOTH
+// the live rules AND the repo's own database.rules.json already said otherwise.
+// Checked 2026-08-21 via /.settings/rules.json:
 //
-// The third gate — setCategoryPolicy's own server-side email check — is the
-// only one an attacker cannot reach around, and even it is bypassed by writing
-// /config/refillEngine/categoryPolicy directly until that rule is pasted.
+//   • no root ".read" and no root ".write" at all — unmatched paths DENY
+//   • /config          ".read":  auth != null && sign_in_provider != 'anonymous'
+//   • /config/refillEngine ".write": …the same, AND
+//     root.child('users').child(auth.uid).child('stockRole').val() === 'admin'
+//
+// So the policy node is writable by any stockRole 'admin' account — four of
+// them on the live /users node today (Ibrahim, Ahmed, Mike, 2POS) — not by
+// every signed-in staff member, and not by nobody.
+//
+// The console rule printed by scripts/print-engine-policy-rule.mjs narrows
+// those four to one; it is not live yet. The third gate — setCategoryPolicy's
+// own server-side email check — is the only one an attacker cannot reach
+// around, and even it is bypassed by writing the node directly until then.
 
 import { ADMIN_EMAIL } from "../components/PermissionsContext";
 

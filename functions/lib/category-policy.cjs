@@ -48,10 +48,20 @@
 //
 // What it still does NOT model — every one of which can only REMOVE a request,
 // so the number stays a ceiling: confirmed-out, reject streaks, retry cooldown,
-// the recount park, and the global round-robin throttle. Callers must present
-// `wouldRequest` as "at most". The census script runs the REAL computeRefillPlan
-// alongside this and prints both, so the residual gap is measured rather than
-// assumed.
+// the recount park, and the global round-robin throttle. Two INBOUND sources are
+// also unmodelled and lean the same way: manual "Shop Refill" order lines and
+// held central->hub lines both count as inbound to the engine, so a cell with
+// one of those in flight can read here as a request the engine will not make.
+// Callers must present `wouldRequest` as "at most".
+//
+// Destination MODE is reported per leg rather than folded in — see modeOf
+// below. The totals mirror computeRefillPlan, which computes intents for
+// shadow and off destinations too; only a "live" destination has them written.
+//
+// test/category-policy-differential.test.cjs holds all of this to the real
+// computeRefillPlan over 400 generated worlds, and the census script runs the
+// real engine alongside the model on the live snapshot — so the residual gap is
+// measured rather than assumed.
 
 const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
 
@@ -79,6 +89,11 @@ const MAX_REORDER_POINT = 500;
 const REFUSED_CATEGORY_KEYS = new Set(["visors"]);
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+
+// refill-engine.cjs's `num()`, mirrored: anything that is not a finite number
+// is 0, NOT coerced. Callers then apply their own `|| 1` fallback exactly as
+// the engine does, so a string qty resolves identically on both sides.
+const engineNum = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const isCount = (v, max) => typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0 && v <= max;
 
 // ── VALIDATION ───────────────────────────────────────────────────────────────
@@ -247,6 +262,15 @@ function modelCategoryPolicy({
   const dests = Object.keys(config?.mode || {});
   const hasRowsHere = (loc) => pids.some((pid) => Object.keys(targets?.[loc]?.[pid] || {}).length > 0);
   const legLocs = [...new Set([...armedLocs, ...dests.filter(hasRowsHere)])];
+  // A destination's MODE decides whether the scan writes anything at all:
+  // refill-scan.cjs only persists requests for mode "live" — "shadow" produces
+  // read-only artifacts and "off" produces nothing. computeRefillPlan still
+  // COMPUTES intents for those destinations (which is why the totals below
+  // include them, and why the differential test against computeRefillPlan
+  // matches), so the mode is reported per leg instead of being silently folded
+  // in. A caller presenting "the scan will ask for N" must say which of those
+  // N land at a destination that is not live.
+  const modeOf = (loc) => (config?.mode || {})[loc] || "off";
   const perSize = isPlainObject(cat) && cat.perSize === true;
   const ctx = { targets, config, products, stock };
   // THE ENGINE'S OWN DEFAULTS, not convenient ones. refill-engine.cjs falls
@@ -287,7 +311,11 @@ function modelCategoryPolicy({
         const src = entry.source || routes[dest];
         if (!src) continue;
         const k = `${src}|${pid}|${sizeKey}`;
-        reserved.set(k, (reserved.get(k) || 0) + (Number(entry.qty) || 1));
+        // num(), not Number(): the engine maps a non-finite qty to 0 and then
+        // falls back to 1. `Number("6") || 1` is 6 where the engine reserves 1,
+        // which over-reserves the source and can park a cell the engine would
+        // have filled — the under-report direction.
+        reserved.set(k, (reserved.get(k) || 0) + (engineNum(entry.qty) || 1));
       }
     }
   }
@@ -371,7 +399,8 @@ function modelCategoryPolicy({
         }
         const have = qtyAt(loc, pid, sizeKey);
         onHand += have;
-        const inbound = Number(openIndex?.[loc]?.[pid]?.[sizeKey]?.qty) || (openIndex?.[loc]?.[pid]?.[sizeKey] ? 1 : 0);
+        const inboundEntry = openIndex?.[loc]?.[pid]?.[sizeKey];
+        const inbound = inboundEntry ? (engineNum(inboundEntry.qty) || 1) : 0;
         const deficit = t.target - have - inbound;
         if (deficit <= 0) { atTarget += 1; continue; }
         // The gate reads PHYSICAL on-hand only — inbound is already inside
@@ -401,6 +430,9 @@ function modelCategoryPolicy({
       // false = this leg's refills come from explicit rows alone; the policy
       // being edited has no say over it.
       armed: armedLocs.includes(loc),
+      // "live" | "shadow" | "off" — only a live destination has its requests
+      // written by the scan.
+      mode: modeOf(loc),
       target: mapped?.target ?? null,
       minQty: mapped?.minQty ?? null,
       reorderPoint: mapped?.reorderPoint ?? null,
@@ -430,6 +462,11 @@ function modelCategoryPolicy({
 
   const totalRequests = legs.reduce((n, l) => n + l.wouldRequest, 0);
   const totalUnits = legs.reduce((n, l) => n + l.unitsWanted, 0);
+  // The subset the scan actually writes. Reported alongside the total rather
+  // than replacing it, so the number stays comparable to computeRefillPlan
+  // while the card can still say "of which N land at a live shop".
+  const liveRequests = legs.filter((l) => l.mode === "live").reduce((n, l) => n + l.wouldRequest, 0);
+  const liveUnits = legs.filter((l) => l.mode === "live").reduce((n, l) => n + l.unitsWanted, 0);
   const cap = typeof maxIntentsPerRun === "number" && maxIntentsPerRun > 0
     ? maxIntentsPerRun : ENGINE_DEFAULT_MAX_INTENTS_PER_RUN;
   return {
@@ -444,6 +481,9 @@ function modelCategoryPolicy({
     centralOnHand,
     totalRequests,
     totalUnits,
+    liveRequests,
+    liveUnits,
+    nonLiveLegs: legs.filter((l) => l.mode !== "live" && l.wouldRequest > 0).map((l) => ({ loc: l.loc, mode: l.mode, requests: l.wouldRequest })),
     overriddenProducts: overriddenPids.size,
     overriddenProductIds: [...overriddenPids],
     // Rows the engine honours on sizes the map does not speak for. Not an
