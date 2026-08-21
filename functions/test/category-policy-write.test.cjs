@@ -382,3 +382,34 @@ test("history comes back newest first, and an aborted save is in it", async () =
   assert.equal(res.history[0].status, "applied");
   assert.equal(res.history[0].by, OWNER);
 });
+
+test("reverting a SUPERSEDED history entry is refused, not silently applied", async () => {
+  // The card's Revert sends the entry's own `after` as expectedBefore. If the
+  // category has moved on since — somebody made a second change, or a later
+  // revert already ran — that no longer matches live and the write is refused.
+  //
+  // Without this the one-tap revert would be a one-tap way to silently discard
+  // whatever happened after the entry being reverted, which is the opposite of
+  // what a history list is for.
+  const db = makeFakeDb(world());
+  await call(db, { categoryKey: "caps-beanies",
+    policy: { hub2: { target: 10, minQty: 5, reorderPoint: 2 }, "marathon-pe": { target: 5, minQty: 3, reorderPoint: 0 } } });
+  const first = history(db).find((h) => h.status === "applied");
+  // A second change lands on top.
+  await applyCategoryPolicy({ db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u", nowMs: NOW + 60000,
+    data: { categoryKey: "caps-beanies", policy: { hub2: { target: 12, minQty: 6, reorderPoint: 2 } } } });
+  assert.equal(policyAt(db).hub2.target, 12);
+
+  await rejects(() => applyCategoryPolicy({
+    db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u", nowMs: NOW + 120000,
+    data: { categoryKey: "caps-beanies", policy: first.before ?? null, expectedBefore: first.after ?? null },
+  }), "failed-precondition");
+  assert.equal(policyAt(db).hub2.target, 12, "the newer change must survive");
+
+  // Reverting the LATEST entry still works — the guard is about being
+  // superseded, not about reverts.
+  const latest = history(db).filter((h) => h.status === "applied").sort((a, b) => b.at - a.at)[0];
+  await applyCategoryPolicy({ db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u", nowMs: NOW + 180000,
+    data: { categoryKey: "caps-beanies", policy: latest.before, expectedBefore: latest.after } });
+  assert.equal(policyAt(db).hub2.target, 10);
+});
