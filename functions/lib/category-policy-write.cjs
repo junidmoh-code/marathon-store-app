@@ -173,6 +173,12 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   for (const src of [config.categoryPolicy?.[categoryKey], policyAfter]) {
     if (src && typeof src === "object") for (const k of Object.keys(src)) if (k !== "perSize") involved.add(k);
   }
+  // Every configured destination, because the model now walks legs the map does
+  // not arm (a category still refills there off explicit rows, and the engine
+  // counts those). Reading only the armed ones would hand the model an empty
+  // targets map for those legs and silently reproduce the under-reporting bug
+  // the differential fuzz caught.
+  for (const loc of Object.keys(config.mode || {})) involved.add(loc);
   // Sources too: a leg's requests are capped by what its source can pick, so a
   // preview that never read the source's stock would report requests the engine
   // will not create.

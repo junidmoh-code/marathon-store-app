@@ -229,6 +229,24 @@ function modelCategoryPolicy({
   const armedLocs = isPlainObject(cat)
     ? Object.keys(cat).filter((k) => k !== "perSize" && isPlainObject(cat[k]))
     : [];
+  // ── THE LEGS ARE NOT JUST THE ARMED ONES ──────────────────────────────────
+  // The engine's managedPids starts from Object.keys(targets[dest]) — a product
+  // with an explicit row is managed at that destination whether or not the map
+  // names it. So a category can produce real refills at a location this policy
+  // has never armed, off legacy rows alone.
+  //
+  // Walking only the armed locations made the model UNDER-report, which is the
+  // one direction that matters: the panel says "the next scan asks for at most
+  // N refills" and it was quietly excluding whole destinations. Found by the
+  // differential fuzz in test/category-policy-differential.test.cjs — 27 of 400
+  // generated worlds, every one of them this shape.
+  //
+  // Unarmed legs carry no map numbers (target/minQty/reorderPoint null) and are
+  // marked armed:false, so the editor still refuses to treat them as policy —
+  // but their rows are counted, because the engine counts them.
+  const dests = Object.keys(config?.mode || {});
+  const hasRowsHere = (loc) => pids.some((pid) => Object.keys(targets?.[loc]?.[pid] || {}).length > 0);
+  const legLocs = [...new Set([...armedLocs, ...dests.filter(hasRowsHere)])];
   const perSize = isPlainObject(cat) && cat.perSize === true;
   const ctx = { targets, config, products, stock };
   // THE ENGINE'S OWN DEFAULTS, not convenient ones. refill-engine.cjs falls
@@ -249,18 +267,35 @@ function modelCategoryPolicy({
     for (const loc of Object.keys(stock || {})) n += qtyAt(loc, pid, sizeKey);
     return n;
   };
-  // Units of a source cell already promised to a request earlier in this same
-  // model pass. The engine reserves within one scan for exactly this reason:
-  // two destinations must never both be sent the one physical unit. Locations
-  // are walked in the map's own key order, which is not guaranteed to be the
-  // scan's destination order — so which of two competing legs wins a scarce
-  // unit may differ, while the TOTAL is unaffected.
+  // ── SOURCE RESERVATIONS ───────────────────────────────────────────────────
+  // Units at a source already promised to somebody. Two contributions, and
+  // missing the first was a real over-reporting bug found by the differential
+  // fuzz: the engine SEEDS this map from every open request before the deficit
+  // loop starts (refill-engine.cjs:569-577), because a unit already committed
+  // to an open lock cannot also be sent somewhere else. Starting empty let the
+  // model promise the same physical unit twice.
+  //
+  // The second contribution is within-pass: a request earlier in this model
+  // claims its units, exactly as the scan does. Locations are walked in the
+  // map's key order rather than the scan's destination order, so WHICH of two
+  // competing legs wins a scarce unit can differ — the total cannot.
   const reserved = new Map();
+  for (const [dest, byPid] of Object.entries(openIndex || {})) {
+    for (const [pid, bySize] of Object.entries(byPid || {})) {
+      for (const [sizeKey, entry] of Object.entries(bySize || {})) {
+        if (!entry) continue;
+        const src = entry.source || routes[dest];
+        if (!src) continue;
+        const k = `${src}|${pid}|${sizeKey}`;
+        reserved.set(k, (reserved.get(k) || 0) + (Number(entry.qty) || 1));
+      }
+    }
+  }
 
   const legs = [];
   const overriddenPids = new Set();
   const legacyPids = new Set();
-  for (const loc of armedLocs) {
+  for (const loc of legLocs) {
     let cells = 0, wouldRequest = 0, unitsWanted = 0, silent = 0, atTarget = 0, onHand = 0, overrides = 0;
     let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0, legacyRows = 0;
     const overrideRows = [], legacyRowList = [];
@@ -293,9 +328,13 @@ function modelCategoryPolicy({
 
       // The sizes THIS map entry speaks for, encoded — the test that separates
       // an override from a legacy row below.
-      const mapSpeaksFor = new Set(perSize
-        ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_").map(encodeSizeKey)
-        : ["_"]);
+      // At a leg the map does not arm it speaks for NOTHING, so every explicit
+      // row there is a legacy row rather than an override — there is nothing to
+      // override.
+      const mapSpeaksFor = new Set(!armedLocs.includes(loc) ? []
+        : perSize
+          ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_").map(encodeSizeKey)
+          : ["_"]);
 
       let pidOverridden = false;
       for (const [sizeKey, size] of bySizeKey) {
@@ -355,12 +394,16 @@ function modelCategoryPolicy({
       if (pidOverridden) overriddenPids.add(pid);
     }
     const c = carriage[loc] || { carries: false, products: 0, units: 0 };
+    const mapped = isPlainObject(cat) && isPlainObject(cat[loc]) ? cat[loc] : null;
     legs.push({
       loc,
       carries: c.carries,
-      target: cat[loc]?.target ?? null,
-      minQty: cat[loc]?.minQty ?? null,
-      reorderPoint: cat[loc]?.reorderPoint ?? null,
+      // false = this leg's refills come from explicit rows alone; the policy
+      // being edited has no say over it.
+      armed: armedLocs.includes(loc),
+      target: mapped?.target ?? null,
+      minQty: mapped?.minQty ?? null,
+      reorderPoint: mapped?.reorderPoint ?? null,
       source: src,
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
       inFlight, parkedNoSource, parkedNothingAnywhere,
@@ -394,6 +437,8 @@ function modelCategoryPolicy({
     perSize,
     products: pids.length,
     armedLocations: armedLocs,
+    // Legs that produce refills off explicit rows alone, with no map entry.
+    unarmedLegsWithRows: legLocs.filter((l) => !armedLocs.includes(l)),
     carriage,
     legs,
     centralOnHand,
