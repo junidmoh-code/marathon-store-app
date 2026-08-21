@@ -469,14 +469,49 @@ function fileLinks(rawSrc) {
   const src = stripComments(rawSrc);
   const map = assignBranches(src);
   const out = [];
-  for (const h of src.matchAll(/href="([^"]*)"/g)) {
-    const raw = h[1];
-    const v = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
-    out.push(linkFrom(raw, v ? v[1] : raw, map, Boolean(v)));
+
+  // ── DISCOVERY IS ALSO DEFAULT-DENY ────────────────────────────────────────
+  // Inverting the default for RESOLUTION was only half the job: a link that was
+  // never DISCOVERED could still vanish silently, because it never entered this
+  // list to be flagged, refused or counted. Discovery used to accept exactly
+  // `href="…"` and `*_url: bareIdentifier`, so an ordinary single-quoted
+  // `href='/collections/all'` — valid HTML, and what anyone reaches for the
+  // moment a value contains a double quote — disappeared from all three files
+  // while the suite stayed green. That was the sixth instance of this one class.
+  //
+  // So: find EVERY `href=` and every `*_url:` argument, parse the shapes we
+  // understand, and REFUSE anything else rather than skipping it.
+  for (const m of src.matchAll(/href\s*=\s*(.)/g)) {
+    const rest = src.slice(m.index + m[0].length - 1);
+    const q = m[1];
+    if (q === '"' || q === "'") {
+      const close = rest.indexOf(q, 1);
+      if (close === -1) {
+        out.push({ raw: `href=${q}…`, branches: [], verifiable: false, why: "unterminated href attribute" });
+        continue;
+      }
+      const raw = rest.slice(1, close);
+      const v = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
+      out.push(linkFrom(raw, v ? v[1] : raw, map, Boolean(v)));
+    } else {
+      // Unquoted attribute value, or something this parser does not model.
+      out.push({ raw: `href=${rest.slice(0, 30)}`, branches: [], verifiable: false,
+        why: "href is neither single- nor double-quoted — cannot be parsed" });
+    }
   }
-  for (const a of src.matchAll(/[,(]\s*(\w+_url):\s*([\w.]+)/g)) {
+
+  // A `*_url:` render argument may be a variable OR a quoted literal. The
+  // literal form used to be skipped entirely. `[,(]` still keeps this from
+  // matching the `| image_url:` FILTER.
+  for (const a of src.matchAll(/[,(]\s*(\w+_url):\s*('[^']*'|"[^"]*"|[\w.]+)/g)) {
     const [, argName, value] = a;
-    out.push(linkFrom(`${argName}: ${value}`, value, map, true));
+    const quoted = value.match(/^'([^']*)'$|^"([^"]*)"$/);
+    if (quoted) {
+      const literal = quoted[1] ?? quoted[2];
+      out.push(linkFrom(`${argName}: ${value}`, literal, map, false));
+    } else {
+      out.push(linkFrom(`${argName}: ${value}`, value, map, true));
+    }
   }
   return out;
 }
@@ -491,8 +526,13 @@ function fileLinks(rawSrc) {
 //     setting, a value that only exists once Shopify renders the page;
 //   • control flow: it treats every assignment branch as possible and never
 //     works out which one actually runs;
-//   • a link built by markup this parser does not model (a `{% for %}` building
-//     handles, a `{% liquid %}` echo, a link emitted from JavaScript).
+//   • a link built by markup this parser does not model (a `{% liquid %}` echo,
+//     a link emitted from JavaScript);
+//   • FILTER SEMANTICS. It matches substrings in source text, so it reads
+//     `append`/`prepend` as if they were the only filters that exist. A filter
+//     that REMOVES or REWRITES text — `| replace: '?sort_by=…', ''` — leaves the
+//     sort visible in the source and invisible in the rendered URL, and this
+//     test will call that a pass.
 //
 // It is a convention check, not a proof. The honest way to close the remaining
 // gap is to render the sections with liquidjs and assert on the OUTPUT hrefs —
