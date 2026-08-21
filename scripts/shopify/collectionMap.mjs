@@ -451,6 +451,73 @@ export const UNMAPPED_DESTINATION =
  * Never throws and never invents a destination: a caller that ignores `status`
  * still gets a null collectionKey rather than a wrong collection.
  */
+// ── THE HOME-PAGE RAIL TABLE ─────────────────────────────────────────────────
+// The storefront home page shows one rail per category. A rail needs THREE
+// strings and they are all different from each other:
+//
+//   label   what the shopper reads
+//   tag     the Shopify TAG, which is what /collections/all/{tag} filters on
+//           and therefore the only address that reaches every product in the
+//           category regardless of collection membership
+//   key     the COLLECTION the rail is filled from
+//
+// They cannot be derived from one another. `"Tracksuits & Sets" | handleize` is
+// "tracksuits-sets" but the collection is "tracksuits"; "Perfume" lives in
+// "fragrance"; "Jeans & Denim" lives in "pants". Getting this wrong renders an
+// empty home page, silently — which is exactly what happened when
+// sell-through.mjs printed bare collection keys and the theme setting wanted
+// full rows.
+//
+// So the table lives HERE, once, as data, and BOTH sides read it: the theme
+// setting's default is generated from it, and sell-through.mjs prints a
+// paste-ready setting value rather than something that merely looks like one.
+//
+// Jerseys and Polos have no row: both map to the "clothing" collection, and two
+// rails drawn from one collection would show the same photographs twice under
+// two headings. "Clothing" is the single row that covers them.
+export const HOME_RAILS = [
+  { key: "sneakers",       tag: "Sneakers",              label: "Sneakers" },
+  { key: "tracksuits",     tag: "Tracksuits & Sets",     label: "Tracksuits & Sets" },
+  { key: "soccer-boots",   tag: "Soccer Boots",          label: "Soccer Boots" },
+  { key: "clothing",       tag: "Clothing",              label: "Clothing" },
+  { key: "caps-hats",      tag: "Caps & Hats",           label: "Caps & Hats" },
+  { key: "t-shirts",       tag: "T-Shirts",              label: "T-Shirts" },
+  { key: "pants",          tag: "Jeans & Denim",         label: "Jeans & Denim" },
+  { key: "bags",           tag: "Bags",                  label: "Bags" },
+  { key: "fragrance",      tag: "Perfume",               label: "Perfume" },
+  { key: "sandals-slides", tag: "Sandals & Slides",      label: "Sandals & Slides" },
+  { key: "boots",          tag: "Boots",                 label: "Boots" },
+  { key: "jackets",        tag: "Jackets & Coats",       label: "Jackets & Coats" },
+  { key: "hoodies-sweats", tag: "Hoodies & Sweatshirts", label: "Hoodies & Sweatshirts" },
+  { key: "shorts",         tag: "Shorts & Vests",        label: "Shorts & Vests" },
+  { key: "accessories",    tag: "Accessories",           label: "Accessories" },
+];
+
+export const HOME_RAIL_BY_KEY = Object.fromEntries(HOME_RAILS.map((r) => [r.key, r]));
+
+/**
+ * The exact string to paste into the theme's "Rail order" setting, ordered by
+ * the collection keys given (best-selling first). Keys with no rail row are
+ * skipped rather than emitted as something the theme cannot parse.
+ * @param {string[]} orderedKeys collection keys, best first
+ * @returns {string} `Label~tag~key;Label~tag~key;…`
+ */
+export function buildRailOrderSetting(orderedKeys) {
+  const seen = new Set();
+  const rows = [];
+  for (const key of orderedKeys) {
+    const r = HOME_RAIL_BY_KEY[key];
+    if (!r || seen.has(key)) continue;
+    seen.add(key);
+    rows.push(`${r.label}~${r.tag}~${r.key}`);
+  }
+  // Anything measured but unranked still belongs on the page, at the back.
+  for (const r of HOME_RAILS) {
+    if (!seen.has(r.key)) rows.push(`${r.label}~${r.tag}~${r.key}`);
+  }
+  return rows.join(";");
+}
+
 export function resolveCollection(product) {
   // FIRST, before any category lookup: is this merchandise at all? Price
   // records are not, and the answer must not depend on which of their three

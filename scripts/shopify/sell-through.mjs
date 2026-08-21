@@ -44,7 +44,7 @@ import { createRequire } from "module";
 import { writeFileSync } from "fs";
 import { recentDaysStartKey } from "../../src/insights/insightsLogRange.js";
 import { dedupeByOrderNumber, returnedOrderNumberSet, excludeReturnedOrderNumbers } from "../../src/utils/insights.js";
-import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
+import { resolveCollection, COLLECTION_BY_KEY, buildRailOrderSetting } from "./collectionMap.mjs";
 
 const flags = process.argv.slice(2);
 const argOf = (name, dflt) => {
@@ -173,7 +173,7 @@ const ranked = [...byCollection.entries()].sort((a, b) => b[1].units - a[1].unit
 console.log(`\n══ SELL-THROUGH BY STOREFRONT COLLECTION (${DAYS} days) ══\n`);
 console.log("units".padStart(7), "share".padStart(7), " products  collection");
 for (const [key, v] of ranked) {
-  const title = COLLECTION_BY_KEY[key]?.title ?? key;
+  const title = COLLECTION_BY_KEY.get(key)?.title ?? key;
   console.log(
     String(v.units).padStart(7),
     (((v.units / attributedUnits) * 100).toFixed(1) + "%").padStart(7),
@@ -188,7 +188,19 @@ if (unmapped) {
   }
 }
 
-console.log(`\n══ THE HOME-PAGE ORDER ══\nhome_rail_order default =\n  ${ranked.map(([k]) => k).join(",")}`);
+// PASTE-READY, not merely informative. The theme's "Rail order" setting parses
+// `Label~tag~collection-handle` rows; a list of bare collection keys parses to
+// nothing and silently empties the home page. So the setting value is BUILT
+// from the shared rail table (collectionMap.mjs HOME_RAILS) rather than printed
+// as keys and left for a human to translate.
+console.log(`\n══ THE HOME-PAGE ORDER ══
+Measured order (collection keys, best first):
+  ${ranked.map(([k]) => k).join(", ") || "(nothing measured)"}
+
+Paste this into the theme editor → Home rails → "Rail order":
+
+${buildRailOrderSetting(ranked.map(([k]) => k))}
+`);
 
 if (JSON_OUT) {
   writeFileSync(
@@ -197,7 +209,7 @@ if (JSON_OUT) {
       {
         windowDays: DAYS, fromIso, toIso,
         events: events.length, totalUnits, attributedUnits, coverage,
-        ranked: ranked.map(([key, v]) => ({ key, title: COLLECTION_BY_KEY[key]?.title ?? key, ...v })),
+        ranked: ranked.map(([key, v]) => ({ key, title: COLLECTION_BY_KEY.get(key)?.title ?? key, ...v })),
         unmapped: Object.fromEntries(unmappedKeys),
       },
       null, 2

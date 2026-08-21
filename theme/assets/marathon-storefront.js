@@ -50,9 +50,14 @@
   // Without this, opening A then B then closing would land Back on A's URL with
   // no panel open — the address bar claiming a product the shopper is not
   // looking at — and Back out of the shop would take one press per photo tapped.
+  // The URL travels IN the history state, not just in the address bar, so a
+  // history entry can be turned back into an open panel. Without it, Back then
+  // Forward lands on the product URL with the grid showing and nothing open —
+  // the address bar claiming a product the shopper is not looking at, which is
+  // the exact failure the history discipline above exists to prevent.
   function setUrl(url, title, replace) {
     try {
-      history[replace ? "replaceState" : "pushState"]({ mc: true }, "", url);
+      history[replace ? "replaceState" : "pushState"]({ mc: true, url: url, title: title }, "", url);
       if (title) document.title = title;
     } catch (e) { /* history is a nicety; never let it break open/close */ }
   }
@@ -72,8 +77,11 @@
     } catch (e) { /* as above */ }
   }
 
-  function open(card) {
-    if (openCard === card) { close(true); return; }
+  // `silent` reopens a card because HISTORY said so (Forward, or a restored
+  // entry). It must not write history back, or the entry it is restoring would
+  // be rewritten by the act of restoring it.
+  function open(card, silent) {
+    if (!silent && openCard === card) { close(true); return; }
     var replacing = openCard !== null;   // moving between cards rewrites, never stacks
     close(false);
     var panel = $("[data-mc-panel]", card);
@@ -83,7 +91,11 @@
     openCard = card;
 
     var url = card.getAttribute("data-mc-url");
-    if (url) setUrl(url, card.getAttribute("data-mc-title"), replacing);
+    if (url && !silent) setUrl(url, card.getAttribute("data-mc-title"), replacing);
+    if (silent) {
+      var t = card.getAttribute("data-mc-title");
+      if (t) document.title = t;
+    }
 
     // A panel the shopper never sees is a panel that did not open. A card can
     // be out of view VERTICALLY on the browsing grid and HORIZONTALLY in a home
@@ -93,7 +105,10 @@
       rect.top < 0 || rect.bottom > window.innerHeight ||
       rect.left < 0 || rect.right > window.innerWidth;
     if (offScreen) {
-      card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+      // A shopper who has asked for reduced motion gets the jump, not the glide.
+      var still = false;
+      try { still = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
+      card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: still ? "auto" : "smooth" });
     }
     var closeBtn = $("[data-mc-close]", panel);
     if (closeBtn) closeBtn.focus({ preventScroll: true });
@@ -142,11 +157,27 @@
     if (ev.key === "Escape" && openCard) close(true);
   });
 
-  // Back/forward: the panel state is the history state, so honour it.
+  // Back/forward: the panel state IS the history state, so honour it in both
+  // directions. An entry we wrote reopens its card; anything else closes.
   window.addEventListener("popstate", function () {
+    var st = history.state;
+    if (st && st.mc && st.url) {
+      var card = document.querySelector('[data-mc-card][data-mc-url="' + cssEscape(st.url) + '"]');
+      if (card) { open(card, true); return; }
+      // The card is not on this page — a different pagination page, say. Leave
+      // the panel closed rather than pretending; the URL is a real product page
+      // and reloading it works.
+    }
     close(false);
     document.title = listTitle;
   });
+
+  // Attribute-selector escaping for a product path. Handles are lowercase
+  // alnum and hyphens (compliance.mjs buildHandle), so this only ever has to
+  // survive the quote and backslash cases, but it is cheap to be exact.
+  function cssEscape(v) {
+    return String(v).replace(/(["\\])/g, "\\$1");
+  }
 
   // ── size selection ─────────────────────────────────────────────────────────
   function selectSize(btn) {

@@ -65,7 +65,33 @@
     assign new_in = collections['new-in']
     assign new_in_done = false
     assign after = section.settings.new_in_after
+
+    # Does New In clear the same bar every other rail has to clear? Asked ONCE,
+    # here, because the answer decides three separate things below: whether it
+    # may render early, whether the in-loop insert may claim it as done, and
+    # whether the end-of-page fallback still has work to do.
+    assign new_in_ok = false
+    if new_in != blank and new_in.products_count >= min_products
+      assign new_in_ok = true
+    endif
   -%}
+
+  {%- comment -%}
+    `new_in_after: 0` means "put New In first", and it can only mean that if it
+    is rendered BEFORE the category loop — an insert that lives inside the loop
+    cannot run before the loop's first iteration.
+  {%- endcomment -%}
+  {%- if after == 0 and new_in_ok -%}
+    {%- render 'marathon-rail',
+        rail_title: 'New in',
+        rail_url: new_in.url,
+        rail_products: new_in.products,
+        rail_limit: per_rail,
+        rail_min: min_products,
+        rail_count: new_in.products_count -%}
+    {%- assign new_in_done = true -%}
+    {%- assign rendered = rendered | plus: 1 -%}
+  {%- endif -%}
 
   {%- for row in order -%}
     {%- liquid
@@ -123,7 +149,14 @@
       phrase to show a shopper and so appears in no category row. So it goes
       second: the evidence leads, and the complete path is still above the fold.
     {%- endcomment -%}
-    {%- if new_in_done == false and rendered >= after and new_in != blank -%}
+    {%- comment -%}
+      `new_in_ok` is the guard, not `new_in != blank`. marathon-rail renders
+      NOTHING when it is handed fewer products than its floor — so claiming
+      "done" here without checking the floor would silently swallow New In: the
+      rail would not appear, and the end-of-page fallback that exists precisely
+      for that case would think the job was finished.
+    {%- endcomment -%}
+    {%- if new_in_done == false and new_in_ok and rendered >= after -%}
       {%- render 'marathon-rail',
           rail_title: 'New in',
           rail_url: new_in.url,
@@ -132,6 +165,7 @@
           rail_min: min_products,
           rail_count: new_in.products_count -%}
       {%- assign new_in_done = true -%}
+      {%- assign rendered = rendered | plus: 1 -%}
     {%- endif -%}
   {%- endfor -%}
 
@@ -172,8 +206,8 @@
       "type": "textarea",
       "id": "rail_order",
       "label": "Rail order — Label~tag~collection handle, best-selling first",
-      "info": "From POS sell-through, 56 days to 2026-08-21. Re-run scripts/shopify/sell-through.mjs to refresh.",
-      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Caps & Hats~Caps & Hats~caps-hats;T-Shirts~T-Shirts~t-shirts;Jeans & Denim~Jeans & Denim~pants;Bags~Bags~bags;Perfume~Perfume~fragrance;Sandals & Slides~Sandals & Slides~sandals-slides;Boots~Boots~boots;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
+      "info": "Label~tag~collection-handle rows, best-selling first. From POS sell-through, 56 days to 2026-08-21. `node scripts/shopify/sell-through.mjs` prints a paste-ready replacement in exactly this format.",
+      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Caps & Hats~Caps & Hats~caps-hats;T-Shirts~T-Shirts~t-shirts;Jeans & Denim~Jeans & Denim~pants;Bags~Bags~bags;Perfume~Perfume~fragrance;Sandals & Slides~Sandals & Slides~sandals-slides;Boots~Boots~boots;Accessories~Accessories~accessories;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
     },
     {
       "type": "range",
