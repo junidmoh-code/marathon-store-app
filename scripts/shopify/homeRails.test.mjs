@@ -234,3 +234,50 @@ describe("the category-page sibling strip", () => {
     expect(overlap).toEqual([]);
   });
 });
+
+// ── TAG URLS MUST LAND NEWEST-FIRST ─────────────────────────────────────────
+// /collections/all/{tag} inherits collections.all's sort, and that default is
+// `title-ascending` (measured on production 2026-08-21). These titles are
+// machine-generated with every brand term stripped out, so alphabetical is a
+// sort on noise — and tag URLs ARE the category navigation, so it was the
+// landing order of every category in the shop. Every generated tag link
+// therefore carries an explicit sort, and this holds it there: the param is one
+// `| append:` away from being dropped by a refactor, and nothing else would
+// notice.
+describe("generated tag URLs carry an explicit sort", () => {
+  const SORT = "?sort_by=created-descending";
+  const files = {
+    "marathon-nav.liquid": readFileSync(NAV, "utf8"),
+    "marathon-grid.liquid": readFileSync(GRID, "utf8"),
+    "marathon-home.liquid": readFileSync(HOME, "utf8"),
+  };
+
+  for (const [name, src] of Object.entries(files)) {
+    it(`${name} appends the sort to every /collections/all/ link it builds`, () => {
+      // Every assign that prepends the tag base is a link the shopper follows.
+      const builders = [...src.matchAll(/assign\s+(\w+)\s*=\s*([^\n]*prepend:\s*'\/collections\/all\/'[^\n]*)/g)];
+      expect(builders.length, `${name} builds no tag URLs — did the idiom change?`).toBeGreaterThan(0);
+
+      for (const [, varName, expr] of builders) {
+        // Either this line appends the sort, or it is an explicitly-named *_path
+        // used only for the aria-current comparison (which must NOT carry it,
+        // because request.path has no query string).
+        const isPathOnly = /_path$/.test(varName);
+        if (isPathOnly) {
+          expect(expr, `${name}: ${varName} must stay query-free`).not.toContain("sort_by");
+        } else {
+          expect(expr, `${name}: ${varName} lost its sort`).toContain(SORT);
+        }
+      }
+    });
+  }
+
+  it("the *_path variables are actually used for aria-current, not for href", () => {
+    const src = files["marathon-nav.liquid"];
+    for (const m of src.matchAll(/assign\s+(\w+_path)\s*=/g)) {
+      const v = m[1];
+      expect(src, `${v} is built but never compared`).toContain(`request.path == ${v}`);
+      expect(src).not.toContain(`href="{{ ${v} }}"`);
+    }
+  });
+});

@@ -60,6 +60,26 @@
   37.8% of units, Clothing follows.
 {%- endcomment -%}
 
+{%- comment -%}
+    WHY EVERY TAG LINK CARRIES ?sort_by=created-descending
+
+    `/collections/all/{tag}` inherits the sort of `collections.all`, and that
+    collection's default is `title-ascending` — measured on production
+    2026-08-21: /collections/all opens on "AC Milan…", /collections/all/perfume
+    on "Acquadi…", /collections/all/tracksuits-sets on "Central Cee…". All
+    alphabetical.
+
+    Alphabetical is the ONE ordering that is worthless here. These titles are
+    machine-generated and every brand term is stripped out of them, so A-to-Z is
+    a sort on noise — and because tag URLs ARE the category navigation, it was
+    the landing order of every category in the shop.
+
+    Newest-first is the right default for clearance stock, and it is the order
+    the real collections already use. Stated as a parameter rather than assumed,
+    because a shopper who arrives from a search engine gets whatever Shopify
+    defaults to, and the sort control on the page says so honestly either way.
+  {%- endcomment -%}
+
 {%- liquid
   assign all_tags = collections.all.all_tags
 
@@ -84,15 +104,18 @@
           # ── Is there anything behind this row? ──────────────────────────────
           assign visible = false
           assign url = ''
+          assign url_path = ''
           if kind == 'tag'
             if all_tags contains target
               assign visible = true
-              assign url = target | handleize | prepend: '/collections/all/'
+              assign url_path = target | handleize | prepend: '/collections/all/'
+              assign url = url_path | append: '?sort_by=created-descending'
             endif
           else
             assign c = collections[target]
             if c != blank and c.all_products_count > 0
               assign visible = true
+              assign url_path = c.url
               assign url = c.url
             endif
           endif
@@ -110,10 +133,11 @@
                 {%- for kid in kids -%}
                   {%- comment -%} Same test, per child: no empty child row. {%- endcomment -%}
                   {%- if all_tags contains kid -%}
-                    {%- assign kid_url = kid | handleize | prepend: '/collections/all/' -%}
+                    {%- assign kid_path = kid | handleize | prepend: '/collections/all/' -%}
+                    {%- assign kid_url = kid_path | append: '?sort_by=created-descending' -%}
                     <a class="mc-nav__link"
                        href="{{ kid_url }}"
-                       {% if request.path == kid_url %}aria-current="page"{% endif %}>{{ kid }}</a>
+                       {% if request.path == kid_path %}aria-current="page"{% endif %}>{{ kid }}</a>
                   {%- endif -%}
                 {%- endfor -%}
               </div>
@@ -121,7 +145,7 @@
           {%- else -%}
             <a class="mc-nav__link"
                href="{{ url }}"
-               {% if request.path == url %}aria-current="page"{% endif %}>{{ label }}</a>
+               {% if request.path == url_path %}aria-current="page"{% endif %}>{{ label }}</a>
           {%- endif -%}
         {%- endif -%}
       {%- endfor -%}

@@ -128,7 +128,8 @@
         cost a bug in marathon-card.liquid, where a filter written after a named
         argument chained onto the tag's own output instead.
       {%- endcomment -%}
-      {%- assign rail_url = tag | handleize | prepend: '/collections/all/' -%}
+      {%- comment -%} Newest-first — see snippets/marathon-nav.liquid. {%- endcomment -%}
+      {%- assign rail_url = tag | handleize | prepend: '/collections/all/' | append: '?sort_by=created-descending' -%}
       {%- if c.products.size >= min_products -%}
         {%- render 'marathon-rail',
             rail_title: label,

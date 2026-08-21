@@ -86,9 +86,38 @@
       assign sort_base = here | handleize | prepend: '/' | prepend: collection.url
     endif
   -%}
+  {%- comment -%}
+    IF THE PAGE IS IN AN ORDER THIS CONTROL DOES NOT OFFER, IT SAYS SO.
+    A shopper arriving from a search engine on a bare /collections/all/{tag} gets
+    Shopify's title-ascending default, which is none of the three below. Showing
+    three links with none of them marked leaves the shopper unable to tell what
+    order they are looking at — so the actual order is rendered as a fourth,
+    current-marked entry instead. Honest about the state, and one tap from a
+    useful one.
+  {%- endcomment -%}
+  {%- liquid
+    assign offered = 'created-descending,price-ascending,price-descending' | split: ','
+    assign active_is_offered = false
+    if offered contains active_sort
+      assign active_is_offered = true
+    endif
+    assign other_labels = 'title-ascending|A to Z,title-descending|Z to A,best-selling|Best selling,manual|Featured,created-ascending|Oldest' | split: ','
+    assign active_label = ''
+    for row in other_labels
+      assign kv = row | split: '|'
+      if kv[0] == active_sort
+        assign active_label = kv[1]
+      endif
+    endfor
+  -%}
   {%- if collection.products_count > 1 -%}
     <div class="mc-sort">
       <span class="mc-sort__label">Sort</span>
+      {%- unless active_is_offered -%}
+        {%- if active_label != blank -%}
+          <span class="mc-sort__link" aria-current="true">{{ active_label }}</span>
+        {%- endif -%}
+      {%- endunless -%}
       {%- for s in sorts -%}
         {%- assign bits = s | split: '|' -%}
         <a class="mc-sort__link"
@@ -107,7 +136,12 @@
     <div class="mc-siblings">
       {%- for s in siblings -%}
         {%- if all_tags contains s -%}
-          <a href="{{ s | handleize | prepend: '/collections/all/' }}"
+          {%- comment -%} Newest-first, for the reason set out in
+            snippets/marathon-nav.liquid: a tag URL inherits collections.all's
+            title-ascending default, which sorts machine-generated names
+            alphabetically and is the one ordering worth nothing here. {%- endcomment -%}
+          {%- assign sib = s | handleize | prepend: '/collections/all/' | append: '?sort_by=created-descending' -%}
+          <a href="{{ sib }}"
              {% if s == here %}aria-current="page"{% endif %}>{{ s }}</a>
         {%- endif -%}
       {%- endfor -%}
