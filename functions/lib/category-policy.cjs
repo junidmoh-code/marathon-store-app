@@ -139,6 +139,15 @@ function validatePolicyEntry(entry, { where = "entry" } = {}) {
 // this file has no private idea of what the estate looks like.
 function validateCategoryPolicy(categoryKey, cat, { knownLocations, knownCategoryKeys }) {
   if (typeof categoryKey !== "string" || !categoryKey) return "categoryKey must be a non-empty string";
+  // A SINGLE RTDB KEY SEGMENT, checked here rather than trusted. The key is
+  // interpolated straight into `config/refillEngine/categoryPolicy/${key}`, and
+  // the taxonomy allow-list below only bites when /settings/productTaxonomy
+  // read back non-empty — so an unreadable or unseeded taxonomy would let a key
+  // containing "/" write to a nested path somewhere else entirely. RTDB also
+  // forbids . # $ [ ] in keys outright.
+  if (!/^[A-Za-z0-9_-]+$/.test(categoryKey)) {
+    return `categoryKey must be letters, digits, hyphens or underscores only (got ${JSON.stringify(categoryKey)})`;
+  }
   if (REFUSED_CATEGORY_KEYS.has(categoryKey)) {
     return `"${categoryKey}" carries no policy by owner decision and cannot be armed here`;
   }

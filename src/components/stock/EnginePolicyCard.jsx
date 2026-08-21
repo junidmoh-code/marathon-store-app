@@ -283,6 +283,13 @@ function EnginePolicyAuthed({ viewer, onExit }) {
       // since, the server's own drift check refuses, which is the right answer.
       await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null });
       flash("ok", `${h.categoryKey} put back to how it was on ${fmtWhen(h.at)}.`);
+      // Close the editor, exactly as save does. Leaving it open kept the
+      // PRE-revert draft on screen against the refreshed entry, so the
+      // changed-fields banner reported edits the owner never made and the row
+      // values no longer matched live.
+      setOpenKey("");
+      setDraft({});
+      setPreview(null);
       await load();
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -350,7 +357,19 @@ function EnginePolicyAuthed({ viewer, onExit }) {
           const isOpen = openKey === c.key;
           return (
             <div key={c.key} style={{ ...GLASS, marginBottom: 10, overflow: "hidden" }}>
-              <div onClick={() => expand(c)} style={{ display: "flex", alignItems: "center", gap: 12, padding: ".9rem 1rem", cursor: "pointer" }}>
+              {/* The expand control is a REAL BUTTON — it is the only way into
+                  the editor, and as a div with onClick the entire feature was
+                  unreachable without a pointer.
+                  It is a sibling of StateChip rather than wrapping it, because
+                  an unarmed row's chip contains its own "Set policy" button and
+                  a button inside a button is invalid. Styled back down to look
+                  like the row it replaced. */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: ".9rem 1rem" }}>
+              <button type="button" onClick={() => expand(c)}
+                aria-expanded={isOpen} aria-label={`${c.label} — ${isOpen ? "collapse" : "expand"} policy`}
+                style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer",
+                  flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none",
+                  color: "inherit", font: "inherit", padding: 0 }}>
                 <div style={{ fontSize: "1.4rem" }}>{iconFor(c.key)}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 700, fontSize: "1rem" }}>{c.label}</div>
@@ -366,6 +385,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
                     )}
                   </div>
                 </div>
+              </button>
                 <StateChip category={c} armed={armed} onSetPolicy={() => expand(c)} />
               </div>
 

@@ -159,7 +159,12 @@ const ROLLBACK = join(ROOT, "var", `engine-policy-rollback-${CATEGORY}-${stamp}.
   console.log(`  LIVE AFTER: ${JSON.stringify(after)}`);
   const ok = canon(after) === canon(res.after);
   const audit = (await db.ref(`engine_policy_history/${res.historyId}`).once("value")).val();
-  console.log(`  audit: status=${audit?.status} by=${audit?.by} at=${new Date(audit?.at).toISOString()}`);
+  // Defensive on purpose: this line runs AFTER the live write. new Date(undefined)
+  // .toISOString() throws a RangeError, the outer catch would print FAILED and
+  // exit 1 — announcing a failure for a write that had already succeeded, and
+  // swallowing the post-verify line that says so.
+  const auditAt = Number.isFinite(audit?.at) ? new Date(audit.at).toISOString() : "unknown";
+  console.log(`  audit: status=${audit?.status ?? "missing"} by=${audit?.by ?? "unknown"} at=${auditAt}`);
   console.log(ok ? `  ✓ POST-VERIFY PASSED — live reads back exactly what was intended.`
                  : `  ✗ POST-VERIFY FAILED — live does not match. Roll back with ${ROLLBACK}.`);
   console.log(`${"═".repeat(78)}\n`);

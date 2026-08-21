@@ -158,36 +158,57 @@ describe("the default export runs zero hooks", () => {
 describe("App.jsx — the tile and the route", () => {
   const appSrc = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
 
+  // ── EVERY SLICE IS GUARDED, AND THAT IS NOT PEDANTRY ──────────────────────
+  // String.prototype.slice treats a negative start as an offset from the END.
+  // So an unguarded `src.slice(src.indexOf(x) - 400)` does NOT fail when x is
+  // missing — it silently reads an unrelated region of the file, and the
+  // assertion that follows passes or fails for reasons having nothing to do
+  // with the gate. On a test whose entire job is to fail when a security gate
+  // is deleted, "passes for the wrong reason" is the only failure mode that
+  // matters. (CodeRabbit, PR #397.)
+  const around = (needle, before, after) => {
+    const i = appSrc.indexOf(needle);
+    expect(i, `App.jsx must contain ${needle}`).toBeGreaterThan(-1);
+    return appSrc.slice(Math.max(0, i - before), i + after);
+  };
+  const lineWith = (needle) => {
+    const i = appSrc.indexOf(needle);
+    expect(i, `App.jsx must contain ${needle}`).toBeGreaterThan(-1);
+    const start = appSrc.lastIndexOf("\n", i) + 1;
+    const end = appSrc.indexOf("\n", i);
+    return appSrc.slice(start, end === -1 ? undefined : end);
+  };
+
   it("GATE 1 — the tile is gated, and the gate is the shared predicate", () => {
-    const tile = appSrc.slice(appSrc.indexOf('key:"engine_policy"') - 400, appSrc.indexOf('key:"engine_policy"') + 200);
-    expect(tile).toMatch(/enginePolicyVisibleForViewer\(enginePolicyViewer\)\s*&&\s*\{\s*key:"engine_policy"/);
+    // Whitespace-tolerant: a formatter run must not be able to break a
+    // security assertion.
+    const tile = around('key:"engine_policy"', 400, 200);
+    expect(tile).toMatch(/enginePolicyVisibleForViewer\(\s*enginePolicyViewer\s*\)\s*&&\s*\{\s*key:\s*"engine_policy"/);
   });
 
   it("GATE 1 — the tile's viewer comes from the AUTH email, not from a permissions record", () => {
-    const decl = appSrc.slice(appSrc.indexOf("const enginePolicyViewer"));
-    const line = decl.slice(0, decl.indexOf("\n"));
+    const line = lineWith("const enginePolicyViewer");
     expect(line).toMatch(/homeUser\?\.email/);
     expect(line).not.toMatch(/permRecord|permissions|hasPermission|stockRole/);
   });
 
   it("GATE 2 — the route guards the mount, independently of the tile", () => {
-    const start = appSrc.indexOf("else if (role === ROLES.ENGINE_POLICY)");
-    expect(start, "the ENGINE_POLICY route branch must exist").toBeGreaterThan(-1);
-    const block = appSrc.slice(start, start + 500);
-    expect(block).toMatch(/enginePolicyVisibleForViewer\(\{\s*email:\s*authUser\?\.email\s*\}\)/);
+    const block = around("else if (role === ROLES.ENGINE_POLICY)", 0, 500);
+    expect(block).toMatch(/enginePolicyVisibleForViewer\(\s*\{\s*email:\s*authUser\?\.email\s*\}\s*\)/);
     // Authorized branch first; the refusal arm must not be the privileged screen.
     expect(block).toMatch(/enginePolicyVisibleForViewer[\s\S]*\?[\s\S]*<EnginePolicyCard/);
-    const afterColon = block.slice(block.indexOf(":", block.indexOf("<EnginePolicyCard")));
-    expect(afterColon).not.toMatch(/<EnginePolicyCard/);
+    const cardAt = block.indexOf("<EnginePolicyCard");
+    expect(cardAt).toBeGreaterThan(-1);
+    const colonAt = block.indexOf(":", cardAt);
+    expect(colonAt, "the route must be a ternary with a refusal arm").toBeGreaterThan(-1);
+    expect(block.slice(colonAt)).not.toMatch(/<EnginePolicyCard/);
   });
 
   it("GATE 2 — a refused viewer gets the admin sign-in screen, not a dead end", () => {
     // The brief is specific: the same treatment #admin/users has had since
     // PR #302. `null` would let the role-reset effect bounce them home with no
     // explanation of what to do about it.
-    const start = appSrc.indexOf("else if (role === ROLES.ENGINE_POLICY)");
-    const block = appSrc.slice(start, start + 500);
-    expect(block).toMatch(/<AdminSignInScreen/);
+    expect(around("else if (role === ROLES.ENGINE_POLICY)", 0, 500)).toMatch(/<AdminSignInScreen/);
   });
 
   it("there is no second, ungated mount of the card anywhere in App.jsx", () => {
@@ -197,9 +218,12 @@ describe("App.jsx — the tile and the route", () => {
   it("the route constant grants nothing by itself", () => {
     // ROLES.ENGINE_POLICY only names the route. If the role string ever became
     // the whole test, a value persisted in localStorage would be the gate.
-    const roles = appSrc.slice(appSrc.indexOf("const ROLES = {"));
-    const line = roles.slice(0, roles.indexOf("\n"));
-    expect(line).toMatch(/ENGINE_POLICY: "engine_policy"/);
-    expect(line).not.toMatch(/isSuperAdmin|email/);
+    // Read the whole ROLES object rather than assuming it stays on one line —
+    // a formatter run must not silently empty this assertion.
+    const i = appSrc.indexOf("const ROLES = {");
+    expect(i, "App.jsx must declare ROLES").toBeGreaterThan(-1);
+    const decl = appSrc.slice(i, appSrc.indexOf("};", i) + 2);
+    expect(decl).toMatch(/ENGINE_POLICY:\s*"engine_policy"/);
+    expect(decl).not.toMatch(/isSuperAdmin|authUser|email/);
   });
 });

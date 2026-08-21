@@ -261,7 +261,13 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // The locations the card can show, arm, or reason about — plus central, the
   // only place a hub deficit can be filled from. Reading the rest (studio,
   // in_transit, base) was reading them for nothing.
-  const stockLocs = [...new Set([...destinations, ...armedAnywhere, "central"])];
+  // Route SOURCES too. The model's actionable-only gate reads the source's
+  // stock, so a source whose node was never read looks empty and every cell it
+  // feeds parks as "no stock upstream". Today every source happens to be a
+  // destination, so this changes nothing — but one routes edit away it would
+  // have silently zeroed a whole leg's requests. buildPreview already does it.
+  const sources = Object.values(config.routes || {});
+  const stockLocs = [...new Set([...destinations, ...armedAnywhere, ...sources, "central"])];
   const rowLocs = [...new Set([...destinations, ...armedAnywhere])];
 
   const products = await readMapPaged(db, "products");

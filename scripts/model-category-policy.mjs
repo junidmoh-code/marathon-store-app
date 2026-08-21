@@ -86,6 +86,17 @@ if (TARGET_OVERRIDES && TARGET_OVERRIDES.length !== LOCS.length) {
   console.error(`TARGETS must have one entry per LOCS entry (${LOCS.length}).`);
   process.exit(1);
 }
+// Number("x") is NaN, and NaN survives the `target == null` test below — so a
+// typo would be written into the proposed entry, arm nothing, and print a
+// confident zero-request result that looks like a real answer.
+if (TARGET_OVERRIDES && TARGET_OVERRIDES.some((n) => !Number.isInteger(n) || n <= 0)) {
+  console.error(`TARGETS must be whole numbers of 1 or more (got ${process.env.TARGETS}).`);
+  process.exit(1);
+}
+if (REORDER_POINT !== null && (!Number.isInteger(REORDER_POINT) || REORDER_POINT < 0)) {
+  console.error(`REORDER_POINT must be a whole number of 0 or more, or empty for absent (got ${JSON.stringify(process.env.REORDER_POINT)}).`);
+  process.exit(1);
+}
 
 const pad = (s, n) => String(s).padEnd(n);
 const rpad = (s, n) => String(s).padStart(n);
