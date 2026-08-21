@@ -90,8 +90,15 @@
 <nav class="mc-nav" aria-label="Categories">
   <div class="page-width">
     <div class="mc-nav__scroll">
+      {%- comment -%}
+        The sort belongs here MOST of all: `collections.all` is the collection
+        whose title-ascending default causes the problem in the first place, and
+        this is the first row in the navigation, on every page of the shop.
+        Fixing the children and leaving the parent alphabetical was the bug one
+        link to the left.
+      {%- endcomment -%}
       <a class="mc-nav__link"
-         href="/collections/all"
+         href="/collections/all?sort_by=created-descending"
          {% if request.path == '/collections/all' %}aria-current="page"{% endif %}>Everything</a>
 
       {%- for row in rows -%}

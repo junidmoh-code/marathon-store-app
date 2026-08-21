@@ -235,49 +235,116 @@ describe("the category-page sibling strip", () => {
   });
 });
 
-// ── TAG URLS MUST LAND NEWEST-FIRST ─────────────────────────────────────────
-// /collections/all/{tag} inherits collections.all's sort, and that default is
-// `title-ascending` (measured on production 2026-08-21). These titles are
-// machine-generated with every brand term stripped out, so alphabetical is a
-// sort on noise — and tag URLs ARE the category navigation, so it was the
-// landing order of every category in the shop. Every generated tag link
-// therefore carries an explicit sort, and this holds it there: the param is one
-// `| append:` away from being dropped by a refactor, and nothing else would
-// notice.
-describe("generated tag URLs carry an explicit sort", () => {
-  const SORT = "?sort_by=created-descending";
+// ── EVERY /collections/all LINK MUST CARRY AN EXPLICIT SORT ─────────────────
+// `collections.all` defaults to `title-ascending`, and every category URL in
+// this storefront is `/collections/all` or `/collections/all/{tag}` — so
+// without an explicit sort, the whole category navigation lands sorted A-to-Z
+// on machine-generated titles with every brand term stripped out. A sort on
+// noise, on the primary browsing surface.
+//
+// THIS TEST IS WRITTEN AGAINST hrefs, NOT AGAINST assign SYNTAX. The first
+// version of it matched `assign` lines containing `prepend: '/collections/all/'`
+// — which in the nav are only the query-free `*_path` helpers, never the actual
+// link variables (those are built FROM the path with `| append:`). It therefore
+// asserted nothing at all about the file it mattered most for, and a simulated
+// regression that reverted every nav link to alphabetical left all tests green.
+// A test written to fit the code rather than the requirement is worse than no
+// test, because it reads like coverage.
+//
+// So: find every href, resolve variable hrefs back through the assign chain,
+// and judge the resolved string.
+import { describe, it, expect } from "vitest";
+
+function assignMap(src) {
+  const m = new Map();
+  for (const a of src.matchAll(/assign\s+(\w+)\s*=\s*([^\n%]*)/g)) {
+    // Later assigns to the same name win only if the earlier one is empty
+    // scaffolding (`assign url = ''`), which is how the nav initialises them.
+    const [, name, expr] = a;
+    const prev = m.get(name);
+    if (prev && !/^\s*''\s*$/.test(prev)) m.set(name, prev + " ;; " + expr);
+    else m.set(name, expr);
+  }
+  return m;
+}
+
+/** Resolve a Liquid expression to the text of everything it is built from. */
+function resolve(expr, map, seen = new Set()) {
+  let out = expr;
+  for (const ref of expr.matchAll(/\b([a-z_][a-z0-9_]*)\b/gi)) {
+    const name = ref[1];
+    if (seen.has(name) || !map.has(name)) continue;
+    seen.add(name);
+    out += " " + resolve(map.get(name), map, seen);
+  }
+  return out;
+}
+
+/**
+ * Every LINK the file is responsible for, resolved to the text it is built from.
+ *
+ * "Link" is not the same as "href". A section can build a URL and hand it to a
+ * snippet, where the actual href lives — marathon-home.liquid does exactly that
+ * with `render 'marathon-rail', rail_url: …`. A first version of this checked
+ * hrefs only, and a mutation that stripped the sort from the home rails' "See
+ * all" link passed clean, because the href is in the snippet and the bug is in
+ * the caller. So any render argument named `*_url` counts as a link too.
+ */
+function resolvedHrefs(src) {
+  const map = assignMap(src);
+  const out = [];
+  for (const h of src.matchAll(/href="([^"]*)"/g)) {
+    const raw = h[1];
+    const varMatch = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
+    out.push({
+      raw,
+      text: varMatch && map.has(varMatch[1]) ? resolve(map.get(varMatch[1]), map) : raw,
+    });
+  }
+  for (const a of src.matchAll(/(\w*_url):\s*([\w.]+)/g)) {
+    const [, argName, value] = a;
+    out.push({
+      raw: `${argName}: ${value}`,
+      text: map.has(value) ? resolve(map.get(value), map) : value,
+    });
+  }
+  return out;
+}
+
+describe("every /collections/all link carries an explicit sort", () => {
+  const SORT = "sort_by=created-descending";
   const files = {
-    "marathon-nav.liquid": readFileSync(NAV, "utf8"),
-    "marathon-grid.liquid": readFileSync(GRID, "utf8"),
-    "marathon-home.liquid": readFileSync(HOME, "utf8"),
+    "marathon-nav.liquid": NAV,
+    "marathon-grid.liquid": GRID,
+    "marathon-home.liquid": HOME,
   };
 
-  for (const [name, src] of Object.entries(files)) {
-    it(`${name} appends the sort to every /collections/all/ link it builds`, () => {
-      // Every assign that prepends the tag base is a link the shopper follows.
-      const builders = [...src.matchAll(/assign\s+(\w+)\s*=\s*([^\n]*prepend:\s*'\/collections\/all\/'[^\n]*)/g)];
-      expect(builders.length, `${name} builds no tag URLs — did the idiom change?`).toBeGreaterThan(0);
+  for (const [name, path] of Object.entries(files)) {
+    it(name, () => {
+      const hrefs = resolvedHrefs(readFileSync(path, "utf8"));
+      expect(hrefs.length, `${name}: no hrefs found — did the markup change?`).toBeGreaterThan(0);
 
-      for (const [, varName, expr] of builders) {
-        // Either this line appends the sort, or it is an explicitly-named *_path
-        // used only for the aria-current comparison (which must NOT carry it,
-        // because request.path has no query string).
-        const isPathOnly = /_path$/.test(varName);
-        if (isPathOnly) {
-          expect(expr, `${name}: ${varName} must stay query-free`).not.toContain("sort_by");
-        } else {
-          expect(expr, `${name}: ${varName} lost its sort`).toContain(SORT);
-        }
-      }
+      const allLinks = hrefs.filter((h) => h.text.includes("/collections/all"));
+      expect(
+        allLinks.length,
+        `${name}: no /collections/all links found — this test has stopped covering anything`
+      ).toBeGreaterThan(0);
+
+      const unsorted = allLinks.filter((h) => !h.text.includes(SORT)).map((h) => h.raw);
+      expect(unsorted, `${name}: these land in alphabetical order`).toEqual([]);
     });
   }
 
-  it("the *_path variables are actually used for aria-current, not for href", () => {
-    const src = files["marathon-nav.liquid"];
-    for (const m of src.matchAll(/assign\s+(\w+_path)\s*=/g)) {
-      const v = m[1];
-      expect(src, `${v} is built but never compared`).toContain(`request.path == ${v}`);
-      expect(src).not.toContain(`href="{{ ${v} }}"`);
+  it("the aria-current comparisons stay query-free", () => {
+    // request.path carries no query string, so a *_path used for the highlight
+    // must never pick up the sort — otherwise no row is ever highlighted.
+    const src = readFileSync(NAV, "utf8");
+    const map = assignMap(src);
+    for (const m of src.matchAll(/request\.path\s*==\s*(\w+)/g)) {
+      const name = m[1];
+      if (!map.has(name)) continue;
+      expect(map.get(name), `${name} is compared to request.path but carries a query`)
+        .not.toContain("sort_by");
     }
   });
 });
