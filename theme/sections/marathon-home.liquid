@@ -173,7 +173,15 @@
     If fewer rails rendered than New In was meant to follow — a very thin shop —
     it still has to appear, or the home page loses its only complete path.
   {%- endcomment -%}
-  {%- if new_in_done == false and new_in != blank -%}
+  {%- comment -%}
+    `products_count >= 1` is the guard, not `!= blank`. marathon-rail renders
+    nothing when it is handed nothing, so incrementing `rendered` here
+    unconditionally claimed a rail that does not exist — and the "Browse
+    everything" floor below, which only fires at `rendered == 0`, would then be
+    suppressed on the one page that needs it most: a shop with no live products
+    at all, showing the opening line and a blank page under it.
+  {%- endcomment -%}
+  {%- if new_in_done == false and new_in != blank and new_in.products_count >= 1 -%}
     {%- render 'marathon-rail',
         rail_title: 'New in',
         rail_url: new_in.url,
@@ -207,7 +215,7 @@
       "id": "rail_order",
       "label": "Rail order — Label~tag~collection handle, best-selling first",
       "info": "Label~tag~collection-handle rows, best-selling first. From POS sell-through, 56 days to 2026-08-21. `node scripts/shopify/sell-through.mjs` prints a paste-ready replacement in exactly this format.",
-      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Caps & Hats~Caps & Hats~caps-hats;T-Shirts~T-Shirts~t-shirts;Jeans & Denim~Jeans & Denim~pants;Bags~Bags~bags;Perfume~Perfume~fragrance;Sandals & Slides~Sandals & Slides~sandals-slides;Boots~Boots~boots;Accessories~Accessories~accessories;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
+      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Caps & Hats~Caps & Hats~caps-hats;T-Shirts~T-Shirts~t-shirts;Jeans & Denim~Jeans & Denim~pants;Bags~Bags~bags;Perfume~Perfume~fragrance;Sandals & Slides~Sandals & Slides~sandals-slides;Boots~Boots~boots;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
     },
     {
       "type": "range",

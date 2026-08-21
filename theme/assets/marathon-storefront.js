@@ -30,6 +30,16 @@
 (function () {
   "use strict";
 
+  // BOTH sections that use this file emit their own <script src> tag, and both
+  // declare presets — so the theme editor happily allows the photo grid on the
+  // home page, or either section twice on one template. Two <script> elements
+  // with the same src BOTH execute (the resource is cached; the element still
+  // runs), which would give two click listeners, two popstate listeners and two
+  // independent `openCard`: one tap would write history twice and one close
+  // would fire two history.back() calls, walking the shopper out of the shop.
+  if (window.__marathonStorefront) return;
+  window.__marathonStorefront = true;
+
   var OPEN_CLASS = "is-open";
   var listUrl = window.location.pathname + window.location.search;
   var listTitle = document.title;
@@ -89,6 +99,12 @@
     panel.hidden = false;
     card.classList.add(OPEN_CLASS);
     openCard = card;
+
+    // "Added to cart." from a previous visit to this card would otherwise still
+    // be sitting there, telling the shopper they have done something they have
+    // not done yet.
+    var status = $("[data-mc-status]", panel);
+    if (status) { status.textContent = ""; status.className = "mc-panel__status"; }
 
     var url = card.getAttribute("data-mc-url");
     if (url && !silent) setUrl(url, card.getAttribute("data-mc-title"), replacing);
@@ -196,6 +212,13 @@
     return picked ? picked.getAttribute("data-variant-id") : null;
   }
 
+  // Shopify prefixes every storefront path with the locale root on a
+  // multi-locale shop ("/en-za/"). One helper so the cart call and the section
+  // re-render can never disagree about it.
+  function shopRoot() {
+    return (window.Shopify && window.Shopify.routes && window.Shopify.routes.root) || "/";
+  }
+
   // ── add to cart ────────────────────────────────────────────────────────────
   function addToCart(btn) {
     var panel = btn.closest("[data-mc-panel]");
@@ -220,7 +243,7 @@
     btn.disabled = true;
     say("Adding…", false);
 
-    fetch(window.Shopify && window.Shopify.routes ? window.Shopify.routes.root + "cart/add.js" : "/cart/add.js", {
+    fetch(shopRoot() + "cart/add.js", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ items: [{ id: Number(id), quantity: 1 }] }),
@@ -251,7 +274,7 @@
   // Entirely best-effort: a stale bubble is a cosmetic problem, and the item is
   // in the cart either way.
   function refreshCartCount() {
-    fetch("/?sections=cart-icon-bubble")
+    fetch(shopRoot() + "?sections=cart-icon-bubble")
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var html = data && data["cart-icon-bubble"];

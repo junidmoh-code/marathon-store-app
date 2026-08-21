@@ -475,6 +475,14 @@ export const UNMAPPED_DESTINATION =
 // Jerseys and Polos have no row: both map to the "clothing" collection, and two
 // rails drawn from one collection would show the same photographs twice under
 // two headings. "Clothing" is the single row that covers them.
+//
+// "Accessories" has no row for the same reason, one level up. The only products
+// carrying the Accessories tag are the 34 bags (census 2026-08-21), so an
+// Accessories rail and a Bags rail would be the same 34 photographs under two
+// headings, and /collections/all/accessories and /collections/all/bags would be
+// the same page. Give it a row again if Accessories ever holds something that
+// is not a bag — watches, belts and eyewear all have CATEGORY_MAP rows already
+// and simply have no live products yet.
 export const HOME_RAILS = [
   { key: "sneakers",       tag: "Sneakers",              label: "Sneakers" },
   { key: "tracksuits",     tag: "Tracksuits & Sets",     label: "Tracksuits & Sets" },
@@ -490,7 +498,6 @@ export const HOME_RAILS = [
   { key: "jackets",        tag: "Jackets & Coats",       label: "Jackets & Coats" },
   { key: "hoodies-sweats", tag: "Hoodies & Sweatshirts", label: "Hoodies & Sweatshirts" },
   { key: "shorts",         tag: "Shorts & Vests",        label: "Shorts & Vests" },
-  { key: "accessories",    tag: "Accessories",           label: "Accessories" },
 ];
 
 export const HOME_RAIL_BY_KEY = Object.fromEntries(HOME_RAILS.map((r) => [r.key, r]));

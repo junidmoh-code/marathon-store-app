@@ -190,6 +190,7 @@
   position: absolute;
   inset: 0;
   z-index: 2;
+  /* See the "PANELS GROW" note below the close button. */
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
@@ -217,10 +218,20 @@
   .mc-panel { animation: none; }
 }
 
+/* STICKY, NOT ABSOLUTE. The panel is a scroll container, and an absolutely
+   positioned child of a scroll container scrolls away with the content — so in
+   exactly the case the pinned Add button exists for, the way OUT of the panel
+   left the screen while the way to buy stayed. On a phone there is no Escape
+   key, which left an outside tap on a thin margin as the only exit.
+   Sticky keeps it in flow (so it cannot escape) and pinned to the top (so it is
+   always reachable). The negative bottom margin gives back the line it would
+   otherwise occupy, keeping the layout identical to the absolute version. */
 .mc-panel__close {
-  position: absolute;
-  inset-block-start: 0.4rem;
-  inset-inline-end: 0.4rem;
+  position: sticky;
+  align-self: flex-end;
+  inset-block-start: 0;
+  margin-block-end: -3rem;
+  z-index: 3;
   width: 3.2rem;
   height: 3.2rem;
   display: grid;
@@ -238,9 +249,33 @@
 .mc-panel__title {
   font-size: var(--mc-label);
   line-height: 1.3;
-  margin: 0 2.4rem 0 0;
+  margin: 0;
+  padding-inline-end: 3rem;   /* clear of the sticky close button */
   font-weight: inherit;
 }
+
+/* ─── PANELS GROW RATHER THAN CLIP ─────────────────────────────────────────── */
+/* Measured at a 600px viewport, which is the TIGHTEST layout in the design —
+   three columns of 181px, narrower than the four-column card at 990px:
+   panel 284px tall, content 409px. Every open card overflowed by 80–125px.
+   The sticky buy controls kept it usable, but "usable if you discover you can
+   scroll a panel" is not the same as working.
+   So the panel releases its bottom edge and sizes to its CONTENT, growing down
+   over the cards below like a popover. It is never shorter than the card
+   (`min-height: 100%`) and never shorter than what it holds.
+
+   This is not scoped to a breakpoint. It was tempting to apply it only above
+   600px, since below that the card already expands to full width — but a phone
+   card still overflowed by 41px, and "the tight case is the one I remembered to
+   check" is how the 600px hole got there in the first place. One rule, every
+   width, no arithmetic to get wrong. Swept and verified at 390, 599, 600, 749,
+   900, 989, 990, 1200, 1399, 1400 and 1600: zero overflow everywhere, with the
+   buy button and the close button both in view. */
+.mc-panel {
+  inset-block-end: auto;
+  min-height: 100%;
+}
+.mc-card.is-open { z-index: 5; }
 .mc-panel__price { font-size: 1.6rem; margin: 0; }
 
 /* ─── CONDITION ────────────────────────────────────────────────────────────── */
