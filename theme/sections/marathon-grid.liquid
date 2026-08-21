@@ -1,0 +1,200 @@
+{%- comment -%}
+  ─── THE PHOTO GRID ─────────────────────────────────────────────────────────
+
+  The browsing surface. Everything in the current collection, listed, as
+  photographs. Replaces Dawn's `main-collection-product-grid` on the collection
+  template.
+
+  IT IS SERVER-RENDERED AND PAGINATED, which is what makes the quick view safe:
+  the address bar can carry a real product URL because there is a real product
+  page behind it, and a crawler walking this grid finds ordinary <a> links to
+  ordinary pages. Nothing here is a single-page app.
+
+  IT ALSO SERVES TAG-FILTERED URLS. Shopify applies /collections/all/{tag} to
+  `collection.products` before the template runs, so this same section renders
+  /collections/sneakers and /collections/all/tracksuits-sets identically without
+  knowing which it is. That is what lets the navigation address the whole
+  catalogue by tag (see snippets/marathon-nav.liquid for why it must).
+{%- endcomment -%}
+
+{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+
+{%- render 'marathon-nav' -%}
+
+{%- liquid
+  assign here = collection.current_tags.first
+  assign all_tags = collections.all.all_tags
+  assign footwear = 'Sneakers,Boots,Sandals & Slides,Soccer Boots' | split: ','
+  assign everything_else = 'Tracksuits & Sets,Caps & Hats,Jerseys,Polos,Jeans & Denim,Jackets & Coats,Hoodies & Sweatshirts,T-Shirts,Shorts & Vests,Bags,Perfume' | split: ','
+
+  # The sibling strip shows the categories a shopper would move to NEXT, which
+  # for a shoe is the other shoes. Anything else gets the general row.
+  assign siblings = everything_else
+  if footwear contains here
+    assign siblings = footwear
+  endif
+-%}
+
+<div class="page-width mc-page">
+  <header class="mc-head">
+    <h1 class="mc-head__title">
+      {%- if here != blank -%}
+        {{ collection.current_tags | join: ' · ' }}
+      {%- else -%}
+        {{ collection.title | default: 'Everything' }}
+      {%- endif -%}
+    </h1>
+    <p class="mc-head__count">
+      {{ collection.products_count }} {% if collection.products_count == 1 %}item{% else %}items{% endif %}
+    </p>
+  </header>
+
+  {%- comment -%}
+    ─── SORT ────────────────────────────────────────────────────────────────
+    LINKS, NOT A SELECT. A `<select>` needs JavaScript to submit on change, and
+    a submit button next to it is a second control for one decision. Three links
+    are server-rendered, work with JavaScript off, are crawlable, and are quiet
+    enough to sit under the heading without competing with the photographs.
+
+    THE OPTIONS ARE DELIBERATELY THREE. Shopify offers seven; four of them are
+    useless or misleading on this catalogue:
+      • title A-Z / Z-A — the names are machine-generated and carry no brand, so
+        alphabetical order is noise ("Sneaker Audysol…" tells a shopper nothing).
+      • best-selling — Shopify counts ONLINE sales, and this storefront is new
+        and barely visited. It would rank noise and look authoritative doing it.
+        (What actually sells is measured from the tills instead, and drives the
+        home page — see sections/marathon-home.liquid.)
+      • manual — no collection here has a hand-ordered sequence to respect.
+    Newest and the two price directions are the three a shopper can actually use.
+
+    `sort_by` works on tag-addressed URLs as well as collection URLs — verified
+    against production 2026-08-21 on /collections/all/tracksuits-sets, where
+    price-ascending and price-descending return different first products.
+    Deliberately NOT carrying `page`: changing the sort must return to page 1.
+  {%- endcomment -%}
+  {%- liquid
+    assign active_sort = collection.sort_by | default: collection.default_sort_by
+    assign sorts = 'created-descending|Newest,price-ascending|Price low to high,price-descending|Price high to low' | split: ','
+
+    # The page's own address, rebuilt from the collection rather than read from
+    # `request.path`. On a tag-filtered page `collection.url` is /collections/all
+    # and the tag is the segment after it, so the two together ARE the address —
+    # and they come from the objects this template already has rather than from
+    # a separate request drop that could disagree with them.
+    assign sort_base = collection.url
+    if here != blank
+      assign sort_base = here | handleize | prepend: '/' | prepend: collection.url
+    endif
+  -%}
+  {%- comment -%}
+    IF THE PAGE IS IN AN ORDER THIS CONTROL DOES NOT OFFER, IT SAYS SO.
+    A shopper arriving from a search engine on a bare /collections/all/{tag} gets
+    Shopify's title-ascending default, which is none of the three below. Showing
+    three links with none of them marked leaves the shopper unable to tell what
+    order they are looking at — so the actual order is rendered as a fourth,
+    current-marked entry instead. Honest about the state, and one tap from a
+    useful one.
+  {%- endcomment -%}
+  {%- liquid
+    assign offered = 'created-descending,price-ascending,price-descending' | split: ','
+    assign active_is_offered = false
+    if offered contains active_sort
+      assign active_is_offered = true
+    endif
+    assign other_labels = 'title-ascending|A to Z,title-descending|Z to A,best-selling|Best selling,manual|Featured,created-ascending|Oldest' | split: ','
+    assign active_label = ''
+    for row in other_labels
+      assign kv = row | split: '|'
+      if kv[0] == active_sort
+        assign active_label = kv[1]
+      endif
+    endfor
+  -%}
+  {%- if collection.products_count > 1 -%}
+    <div class="mc-sort">
+      <span class="mc-sort__label">Sort</span>
+      {%- unless active_is_offered -%}
+        {%- if active_label != blank -%}
+          <span class="mc-sort__link" aria-current="true">{{ active_label }}</span>
+        {%- endif -%}
+      {%- endunless -%}
+      {%- for s in sorts -%}
+        {%- assign bits = s | split: '|' -%}
+        <a class="mc-sort__link"
+           href="{{ sort_base }}?sort_by={{ bits[0] }}"
+           {% if active_sort == bits[0] %}aria-current="true"{% endif %}>{{ bits[1] }}</a>
+      {%- endfor -%}
+    </div>
+  {%- endif -%}
+
+  {%- comment -%}
+    THE SIBLING STRIP — "where else can I go", stated rather than hidden behind
+    a dropdown. Every entry is checked against `all_tags`, so it can never offer
+    a dead end.
+  {%- endcomment -%}
+  {%- if here != blank -%}
+    <div class="mc-siblings">
+      {%- for s in siblings -%}
+        {%- if all_tags contains s -%}
+          {%- comment -%} Newest-first, for the reason set out in
+            snippets/marathon-nav.liquid: a tag URL inherits collections.all's
+            title-ascending default, which sorts machine-generated names
+            alphabetically and is the one ordering worth nothing here. {%- endcomment -%}
+          {%- assign sib = s | handleize | prepend: '/collections/all/' | append: '?sort_by=created-descending' -%}
+          <a href="{{ sib }}"
+             {% if s == here %}aria-current="page"{% endif %}>{{ s }}</a>
+        {%- endif -%}
+      {%- endfor -%}
+    </div>
+  {%- endif -%}
+
+  {%- paginate collection.products by section.settings.per_page -%}
+    {%- if collection.products.size == 0 -%}
+      {%- comment -%}
+        Degrade rather than break. A category that has sold out says so in a
+        sentence and offers the way back, instead of rendering an empty grid.
+      {%- endcomment -%}
+      <p class="mc-empty">
+        Nothing in this section right now.
+        <a href="/collections/all?sort_by=created-descending">See everything</a>.
+      </p>
+    {%- else -%}
+      <div class="mc-grid">
+        {%- for product in collection.products -%}
+          {%- comment -%} The first row is eager. Five, not two: the grid is
+            five columns at >=1400px, and a lazy card in the opening row renders
+            as an empty frame until the scroll handler fires. Below that width
+            the extra eager images are still above or just below the fold.
+          {%- endcomment -%}
+          {%- assign lazy = 'lazy' -%}
+          {%- if forloop.index <= 5 -%}{%- assign lazy = 'eager' -%}{%- endif -%}
+          {%- render 'marathon-card', product: product, lazy: lazy -%}
+        {%- endfor -%}
+      </div>
+
+      {%- if paginate.pages > 1 -%}
+        {{ paginate | default_pagination }}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endpaginate -%}
+</div>
+
+<script src="{{ 'marathon-storefront.js' | asset_url }}" defer="defer"></script>
+
+{% schema %}
+{
+  "name": "Photo grid",
+  "settings": [
+    {
+      "type": "range",
+      "id": "per_page",
+      "min": 12,
+      "max": 48,
+      "step": 4,
+      "default": 24,
+      "label": "Products per page"
+    }
+  ],
+  "presets": [{ "name": "Photo grid" }]
+}
+{% endschema %}

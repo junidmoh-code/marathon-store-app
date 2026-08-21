@@ -1,0 +1,259 @@
+{%- comment -%}
+  ─── HOME ───────────────────────────────────────────────────────────────────
+
+  WHAT DECIDES WHAT LEADS. Not web traffic — the storefront is new and almost
+  nobody has been to it, so ranking on page views would rank noise. The evidence
+  used here is the shop's OWN POS sell-through: one sale is one /insights_log
+  entry with action "ready", deduped on (SA-date, order number) and with
+  /returns_log subtracted, exactly as functions/analyzeReorderNeeds counts it.
+
+  Measured over the 56 days to 2026-08-21 (scripts/shopify/sell-through.mjs,
+  read-only, re-runnable):
+
+      12,443 sale events · 14,324 units · 2,506 distinct products
+      100.0% of units carry a productId, so nothing is estimated
+
+      Sneakers          5,410   37.8%      Fragrance          441   3.1%
+      Tracksuits        1,818   12.7%      Sandals & Slides   398   2.8%
+      Soccer Boots      1,107    7.7%      Boots              278   1.9%
+      Clothing          1,037    7.2%      Accessories        273   1.9%
+      Caps & Hats         861    6.0%      Jackets            207   1.4%
+      T-Shirts            807    5.6%      Hoodies            180   1.3%
+      Pants               781    5.5%      Shorts              92   0.6%
+      Bags                597    4.2%
+
+  That order is the default of `rail_order` below, so it is visible and
+  editable in the theme editor rather than compiled in. Re-run the script and
+  paste the new line to refresh it; nothing breaks if nobody ever does.
+
+  WHY THE ORDER IS BAKED RATHER THAN FETCHED. A live ranking would mean a Cloud
+  Function call on every home page load, a cold start in front of the shopper,
+  and a home page that is blank when the endpoint is slow. Sell-through order
+  moves over months, not minutes. A static list that is correct today and
+  slightly stale in six weeks is strictly better than a dynamic one that can be
+  empty right now.
+
+  DEGRADING GRACEFULLY IS THE POINT OF THIS SECTION. The sell-through order and
+  the shop's stock do not agree — soccer boots are the third best-selling
+  category and there are exactly 2 live; tracksuits are second and 64 are live
+  but none are in the tracksuits COLLECTION. So a rail is rendered only if the
+  tag behind it actually has products, rails are addressed by tag rather than
+  by collection for the reason set out in snippets/marathon-nav.liquid, and a
+  rail with fewer than `min_products` items is skipped entirely rather than
+  rendered half-empty. A thin shop shows fewer rails; it never shows a broken
+  one.
+{%- endcomment -%}
+
+{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+
+{%- render 'marathon-nav' -%}
+
+<div class="page-width mc-page">
+  {%- if section.settings.lede != blank -%}
+    <p class="mc-lede">{{ section.settings.lede }}</p>
+  {%- endif -%}
+
+  {%- liquid
+    assign all_tags = collections.all.all_tags
+    assign order = section.settings.rail_order | split: ';'
+    assign per_rail = section.settings.per_rail
+    assign min_products = section.settings.min_products
+    assign rendered = 0
+  -%}
+
+  {%- liquid
+    assign new_in = collections['new-in']
+    assign new_in_done = false
+    assign after = section.settings.new_in_after
+
+    # Does New In clear the same bar every other rail has to clear? Asked ONCE,
+    # here, because the answer decides three separate things below: whether it
+    # may render early, whether the in-loop insert may claim it as done, and
+    # whether the end-of-page fallback still has work to do.
+    assign new_in_ok = false
+    if new_in != blank and new_in.products_count >= min_products
+      assign new_in_ok = true
+    endif
+  -%}
+
+  {%- comment -%}
+    `new_in_after: 0` means "put New In first", and it can only mean that if it
+    is rendered BEFORE the category loop — an insert that lives inside the loop
+    cannot run before the loop's first iteration.
+  {%- endcomment -%}
+  {%- if after == 0 and new_in_ok -%}
+    {%- render 'marathon-rail',
+        rail_title: 'New in',
+        rail_url: new_in.url,
+        rail_products: new_in.products,
+        rail_limit: per_rail,
+        rail_min: min_products,
+        rail_count: new_in.products_count -%}
+    {%- assign new_in_done = true -%}
+    {%- assign rendered = rendered | plus: 1 -%}
+  {%- endif -%}
+
+  {%- for row in order -%}
+    {%- liquid
+      # Label ~ tag (for the complete "see all" URL) ~ collection handle (what
+      # fills the rail). The tag and the collection handle are NOT the same
+      # string and cannot be derived from one another: the tag "Tracksuits &
+      # Sets" handleizes to "tracksuits-sets" but the collection is
+      # "tracksuits", "Perfume" lives in "fragrance", "Jeans & Denim" lives in
+      # "pants". The mapping is scripts/shopify/collectionMap.mjs CATEGORY_MAP,
+      # transcribed here because Liquid cannot read it.
+      assign parts = row | split: '~'
+      assign label = parts[0] | strip
+      assign tag = parts[1] | strip
+      assign handle = parts[2] | strip
+
+      assign show = false
+      if all_tags contains tag
+        assign show = true
+      endif
+      assign c = collections[handle]
+    -%}
+    {%- if show and c != blank -%}
+      {%- comment -%}
+        The rail is FILLED from the collection and LINKED to the tag. Those two
+        can disagree — today the tracksuits collection holds 0 while 64
+        tracksuits are live and tagged — and when they do, the snippet renders
+        nothing rather than a half-empty row, while the navigation still reaches
+        every one of them by tag. Show only what can be shown correctly, link to
+        what is complete, never fabricate a row.
+      {%- endcomment -%}
+      {%- comment -%}
+        Arguments to {% render %} may not carry filters — Shopify evaluates them
+        as plain values — so the URL is built with assign first. The same rule
+        cost a bug in marathon-card.liquid, where a filter written after a named
+        argument chained onto the tag's own output instead.
+      {%- endcomment -%}
+      {%- comment -%} Newest-first — see snippets/marathon-nav.liquid. {%- endcomment -%}
+      {%- assign rail_url = tag | handleize | prepend: '/collections/all/' | append: '?sort_by=created-descending' -%}
+      {%- if c.products.size >= min_products -%}
+        {%- render 'marathon-rail',
+            rail_title: label,
+            rail_url: rail_url,
+            rail_products: c.products,
+            rail_limit: per_rail,
+            rail_min: min_products -%}
+        {%- assign rendered = rendered | plus: 1 -%}
+      {%- endif -%}
+    {%- endif -%}
+
+    {%- comment -%}
+      NEW IN sits AFTER the best-selling section, not before it. The brief for
+      this page is to lead on what actually sells, and what sells is footwear —
+      37.8% of every unit the tills rang up in the 56 days to 2026-08-21. But
+      New In is also the only section that holds the WHOLE catalogue, including
+      the five products filed as "Clothing — Uncategorized", which is not a
+      phrase to show a shopper and so appears in no category row. So it goes
+      second: the evidence leads, and the complete path is still above the fold.
+    {%- endcomment -%}
+    {%- comment -%}
+      `new_in_ok` is the guard, not `new_in != blank`. marathon-rail renders
+      NOTHING when it is handed fewer products than its floor — so claiming
+      "done" here without checking the floor would silently swallow New In: the
+      rail would not appear, and the end-of-page fallback that exists precisely
+      for that case would think the job was finished.
+    {%- endcomment -%}
+    {%- if new_in_done == false and new_in_ok and rendered >= after -%}
+      {%- render 'marathon-rail',
+          rail_title: 'New in',
+          rail_url: new_in.url,
+          rail_products: new_in.products,
+          rail_limit: per_rail,
+          rail_min: min_products,
+          rail_count: new_in.products_count -%}
+      {%- assign new_in_done = true -%}
+      {%- assign rendered = rendered | plus: 1 -%}
+    {%- endif -%}
+  {%- endfor -%}
+
+  {%- comment -%}
+    If fewer rails rendered than New In was meant to follow — a very thin shop —
+    it still has to appear, or the home page loses its only complete path.
+  {%- endcomment -%}
+  {%- comment -%}
+    `products_count >= 1` is the guard, not `!= blank`. marathon-rail renders
+    nothing when it is handed nothing, so incrementing `rendered` here
+    unconditionally claimed a rail that does not exist — and the "Browse
+    everything" floor below, which only fires at `rendered == 0`, would then be
+    suppressed on the one page that needs it most: a shop with no live products
+    at all, showing the opening line and a blank page under it.
+  {%- endcomment -%}
+  {%- if new_in_done == false and new_in != blank and new_in.products_count >= 1 -%}
+    {%- render 'marathon-rail',
+        rail_title: 'New in',
+        rail_url: new_in.url,
+        rail_products: new_in.products,
+        rail_limit: per_rail,
+        rail_min: 1,
+        rail_count: new_in.products_count -%}
+    {%- assign rendered = rendered | plus: 1 -%}
+  {%- endif -%}
+
+  {%- comment -%}
+    THE FLOOR. If every category rail was skipped — a thin catalogue, or the
+    collections never repaired — the page still has to be a shop. "Everything"
+    is always there, because /collections/all is always complete.
+  {%- endcomment -%}
+  {%- if rendered == 0 -%}
+    <p class="mc-empty">
+      <a href="/collections/all?sort_by=created-descending">Browse everything &rarr;</a>
+    </p>
+  {%- endif -%}
+</div>
+
+<script src="{{ 'marathon-storefront.js' | asset_url }}" defer="defer"></script>
+
+{% schema %}
+{
+  "name": "Home rails",
+  "settings": [
+    {
+      "type": "textarea",
+      "id": "rail_order",
+      "label": "Rail order — Label~tag~collection handle, best-selling first",
+      "info": "Label~tag~collection-handle rows, best-selling first. From POS sell-through, 56 days to 2026-08-21. `node scripts/shopify/sell-through.mjs` prints a paste-ready replacement in exactly this format.",
+      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Caps & Hats~Caps & Hats~caps-hats;T-Shirts~T-Shirts~t-shirts;Jeans & Denim~Jeans & Denim~pants;Bags~Bags~bags;Perfume~Perfume~fragrance;Sandals & Slides~Sandals & Slides~sandals-slides;Boots~Boots~boots;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
+    },
+    {
+      "type": "range",
+      "id": "per_rail",
+      "min": 4,
+      "max": 12,
+      "step": 1,
+      "default": 5,
+      "label": "Photos per rail"
+    },
+    {
+      "type": "range",
+      "id": "min_products",
+      "min": 1,
+      "max": 12,
+      "step": 1,
+      "default": 4,
+      "label": "Hide a rail with fewer than this many products",
+      "info": "A rail shorter than this is skipped entirely rather than rendered half-empty."
+    },
+    {
+      "type": "range",
+      "id": "new_in_after",
+      "min": 0,
+      "max": 6,
+      "step": 1,
+      "default": 1,
+      "label": "Show New In after this many category rails",
+      "info": "0 puts it first. 1 leads on the best-selling category, which is what the POS data supports."
+    },
+    {
+      "type": "text",
+      "id": "lede",
+      "label": "Opening line",
+      "default": "Clearance, factory surplus and pre-loved stock. Checked by hand, graded, and listed only in the sizes we hold."
+    }
+  ],
+  "presets": [{ "name": "Home rails" }]
+}
+{% endschema %}

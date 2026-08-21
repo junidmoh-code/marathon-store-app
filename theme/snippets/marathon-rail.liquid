@@ -1,0 +1,42 @@
+{%- comment -%}
+  ─── ONE HOME RAIL ──────────────────────────────────────────────────────────
+  A heading, a "see all" link, and a row of photographs.
+
+  It renders NOTHING if `rail_products` is short. That is the whole graceful-
+  degradation rule in one place: a rail with two photographs in a five-column
+  row is a page that looks broken, and a shop with thin stock should show fewer
+  sections rather than emptier ones. The caller decides the threshold; this
+  snippet enforces it so no call site can forget.
+
+  ACCEPTS
+    rail_title     heading text
+    rail_url       where "See all" goes — the COMPLETE listing for this section,
+                   which is not always the same place the products came from
+    rail_products  the products to show
+    rail_limit     how many to show
+    rail_min       render nothing below this many
+    rail_count     optional; shown next to "See all" when known
+{%- endcomment -%}
+
+{%- liquid
+  assign n = rail_products.size
+  assign floor = rail_min | default: 4
+-%}
+{%- if n >= floor -%}
+  <section class="mc-rail">
+    <div class="mc-rail__head">
+      <h2 class="mc-rail__title">{{ rail_title }}</h2>
+      <a class="mc-rail__more" href="{{ rail_url }}">
+        See all{% if rail_count %} {{ rail_count }}{% endif %} &rarr;
+      </a>
+    </div>
+    <div class="mc-rail__track">
+      {%- for product in rail_products limit: rail_limit -%}
+        {%- assign lazy = 'lazy' -%}
+        {%- if forloop.index <= 2 -%}{%- assign lazy = 'eager' -%}{%- endif -%}
+        {%- render 'marathon-card', product: product, lazy: lazy,
+            sizes_attr: '(min-width: 990px) 19vw, (min-width: 600px) 27vw, 44vw' -%}
+      {%- endfor -%}
+    </div>
+  </section>
+{%- endif -%}
