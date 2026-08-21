@@ -277,7 +277,13 @@ function assignBranches(src) {
     if (!m.has(name)) m.set(name, []);
     m.get(name).push(e);
   };
-  for (const a of src.matchAll(/assign\s+(\w+)\s*=\s*([^\n%]*)/g)) add(a[1], a[2].trim());
+  // The trailing `-` of a whitespace-trimming `{%- assign x = y -%}` is Liquid
+  // punctuation, not part of the value. Keeping it left `coll_base` as
+  // `'/collections' -`, so substituting it produced `'/collections' -/all`,
+  // which does not contain "/collections/all" — a composite link slipped past.
+  for (const a of src.matchAll(/assign\s+(\w+)\s*=\s*([^\n%]*)/g)) {
+    add(a[1], a[2].trim().replace(/\s*-$/, "").trim());
+  }
 
   // {% capture %} BUILDS A VARIABLE TOO, and reading only `assign` meant a
   // capture was invisible: a link rebuilt as a capture kept whatever OTHER
@@ -344,6 +350,10 @@ function refsOf(expr, map) {
  */
 function normaliseShopifyGlobals(text) {
   return text
+    // `collection.url` (singular) is the CURRENT collection. On a tag page —
+    // which is every category page in this storefront — that object is
+    // /collections/all. Normalising to the worst case is the safe direction.
+    .replace(/(?<![\w.])collection\s*\.\s*url/g, "/collections/all")
     .replace(/collections\s*\.\s*all\s*\.\s*url/g, "/collections/all")
     .replace(/collections\s*\[\s*['"]all['"]\s*\]\s*\.?\s*url/g, "/collections/all")
     .replace(/collections\s*\[\s*['"]([\w-]+)['"]\s*\]/g, "/collections/$1")
@@ -384,7 +394,30 @@ class Unverifiable extends Error {}
  * A link, resolved — or an explicit refusal. Never a silent pass.
  */
 function linkFrom(raw, nameOrLiteral, map, isVariable) {
-  if (!isVariable) return { raw, branches: [nameOrLiteral], verifiable: true };
+  if (!isVariable) {
+    // A COMPOSITE href — literal text mixed with {{ variables }} — used to be
+    // returned as raw source and skip every gate: no resolution, no globals
+    // normalisation, no concreteness check. Rewriting the "Everything" row as
+    // href="/collections/{{ all_handle }}" therefore passed while rendering
+    // /collections/all unsorted, and the grid's own sort links
+    // ("{{ sort_base }}?sort_by={{ bits[0] }}") were never checked at all.
+    // Every {{ var }} inside the href is now resolved and substituted.
+    const text = String(nameOrLiteral);
+    const vars = [...text.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)];
+    if (!vars.length) return { raw, branches: [normaliseShopifyGlobals(text)], verifiable: true };
+    try {
+      let branches = [text];
+      for (const [token, varName] of vars) {
+        const inner = linkFrom(token, varName, map, true);
+        if (inner.verifiable === false) throw new Unverifiable(inner.why);
+        branches = branches.flatMap((b) => inner.branches.map((sub) => b.replace(token, sub)));
+      }
+      return { raw, branches: branches.map(normaliseShopifyGlobals), verifiable: true };
+    } catch (e) {
+      if (e instanceof Unverifiable) return { raw, branches: [], verifiable: false, why: e.message };
+      throw e;
+    }
+  }
   const name = nameOrLiteral;
   try {
     const dot = name.indexOf(".");
@@ -408,6 +441,7 @@ function linkFrom(raw, nameOrLiteral, map, isVariable) {
     if (vague !== undefined) {
       throw new Unverifiable(`"${name}" resolves to ${JSON.stringify(vague)}, which is not a path — cannot be judged`);
     }
+    branches = branches.map(normaliseShopifyGlobals);
     return { raw, branches, verifiable: true };
   } catch (e) {
     if (e instanceof Unverifiable) return { raw, branches: [], verifiable: false, why: e.message };
@@ -441,8 +475,31 @@ function fileLinks(rawSrc) {
   return out;
 }
 
+// ─── WHAT THIS TEST CANNOT SEE ───────────────────────────────────────────────
+// Said plainly, because claiming exhaustiveness is how this file went wrong five
+// times. It reads Liquid SOURCE with regexes; it does not render it. It has been
+// mutation-proven against fifteen concrete regression shapes, and it will not
+// catch:
+//
+//   • a URL assembled at RUNTIME from data it cannot see — a metafield, a
+//     setting, a value that only exists once Shopify renders the page;
+//   • control flow: it treats every assignment branch as possible and never
+//     works out which one actually runs;
+//   • a link built by markup this parser does not model (a `{% for %}` building
+//     handles, a `{% liquid %}` echo, a link emitted from JavaScript).
+//
+// It is a convention check, not a proof. The honest way to close the remaining
+// gap is to render the sections with liquidjs and assert on the OUTPUT hrefs —
+// that needs a devDependency, which is a decision for the owner rather than a
+// thing to slip into a test file.
+
 describe("every /collections/all link carries an explicit sort", () => {
-  const SORT = "sort_by=created-descending";
+  // ANY explicit sort, not one specific value. The property being protected is
+  // "never inherit collections.all's title-ascending default" — the navigation
+  // states created-descending, and the sort control's own links state whichever
+  // the shopper picked. Both are explicit; requiring one literal value would
+  // have failed the sort control the moment it was actually checked.
+  const SORT = "sort_by=";
   const files = { "marathon-nav.liquid": NAV, "marathon-grid.liquid": GRID, "marathon-home.liquid": HOME };
 
   for (const [name, path] of Object.entries(files)) {
@@ -456,14 +513,22 @@ describe("every /collections/all link carries an explicit sort", () => {
       for (const link of links) {
         if (link.verifiable === false) { problems.push(`UNVERIFIABLE ${link.raw} — ${link.why}`); continue; }
         for (const branch of link.branches) {
-          if (branch.includes("/collections/all") && !branch.includes(SORT)) {
+          // JUDGE ON QUOTE-STRIPPED TEXT. A resolved branch keeps the quotes of
+          // the literal it came from, so `{{ coll_base }}/all` with
+          // `coll_base = '/collections'` substituted to `'/collections'/all` —
+          // which does not contain "/collections/all", because a quote sits in
+          // the middle of it. Stripping quotes can only JOIN text that Liquid
+          // would also join, so it cannot invent a match that the rendered page
+          // would not have.
+          const text = branch.replace(/['"]/g, "");
+          if (text.includes("/collections/all") && !text.includes(SORT)) {
             problems.push(`ALPHABETICAL ${link.raw} -> ${branch.trim()}`);
           }
         }
       }
       expect(problems, `${name}: link problems`).toEqual([]);
 
-      const covered = links.filter((l) => l.branches.some((b) => b.includes("/collections/all")));
+      const covered = links.filter((l) => l.branches.some((b) => b.replace(/['"]/g, "").includes("/collections/all")));
       expect(
         covered.length,
         `${name}: no /collections/all links found — this test has stopped covering anything`
