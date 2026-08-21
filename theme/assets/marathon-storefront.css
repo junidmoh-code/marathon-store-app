@@ -218,14 +218,20 @@
   .mc-panel { animation: none; }
 }
 
-/* STICKY, NOT ABSOLUTE. The panel is a scroll container, and an absolutely
-   positioned child of a scroll container scrolls away with the content — so in
-   exactly the case the pinned Add button exists for, the way OUT of the panel
-   left the screen while the way to buy stayed. On a phone there is no Escape
-   key, which left an outside tap on a thin margin as the only exit.
-   Sticky keeps it in flow (so it cannot escape) and pinned to the top (so it is
-   always reachable). The negative bottom margin gives back the line it would
-   otherwise occupy, keeping the layout identical to the absolute version. */
+/* STICKY, NOT ABSOLUTE. An absolutely positioned child of a scroll container
+   scrolls away with the content, so when the panel could still overflow, the
+   way OUT of it left the screen while the way to buy stayed — and on a phone
+   there is no Escape key.
+
+   NOTE, so nobody deletes the wrong thing: what actually guarantees both
+   buttons are reachable now is `min-height: 100%` with an auto height on the
+   panel, which means it never overflows and therefore never scrolls. These two
+   sticky rules consequently never engage. They are kept as belt-and-braces for
+   any future change that caps the panel's height — but they are the braces, not
+   the belt. Remove the min-height and the original bug comes straight back.
+
+   The negative bottom margin gives back most of the line this would otherwise
+   occupy; it costs about 11px of flow where `absolute` cost none. */
 .mc-panel__close {
   position: sticky;
   align-self: flex-end;
@@ -275,7 +281,15 @@
   inset-block-end: auto;
   min-height: 100%;
 }
-.mc-card.is-open { z-index: 5; }
+/* 1, not 5. All this has to beat is its own siblings — every other .mc-card is
+   `z-index: auto`, and the only requirement is that an earlier open card paints
+   over the ones after it. Dawn 15.4.1 runs its chrome at 3 and 4
+   (`.section-header` 3, `.shopify-section-group-header-group` 4, `.menu-drawer`
+   3, `.predictive-search` 3), so 5 would have put a panel — now up to 730px
+   tall — over the logo, search and cart. That is invisible on this shop today
+   only because the sticky-header setting happens to be OFF, which is a theme
+   setting, not a guarantee. */
+.mc-card.is-open { z-index: 1; }
 .mc-panel__price { font-size: 1.6rem; margin: 0; }
 
 /* ─── CONDITION ────────────────────────────────────────────────────────────── */
@@ -544,10 +558,14 @@
 .mc-rail__track > .mc-card { scroll-snap-align: start; }
 @media screen and (min-width: 600px) { .mc-rail__track { grid-auto-columns: minmax(26vw, 1fr); } }
 @media screen and (min-width: 750px) { .mc-rail__track { margin-inline: -3.2rem; padding-inline: 3.2rem; } }
+/* A rail is as dense as the grid it sits above, and no denser. At exactly
+   990px the grid drops to four columns; a five-column rail there gave 172px
+   cards against the grid's 220px, so the same photograph was visibly smaller on
+   the home page than on the category page one tap away. */
 @media screen and (min-width: 990px) {
   .mc-rail__track {
     grid-auto-columns: minmax(0, 1fr);
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     /* Desktop rails are a full five-up row, so nothing scrolls and nothing may
        clip — an open quick-view panel has to be able to overflow the track. */
     overflow: visible;
@@ -559,6 +577,9 @@
 /* On desktop a rail is a five-up row, so an open panel must not be clipped by
    the scroller. Only the scrolling (phone/tablet) rails need overflow. */
 @media screen and (min-width: 990px) { .mc-rail__track { grid-auto-flow: row; } }
+@media screen and (min-width: 1400px) {
+  .mc-rail__track { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
 
 .mc-lede {
   max-width: 46rem;

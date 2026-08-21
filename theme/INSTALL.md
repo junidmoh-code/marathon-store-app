@@ -164,6 +164,14 @@ where dreams collide" — is Shopify's default demo content and goes with it.
 Open the preview URL **on a phone as well as a laptop**. Most of this traffic is
 mobile.
 
+> **Please do one check on a real iPhone.** Everything below was verified in
+> Chrome, across eleven viewport widths from 360px to 1600px. The one thing I
+> could not test is Safari on iOS, and that is where most of this traffic
+> actually is. What to look at: open a photograph on a product with a long size
+> run (`/products/sneaker-navy-white` has ten sizes) and confirm the panel grows
+> to fit — the price, the condition line, every size and the Add to cart button
+> all present, nothing cut off at the bottom.
+
 **The grid**
 - Tap a photograph. Price, condition and sizes appear over it, and **the address
   bar becomes that product's own URL**.
