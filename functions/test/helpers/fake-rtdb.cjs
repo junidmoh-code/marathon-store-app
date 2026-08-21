@@ -138,8 +138,31 @@ function makeFakeDb(initial = {}, hooks = {}) {
           child.key = key;
           return child;
         },
-        // Query surface — only what readMapPaged uses.
+        // Query surface — only what the readers in this repo use.
         orderByKey() { return self; },
+        // orderByChild(field).limitToLast(n): the audit-trail read. Sorts on the
+        // field, keeps the LAST n, and hands them back in ascending order the
+        // way RTDB does — the caller is responsible for reversing, and a fake
+        // that pre-reversed would hide a caller that forgot to.
+        orderByChild(field) {
+          return {
+            limitToLast(n) {
+              return { async once() {
+                if (hooks.beforeRead) await hooks.beforeRead(path, state);
+                const v = readAt(state.root, path);
+                if (!v || typeof v !== "object") return makeSnapshot(parts(path).pop() || null, null);
+                const sorted = Object.entries(v).sort((a, b) => {
+                  const av = a[1]?.[field], bv = b[1]?.[field];
+                  if (av === bv) return a[0] < b[0] ? -1 : 1;
+                  if (av === undefined || av === null) return -1;
+                  if (bv === undefined || bv === null) return 1;
+                  return av < bv ? -1 : 1;
+                });
+                return makeSnapshot(parts(path).pop() || null, Object.fromEntries(sorted.slice(-n)));
+              } };
+            },
+          };
+        },
         limitToFirst(n) { return { ...self, async once() {
           // The read hook fires on QUERIES too. A drift test has to be able to
           // move the world during the paged catalogue read, because that is the

@@ -39,7 +39,10 @@
 
 const {
   validateCategoryPolicy, diffCategoryPolicy, modelCategoryPolicy, defaultMinQty,
+  carriageForCategory,
 } = require("./category-policy.cjs");
+
+const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
 const HISTORY_PATH = "engine_policy_history";
 const POLICY_PATH = "config/refillEngine/categoryPolicy";
@@ -182,6 +185,75 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   };
 }
 
+// ── THE CENSUS ───────────────────────────────────────────────────────────────
+// What the card's LIST needs, answered server-side in one call: per category,
+// the product count, units on hand, which locations carry it, whether it is
+// armed, and how many products are overridden by their own explicit rows.
+//
+// It is here rather than in the browser for one reason: every one of those
+// numbers is derived from /products and /stock, and a client that read those
+// would be downloading the catalogue and the whole stock tree onto a phone on a
+// shop network, on every visit, at the owner's expense. The server pages them
+// and returns a few kilobytes of answers.
+//
+// The override count is the expensive part and it is worth the cost: a map edit
+// that appears to do nothing is the most confusing thing this system does, and
+// the reason is always an explicit row outranking the map.
+async function buildCensus(db, { config, taxonomy, knownLocations }) {
+  const policy = isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {};
+  const cats = isPlainObject(taxonomy?.cats) ? taxonomy.cats : {};
+  const keys = [...new Set([...Object.keys(policy), ...Object.keys(cats)])].sort();
+
+  const products = await readMapPaged(db, "products");
+  const stock = {}, targets = {}, openIndex = {};
+  for (const loc of knownLocations) stock[loc] = await readMapPaged(db, `stock/${loc}`);
+  const destinations = Object.keys(config.mode || {});
+  for (const loc of destinations) {
+    targets[loc] = await readMapPaged(db, `stock_targets/${loc}`);
+    openIndex[loc] = await readMapPaged(db, `refill_engine/open/${loc}`);
+  }
+
+  const categories = [];
+  for (const key of keys) {
+    const entry = isPlainObject(policy[key]) ? policy[key] : null;
+    const armed = entry ? Object.keys(entry).filter((k) => k !== "perSize" && isPlainObject(entry[k])) : [];
+    const { pids, byLocation } = carriageForCategory({ products, stock, categoryKey: key, locations: knownLocations });
+    // resolveTarget is only run where the map is armed. An unarmed category
+    // resolves nothing through it by definition, and walking every product at
+    // every location for forty categories would be a minute of nothing.
+    const m = armed.length
+      ? modelCategoryPolicy({ config, products, stock, targets, openIndex, categoryKey: key,
+          locations: knownLocations, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent })
+      : null;
+    categories.push({
+      key,
+      label: cats[key]?.label || key,
+      inTaxonomy: !!cats[key],
+      active: cats[key]?.active !== false,
+      sizeMode: entry?.perSize === true ? "list" : (cats[key]?.sizeMode || "one"),
+      perSize: entry?.perSize === true,
+      entry,
+      armed,
+      products: pids.length,
+      units: Object.values(byLocation).reduce((n, v) => n + v.units, 0),
+      carriage: byLocation,
+      overriddenProducts: m ? m.overriddenProducts : 0,
+      overriddenCells: m ? m.legs.reduce((n, l) => n + l.overrides, 0) : 0,
+    });
+  }
+  return { categories, destinations };
+}
+
+// The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
+// console rule this feature ships with; without it RTDB downloads the node and
+// sorts on the client, which is the thing being avoided.
+async function readHistory(db, limit = 25) {
+  const snap = await db.ref(HISTORY_PATH).orderByChild("at").limitToLast(limit).once("value");
+  const out = [];
+  snap.forEach((c) => { out.push({ id: c.key, ...(c.val() || {}) }); });
+  return out.sort((a, b) => (b.at || 0) - (a.at || 0));
+}
+
 // ── THE ENTRY POINT ──────────────────────────────────────────────────────────
 async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, data, nowMs }) {
   assertSuperAdmin(callerEmail, adminEmail);
@@ -196,6 +268,22 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   const cfg = config && typeof config === "object" ? config : {};
   const knownCategoryKeys = Object.keys(taxonomy?.cats || {});
   const knownLocations = Object.keys(locationsNode || {});
+
+  // Read-only. Reached only after the owner check above, so a refused caller
+  // does not get a catalogue-wide census either.
+  if (d.action === "census") {
+    const census = await buildCensus(db, { config: cfg, taxonomy, knownLocations });
+    return {
+      ok: true,
+      action: "census",
+      ...census,
+      locations: knownLocations,
+      cap: cfg.maxIntentsPerRun ?? null,
+      maxUnitsPerIntent: cfg.maxUnitsPerIntent ?? null,
+      history: await readHistory(db),
+      serverNowMs: nowMs,
+    };
+  }
 
   const policyAfter = normalizePolicy(d.policy === undefined ? null : d.policy);
   const err = validateCategoryPolicy(categoryKey, policyAfter, { knownLocations, knownCategoryKeys });
@@ -274,10 +362,13 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       { historyId: historyRef.key, written: written ?? null });
   }
 
-  return { ok: true, categoryKey, before, after: policyAfter, changes, preview, historyId: historyRef.key };
+  return {
+    ok: true, categoryKey, before, after: policyAfter, changes, preview,
+    historyId: historyRef.key, history: await readHistory(db),
+  };
 }
 
 module.exports = {
-  applyCategoryPolicy, assertSuperAdmin, normalizePolicy, canonical, sameValue,
+  applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, normalizePolicy, canonical, sameValue,
   HISTORY_PATH, POLICY_PATH, httpsError, readMapPaged,
 };

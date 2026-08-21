@@ -29,6 +29,8 @@ import { resolveCustomerKey, resolveOrderCustomer } from "./utils/orderCustomer"
 import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
+import EnginePolicyCard from "./components/stock/EnginePolicyCard";
+import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { useSpecials } from "./components/TvSpecialsRail";
 import { TV_ORDER_KEY_START, TV_ORDER_KEY_END } from "./utils/tvOrdersRange";
@@ -314,7 +316,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2707,6 +2709,9 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
+  // Engine Policy's tile gate reads the FIREBASE AUTH email and nothing else —
+  // not permRecord, not hasPermission, not stockRole. See src/config/enginePolicy.js.
+  const enginePolicyViewer = { email: homeUser?.email };
   // Who-am-I, home only (owner directive 2026-08-08): the global "Signed in:"
   // pill is gone, so the bare name in the hero of BOTH home branches is the one
   // identity signal in the app. Hoisted above the isDesktop split — it used to
@@ -2817,6 +2822,17 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
       isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
+      // ── ENGINE POLICY — GATE 1 OF 3 ──────────────────────────────────────
+      // The tile does not render for anyone else. It calls the SAME function
+      // the route gate calls (src/config/enginePolicy.js) so the two can never
+      // disagree about who is allowed — but it is a real, independent check:
+      // deleting it leaves the route gate working, and deleting the route gate
+      // leaves this one working. Both are mutation-proven.
+      //
+      // `enginePolicyViewer` is built from the Firebase Auth email, NOT from a
+      // permissions array: Junid's /users record has no permissions array at
+      // all, so a permission-based gate would lock out the only intended user.
+      enginePolicyVisibleForViewer(enginePolicyViewer) && { key:"engine_policy", icon:RoleIcons.insights, name:"Engine Policy", desc:"What each shop keeps, and when to reorder", onClick:()=>onSelect(ROLES.ENGINE_POLICY) },
     ].filter(Boolean) },
   ];
   const anyCards = groups.some(g => g.cards.length > 0);
@@ -17604,6 +17620,28 @@ function AppInner() {
   else if (role === ROLES.SHOPIFY_PUBLISH) view = shopifyRouteOpen
     ? <ShopifyPublishView products={products} onExit={() => setRole(null)} />
     : null;
+  // ── ENGINE POLICY — GATE 2 OF 3: THE ROUTE ────────────────────────────────
+  // Evaluated INDEPENDENTLY of the tile. A persisted role in localStorage, a
+  // pasted hash, or hand-edited component state all arrive here, and none of
+  // them reach the screen: the check is on the live Firebase Auth email, which
+  // no stored value can forge.
+  //
+  // A refused viewer gets AdminSignInScreen, not a refusal — the same treatment
+  // #admin/users has had since PR #302, and the useful response, because the
+  // ordinary way to land here unauthorized is a deep link opened before signing
+  // in with the owner's Google account. Deliberately NOT `null`: null would let
+  // the role-reset effect bounce them home with no explanation of what to do.
+  //
+  // ROLES.ENGINE_POLICY is also deliberately absent from that reset effect, so
+  // the sign-in screen stays up long enough to be used instead of being reset
+  // out from under the viewer on the next render.
+  //
+  // Gate 3 (the server) and gate 2b (the component's own check, which holds no
+  // hooks so a refused viewer opens nothing) are both real and independent.
+  // Deleting any one of the three must fail tests.
+  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email })
+    ? <EnginePolicyCard viewer={{ email: authUser?.email }} onExit={() => setRole(null)} />
+    : <AdminSignInScreen onCancel={() => setRole(null)} />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);

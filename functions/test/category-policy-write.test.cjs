@@ -303,3 +303,63 @@ test("canonical equality ignores key order — a drift check that cries wolf get
   assert.equal(sameValue(0, null), false);
   assert.equal(sameValue({ reorderPoint: 0 }, {}), false, "absent and 0 are different policies");
 });
+
+// ── THE CENSUS ───────────────────────────────────────────────────────────────
+// It exists so the card's list costs a few kilobytes instead of the catalogue
+// plus the whole stock tree, downloaded onto a phone on a shop network every
+// time the screen opens.
+test("the census answers the list without the browser reading /products or /stock", async () => {
+  const db = makeFakeDb(world());
+  const res = await call(db, { action: "census" });
+  assert.equal(res.action, "census");
+  // Every taxonomy key AND every live map key, armed or not — an unarmed
+  // category has to be visible or there is nothing to press "Set policy" on.
+  const keys = res.categories.map((c) => c.key).sort();
+  assert.deepEqual(keys, ["caps-beanies", "t-shirts", "visors"]);
+  const cb = res.categories.find((c) => c.key === "caps-beanies");
+  assert.equal(cb.products, 2);
+  assert.equal(cb.units, 44);                       // 40 central + 3 hub2 + 1 PE
+  assert.deepEqual(cb.armed.sort(), ["hub2", "marathon-pe"]);
+  assert.equal(cb.carriage.trophy.carries, false);  // trophy holds no cap cell
+  assert.equal(cb.carriage.hub2.carries, true);
+  const ts = res.categories.find((c) => c.key === "t-shirts");
+  assert.equal(ts.products, 0);
+  assert.deepEqual(ts.armed, []);
+  assert.equal(ts.entry, null);
+  assert.equal(res.cap, 75);
+  assert.deepEqual(res.destinations.sort(), ["hub2", "marathon-pe"]);
+  // Read-only: a census must not be a way to write anything.
+  assert.deepEqual(history(db), []);
+  assert.equal(policyAt(db).hub2.reorderPoint, 0);
+});
+
+test("the census is behind the owner check too", async () => {
+  const db = makeFakeDb(world());
+  await rejects(() => applyCategoryPolicy({
+    db, callerEmail: "ahmed@marathon.internal", adminEmail: OWNER, data: { action: "census" }, nowMs: NOW,
+  }), "permission-denied");
+});
+
+test("an explicit row outranks the map, and the census counts it", async () => {
+  // The thing that makes a map edit look like it did nothing.
+  const w = world();
+  w.stock_targets = { "marathon-pe": { c1: { _: { target: 9, minQty: 4 } } } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { action: "census" });
+  const cb = res.categories.find((c) => c.key === "caps-beanies");
+  assert.equal(cb.overriddenProducts, 1);
+  assert.equal(cb.overriddenCells, 1);
+});
+
+test("history comes back newest first, and an aborted save is in it", async () => {
+  const db = makeFakeDb(world());
+  await call(db, { categoryKey: "caps-beanies",
+    policy: { hub2: { target: 10, minQty: 5, reorderPoint: 2 }, "marathon-pe": { target: 5, minQty: 3, reorderPoint: 0 } } });
+  const res = await applyCategoryPolicy({
+    db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u", nowMs: NOW + 60000,
+    data: { categoryKey: "caps-beanies", action: "census" },
+  });
+  assert.equal(res.history.length, 1);
+  assert.equal(res.history[0].status, "applied");
+  assert.equal(res.history[0].by, OWNER);
+});
