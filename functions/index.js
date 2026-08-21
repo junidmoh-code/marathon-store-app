@@ -1,4 +1,5 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
+const { applyCategoryPolicy } = require("./lib/category-policy-write.cjs");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onValueWritten } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
@@ -3437,3 +3438,47 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // being redeployed; it does NOT remove the running instance, which still holds
 // the GEMINI_API_KEY secret binding and is still callable by any admin:
 //   firebase functions:delete cleanProductPhoto --region europe-west1
+
+// ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
+// The ONLY supported way to change /config/refillEngine/categoryPolicy: the
+// owner-armed map that says what each category keeps at each location, and when
+// the engine asks for more. Reached from the Engine Policy card.
+//
+// Everything it does — the owner check, validation, the drift check, the
+// rollback snapshot, the audit entry, the post-verify and the dry-run preview —
+// lives in lib/category-policy-write.cjs, injected with `db` and the caller's
+// email so every branch is unit-testable without firebase-admin. This is the
+// wrapper and nothing else.
+//
+// GATE 3 OF 3, and read the module header for the honest limits of it: the root
+// RTDB rules on this database are still `auth !== null` for read AND write, so
+// any signed-in staff account can write the policy node directly through the
+// SDK today and never reach this function. It becomes a real boundary when the
+// console rule printed by scripts/print-engine-policy-rule.mjs is pasted.
+//
+// DEPLOY BY NAME. functions/ is shared with marathon-pos-app:
+//   firebase deploy --only functions:setCategoryPolicy
+exports.setCategoryPolicy = onCall(
+  { region: "europe-west1", timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    // assertAdmin ALSO runs here, above the module, so the gate survives a
+    // refactor of either side. The module's own check is the one the mutation
+    // proof breaks; this one is belt to its braces.
+    assertAdmin(request);
+    try {
+      return await applyCategoryPolicy({
+        db: admin.database(),
+        callerEmail: request.auth?.token?.email,
+        callerUid: request.auth?.uid || null,
+        adminEmail: ADMIN_EMAIL,
+        data: request.data,
+        // Server clock. serverNowMs() is the CLIENT's corrected clock and does
+        // not exist here; inside a Cloud Function Date.now() IS server time.
+        nowMs: Date.now(),
+      });
+    } catch (e) {
+      if (e && e.httpsCode) throw new HttpsError(e.httpsCode, e.message, e.details);
+      throw e;
+    }
+  }
+);

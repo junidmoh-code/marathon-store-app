@@ -26,17 +26,32 @@
 // introduce-existing letter rows, and every one of them outranks the map.
 // Counting those overrides is a first-class output here for that reason.
 //
-// ── THE MODEL IS AN UPPER BOUND, AND SAYS SO ─────────────────────────────────
-// It walks the deficit loop's arithmetic faithfully (deficit = target − on hand
-// − inbound; the reorderPoint gate on physical on-hand only; avail() clamping a
-// negative counted cell to 0) but it does NOT run the scan's suppression
-// passes: confirmed-out, reject streaks, retry cooldown, in-flight detection,
-// or the round-robin throttle. Every one of those can only REMOVE a request.
-// So `wouldRequest` is the ceiling, never the floor — which is the safe
-// direction for a number whose job is to warn the owner before they arm
-// something. Callers must present it as a ceiling. The census script runs the
-// REAL computeRefillPlan alongside this and prints both, so the size of the gap
-// between them is measured rather than assumed.
+// ── THE MODEL IS AN UPPER BOUND, AND IT IS A TIGHT ONE ───────────────────────
+// It walks the deficit loop's arithmetic faithfully — deficit = target − on
+// hand − inbound, the reorderPoint gate on physical on-hand only, avail()
+// clamping a negative counted cell to 0 — and then the three gates that decide
+// most of the outcome in practice:
+//
+//   • already in flight       (engine: `if (inb > 0) continue`)
+//   • nothing anywhere        (engine: `networkQty − have <= 0` → reorder list)
+//   • THE SOURCE IS EMPTY     (engine's actionable-only rule, owner v9: a
+//                              request exists only if the source can physically
+//                              fill it right now; qty is capped to what the
+//                              source has, and units are reserved within the
+//                              scan so two stores are never sent one unit)
+//
+// That third gate is not a detail. Measured against the live snapshot on
+// 2026-08-21, caps-beanies has 293 cells below target at its two armed
+// locations and the real engine creates ZERO requests for them, because their
+// upstream is empty too. A model without the source gate reports 293 and would
+// have panicked the owner out of a change that actually costs 19 requests.
+//
+// What it still does NOT model — every one of which can only REMOVE a request,
+// so the number stays a ceiling: confirmed-out, reject streaks, retry cooldown,
+// the recount park, and the global round-robin throttle. Callers must present
+// `wouldRequest` as "at most". The census script runs the REAL computeRefillPlan
+// alongside this and prints both, so the residual gap is measured rather than
+// assumed.
 
 const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
 
@@ -212,12 +227,32 @@ function modelCategoryPolicy({
   const perSize = isPlainObject(cat) && cat.perSize === true;
   const ctx = { targets, config, products, stock };
   const capUnits = typeof maxUnitsPerIntent === "number" && maxUnitsPerIntent > 0 ? maxUnitsPerIntent : Infinity;
+  const routes = config?.routes && typeof config.routes === "object" ? config.routes : {};
+  const qtyAt = (loc, pid, sizeKey) =>
+    Math.max(typeof stock?.[loc]?.[pid]?.[sizeKey]?.qty === "number" ? stock[loc][pid][sizeKey].qty : 0, 0);
+  // Units of one cell across the WHOLE network — the engine's networkQty. A
+  // deficit with nothing anywhere upstream is a supplier reorder, never a
+  // request.
+  const networkQty = (pid, sizeKey) => {
+    let n = 0;
+    for (const loc of Object.keys(stock || {})) n += qtyAt(loc, pid, sizeKey);
+    return n;
+  };
+  // Units of a source cell already promised to a request earlier in this same
+  // model pass. The engine reserves within one scan for exactly this reason:
+  // two destinations must never both be sent the one physical unit. Locations
+  // are walked in the map's own key order, which is not guaranteed to be the
+  // scan's destination order — so which of two competing legs wins a scarce
+  // unit may differ, while the TOTAL is unaffected.
+  const reserved = new Map();
 
   const legs = [];
   const overriddenPids = new Set();
   for (const loc of armedLocs) {
     let cells = 0, wouldRequest = 0, unitsWanted = 0, silent = 0, atTarget = 0, onHand = 0, overrides = 0;
+    let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0;
     const overrideRows = [];
+    const src = routes[loc] || null;
     for (const pid of pids) {
       // The sizes the deficit loop would walk for this cell — sizesFor()'s
       // category branch, exactly: one-size mode walks "_" alone, per-size mode
@@ -237,7 +272,7 @@ function modelCategoryPolicy({
               minQty: t.minQty ?? null, reorderPoint: t.reorderPoint ?? null });
           }
         }
-        const have = Math.max(typeof stock?.[loc]?.[pid]?.[sizeKey]?.qty === "number" ? stock[loc][pid][sizeKey].qty : 0, 0);
+        const have = qtyAt(loc, pid, sizeKey);
         onHand += have;
         const inbound = Number(openIndex?.[loc]?.[pid]?.[sizeKey]?.qty) || (openIndex?.[loc]?.[pid]?.[sizeKey] ? 1 : 0);
         const deficit = t.target - have - inbound;
@@ -245,8 +280,19 @@ function modelCategoryPolicy({
         // The gate reads PHYSICAL on-hand only — inbound is already inside
         // `deficit` above, so a cell with stock on the way never reaches here.
         if (t.reorderPoint != null && have > t.reorderPoint) { silent += 1; continue; }
+        // Already on its way — the engine skips the cell outright rather than
+        // topping up a partial delivery.
+        if (inbound > 0) { inFlight += 1; continue; }
+        // Nothing anywhere else in the network → reorder list, not a request.
+        if (networkQty(pid, sizeKey) - have <= 0) { parkedNothingAnywhere += 1; continue; }
+        // ACTIONABLE-ONLY: a request exists only if the source can fill it now.
+        const srcKey = `${src}|${pid}|${sizeKey}`;
+        const srcAvail = src ? qtyAt(src, pid, sizeKey) - (reserved.get(srcKey) || 0) : 0;
+        if (srcAvail <= 0) { parkedNoSource += 1; continue; }
+        const qty = Math.min(deficit, srcAvail, capUnits);
+        reserved.set(srcKey, (reserved.get(srcKey) || 0) + qty);
         wouldRequest += 1;
-        unitsWanted += Math.min(deficit, capUnits);
+        unitsWanted += qty;
       }
       if (pidOverridden) overriddenPids.add(pid);
     }
@@ -257,7 +303,13 @@ function modelCategoryPolicy({
       target: cat[loc]?.target ?? null,
       minQty: cat[loc]?.minQty ?? null,
       reorderPoint: cat[loc]?.reorderPoint ?? null,
+      source: src,
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
+      inFlight, parkedNoSource, parkedNothingAnywhere,
+      // Everything below target that produces no request: in flight, nothing
+      // anywhere, or the source is empty. The card shows this so "0 requests"
+      // never reads as "0 shortfall".
+      parked: parkedNoSource + parkedNothingAnywhere,
       overrides, overrideRows,
     });
   }

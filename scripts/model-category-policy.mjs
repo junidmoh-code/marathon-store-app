@@ -21,16 +21,19 @@
 // ── WHY THERE ARE TWO DAY-ONE NUMBERS ────────────────────────────────────────
 // The model comes from functions/lib/category-policy.cjs — the SAME function
 // the card's preview panel calls, so what the owner sees before saving and what
-// this script prints are one implementation. That function is deliberately an
-// UPPER BOUND: it walks the deficit arithmetic but not the scan's suppression
-// passes (confirmed-out, reject streaks, retry cooldown, in-flight, throttle),
-// every one of which can only remove a request.
+// this script prints are one implementation. It is a deliberate UPPER BOUND: it
+// walks the deficit arithmetic and the three gates that decide most outcomes
+// (in flight, nothing anywhere, source empty) but not the scan's remaining
+// suppression passes — confirmed-out, reject streaks, retry cooldown, the
+// recount park, the global throttle — every one of which can only remove a
+// request.
 //
 // So this script ALSO runs the real computeRefillPlan — the same function the
 // 15-minute scan calls — over a copy of the live snapshot with the proposed
 // config injected, and prints both numbers side by side. The gap between them
-// is measured here rather than assumed anywhere. (ENGINE=0 skips it; the heavy
-// nodes it needs are then never read.)
+// is measured here rather than assumed anywhere, and it is the check that
+// keeps the card's preview honest. (ENGINE=0 skips it; the heavy nodes it
+// needs are then never read.)
 //
 // ── READS ARE PAGED ──────────────────────────────────────────────────────────
 // Live bandwidth is billed. Nothing here issues a single whole-node read of a
@@ -225,14 +228,14 @@ const line = (n = 92) => "─".repeat(n);
 
   const table = (m, title) => {
     console.log(`\n  ${title}`);
-    console.log(`  ${pad("location", 14)} ${pad("carried", 8)} ${rpad("keep", 5)} ${rpad("min", 4)} ${rpad("askAt", 6)} ${rpad("cells", 6)} ${rpad("REQ", 5)} ${rpad("units", 6)} ${rpad("silent", 7)} ${rpad("atTgt", 6)} ${rpad("onHand", 7)} ${rpad("ovr", 4)}`);
+    console.log(`  ${pad("location", 14)} ${pad("src", 10)} ${rpad("keep", 5)} ${rpad("min", 4)} ${rpad("askAt", 6)} ${rpad("cells", 6)} ${rpad("REQ", 5)} ${rpad("units", 6)} ${rpad("silent", 7)} ${rpad("atTgt", 6)} ${rpad("flight", 7)} ${rpad("parked", 7)} ${rpad("onHand", 7)} ${rpad("ovr", 4)}`);
     for (const l of m.legs) {
-      console.log(`  ${pad(l.loc, 14)} ${pad(l.carries ? "yes" : "NO", 8)} ${rpad(l.target ?? "—", 5)} ${rpad(l.minQty ?? "—", 4)} ${rpad(l.reorderPoint ?? "absent", 6)} ${rpad(l.cells, 6)} ${rpad(l.wouldRequest, 5)} ${rpad(l.unitsWanted, 6)} ${rpad(l.silent, 7)} ${rpad(l.atTarget, 6)} ${rpad(l.onHand, 7)} ${rpad(l.overrides, 4)}`);
+      console.log(`  ${pad(l.loc, 14)} ${pad(l.source || "—", 10)} ${rpad(l.target ?? "—", 5)} ${rpad(l.minQty ?? "—", 4)} ${rpad(l.reorderPoint ?? "absent", 6)} ${rpad(l.cells, 6)} ${rpad(l.wouldRequest, 5)} ${rpad(l.unitsWanted, 6)} ${rpad(l.silent, 7)} ${rpad(l.atTarget, 6)} ${rpad(l.inFlight, 7)} ${rpad(l.parked, 7)} ${rpad(l.onHand, 7)} ${rpad(l.overrides, 4)}`);
     }
-    console.log(`  ${pad("TOTAL", 14)} ${pad("", 8)} ${rpad("", 5)} ${rpad("", 4)} ${rpad("", 6)} ${rpad(m.legs.reduce((n, l) => n + l.cells, 0), 6)} ${rpad(m.totalRequests, 5)} ${rpad(m.totalUnits, 6)}`);
+    console.log(`  ${pad("TOTAL", 14)} ${pad("", 10)} ${rpad("", 5)} ${rpad("", 4)} ${rpad("", 6)} ${rpad(m.legs.reduce((n, l) => n + l.cells, 0), 6)} ${rpad(m.totalRequests, 5)} ${rpad(m.totalUnits, 6)} ${rpad("", 7)} ${rpad("", 6)} ${rpad(m.legs.reduce((n, l) => n + l.inFlight, 0), 7)} ${rpad(m.legs.reduce((n, l) => n + l.parked, 0), 7)}`);
   };
-  table(modelBefore, `DAY ONE AS IT STANDS TODAY (upper bound — suppression passes not modelled)`);
-  table(modelAfter, `DAY ONE AFTER THE CHANGE (upper bound)`);
+  table(modelBefore, `DAY ONE AS IT STANDS TODAY (ceiling — the scan can only ask for less)`);
+  table(modelAfter, `DAY ONE AFTER THE CHANGE (ceiling — the scan can only ask for less)`);
 
   console.log(`\n  products in ${CATEGORY}: ${modelAfter.products}   still on their own explicit rows: ${modelAfter.overriddenProducts}`);
   console.log(`  Central on hand for ${CATEGORY}: ${modelAfter.centralOnHand} units`);
