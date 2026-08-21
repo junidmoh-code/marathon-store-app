@@ -433,6 +433,12 @@ function linkFrom(raw, nameOrLiteral, map, isVariable) {
         throw new Unverifiable(`"${name}" is built by neither assign nor capture — cannot be resolved`);
       }
       branches = map.get(name).flatMap((b) => expand(b, map));
+      // NOTE: there is no separate multi-variable check here. expand() refuses a
+      // multi-variable expression at ANY depth, which covers this path and the
+      // dotted-root path above through one mechanism. An explicit check on only
+      // one of the two used to sit here and read like the other path was
+      // unprotected; it was redundant, and asymmetry that looks like a bug is
+      // its own cost.
     }
     branches = branches.map(normaliseShopifyGlobals);
 
