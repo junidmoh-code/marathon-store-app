@@ -290,54 +290,140 @@ function assignBranches(src) {
   return m;
 }
 
-/** The mapped variables an expression refers to. */
+// ─── RESOLVING A LINK ────────────────────────────────────────────────────────
+// THE DEFAULT IS "I CANNOT VERIFY THIS", NOT "THIS IS FINE".
+//
+// This file has now had the SAME SHAPE of hole four times: a link the resolver
+// could not understand fell back to some raw text, that text happened not to
+// contain "/collections/all", and so the link was neither flagged as unsorted
+// NOR counted toward coverage — it simply vanished from the scan while the
+// file's other links kept the "did we check anything?" guard satisfied. Four
+// different escape routes (a *_path helper, a merged branch blob, a comment, a
+// {% capture %}, `collections.all.url`) all exploited that one default.
+//
+// Patching escape routes one at a time was the mistake. Every link must now
+// resolve to a CONCRETE PATH — a string starting with "/" — or it fails as
+// unverifiable. There is no third outcome.
+
+const MASK = "\u0000";
+
+/** Hide string literals so identifiers inside them are never treated as code. */
+function maskLiterals(expr) {
+  const lits = [];
+  const masked = expr.replace(/'[^']*'|"[^"]*"/g, (m) => {
+    lits.push(m);
+    return `${MASK}${lits.length - 1}${MASK}`;
+  });
+  return { masked, lits };
+}
+const unmask = (s, lits) => s.replace(new RegExp(`${MASK}(\\d+)${MASK}`, "g"), (_, i) => lits[+i]);
+
+/** The mapped variables an expression names, ignoring anything inside quotes. */
 function refsOf(expr, map) {
-  // A PROPERTY is not a variable: `c.url` refers to `c`, not to some unrelated
-  // `url` assigned elsewhere in the file. Without the lookbehind, `c.url` pulled
-  // in the nav's `url` variable — which does carry the sort — and reported the
-  // query-free `url_path` as carrying a query.
+  const { masked } = maskLiterals(expr);
   const out = new Set();
-  for (const m of expr.matchAll(/(?<![\w.])([a-z_][a-z0-9_]*)/gi)) {
+  // A PROPERTY is not a variable: `c.url` refers to `c`, not to some unrelated
+  // `url` assigned elsewhere in the file.
+  for (const m of masked.matchAll(/(?<![\w.])([a-z_][a-z0-9_]*)/gi)) {
     if (map.has(m[1])) out.add(m[1]);
   }
   return [...out];
 }
 
 /**
+ * Shopify's own objects, rewritten to the path they actually render.
+ * `collections.all.url` renders "/collections/all" — the literal this whole
+ * test is about — but its SOURCE TEXT contains dots and no leading slash, so
+ * judging the text directly reported "no /collections/all here" and passed a
+ * link that was exactly the bug.
+ *
+ * An index that is a variable becomes /collections/{dynamic}: it is knowably
+ * not `all`, because the collection rows the nav builds are pinned to real
+ * collection keys by the "every collection row names a real collection" test
+ * above.
+ */
+function normaliseShopifyGlobals(text) {
+  return text
+    .replace(/collections\s*\.\s*all\s*\.\s*url/g, "/collections/all")
+    .replace(/collections\s*\[\s*['"]all['"]\s*\]\s*\.?\s*url/g, "/collections/all")
+    .replace(/collections\s*\[\s*['"]([\w-]+)['"]\s*\]/g, "/collections/$1")
+    .replace(/collections\s*\[[^\]]+\]/g, "/collections/{dynamic}");
+}
+
+/**
  * Every value an expression could resolve to, one string per branch, with each
  * variable SUBSTITUTED IN PLACE.
  *
- * It used to APPEND expansions instead of substituting, which let one
- * variable's sort excuse another variable's unsorted path: with
- * `assign url = url_path | default: sort_note`, the concatenated string
- * contained `/collections/all` (from url_path) and `sort_by` (from sort_note)
- * and passed, while the rendered link was unsorted every time url_path was
- * truthy. Substitution keeps each possible value readable as the URL it is.
- *
- * Substitution alone cannot untangle that particular case — knowing that
- * `default:` picks one side or the other means evaluating Liquid — so
- * expressions naming more than one variable are REFUSED by the caller rather
- * than guessed at. See assertVerifiable.
+ * Substitution rather than appending, because appending let one variable's sort
+ * excuse another variable's unsorted path: the two expansions landed in a single
+ * string and "contains /collections/all AND lacks the sort" was satisfied
+ * jointly. Throws on an expression naming more than one variable AT ANY DEPTH —
+ * checking only the top level left the same hole one assign further down.
  */
 function expand(expr, map, seen = new Set()) {
-  let out = [expr];
-  for (const ref of refsOf(expr, map)) {
+  const refs = refsOf(expr, map);
+  if (refs.length > 1) {
+    throw new Unverifiable(`built from more than one variable (${expr.trim()}) — simplify it or assert it explicitly`);
+  }
+  const { masked, lits } = maskLiterals(expr);
+  let out = [masked];
+  for (const ref of refs) {
     if (seen.has(ref)) continue;
     const deeper = new Set(seen);
     deeper.add(ref);
     const subs = map.get(ref).flatMap((b) => expand(b, map, deeper));
     const re = new RegExp(`(?<![\\w.])${ref}(?![\\w])`, "g");
-    out = out.flatMap((o) => subs.map((sub) => o.replace(re, sub)));
+    out = out.flatMap((o) => subs.map((sub) => o.replace(re, maskLiterals(sub).masked === sub ? sub : sub)));
   }
-  return out;
+  return out.map((o) => unmask(o, lits));
+}
+
+class Unverifiable extends Error {}
+
+/**
+ * A link, resolved — or an explicit refusal. Never a silent pass.
+ */
+function linkFrom(raw, nameOrLiteral, map, isVariable) {
+  if (!isVariable) return { raw, branches: [nameOrLiteral], verifiable: true };
+  const name = nameOrLiteral;
+  try {
+    const dot = name.indexOf(".");
+    let branches;
+    if (dot > 0) {
+      const root = name.slice(0, dot);
+      const suffix = name.slice(dot);
+      branches = map.has(root)
+        ? map.get(root).flatMap((b) => expand(b, map)).map((x) => x + suffix)
+        : [name];
+    } else {
+      if (!map.has(name)) {
+        throw new Unverifiable(`"${name}" is built by neither assign nor capture — cannot be resolved`);
+      }
+      branches = map.get(name).flatMap((b) => expand(b, map));
+    }
+    branches = branches.map(normaliseShopifyGlobals);
+
+    // THE INVERTED DEFAULT. A branch that is not a concrete path is not a pass.
+    const vague = branches.find((b) => !b.includes("/"));
+    if (vague !== undefined) {
+      throw new Unverifiable(`"${name}" resolves to ${JSON.stringify(vague)}, which is not a path — cannot be judged`);
+    }
+    return { raw, branches, verifiable: true };
+  } catch (e) {
+    if (e instanceof Unverifiable) return { raw, branches: [], verifiable: false, why: e.message };
+    throw e;
+  }
 }
 
 /**
  * Every LINK the file is responsible for. "Link" is not the same as "href": a
- * section can build a URL and hand it to a snippet where the href actually lives
- * — marathon-home.liquid does exactly that via `render 'marathon-rail',
+ * section can build a URL and hand it to a snippet where the href actually
+ * lives — marathon-home.liquid does exactly that via `render 'marathon-rail',
  * rail_url: …` — so `*_url:` render arguments count too. The leading `,` or `(`
  * requirement keeps it from matching the `| image_url:` FILTER.
+ *
+ * Comments and schema are stripped FIRST: an href inside a {% comment %} once
+ * satisfied the coverage guard while every real link was broken.
  */
 function fileLinks(rawSrc) {
   const src = stripComments(rawSrc);
@@ -346,58 +432,13 @@ function fileLinks(rawSrc) {
   for (const h of src.matchAll(/href="([^"]*)"/g)) {
     const raw = h[1];
     const v = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
-    out.push(v ? linkFromVariable(raw, v[1], map) : { raw, branches: [raw], verifiable: true });
+    out.push(linkFrom(raw, v ? v[1] : raw, map, Boolean(v)));
   }
   for (const a of src.matchAll(/[,(]\s*(\w+_url):\s*([\w.]+)/g)) {
     const [, argName, value] = a;
-    out.push(linkFromVariable(`${argName}: ${value}`, value, map));
+    out.push(linkFrom(`${argName}: ${value}`, value, map, true));
   }
   return out;
-}
-
-/**
- * A link whose href is a variable. Two failure modes are made LOUD rather than
- * silent, because both previously let a broken link vanish from the scan
- * entirely — not flagged, and not counted toward coverage either, so the
- * "did we check anything?" guard stayed satisfied by the file's other links:
- *
- *   • the variable is not built with `assign` at all (a {% capture %}, say), so
- *     there is nothing to resolve;
- *   • the expression names more than one variable, which cannot be resolved
- *     without evaluating Liquid.
- *
- * Refusing to guess is the point. A test that cannot verify something must say
- * so, not quietly approve it.
- */
-function linkFromVariable(raw, name, map) {
-  // A PROPERTY ACCESS resolves through its ROOT. `new_in.url` is
-  // `collections['new-in'].url` — a real collection's own URL, not something a
-  // capture built — so the root is what the assign map knows about. Looking up
-  // the whole dotted path found nothing and refused a link that is perfectly
-  // verifiable.
-  const dot = name.indexOf(".");
-  if (dot > 0) {
-    const root = name.slice(0, dot);
-    const suffix = name.slice(dot);
-    if (map.has(root)) {
-      return { raw, verifiable: true,
-        branches: map.get(root).flatMap((b) => expand(b, map)).map((x) => x + suffix) };
-    }
-    // An unmapped root is a Shopify global (`collection.url`, `shop.url`).
-    // Verifiable by inspection: the only one that reaches /collections/all is
-    // `collections.all.url`, and the text carries that if so.
-    return { raw, branches: [name], verifiable: true };
-  }
-  if (!map.has(name)) {
-    return { raw, branches: [], verifiable: false,
-      why: `"${name}" is built by neither assign nor capture — this link cannot be resolved` };
-  }
-  const multi = map.get(name).find((b) => refsOf(b, map).length > 1);
-  if (multi) {
-    return { raw, branches: [], verifiable: false,
-      why: `"${name}" is built from more than one variable (${multi.trim()}) — too complex to verify; simplify it or assert it explicitly` };
-  }
-  return { raw, branches: map.get(name).flatMap((b) => expand(b, map)), verifiable: true };
 }
 
 describe("every /collections/all link carries an explicit sort", () => {
@@ -409,16 +450,18 @@ describe("every /collections/all link carries an explicit sort", () => {
       const links = fileLinks(readFileSync(path, "utf8"));
       expect(links.length, `${name}: no links found — did the markup change?`).toBeGreaterThan(0);
 
-      const unverifiable = links.filter((l) => l.verifiable === false).map((l) => `${l.raw} — ${l.why}`);
-      expect(unverifiable, `${name}: links this test cannot check`).toEqual([]);
-
-      const bad = [];
+      // Both failure kinds in ONE assertion, so an unverifiable link cannot mask
+      // a genuinely unsorted one sitting behind it.
+      const problems = [];
       for (const link of links) {
+        if (link.verifiable === false) { problems.push(`UNVERIFIABLE ${link.raw} — ${link.why}`); continue; }
         for (const branch of link.branches) {
-          if (branch.includes("/collections/all") && !branch.includes(SORT)) bad.push(link.raw);
+          if (branch.includes("/collections/all") && !branch.includes(SORT)) {
+            problems.push(`ALPHABETICAL ${link.raw} -> ${branch.trim()}`);
+          }
         }
       }
-      expect(bad, `${name}: these land in alphabetical order`).toEqual([]);
+      expect(problems, `${name}: link problems`).toEqual([]);
 
       const covered = links.filter((l) => l.branches.some((b) => b.includes("/collections/all")));
       expect(
@@ -436,7 +479,10 @@ describe("every /collections/all link carries an explicit sort", () => {
     for (const m of src.matchAll(/request\.path\s*==\s*(\w+)/g)) {
       const name = m[1];
       if (!map.has(name)) continue;
-      for (const branch of map.get(name).flatMap((b) => expand(b, map))) {
+      let branches;
+      try { branches = map.get(name).flatMap((b) => expand(b, map)); }
+      catch (e) { throw new Error(`${name} cannot be resolved: ${e.message}`); }
+      for (const branch of branches) {
         expect(branch, `${name} is compared to request.path but carries a query`).not.toContain("sort_by");
       }
     }
