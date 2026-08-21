@@ -85,10 +85,15 @@
     var url = card.getAttribute("data-mc-url");
     if (url) setUrl(url, card.getAttribute("data-mc-title"), replacing);
 
-    // A panel that opens below the fold is a panel the shopper never sees.
+    // A panel the shopper never sees is a panel that did not open. A card can
+    // be out of view VERTICALLY on the browsing grid and HORIZONTALLY in a home
+    // rail, which is a sideways scroller — so both axes are checked.
     var rect = card.getBoundingClientRect();
-    if (rect.top < 0 || rect.bottom > window.innerHeight) {
-      card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    var offScreen =
+      rect.top < 0 || rect.bottom > window.innerHeight ||
+      rect.left < 0 || rect.right > window.innerWidth;
+    if (offScreen) {
+      card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
     }
     var closeBtn = $("[data-mc-close]", panel);
     if (closeBtn) closeBtn.focus({ preventScroll: true });

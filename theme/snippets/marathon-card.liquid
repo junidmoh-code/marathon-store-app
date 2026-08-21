@@ -95,8 +95,16 @@
 >
   <a class="mc-card__media" href="{{ product.url }}" data-mc-open>
     {%- if product.featured_media -%}
+      {%- comment -%}
+        `featured_media.preview_image`, not `featured_media` — this is exactly
+        the path Dawn 15.4.1 uses in its own card snippet. image_url accepts a
+        media object in recent API versions, but the preview image is the
+        documented, long-standing input and this theme is a Dawn derivative:
+        matching it means the image pipeline behaves identically to every other
+        image on the shop rather than relying on a newer overload.
+      {%- endcomment -%}
       {{
-        product.featured_media
+        product.featured_media.preview_image
         | image_url: width: 800
         | image_tag:
           loading: lazy,

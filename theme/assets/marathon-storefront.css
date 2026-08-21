@@ -294,7 +294,23 @@
 }
 
 /* ─── ADD ──────────────────────────────────────────────────────────────────── */
-.mc-panel__actions { margin-top: auto; display: grid; gap: 0.6rem; }
+/* THE BUY CONTROLS ARE PINNED TO THE BOTTOM OF THE PANEL.
+   `margin-top: auto` puts them at the bottom when there is room; `position:
+   sticky` keeps them there when there is not. Without the sticky half, a panel
+   whose content is taller than its card scrolls the button out of sight and the
+   shopper simply cannot buy — which is exactly what happened on a phone, in a
+   home rail, where the card is 168px wide and the panel's content ran to 409px
+   inside a 266px frame. The background is opaque so scrolled size pills do not
+   run underneath the button. */
+.mc-panel__actions {
+  margin-top: auto;
+  display: grid;
+  gap: 0.6rem;
+  position: sticky;
+  bottom: 0;
+  padding-block-start: 0.8rem;
+  background: rgb(14 12 11 / 0.96);
+}
 .mc-add {
   width: 100%;
   padding: 1.1rem 1rem;
@@ -328,9 +344,23 @@
    photograph gets bigger, the detail fits, and the shopper is still in the
    grid. Tapping again puts it back. */
 @media screen and (max-width: 599px) {
-  .mc-card.is-open { grid-column: 1 / -1; }
-  .mc-card.is-open .mc-card__media { aspect-ratio: 4 / 3; }
+  /* SCOPED TO THE GRID. `grid-column: 1 / -1` only means "full width" in the
+     two-column browsing grid. A home rail is a horizontal scroller with
+     `grid-auto-flow: column`, where 1 / -1 resolves against implicit tracks and
+     does nothing at all — the card stayed 168px wide and the panel clipped. */
+  .mc-grid > .mc-card.is-open { grid-column: 1 / -1; }
+  .mc-grid > .mc-card.is-open .mc-card__media { aspect-ratio: 4 / 3; }
+
+  /* A rail card widens by taking a second track, which IS how you get width in
+     a column-flow grid, and grows taller so the detail has somewhere to go. */
+  .mc-rail__track > .mc-card.is-open { grid-column: span 2; }
+  .mc-rail__track > .mc-card.is-open .mc-card__media { aspect-ratio: 1 / 1; }
+
   .mc-panel { padding: 1.6rem; }
+}
+@media screen and (min-width: 600px) and (max-width: 989px) {
+  /* Same story at tablet width: the rail is still a scroller there. */
+  .mc-rail__track > .mc-card.is-open { grid-column: span 2; }
 }
 
 /* ─── CATEGORY NAVIGATION ──────────────────────────────────────────────────── */
