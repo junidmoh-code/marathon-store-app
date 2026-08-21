@@ -481,7 +481,11 @@ function fileLinks(rawSrc) {
   //
   // So: find EVERY `href=` and every `*_url:` argument, parse the shapes we
   // understand, and REFUSE anything else rather than skipping it.
-  for (const m of src.matchAll(/href\s*=\s*(.)/g)) {
+  // CASE-INSENSITIVE: HTML attribute names are, so `HREF=` and `Href=` are
+  // working links — and without the `i` they were found by nothing, which is
+  // this same vanishing-link class one more time. The `*_url:` scan below stays
+  // case-sensitive on purpose: those are Liquid identifiers, not HTML.
+  for (const m of src.matchAll(/href\s*=\s*(.)/gi)) {
     const rest = src.slice(m.index + m[0].length - 1);
     const q = m[1];
     if (q === '"' || q === "'") {
