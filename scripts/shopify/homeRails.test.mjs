@@ -272,29 +272,62 @@ function stripComments(src) {
  */
 function assignBranches(src) {
   const m = new Map();
-  for (const a of src.matchAll(/assign\s+(\w+)\s*=\s*([^\n%]*)/g)) {
-    const [, name, expr] = a;
-    const e = expr.trim();
-    if (e === "''" || e === '""') continue;   // empty scaffolding, not a branch
+  const add = (name, e) => {
+    if (e === "''" || e === '""' || e === "") return; // empty scaffolding
     if (!m.has(name)) m.set(name, []);
     m.get(name).push(e);
+  };
+  for (const a of src.matchAll(/assign\s+(\w+)\s*=\s*([^\n%]*)/g)) add(a[1], a[2].trim());
+
+  // {% capture %} BUILDS A VARIABLE TOO, and reading only `assign` meant a
+  // capture was invisible: a link rebuilt as a capture kept whatever OTHER
+  // assign branches its name still had, resolved cleanly through those, and the
+  // unsorted capture never appeared in the scan at all. Its body is literal
+  // text, which is exactly what this test wants to read.
+  for (const c of src.matchAll(/\{%-?\s*capture\s+(\w+)\s*-?%\}([\s\S]*?)\{%-?\s*endcapture\s*-?%\}/g)) {
+    add(c[1], c[2].trim());
   }
   return m;
 }
 
-/** Every value an expression could resolve to, one string per branch. */
-function expand(expr, map, seen = new Set()) {
-  let out = [expr];
+/** The mapped variables an expression refers to. */
+function refsOf(expr, map) {
   // A PROPERTY is not a variable: `c.url` refers to `c`, not to some unrelated
   // `url` assigned elsewhere in the file. Without the lookbehind, `c.url` pulled
   // in the nav's `url` variable — which does carry the sort — and reported the
   // query-free `url_path` as carrying a query.
-  for (const ref of [...expr.matchAll(/(?<![\w.])([a-z_][a-z0-9_]*)/gi)].map((x) => x[1])) {
-    if (seen.has(ref) || !map.has(ref)) continue;
+  const out = new Set();
+  for (const m of expr.matchAll(/(?<![\w.])([a-z_][a-z0-9_]*)/gi)) {
+    if (map.has(m[1])) out.add(m[1]);
+  }
+  return [...out];
+}
+
+/**
+ * Every value an expression could resolve to, one string per branch, with each
+ * variable SUBSTITUTED IN PLACE.
+ *
+ * It used to APPEND expansions instead of substituting, which let one
+ * variable's sort excuse another variable's unsorted path: with
+ * `assign url = url_path | default: sort_note`, the concatenated string
+ * contained `/collections/all` (from url_path) and `sort_by` (from sort_note)
+ * and passed, while the rendered link was unsorted every time url_path was
+ * truthy. Substitution keeps each possible value readable as the URL it is.
+ *
+ * Substitution alone cannot untangle that particular case — knowing that
+ * `default:` picks one side or the other means evaluating Liquid — so
+ * expressions naming more than one variable are REFUSED by the caller rather
+ * than guessed at. See assertVerifiable.
+ */
+function expand(expr, map, seen = new Set()) {
+  let out = [expr];
+  for (const ref of refsOf(expr, map)) {
+    if (seen.has(ref)) continue;
     const deeper = new Set(seen);
     deeper.add(ref);
     const subs = map.get(ref).flatMap((b) => expand(b, map, deeper));
-    out = out.flatMap((o) => subs.map((sub) => `${o} ${sub}`));
+    const re = new RegExp(`(?<![\\w.])${ref}(?![\\w])`, "g");
+    out = out.flatMap((o) => subs.map((sub) => o.replace(re, sub)));
   }
   return out;
 }
@@ -313,16 +346,58 @@ function fileLinks(rawSrc) {
   for (const h of src.matchAll(/href="([^"]*)"/g)) {
     const raw = h[1];
     const v = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
-    out.push({ raw, branches: v && map.has(v[1]) ? map.get(v[1]).flatMap((b) => expand(b, map)) : [raw] });
+    out.push(v ? linkFromVariable(raw, v[1], map) : { raw, branches: [raw], verifiable: true });
   }
   for (const a of src.matchAll(/[,(]\s*(\w+_url):\s*([\w.]+)/g)) {
     const [, argName, value] = a;
-    out.push({
-      raw: `${argName}: ${value}`,
-      branches: map.has(value) ? map.get(value).flatMap((b) => expand(b, map)) : [value],
-    });
+    out.push(linkFromVariable(`${argName}: ${value}`, value, map));
   }
   return out;
+}
+
+/**
+ * A link whose href is a variable. Two failure modes are made LOUD rather than
+ * silent, because both previously let a broken link vanish from the scan
+ * entirely — not flagged, and not counted toward coverage either, so the
+ * "did we check anything?" guard stayed satisfied by the file's other links:
+ *
+ *   • the variable is not built with `assign` at all (a {% capture %}, say), so
+ *     there is nothing to resolve;
+ *   • the expression names more than one variable, which cannot be resolved
+ *     without evaluating Liquid.
+ *
+ * Refusing to guess is the point. A test that cannot verify something must say
+ * so, not quietly approve it.
+ */
+function linkFromVariable(raw, name, map) {
+  // A PROPERTY ACCESS resolves through its ROOT. `new_in.url` is
+  // `collections['new-in'].url` — a real collection's own URL, not something a
+  // capture built — so the root is what the assign map knows about. Looking up
+  // the whole dotted path found nothing and refused a link that is perfectly
+  // verifiable.
+  const dot = name.indexOf(".");
+  if (dot > 0) {
+    const root = name.slice(0, dot);
+    const suffix = name.slice(dot);
+    if (map.has(root)) {
+      return { raw, verifiable: true,
+        branches: map.get(root).flatMap((b) => expand(b, map)).map((x) => x + suffix) };
+    }
+    // An unmapped root is a Shopify global (`collection.url`, `shop.url`).
+    // Verifiable by inspection: the only one that reaches /collections/all is
+    // `collections.all.url`, and the text carries that if so.
+    return { raw, branches: [name], verifiable: true };
+  }
+  if (!map.has(name)) {
+    return { raw, branches: [], verifiable: false,
+      why: `"${name}" is built by neither assign nor capture — this link cannot be resolved` };
+  }
+  const multi = map.get(name).find((b) => refsOf(b, map).length > 1);
+  if (multi) {
+    return { raw, branches: [], verifiable: false,
+      why: `"${name}" is built from more than one variable (${multi.trim()}) — too complex to verify; simplify it or assert it explicitly` };
+  }
+  return { raw, branches: map.get(name).flatMap((b) => expand(b, map)), verifiable: true };
 }
 
 describe("every /collections/all link carries an explicit sort", () => {
@@ -333,6 +408,9 @@ describe("every /collections/all link carries an explicit sort", () => {
     it(name, () => {
       const links = fileLinks(readFileSync(path, "utf8"));
       expect(links.length, `${name}: no links found — did the markup change?`).toBeGreaterThan(0);
+
+      const unverifiable = links.filter((l) => l.verifiable === false).map((l) => `${l.raw} — ${l.why}`);
+      expect(unverifiable, `${name}: links this test cannot check`).toEqual([]);
 
       const bad = [];
       for (const link of links) {
