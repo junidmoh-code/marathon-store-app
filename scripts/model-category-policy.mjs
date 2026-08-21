@@ -163,15 +163,20 @@ const line = (n = 92) => "─".repeat(n);
       overriddenCells: model ? model.legs.reduce((n, l) => n + l.overrides, 0) : 0,
       overriddenProducts: model ? model.overriddenProducts : 0,
       overrideRows: model ? model.legs.flatMap((l) => l.overrideRows.map((r) => ({ loc: l.loc, ...r }))) : [],
+      // Explicit rows on sizes the map does not speak for. The engine walks
+      // them and they produce real requests, but they override nothing here.
+      legacyRowCells: model ? model.legacyRowCells : 0,
+      legacyRowProducts: model ? model.legacyRowProducts : 0,
+      legacyRows: model ? model.legs.flatMap((l) => l.legacyRowList.map((r) => ({ loc: l.loc, ...r }))) : [],
     });
   }
 
   console.log(`\n── CENSUS — every category key, armed or not ${line(48)}`);
-  console.log(`  ${pad("key", 22)} ${pad("size", 5)} ${rpad("prods", 6)} ${rpad("units", 7)} ${pad("carried at", 34)} ${pad("armed", 22)} ${rpad("map", 5)} ${rpad("ovr", 4)}`);
+  console.log(`  ${pad("key", 22)} ${pad("size", 5)} ${rpad("prods", 6)} ${rpad("units", 7)} ${pad("carried at", 34)} ${pad("armed", 22)} ${rpad("map", 5)} ${rpad("ovr", 4)} ${rpad("legacy", 6)}`);
   for (const c of census) {
     if (!c.products && !c.armed) continue;   // an empty unarmed category has nothing to say
     const units = Object.values(c.unitsByLocation).reduce((a, b) => a + b, 0);
-    console.log(`  ${pad(c.key, 22)} ${pad(c.perSize ? "size" : "one", 5)} ${rpad(c.products, 6)} ${rpad(units, 7)} ${pad(c.carriedAt.join(",") || "—", 34)} ${pad(c.armed ? c.armedLocations.join(",") : "—", 22)} ${rpad(c.resolvesMap, 5)} ${rpad(c.overriddenCells, 4)}`);
+    console.log(`  ${pad(c.key, 22)} ${pad(c.perSize ? "size" : "one", 5)} ${rpad(c.products, 6)} ${rpad(units, 7)} ${pad(c.carriedAt.join(",") || "—", 34)} ${pad(c.armed ? c.armedLocations.join(",") : "—", 22)} ${rpad(c.resolvesMap, 5)} ${rpad(c.overriddenCells, 4)} ${rpad(c.legacyRowCells, 6)}`);
   }
   const skipped = census.filter((c) => !c.products && !c.armed).length;
   if (skipped) console.log(`  (${skipped} taxonomy categories hold no products and are not armed — omitted)`);
@@ -179,6 +184,13 @@ const line = (n = 92) => "─".repeat(n);
   const armedCensus = census.filter((c) => c.armed);
   console.log(`\n  ARMED: ${armedCensus.length} of ${census.length} categories — ${armedCensus.map((c) => c.key).join(", ")}`);
   for (const c of armedCensus) {
+    if (c.legacyRowCells) {
+      console.log(`\n  • ${c.key}: ${c.legacyRowCells} explicit rows on ${c.legacyRowProducts} products sit on sizes this ${c.perSize ? "per-size" : "one-size"} map does NOT speak for.`);
+      console.log(`    They override nothing here — but the engine walks them and they produce real refills.`);
+      const bySize = {};
+      for (const r of c.legacyRows) bySize[r.size] = (bySize[r.size] || 0) + 1;
+      console.log(`    by size: ${Object.entries(bySize).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join("  ")}`);
+    }
     if (!c.overriddenCells) continue;
     console.log(`\n  ⚠ ${c.key}: ${c.overriddenCells} cells on ${c.overriddenProducts} products are OVERRIDDEN by explicit /stock_targets rows.`);
     console.log(`    An explicit row outranks the map, so editing the map does NOT reach these cells.`);
@@ -237,7 +249,7 @@ const line = (n = 92) => "─".repeat(n);
   table(modelBefore, `DAY ONE AS IT STANDS TODAY (ceiling — the scan can only ask for less)`);
   table(modelAfter, `DAY ONE AFTER THE CHANGE (ceiling — the scan can only ask for less)`);
 
-  console.log(`\n  products in ${CATEGORY}: ${modelAfter.products}   still on their own explicit rows: ${modelAfter.overriddenProducts}`);
+  console.log(`\n  products in ${CATEGORY}: ${modelAfter.products}   overriding the map: ${modelAfter.overriddenProducts}   carrying legacy sized rows: ${modelAfter.legacyRowProducts}`);
   console.log(`  Central on hand for ${CATEGORY}: ${modelAfter.centralOnHand} units`);
   console.log(`  requests ${modelBefore.totalRequests} -> ${modelAfter.totalRequests} against the ${modelAfter.cap}-intent cap (GLOBAL, shared with every other clothing category)`);
   console.log(`  units    ${modelBefore.totalUnits} -> ${modelAfter.totalUnits} against Central's ${modelAfter.centralOnHand}`);

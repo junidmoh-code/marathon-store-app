@@ -14,7 +14,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { applyCategoryPolicy, normalizePolicy, sameValue } = require("../lib/category-policy-write.cjs");
+const { applyCategoryPolicy, normalizePolicy, sameValue, invalidateCensusCache } = require("../lib/category-policy-write.cjs");
 const { makeFakeDb, readAt } = require("./helpers/fake-rtdb.cjs");
 
 const OWNER = "gunidmoh@gmail.com";
@@ -328,6 +328,7 @@ test("canonical equality ignores key order — a drift check that cries wolf get
 // plus the whole stock tree, downloaded onto a phone on a shop network every
 // time the screen opens.
 test("the census answers the list without the browser reading /products or /stock", async () => {
+  invalidateCensusCache();
   const db = makeFakeDb(world());
   const res = await call(db, { action: "census" });
   assert.equal(res.action, "census");
@@ -339,8 +340,14 @@ test("the census answers the list without the browser reading /products or /stoc
   assert.equal(cb.products, 3);
   assert.equal(cb.units, 64);                       // 40+3+1 of c1, plus 20 of c3 at central
   assert.deepEqual(cb.armed.sort(), ["hub2", "marathon-pe"]);
-  assert.equal(cb.carriage.trophy.carries, false);  // trophy holds no cap cell
   assert.equal(cb.carriage.hub2.carries, true);
+  assert.equal(cb.carriage["marathon-pe"].carries, true);
+  // Carriage is answered for exactly the locations the card can render — its
+  // destinations, plus central. trophy is a real location but not a
+  // destination in this config, so reading its stock would have been reading
+  // it for nothing. Every location the editor offers a row for IS covered.
+  assert.deepEqual(Object.keys(cb.carriage).sort(), ["central", "hub2", "marathon-pe"]);
+  for (const loc of res.destinations) assert.ok(cb.carriage[loc], `carriage must cover destination ${loc}`);
   const ts = res.categories.find((c) => c.key === "t-shirts");
   assert.equal(ts.products, 0);
   assert.deepEqual(ts.armed, []);
@@ -361,6 +368,7 @@ test("the census is behind the owner check too", async () => {
 
 test("an explicit row outranks the map, and the census counts it", async () => {
   // The thing that makes a map edit look like it did nothing.
+  invalidateCensusCache();
   const w = world();
   w.stock_targets = { "marathon-pe": { c1: { _: { target: 9, minQty: 4 } } } };
   const db = makeFakeDb(w);
@@ -412,4 +420,232 @@ test("reverting a SUPERSEDED history entry is refused, not silently applied", as
   await applyCategoryPolicy({ db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u", nowMs: NOW + 180000,
     data: { categoryKey: "caps-beanies", policy: latest.before, expectedBefore: latest.after } });
   assert.equal(policyAt(db).hub2.target, 10);
+});
+
+// ── THE CENSUS CACHE ─────────────────────────────────────────────────────────
+// A warm instance reuses the last answer for a couple of minutes, because the
+// owner opening the screen, expanding a row, saving and looking again was four
+// full catalogue reads in two minutes. It is per-instance and in-memory, so it
+// is never shared between callers — but it IS shared between calls, which is
+// precisely why the two ways it must be dropped are pinned here.
+test("a warm instance reuses the census, and a save drops it", async () => {
+  invalidateCensusCache();
+  let productReads = 0;
+  const db = makeFakeDb(world(), {
+    beforeRead: (path) => { if (path === "products") productReads += 1; },
+  });
+  const first = await call(db, { action: "census" });
+  assert.equal(first.cached, false);
+  assert.equal(productReads, 1);
+
+  const second = await call(db, { action: "census" });
+  assert.equal(second.cached, true, "a second open inside the window must not re-read the catalogue");
+  assert.equal(productReads, 1);
+
+  // refresh:true is the owner asking for the truth right now.
+  await call(db, { action: "census", refresh: true });
+  assert.equal(productReads, 2);
+
+  // A SAVE must never be followed by a stale list.
+  await call(db, { categoryKey: "caps-beanies",
+    policy: { hub2: { target: 11, minQty: 6, reorderPoint: 2 }, "marathon-pe": { target: 5, minQty: 3, reorderPoint: 0 } } });
+  const after = await call(db, { action: "census" });
+  assert.equal(after.cached, false);
+  assert.equal(after.categories.find((c) => c.key === "caps-beanies").entry.hub2.target, 11);
+});
+
+test("the audit trail is ALWAYS read live, never served from the cache", async () => {
+  invalidateCensusCache();
+  const db = makeFakeDb(world());
+  await call(db, { action: "census" });
+  await call(db, { categoryKey: "caps-beanies",
+    policy: { hub2: { target: 10, minQty: 5, reorderPoint: 4 }, "marathon-pe": { target: 5, minQty: 3, reorderPoint: 0 } } });
+  // Even on a cache hit the history must be current — a stale audit trail is
+  // worse than a slow one.
+  const a = await call(db, { action: "census" });
+  const b = await call(db, { action: "census" });
+  assert.equal(b.cached, true);
+  assert.equal(b.history.length, 1);
+  assert.deepEqual(a.history.map((h) => h.id), b.history.map((h) => h.id));
+});
+
+test("the census reads stock for destinations and central only", async () => {
+  invalidateCensusCache();
+  const read = [];
+  const w = world();
+  w.stock.trophy = { c1: { _: { qty: 7 } } };          // a real location the card cannot arm
+  w.stock.in_transit = { c1: { _: { qty: 3 } } };
+  const db = makeFakeDb(w, { beforeRead: (p) => { if (p.startsWith("stock/")) read.push(p); } });
+  await call(db, { action: "census" });
+  const locs = [...new Set(read.map((p) => p.split("/")[1]))].sort();
+  // trophy and in_transit are not destinations in this config, so reading them
+  // was reading them for nothing.
+  assert.deepEqual(locs, ["central", "hub2", "marathon-pe"]);
+});
+
+// ── THE HOLE THAT HID THE HEADLINE NUMBER, AND THE DISTINCTION IT NEEDED ─────
+// The engine's sizesFor STARTS from the explicit rows that already exist for a
+// cell and then adds the map's sizes. A model that derived its size list from
+// the map alone walked only "_", so a category whose products carry legacy
+// LETTER rows reported "asks for nothing" while the engine issued real requests
+// off those rows.
+//
+// Fixing that naively then over-corrected: it counted every such row as an
+// OVERRIDE. Measured on the live estate, caps-beanies has 188 explicit rows on
+// 94 products and every one is on a letter size left by the headwear one-size
+// collapse — while the map is one-size and speaks only for "_". Reported as
+// overrides that reads "94 products ignore your numbers" (false, and it would
+// have stopped a correct change). So the two are counted separately.
+test("a row on a size the map SPEAKS FOR is an override", async () => {
+  invalidateCensusCache();
+  const w = world();
+  w.stock_targets = { "marathon-pe": { c1: { _: { target: 9, minQty: 4 } } } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { hub2: { target: 10, minQty: 5 }, "marathon-pe": { target: 5, minQty: 3 } } });
+  const pe = res.preview.after.legs.find((l) => l.loc === "marathon-pe");
+  assert.equal(pe.overrides, 1, 'a "_" row in a one-size category beats the map');
+  assert.equal(pe.legacyRows, 0);
+  assert.equal(res.preview.after.overriddenProducts, 1);
+});
+
+test("a row on a size the map does NOT speak for is a legacy row, not an override", async () => {
+  invalidateCensusCache();
+  const w = world();
+  w.products.c1.sizes = ["_", "L"];
+  w.stock["marathon-pe"].c1 = { _: { qty: 1 }, L: { qty: 0 } };
+  w.stock.hub2.c1 = { _: { qty: 3 }, L: { qty: 10 } };
+  w.stock_targets = { "marathon-pe": { c1: { L: { target: 6, minQty: 3 } } } };
+  const db = makeFakeDb(w);
+
+  const res = await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { hub2: { target: 10, minQty: 5, reorderPoint: 2 }, "marathon-pe": { target: 5, minQty: 3, reorderPoint: 2 } } });
+  const pe = res.preview.after.legs.find((l) => l.loc === "marathon-pe");
+  // The map is one-size; an "L" row contradicts nothing it says.
+  assert.equal(pe.overrides, 0);
+  assert.equal(res.preview.after.overriddenProducts, 0);
+  assert.equal(pe.legacyRows, 1);
+  assert.equal(res.preview.after.legacyRowProducts, 1);
+  // …but it is still WALKED, and still produces the request the engine would:
+  // PE wants 6 of L, holds none, hub2 has 10. This is the half the original
+  // model missed entirely.
+  assert.ok(pe.wouldRequest >= 1, "the legacy row's own deficit must be modelled");
+  assert.ok(pe.unitsWanted >= 6);
+
+  const cen = await call(db, { action: "census" });
+  const cb = cen.categories.find((c) => c.key === "caps-beanies");
+  assert.equal(cb.overriddenProducts, 0);
+  assert.equal(cb.legacyRowProducts, 1);
+});
+
+test("a size declared twice under one encoded key is walked once", async () => {
+  // "5.5" and "5 5" both encode to 5_5. Walked twice the cell is double-counted
+  // and double-reserved against the source.
+  invalidateCensusCache();
+  const w = world();
+  w.config.refillEngine.categoryPolicy["caps-beanies"].perSize = true;
+  w.products.c1.sizes = ["5.5", "5 5"];
+  w.stock.hub2.c1 = { "5_5": { qty: 0 } };
+  w.stock["marathon-pe"].c1 = { "5_5": { qty: 0 } };
+  w.stock.central.c1 = { "5_5": { qty: 40 } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { perSize: true, hub2: { target: 10, minQty: 5 }, "marathon-pe": { target: 5, minQty: 3 } } });
+  const hub2 = res.preview.after.legs.find((l) => l.loc === "hub2");
+  assert.equal(hub2.cells, 1, "one encoded key is one cell, however many ways it is spelled");
+});
+
+// ── ENGINE DEFAULTS, NOT CONVENIENT ONES ─────────────────────────────────────
+test("an absent maxUnitsPerIntent models the engine's 20, not unlimited", async () => {
+  invalidateCensusCache();
+  const w = world();
+  delete w.config.refillEngine.maxUnitsPerIntent;
+  w.stock.central.c1 = { _: { qty: 500 } };
+  w.stock.hub2.c1 = { _: { qty: 0 } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { hub2: { target: 200, minQty: 100 }, "marathon-pe": { target: 5, minQty: 3 } } });
+  const hub2 = res.preview.after.legs.find((l) => l.loc === "hub2");
+  // Each cell is 200 short with stock upstream — but the engine caps ONE intent
+  // at 20 units. Reporting the raw deficit would have fabricated a Central
+  // shortfall out of nothing.
+  assert.ok(hub2.wouldRequest > 0);
+  assert.equal(hub2.unitsWanted, hub2.wouldRequest * 20);
+});
+
+test("an absent maxIntentsPerRun models the engine's 200, so the cap warning still works", async () => {
+  invalidateCensusCache();
+  const w = world();
+  delete w.config.refillEngine.maxIntentsPerRun;
+  const db = makeFakeDb(w);
+  const res = await call(db, { categoryKey: "caps-beanies", dryRun: true,
+    policy: { hub2: { target: 10, minQty: 5 }, "marathon-pe": { target: 5, minQty: 3 } } });
+  // null here would have made exceedsCap permanently false AND left the card's
+  // "Refills per scan" tile showing a loading ellipsis forever.
+  assert.equal(res.preview.after.cap, 200);
+  assert.equal(res.preview.after.exceedsCap, false);
+});
+
+// ── UN-ARMING MUST BE SAID, NOT IMPLIED ──────────────────────────────────────
+test("omitting `policy` is refused; only an explicit null un-arms", async () => {
+  const db = makeFakeDb(world());
+  // A truncated payload, a renamed field, a half-built call — none of them may
+  // be indistinguishable from "delete this category's policy".
+  await rejects(() => call(db, { categoryKey: "caps-beanies" }), "invalid-argument");
+  assert.equal(policyAt(db).hub2.target, 10, "a dropped field must not delete a live policy");
+  assert.deepEqual(history(db), []);
+  // The off switch itself still works, said out loud.
+  await call(db, { categoryKey: "caps-beanies", policy: null });
+  assert.equal(policyAt(db), null);
+});
+
+// ── AN ARMED LOCATION THAT IS NOT A CONFIGURED DESTINATION ───────────────────
+// The census used to read /stock_targets only for Object.keys(config.mode). An
+// armed location outside that set got no targets map at all, so resolveTarget
+// found no explicit rows and the category reported "0 overridden" — while being
+// fully overridden there.
+test("overrides are counted at an armed location even if it is not in config.mode", async () => {
+  invalidateCensusCache();
+  const w = world();
+  w.config.refillEngine.categoryPolicy["caps-beanies"].trophy = { target: 4, minQty: 2 };
+  w.stock.trophy = { c1: { _: { qty: 0 } } };
+  w.stock_targets = { trophy: { c1: { _: { target: 9, minQty: 4 } } } };
+  const db = makeFakeDb(w);
+  const res = await call(db, { action: "census" });
+  const cb = res.categories.find((c) => c.key === "caps-beanies");
+  assert.ok(cb.armed.includes("trophy"));
+  assert.equal(cb.overriddenProducts, 1, "the trophy row must be seen even though trophy has no mode entry");
+  assert.equal(cb.overriddenCells, 1);
+  assert.ok(cb.carriage.trophy, "and carriage must be answered for it");
+});
+
+// ── THE FAKE'S OWN FIDELITY ──────────────────────────────────────────────────
+// Two behaviours a convenient fake gets wrong, both of which would let a real
+// bug pass here. Pinned because the fake is the only database these tests see.
+test("the fake pages in RTDB's key order, not lexicographic order", async () => {
+  const { rtdbKeyOrder } = require("./helpers/fake-rtdb.cjs");
+  // Integer-parseable keys sort NUMERICALLY and come FIRST. Lexicographically
+  // "10" < "9", which is what makes a paging cursor walk backwards forever.
+  assert.deepEqual(rtdbKeyOrder({ "9": 1, "10": 1, "2": 1, b: 1, a: 1 }), ["2", "9", "10", "a", "b"]);
+
+  // And the paged reader must return every record exactly once over such a node.
+  const db = makeFakeDb({ n: Object.fromEntries([...Array(12)].map((_, i) => [String(i + 1), { v: i + 1 }])) });
+  const { readMapPaged } = require("../lib/category-policy-write.cjs");
+  const out = await readMapPaged(db, "n", 5);
+  assert.equal(Object.keys(out).length, 12);
+  assert.deepEqual(Object.keys(out).map(Number).sort((a, b) => a - b), [...Array(12)].map((_, i) => i + 1));
+});
+
+test("the fake leaves array holes rather than re-indexing, as RTDB does", () => {
+  const { normalize } = require("./helpers/fake-rtdb.cjs");
+  // RTDB stores an array as index-keyed children; dropping a null element
+  // leaves a hole and the survivors keep their indices. A fake that compacted
+  // would hand a dense array to a caller that will meet a sparse one in
+  // production.
+  const out = normalize([{ a: 1 }, null, { c: 3 }]);
+  assert.equal(out.length, 3);
+  assert.equal(out[0].a, 1);
+  assert.equal(1 in out, false, "index 1 must be a HOLE, not a shifted element");
+  assert.equal(out[2].c, 3);
+  assert.equal(normalize([null, null]), null);
 });

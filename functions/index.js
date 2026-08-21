@@ -3450,11 +3450,11 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // email so every branch is unit-testable without firebase-admin. This is the
 // wrapper and nothing else.
 //
-// GATE 3 OF 3, and read the module header for the honest limits of it: the root
-// RTDB rules on this database are still `auth !== null` for read AND write, so
-// any signed-in staff account can write the policy node directly through the
-// SDK today and never reach this function. It becomes a real boundary when the
-// console rule printed by scripts/print-engine-policy-rule.mjs is pasted.
+// GATE 3 OF 3, and read the module header for the honest limits of it: live
+// RTDB rules already gate /config/refillEngine on stockRole 'admin', so four
+// staff accounts can write the policy node directly through the SDK today and
+// never reach this function. It becomes a real boundary when the console rule
+// printed by scripts/print-engine-policy-rule.mjs narrows those four to one.
 //
 // DEPLOY BY NAME. functions/ is shared with marathon-pos-app:
 //   firebase deploy --only functions:setCategoryPolicy

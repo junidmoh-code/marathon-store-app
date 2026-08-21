@@ -33,14 +33,16 @@
 // subscription and start no fetch, and a hook cannot live below a conditional
 // return without changing the hook count between renders.
 //
-// NONE OF THAT IS A SECURITY BOUNDARY YET. The root RTDB rules are still
-// `auth !== null` for read AND write, so any signed-in staff account can write
-// the policy node directly through the SDK, bypassing all three gates and every
-// safeguard behind them. The real boundary is the console rule printed by
-// scripts/print-engine-policy-rule.mjs, and it is not live. Do not describe
-// these gates as security until it is.
+// NONE OF THAT IS A SECURITY BOUNDARY YET, and the precise reason is worth
+// stating because an earlier version of this comment got it wrong: live RTDB
+// rules (checked 2026-08-21) have no root ".read" or ".write", and
+// /config/refillEngine is already gated on stockRole 'admin'. So the policy
+// node is writable today by four staff accounts, bypassing all three gates and
+// every safeguard behind them. The console rule printed by
+// scripts/print-engine-policy-rule.mjs narrows those four to one; it is not
+// live. Do not describe these gates as security until it is.
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, BG, CARD, BORDER, GLASS, RADIUS, GRAY, GREEN, RED, AMBER, BLUE, BLUE_L, bGreen, bGray, bGhost, bRed, input } from "./ui";
@@ -123,16 +125,30 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState(null);         // { kind, text }
 
-  const flash = (kind, text) => { setNote({ kind, text }); setTimeout(() => setNote(null), 7000); };
+  // The timer is held and cleared, rather than fired and forgotten. Two real
+  // consequences of the naive version: a second message inside the window
+  // inherited the first one's timer and vanished early, and an unmount left a
+  // pending setNote to run against a dead tree.
+  const flashTimer = useRef(null);
+  const flash = useCallback((kind, text) => {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setNote({ kind, text });
+    flashTimer.current = setTimeout(() => { flashTimer.current = null; setNote(null); }, 7000);
+  }, []);
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
 
   // ONE call, on mount, for the whole list. The counts it returns are derived
   // from /products and /stock, and a browser that read those would download the
   // catalogue and the stock tree onto a phone on a shop network at the owner's
   // expense — so the server pages them and sends back a few kilobytes.
-  const load = useCallback(async () => {
+  //
+  // A warm function instance reuses its last answer for two minutes. `refresh`
+  // is the owner asking for the truth right now; a save drops the cache
+  // server-side, so this is never needed to see one's own change.
+  const load = useCallback(async (refresh = false) => {
     setLoading(true); setError("");
     try {
-      const res = await setCategoryPolicyFn()({ action: "census" });
+      const res = await setCategoryPolicyFn()(refresh ? { action: "census", refresh: true } : { action: "census" });
       setCensus(res.data);
     } catch (e) {
       setError(e?.message || String(e));
@@ -281,7 +297,12 @@ function EnginePolicyAuthed({ viewer, onExit }) {
                 : "No changes recorded yet"}
             </div>
           </div>
-          <button onClick={onExit} style={bGhost}>Back</button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => load(true)} disabled={loading} style={{ ...bGhost, opacity: loading ? .5 : 1 }}>
+              {loading ? "…" : "Refresh"}
+            </button>
+            <button onClick={onExit} style={bGhost}>Back</button>
+          </div>
         </div>
 
         {note && (
@@ -301,7 +322,15 @@ function EnginePolicyAuthed({ viewer, onExit }) {
         </div>
 
         {loading && <div style={{ color: GRAY, padding: "2rem 0" }}>Reading the policy…</div>}
-        {error && <div style={{ ...GLASS, padding: "1rem", color: RED }}>{error}</div>}
+        {error && (
+          // A failed read used to hide the entire list with no way back except
+          // leaving the screen and returning — on a shop network, where a
+          // dropped call is the common case, not the rare one.
+          <div style={{ ...GLASS, padding: "1rem", border: "1px solid rgba(248,113,113,.45)" }}>
+            <div style={{ color: RED, fontSize: ".9rem" }}>Could not read the policy: {error}</div>
+            <button onClick={() => load(true)} style={{ ...bGray, marginTop: ".8rem" }}>Try again</button>
+          </div>
+        )}
 
         {!loading && !error && categories.map((c) => {
           const armed = armedLocations(c.entry);
@@ -314,9 +343,17 @@ function EnginePolicyAuthed({ viewer, onExit }) {
                   <div style={{ fontWeight: 700, fontSize: "1rem" }}>{c.label}</div>
                   <div style={{ color: GRAY, fontSize: ".8rem", marginTop: 2 }}>
                     {c.products} {c.products === 1 ? "product" : "products"} · {c.units} on hand · {c.perSize ? "per size" : "one size"}
+                    {c.legacyRowProducts > 0 && (
+                      // NOT the override chip. A legacy row sits on a size this
+                      // map does not speak for, so it contradicts nothing here —
+                      // but the engine still walks it and it still produces
+                      // refills. Saying "overridden" would have read as "your
+                      // numbers are ignored", which is false.
+                      <span style={{ color: "#6b7280" }}> · {c.legacyRowProducts} with old sized rows</span>
+                    )}
                   </div>
                 </div>
-                <StateChip category={c} armed={armed} />
+                <StateChip category={c} armed={armed} onSetPolicy={() => expand(c)} />
               </div>
 
               {isOpen && (
@@ -389,9 +426,19 @@ function Tile({ label, value, sub }) {
 // The right-hand state. Three, and the middle one is the reason this screen
 // exists: an armed category whose products still carry their own rows is armed
 // in name only for those products.
-function StateChip({ category, armed }) {
+function StateChip({ category, armed, onSetPolicy }) {
   if (!armed.length) {
-    return <span style={{ color: GRAY, fontSize: ".8rem", fontWeight: 700, whiteSpace: "nowrap" }}>No policy · Set policy ▸</span>;
+    return (
+      <span style={{ display: "flex", alignItems: "center", gap: 10, whiteSpace: "nowrap" }}>
+        <span style={{ color: "#4b5563", fontSize: ".8rem" }}>No policy</span>
+        {/* A real button, not a styled span: this is the primary action on an
+            unarmed row, and it has to be reachable by keyboard and announced as
+            an action. The row is click-to-expand too, so the button stops the
+            event rather than firing the same handler twice. */}
+        <button type="button" onClick={(e) => { e.stopPropagation(); onSetPolicy(); }}
+          style={{ ...bGray, padding: "6px 12px", fontSize: ".75rem" }}>Set policy</button>
+      </span>
+    );
   }
   if (category.overriddenProducts > 0) {
     return (
@@ -498,6 +545,7 @@ function PreviewPanel({ preview, keyNow, cap, busy, category }) {
         shop recently said no to, and anything over the per-scan limit — so it can ask
         for less than this, never more.
         {category.overriddenProducts > 0 && ` ${category.overriddenProducts} products in this category are governed by their own rows and are unaffected by any of these numbers.`}
+        {category.legacyRowProducts > 0 && ` A further ${category.legacyRowProducts} carry old rows on sizes this policy does not cover — those keep refilling on their own numbers, and the counts above include them.`}
       </div>
     </div>
   );

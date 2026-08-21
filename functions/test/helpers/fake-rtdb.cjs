@@ -27,8 +27,17 @@ function normalize(v) {
   if (v === null) return null;
   if (Array.isArray(v) || typeof v !== "object") {
     if (Array.isArray(v)) {
-      const kept = v.map(normalize).filter((x) => x !== null);
-      return kept.length ? kept : null;
+      // RTDB stores an array as index-keyed children. Dropping a null element
+      // leaves a HOLE — the surviving elements keep their original indices and
+      // the value comes back sparse (or as an object). Re-indexing here would
+      // hand tests a dense array the real database can never produce, and any
+      // caller doing `(arr || []).map(...)` on the sparse original would throw
+      // in production while passing here.
+      const kept = v.map(normalize);
+      if (kept.every((x) => x === null)) return null;
+      const out = [];
+      kept.forEach((x, i) => { if (x !== null) out[i] = x; });
+      return out;
     }
     return v;
   }
@@ -42,6 +51,23 @@ function normalize(v) {
 }
 
 const parts = (p) => String(p).split("/").filter(Boolean);
+
+// RTDB's key order: integer-parseable keys numerically FIRST, then string keys
+// lexicographically. ONE implementation, used by forEach AND by the query
+// window — they must not disagree. readMapPaged takes its cursor from forEach
+// order and its page from query order, so two orderings meant the paged reader
+// was exercised against a database that cannot exist, and a cursor bug on
+// integer-like keys (bare numeric product or phone keys) would pass here.
+function rtdbKeyCmp(a, b) {
+  const na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
+  if (na && nb) return Number(a) - Number(b);
+  if (na) return -1;
+  if (nb) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function rtdbKeyOrder(obj) {
+  return Object.keys(obj).sort(rtdbKeyCmp);
+}
 
 function readAt(root, path) {
   let cur = root;
@@ -88,17 +114,7 @@ function makeSnapshot(key, value) {
     child: (k) => makeSnapshot(k, value && typeof value === "object" ? (value[k] ?? null) : null),
     forEach: (fn) => {
       if (!value || typeof value !== "object") return false;
-      // RTDB orders integer-parseable keys numerically BEFORE string keys.
-      // Reproduced so a cursor bug that only shows on numeric keys can be
-      // caught here rather than in production.
-      const keys = Object.keys(value).sort((a, b) => {
-        const na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
-        if (na && nb) return Number(a) - Number(b);
-        if (na) return -1;
-        if (nb) return 1;
-        return a < b ? -1 : a > b ? 1 : 0;
-      });
-      for (const k of keys) if (fn(makeSnapshot(k, value[k])) === true) return true;
+      for (const k of rtdbKeyOrder(value)) if (fn(makeSnapshot(k, value[k])) === true) return true;
       return false;
     },
   };
@@ -170,8 +186,14 @@ function makeFakeDb(initial = {}, hooks = {}) {
           if (hooks.beforeRead) await hooks.beforeRead(path, state);
           const v = readAt(state.root, path);
           if (!v || typeof v !== "object") return makeSnapshot(self.key, null);
-          const keys = Object.keys(v).sort();
-          const from = self._startAt ? keys.filter((k) => k >= self._startAt) : keys;
+          const keys = rtdbKeyOrder(v);
+          // startAt is INCLUSIVE and is positional in RTDB's own key order, not
+          // a string comparison — `"10" >= "9"` is false lexicographically and
+          // true here, which is exactly the cursor bug this fake exists to be
+          // able to catch.
+          const i = self._startAt === undefined || self._startAt === null
+            ? 0 : keys.findIndex((k) => rtdbKeyCmp(k, self._startAt) >= 0);
+          const from = i === -1 ? [] : keys.slice(i);
           return makeSnapshot(self.key, Object.fromEntries(from.slice(0, n).map((k) => [k, v[k]])));
         }, startAt(k) { self._startAt = k; return this; } }; },
         startAt(k) { self._startAt = k; return self; },
@@ -182,4 +204,4 @@ function makeFakeDb(initial = {}, hooks = {}) {
   return api;
 }
 
-module.exports = { makeFakeDb, normalize, isEmptyContainer, readAt };
+module.exports = { makeFakeDb, normalize, isEmptyContainer, readAt, rtdbKeyOrder, rtdbKeyCmp };

@@ -15,19 +15,29 @@
 // and any Google account that is not the owner's.
 //
 // ── AND IT IS STILL NOT A SECURITY BOUNDARY, TODAY ───────────────────────────
-// STATE THIS PLAINLY BECAUSE IT IS TRUE: the ROOT RTDB rules on this database
-// are `".read": "auth !== null", ".write": "auth !== null"`. /config has no
-// tighter rule of its own. So ANY signed-in staff account can today write
-// /config/refillEngine/categoryPolicy directly through the client SDK, bypass
-// this function entirely, and neither the validation, the drift check, the
-// rollback snapshot nor the audit entry below would run.
+// STATE THIS PRECISELY, BECAUSE AN EARLIER VERSION OF THIS COMMENT STATED IT
+// CONFIDENTLY AND WRONGLY. It claimed the root RTDB rules were `auth !== null`
+// for read and write and that /config had no tighter rule. That was read off
+// the STALE repo copy of database.rules.json, not off live. Live (checked
+// 2026-08-21 via /.settings/rules.json) has NO root ".read" and NO root
+// ".write" at all — unmatched paths deny — and /config/refillEngine already
+// carries:
+//
+//     ".write": auth != null && sign_in_provider != 'anonymous'
+//               && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'
+//
+// So the policy node is writable by any stockRole 'admin' account — four of
+// them on the live /users node today (Ibrahim, Ahmed, Mike, 2POS) — not by
+// every signed-in staff member, and not by nobody. Any of those four can write
+// it straight from a tablet, bypassing this function entirely, and none of the
+// validation, drift checks, rollback snapshot or audit entry below would run.
 //
 // This function is therefore the only SUPPORTED way to change the policy, and
 // the only one that leaves evidence — but it is not yet the only POSSIBLE way.
-// It becomes a real boundary the moment the console rule printed by
-// scripts/print-engine-policy-rule.mjs is pasted into the Firebase console.
-// Until then, treat every gate in this feature as an operational control, not
-// a security control, and do not tell anyone otherwise.
+// The console rule printed by scripts/print-engine-policy-rule.mjs narrows
+// those four accounts to one. Until it is pasted, treat every gate in this
+// feature as an operational control, not a security control, and do not tell
+// anyone otherwise.
 //
 // ── WHY THE HISTORY IS WRITTEN BEFORE THE MUTATION ───────────────────────────
 // A rollback snapshot written afterwards is a snapshot you do not have when the
@@ -163,6 +173,10 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   for (const src of [config.categoryPolicy?.[categoryKey], policyAfter]) {
     if (src && typeof src === "object") for (const k of Object.keys(src)) if (k !== "perSize") involved.add(k);
   }
+  // Sources too: a leg's requests are capped by what its source can pick, so a
+  // preview that never read the source's stock would report requests the engine
+  // will not create.
+  for (const loc of [...involved]) { const src = config.routes?.[loc]; if (src) involved.add(src); }
   // Carriage has to be answered for EVERY location the card can offer, not just
   // the armed ones — "Not carried" is the reason a row is not editable, so the
   // card needs the answer for the rows it greys out too.
@@ -190,25 +204,62 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
 // the product count, units on hand, which locations carry it, whether it is
 // armed, and how many products are overridden by their own explicit rows.
 //
-// It is here rather than in the browser for one reason: every one of those
-// numbers is derived from /products and /stock, and a client that read those
-// would be downloading the catalogue and the whole stock tree onto a phone on a
-// shop network, on every visit, at the owner's expense. The server pages them
-// and returns a few kilobytes of answers.
+// ── WHAT THIS COSTS, STATED HONESTLY ────────────────────────────────────────
+// Paging a node is not the same as not reading it. This walks the WHOLE of
+// /products, because there is no index on categoryKey and every category has
+// to be counted — an unarmed one is exactly what the "Set policy" button is
+// for. Paging bounds each request and makes it resumable; it does not make the
+// bytes free. So two things reduce the bill instead of pretending it away:
 //
-// The override count is the expensive part and it is worth the cost: a map edit
-// that appears to do nothing is the most confusing thing this system does, and
-// the reason is always an explicit row outranking the map.
+//   1. STOCK IS READ FOR DESTINATIONS + CENTRAL ONLY. It used to walk every
+//      key in /locations — including base, studio, in_transit, hub1 and hub3,
+//      none of which the card can arm or offer. central is in because it is
+//      the only place a hub deficit can be filled from and "Central holds N"
+//      is half of every verdict.
+//   2. A WARM INSTANCE REUSES THE LAST ANSWER for CENSUS_TTL_MS. The owner
+//      opening the screen, expanding a row, saving and looking again is four
+//      calls in two minutes; without this it was four full catalogue reads.
+//      The cache is per-instance and in-memory — it dies with the instance,
+//      is never shared between callers, and is dropped outright whenever a
+//      write lands, so a save is never followed by a stale list.
+//
+// It is still server-side rather than in the browser for the original reason:
+// a client deriving these numbers would download the catalogue and the stock
+// tree onto a phone on a shop network on every visit.
+//
+// The override count is the expensive part of the computation and is worth it:
+// a map edit that appears to do nothing is the most confusing thing this
+// system does, and the reason is always an explicit row outranking the map.
+const CENSUS_TTL_MS = 120000;
+let censusCache = null;    // { at, key, payload } — per-instance, never shared
+
+function invalidateCensusCache() { censusCache = null; }
+
 async function buildCensus(db, { config, taxonomy, knownLocations }) {
   const policy = isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {};
   const cats = isPlainObject(taxonomy?.cats) ? taxonomy.cats : {};
   const keys = [...new Set([...Object.keys(policy), ...Object.keys(cats)])].sort();
 
+  const destinations = Object.keys(config.mode || {});
+  // Every location the map ALREADY names, even one that is not a configured
+  // destination. Without this an armed-but-not-a-destination location got
+  // `targets[loc] === undefined`, so resolveTarget found no explicit row and
+  // the census reported "0 overridden" for a category that was in fact fully
+  // overridden there — the single number this screen is built around.
+  const armedAnywhere = new Set();
+  for (const entry of Object.values(isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {})) {
+    if (isPlainObject(entry)) for (const k of Object.keys(entry)) if (k !== "perSize" && isPlainObject(entry[k])) armedAnywhere.add(k);
+  }
+  // The locations the card can show, arm, or reason about — plus central, the
+  // only place a hub deficit can be filled from. Reading the rest (studio,
+  // in_transit, base) was reading them for nothing.
+  const stockLocs = [...new Set([...destinations, ...armedAnywhere, "central"])];
+  const rowLocs = [...new Set([...destinations, ...armedAnywhere])];
+
   const products = await readMapPaged(db, "products");
   const stock = {}, targets = {}, openIndex = {};
-  for (const loc of knownLocations) stock[loc] = await readMapPaged(db, `stock/${loc}`);
-  const destinations = Object.keys(config.mode || {});
-  for (const loc of destinations) {
+  for (const loc of stockLocs) stock[loc] = await readMapPaged(db, `stock/${loc}`);
+  for (const loc of rowLocs) {
     targets[loc] = await readMapPaged(db, `stock_targets/${loc}`);
     openIndex[loc] = await readMapPaged(db, `refill_engine/open/${loc}`);
   }
@@ -217,13 +268,13 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   for (const key of keys) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
     const armed = entry ? Object.keys(entry).filter((k) => k !== "perSize" && isPlainObject(entry[k])) : [];
-    const { pids, byLocation } = carriageForCategory({ products, stock, categoryKey: key, locations: knownLocations });
+    const { pids, byLocation } = carriageForCategory({ products, stock, categoryKey: key, locations: stockLocs });
     // resolveTarget is only run where the map is armed. An unarmed category
     // resolves nothing through it by definition, and walking every product at
     // every location for forty categories would be a minute of nothing.
     const m = armed.length
       ? modelCategoryPolicy({ config, products, stock, targets, openIndex, categoryKey: key,
-          locations: knownLocations, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent })
+          locations: stockLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent })
       : null;
     categories.push({
       key,
@@ -239,6 +290,16 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       carriage: byLocation,
       overriddenProducts: m ? m.overriddenProducts : 0,
       overriddenCells: m ? m.legs.reduce((n, l) => n + l.overrides, 0) : 0,
+      // Explicit rows the engine honours on sizes this map does not speak for.
+      // Not an override — a cleanup backlog, and a different sentence.
+      legacyRowProducts: m ? m.legacyRowProducts : 0,
+      legacyRowCells: m ? m.legacyRowCells : 0,
+      // Both, because "how many resolve the map" has two honest answers and
+      // reporting only one of them invited the wrong comparison: the override
+      // figure next to it is per PRODUCT, so a cells-only number here read as
+      // though the two could be subtracted.
+      resolvesMapCells: m ? m.legs.reduce((n, l) => n + (l.cells - l.overrides), 0) : 0,
+      resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
     });
   }
   return { categories, destinations };
@@ -272,11 +333,23 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   // Read-only. Reached only after the owner check above, so a refused caller
   // does not get a catalogue-wide census either.
   if (d.action === "census") {
-    const census = await buildCensus(db, { config: cfg, taxonomy, knownLocations });
+    // The cache key includes the live policy, so arming a category through any
+    // other route (a script, the console) invalidates it too — the cache can
+    // go stale on stock movements within the TTL, never on the policy itself,
+    // which is what this screen is actually about. `refresh: true` skips it.
+    const key = canonical({ policy: cfg.categoryPolicy ?? null, cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null });
+    const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
+    const census = fresh && d.refresh !== true
+      ? censusCache.payload
+      : await buildCensus(db, { config: cfg, taxonomy, knownLocations });
+    if (!fresh || d.refresh === true) censusCache = { at: nowMs, key, payload: census };
     return {
       ok: true,
       action: "census",
       ...census,
+      // History is ALWAYS read live, never from the cache: it is the audit
+      // trail, and a stale audit trail is worse than a slow one.
+      cached: fresh && d.refresh !== true,
       locations: knownLocations,
       cap: cfg.maxIntentsPerRun ?? null,
       maxUnitsPerIntent: cfg.maxUnitsPerIntent ?? null,
@@ -285,7 +358,17 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     };
   }
 
-  const policyAfter = normalizePolicy(d.policy === undefined ? null : d.policy);
+  // ── UN-ARMING MUST BE SAID, NOT IMPLIED ───────────────────────────────────
+  // `policy: null` is the documented off switch and stays legal. An ABSENT
+  // policy field is refused outright: a truncated payload, a renamed field or a
+  // half-built call would otherwise be indistinguishable from a deliberate
+  // "delete this category's policy", and would silently un-arm a live category
+  // with only the audit entry to show for it.
+  if (!("policy" in d)) {
+    throw httpsError("invalid-argument",
+      'policy is required — send `policy: null` to un-arm a category. Omitting it is refused, because a dropped field must not delete a live policy.');
+  }
+  const policyAfter = normalizePolicy(d.policy);
   const err = validateCategoryPolicy(categoryKey, policyAfter, { knownLocations, knownCategoryKeys });
   if (err) throw httpsError("invalid-argument", err);
 
@@ -351,6 +434,10 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   }
 
   await db.ref(`${POLICY_PATH}/${categoryKey}`).set(policyAfter);
+  // A save must never be followed by a stale list. The key check above would
+  // catch this anyway; dropping it outright means one fewer thing to reason
+  // about at the moment it matters most.
+  invalidateCensusCache();
 
   // ── POST-VERIFY ───────────────────────────────────────────────────────────
   const written = await val(db, `${POLICY_PATH}/${categoryKey}`);
@@ -369,6 +456,6 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 }
 
 module.exports = {
-  applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, normalizePolicy, canonical, sameValue,
+  applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
   HISTORY_PATH, POLICY_PATH, httpsError, readMapPaged,
 };

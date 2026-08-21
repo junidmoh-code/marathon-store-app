@@ -25,13 +25,19 @@
 // ── AND IT IS NOT A SECURITY BOUNDARY ────────────────────────────────────────
 // Say it plainly: this runs in the browser, and anyone can edit their own
 // JavaScript. It stops the wrong person opening the screen; it does not stop a
-// determined one writing the policy node, because the ROOT RTDB rules on this
-// database are still `auth !== null` for read AND write. The real boundary is
-// the console rule printed by scripts/print-engine-policy-rule.mjs, and it is
-// not live yet. The third gate — setCategoryPolicy's own server-side email
-// check — is the only one an attacker cannot reach around, and even it can be
-// bypassed by writing /config/refillEngine/categoryPolicy directly until that
-// rule is pasted.
+// determined one writing the policy node.
+//
+// Be precise about what that hole actually is, because an earlier version of
+// this comment was confidently wrong about it. Live RTDB rules (checked
+// 2026-08-21) have NO root ".read" or ".write" — unmatched paths deny — and
+// /config/refillEngine is already gated on stockRole 'admin'. So the node is
+// writable by four staff accounts, not by everyone and not by nobody. The
+// console rule printed by scripts/print-engine-policy-rule.mjs narrows those
+// four to one; it is not live yet.
+//
+// The third gate — setCategoryPolicy's own server-side email check — is the
+// only one an attacker cannot reach around, and even it is bypassed by writing
+// /config/refillEngine/categoryPolicy directly until that rule is pasted.
 
 import { ADMIN_EMAIL } from "../components/PermissionsContext";
 

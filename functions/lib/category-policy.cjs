@@ -65,6 +65,11 @@ const POLICY_FIELDS = ["target", "minQty", "reorderPoint"];
 // — `have > -1` is true for every non-negative on-hand, so the cell would never
 // be replenished again.
 const MAX_TARGET = 500;
+
+// Mirrors of refill-engine.cjs's own fallbacks, so an absent config key models
+// what the engine would actually do rather than what is convenient here.
+const ENGINE_DEFAULT_MAX_UNITS_PER_INTENT = 20;
+const ENGINE_DEFAULT_MAX_INTENTS_PER_RUN = 200;
 const MAX_REORDER_POINT = 500;
 
 // `visors` was re-keyed out of the live map deliberately and carries NO policy.
@@ -226,7 +231,13 @@ function modelCategoryPolicy({
     : [];
   const perSize = isPlainObject(cat) && cat.perSize === true;
   const ctx = { targets, config, products, stock };
-  const capUnits = typeof maxUnitsPerIntent === "number" && maxUnitsPerIntent > 0 ? maxUnitsPerIntent : Infinity;
+  // THE ENGINE'S OWN DEFAULTS, not convenient ones. refill-engine.cjs falls
+  // back to 20 units per intent and 200 intents per run when the config keys
+  // are absent. Defaulting to Infinity/null here made the model overstate units
+  // by up to 10x on an absent key, and quietly disabled the over-cap warning
+  // altogether — both in the direction of a preview the owner cannot trust.
+  const capUnits = typeof maxUnitsPerIntent === "number" && maxUnitsPerIntent > 0
+    ? maxUnitsPerIntent : ENGINE_DEFAULT_MAX_UNITS_PER_INTENT;
   const routes = config?.routes && typeof config.routes === "object" ? config.routes : {};
   const qtyAt = (loc, pid, sizeKey) =>
     Math.max(typeof stock?.[loc]?.[pid]?.[sizeKey]?.qty === "number" ? stock[loc][pid][sizeKey].qty : 0, 0);
@@ -248,28 +259,75 @@ function modelCategoryPolicy({
 
   const legs = [];
   const overriddenPids = new Set();
+  const legacyPids = new Set();
   for (const loc of armedLocs) {
     let cells = 0, wouldRequest = 0, unitsWanted = 0, silent = 0, atTarget = 0, onHand = 0, overrides = 0;
-    let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0;
-    const overrideRows = [];
+    let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0, legacyRows = 0;
+    const overrideRows = [], legacyRowList = [];
     const src = routes[loc] || null;
     for (const pid of pids) {
-      // The sizes the deficit loop would walk for this cell — sizesFor()'s
-      // category branch, exactly: one-size mode walks "_" alone, per-size mode
-      // walks every declared catalogue size.
-      const sizes = perSize ? (products[pid]?.sizes || []).map(String).filter((s) => s !== "_") : ["_"];
+      // ── THE SIZES THE DEFICIT LOOP WOULD ACTUALLY WALK ────────────────────
+      // sizesFor() (refill-engine.cjs) STARTS from the explicit rows that
+      // already exist for this cell and then ADDS the map's sizes. Deriving the
+      // list from the map alone was a real hole, and it hid the one number this
+      // screen is built around: a one-size category whose legacy products still
+      // carry letter rows would report "0 overridden" and "asks for nothing"
+      // while the engine issued requests off those very rows — exactly the
+      // "79 fitted caps still carry introduce-existing letter rows" case.
+      //
+      // Keyed by ENCODED size, like the engine's Set, so a product declaring
+      // both "5.5" and "5 5" (both encode to 5_5) is walked once rather than
+      // twice — walked twice it would double-count the cell and double-reserve
+      // against the source.
+      const bySizeKey = new Map();
+      const add = (raw) => { const k = encodeSizeKey(raw); if (!bySizeKey.has(k)) bySizeKey.set(k, raw); };
+      for (const k of Object.keys(targets?.[loc]?.[pid] || {})) {
+        // Recover the declared size this row is about, so resolveTarget is
+        // asked the same question the engine asks it. A row on a size the
+        // product no longer declares still counts — the engine honours it.
+        const declared = (products[pid]?.sizes || []).map(String).find((sz) => encodeSizeKey(sz) === k);
+        add(declared === undefined ? k : declared);
+      }
+      if (perSize) for (const sz of (products[pid]?.sizes || []).map(String)) { if (sz !== "_") add(sz); }
+      else add("_");
+
+      // The sizes THIS map entry speaks for, encoded — the test that separates
+      // an override from a legacy row below.
+      const mapSpeaksFor = new Set(perSize
+        ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_").map(encodeSizeKey)
+        : ["_"]);
+
       let pidOverridden = false;
-      for (const size of sizes) {
-        const sizeKey = encodeSizeKey(size);
+      for (const [sizeKey, size] of bySizeKey) {
         const t = resolveTarget(ctx, loc, pid, size);
         if (!t || t.target <= 0) continue;
         cells += 1;
         if (t.source === "explicit") {
-          overrides += 1;
-          pidOverridden = true;
-          if (overrideRows.length < 200) {
-            overrideRows.push({ pid, name: products[pid]?.name || "", size: sizeKey, target: t.target,
-              minQty: t.minQty ?? null, reorderPoint: t.reorderPoint ?? null });
+          // ── OVERRIDE vs LEGACY ROW — a distinction worth the extra field ───
+          // An explicit row only OVERRIDES THE MAP when it sits on a size the
+          // map actually speaks for: the "_" cell in one-size mode, a declared
+          // size in per-size mode. A row on any other size is a LEGACY ROW —
+          // the engine walks it and it produces real requests, but the map was
+          // never going to govern that cell, so it contradicts nothing.
+          //
+          // Conflating the two is not academic. Measured on the live estate
+          // 2026-08-21, caps-beanies has 188 explicit rows on 94 products and
+          // EVERY ONE is on a letter size (S or M) left behind by the headwear
+          // one-size collapse — while the map is one-size and speaks only for
+          // "_". Reported as overrides that reads "94 products ignore your
+          // numbers", which is false and would have stopped a correct change.
+          // Reported as legacy rows it reads "94 products still carry old
+          // sized rows", which is true and is a cleanup task.
+          const row = { pid, name: products[pid]?.name || "", size: sizeKey, target: t.target,
+            minQty: t.minQty ?? null, reorderPoint: t.reorderPoint ?? null };
+          if (mapSpeaksFor.has(sizeKey)) {
+            overrides += 1;
+            pidOverridden = true;
+            if (overrideRows.length < 200) overrideRows.push(row);
+          } else {
+            legacyRows += 1;
+            legacyPids.add(pid);
+            if (legacyRowList.length < 200) legacyRowList.push(row);
           }
         }
         const have = qtyAt(loc, pid, sizeKey);
@@ -306,6 +364,7 @@ function modelCategoryPolicy({
       source: src,
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
       inFlight, parkedNoSource, parkedNothingAnywhere,
+      legacyRows, legacyRowList,
       // Everything below target that produces no request: in flight, nothing
       // anywhere, or the source is empty. The card shows this so "0 requests"
       // never reads as "0 shortfall".
@@ -328,7 +387,8 @@ function modelCategoryPolicy({
 
   const totalRequests = legs.reduce((n, l) => n + l.wouldRequest, 0);
   const totalUnits = legs.reduce((n, l) => n + l.unitsWanted, 0);
-  const cap = typeof maxIntentsPerRun === "number" && maxIntentsPerRun > 0 ? maxIntentsPerRun : null;
+  const cap = typeof maxIntentsPerRun === "number" && maxIntentsPerRun > 0
+    ? maxIntentsPerRun : ENGINE_DEFAULT_MAX_INTENTS_PER_RUN;
   return {
     categoryKey,
     perSize,
@@ -341,6 +401,10 @@ function modelCategoryPolicy({
     totalUnits,
     overriddenProducts: overriddenPids.size,
     overriddenProductIds: [...overriddenPids],
+    // Rows the engine honours on sizes the map does not speak for. Not an
+    // override — a cleanup backlog.
+    legacyRowCells: legs.reduce((n, l) => n + l.legacyRows, 0),
+    legacyRowProducts: legacyPids.size,
     cap,
     // The cap is GLOBAL and dealt round-robin across destinations — every other
     // clothing category competes for the same 75. Over it means this category
@@ -360,6 +424,7 @@ const defaultMinQty = (target) => (typeof target === "number" && target > 0 ? Ma
 
 module.exports = {
   POLICY_FIELDS, MAX_TARGET, MAX_REORDER_POINT, REFUSED_CATEGORY_KEYS,
+  ENGINE_DEFAULT_MAX_UNITS_PER_INTENT, ENGINE_DEFAULT_MAX_INTENTS_PER_RUN,
   validatePolicyEntry, validateCategoryPolicy, diffCategoryPolicy,
   carriageForCategory, modelCategoryPolicy, defaultMinQty,
 };
