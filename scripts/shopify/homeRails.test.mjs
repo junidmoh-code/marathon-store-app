@@ -16,6 +16,7 @@ import {
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
 
 const HOME = new URL("../../theme/sections/marathon-home.liquid", import.meta.url).pathname;
+const NAV = new URL("../../theme/snippets/marathon-nav.liquid", import.meta.url).pathname;
 
 function themeSetting(id) {
   const src = readFileSync(HOME, "utf8");
@@ -114,6 +115,67 @@ describe("the shipped theme default IS the generated one", () => {
       expect(COLLECTION_BY_KEY.get(key), `row "${row}"`).toBeTruthy();
       expect(label).toBeTruthy();
       expect(tag).toBeTruthy();
+    }
+  });
+});
+
+// ── THE NAVIGATION TREE ──────────────────────────────────────────────────────
+// The navigation carries its own tree, deliberately: it is a two-level shopper
+// hierarchy, not the flat ranked list the home rails use, and the two answer
+// different questions. What they MUST agree on is that every tag they name is a
+// tag products actually carry — a nav row pointing at /collections/all/{tag}
+// for a tag on no product is a dead end, which is the one thing the whole
+// tag-driven design exists to avoid.
+describe("navigation tags are real", () => {
+  const routedTags = (() => {
+    const known = new Set();
+    for (const pair of Object.keys(CATEGORY_MAP)) {
+      const [cat, sub] = pair.split("|");
+      known.add(cat);
+      if (sub !== "*") known.add(sub);
+    }
+    return known;
+  })();
+
+  // The `rows` assign: 'Label~kind~target[~child,child,…];…'
+  const navRows = (() => {
+    const src = readFileSync(NAV, "utf8");
+    const m = src.match(/assign rows = '([^']+)'/);
+    if (!m) throw new Error("could not find the nav `rows` table — did it move?");
+    return m[1].split(";").map((r) => r.split("~"));
+  })();
+
+  it("found the tree", () => expect(navRows.length).toBeGreaterThan(3));
+
+  it("every tag row names a tag products carry", () => {
+    for (const [label, kind, target] of navRows) {
+      if (kind !== "tag") continue;
+      expect(routedTags.has(target), `nav row "${label}" -> tag "${target}"`).toBe(true);
+    }
+  });
+
+  it("every child names a tag products carry", () => {
+    for (const row of navRows) {
+      for (const kid of (row[3] || "").split(",").filter(Boolean)) {
+        expect(routedTags.has(kid), `nav child "${kid}"`).toBe(true);
+      }
+    }
+  });
+
+  it("every collection row names a real collection", () => {
+    for (const [label, kind, target] of navRows) {
+      if (kind !== "collection") continue;
+      expect(COLLECTION_BY_KEY.get(target), `nav row "${label}" -> "${target}"`).toBeTruthy();
+    }
+  });
+
+  it("no label or tag carries a brand trigger", () => {
+    for (const row of navRows) {
+      expect(triggersInText(row[0])).toEqual([]);
+      if (row[1] === "tag") expect(triggersInText(row[2])).toEqual([]);
+      for (const kid of (row[3] || "").split(",").filter(Boolean)) {
+        expect(triggersInText(kid)).toEqual([]);
+      }
     }
   });
 });

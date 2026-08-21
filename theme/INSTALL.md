@@ -261,6 +261,26 @@ product page.
 
 ---
 
+## Refreshing what the home page leads on
+
+The home page's running order is POS sell-through, measured once and stored in a
+theme setting so the page has no runtime dependency on anything. To refresh it:
+
+```
+node scripts/shopify/sell-through.mjs
+```
+
+It reads only, prints the measured order, and then prints a **paste-ready**
+value for **Theme editor → Home rails → "Rail order"**. Paste that line in
+whole. Do not hand-type it: each row is `Label~tag~collection-handle`, the three
+are different strings (the tag "Tracksuits & Sets" belongs to the collection
+"tracksuits"; "Perfume" belongs to "fragrance"), and a row in any other shape is
+skipped silently.
+
+Sell-through moves over months, so once or twice a year is plenty.
+
+---
+
 ## Known issues, in this theme, not fixed here
 
 **The product template shows the condition grade below Add to cart.** The grade
@@ -286,5 +306,23 @@ node scripts/shopify/sync-collections.mjs --commit    # apply
 ```
 
 It writes Shopify collection membership only. Nothing is created, archived,
-deleted or unpublished, and no RTDB node is touched. Expect it to take a while —
-it reads current membership for 3,457 products before it plans anything.
+deleted or unpublished, and no RTDB node is touched.
+
+**The dry run was already done** — 2026-08-21, took roughly an hour because it
+reads current membership for all 3,457 products before it plans anything:
+
+```
+would-change: 515 · already-correct: 154 · failed: 49 · live-drift: 3
+```
+
+The 49 failures are all `fetch failed` — transient network, not refusals — and
+the script is idempotent, so a second run picks them up. The 3 drift rows are
+pre-existing and are reported, never touched: three products that
+`/shopify_publish` believes are live but that Shopify does not publish to the
+Online Store (`Jean black Y8105`, `JEAN Y8161`, `JEAN BLUE Y8161`). Switching
+each off and on again in the publishing page reconciles them.
+
+**I did not run `--commit`.** The storefront does not need it — the navigation
+reaches all 703 products by tag either way — and 515 membership writes on a live
+shop is a change worth watching happen rather than finding done. Run it when you
+have a few minutes to look at the result.
