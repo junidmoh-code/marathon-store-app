@@ -25,7 +25,7 @@
 // This function is therefore the only SUPPORTED way to change the policy, and
 // the only one that leaves evidence — but it is not yet the only POSSIBLE way.
 // It becomes a real boundary the moment the console rule printed by
-//
+// scripts/print-engine-policy-rule.mjs is pasted into the Firebase console.
 // Until then, treat every gate in this feature as an operational control, not
 // a security control, and do not tell anyone otherwise.
 //
