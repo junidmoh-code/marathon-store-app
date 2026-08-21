@@ -49,11 +49,16 @@ function world(overrides = {}) {
     products: {
       c1: { name: "Black Cap", categoryKey: "caps-beanies", sizes: ["_"], productType: "clothing" },
       c2: { name: "Grey Beanie", categoryKey: "caps-beanies", sizes: ["_"], productType: "clothing" },
+      // c3 is the SOURCE-EMPTY case: stock exists at central, but PE's source
+      // is hub2, and hub2 has none. The engine's actionable-only rule says PE
+      // gets no card — the central->hub2 leg is created first and PE's leg
+      // appears on the NEXT scan, once hub2 has received.
+      c3: { name: "Red Cap", categoryKey: "caps-beanies", sizes: ["_"], productType: "clothing" },
     },
     stock: {
-      central: { c1: { _: { qty: 40 } }, c2: { _: { qty: 0 } } },
-      hub2: { c1: { _: { qty: 3 } }, c2: { _: { qty: 0 } } },
-      "marathon-pe": { c1: { _: { qty: 1 } }, c2: { _: { qty: 0 } } },
+      central: { c1: { _: { qty: 40 } }, c2: { _: { qty: 0 } }, c3: { _: { qty: 20 } } },
+      hub2: { c1: { _: { qty: 3 } }, c2: { _: { qty: 0 } }, c3: { _: { qty: 0 } } },
+      "marathon-pe": { c1: { _: { qty: 1 } }, c2: { _: { qty: 0 } }, c3: { _: { qty: 0 } } },
     },
     ...overrides,
   };
@@ -236,7 +241,7 @@ test("dryRun answers the question and touches nothing", async () => {
   assert.equal(policyAt(db).hub2.reorderPoint, 0, "a preview must not mutate the policy");
   // The preview is the model, per leg, before and after.
   assert.equal(res.preview.after.categoryKey, "caps-beanies");
-  assert.equal(res.preview.after.products, 2);
+  assert.equal(res.preview.after.products, 3);
   assert.equal(res.preview.after.legs.length, 2);
   const pe = res.preview.after.legs.find((l) => l.loc === "marathon-pe");
   // PE keeps 5, holds 1 of c1, and hub2 has 3 to give → one request for 4.
@@ -248,7 +253,21 @@ test("dryRun answers the question and touches nothing", async () => {
   // could complete.
   assert.equal(pe.unitsWanted, 3);
   assert.equal(pe.parkedNothingAnywhere, 1);
-  assert.equal(res.preview.after.centralOnHand, 40);
+  // THE ACTIONABLE-ONLY RULE. c3 sits 5 short at PE with 20 units at central —
+  // but PE draws from hub2, and hub2 has none. No card is written for work
+  // nobody can complete; it parks until the central->hub2 leg lands. Without
+  // this gate the model reported 293 day-one requests for caps-beanies where
+  // the real engine creates 0.
+  assert.equal(pe.parkedNoSource, 1);
+  assert.equal(pe.wouldRequest, 1, "only c1 is fillable from hub2 right now");
+  const hub2 = res.preview.after.legs.find((l) => l.loc === "hub2");
+  // hub2 keeps 10 with "Ask at" 2. c1 sits at 3, above the point, so it stays
+  // SILENT — that is what an Ask at buys. c3 is at 0 and central has 20, so it
+  // is the one request.
+  assert.equal(hub2.wouldRequest, 1);
+  assert.equal(hub2.silent, 1);
+  assert.equal(hub2.unitsWanted, 10);
+  assert.equal(res.preview.after.centralOnHand, 60);
   // A dryRun is a question, so it is answered even when the world has moved.
   const drifted = makeFakeDb(world());
   await drifted.ref("config/refillEngine/categoryPolicy/caps-beanies/hub2/target").set(99);
@@ -317,8 +336,8 @@ test("the census answers the list without the browser reading /products or /stoc
   const keys = res.categories.map((c) => c.key).sort();
   assert.deepEqual(keys, ["caps-beanies", "t-shirts", "visors"]);
   const cb = res.categories.find((c) => c.key === "caps-beanies");
-  assert.equal(cb.products, 2);
-  assert.equal(cb.units, 44);                       // 40 central + 3 hub2 + 1 PE
+  assert.equal(cb.products, 3);
+  assert.equal(cb.units, 64);                       // 40+3+1 of c1, plus 20 of c3 at central
   assert.deepEqual(cb.armed.sort(), ["hub2", "marathon-pe"]);
   assert.equal(cb.carriage.trophy.carries, false);  // trophy holds no cap cell
   assert.equal(cb.carriage.hub2.carries, true);
