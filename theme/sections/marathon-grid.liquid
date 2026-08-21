@@ -1,0 +1,116 @@
+{%- comment -%}
+  ─── THE PHOTO GRID ─────────────────────────────────────────────────────────
+
+  The browsing surface. Everything in the current collection, listed, as
+  photographs. Replaces Dawn's `main-collection-product-grid` on the collection
+  template.
+
+  IT IS SERVER-RENDERED AND PAGINATED, which is what makes the quick view safe:
+  the address bar can carry a real product URL because there is a real product
+  page behind it, and a crawler walking this grid finds ordinary <a> links to
+  ordinary pages. Nothing here is a single-page app.
+
+  IT ALSO SERVES TAG-FILTERED URLS. Shopify applies /collections/all/{tag} to
+  `collection.products` before the template runs, so this same section renders
+  /collections/sneakers and /collections/all/tracksuits-sets identically without
+  knowing which it is. That is what lets the navigation address the whole
+  catalogue by tag (see snippets/marathon-nav.liquid for why it must).
+{%- endcomment -%}
+
+{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+
+{%- render 'marathon-nav' -%}
+
+{%- liquid
+  assign here = collection.current_tags.first
+  assign all_tags = collections.all.all_tags
+  assign footwear = 'Sneakers,Boots,Sandals & Slides,Soccer Boots' | split: ','
+  assign everything_else = 'Tracksuits & Sets,Caps & Hats,Jerseys,Polos,Jeans & Denim,Jackets & Coats,Hoodies & Sweatshirts,T-Shirts,Shorts & Vests,Bags,Perfume' | split: ','
+
+  # The sibling strip shows the categories a shopper would move to NEXT, which
+  # for a shoe is the other shoes. Anything else gets the general row.
+  assign siblings = everything_else
+  if footwear contains here
+    assign siblings = footwear
+  endif
+-%}
+
+<div class="page-width mc-page">
+  <header class="mc-head">
+    <h1 class="mc-head__title">
+      {%- if here != blank -%}
+        {{ collection.current_tags | join: ' · ' }}
+      {%- else -%}
+        {{ collection.title | default: 'Everything' }}
+      {%- endif -%}
+    </h1>
+    <p class="mc-head__count">
+      {{ collection.products_count }} {% if collection.products_count == 1 %}item{% else %}items{% endif %}
+    </p>
+  </header>
+
+  {%- comment -%}
+    THE SIBLING STRIP — "where else can I go", stated rather than hidden behind
+    a dropdown. Every entry is checked against `all_tags`, so it can never offer
+    a dead end.
+  {%- endcomment -%}
+  {%- if here != blank -%}
+    <div class="mc-siblings">
+      {%- for s in siblings -%}
+        {%- if all_tags contains s -%}
+          <a href="{{ s | handleize | prepend: '/collections/all/' }}"
+             {% if s == here %}aria-current="page"{% endif %}>{{ s }}</a>
+        {%- endif -%}
+      {%- endfor -%}
+    </div>
+  {%- endif -%}
+
+  {%- paginate collection.products by section.settings.per_page -%}
+    {%- if collection.products.size == 0 -%}
+      {%- comment -%}
+        Degrade rather than break. A category that has sold out says so in a
+        sentence and offers the way back, instead of rendering an empty grid.
+      {%- endcomment -%}
+      <p class="mc-empty">
+        Nothing in this section right now. <a href="/collections/all">See everything</a>.
+      </p>
+    {%- else -%}
+      <div class="mc-grid">
+        {%- for product in collection.products -%}
+          {%- comment -%} The first row is eager. Five, not two: the grid is
+            five columns at >=1400px, and a lazy card in the opening row renders
+            as an empty frame until the scroll handler fires. Below that width
+            the extra eager images are still above or just below the fold.
+          {%- endcomment -%}
+          {%- assign lazy = 'lazy' -%}
+          {%- if forloop.index <= 5 -%}{%- assign lazy = 'eager' -%}{%- endif -%}
+          {%- render 'marathon-card', product: product, lazy: lazy -%}
+        {%- endfor -%}
+      </div>
+
+      {%- if paginate.pages > 1 -%}
+        {{ paginate | default_pagination }}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endpaginate -%}
+</div>
+
+<script src="{{ 'marathon-storefront.js' | asset_url }}" defer="defer"></script>
+
+{% schema %}
+{
+  "name": "Photo grid",
+  "settings": [
+    {
+      "type": "range",
+      "id": "per_page",
+      "min": 12,
+      "max": 48,
+      "step": 4,
+      "default": 24,
+      "label": "Products per page"
+    }
+  ],
+  "presets": [{ "name": "Photo grid" }]
+}
+{% endschema %}

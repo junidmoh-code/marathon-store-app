@@ -1,0 +1,130 @@
+{%- comment -%}
+  ─── CATEGORY NAVIGATION ────────────────────────────────────────────────────
+
+  WHY THIS IS NOT A SHOPIFY MENU. Two reasons, both measured on the live shop.
+
+  1. The app cannot build one. `read_online_store_navigation` and
+     `write_online_store_navigation` are both ACCESS_DENIED for this app
+     (probed 2026-08-15, see scripts/shopify/print-menu-plan.mjs), so a menu is
+     hand-built in the admin and then drifts. The live Main menu today holds
+     five rows — Home, New In, Sneakers, Caps & Hats, Under R500 — against a
+     catalogue of sixteen categories. Eleven categories have no way in at all.
+
+  2. The COLLECTIONS cannot be trusted as the source either. Measured
+     2026-08-21 across all 703 live products:
+
+         collection        on shop   should hold
+         sneakers              117           324
+         caps-hats               4            65
+         tracksuits              0            64
+         clothing                0            74
+         bags                    0            34
+         fragrance               0            17
+         pants                   0            27
+         jackets                 0            22
+         hoodies-sweats          0            18
+         t-shirts                0            14
+         soccer-boots            0             2
+         shorts                  0             4
+
+     559 of 703 live products are in NO category collection. Navigation built
+     from collections would show a shopper 117 of 324 sneakers and would not
+     offer tracksuits at all — while 64 tracksuits are live and tracksuits are
+     the SECOND best-selling category in the shop.
+
+  SO THIS NAVIGATES BY TAG. Every live product carries exactly its category and
+  subcategory as tags (verified: 703/703), and Shopify serves a real,
+  server-rendered, paginated, crawlable page at /collections/all/{tag}. That
+  URL is complete and correct today, needs no admin work, needs no data
+  migration, and STAYS correct when new products are pushed. If the collections
+  are ever repaired (`node scripts/shopify/sync-collections.mjs --commit`) these
+  URLs keep working unchanged — there is nothing to migrate either way.
+
+  EMPTY ROWS CANNOT APPEAR. `collections.all.all_tags` lists only tags that are
+  on at least one published product, so a row is rendered only if the tag is in
+  that list. A category that sells out entirely disappears from the navigation
+  by itself, and comes back by itself. Nothing to maintain.
+
+  THE TREE is grouped as the DATA groups it, not as a category tree was
+  imagined: "Caps & Hats" sits under Clothing because every caps product carries
+  the Clothing tag, so the Clothing parent page genuinely contains them. Two
+  categories are deliberately absent:
+    • "Clothing — Uncategorized" (5 products) — not a phrase to show a shopper.
+      Those products still appear under New In, under Clothing, and in search.
+    • "Accessories" as a parent row — the tag covers Bags but not Perfume, so a
+      parent link would quietly exclude a category. Bags and Perfume are top
+      rows of their own instead.
+
+  ROW ORDER is POS sell-through, best first, from the shop's own tills over the
+  56 days to 2026-08-21 (scripts/shopify/sell-through.mjs). Footwear leads at
+  37.8% of units, Clothing follows.
+{%- endcomment -%}
+
+{%- liquid
+  assign all_tags = collections.all.all_tags
+
+  # label ~ kind ~ target ~ optional children (comma-separated tag names)
+  assign rows = 'New In~collection~new-in;Footwear~tag~Footwear~Sneakers,Boots,Sandals & Slides,Soccer Boots;Clothing~tag~Clothing~Tracksuits & Sets,Caps & Hats,Jerseys,Polos,Jeans & Denim,Jackets & Coats,Hoodies & Sweatshirts,T-Shirts,Shorts & Vests;Bags~tag~Bags;Perfume~tag~Perfume;Under R500~collection~under-r500' | split: ';'
+-%}
+
+<nav class="mc-nav" aria-label="Categories">
+  <div class="page-width">
+    <div class="mc-nav__scroll">
+      <a class="mc-nav__link"
+         href="/collections/all"
+         {% if request.path == '/collections/all' %}aria-current="page"{% endif %}>Everything</a>
+
+      {%- for row in rows -%}
+        {%- liquid
+          assign parts = row | split: '~'
+          assign label = parts[0]
+          assign kind = parts[1]
+          assign target = parts[2]
+
+          # ── Is there anything behind this row? ──────────────────────────────
+          assign visible = false
+          assign url = ''
+          if kind == 'tag'
+            if all_tags contains target
+              assign visible = true
+              assign url = target | handleize | prepend: '/collections/all/'
+            endif
+          else
+            assign c = collections[target]
+            if c != blank and c.all_products_count > 0
+              assign visible = true
+              assign url = c.url
+            endif
+          endif
+        -%}
+
+        {%- if visible -%}
+          {%- assign kids = parts[3] | split: ',' -%}
+          {%- if kids.size > 0 -%}
+            <div class="mc-nav__group" data-mc-navgroup>
+              <button type="button" class="mc-nav__toggle" data-mc-navtoggle aria-expanded="false">
+                {{ label }} &#9662;
+              </button>
+              <div class="mc-nav__panel" hidden data-mc-navpanel>
+                <a class="mc-nav__link" href="{{ url }}">All {{ label | downcase }}</a>
+                {%- for kid in kids -%}
+                  {%- comment -%} Same test, per child: no empty child row. {%- endcomment -%}
+                  {%- if all_tags contains kid -%}
+                    {%- assign kid_url = kid | handleize | prepend: '/collections/all/' -%}
+                    <a class="mc-nav__link"
+                       href="{{ kid_url }}"
+                       {% if request.path == kid_url %}aria-current="page"{% endif %}>{{ kid }}</a>
+                  {%- endif -%}
+                {%- endfor -%}
+              </div>
+            </div>
+          {%- else -%}
+            <a class="mc-nav__link"
+               href="{{ url }}"
+               {% if request.path == url %}aria-current="page"{% endif %}>{{ label }}</a>
+          {%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+    </div>
+  </div>
+</nav>

@@ -1,0 +1,179 @@
+{%- comment -%}
+  ─── ONE PRODUCT CARD ───────────────────────────────────────────────────────
+
+  A photograph, a quiet label, and a detail panel that is rendered HERE, on the
+  server, hidden, and revealed in place when the shopper taps the photo.
+
+  WHY THE PANEL IS SERVER-RENDERED AND NOT FETCHED. Three reasons, in order of
+  how much they matter:
+
+    1. Sold-out sizes. The panel's size row is built from `product.variants`
+       and `variant.available` — the SAME two values the product page uses. It
+       cannot drift from the product page, cannot be stale, and cannot fail to
+       load. A fetched panel would have a state where the sizes have not
+       arrived yet, and "no sizes yet" and "no sizes left" look identical on a
+       phone. That is the one mistake this site cannot make.
+    2. It opens instantly, with no network, so browsing stays browsing.
+    3. It works when the endpoint is down, because there is no endpoint.
+
+  The cost is page weight: ~1–15 hidden size buttons per card. At 24 cards a
+  page that is a few kilobytes of gzipped markup, which is cheaper than one of
+  the photographs.
+
+  WITHOUT JAVASCRIPT the panel simply never un-hides, and the card is a plain
+  <a> to the real product page. Nothing is lost but the convenience.
+
+  SEO / SHARING. The photo is wrapped in a real <a href="{{ product.url }}">.
+  Crawlers follow it to a real, server-rendered product page — the quick view is
+  an enhancement layered on top of a working link, never a replacement for one.
+  marathon-storefront.js intercepts the click and pushes that same URL into the
+  address bar, so an opened card and a shared link are the same address.
+
+  ACCEPTS
+    product      (required)
+    lazy         'lazy' | 'eager'   — first row should be eager
+    sizes_attr   the responsive `sizes` attribute for this context
+{%- endcomment -%}
+
+{%- liquid
+  assign lazy = lazy | default: 'lazy'
+  assign sizes_attr = sizes_attr | default: '(min-width: 1400px) 18vw, (min-width: 990px) 23vw, (min-width: 600px) 31vw, 47vw'
+
+  # ─── THE CONDITION GRADE ───────────────────────────────────────────────────
+  # It is not a metafield. The publishing pipeline writes it into the product
+  # description with a fixed template (src/components/shopify/publishShared.js,
+  # buildDescriptionHtml) as exactly one paragraph:
+  #
+  #     <p><strong>Condition:</strong> Excellent — no visible wear</p>
+  #
+  # so it is read back out of the description here. This is deliberate: adding a
+  # metafield would mean a write pass over 3,457 publish records to say something
+  # the description already says, and would then have TWO places a grade could
+  # live and disagree. Reading the one the shopper is already shown cannot
+  # disagree with itself.
+  #
+  # If the paragraph is ever absent, `condition` stays blank and the panel omits
+  # the line rather than inventing a grade — there is no default, by owner spec.
+  assign condition = ''
+  if product.description contains '<strong>Condition:</strong>'
+    assign condition = product.description | split: '<strong>Condition:</strong>' | last | split: '</p>' | first | strip_html | strip
+  endif
+
+  assign sold_out = true
+  if product.available
+    assign sold_out = false
+  endif
+
+  # ALT TEXT. Computed here, not inline: a filter written after a named argument
+  # of image_tag chains onto image_tag's OWN output, so `alt: x | escape` escapes
+  # the whole <img> element and prints it to the shopper as text. (image_tag
+  # escapes the alt attribute itself, so no `| escape` is needed or wanted.)
+  #
+  # The alt is the product's listing title. That title is the one the publishing
+  # pipeline already validated against src/utils/shopifyTriggers.js, so it is the
+  # compliant string by construction — deriving anything else here would either
+  # repeat that validation badly or throw away the only description a screen
+  # reader gets.
+  assign img_alt = product.featured_media.alt | default: product.title
+
+  # ONE VARIANT = NO PICKER. `has_only_default_variant` is NOT the test: it is
+  # true only for a product with no options at all, and every product on this
+  # shop carries a real "Size" option — a one-size bag's single variant is
+  # titled "One Size", not "Default Title", so has_only_default_variant is false
+  # and the shopper would be made to tap a one-item size picker before buying.
+  assign single_variant = false
+  if product.variants.size == 1
+    assign single_variant = true
+  endif
+-%}
+
+<article
+  class="mc-card"
+  data-mc-card
+  data-mc-url="{{ product.url }}"
+  data-mc-title="{{ product.title | escape }}"
+>
+  <a class="mc-card__media" href="{{ product.url }}" data-mc-open>
+    {%- if product.featured_media -%}
+      {{
+        product.featured_media
+        | image_url: width: 800
+        | image_tag:
+          loading: lazy,
+          widths: '200,300,400,500,600,700,800',
+          sizes: sizes_attr,
+          alt: img_alt
+      }}
+    {%- endif -%}
+    {%- if sold_out -%}<span class="mc-card__sold">Sold out</span>{%- endif -%}
+  </a>
+
+  <div class="mc-card__meta">
+    <a class="mc-card__name" href="{{ product.url }}" data-mc-open>{{ product.title }}</a>
+    <span class="mc-card__price{% if sold_out %} mc-card__price--out{% endif %}">
+      {{- product.price | money -}}
+    </span>
+  </div>
+
+  {%- comment -%}
+    The panel. `hidden` until JS opens it — and it stays hidden forever if JS
+    never runs, which is the graceful degradation described above.
+  {%- endcomment -%}
+  <div class="mc-panel" hidden data-mc-panel>
+    <button type="button" class="mc-panel__close" data-mc-close aria-label="Close">&times;</button>
+
+    <p class="mc-panel__title">{{ product.title }}</p>
+    <p class="mc-panel__price">{{ product.price | money }}</p>
+
+    {%- comment -%}
+      CONDITION SITS HERE — above the sizes, above the button. It is a public
+      claim about used goods and the shopper reads it BEFORE choosing to buy,
+      not after. (On the theme's own product template it currently renders
+      below Add to cart; see theme/INSTALL.md.)
+    {%- endcomment -%}
+    {%- if condition != blank -%}
+      <p class="mc-panel__condition"><b>Condition:</b> {{ condition }}</p>
+    {%- endif -%}
+
+    {%- unless single_variant -%}
+      <div>
+        <p class="mc-sizes__legend" id="mc-legend-{{ product.id }}">
+          {{ product.options_with_values.first.name | default: 'Size' }}
+        </p>
+        <div class="mc-sizes" role="group" aria-labelledby="mc-legend-{{ product.id }}">
+          {%- comment -%}
+            EVERY variant is rendered, in the order the product defines them.
+            A sold-out size is rendered, is legible, and is `disabled` — it is
+            never dropped and never hidden. Dropping it would tell the shopper
+            the size was never made; this tells them it is gone.
+          {%- endcomment -%}
+          {%- for variant in product.variants -%}
+            <button
+              type="button"
+              class="mc-size"
+              data-mc-size
+              data-variant-id="{{ variant.id }}"
+              aria-pressed="false"
+              {% unless variant.available %}disabled aria-disabled="true"{% endunless %}
+            >{{ variant.title }}{% unless variant.available %}<span class="visually-hidden"> — sold out</span>{% endunless %}</button>
+          {%- endfor -%}
+        </div>
+      </div>
+    {%- else -%}
+      {%- comment -%} One-size product (bags, fragrance): no picker, but the
+        buy button still needs its variant id. {%- endcomment -%}
+      <input type="hidden" data-mc-single value="{{ product.selected_or_first_available_variant.id }}">
+    {%- endunless -%}
+
+    <div class="mc-panel__actions">
+      <p class="mc-panel__status" data-mc-status role="status" aria-live="polite"></p>
+      <button
+        type="button"
+        class="mc-add"
+        data-mc-add
+        {% if sold_out %}disabled{% endif %}
+      >{% if sold_out %}Sold out{% else %}Add to cart{% endif %}</button>
+      <a class="mc-panel__link" href="{{ product.url }}">View full details</a>
+    </div>
+  </div>
+</article>
