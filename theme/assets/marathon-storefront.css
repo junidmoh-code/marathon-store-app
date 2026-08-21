@@ -464,6 +464,31 @@
 .mc-nav__panel a:hover { background: rgb(255 255 255 / 0.08); }
 .mc-nav__count { opacity: 0.5; font-size: 1.1rem; margin-inline-start: 0.6rem; }
 
+/* ─── SORT ─────────────────────────────────────────────────────────────────── */
+/* Sits between the heading and the photographs, at label size, never bold. It
+   is a control a minority of shoppers use; it should be findable and otherwise
+   invisible. */
+.mc-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 1.6rem;
+  margin: 0 0 1.2rem;
+  font-size: var(--mc-label-sm);
+}
+.mc-sort__label { opacity: 0.5; }
+.mc-sort__link {
+  text-decoration: none;
+  color: rgb(var(--color-foreground, 247 248 250) / 0.65);
+  padding-block: 0.4rem;
+}
+.mc-sort__link:hover { color: var(--mc-fg); }
+.mc-sort__link[aria-current] {
+  color: var(--mc-fg);
+  text-decoration: underline;
+  text-underline-offset: 0.4rem;
+}
+
 /* Sibling strip on a category page: the "where else can I go" row. A dropdown
    hides the rest of the shop; this states it.
 

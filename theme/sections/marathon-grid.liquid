@@ -50,6 +50,55 @@
   </header>
 
   {%- comment -%}
+    ─── SORT ────────────────────────────────────────────────────────────────
+    LINKS, NOT A SELECT. A `<select>` needs JavaScript to submit on change, and
+    a submit button next to it is a second control for one decision. Three links
+    are server-rendered, work with JavaScript off, are crawlable, and are quiet
+    enough to sit under the heading without competing with the photographs.
+
+    THE OPTIONS ARE DELIBERATELY THREE. Shopify offers seven; four of them are
+    useless or misleading on this catalogue:
+      • title A-Z / Z-A — the names are machine-generated and carry no brand, so
+        alphabetical order is noise ("Sneaker Audysol…" tells a shopper nothing).
+      • best-selling — Shopify counts ONLINE sales, and this storefront is new
+        and barely visited. It would rank noise and look authoritative doing it.
+        (What actually sells is measured from the tills instead, and drives the
+        home page — see sections/marathon-home.liquid.)
+      • manual — no collection here has a hand-ordered sequence to respect.
+    Newest and the two price directions are the three a shopper can actually use.
+
+    `sort_by` works on tag-addressed URLs as well as collection URLs — verified
+    against production 2026-08-21 on /collections/all/tracksuits-sets, where
+    price-ascending and price-descending return different first products.
+    Deliberately NOT carrying `page`: changing the sort must return to page 1.
+  {%- endcomment -%}
+  {%- liquid
+    assign active_sort = collection.sort_by | default: collection.default_sort_by
+    assign sorts = 'created-descending|Newest,price-ascending|Price low to high,price-descending|Price high to low' | split: ','
+
+    # The page's own address, rebuilt from the collection rather than read from
+    # `request.path`. On a tag-filtered page `collection.url` is /collections/all
+    # and the tag is the segment after it, so the two together ARE the address —
+    # and they come from the objects this template already has rather than from
+    # a separate request drop that could disagree with them.
+    assign sort_base = collection.url
+    if here != blank
+      assign sort_base = here | handleize | prepend: '/' | prepend: collection.url
+    endif
+  -%}
+  {%- if collection.products_count > 1 -%}
+    <div class="mc-sort">
+      <span class="mc-sort__label">Sort</span>
+      {%- for s in sorts -%}
+        {%- assign bits = s | split: '|' -%}
+        <a class="mc-sort__link"
+           href="{{ sort_base }}?sort_by={{ bits[0] }}"
+           {% if active_sort == bits[0] %}aria-current="true"{% endif %}>{{ bits[1] }}</a>
+      {%- endfor -%}
+    </div>
+  {%- endif -%}
+
+  {%- comment -%}
     THE SIBLING STRIP — "where else can I go", stated rather than hidden behind
     a dropdown. Every entry is checked against `all_tags`, so it can never offer
     a dead end.

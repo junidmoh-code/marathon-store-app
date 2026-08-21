@@ -17,6 +17,7 @@ import { triggersInText } from "../../src/utils/shopifyTriggers.js";
 
 const HOME = new URL("../../theme/sections/marathon-home.liquid", import.meta.url).pathname;
 const NAV = new URL("../../theme/snippets/marathon-nav.liquid", import.meta.url).pathname;
+const GRID = new URL("../../theme/sections/marathon-grid.liquid", import.meta.url).pathname;
 
 function themeSetting(id) {
   const src = readFileSync(HOME, "utf8");
@@ -177,5 +178,59 @@ describe("navigation tags are real", () => {
         expect(triggersInText(kid)).toEqual([]);
       }
     }
+  });
+});
+
+// ── THE SIBLING STRIP ────────────────────────────────────────────────────────
+// marathon-grid.liquid holds a THIRD copy of the category vocabulary — the two
+// lists behind the "where else can I go" strip on a category page. It is a
+// third copy because Liquid cannot read collectionMap.mjs, and an unpinned
+// third copy is exactly the thing these tests exist to stop: rename a category
+// in the map and the strip would go on offering the old name, silently, in the
+// one place built to guarantee no dead ends.
+describe("the category-page sibling strip", () => {
+  const routedTags = (() => {
+    const known = new Set();
+    for (const pair of Object.keys(CATEGORY_MAP)) {
+      const [cat, sub] = pair.split("|");
+      known.add(cat);
+      if (sub !== "*") known.add(sub);
+    }
+    return known;
+  })();
+
+  const lists = (() => {
+    const src = readFileSync(GRID, "utf8");
+    const out = {};
+    for (const name of ["footwear", "everything_else"]) {
+      const m = src.match(new RegExp(`assign ${name} = '([^']+)'`));
+      if (!m) throw new Error(`the grid's "${name}" list moved or was renamed`);
+      out[name] = m[1].split(",").map((x) => x.trim());
+    }
+    return out;
+  })();
+
+  it("found both lists", () => {
+    expect(lists.footwear.length).toBeGreaterThan(2);
+    expect(lists.everything_else.length).toBeGreaterThan(5);
+  });
+
+  it("every sibling names a tag products carry", () => {
+    for (const [name, list] of Object.entries(lists)) {
+      for (const tag of list) {
+        expect(routedTags.has(tag), `${name}: "${tag}"`).toBe(true);
+      }
+    }
+  });
+
+  it("no sibling carries a brand trigger", () => {
+    for (const list of Object.values(lists)) {
+      for (const tag of list) expect(triggersInText(tag)).toEqual([]);
+    }
+  });
+
+  it("the two lists do not overlap — a shoe belongs to one strip", () => {
+    const overlap = lists.footwear.filter((t) => lists.everything_else.includes(t));
+    expect(overlap).toEqual([]);
   });
 });

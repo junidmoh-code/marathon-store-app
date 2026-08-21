@@ -301,6 +301,27 @@ block in the section's block order) so it sits **before** the
 needed: **Theme editor → Product pages → Product information → drag
 "Description" above "Buy buttons".**
 
+**Shopify's filter panel is not carried over; sorting is.** The old collection
+page had Shopify's facet sidebar (availability, price) and a sort control. The
+new grid has **sort** — Newest, Price low to high, Price high to low, as three
+plain links that work with JavaScript off — but **no facet filters**, and that
+is a deliberate trade, not an oversight.
+
+The reason is measured, not assumed. Storefront facet filters and tag-addressed
+URLs are mutually exclusive on Shopify: verified against the live shop
+2026-08-21, `/collections/all/sneakers?filter.v.availability=1` returns **zero**
+products, while the same filter on `/collections/sneakers` works normally. Since
+the navigation reaches categories by tag — which is the only way to reach all 703
+products while 559 of them sit in no collection — facets cannot come with it.
+
+What is lost is mostly covered elsewhere: sold-out products are badged in the
+grid and their sizes are visible-but-unbuyable in the overlay, so "in stock only"
+matters less than it did; price is served by the **Under R500** collection and
+by price sorting. If you want the full facet panel back, the trade is the
+opposite one — repair the collections (below), then point the navigation rows at
+`/collections/{handle}` instead of `/collections/all/{tag}` in
+`snippets/marathon-nav.liquid`.
+
 **Nine categories are missing from their collections.** Measured 2026-08-21:
 559 of 703 live products are in no category collection at all, including all 64
 tracksuits and all 34 bags. The navigation is unaffected — it addresses

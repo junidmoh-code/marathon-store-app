@@ -69,11 +69,21 @@
   # the whole <img> element and prints it to the shopper as text. (image_tag
   # escapes the alt attribute itself, so no `| escape` is needed or wanted.)
   #
-  # The alt is the product's listing title. That title is the one the publishing
-  # pipeline already validated against src/utils/shopifyTriggers.js, so it is the
-  # compliant string by construction — deriving anything else here would either
-  # repeat that validation badly or throw away the only description a screen
-  # reader gets.
+  # The alt is the product's listing title, and that is a DECISION about scope,
+  # not a compliance claim — worth being precise about, because the rule for this
+  # work is "no brand term in any theme content, alt text or metadata".
+  #
+  # The title is what the publishing pipeline validated against
+  # src/utils/shopifyTriggers.js. That lexicon catches sportswear and streetwear
+  # marques but demonstrably NOT motorsport teams, sports franchises or artists,
+  # so live alt text today includes "Ferrari cap white" and "McLaren cap white".
+  #
+  # It is still the right string here, for two reasons: the identical text is
+  # already rendered as the visible product name two lines below, so the alt adds
+  # no exposure that the page does not already have; and mangling it would take
+  # away the only description a screen reader gets for a product whose photograph
+  # IS the description. The place to fix a dirty title is the lexicon and the
+  # catalogue, not the alt attribute — see the report accompanying this change.
   assign img_alt = product.featured_media.alt | default: product.title
 
   # ONE VARIANT = NO PICKER. `has_only_default_variant` is NOT the test: it is
