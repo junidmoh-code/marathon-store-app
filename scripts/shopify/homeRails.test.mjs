@@ -238,74 +238,88 @@ describe("the category-page sibling strip", () => {
 // ── EVERY /collections/all LINK MUST CARRY AN EXPLICIT SORT ─────────────────
 // `collections.all` defaults to `title-ascending`, and every category URL in
 // this storefront is `/collections/all` or `/collections/all/{tag}` — so
-// without an explicit sort, the whole category navigation lands sorted A-to-Z
-// on machine-generated titles with every brand term stripped out. A sort on
-// noise, on the primary browsing surface.
+// without an explicit sort the whole category navigation lands sorted A-to-Z on
+// machine-generated titles with every brand term stripped out. A sort on noise,
+// on the primary browsing surface.
 //
-// THIS TEST IS WRITTEN AGAINST hrefs, NOT AGAINST assign SYNTAX. The first
-// version of it matched `assign` lines containing `prepend: '/collections/all/'`
-// — which in the nav are only the query-free `*_path` helpers, never the actual
-// link variables (those are built FROM the path with `| append:`). It therefore
-// asserted nothing at all about the file it mattered most for, and a simulated
-// regression that reverted every nav link to alphabetical left all tests green.
-// A test written to fit the code rather than the requirement is worse than no
-// test, because it reads like coverage.
+// THIS TEST HAS BEEN WRONG TWICE, in two different ways, and both are worth
+// remembering because they are how guard rails usually fail:
 //
-// So: find every href, resolve variable hrefs back through the assign chain,
-// and judge the resolved string.
-import { describe, it, expect } from "vitest";
+//   1. It first matched `assign` SYNTAX (`prepend: '/collections/all/'`), which
+//      in the nav matches only the query-free `*_path` helpers — never the real
+//      link variables, which are built FROM those with `| append:`. It asserted
+//      nothing at all about the file it existed for.
+//   2. Rewritten to judge links, it then (a) merged every branch of a
+//      multiply-assigned variable into one blob, so a later branch that DROPPED
+//      the sort was excused by an earlier one that had it, and (b) scanned raw
+//      source, so an href inside a {% comment %} counted as a real link — enough
+//      to satisfy the "found some links" guard while every real link was broken.
+//
+// So it now: strips comments first, keeps each assignment BRANCH separate, and
+// requires every branch that reaches /collections/all to carry the sort.
 
-function assignMap(src) {
+/** Liquid/HTML comments are documentation, not links. */
+function stripComments(src) {
+  return src
+    .replace(/\{%-?\s*comment\s*-?%\}[\s\S]*?\{%-?\s*endcomment\s*-?%\}/g, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/\{%-?\s*schema\s*-?%\}[\s\S]*?\{%-?\s*endschema\s*-?%\}/g, " ");
+}
+
+/**
+ * name -> EVERY expression assigned to it, kept separate. Liquid reassigns
+ * freely inside branches, and a variable is only safe if EVERY branch is safe.
+ */
+function assignBranches(src) {
   const m = new Map();
   for (const a of src.matchAll(/assign\s+(\w+)\s*=\s*([^\n%]*)/g)) {
-    // Later assigns to the same name win only if the earlier one is empty
-    // scaffolding (`assign url = ''`), which is how the nav initialises them.
     const [, name, expr] = a;
-    const prev = m.get(name);
-    if (prev && !/^\s*''\s*$/.test(prev)) m.set(name, prev + " ;; " + expr);
-    else m.set(name, expr);
+    const e = expr.trim();
+    if (e === "''" || e === '""') continue;   // empty scaffolding, not a branch
+    if (!m.has(name)) m.set(name, []);
+    m.get(name).push(e);
   }
   return m;
 }
 
-/** Resolve a Liquid expression to the text of everything it is built from. */
-function resolve(expr, map, seen = new Set()) {
-  let out = expr;
-  for (const ref of expr.matchAll(/\b([a-z_][a-z0-9_]*)\b/gi)) {
-    const name = ref[1];
-    if (seen.has(name) || !map.has(name)) continue;
-    seen.add(name);
-    out += " " + resolve(map.get(name), map, seen);
+/** Every value an expression could resolve to, one string per branch. */
+function expand(expr, map, seen = new Set()) {
+  let out = [expr];
+  // A PROPERTY is not a variable: `c.url` refers to `c`, not to some unrelated
+  // `url` assigned elsewhere in the file. Without the lookbehind, `c.url` pulled
+  // in the nav's `url` variable — which does carry the sort — and reported the
+  // query-free `url_path` as carrying a query.
+  for (const ref of [...expr.matchAll(/(?<![\w.])([a-z_][a-z0-9_]*)/gi)].map((x) => x[1])) {
+    if (seen.has(ref) || !map.has(ref)) continue;
+    const deeper = new Set(seen);
+    deeper.add(ref);
+    const subs = map.get(ref).flatMap((b) => expand(b, map, deeper));
+    out = out.flatMap((o) => subs.map((sub) => `${o} ${sub}`));
   }
   return out;
 }
 
 /**
- * Every LINK the file is responsible for, resolved to the text it is built from.
- *
- * "Link" is not the same as "href". A section can build a URL and hand it to a
- * snippet, where the actual href lives — marathon-home.liquid does exactly that
- * with `render 'marathon-rail', rail_url: …`. A first version of this checked
- * hrefs only, and a mutation that stripped the sort from the home rails' "See
- * all" link passed clean, because the href is in the snippet and the bug is in
- * the caller. So any render argument named `*_url` counts as a link too.
+ * Every LINK the file is responsible for. "Link" is not the same as "href": a
+ * section can build a URL and hand it to a snippet where the href actually lives
+ * — marathon-home.liquid does exactly that via `render 'marathon-rail',
+ * rail_url: …` — so `*_url:` render arguments count too. The leading `,` or `(`
+ * requirement keeps it from matching the `| image_url:` FILTER.
  */
-function resolvedHrefs(src) {
-  const map = assignMap(src);
+function fileLinks(rawSrc) {
+  const src = stripComments(rawSrc);
+  const map = assignBranches(src);
   const out = [];
   for (const h of src.matchAll(/href="([^"]*)"/g)) {
     const raw = h[1];
-    const varMatch = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
-    out.push({
-      raw,
-      text: varMatch && map.has(varMatch[1]) ? resolve(map.get(varMatch[1]), map) : raw,
-    });
+    const v = raw.match(/^\{\{\s*([\w.]+)\s*\}\}$/);
+    out.push({ raw, branches: v && map.has(v[1]) ? map.get(v[1]).flatMap((b) => expand(b, map)) : [raw] });
   }
-  for (const a of src.matchAll(/(\w*_url):\s*([\w.]+)/g)) {
+  for (const a of src.matchAll(/[,(]\s*(\w+_url):\s*([\w.]+)/g)) {
     const [, argName, value] = a;
     out.push({
       raw: `${argName}: ${value}`,
-      text: map.has(value) ? resolve(map.get(value), map) : value,
+      branches: map.has(value) ? map.get(value).flatMap((b) => expand(b, map)) : [value],
     });
   }
   return out;
@@ -313,38 +327,40 @@ function resolvedHrefs(src) {
 
 describe("every /collections/all link carries an explicit sort", () => {
   const SORT = "sort_by=created-descending";
-  const files = {
-    "marathon-nav.liquid": NAV,
-    "marathon-grid.liquid": GRID,
-    "marathon-home.liquid": HOME,
-  };
+  const files = { "marathon-nav.liquid": NAV, "marathon-grid.liquid": GRID, "marathon-home.liquid": HOME };
 
   for (const [name, path] of Object.entries(files)) {
     it(name, () => {
-      const hrefs = resolvedHrefs(readFileSync(path, "utf8"));
-      expect(hrefs.length, `${name}: no hrefs found — did the markup change?`).toBeGreaterThan(0);
+      const links = fileLinks(readFileSync(path, "utf8"));
+      expect(links.length, `${name}: no links found — did the markup change?`).toBeGreaterThan(0);
 
-      const allLinks = hrefs.filter((h) => h.text.includes("/collections/all"));
+      const bad = [];
+      for (const link of links) {
+        for (const branch of link.branches) {
+          if (branch.includes("/collections/all") && !branch.includes(SORT)) bad.push(link.raw);
+        }
+      }
+      expect(bad, `${name}: these land in alphabetical order`).toEqual([]);
+
+      const covered = links.filter((l) => l.branches.some((b) => b.includes("/collections/all")));
       expect(
-        allLinks.length,
+        covered.length,
         `${name}: no /collections/all links found — this test has stopped covering anything`
       ).toBeGreaterThan(0);
-
-      const unsorted = allLinks.filter((h) => !h.text.includes(SORT)).map((h) => h.raw);
-      expect(unsorted, `${name}: these land in alphabetical order`).toEqual([]);
     });
   }
 
   it("the aria-current comparisons stay query-free", () => {
-    // request.path carries no query string, so a *_path used for the highlight
-    // must never pick up the sort — otherwise no row is ever highlighted.
-    const src = readFileSync(NAV, "utf8");
-    const map = assignMap(src);
+    // request.path carries no query string, so anything compared against it must
+    // not pick up the sort — otherwise no row is ever highlighted.
+    const src = stripComments(readFileSync(NAV, "utf8"));
+    const map = assignBranches(src);
     for (const m of src.matchAll(/request\.path\s*==\s*(\w+)/g)) {
       const name = m[1];
       if (!map.has(name)) continue;
-      expect(map.get(name), `${name} is compared to request.path but carries a query`)
-        .not.toContain("sort_by");
+      for (const branch of map.get(name).flatMap((b) => expand(b, map))) {
+        expect(branch, `${name} is compared to request.path but carries a query`).not.toContain("sort_by");
+      }
     }
   });
 });
