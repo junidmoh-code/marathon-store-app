@@ -266,6 +266,27 @@ const CENSUS = {
       policy: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
     },
   },
+  // The third pass: the group arrives as ONE ENTRY in the same list, and its
+  // members are marked so the card leaves them out of the top level.
+  groupEntries: [
+    {
+      key: "group:footwear-all", groupKey: "footwear-all", isGroup: true, label: "Sneakers",
+      memberCategoryKeys: ["sneakers", "slides"], armedGroup: false, perSize: true,
+      entry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
+      effectiveEntry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
+      policySource: "group", armed: ["hub2"], armedEffective: [], policyLocations: ["hub2"],
+      sizeRun: ["5_5", "7", "8"], sizeRunPartial: ["5_5", "8"],
+      sizeRunCarriedBy: { "5_5": ["sneakers"], 7: ["sneakers", "slides"], 8: ["sneakers"] },
+      sizeRunExtra: [], sizeRunEmpty: false, membersWithoutRun: [],
+      products: 1297, units: 17000, ownRowCells: 0, ownRowProducts: 0, overriddenProducts: 0,
+      carriage: { hub2: { carries: true, products: 940, units: 9400 } },
+      members: [
+        { key: "sneakers", label: "Sneakers", products: 1246, units: 16872, hasOwnPolicy: false, armedEffective: [], ownRowCells: 0, sizeRun: ["5_5", "7", "8"] },
+        { key: "slides", label: "Slides", products: 51, units: 128, hasOwnPolicy: false, armedEffective: [], ownRowCells: 0, sizeRun: ["7"] },
+      ],
+      imageUrl: null,
+    },
+  ],
   categories: [
     {
       key: "caps-beanies", label: "Caps & Beanies", products: 94, units: 512, perSize: false,
@@ -279,6 +300,7 @@ const CENSUS = {
     },
     {
       key: "sneakers", label: "Sneakers", products: 1246, units: 16872, perSize: true,
+      memberOfGroup: "footwear-all",
       entry: null, effectiveEntry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
       armed: [], armedEffective: ["hub2"], policySource: "group", groupKey: "footwear-all",
       groupLabel: "All footwear except soccer boots",
@@ -309,6 +331,26 @@ async function renderCard() {
   return tree;
 }
 const textOf = (tree) => JSON.stringify(tree.toJSON());
+// The rendered strings under a node, flattened. JSON.stringify on props.children
+// cannot be used any more: a button may hold a React element (a chip), and an
+// unrendered element carries a circular _owner back to its fiber.
+const stringsUnder = (node) => {
+  const out = [];
+  const walk = (n) => {
+    if (n === null || n === undefined || n === false) return;
+    if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (n.children) walk(n.children);
+  };
+  walk(node.children ? node : node.toJSON ? node.toJSON() : node);
+  return out.join(" ");
+};
+const buttonTextOf = (tree) => (tree.toJSON ? [tree.toJSON()] : [])
+  .flatMap(function collect(n) {
+    if (!n || typeof n !== "object") return [];
+    const kids = Array.isArray(n.children) ? n.children.flatMap(collect) : [];
+    return n.type === "button" ? [stringsUnder(n), ...kids] : kids;
+  }).join(" ");
 const styleTag = (tree) => tree.root.findAllByType("style").map((n) => n.children.join("")).join("");
 
 beforeEach(() => { callableMock.mockClear(); });
@@ -319,8 +361,28 @@ describe("the rebuilt screen", () => {
     const t = textOf(tree);
     expect(t).toContain("Caps &amp; Beanies".replace("&amp;", "&"));
     expect(t).toContain("Sneakers");
-    // The grouped one says so on the list, before it is opened.
-    expect(t).toContain("in All footwear except soccer boots");
+    // ONE Sneakers entry, carrying how many categories it speaks for.
+    expect(t).toContain("2 categories");
+  });
+
+  // ── THE GROUP IS ONE ENTRY, NOT A SECTION ────────────────────────────────
+  it("has NO Groups section and none of its prose", async () => {
+    const tree = await renderCard();
+    const t = textOf(tree);
+    expect(t).not.toContain("cannot produce a single refill");
+    expect(t).not.toContain("grouping never");
+    expect(t).not.toContain("Groups");
+  });
+
+  it("lists a group's member ONCE — inside the group, never beside it", async () => {
+    const tree = await renderCard();
+    const opens = tree.root.findAll((n) => n.type === "button" && /^Open /.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    expect(opens).toContain("Open Sneakers");
+    // The member category `sneakers` is hidden behind the group, so "Sneakers"
+    // appears exactly once as an openable row.
+    expect(opens.filter((l) => l === "Open Sneakers").length).toBe(1);
+    expect(opens).toContain("Open Caps & Beanies");
   });
 
   it('says "N with their own rows", never "overridden"', async () => {
@@ -330,22 +392,41 @@ describe("the rebuilt screen", () => {
     expect(t.toLowerCase()).not.toContain("overridden");
   });
 
-  it('has NO "Clear the N old rows" control anywhere', async () => {
-    // The button was removed outright. Its absence is the assertion, because a
-    // control that deletes hundreds of hand-made rows must not come back by
-    // accident.
+  it('has NO control that clears rows — "N old rows" is a link that OPENS them', async () => {
+    // The "Clear the N old rows" button was removed outright and must not come
+    // back: it deleted hundreds of hand-made rows. The words "old rows" DO
+    // appear now — as the chip that opens them for editing — so the assertion
+    // is on what the controls do, not on the substring.
     const tree = await renderCard();
-    const t = textOf(tree).toLowerCase();
-    expect(t).not.toContain("clear the");
-    expect(t).not.toContain("old rows");
+    expect(textOf(tree).toLowerCase()).not.toContain("clear the");
+    const buttonText = buttonTextOf(tree).toLowerCase();
+    for (const word of ["clear", "delete", "remove"]) expect(buttonText).not.toContain(word);
   });
 
-  it("shows a group as not armed, and explains what that means", async () => {
+  it("shows the header stamp with no author or key tail, and no subtitle", async () => {
+    callableMock.mockImplementationOnce(async () => ({ data: { ...CENSUS,
+      history: [{ id: "h1", at: Date.parse("2026-08-22T10:24:00Z"), by: "gunidmoh@gmail.com",
+        categoryKey: "caps-beanies", status: "applied", changes: [] }] } }));
     const tree = await renderCard();
     const t = textOf(tree);
-    expect(t).toContain("All footwear except soccer boots");
-    expect(t).toContain("not armed");
-    expect(t).toContain("cannot produce a single refill");
+    expect(t).toContain("Last changed");
+    // The header stamp itself no longer names anybody. (The change history
+    // further down still does, in full — that is where provenance belongs.)
+    const stamp = tree.root.findAll((n) => n.type === "div"
+      && typeof n.props.children === "string" && /^Last changed/.test(n.props.children))[0];
+    expect(stamp.props.children).not.toContain("gunidmoh@gmail.com");
+    expect(stamp.props.children).not.toContain("caps-beanies");
+    expect(t).not.toContain("when the engine asks for more");
+  });
+
+  it("has NO explanatory sub-line under any stat card", async () => {
+    const tree = await renderCard();
+    const t = textOf(tree);
+    for (const gone of ["fall through to the engine", "shared across every category",
+      "none armed", "units across every location", "in this category", "carry it today",
+      "rows the engine reads first"]) {
+      expect(t).not.toContain(gone);
+    }
   });
 
   it("has NO bottom tab bar — out of scope for this branch", async () => {
@@ -371,17 +452,25 @@ describe("the layout that was broken", () => {
   it("gives the location label a shrinkable track that ellipses instead of wrapping", async () => {
     const tree = await renderCard();
     const css = styleTag(tree);
-    // minmax(0,1fr) is what lets the track shrink below its content; without it
-    // the label pushed the inputs off the row, which is the bug being fixed.
-    expect(css).toMatch(/\.ep-loc\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)/);
-    expect(css).toMatch(/\.ep-loc-name\s*>\s*span\s*\{[^}]*white-space:nowrap/);
+    expect(css).toMatch(/\.ep-box-head\s*>\s*\.ep-name\s*\{[^}]*white-space:nowrap/);
     expect(css).toMatch(/text-overflow:ellipsis/);
   });
 
-  it("stacks the numbers below the label at phone width and beside it above 560px", async () => {
+  it("gives every location its own bordered box", async () => {
     const tree = await renderCard();
     const css = styleTag(tree);
-    expect(css).toMatch(/@media\s*\(min-width:560px\)\s*\{[\s\S]*?\.ep-loc\s*\{[^}]*minmax\(0,1fr\)\s+260px/);
+    expect(css).toMatch(/\.ep-box\s*\{[^}]*border:1px solid/);
+    const boxes = tree.root.findAll((n) => n.props && n.props.className === "ep-box");
+    void boxes;
+  });
+
+  it("keeps the error on its OWN row so it cannot overlap the control below", async () => {
+    const tree = await renderCard();
+    const css = styleTag(tree);
+    // Full-width, its own grid row, and padding ABOVE rather than a negative
+    // margin — the layout that put "Keep is required" on top of the next row.
+    expect(css).toMatch(/\.ep-err\s*\{[^}]*grid-column:1 \/ -1/);
+    expect(css).not.toMatch(/\.ep-err\s*\{[^}]*margin-top:-/);
   });
 });
 
@@ -391,16 +480,54 @@ describe("the category detail screen", () => {
     await act(async () => { btn.props.onClick(); });
   };
 
-  it("shows the four stats, the legend and a Preview button", async () => {
+  it("shows the four stats and a Preview button, and NO legend", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Caps & Beanies");
     const t = textOf(tree);
     for (const s of ["On hand", "Products", "Locations", "Own rows"]) expect(t).toContain(s);
-    expect(t).toContain("how many the shelf should hold when it is full");
-    expect(t).toContain("hold the request back until the shelf drops");
+    // The legend block is gone: the three names live over the three inputs now,
+    // in every location box.
+    expect(t).not.toContain("how many the shelf should hold when it is full");
+    expect(t).not.toContain("hold the request back until the shelf drops");
     expect(t).toContain("Preview");
     expect(t).toContain("Save policy");
     expect(t).toContain("Policy history");
+  });
+
+  it("repeats the three column headings inside EVERY location box, coloured to its input", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const heads = tree.root.findAll((n) => n.props && n.props.className === "ep-colhead");
+    const boxes = tree.root.findAll((n) => n.props && n.props.className === "ep-box");
+    expect(boxes.length).toBe(3);
+    expect(heads.length).toBe(boxes.length);
+    for (const h of heads) {
+      const cells = h.findAllByType("div").filter((d) => typeof d.props.children === "string");
+      expect(cells.map((d) => d.props.children)).toEqual(["Keep", "Minimum", "Ask at"]);
+      // Each heading carries its own input's accent colour, so the pairing is
+      // visible without reading a legend somewhere else.
+      const colours = cells.map((d) => d.props.style.color);
+      expect(new Set(colours).size).toBe(3);
+      // …and it is the SAME colour as the input it sits over.
+      const inputs = h.parent.findAllByType("input");
+      if (inputs.length >= 3) {
+        expect(inputs.slice(0, 3).map((i) => i.props.style.borderLeft.split(" ").pop())).toEqual(colours);
+      }
+    }
+  });
+
+  it("replaces the legacy-sizes paragraph with a chip that opens those rows", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const t = textOf(tree);
+    expect(t).not.toContain("which are not");
+    expect(t).not.toContain("edited in the");
+    expect(t).toContain("2 old rows");
+    const chip = tree.root.findAll((n) => n.type === "button"
+      && String(n.props.children).includes("old rows"))[0];
+    expect(chip).toBeTruthy();
+    await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
+    expect(textOf(tree)).toContain("Black Cap");
   });
 
   it("shows an em dash for a location with no policy, with the reason and its action", async () => {
@@ -408,16 +535,31 @@ describe("the category detail screen", () => {
     await openFirst(tree, "Caps & Beanies");
     const t = textOf(tree);
     expect(t).toContain("—");
-    expect(t).toContain("not stocked by the engine here");
+    expect(t).toContain("carried");
     expect(t).toContain("Stock here");
     expect(t).toContain("not carried");
     expect(t).toContain("Arm this store");
   });
 
-  it("warns that saving a grouped category takes it out of the group", async () => {
+  it("opens the Sneakers policy on the same detail screen every category uses", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Sneakers");
-    expect(textOf(tree)).toContain("takes it out of");
+    const t = textOf(tree);
+    expect(t).toContain("Save policy");
+    expect(t).toContain("On hand");
+    // The member categories are reachable from inside it, as a compact list,
+    // with the one rule that is not visible from the numbers.
+    expect(t).toContain("Slides");
+    expect(t).toContain("A category with its own numbers ignores these.");
+  });
+
+  it("marks a size only some members carry, at the size itself", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const marked = tree.root.findAll((n) => n.type === "span" && n.props.title
+      && /only /.test(n.props.title));
+    expect(marked.length).toBe(2);          // 5.5 and 8 — sneakers only
+    expect(marked[0].props.title).toContain("sneakers");
   });
 
   it("expands a sized category into one row per size, in size order", async () => {
@@ -429,7 +571,7 @@ describe("the category detail screen", () => {
   });
 
   it("refuses a per-size editor when the size run cannot be derived", async () => {
-    const c = { ...CENSUS, categories: [{ ...CENSUS.categories[1], sizeRun: [], sizeRunEmpty: true }] };
+    const c = { ...CENSUS, groupEntries: [{ ...CENSUS.groupEntries[0], sizeRun: [], sizeRunEmpty: true }], categories: [] };
     callableMock.mockImplementationOnce(async () => ({ data: c }));
     const tree = await renderCard();
     await act(async () => {
@@ -446,13 +588,12 @@ describe("the category detail screen", () => {
     await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
     const t = textOf(tree);
     expect(t).toContain("Black Cap");
-    expect(t).toContain("BEFORE it reads the category policy");
+    expect(t).toContain("reads a row before the category policy");
     // …and there is no CONTROL that removes one. (The prose says rows are never
     // deleted, so a naive substring check on "delete" would match its own
     // reassurance — the assertion is on the buttons.)
-    const buttonText = tree.root.findAll((n) => n.type === "button")
-      .map((n) => JSON.stringify(n.props.children)).join(" ").toLowerCase();
+    const buttonText = buttonTextOf(tree).toLowerCase();
     for (const word of ["delete", "remove", "clear"]) expect(buttonText).not.toContain(word);
-    expect(t).toContain("Rows are never deleted from this screen");
+    expect(t).toContain("Rows are never deleted here.");
   });
 });

@@ -1,21 +1,34 @@
 // ─── ENGINE POLICY ────────────────────────────────────────────────────────────
-// What each category keeps at every location, and when the engine asks for
-// more. The owner-facing face of /config/refillEngine/categoryPolicy and
+// The owner-facing face of /config/refillEngine/categoryPolicy and
 // /config/refillEngine/policyGroups.
 //
-// ── WHY THIS SCREEN WAS REBUILT ──────────────────────────────────────────────
-// The shipped version put the location label, its carriage caption and three
-// number inputs in ONE grid row. At phone width the label wrapped to three
-// lines — "Hub" / "1" / "1 carried · 0 units" — and collided with the inputs.
-// That is not a padding problem, so it is not fixed with padding: the row now
-// has ONE line of label (icon plus name, nothing else) and the numbers live in
-// their own track, which stacks BELOW the label at phone width instead of
-// competing with it. The carriage detail moved to the stat block, where a
-// two-line answer has room to be two lines.
+// ── THE THIRD PASS: ONE LIST, AND NO PROSE ───────────────────────────────────
+// A GROUP IS NOT A SECTION. The seven footwear categories are one Sneakers
+// policy, and it sits in the same list as every category, sorted in with them,
+// carrying a photo, the combined counts, a "7 categories" chip and its armed
+// state. Its members are reachable from inside it and appear nowhere else — a
+// category listed both beside its group and inside it was what the separate
+// GROUPS section, and its three explanatory paragraphs, actually cost.
 //
-// The structure is now: header (image, name, chips, headline numbers) → a 2×2
-// stat block that is never more than two columns at phone width → the location
-// table → the legend → the next-scan preview → the footer actions.
+// AND THERE IS NO PARAGRAPH ANYWHERE. One short line per control, only where a
+// number alone would be ambiguous. What was deleted, exactly: the header
+// subtitle, the "by <email> — <key>" tail under the timestamp, every
+// explanatory sub-line under every stat card, the whole GROUPS block, the grey
+// note about legacy size cells (now a chip that OPENS them), and the
+// Keep / Minimum / Ask at legend.
+//
+// The legend is gone because the three names are now over the three inputs, in
+// EVERY location box — a legend at the bottom of a long screen is a legend
+// nobody can see from the third shop. Each location is its own bordered box
+// with its own repeated column headers, and a validation error renders on its
+// own row INSIDE that box: the old layout floated the message under an input
+// with a negative margin above the next control, so "Keep is required" printed
+// on top of the row below it.
+//
+// The structure is: header (image, name, chips, headline numbers) → a 2×2 stat
+// block that is never more than two columns at phone width → one box per
+// location → (for a group) its member list → the next-scan preview → the
+// footer actions.
 //
 // ── THE FOUR THINGS THIS SCREEN IS TRYING TO PREVENT ─────────────────────────
 //
@@ -143,23 +156,43 @@ const CSS = `
 .ep-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 @media (min-width:720px){ .ep-stats { grid-template-columns:repeat(4,minmax(0,1fr)); } }
 
-/* The row that used to collide. The label track is minmax(0,1fr) so it SHRINKS
-   and ellipses instead of wrapping; the numbers sit in their own fixed track. */
+/* ── ONE BORDERED BOX PER LOCATION ──────────────────────────────────────────
+   The previous screen ran every location together as one continuous column of
+   stacked text, so where one shop's numbers ended and the next began was a
+   judgement call made from spacing alone. Each location is its own box now,
+   with its own border, and the three-column header repeats inside every one of
+   them: a header drawn once at the top of a long list is a header nobody can
+   see by the time they reach the third shop. */
+.ep-box { border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:10px 12px 12px;
+          margin-bottom:10px; background:rgba(255,255,255,.02); }
+.ep-box-head { display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:8px; }
+.ep-box-head > .ep-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+/* Header cells and inputs share ONE column template, so each label sits over
+   its own input at every width. Three equal columns, never collapsed. */
+.ep-nums { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.ep-colhead { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:4px; }
+/* A size run indents its rows behind the size label; the header row carries the
+   same leading cell so the columns still line up over the inputs. */
+.ep-sized { display:grid; grid-template-columns:minmax(44px,56px) minmax(0,1fr); gap:8px; align-items:center; }
+/* Errors get their OWN row inside the box. The old layout floated the message
+   under an input with a negative margin above the next control, so "Keep is
+   required" printed on top of the row below it. */
+.ep-err { grid-column:1 / -1; color:#f87171; font-size:.78rem; line-height:1.4; padding-top:6px; }
+
+/* The explicit-rows panel keeps the older two-track row: it is a long list of
+   products, not a handful of locations, and a box each would be a page of
+   borders. */
 .ep-loc { display:grid; grid-template-columns:minmax(0,1fr); gap:6px 10px; align-items:center;
           padding:10px 0; border-bottom:1px solid rgba(255,255,255,.05); }
 .ep-loc-name { display:flex; align-items:center; gap:8px; min-width:0; }
 .ep-loc-name > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ep-nums { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
 @media (min-width:560px){
   .ep-loc { grid-template-columns:minmax(0,1fr) 260px; }
-  .ep-nums { grid-template-columns:repeat(3,76px); justify-content:end; }
 }
 .ep-num-head { display:none; }
 @media (min-width:560px){
   .ep-num-head { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:10px; }
 }
-.ep-size { display:grid; grid-template-columns:minmax(0,54px) 1fr; gap:8px; align-items:center; padding:4px 0; }
-@media (min-width:560px){ .ep-size { grid-template-columns:minmax(0,1fr) 260px; } }
 .ep-cat { display:flex; align-items:center; gap:12px; width:100%; text-align:left;
           background:transparent; border:none; color:inherit; font:inherit; padding:0; cursor:pointer; min-width:0; }
 .ep-chips { display:flex; flex-wrap:wrap; gap:6px; }
@@ -245,8 +278,16 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  // ── ONE LIST ─────────────────────────────────────────────────────────────
+  // Group entries and category entries in the SAME list, sorted together. A
+  // group's member categories are left out of it: they are reachable from
+  // inside the group entry, and a category that appeared both beside its group
+  // and inside it was the separate GROUPS section this pass deleted.
   const categories = useMemo(() => {
-    const list = census?.categories || [];
+    const list = [
+      ...(census?.groupEntries || []),
+      ...(census?.categories || []).filter((c) => !c.memberOfGroup),
+    ];
     // Governed first (they are what somebody came to change), then anything
     // with products or rows, then the empty rest — alphabetical inside each.
     return [...list].sort((a, b) => {
@@ -255,7 +296,10 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     });
   }, [census]);
 
-  const open = categories.find((c) => c.key === openKey) || null;
+  // A member category opened from inside its group is not in `categories` (the
+  // group hides it), so the lookup falls back to the full census list.
+  const open = categories.find((c) => c.key === openKey)
+    || (census?.categories || []).find((c) => c.key === openKey) || null;
   const destinations = census?.destinations || [];
   const errors = useMemo(() => validateDraft(draft), [draft]);
   const keyNow = useMemo(() => previewKey(openKey, draft, { perSize: open?.perSize }), [openKey, draft, open]);
@@ -264,6 +308,13 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());
   const stamp = lastChange(census?.history);
+
+  // Opening one of a group's categories from inside it. The member is not in
+  // `categories` (the group hides it), so it is looked up in the full census.
+  const openMember = (key) => {
+    const c = (census?.categories || []).find((x) => x.key === key);
+    if (c) openCategory(c);
+  };
 
   const openCategory = (c) => {
     setOpenKey(c.key);
@@ -357,11 +408,34 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     });
   };
 
+  // The group's policy is written through setGroup, so both the preview and the
+  // save need the whole group object with its numbers replaced — never a
+  // reconstructed one. `armed` and `memberCategoryKeys` are carried through
+  // untouched: editing numbers is not arming, and it does not change who is in.
+  const groupPayload = (policy) => ({
+    label: open?.label, memberCategoryKeys: open?.memberCategoryKeys,
+    armed: open?.armedGroup === true, ...(policy === null ? {} : { policy }),
+  });
+  const groupBefore = () => (open?.isGroup
+    ? { label: open.label, memberCategoryKeys: open.memberCategoryKeys,
+        armed: open.armedGroup === true, ...(open.entry ? { policy: open.entry } : {}) }
+    : null);
+
   const runPreview = async () => {
     if (busy || Object.keys(errors).length) return;
     setBusy("preview");
     const forKey = keyNow;
     try {
+      if (open?.isGroup) {
+        const res = await setCategoryPolicyFn()({
+          action: "setGroup", groupKey: open.groupKey, group: groupPayload(proposed), dryRun: true });
+        // A DISARMED group is modelled as "if this were armed" — the server
+        // says so, and the panel repeats it rather than presenting a number
+        // about a world that does not exist as though it did.
+        setPreview({ key: forKey, model: null, hypothetical: res.data.hypothetical !== false,
+          armModel: res.data.armModel, changes: [] });
+        return;
+      }
       const res = await setCategoryPolicyFn()({ categoryKey: openKey, policy: proposed, dryRun: true });
       // The preview is stamped with the key of the values it was computed FROM.
       // If the owner edited a field while it was in flight, this preview is
@@ -378,6 +452,19 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     if (!saveable) return;
     setBusy("save");
     try {
+      if (open?.isGroup) {
+        const res = await setCategoryPolicyFn()({
+          action: "setGroup", groupKey: open.groupKey, group: groupPayload(proposed),
+          // The exact group this editor was opened on. The server refuses the
+          // write if live no longer matches it.
+          expectedBefore: groupBefore(),
+        });
+        if (res.data.noChange) flash("ok", "Nothing to save — these are the numbers already live.");
+        else flash("ok", `Saved. ${open.label} stays ${open.armedGroup ? "armed" : "off"}.`);
+        closeCategory();
+        await load(true);
+        return;
+      }
       const res = await setCategoryPolicyFn()({
         categoryKey: openKey,
         policy: proposed,
@@ -511,6 +598,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
             scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
             onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
             onSwitchShape={switchShape} onPreview={runPreview} onSave={save} onBack={closeCategory}
+            onOpenMember={openMember}
             onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
             onSaveRows={saveRows} onRevert={revert}
@@ -520,13 +608,12 @@ function EnginePolicyAuthed({ viewer, onExit }) {
             <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Engine Policy</h1>
-                <div style={{ marginTop: 6, color: GRAY, fontSize: ".92rem", lineHeight: 1.45 }}>
-                  What each category keeps at every location, and when the engine asks for more
-                </div>
+                {/* The stamp, and nothing else. The subtitle that used to sit
+                    here described the screen to somebody already on it, and the
+                    "by <email> — <key>" tail repeated what the change history
+                    below says in full. */}
                 <div style={{ marginTop: 6, color: "#6b7280", fontSize: ".8rem" }}>
-                  {stamp
-                    ? `Last changed ${fmtWhen(stamp.at)} by ${stamp.by} — ${stamp.categoryKey || stamp.groupKey || "rows"}`
-                    : "No changes recorded yet"}
+                  {stamp ? `Last changed ${fmtWhen(stamp.at)}` : "No changes recorded yet"}
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -537,15 +624,14 @@ function EnginePolicyAuthed({ viewer, onExit }) {
               </div>
             </div>
 
+            {/* LABEL AND NUMBER. Every stat card used to carry a line of
+                explanation under it; four of them stacked read as a paragraph
+                broken into pieces, and none of them changed what anybody did. */}
             <div className="ep-stats" style={{ marginBottom: "1.2rem" }}>
-              <Tile label="Governed" value={loading ? "…" : `${governed} of ${categories.length}`}
-                sub="the rest fall through to the engine's own rules" />
-              <Tile label="Next scan" value={scan.at ? scan.label : "—"}
-                sub={scan.at ? "every 15 min, 07:00–19:00" : scan.label} />
-              <Tile label="Refills per scan" value={census?.cap ?? "…"}
-                sub="shared across every category" />
-              <Tile label="Groups" value={Object.keys(census?.groups || {}).length}
-                sub={groupsSub(census?.groups)} />
+              <Tile label="Governed" value={loading ? "…" : `${governed} of ${categories.length}`} />
+              <Tile label="Next scan" value={scan.at ? scan.label : "—"} />
+              <Tile label="Refills per scan" value={census?.cap ?? "…"} />
+              <Tile label="Locations" value={destinations.length} />
             </div>
 
             {loading && <div style={{ color: GRAY, padding: "2rem 0" }}>Reading the policy…</div>}
@@ -559,19 +645,12 @@ function EnginePolicyAuthed({ viewer, onExit }) {
               </div>
             )}
 
-            {!loading && !error && <Groups groups={census?.groups} cap={census?.cap} />}
-
             {!loading && !error && categories.map((c) => (
               <CategoryRow key={c.key} category={c} onOpen={() => openCategory(c)} />
             ))}
 
             {!loading && !error && <History entries={census?.history} onRevert={revert} busy={busy} />}
 
-            <div style={{ marginTop: "2rem", color: "#4b5563", fontSize: ".75rem", lineHeight: 1.6 }}>
-              These numbers are read live by the refill engine — no deploy, no restart.
-              Deleting a category's policy entirely puts it back on the engine's own rules.
-              Products with their own rows keep those rows; nothing on this screen removes one.
-            </div>
           </>
         )}
       </div>
@@ -585,19 +664,11 @@ const rowSeed = (rows, id) => {
     reorderPoint: r.reorderPoint == null ? "" : String(r.reorderPoint) };
 };
 
-const groupsSub = (groups) => {
-  const g = Object.values(groups || {});
-  if (!g.length) return "none yet";
-  const armed = g.filter((x) => x?.armed === true).length;
-  return armed ? `${armed} armed` : "none armed";
-};
-
-function Tile({ label, value, sub }) {
+function Tile({ label, value }) {
   return (
     <div style={{ ...GLASS, padding: ".85rem .9rem", minWidth: 0 }}>
       <div style={{ color: GRAY, fontSize: ".7rem", textTransform: "uppercase", letterSpacing: ".04em" }}>{label}</div>
       <div style={{ fontSize: "1.4rem", fontWeight: 700, marginTop: 4 }}>{value}</div>
-      <div style={{ color: "#6b7280", fontSize: ".72rem", marginTop: 2, lineHeight: 1.35 }}>{sub}</div>
     </div>
   );
 }
@@ -625,12 +696,24 @@ function Chip({ tone = "gray", children, onClick, title }) {
 
 function categoryChips(c) {
   const out = [];
+  // A GROUP LEADS WITH HOW MANY CATEGORIES IT IS. It is one policy in the list
+  // now, and the only thing that distinguishes it from a category is that it
+  // speaks for seven of them.
+  if (c.isGroup) out.push({ tone: "blue", text: `${c.memberCategoryKeys.length} categories` });
   out.push({ tone: "gray", text: c.perSize ? "per size" : "one size" });
-  if (c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
+  if (!c.isGroup && c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
   if ((c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
   else out.push({ tone: "gray", text: "no policy" });
   if (c.ownRowCells > 0) {
     out.push({ tone: "amber", text: `${c.ownRowProducts} with their own rows`, rows: true });
+  }
+  // ── "N OLD ROWS" ─────────────────────────────────────────────────────────
+  // Replaces the grey paragraph that used to sit under the location table
+  // explaining that a category "also holds cells at S, M, L…". It is a chip
+  // that OPENS those rows, in the same list every other row is edited in.
+  if ((c.sizeRunExtra || []).length) {
+    out.push({ tone: "amber", text: `${c.sizeRunExtra.length} old rows`, rows: true,
+      title: `Cells at ${c.sizeRunExtra.map(sizeLabel).join(", ")} — sizes this category does not come in` });
   }
   if (c.refused) out.push({ tone: "red", text: "no policy by decision" });
   if (c.rowOnly) out.push({ tone: "gray", text: "not in the taxonomy" });
@@ -661,54 +744,13 @@ function CategoryRow({ category: c, onOpen }) {
   );
 }
 
-// ── GROUPS ───────────────────────────────────────────────────────────────────
-// Read and explain, on this build. A group is created and edited by the
-// callable (setGroup); the one thing this panel deliberately does NOT offer is
-// an Arm button for a group the model says is over the per-scan cap — the
-// server refuses it anyway, and offering a control that always fails is worse
-// than not offering it.
-function Groups({ groups, cap }) {
-  const list = Object.entries(groups || {});
-  if (!list.length) return null;
-  return (
-    <div style={{ marginBottom: "1.2rem" }}>
-      <div style={{ color: GRAY, fontSize: ".72rem", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>
-        Groups
-      </div>
-      {list.map(([key, g]) => (
-        <div key={key} style={{ ...GLASS, padding: ".8rem .9rem", marginBottom: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 700, fontSize: ".95rem", flex: 1, minWidth: 0 }}>{g?.label || key}</div>
-            <Chip tone={g?.armed === true ? "green" : "gray"}>{g?.armed === true ? "armed" : "not armed"}</Chip>
-          </div>
-          <div style={{ color: GRAY, fontSize: ".78rem", marginTop: 6, lineHeight: 1.5 }}>
-            {(g?.memberCategoryKeys || []).length} categories: {(g?.memberCategoryKeys || []).join(", ")}
-          </div>
-          {g?.armed !== true && (
-            <div style={{ color: "#6b7280", fontSize: ".75rem", marginTop: 6, lineHeight: 1.5 }}>
-              Not armed. A group that is not armed is not in the engine's resolution at all —
-              it cannot produce a single refill, whatever numbers it holds. Arming it is refused
-              while it would ask for more than the {cap ?? "per-scan"} refills a scan allows,
-              which is shared with every other category.
-            </div>
-          )}
-          <div style={{ color: "#4b5563", fontSize: ".72rem", marginTop: 6, lineHeight: 1.5 }}>
-            A category with numbers of its own ignores its group entirely — grouping never
-            overrides a setting somebody made on purpose.
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // THE CATEGORY DETAIL SCREEN
 // ═════════════════════════════════════════════════════════════════════════════
 function CategoryDetail({
   category: c, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
   saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
-  onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert,
+  onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
   const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
@@ -725,7 +767,7 @@ function CategoryDetail({
           <div className="ep-chips" style={{ marginTop: 8 }}>
             {categoryChips(c).map((ch, i) => (
               <Chip key={i} tone={ch.tone} onClick={ch.rows ? onOpenRows : undefined}
-                title={ch.rows ? "Open these rows and edit them" : undefined}>{ch.text}</Chip>
+                title={ch.title || (ch.rows ? "Open these rows and edit them" : undefined)}>{ch.text}</Chip>
             ))}
           </div>
           <div style={{ marginTop: 8, color: GRAY, fontSize: ".85rem", lineHeight: 1.5 }}>{headline}</div>
@@ -733,21 +775,21 @@ function CategoryDetail({
         <button onClick={onBack} style={bGhost}>Back</button>
       </div>
 
-      {c.policySource === "group" && (
-        <div style={{ ...GLASS, padding: ".8rem 1rem", marginBottom: "1rem",
-          border: "1px solid rgba(74,127,255,.35)", color: "#dbe6ff", fontSize: ".85rem", lineHeight: 1.55 }}>
-          These numbers come from the <b>{c.groupLabel || c.groupKey}</b> group, not from this
-          category. Saving them here gives {c.label} numbers of its own — which takes it out of
-          the group, so a later change to the group stops reaching it.
+      {!c.isGroup && c.policySource === "group" && (
+        // ONE LINE. Saving here takes the category out of its group, which is a
+        // bigger change than the numbers look — that is the whole content, and
+        // the paragraph that used to say it three times is gone.
+        <div style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: "1rem",
+          border: "1px solid rgba(74,127,255,.35)", color: "#dbe6ff", fontSize: ".85rem" }}>
+          These numbers come from <b>{c.groupLabel || c.groupKey}</b> — saving here takes {c.label} out of it.
         </div>
       )}
 
       <div className="ep-stats" style={{ marginBottom: "1.2rem" }}>
-        <Tile label="On hand" value={c.units} sub="units across every location" />
-        <Tile label="Products" value={c.products} sub="in this category" />
-        <Tile label="Locations" value={carriedCount(c)} sub="carry it today" />
-        <Tile label="Own rows" value={c.ownRowProducts || 0}
-          sub={c.ownRowCells ? `${c.ownRowCells} rows the engine reads first` : "none"} />
+        <Tile label="On hand" value={c.units} />
+        <Tile label="Products" value={c.products} />
+        <Tile label="Locations" value={carriedCount(c)} />
+        <Tile label="Own rows" value={c.ownRowProducts || 0} />
       </div>
 
       {panel === "rows" ? (
@@ -767,7 +809,7 @@ function CategoryDetail({
             onQuickFill={onQuickFill} onSwitchShape={onSwitchShape}
           />
 
-          <Legend />
+          {c.isGroup && <MemberList group={c} onOpenMember={onOpenMember} />}
 
           {banner.length > 0 && (
             <div style={{ marginTop: "1rem", padding: ".8rem 1rem", borderRadius: RADIUS,
@@ -817,39 +859,53 @@ function headlineNumber(entry) {
   return typeof entry.target === "number" ? String(entry.target) : "—";
 }
 
-// ── THE LOCATION TABLE ───────────────────────────────────────────────────────
-// One row per location: icon plus name, nothing else on that line. Three
-// colour-coded numeric columns. A location with a policy shows its numbers; one
-// without shows an em dash and the reason.
+// ── THE LOCATIONS ────────────────────────────────────────────────────────────
+// ONE BORDERED BOX PER LOCATION, and inside every one of them the three column
+// headers sit directly over their own inputs, coloured to match each input's
+// accent. That repetition is the point: the shipped screen drew the headers
+// once at the top and a legend once at the bottom, so by the third shop nobody
+// could see either, and the middle column was a number with no name.
+//
+// Validation errors render INSIDE the box they belong to, on their own row.
+// They used to float under an input with a negative margin above the next
+// control, which put "Keep is required" on top of the row below it.
 const COL_TONE = { target: BLUE_L, minQty: AMBER, reorderPoint: GREEN };
+
+function ColumnHeads({ lead = false }) {
+  const heads = (
+    <div className="ep-colhead">
+      {FIELD_ORDER.map((f) => (
+        <div key={f} style={{ textAlign: "center", color: COL_TONE[f], fontSize: ".68rem",
+          fontWeight: 700, textTransform: "uppercase", letterSpacing: ".04em" }}>{COLUMN_LABELS[f]}</div>
+      ))}
+    </div>
+  );
+  if (!lead) return heads;
+  // A size run indents its rows behind the size label, so the header row needs
+  // the same leading cell or every label sits one column to the left of the
+  // input it names.
+  return <div className="ep-sized"><div /><div>{heads}</div></div>;
+}
 
 function LocationTable({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSwitchShape }) {
   const sizeRun = c.sizeRun || [];
   const canPerSize = c.perSize && sizeRun.length > 0;
   return (
-    <div style={{ ...GLASS, padding: ".6rem .9rem" }}>
-      <div className="ep-num-head" style={{ color: GRAY, fontSize: ".68rem", textTransform: "uppercase",
-        letterSpacing: ".05em", padding: "4px 0 6px" }}>
-        <div>Location</div>
-        <div className="ep-nums">
-          {FIELD_ORDER.map((f) => (
-            <div key={f} style={{ textAlign: "center", color: COL_TONE[f] }}>{COLUMN_LABELS[f]}</div>
-          ))}
-        </div>
-      </div>
-
+    <div>
       {rows.map((r) => {
         const row = draft[r.loc];
         const inDraft = !!row;
         const perSize = isPerSizeRow(row);
         return (
-          <div key={r.loc}>
-            <div className="ep-loc">
-              <div className="ep-loc-name">
-                <span aria-hidden="true" style={{ fontSize: "1rem" }}>{locIcon(r.loc)}</span>
-                <span style={{ fontWeight: 600, fontSize: ".93rem" }}>{locLabel(r.loc)}</span>
-              </div>
-              {inDraft && !perSize ? (
+          <div key={r.loc} className="ep-box">
+            <div className="ep-box-head">
+              <span aria-hidden="true" style={{ fontSize: "1rem" }}>{locIcon(r.loc)}</span>
+              <span className="ep-name" style={{ fontSize: ".95rem" }}>{locLabel(r.loc)}</span>
+            </div>
+
+            {inDraft && !perSize && (
+              <>
+                <ColumnHeads />
                 <div className="ep-nums">
                   {FIELD_ORDER.map((f) => (
                     <input key={f} inputMode="numeric" value={row?.[f] ?? ""}
@@ -861,44 +917,39 @@ function LocationTable({ category: c, rows, draft, errors, onField, onArm, onDro
                         border: errors[r.loc] ? "1px solid rgba(248,113,113,.6)" : input.border }} />
                   ))}
                 </div>
-              ) : inDraft && perSize ? (
-                <div style={{ color: GRAY, fontSize: ".78rem", textAlign: "right" }}>
-                  size by size, below
-                </div>
-              ) : (
-                // NO POLICY HERE. An em dash for each column, and the reason
-                // underneath — the two reasons are different and lead to
-                // different actions.
+                {errors[r.loc] && <div className="ep-err">{errors[r.loc]}</div>}
+              </>
+            )}
+
+            {inDraft && perSize && (
+              <SizeRows loc={r.loc} row={row} sizeRun={sizeRun} errors={errors} category={c}
+                onField={onField} onQuickFill={onQuickFill} />
+            )}
+
+            {!inDraft && (
+              <>
+                <ColumnHeads />
                 <div className="ep-nums">
                   {FIELD_ORDER.map((f) => (
                     <div key={f} style={{ textAlign: "center", color: "#4b5563", fontSize: "1rem" }}>—</div>
                   ))}
                 </div>
-              )}
-            </div>
-
-            {!inDraft && (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-                padding: "0 0 10px", marginTop: -6 }}>
-                <span style={{ color: r.carries ? "#6b7280" : AMBER, fontSize: ".76rem" }}>
-                  {r.carries
-                    ? `not stocked by the engine here — ${r.productsCarried} carried, ${r.unitsHeld} units`
-                    : "not carried — this store does not stock this category"}
-                </span>
-                <button onClick={() => onArm(r.loc, r.carries)}
-                  style={{ ...(r.carries ? bGray : bRed), padding: "5px 10px", fontSize: ".73rem" }}>
-                  {r.carries ? "Stock here" : "Arm this store"}
-                </button>
-              </div>
-            )}
-
-            {inDraft && perSize && (
-              <SizeRows loc={r.loc} row={row} sizeRun={sizeRun} errors={errors}
-                onField={onField} onQuickFill={onQuickFill} />
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                  <span style={{ color: r.carries ? "#6b7280" : AMBER, fontSize: ".76rem" }}>
+                    {r.carries
+                      ? `${r.productsCarried} carried, ${r.unitsHeld} units`
+                      : "not carried here"}
+                  </span>
+                  <button onClick={() => onArm(r.loc, r.carries)}
+                    style={{ ...(r.carries ? bGray : bRed), padding: "5px 10px", fontSize: ".73rem" }}>
+                    {r.carries ? "Stock here" : "Arm this store"}
+                  </button>
+                </div>
+              </>
             )}
 
             {inDraft && (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "0 0 10px", marginTop: -4 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                 {canPerSize && (
                   <button onClick={() => onSwitchShape(r.loc, !perSize, sizeRun)}
                     style={{ ...bGhost, padding: "5px 10px", fontSize: ".73rem" }}>
@@ -909,47 +960,45 @@ function LocationTable({ category: c, rows, draft, errors, onField, onArm, onDro
                   style={{ ...bGhost, padding: "5px 10px", fontSize: ".73rem" }}>Stop stocking here</button>
               </div>
             )}
-
-            {errors[r.loc] && <div style={{ color: RED, fontSize: ".78rem", padding: "0 0 8px" }}>{errors[r.loc]}</div>}
           </div>
         );
       })}
 
       {c.perSize && !sizeRun.length && (
-        // THE STOP. A category the registry calls sized whose run cannot be
-        // worked out from live data does not get a guessed list of sizes.
-        <div style={{ color: AMBER, fontSize: ".8rem", padding: "8px 0", lineHeight: 1.5 }}>
-          No size run can be worked out for this category from the live data — no product
-          declares a size, no cell exists and no row exists. Setting numbers size by size here
-          would be a guess, so it is not offered.
-        </div>
-      )}
-
-      {(c.sizeRunExtra || []).length > 0 && (
-        <div style={{ color: "#4b5563", fontSize: ".75rem", padding: "8px 0", lineHeight: 1.5 }}>
-          This category also holds cells at {c.sizeRunExtra.map(sizeLabel).join(", ")}, which are not
-          sizes it comes in. Those are old rows — they still refill on their own numbers, and they are
-          edited in the "with their own rows" list, not here.
+        // THE STOP, in one line. A category the registry calls sized whose run
+        // cannot be worked out from live data does not get a guessed list.
+        <div style={{ color: AMBER, fontSize: ".8rem", padding: "4px 0 8px" }}>
+          No size run can be worked out from the live data — size-by-size is not offered.
         </div>
       )}
     </div>
   );
 }
 
-// A location's size run, one row each. The quick-fill copies the first size
-// that has a number into every size — as its own row, which is the point.
-function SizeRows({ loc, row, sizeRun, errors, onField, onQuickFill }) {
+// A location's size run, one row each, inside that location's box. The
+// quick-fill copies the first size that has a number into every size — as its
+// own row, which is the point.
+function SizeRows({ loc, row, sizeRun, errors, category, onField, onQuickFill }) {
   const keys = [...new Set([...(sizeRun || []), ...Object.keys(row.sizes || {})])].sort(bySizeRank);
   const anyFilled = Object.values(row.sizes || {}).some((r) => String(r?.target ?? "").trim() !== "");
+  const carriedBy = category?.sizeRunCarriedBy || null;
+  const memberCount = (category?.memberCategoryKeys || []).length;
   return (
-    <div style={{ padding: "2px 0 10px 8px", borderLeft: "2px solid rgba(255,255,255,.07)", marginLeft: 6 }}>
+    <div>
+      <ColumnHeads lead />
       {keys.map((k) => {
         const sr = row.sizes?.[k] || { target: "", minQty: "", reorderPoint: "" };
         const err = errors[`${loc}::${k}`];
+        // A size only SOME of a group's categories carry is marked where it is
+        // typed, not explained underneath. A number here reaches fewer products
+        // than the size next to it, and that is worth one glyph.
+        const partial = carriedBy && carriedBy[k] && carriedBy[k].length < memberCount;
         return (
           <div key={k}>
-            <div className="ep-size">
-              <div style={{ color: GRAY, fontSize: ".8rem", fontWeight: 600 }}>{sizeLabel(k)}</div>
+            <div className="ep-sized">
+              <div style={{ color: GRAY, fontSize: ".8rem", fontWeight: 600 }}>
+                {sizeLabel(k)}{partial ? <span title={`only ${carriedBy[k].join(", ")}`} style={{ color: AMBER }}> *</span> : null}
+              </div>
               <div className="ep-nums">
                 {FIELD_ORDER.map((f) => (
                   <input key={f} inputMode="numeric" value={sr[f] ?? ""}
@@ -962,31 +1011,43 @@ function SizeRows({ loc, row, sizeRun, errors, onField, onQuickFill }) {
                 ))}
               </div>
             </div>
-            {err && <div style={{ color: RED, fontSize: ".75rem", padding: "0 0 4px" }}>{err}</div>}
+            {err && <div className="ep-err">{err}</div>}
           </div>
         );
       })}
+      {errors[loc] && <div className="ep-err">{errors[loc]}</div>}
       {anyFilled && (
         <button onClick={() => onQuickFill(loc, sizeRun)}
-          style={{ ...bGhost, padding: "5px 10px", fontSize: ".73rem", marginTop: 6 }}>
-          Same across all sizes
+          style={{ ...bGhost, padding: "5px 10px", fontSize: ".73rem", marginTop: 8 }}>
+          Same for every size
         </button>
       )}
-      <div style={{ color: "#4b5563", fontSize: ".72rem", marginTop: 6, lineHeight: 1.5 }}>
-        Each size is stored on its own. "Same across all sizes" fills them all in one tap and
-        every one stays editable afterwards.
-      </div>
     </div>
   );
 }
 
-function Legend() {
+// ── THE CATEGORIES INSIDE A GROUP ────────────────────────────────────────────
+// Compact, tappable, and one short line above them for the only rule that is
+// not visible from the numbers: a category with its own numbers ignores these
+// entirely. Opening one gives it numbers of its own.
+function MemberList({ group, onOpenMember }) {
+  const members = group.members || [];
+  if (!members.length) return null;
   return (
-    <div style={{ marginTop: ".9rem", padding: ".8rem 1rem", borderRadius: RADIUS, background: "rgba(255,255,255,.02)",
-      border: BORDER, fontSize: ".8rem", lineHeight: 1.7, color: "#c9d3e6" }}>
-      <div><b style={{ color: BLUE_L }}>Keep</b> — how many the shelf should hold when it is full.</div>
-      <div><b style={{ color: AMBER }}>Minimum</b> — below this a refill card shows as urgent; it changes nothing else.</div>
-      <div><b style={{ color: GREEN }}>Ask at</b> — hold the request back until the shelf drops to this number; blank means top up as soon as anything sells.</div>
+    <div style={{ marginTop: "1rem" }}>
+      <div style={{ color: GRAY, fontSize: ".75rem", marginBottom: 8 }}>
+        A category with its own numbers ignores these.
+      </div>
+      <div className="ep-chips">
+        {members.map((m) => (
+          <button key={m.key} type="button" onClick={() => onOpenMember(m.key)}
+            style={{ ...bGhost, padding: "6px 10px", fontSize: ".78rem", display: "flex", alignItems: "center", gap: 6 }}>
+            <span>{m.label}</span>
+            <span style={{ color: "#6b7280" }}>{m.products ?? 0}</span>
+            {m.hasOwnPolicy && <Chip tone="green">own numbers</Chip>}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -997,6 +1058,35 @@ function Legend() {
 // invalidates it.
 function PreviewPanel({ preview, keyNow, cap, busy, category, errors, onRun }) {
   const stale = preview && preview.key !== keyNow;
+  // A GROUP IS PREVIEWED AS "IF THIS WERE ARMED". The Sneakers group is
+  // disarmed and stays disarmed, so its preview is explicitly about a world
+  // that does not exist yet — said in the heading rather than left for somebody
+  // to infer from a number.
+  if (preview && !stale && preview.armModel) {
+    const m = preview.armModel;
+    const over = m.cap != null && m.totalRequests > m.cap;
+    return (
+      <div style={{ marginTop: "1rem", padding: ".9rem 1rem", borderRadius: RADIUS,
+        background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.3)" }}>
+        <div style={{ fontWeight: 700, fontSize: ".9rem", color: BLUE_L }}>
+          {preview.hypothetical ? "If this were armed" : "What happens on the next scan"}
+        </div>
+        <div className="ep-stats" style={{ margin: ".8rem 0" }}>
+          <Stat label="Refills asked for" value={m.totalRequests} of={m.cap != null ? `of ${m.cap} per scan` : ""} warn={over} />
+          <Stat label="Units wanted" value={m.totalUnits} />
+          <Stat label="Categories" value={(m.perMember || []).length} />
+          <Stat label="Over the limit" value={over ? "yes" : "no"} warn={over} />
+        </div>
+        <div style={{ fontSize: ".82rem", color: "#e5e7eb", lineHeight: 1.5 }}>
+          {(m.perMember || []).filter((x) => x.requests > 0)
+            .map((x) => `${x.key} ${x.requests}`).join(" · ") || "No category asks for anything."}
+        </div>
+        <button onClick={onRun} disabled={!!busy} style={{ ...bGray, marginTop: ".8rem", opacity: busy ? .5 : 1 }}>
+          {busy === "preview" ? "Working…" : "Preview again"}
+        </button>
+      </div>
+    );
+  }
   const blocked = !!busy || !!Object.keys(errors || {}).length;
   const RunButton = () => (
     <button onClick={onRun} disabled={blocked} style={{ ...bGray, marginTop: ".8rem", opacity: blocked ? .5 : 1 }}>
@@ -1032,10 +1122,8 @@ function PreviewPanel({ preview, keyNow, cap, busy, category, errors, onRun }) {
         {previewVerdict(m, { cap })}
       </div>
       <div style={{ marginTop: ".7rem", fontSize: ".74rem", color: "#4b5563", lineHeight: 1.5 }}>
-        This is a ceiling. The scan holds back anything already on its way, anything a
-        shop recently said no to, and anything over the per-scan limit — so it can ask
-        for less than this, never more.
-        {category.ownRowProducts > 0 && ` ${category.ownRowProducts} products in this category carry their own rows; the engine reads those first, so these numbers do not reach them.`}
+        A ceiling — the scan can ask for less, never more.
+        {category.ownRowProducts > 0 && ` ${category.ownRowProducts} products have their own rows and are not reached by these numbers.`}
       </div>
       <RunButton />
     </div>
@@ -1075,16 +1163,12 @@ function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave
         )}
       </div>
 
-      <div style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: ".8rem", fontSize: ".84rem",
-        color: "#c9d3e6", lineHeight: 1.6 }}>
-        These products carry their own numbers, set by hand. The engine reads a row like this
-        BEFORE it reads the category policy, so for these products the numbers on the previous
-        screen do nothing. That is not a fault — a row is the more specific answer, and it wins
-        on purpose. Change one here and it takes effect on the next scan.
-        <div style={{ color: "#4b5563", fontSize: ".76rem", marginTop: 8 }}>
-          Rows are never deleted from this screen. Clearing a row is a bulk change to
-          /stock_targets and needs its own preview and its own rollback file.
-        </div>
+      {/* One line each. The paragraph that used to sit here said the same thing
+          four ways, and the standing rule for this screen is one short line per
+          control, only where a number alone would be ambiguous. */}
+      <div style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: ".8rem", fontSize: ".84rem", color: "#c9d3e6" }}>
+        The engine reads a row before the category policy, so these numbers win.
+        <div style={{ color: "#4b5563", fontSize: ".76rem", marginTop: 6 }}>Rows are never deleted here.</div>
       </div>
 
       {/* THE LIST IS CAPPED, AND IT SAYS SO. t-shirts has 1,870 rows; sending
