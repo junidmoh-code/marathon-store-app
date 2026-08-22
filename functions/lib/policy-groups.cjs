@@ -109,7 +109,7 @@ function sizesOfLocationEntry(locEntry) {
 // so overlapping membership is refused against what is actually there rather
 // than against an assumption.
 function validatePolicyGroup(groupKey, group, {
-  knownCategoryKeys, knownLocations, existingGroups, categoryPolicy,
+  knownCategoryKeys, knownLocations, existingGroups, categoryPolicy, allowedSizes = null,
 } = {}) {
   if (typeof groupKey !== "string" || !groupKey) return "groupKey must be a non-empty string";
   if (!KEY_RE.test(groupKey)) {
@@ -155,7 +155,10 @@ function validatePolicyGroup(groupKey, group, {
       if (Array.isArray(knownLocations) && knownLocations.length && !knownLocations.includes(loc)) {
         return `unknown location "${loc}"`;
       }
-      const err = validateLocationEntry(p[loc], { where: loc, perSize: p.perSize === true, allowedSizes: null });
+      // `allowedSizes` is the group's DERIVED run — the union of its members'
+      // runs (sizeRunForGroup) — when the caller has it; the callable always
+      // does. A per-size group write can then never name a size no member has.
+      const err = validateLocationEntry(p[loc], { where: loc, perSize: p.perSize === true, allowedSizes });
       if (err) return err;
     }
   }
@@ -264,6 +267,47 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
   };
 }
 
+// ── SIZE RUN OF A GROUP — THE UNION OF ITS MEMBERS' RUNS ─────────────────────
+// A group's per-size editor needs one list of sizes, and the members do not
+// agree: measured live 2026-08-22 the Sneakers group's members with any run are
+// designer-shoes (3–11), slides (3–11 with 5.5) and sneakers (3–13 with 5.5).
+// The rule the brief sets is THE UNION, with the sizes only SOME members carry
+// MARKED rather than dropped — dropping 12 and 13 would leave the group unable
+// to speak for the two largest sneaker sizes, and dropping 5.5 would leave 538
+// live cells ungoverned.
+//
+// Each member's run is the same derived run sizeRunForCategory offers (so the
+// registry intersection applies per member — a sneaker's stray "XL" never
+// reaches the union). Members that hold no products have no run and are listed
+// as such; they do not shrink the union and they do not count toward "all".
+//
+// `overStop` flips when the union exceeds MAX_GROUP_UNION. That is the pass's
+// stop condition — an editor with more rows than that is a guess dressed as a
+// list — and the callable refuses a per-size group write on it rather than
+// offering the list anyway.
+const MAX_GROUP_UNION = 20;
+function sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations }) {
+  // De-duplicated: the write path refuses a repeated member, but the census
+  // reads the live node unvalidated, and a repeat must not count twice.
+  const members = [...new Set(Array.isArray(memberCategoryKeys) ? memberCategoryKeys.filter((m) => typeof m === "string") : [])];
+  const byMember = {};
+  const carriedBy = {};
+  for (const m of members) {
+    const run = sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: m, locations });
+    byMember[m] = { sizes: run.sizes, empty: run.empty, oneSize: run.oneSize, products: run.products };
+    for (const s of run.sizes) (carriedBy[s] = carriedBy[s] || []).push(m);
+  }
+  const membersWithRun = members.filter((m) => byMember[m].sizes.length);
+  const sizes = Object.keys(carriedBy).sort(bySizeRank);
+  // Carried by only some of the members that have a run at all.
+  const partial = sizes.filter((s) => carriedBy[s].length < membersWithRun.length);
+  return {
+    sizes, byMember, carriedBy, partial, membersWithRun,
+    empty: sizes.length === 0,
+    overStop: sizes.length > MAX_GROUP_UNION,
+  };
+}
+
 // Letters first in their conventional order, then numerics ascending, then
 // anything else. Mirrors src/components/stock/hubSizeRank.js — pinned equal by
 // test rather than by hope (functions/ is CommonJS, the browser bundle must not
@@ -359,8 +403,8 @@ function mergeCandidates({ taxonomy, countsByCategory, movementByCategory, polic
 }
 
 module.exports = {
-  GROUPS_PATH, MAX_GROUP_MEMBERS, MAX_SIZES_PER_LOCATION, MAX_TARGET,
+  GROUPS_PATH, MAX_GROUP_MEMBERS, MAX_SIZES_PER_LOCATION, MAX_TARGET, MAX_GROUP_UNION,
   locationEntryMode, sizesOfLocationEntry, validateLocationEntry, validatePolicyGroup,
   armedGroupForCategory, effectivePolicyFor, locationPolicyFor,
-  sizeRunForCategory, sizeRank, fillAllSizes, mergeCandidates,
+  sizeRunForCategory, sizeRunForGroup, sizeRank, bySizeRank, fillAllSizes, mergeCandidates,
 };

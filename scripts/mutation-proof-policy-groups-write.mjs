@@ -119,18 +119,19 @@ const MUTATIONS = [
     id: "M-CAP",
     guard: "A group over the per-scan cap cannot be armed from this screen",
     file: WRITE,
-    from: `      if (armModel.exceedsCap) {`,
-    to: `      if (false && armModel.exceedsCap) {`,
+    from: `      if (armModel && armModel.exceedsCap) {`,
+    to: `      if (false && armModel && armModel.exceedsCap) {`,
     nodeTests: TESTS,
   },
   {
     id: "M-CAP-2",
     guard: "…and it is modelled BEFORE the write, not reported after it",
     file: WRITE,
-    from: `    let armModel = null;
-    if (after && after.armed === true) {`,
-    to: `    let armModel = null;
-    if (false && after && after.armed === true) {`,
+    // The model now also runs on a dry run (pass 3), so the anchor is the
+    // condition that decides WHEN it runs; switching it off leaves the refusal
+    // below reading a null model — nothing is modelled before the write.
+    from: `    if (after && isPlainObject(after.policy) && (after.armed === true || d.dryRun === true)) {`,
+    to: `    if (false) {`,
     nodeTests: TESTS,
   },
   {
