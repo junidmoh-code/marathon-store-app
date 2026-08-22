@@ -452,6 +452,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     categories.push({
       key,
       label: cats[key]?.label || key,
+      // The studio photograph, cached on the taxonomy entry by
+      // scripts/generate-category-images.mjs. Absent is normal and normal is
+      // fine — the card falls back to the category's emoji.
+      imageUrl: typeof cats[key]?.imageUrl === "string" ? cats[key].imageUrl : null,
       inTaxonomy: !!cats[key],
       active: cats[key]?.active !== false,
       sizeMode: effEntry?.perSize === true ? "list" : (cats[key]?.sizeMode || "one"),
