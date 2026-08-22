@@ -42,14 +42,14 @@ function fakeDb(initial = {}) {
   // drift fence, which re-reads the very path the initial read used: firing on
   // the first match would model a write that landed BEFORE the merge looked,
   // which is not drift at all.
-  let inFlight = 0;
-  let peakInFlight = 0;
+  const inFlightPaths = new Set();
+  let peakPaths = [];
   let onGet = null;
 
   return {
     data,
     updates,
-    peakConcurrentGets: () => peakInFlight,
+    peakConcurrentPaths: () => peakPaths,
     afterGetOf(match, fn, skip = 0) { onGet = { match, fn, skip }; },
     ref(path = "") {
       return {
@@ -57,10 +57,10 @@ function fakeDb(initial = {}) {
           // Peak concurrency is observable because get() yields once before
           // returning: reads issued together overlap, reads awaited one at a
           // time never do. That is what pins the fence to ONE round trip.
-          inFlight += 1;
-          if (inFlight > peakInFlight) peakInFlight = inFlight;
+          inFlightPaths.add(String(path));
+          if (inFlightPaths.size > peakPaths.length) peakPaths = [...inFlightPaths];
           await Promise.resolve();
-          inFlight -= 1;
+          inFlightPaths.delete(String(path));
           // The hook fires BEFORE the value is captured, so a "concurrent
           // write landing just before this read" is modelled faithfully.
           if (onGet && String(path).includes(onGet.match)) {
@@ -567,13 +567,22 @@ test("the drift fences read in ONE round trip — a slower fence would widen the
   // The fences run LAST, so every serial read between the first fence read and
   // the commit is race window they added themselves — and the widest of those
   // gaps would land on the survivor, the live sellable record a POS sale hits.
-  // The loser side alone walks the whole registry, so serial reads here would
-  // be 10+ round trips on a 2-location merge.
+  //
+  // THIS ASSERTS THE PATHS, NOT A COUNT. A bare "peak concurrency >= 8" is
+  // satisfied by the eight loser probes ALONE, so it stays green with the
+  // survivor fence fully serialised — the exact regression the comment above
+  // says matters most — and it is also satisfied by any unrelated read loop
+  // that happens to be parallel. Naming the paths makes both mutations visible:
+  // the survivor's cell read carries a size suffix, which no node read has.
   const db = fakeDb(baseWorld());
   await run(db);
-  const registered = Object.keys(LOCATIONS).length;
-  assert.ok(db.peakConcurrentGets() >= registered,
-    `fence reads must be issued together: peak concurrency was ${db.peakConcurrentGets()}, expected at least ${registered}`);
+  const peak = db.peakConcurrentPaths();
+  const wantLoser = Object.keys(LOCATIONS).map((loc) => `stock/${loc}/pLoser`);
+  const wantSurvivor = ["stock/central/pSurvivor/6", "stock/hub2/pSurvivor/6"];
+  for (const want of [...wantSurvivor, ...wantLoser]) {
+    assert.ok(peak.includes(want),
+      `${want} must be in flight alongside the other fence reads — peak was [${peak.join(", ")}]`);
+  }
 });
 
 test("a fence read that fails takes NOTHING down with it — no unhandled rejection", async () => {
