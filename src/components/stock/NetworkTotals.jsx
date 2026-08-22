@@ -33,7 +33,7 @@ import { Empty } from "./widgets";
 import { FONT, BG, BLUE_L, GRAY, BORDER, input, bGray, tabOn, tabOff } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
 import { sortRows, visibleProducts, countedLocations } from "./networkTotalsCore";
-import { loadTotals, cachedTotals, totalsFailed, forgetTotals } from "./networkTotalsStore";
+import { loadTotals, cachedTotals, totalsFailed, totalsReadAt, forgetTotals } from "./networkTotalsStore";
 
 const PAGE = 25;
 
@@ -98,7 +98,7 @@ export default function NetworkTotals({ products = [], registry, onExit }) {
   // Fetch totals for exactly the rows on screen, and nothing else.
   useEffect(() => {
     if (!registryReady) return;
-    const missing = shown.filter(p => !cachedTotals(p.id) && !totalsFailed(p.id)).map(p => p.id);
+    const missing = shown.filter(p => !cachedTotals(p.id, locationIds) && !totalsFailed(p.id, locationIds)).map(p => p.id);
     if (!missing.length) return;
     setLoading(true);
     loadTotals(missing, locationIds, () => { if (mounted.current) forceRender(n => n + 1); })
@@ -106,18 +106,19 @@ export default function NetworkTotals({ products = [], registry, onExit }) {
   }, [shown, locationIds, registryReady, reload]);
 
   const rows = useMemo(
-    () => sortRows(shown.map(p => ({ id: p.id, name: p.name, product: p, totals: cachedTotals(p.id), failed: totalsFailed(p.id) })), direction),
+    () => sortRows(shown.map(p => ({ id: p.id, name: p.name, product: p, totals: cachedTotals(p.id, locationIds), failed: totalsFailed(p.id, locationIds) })), direction),
     // `tick` is the signal that the totals cache changed under us; shown and
     // direction alone cannot observe a Map mutation.
-    [shown, direction, tick], // eslint-disable-line react-hooks/exhaustive-deps
+    [shown, direction, locationIds, tick], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const pool = query.trim() ? matches.length : catalogue.length;
   const more = pageSize < pool;
-  const retry = (productId) => { forgetTotals(productId); setReload(n => n + 1); };
+  const retry = (productId) => { forgetTotals(productId, locationIds); setReload(n => n + 1); };
   const refresh = () => { forgetTotals(); setReload(n => n + 1); };
 
   const counted = locationIds.map(id => labelFor(id, reg)).join(", ");
+  const readAt = totalsReadAt();
 
   // ── SCROLL, DON'T PRESS ─────────────────────────────────────────────────────
   // The next page loads on its own as he gets near the bottom. An observer on a
@@ -173,6 +174,13 @@ export default function NetworkTotals({ products = [], registry, onExit }) {
           <button onClick={() => setDirection("desc")} style={direction === "desc" ? tabOn : tabOff}>Most first</button>
           <button onClick={() => setDirection("asc")} style={direction === "asc" ? tabOn : tabOff}>Least first</button>
           <div style={{ flex: 1 }} />
+          {/* When it was counted. Six characters, and the difference between a
+              number he can act on and a number an hour old that looks current. */}
+          {readAt && !loading && (
+            <span style={{ fontSize: 11, color: "rgba(233,238,255,.3)", fontVariantNumeric: "tabular-nums" }}>
+              {readAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          )}
           <button onClick={refresh} disabled={loading} style={{ ...tabOff, opacity: loading ? .5 : 1 }}>Refresh</button>
         </div>
 

@@ -62,9 +62,16 @@ export const EXCLUDED_LOCATIONS = ["marathon-pine", "hub3"];
 
 // The locations to sum. `registry` is the /locations map ({ id: {active,…} });
 // a location is counted when it is not explicitly retired (active === false) and
-// is not one of the two named exclusions. An id the registry does not describe is
-// COUNTED, not dropped — an unknown location holding units should show up in the
-// total and be noticed, not vanish from it silently.
+// is not one of the two named exclusions.
+//
+// THE REGISTRY IS THE CLOSED SET, and that is the whole answer to "what about a
+// location in /stock that isn't in /locations". Nothing here enumerates /stock's
+// own top level, because listing its keys means downloading the 5.36 MB node
+// this screen exists to avoid — and it would buy nothing, since the live
+// stock_movements rules validate `from`/`to` against /locations existence, so
+// units cannot legitimately reach an unregistered location in the first place.
+// An id passed in that the registry does not describe is still counted (a caller
+// that knows about a location is trusted); the screen simply never has one.
 export function countedLocations(locationIds, registry) {
   return [...(locationIds || [])]
     .filter((id) => !EXCLUDED_LOCATIONS.includes(id))

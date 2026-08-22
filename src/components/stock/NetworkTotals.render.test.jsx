@@ -253,6 +253,13 @@ describe("a read that fails", () => {
 });
 
 describe("Refresh", () => {
+  it("stamps the page with the time it counted", async () => {
+    const tree = await mount();
+    // A number an hour old that looks current is the failure mode; the stamp is
+    // the cheapest thing that prevents it.
+    expect(screen(tree)).toMatch(/\d{1,2}:\d{2}/);
+  });
+
   it("re-reads the page so a number he is about to order against is current", async () => {
     const tree = await mount();
     const before = totalsReadsIssued();
@@ -403,6 +410,42 @@ describe("loadTotals is not a silent no-op", () => {
     readCalls.length = 0;
     await loadTotals([], COUNTED, () => {});
     expect(readCalls).toHaveLength(0);
+  });
+});
+
+describe("the cached number always matches the scope on the caption", () => {
+  // /locations is a live subscription. Keyed by product id alone, an admin
+  // flipping a location active mid-session would leave every cached number
+  // describing the OLD set while the caption described the new one.
+  it("re-reads when the counted set changes, instead of showing the old scope's number", async () => {
+    const { cachedTotals } = await import("./networkTotalsStore.js");
+    const wide = ["central", "hub2", "base", "marathon-pe"];
+    const narrow = ["central"];
+    await loadTotals(["wide"], wide, () => {});
+    await loadTotals(["wide"], narrow, () => {});
+    expect(cachedTotals("wide", wide).total).toBe(110);     // 75 + 30 + 3 + 2
+    expect(cachedTotals("wide", narrow).total).toBe(75);    // 40 + 30 + 5
+    // and the wide answer is NOT what a narrow-scope lookup returns
+    expect(cachedTotals("wide", narrow).total).not.toBe(cachedTotals("wide", wide).total);
+  });
+});
+
+describe("Refresh does not adopt a pre-refresh answer", () => {
+  // He presses Refresh because he just moved stock. A read already in flight
+  // snapshotted the state he pressed Refresh to get past, so its answer must be
+  // discarded — not cached, and not handed to the request that replaces it.
+  it("discards a read that was in flight when Refresh was pressed", async () => {
+    const { cachedTotals, forgetTotals, productTotals } = await import("./networkTotalsStore.js");
+    const original = reads["stock/central/mid"];
+    try {
+      const pending = productTotals("mid", ["central"]);   // read starts (sees 12)
+      forgetTotals();                                      // Refresh, mid-flight
+      reads["stock/central/mid"] = { S: cell(99) };         // the world moves on
+      await pending;
+      expect(cachedTotals("mid", ["central"])).toBe(null);  // the stale answer was not kept
+      const fresh = await productTotals("mid", ["central"]);
+      expect(fresh.total).toBe(99);                         // nor handed to its replacement
+    } finally { reads["stock/central/mid"] = original; }
   });
 });
 

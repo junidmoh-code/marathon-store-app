@@ -27,8 +27,14 @@ import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { sumProduct } from "./networkTotalsCore";
 
-// productId -> the sumProduct() result. Module scope so it survives a remount.
+// KEY: productId + the exact location set the total was computed over. NOT the
+// product id alone. /locations is a live subscription, so an admin flipping a
+// location's `active` mid-session changes what "counted" means; keyed by id
+// alone, every already-cached number would keep describing the old set while the
+// caption on screen described the new one. Keyed by both, a scope change simply
+// misses the cache and re-reads. Module scope, so it survives a remount.
 const cache = new Map();
+const keyFor = (productId, locationIds) => `${productId}::${[...(locationIds || [])].sort().join(",")}`;
 // productId -> in-flight promise, so two renders asking at once read once.
 const inflight = new Map();
 // productId -> true for a read that FAILED. A failure is not a total, so it is
@@ -36,6 +42,11 @@ const inflight = new Map();
 // a dropped connection leaves a row saying "counting…" forever, with no error,
 // no retry and no way to tell it from a read still in flight.
 const failed = new Map();
+// Bumped by a full Refresh. A read already in flight when Refresh is pressed
+// snapshotted the state he pressed Refresh to get PAST, so its answer is
+// discarded rather than cached — and the reason he pressed it (he just moved
+// stock) is exactly what makes that race likely.
+let generation = 0;
 // When the totals on screen were read, so the card can say so. He may move stock
 // on another tab and come back; a number with no timestamp invites a reorder
 // decision against a figure that is minutes stale.
@@ -55,22 +66,28 @@ let batches = 0;
 export function totalsBytesRead() { return bytesRead; }
 export function totalsReadsIssued() { return readsIssued; }
 export function totalsBatches() { return batches; }
-export function cachedTotals(productId) { return cache.get(productId) || null; }
+export function cachedTotals(productId, locationIds) { return cache.get(keyFor(productId, locationIds)) || null; }
 export function cachedCount() { return cache.size; }
-export function totalsFailed(productId) { return failed.has(productId); }
+export function totalsFailed(productId, locationIds) { return failed.has(keyFor(productId, locationIds)); }
 export function totalsReadAt() { return lastReadAt; }
 
 // Forget one product's failure so the next render reads it again. Forget
 // everything (no argument) for the card's Refresh — a re-read is one page's
 // worth of bytes, which is the price of a number he can trust.
-export function forgetTotals(productId) {
-  if (productId == null) { cache.clear(); failed.clear(); lastReadAt = null; return; }
-  cache.delete(productId);
-  failed.delete(productId);
+export function forgetTotals(productId, locationIds) {
+  if (productId == null) {
+    // inflight is cleared too, and the generation moves: otherwise a read still
+    // in flight would either be JOINED by the post-refresh request (handing back
+    // the pre-refresh answer) or land and cache itself after the clear.
+    cache.clear(); failed.clear(); inflight.clear(); generation += 1; lastReadAt = null;
+    return;
+  }
+  const k = keyFor(productId, locationIds);
+  cache.delete(k); failed.delete(k); inflight.delete(k);
 }
 
 // Test seam only — the card never calls this.
-export function __resetTotalsCache() { cache.clear(); inflight.clear(); failed.clear(); bytesRead = 0; readsIssued = 0; batches = 0; lastReadAt = null; }
+export function __resetTotalsCache() { cache.clear(); inflight.clear(); failed.clear(); bytesRead = 0; readsIssued = 0; batches = 0; generation = 0; lastReadAt = null; }
 
 // One product, every location. Ten small reads, summed by the pure core.
 //
@@ -95,26 +112,30 @@ async function readOne(productId, locationIds) {
 
 // Totals for one product, memoised. Concurrent callers share one read.
 export function productTotals(productId, locationIds) {
-  if (cache.has(productId)) return Promise.resolve(cache.get(productId));
-  if (inflight.has(productId)) return inflight.get(productId);
+  const k = keyFor(productId, locationIds);
+  if (cache.has(k)) return Promise.resolve(cache.get(k));
+  if (inflight.has(k)) return inflight.get(k);
+  const gen = generation;
   const p = readOne(productId, locationIds)
     .then((totals) => {
-      cache.set(productId, totals);
-      failed.delete(productId);
-      inflight.delete(productId);
+      inflight.delete(k);
+      if (gen !== generation) return null;      // a Refresh overtook this read
+      cache.set(k, totals);
+      failed.delete(k);
       lastReadAt = new Date();
       return totals;
     })
     .catch((err) => {
-      inflight.delete(productId);
+      inflight.delete(k);
+      if (gen !== generation) return null;
       // A denied or failed read is UNKNOWN, never zero. Returning 0 here would
       // put a confident wrong number in front of a reordering decision — and
       // leaving it silent would let it pass for a slow one.
-      failed.set(productId, true);
-      console.warn(`Network totals read failed for ${productId}:`, err);
+      failed.set(k, true);
+      console.warn(`Total Stock read failed for ${productId}:`, err);
       return null;
     });
-  inflight.set(productId, p);
+  inflight.set(k, p);
   return p;
 }
 
