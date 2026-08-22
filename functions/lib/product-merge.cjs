@@ -38,12 +38,17 @@
 // A merge writes TWO movements per moved cell — the loser's decrement and the
 // survivor's increment — so summing the ledger per product stays re-derivable.
 //
-// ── PINE IS OUT OF SCOPE — refused, not skipped ──────────────────────────────
-// Pine (marathon-pine, and its hub3 lane) mixes its own product with Marathon
-// and Trophy product and is handled separately. A merge involving a product
-// that holds ANY stock cell at those locations is REFUSED with a clear message,
-// never partially applied — skipping the Pine cells would leave stock stranded
-// on a hidden record.
+// ── EVERY LOCATION IS TREATED THE SAME — no location refuses a merge ─────────
+// There was, until 2026-08-22, a guard that refused any merge where either
+// product held a cell at marathon-pine or hub3. It was a copy of the HEADWEAR
+// one-size collapse's scope decision, where Pine was excluded because its cells
+// were qty-0 reconciliation husks and that migration REWROTE SIZE KEYS and
+// minted /stock_targets rows off them. A merge does neither, and — the point of
+// this whole module — a merge does not move stock BETWEEN locations: Pine's
+// units stay at Pine, Central's at Central. There is nothing location-specific
+// left for a location guard to protect, so there is no location guard. Every
+// location is read, summed and transferred by the same code path, negatives
+// included. See MERGE-PINE-INVESTIGATION.md for the full trace.
 //
 // ── FAIL CLOSED, ALWAYS ──────────────────────────────────────────────────────
 // Anything uncertain — a missing record, an already-merged party, a lock held
@@ -52,7 +57,6 @@
 
 "use strict";
 
-const PINE_LOCATIONS = ["marathon-pine", "hub3"];
 const MERGE_LOCK_STALE_MS = 10 * 60 * 1000; // takeover window for a crashed merge
 
 // Byte-compatible with src/utils/sizeKey.js — the ONE cross-app encoding.
@@ -80,7 +84,7 @@ class MergeRefused extends Error {
 const asQty = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
 
 // A stock node's countable size cells. "_meta" (and any non-object child) is
-// bookkeeping, not stock — but its EXISTENCE still matters for the Pine guard.
+// bookkeeping, not stock — the node still gets deleted whole, _meta included.
 function sizeCellsOf(node) {
   const out = {};
   if (!node || typeof node !== "object") return out;
@@ -157,14 +161,6 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       const sNode = (await db.ref(`stock/${loc}/${survivorId}`).get()).val();
       if (lNode) { loserNodes[loc] = lNode; loserCells[loc] = sizeCellsOf(lNode); }
       if (sNode) survivorCells[loc] = sizeCellsOf(sNode);
-    }
-
-    // Pine guard — ANY presence at a Pine location refuses the whole merge.
-    for (const loc of PINE_LOCATIONS) {
-      if (loserNodes[loc] || survivorCells[loc]) {
-        throw new MergeRefused("failed-precondition",
-          `Merge refused: a product holds stock at ${loc}. Pine is out of scope for merges — resolve its Pine stock first.`);
-      }
     }
 
     // ── BUILD THE ONE ATOMIC UPDATE ──────────────────────────────────────────
@@ -358,4 +354,4 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
   }
 }
 
-module.exports = { performMerge, MergeRefused, PINE_LOCATIONS, encodeSizeKey, decodeSizeKey };
+module.exports = { performMerge, MergeRefused, encodeSizeKey, decodeSizeKey };

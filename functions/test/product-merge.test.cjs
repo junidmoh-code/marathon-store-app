@@ -4,7 +4,7 @@
 //   • the loser record survives as a redirect (old sales keep resolving);
 //   • loser barcodes scan to the survivor afterwards;
 //   • the matching duplicate row closes;
-//   • Pine stock refuses the whole merge, atomically — nothing half-applies;
+//   • NO location refuses a merge — Pine (marathon-pine / hub3) included;
 //   • the cell/ledger contract (v+1, paired movements, one atomic update).
 
 "use strict";
@@ -12,7 +12,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { performMerge, MergeRefused, PINE_LOCATIONS } = require("../lib/product-merge.cjs");
+const { performMerge, MergeRefused } = require("../lib/product-merge.cjs");
 
 const NOW = 1770000000000;
 const ACTOR = { uid: "admin1", email: "gunidmoh@gmail.com" };
@@ -248,6 +248,136 @@ test("negative loser cells transfer as negatives — the shortage signal is pres
   assert.deepStrictEqual(totalsByLocation(db.data), before);
 });
 
+// ─── NO LOCATION IS SPECIAL — the Pine refusal, removed 2026-08-22 ───────────
+// Until this date a merge was refused outright if EITHER product held a cell at
+// marathon-pine or hub3. That exclusion was copied from the headwear one-size
+// collapse (which rewrote size keys on Pine's qty-0 reconciliation husks) and
+// protected nothing about merges: a merge never moves stock between locations,
+// so Pine's units stay at Pine. These tests pin the replacement contract —
+// every location goes through one code path, sign and all.
+
+// The live case that exposed it: "Lacoste Audyssor White Gray" merged into
+// "Lacoste Audysol White". Survivor hub1 17 / central 16 / marathon-pine 7 /
+// hub3 −2; loser hub1 13. Reproduced cell for cell.
+function lacosteWorld() {
+  return {
+    locations: LOCATIONS,
+    products: {
+      pLoser: { id: "pLoser", name: "Lacoste Audyssor White Gray", sizes: ["8"] },
+      pSurvivor: { id: "pSurvivor", name: "Lacoste Audysol White", sizes: ["8"] },
+    },
+    stock: {
+      hub1: {
+        pSurvivor: { "8": { qty: 17, v: 3, mv: "s1" } },
+        pLoser: { "8": { qty: 13, v: 5, mv: "l1" } },
+      },
+      central: { pSurvivor: { "8": { qty: 16, v: 2, mv: "s2" } } },
+      "marathon-pine": { pSurvivor: { "8": { qty: 7, v: 1, mv: "s3" } } },
+      hub3: { pSurvivor: { "8": { qty: -2, v: 4, mv: "s4" } } },
+    },
+    barcodes: {},
+    style_code_index: {},
+  };
+}
+
+test("THE LIVE CASE: a merge where a product holds Pine and hub3 stock SUCCEEDS", async () => {
+  const db = fakeDb(lacosteWorld());
+  const before = totalsByLocation(db.data);
+  const out = await run(db);
+  assert.strictEqual(out.ok, true, "no location may refuse a merge");
+
+  // Pine's units stay at Pine, untouched and unchanged in total.
+  assert.deepStrictEqual(db.data.stock["marathon-pine"].pSurvivor["8"],
+    { qty: 7, v: 1, mv: "s3" }, "Pine's cell is not even rewritten — nothing moved there");
+  assert.strictEqual(db.data.stock.central.pSurvivor["8"].qty, 16, "Central keeps its 16");
+  // The one collision sums, at its own location.
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["8"].qty, 30, "hub1: 17 + 13, at hub1");
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["8"].v, 4, "…and v goes 3 → 4, exactly +1");
+  assert.strictEqual(db.data.stock.hub1.pLoser, undefined, "the loser's hub1 node is gone");
+  // The negative cell keeps its sign — not refused, not zeroed.
+  assert.strictEqual(db.data.stock.hub3.pSurvivor["8"].qty, -2, "hub3 stays at −2, sign intact");
+
+  // Per-location totals conserved EXACTLY, for every location.
+  assert.deepStrictEqual(totalsByLocation(db.data), before);
+  assert.deepStrictEqual(before,
+    { hub1: 30, central: 16, "marathon-pine": 7, hub3: -2 }, "…and those totals are the real ones");
+});
+
+test("Pine and hub3 stock on EITHER side merges — loser side too, qty-0 husks included", async () => {
+  for (const loc of ["marathon-pine", "hub3"]) {
+    // Loser holds it.
+    const w = baseWorld();
+    w.stock[loc] = { pLoser: { "6": { qty: 4, v: 0, mv: "x" } } };
+    const db = fakeDb(w);
+    const before = totalsByLocation(db.data);
+    assert.strictEqual((await run(db)).ok, true, `a loser cell at ${loc} must not refuse`);
+    assert.strictEqual(db.data.stock[loc].pSurvivor["6"].qty, 4, `${loc}'s 4 stay at ${loc}`);
+    assert.strictEqual(db.data.stock[loc].pSurvivor["6"].v, 0, "a new cell is born at v=0");
+    assert.strictEqual(db.data.stock[loc].pLoser, undefined);
+    assert.deepStrictEqual(totalsByLocation(db.data), before);
+
+    // Survivor holds it — a qty-0 reconciliation husk, the exact shape the old
+    // guard called "presence". It is simply left alone.
+    const w2 = baseWorld();
+    w2.stock[loc] = { pSurvivor: { "6": { qty: 0, v: 7, mv: "x" } } };
+    const db2 = fakeDb(w2);
+    const before2 = totalsByLocation(db2.data);
+    assert.strictEqual((await run(db2)).ok, true, `a survivor husk at ${loc} must not refuse`);
+    assert.deepStrictEqual(db2.data.stock[loc].pSurvivor["6"], { qty: 0, v: 7, mv: "x" },
+      "an untouched survivor cell is not rewritten");
+    assert.deepStrictEqual(totalsByLocation(db2.data), before2);
+  }
+});
+
+test("a NEGATIVE loser cell at Pine transfers with its sign, and sums into a negative survivor cell", async () => {
+  const w = baseWorld();
+  w.stock["marathon-pine"] = {
+    pLoser: { "6": { qty: -3, v: 1, mv: "x" } },
+    pSurvivor: { "6": { qty: -2, v: 5, mv: "y" } },
+  };
+  const db = fakeDb(w);
+  const before = totalsByLocation(db.data);
+  const out = await run(db);
+  assert.strictEqual(db.data.stock["marathon-pine"].pSurvivor["6"].qty, -5,
+    "−2 + −3 = −5 — no clamp, no zeroing");
+  assert.deepStrictEqual(totalsByLocation(db.data), before);
+  // Both ledger legs describe a negative move: the sign flips from/to.
+  const mvL = db.data.stock_movements[out.movementIds.find((id) => id.includes("_L_marathon-pine_6"))];
+  const mvS = db.data.stock_movements[out.movementIds.find((id) => id.includes("_S_marathon-pine_6"))];
+  assert.strictEqual(mvL.qty, 3, "the ledger records magnitude…");
+  assert.strictEqual(mvL.to, "marathon-pine", "…and a negative loser leg reads as an inbound correction");
+  assert.strictEqual(mvL.from, null);
+  assert.deepStrictEqual(mvS.before, { "marathon-pine": -2 });
+  assert.deepStrictEqual(mvS.after, { "marathon-pine": -5 });
+});
+
+test("a second merge of the same pair credits NOTHING extra", async () => {
+  const db = fakeDb(lacosteWorld());
+  await run(db);
+  const afterFirst = JSON.parse(JSON.stringify(db.data.stock));
+  const totals = totalsByLocation(db.data);
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.message, /already merged/);
+    return true;
+  });
+  assert.deepStrictEqual(db.data.stock, afterFirst, "no cell moved a second time");
+  assert.deepStrictEqual(totalsByLocation(db.data), totals);
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["8"].qty, 30, "hub1 is 30, not 43");
+});
+
+test("the loser is a hidden redirect after a Pine-holding merge, and old references resolve", async () => {
+  const w = lacosteWorld();
+  w.barcodes = { "00000801": { productId: "pLoser", size: "8", at: "2026-01-01T00:00:00Z" } };
+  const db = fakeDb(w);
+  await run(db);
+  assert.ok(db.data.products.pLoser, "the record is NOT deleted");
+  assert.strictEqual(db.data.products.pLoser.mergedInto, "pSurvivor");
+  assert.strictEqual(db.data.products.pLoser.name, "Lacoste Audyssor White Gray");
+  assert.strictEqual(db.data.barcodes["00000801"].productId, "pSurvivor",
+    "a label already stuck on stock still scans — to the survivor");
+});
+
 // ─── CLOSURES + AUDIT ────────────────────────────────────────────────────────
 test("the matching duplicate_candidates row closes as merged, keeping its history", async () => {
   const db = fakeDb(baseWorld());
@@ -295,19 +425,6 @@ test("refused: either party already merged away", async () => {
   await assertRefused(fakeDb(w1), {}, /failed-precondition/, /already merged/);
   const w2 = baseWorld(); w2.products.pSurvivor.mergedInto = "pOther";
   await assertRefused(fakeDb(w2), {}, /failed-precondition/, /itself merged/);
-});
-
-test("PINE GUARD: stock at marathon-pine or hub3 refuses the whole merge — atomically", async () => {
-  for (const loc of PINE_LOCATIONS) {
-    const w = baseWorld();
-    w.stock[loc] = { pLoser: { "6": { qty: 1, v: 0, mv: "x" } } };
-    await assertRefused(fakeDb(w), {}, /failed-precondition/, /Pine is out of scope/);
-
-    const w2 = baseWorld();
-    w2.stock[loc] = { pSurvivor: { "6": { qty: 0, v: 0, mv: "x" } } };
-    await assertRefused(fakeDb(w2), {}, /failed-precondition/, /Pine is out of scope/,
-      "even a qty-0 Pine cell refuses — presence is the signal");
-  }
 });
 
 test("refused: unreadable location registry — never guessed", async () => {
@@ -371,7 +488,7 @@ test("a fresh concurrent lock aborts the second merge; a stale one is taken over
 
 test("a refused merge releases its lock; an applied merge keeps a tombstone", async () => {
   const w = baseWorld();
-  w.stock["marathon-pine"] = { pLoser: { "6": { qty: 1, v: 0, mv: "x" } } };
+  delete w.locations; // refuses INSIDE the try, i.e. with the lock already held
   const db = fakeDb(w);
   await assert.rejects(() => run(db));
   assert.strictEqual((db.data.product_merges_locks || {}).pLoser, undefined, "lock released on refusal");
