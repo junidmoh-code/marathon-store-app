@@ -26,6 +26,18 @@
 //   M-SIZE-RUN      let the size run be the raw union again (registry ignored,
 //                   and a one-size category handed a run of legacy letter cells)
 //
+// ── THE THIRD PASS ───────────────────────────────────────────────────────────
+//   M-GROUP-UNION   intersect the members' runs instead of uniting them — the
+//                   design that arms nothing at either end of the run
+//   M-GROUP-UNION-2 drop the `partial` marking, so a size only one member
+//                   carries reads as one every member carries
+//   M-GROUP-SIZES   stop validating a group's per-size write against its
+//                   derived run (any size at all becomes writable)
+//   M-MEMBER-HIDDEN stop marking a member category, so it lists twice — once
+//                   beside its group and once inside it
+//   M-CLOTHING      change the clothing default run by one, and watch the
+//                   frozen live snapshot catch it
+//
 // Same discipline as scripts/mutation-proof-engine-policy.mjs: ERROR is not
 // FAIL, anchors must be unique, restore is signal-safe, and the tree must be
 // clean before anything is touched.
@@ -40,7 +52,14 @@ const ENGINE = "functions/lib/refill-engine.cjs";
 const MODEL = "functions/lib/category-policy.cjs";
 const GROUPS = "functions/lib/policy-groups.cjs";
 
+const WRITE = "functions/lib/category-policy-write.cjs";
+
 const CORE_TESTS = ["test/policy-groups.test.cjs"];
+// The third pass: the Sneakers entry, the group's derived run, and the freeze
+// on clothing resolution.
+const PASS3_TESTS = ["test/sneakers-group-sizes.test.cjs"];
+const WRITE_TESTS = ["test/sneakers-entry-write.test.cjs"];
+const FROZEN_TESTS = ["test/clothing-resolution-frozen.test.cjs"];
 const ENGINE_TESTS = ["test/policy-groups-engine.test.cjs"];
 const DIFF_TESTS = ["test/policy-groups-differential.test.cjs"];
 const ALL_TESTS = [...CORE_TESTS, ...ENGINE_TESTS, ...DIFF_TESTS];
@@ -191,6 +210,49 @@ const MUTATIONS = [
     from: `  const offered = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);`,
     to: `  const offered = union;`,
     nodeTests: CORE_TESTS,
+  },
+
+  // ── THE THIRD PASS ─────────────────────────────────────────────────────────
+  {
+    id: "M-GROUP-UNION",
+    guard: "A group's run is the UNION of its members' — an intersection arms nothing at either end",
+    file: GROUPS,
+    from: `  const sizes = Object.keys(carriedBy).sort(bySizeRank);`,
+    to: `  const sizes = Object.keys(carriedBy).filter((s) => carriedBy[s].length === members.length).sort(bySizeRank);`,
+    nodeTests: PASS3_TESTS,
+  },
+  {
+    id: "M-GROUP-UNION-2",
+    guard: "Sizes only SOME members carry are marked — an unmarked one reads as universal",
+    file: GROUPS,
+    from: `  const partial = sizes.filter((s) => carriedBy[s].length < members.length);`,
+    to: `  const partial = [];`,
+    nodeTests: PASS3_TESTS,
+  },
+  {
+    id: "M-GROUP-SIZES",
+    guard: "A group's per-size write is checked against its derived run, not against nothing",
+    file: GROUPS,
+    from: `        allowedSizes: Array.isArray(allowedSizes) ? allowedSizes : null });`,
+    to: `        allowedSizes: null });`,
+    nodeTests: [...PASS3_TESTS, ...WRITE_TESTS],
+  },
+  {
+    id: "M-MEMBER-HIDDEN",
+    guard: "A group's members are marked so they are not listed a second time beside it",
+    file: WRITE,
+    from: `  for (const c of categories) if (memberKeys.has(c.key)) c.memberOfGroup = groupEntries.find((g) => g.memberCategoryKeys.includes(c.key)).groupKey;`,
+    to: ``,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M-CLOTHING",
+    guard: "CLOTHING RESOLUTION IS FROZEN — the live snapshot replays cell for cell",
+    file: ENGINE,
+    from: `function resolveTarget({ targets, config, products, stock }, dest, pid, size) {`,
+    to: `function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+  if (String(size) === "M" && dest === "hub2") return { target: 99, minQty: 1, reorderPoint: null, source: "explicit" };`,
+    nodeTests: FROZEN_TESTS,
   },
 ];
 
