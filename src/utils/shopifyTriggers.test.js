@@ -101,6 +101,76 @@ describe("detection — three trigger categories", () => {
   });
 });
 
+// ─── THE CLASS-GAP REGRESSION, 2026-08-22 ───────────────────────────────────
+// "Ferrari", "Seattle Mariners" and "Central Cee" were live on the storefront —
+// in the title, the handle, both SEO fields and the image alt text — while the
+// lexicon knew none of them. Not three missing words: three missing CLASSES.
+// The list had been built from sneaker and apparel labels, and this business
+// also stocks car marques, sports franchises, football shirt SPONSORS,
+// musicians, licensed characters, fragrance houses and component marks.
+//
+// These are the real terms from the real leak. If any of them stops being
+// refused, the gap is open again.
+describe("brand CLASSES the sneaker/apparel list never had (live leak 2026-08-22)", () => {
+  const LEAK = [
+    // the three named in the report
+    ["Ferrari cap white", "ferrari"],
+    ["Seattle Mariners cap navy", "seattle mariners"],
+    ["Central Cee Tracksuit Black", "central cee"],
+    // one per class the scan surfaced, all live titles
+    ["Mercedes adjustable cap black", "mercedes"],
+    ["Nascar jacket brown jeans", "nascar"],
+    ["Naskar jacket navy jeans", "nascar"],            // the live misspelling
+    ["Arsenal Fly Emirates Home Jersey Red", "fly emirates"],
+    ["Jersey Arsenal JVC Blue", "jvc"],
+    ["Liverpool FC Crown Paints Jersey Red", "crown paints"],
+    ["Garment Real Madrid Teka Navy", "teka"],
+    ["Manchester United Sharp Digital Jersey Navy", "sharp"],
+    ["Low-top sneaker Drake Palest Purple", "drake"],
+    ["Sneaker Bad Bunny x Indoor Benito", "bad bunny"],
+    ["High-top sneaker Kaws Companion", "kaws"],
+    ["Sneaker Pony Wales Bonner Leopard", "wales bonner"],
+    ["Sneaker Hello Kitty White Black Pink", "hello kitty"],
+    ["Sneaker Retro Snorlax", "snorlax"],
+    ["Dose Gabbana black", "dolce gabbana"],           // the live misspelling
+    ["Barrow t-shirt white", "barrow"],
+    ["Fragrance Acqua di Gio 125ML", "acqua di gio"],
+    ["Gentleman perfume", "gentleman"],
+    ["Sneaker Goodyear Blue Orange Black", "goodyear"],
+    ["Sneaker Flightposite White University Blue", "flightposite"],
+    ["Sneaker Audyssol Green", "audysol"],             // one label, four spellings live
+    ["Atlanta Braves fitted cap cream", "atlanta braves"],
+    ["Red Sox fitted cap", "red sox"],
+  ];
+  for (const [title, label] of LEAK) {
+    it(`refuses "${title}"`, () => {
+      expect(triggersInText(title)).toContain(label);
+      expect(isTriggerFree(title)).toBe(false);
+    });
+  }
+
+  // THE OTHER HALF OF THE JOB. Two entries in the first draft of this extension
+  // were disasters, and both were caught only by running the candidate against
+  // every live title before adding it. Squash mode matches across word joins,
+  // which is what makes it strong and what makes short terms lethal.
+  it("does not shred innocent titles — the collisions that nearly shipped", () => {
+    // "roam" in squash mode matches "Ret-RO A M-a"; word mode does not.
+    expect(triggersInText("Sneaker Retro A Ma Maniaire")).not.toContain("roam");
+    // "verto" in squash mode matches "Fold O-VER TO-ngue"; word mode does not.
+    expect(triggersInText("Soccer boots Elite Fold Over Tongue Firm Ground")).not.toContain("verto");
+    // A "dg" alt for Dolce & Gabbana matched "re-D G-ingham", "Tame D G-reen"
+    // and "Leron-D G-rey" — 11 innocent live titles from one two-letter alt.
+    for (const t of ["Jersey Manchester United AON Red Gingham",
+                     "Sneaker S Tame D Green Orange White",
+                     "Sneaker Lerond Grey White"]) {
+      expect(triggersInText(t), t).not.toContain("dolce gabbana");
+    }
+    // …while the real ones still fail.
+    expect(triggersInText("Sneaker Roam Mint Green")).toContain("roam");
+    expect(triggersInText("Sneaker Verto Alpha Blue Black")).toContain("verto");
+  });
+});
+
 describe("cleanTitleFor — rebuild", () => {
   it("trigger-free names ship unchanged", () => {
     const r = cleanTitleFor({ name: "YOMO stylish tracksuit black", ...sneaker });
