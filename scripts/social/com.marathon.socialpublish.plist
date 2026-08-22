@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the social publisher (Mac mini). Deliberately the SAME
+  mechanism as com.marathon.shopifyreconcile: a user LaunchAgent in
+  ~/Library/LaunchAgents running node against the repo checkout, with its logs
+  under the repo. No second scheduling system is introduced.
+
+  Differences from the reconciler, and why:
+
+    · StartCalendarInterval instead of StartInterval. The reconciler is a
+      2-minute poll because Publish is a thing Junid presses and then waits
+      for. This is a CADENCE — three posts a week — and the times below ARE
+      that cadence: Monday, Wednesday and Saturday at 18:00.
+
+      These three entries must match SLOT_DAYS / SLOT_HOUR_SAST in
+      src/components/social/socialCore.js, which is what the queue shows Junid
+      and what the generator writes into scheduledAt. If they drift, approved
+      posts sit "due" until the next agent fire — late, never lost, but late.
+      launchd Weekday numbering matches JS getUTCDay: 0/7 Sunday, 1 Monday.
+
+    · The machine's clock is South African, so these are 18:00 SAST. If this
+      agent is ever installed on a machine in another timezone, these times
+      move with it — launchd has no timezone field, and the fix is to convert
+      them by hand, not to add one.
+
+    · RunAtLoad is FALSE, unlike the reconciler. Loading the agent — after a
+      reboot, or while installing it — must not fire a post. Nothing here is
+      urgent enough to justify a publish at an unscheduled moment, and a
+      surprise post to a live Instagram account is not recoverable.
+
+    · A missed fire (the mini was asleep or off at 18:00) is run by launchd as
+      soon as it wakes. That is the behaviour we want: an approved post goes
+      out late rather than being skipped for the week.
+
+  INSTALL: see scripts/social/SOCIAL-SETUP.md. Paths below assume the repo is
+  checked out at /Users/marathonclub/marathon-store-app — change BOTH the
+  ProgramArguments path and WorkingDirectory if it lives elsewhere.
+
+  CREDENTIALS: nothing secret belongs in this file (it is committed to the
+  repo). The platform tokens live in Google Secret Manager and are read at run
+  time by the service account GOOGLE_APPLICATION_CREDENTIALS points at. Only
+  PATHS appear here, never values.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.socialpublish</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/social/publish-runner.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <!-- Mon / Wed / Sat at 18:00. KEEP IN SYNC with SLOT_DAYS + SLOT_HOUR_SAST. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
+       not handle itself (node failing to start, a syntax error) lands here.
+       The readable per-run log is logs/social-publish.log, written and rotated
+       by the runner. -->
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/social-launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/social-launchd.err.log</string>
+</dict>
+</plist>
