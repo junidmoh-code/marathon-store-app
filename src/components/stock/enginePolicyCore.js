@@ -105,20 +105,43 @@ export function categoryRowState({ entry, overriddenProducts = 0 }) {
 // sides, so the card never shows a location as armed that the engine ignores.
 export function armedLocations(entry) {
   if (!isObj(entry)) return [];
+  const perSize = entry.perSize === true;
   return Object.entries(entry)
-    .filter(([loc, e]) => loc !== "perSize" && isObj(e) && (
-      (typeof e.target === "number" && Number.isFinite(e.target) && e.target > 0)
-      // A PER-SIZE MAP ARMS THE LOCATION TOO, and it has no `target` of its own.
-      // Testing only for a positive target reported a fully-armed per-size leg as
-      // unarmed — so the editor rendered no row for it, the draft omitted it, and
-      // the save (which .set()s the whole entry) would have DELETED it. Same
-      // data-loss shape as the armed-non-destination bug, same invisibility to
-      // the drift check: live still matched what was rendered.
-      || (isObj(e.sizes) && Object.values(e.sizes).some((r) => isObj(r)
-        && typeof r.target === "number" && Number.isFinite(r.target) && r.target > 0))
-    ))
+    .filter(([loc, e]) => loc !== "perSize" && isObj(e) && locationArms(e, perSize))
     .map(([loc]) => loc)
     .sort();
+}
+
+// Does ONE location entry arm, by the engine's own test? Mirrors
+// policy-resolve.cjs locationEntryMode + locationPolicyFor, and the mirroring is
+// pinned by a differential test over a shape table rather than by this comment.
+//
+// Three shapes used to disagree, all in the unsafe direction — the card showed
+// a location as armed where the engine is silent, which is the exact thing this
+// function exists to prevent:
+//
+//   { hub2: { sizes: {…} } }               a size map with NO perSize:true
+//   { hub2: { target: 5, sizes: {…} } }    both shapes at one location
+//
+// The first describes cells the engine will never ask this entry about; the
+// second is ambiguous and the engine refuses it outright. (Adversarial review,
+// PR #401.)
+function locationArms(e, perSize) {
+  const hasSizes = isObj(e.sizes);
+  const hasTarget = e.target !== undefined;
+  if (hasSizes && hasTarget) return false;            // never both
+  if (hasSizes) {
+    // A PER-SIZE MAP ARMS THE LOCATION, and it has no `target` of its own —
+    // but only under perSize:true. Testing for a positive target alone reported
+    // a fully-armed per-size leg as unarmed, so the editor rendered no row for
+    // it, the draft omitted it, and the save (which .set()s the whole entry)
+    // would have DELETED it. Same data-loss shape as the armed-non-destination
+    // bug, same invisibility to the drift check.
+    if (!perSize) return false;
+    return Object.values(e.sizes).some((r) => isObj(r)
+      && typeof r.target === "number" && Number.isFinite(r.target) && r.target > 0);
+  }
+  return typeof e.target === "number" && Number.isFinite(e.target) && e.target > 0;
 }
 
 // ── EDITOR ROWS ──────────────────────────────────────────────────────────────

@@ -14,6 +14,8 @@
 //   M-DISARMED-3    let a group with no policy resolve (armed by an empty switch)
 //   M-OWN-WINS      delete "a category's own policy beats its group's"
 //   M-OWN-WINS-2    weaken it to a per-location merge (the rejected design)
+//   M-OWN-WINS-3    weaken it to isPlainObject, so a GARBLED own entry falls
+//                   through to the group and arms MORE than a correct one
 //   M-GROUP-MODEL   make the MODEL read categoryPolicy directly again
 //   M-BOTH-SHAPES   allow target and a sizes map at one location
 //   M-PERSIZE-MODE  allow a per-size map outside per-size mode
@@ -73,7 +75,8 @@ const MUTATIONS = [
     id: "M-OWN-WINS",
     guard: "A CATEGORY'S OWN POLICY BEATS ITS GROUP'S",
     file: RESOLVE,
-    from: `  if (isPlainObject(config?.categoryPolicy?.[categoryKey])) return null;   // OWN POLICY WINS`,
+    from: `  const own = config?.categoryPolicy?.[categoryKey];
+  if (own !== undefined && own !== null) return null;`,
     to: ``,
     nodeTests: ALL_TESTS,
   },
@@ -103,6 +106,15 @@ const MUTATIONS = [
   if (!g) return null;
   return { entry: g.group.policy, source: "group", groupKey: g.groupKey };`,
     nodeTests: ENGINE_TESTS,
+  },
+  {
+    id: "M-OWN-WINS-3",
+    guard: "A GARBLED own entry arms nothing and consults no group — present is present, readable or not",
+    file: RESOLVE,
+    from: `  const own = config?.categoryPolicy?.[categoryKey];
+  if (own !== undefined && own !== null) return null;`,
+    to: `  if (isPlainObject(config?.categoryPolicy?.[categoryKey])) return null;`,
+    nodeTests: CORE_TESTS,
   },
   // ── THE MODEL MUST SEE WHAT THE ENGINE SEES ───────────────────────────────
   {

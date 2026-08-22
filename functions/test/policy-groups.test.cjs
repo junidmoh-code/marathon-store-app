@@ -164,6 +164,31 @@ test("two armed groups claiming one category resolve deterministically and repor
   assert.deepEqual(r.overlaps, ["footwear-all"]);
 });
 
+test("A GARBLED OWN ENTRY ARMS NOTHING AND CONSULTS NO GROUP", () => {
+  // Testing isPlainObject on the own entry let garbage fall through to the
+  // group: categoryPolicy: { sneakers: "garbage" } resolved the group's numbers,
+  // identical to having no entry at all. Unsafe twice over — garbage produced
+  // MORE intents than a correct entry would, at a category somebody had
+  // deliberately given its own policy. (Adversarial review, PR #401.)
+  for (const junk of ["garbage", 42, [], true]) {
+    const cfg = CFG();
+    cfg.categoryPolicy = { sneakers: junk };
+    assert.equal(armedGroupForCategory(cfg, "sneakers"), null, JSON.stringify(junk));
+    assert.equal(effectivePolicyFor(cfg, "sneakers"), null, JSON.stringify(junk));
+  }
+});
+
+test("a DELETED own entry releases the category back to its group", () => {
+  // null and undefined are ABSENT, not present. RTDB deletes a key written
+  // null, so deleting a category's policy must let its group speak again —
+  // treating null as "present" would strand it with no policy at all.
+  for (const gone of [null, undefined]) {
+    const cfg = CFG();
+    cfg.categoryPolicy = { sneakers: gone };
+    assert.equal(effectivePolicyFor(cfg, "sneakers").source, "group", String(gone));
+  }
+});
+
 test("garbled config arms nothing", () => {
   assert.equal(armedGroupForCategory({ policyGroups: "nope" }, "sneakers"), null);
   assert.equal(armedGroupForCategory({ policyGroups: { g: null } }, "sneakers"), null);

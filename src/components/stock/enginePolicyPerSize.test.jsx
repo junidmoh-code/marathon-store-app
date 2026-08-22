@@ -173,6 +173,53 @@ describe("the changed-fields banner", () => {
   });
 });
 
+describe("armedLocations agrees with the ENGINE, shape for shape", () => {
+  // A DIFFERENTIAL, not a hand-written case list, because a hand-written list is
+  // what let three shapes disagree in the first place — and all three in the
+  // unsafe direction: the card showed a location as armed where the engine is
+  // silent, which is the exact thing this function exists to prevent.
+  //
+  // The card's own comment claimed it was "byte-for-byte the engine's own test".
+  // It was not. This asserts it instead of claiming it.
+  const SHAPES = [
+    {},
+    { hub2: {} },
+    { hub2: { target: 5, minQty: 3 } },
+    { hub2: { target: 0, minQty: 0 } },
+    { hub2: { target: "5", minQty: 3 } },
+    { hub2: { target: -1, minQty: 0 } },
+    { hub2: { target: NaN, minQty: 0 } },
+    { hub2: { sizes: {} } },
+    { hub2: { sizes: { S: { target: 1 } } } },                      // no perSize
+    { hub2: { sizes: { S: { target: 2, minQty: 1 } } } },           // no perSize
+    { hub2: { target: 5, sizes: { S: { target: 1 } } } },           // both at once
+    { perSize: true, hub2: { target: 5, sizes: { S: { target: 1 } } } },
+    { perSize: true, hub2: { sizes: {} } },
+    { perSize: true, hub2: { sizes: { S: { target: 0, minQty: 0 } } } },
+    { perSize: true, hub2: { sizes: { S: { target: "2", minQty: 1 } } } },
+    { perSize: true, hub2: { sizes: { S: { target: 2, minQty: 1 } } } },
+    { perSize: true, hub2: { target: 5, minQty: 3 } },
+    { perSize: true, hub2: { sizes: { S: { target: 2, minQty: 1 } } }, trophy: { sizes: { S: { target: 3, minQty: 1 } } } },
+  ];
+
+  it("calls a location armed exactly when categoryPolicyEntry resolves for it", async () => {
+    const { createRequire } = await import("node:module");
+    const req = createRequire(import.meta.url);
+    const { categoryPolicyEntry } = req("../../../functions/lib/refill-engine.cjs");
+    const products = { p1: { categoryKey: "cat", sizes: ["S"] } };
+    const disagreed = [];
+    for (const entry of SHAPES) {
+      const mine = armedLocations(entry);
+      const theirs = ["hub2", "trophy"].filter((loc) =>
+        categoryPolicyEntry({ categoryPolicy: { cat: entry } }, products, "p1", loc) !== null);
+      if (JSON.stringify(mine) !== JSON.stringify(theirs)) {
+        disagreed.push({ entry, card: mine, engine: theirs });
+      }
+    }
+    expect(disagreed).toEqual([]);
+  });
+});
+
 describe("editor rows", () => {
   it("report which shape each leg holds", () => {
     const entry = { perSize: true, hub2: { sizes: { S: { target: 4, minQty: 2 } } }, trophy: { target: 3, minQty: 2 } };

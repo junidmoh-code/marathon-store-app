@@ -54,7 +54,24 @@ function locationEntryMode(locEntry) {
 // key, so the engine and every preview agree without coordinating.
 function armedGroupForCategory(config, categoryKey) {
   if (typeof categoryKey !== "string" || !categoryKey) return null;
-  if (isPlainObject(config?.categoryPolicy?.[categoryKey])) return null;   // OWN POLICY WINS
+  // OWN POLICY WINS — and "own policy" means THE KEY IS PRESENT, not "the key
+  // holds something this file can read".
+  //
+  // Testing isPlainObject here let a GARBLED own entry fall through to the
+  // group: categoryPolicy: { sneakers: "garbage" } resolved the group's
+  // numbers, identical to having no entry at all. That is the unsafe direction
+  // twice over — garbage produced MORE intents than a correct entry would, and
+  // it did so at a category somebody had deliberately given its own policy.
+  //
+  // A present-but-unreadable entry now arms NOTHING and consults no group,
+  // which is this file's standing direction for every malformed input.
+  // (Adversarial review, PR #401.)
+  //
+  // null and undefined are ABSENT, not present: RTDB deletes a key written
+  // null, so a live node can never hold one, and treating it as present would
+  // make deleting a category's policy fail to release it back to its group.
+  const own = config?.categoryPolicy?.[categoryKey];
+  if (own !== undefined && own !== null) return null;
   const groups = config?.policyGroups;
   if (!isPlainObject(groups)) return null;
   const claiming = Object.keys(groups).sort().filter((gk) => {
