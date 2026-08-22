@@ -351,26 +351,43 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     // The loser node is therefore re-read WHOLE, not cell by cell: a concurrent
     // write can also CREATE a size cell that the node delete would swallow
     // unseen.
+    // ONE ROUND TRIP, BOTH SIDES. Every fence read is issued together and
+    // awaited once, then judged. Reading them in sequence would push the
+    // commit 10+ round trips past the FIRST fence read — and the widest of
+    // those gaps would sit on the survivor, the live sellable record a POS
+    // sale actually hits. A fence that takes longer to check widens the very
+    // window it exists to close, so the checks must not queue behind each
+    // other. Judging happens after all reads land, so the refusal reported is
+    // deterministic regardless of which read returned first.
+    const survivorProbes = [];
     for (const [loc, cells] of Object.entries(beforeSurvivorCells)) {
       for (const [sizeKey, sCell] of Object.entries(cells)) {
-        const live = (await db.ref(`stock/${loc}/${survivorId}/${sizeKey}`).get()).val();
-        const seenV = sCell && typeof sCell.v === "number" ? sCell.v : null;
-        const liveV = live && typeof live.v === "number" ? live.v : null;
-        if (seenV !== liveV || asQty(live) !== asQty(sCell)) {
-          throw new MergeRefused("aborted",
-            `The surviving product's stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
-        }
+        survivorProbes.push({ loc, sizeKey, sCell, p: db.ref(`stock/${loc}/${survivorId}/${sizeKey}`).get() });
       }
     }
+    const loserProbes = locationIds.map((loc) => ({
+      loc, node: loserNodes[loc] || null, p: db.ref(`stock/${loc}/${loserId}`).get(),
+    }));
+    const survivorLive = await Promise.all(survivorProbes.map((x) => x.p));
+    const loserLive = await Promise.all(loserProbes.map((x) => x.p));
 
+    for (let i = 0; i < survivorProbes.length; i += 1) {
+      const { loc, sCell } = survivorProbes[i];
+      const live = survivorLive[i].val();
+      const seenV = sCell && typeof sCell.v === "number" ? sCell.v : null;
+      const liveV = live && typeof live.v === "number" ? live.v : null;
+      if (seenV !== liveV || asQty(live) !== asQty(sCell)) {
+        throw new MergeRefused("aborted",
+          `The surviving product's stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
+      }
+    }
     // EVERY registered location, not just the ones the loser held: a receive or
     // a transfer_in landing during preparation would create a node the merge
     // never read, so it would be neither transferred nor deleted — stranding
     // stock on a record that is about to become invisible.
-    for (const loc of locationIds) {
-      const node = loserNodes[loc] || null;
-      const live = (await db.ref(`stock/${loc}/${loserId}`).get()).val();
-      if (stableJson(live) !== stableJson(node)) {
+    for (let i = 0; i < loserProbes.length; i += 1) {
+      const { loc, node } = loserProbes[i];
+      if (stableJson(loserLive[i].val()) !== stableJson(node)) {
         throw new MergeRefused("aborted",
           `The product being merged away had its stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
       }
