@@ -359,14 +359,26 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     // window it exists to close, so the checks must not queue behind each
     // other. Judging happens after all reads land, so the refusal reported is
     // deterministic regardless of which read returned first.
+    // Every probe gets a rejection handler THE MOMENT it is created. The two
+    // Promise.all calls are awaited in sequence, so if a SURVIVOR read fails
+    // the loser reads are still in flight with nothing awaiting them — and in
+    // Node 22 a promise that rejects with no handler attached terminates the
+    // process, which in a Cloud Function kills the instance mid-request.
+    // Attaching a no-op catch marks the promise handled without consuming it:
+    // awaiting it later still throws normally.
+    const probe = (path) => {
+      const p = db.ref(path).get();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+      return p;
+    };
     const survivorProbes = [];
     for (const [loc, cells] of Object.entries(beforeSurvivorCells)) {
       for (const [sizeKey, sCell] of Object.entries(cells)) {
-        survivorProbes.push({ loc, sizeKey, sCell, p: db.ref(`stock/${loc}/${survivorId}/${sizeKey}`).get() });
+        survivorProbes.push({ loc, sizeKey, sCell, p: probe(`stock/${loc}/${survivorId}/${sizeKey}`) });
       }
     }
     const loserProbes = locationIds.map((loc) => ({
-      loc, node: loserNodes[loc] || null, p: db.ref(`stock/${loc}/${loserId}`).get(),
+      loc, node: loserNodes[loc] || null, p: probe(`stock/${loc}/${loserId}`),
     }));
     const survivorLive = await Promise.all(survivorProbes.map((x) => x.p));
     const loserLive = await Promise.all(loserProbes.map((x) => x.p));

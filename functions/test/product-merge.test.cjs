@@ -576,6 +576,47 @@ test("the drift fences read in ONE round trip — a slower fence would widen the
     `fence reads must be issued together: peak concurrency was ${db.peakConcurrentGets()}, expected at least ${registered}`);
 });
 
+test("a fence read that fails takes NOTHING down with it — no unhandled rejection", async () => {
+  // The fences issue ALL their reads together but await them in two groups.
+  // When a SURVIVOR read fails, the loser reads are still in flight with
+  // nothing awaiting them — and in Node 22 a promise that rejects with no
+  // handler attached terminates the process; in a Cloud Function, the instance,
+  // mid-request. Both failures are modelled: the survivor probe rejects
+  // immediately, and a loser probe rejects a tick later, after the survivor
+  // group has already thrown and abandoned it.
+  //
+  // The loser failure must fire on the FENCE read only. Every loser node path
+  // is read twice — once in preparation, once by the fence — and failing the
+  // first would abort the merge long before the fence exists.
+  const escaped = [];
+  const onUnhandled = (err) => escaped.push(err);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const db = fakeDb(baseWorld());
+    const realRef = db.ref;
+    let loserReads = 0;
+    db.ref = (path = "") => {
+      const r = realRef(path);
+      if (String(path) === "stock/hub2/pSurvivor/6") {
+        return { ...r, get: async () => { throw new Error("survivor read failed"); } };
+      }
+      if (String(path) === "stock/in_transit/pLoser" && (loserReads += 1) > 1) {
+        return { ...r, get: () => new Promise((_, rej) => setTimeout(() => rej(new Error("loser read failed")), 1)) };
+      }
+      return r;
+    };
+    await assert.rejects(() => run(db), /survivor read failed/);
+    assert.strictEqual(loserReads, 2, "the fence really did re-read the loser node");
+    // Give the abandoned loser rejection a full turn of the loop to surface.
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepStrictEqual(escaped.map((e) => e.message), [], "no rejection may escape unhandled");
+    assert.strictEqual(db.updates.length, 0, "nothing was written");
+    assert.strictEqual((db.data.product_merges_locks || {}).pLoser, undefined, "the lock is released");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("a fresh concurrent lock aborts the second merge; a stale one is taken over", async () => {
   const w = baseWorld();
   w.product_merges_locks = { pLoser: { mergeId: "other", at: NOW - 1000, by: "admin2" } };
