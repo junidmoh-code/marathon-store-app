@@ -4,7 +4,7 @@
 //   • the loser record survives as a redirect (old sales keep resolving);
 //   • loser barcodes scan to the survivor afterwards;
 //   • the matching duplicate row closes;
-//   • Pine stock refuses the whole merge, atomically — nothing half-applies;
+//   • NO location refuses a merge — Pine (marathon-pine / hub3) included;
 //   • the cell/ledger contract (v+1, paired movements, one atomic update).
 
 "use strict";
@@ -12,7 +12,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { performMerge, MergeRefused, PINE_LOCATIONS } = require("../lib/product-merge.cjs");
+const { performMerge, MergeRefused } = require("../lib/product-merge.cjs");
 
 const NOW = 1770000000000;
 const ACTOR = { uid: "admin1", email: "gunidmoh@gmail.com" };
@@ -37,22 +37,42 @@ function fakeDb(initial = {}) {
     else node[last] = value;
   };
 
-  let onGet = null; // { match, fn } — fires ONCE after a get whose path includes match
+  // { match, fn, skip } — fires ONCE after a get whose path includes match,
+  // after `skip` earlier matches have gone by. The skip matters for the LOSER
+  // drift fence, which re-reads the very path the initial read used: firing on
+  // the first match would model a write that landed BEFORE the merge looked,
+  // which is not drift at all.
+  const inFlightPaths = new Set();
+  let peakPaths = [];
+  let onGet = null;
 
   return {
     data,
     updates,
-    afterGetOf(match, fn) { onGet = { match, fn }; },
+    peakConcurrentPaths: () => peakPaths,
+    afterGetOf(match, fn, skip = 0) { onGet = { match, fn, skip }; },
     ref(path = "") {
       return {
         async get() {
+          // Peak concurrency is observable because get() yields once before
+          // returning: reads issued together overlap, reads awaited one at a
+          // time never do. That is what pins the fence to ONE round trip.
+          inFlightPaths.add(String(path));
+          if (inFlightPaths.size > peakPaths.length) peakPaths = [...inFlightPaths];
+          await Promise.resolve();
+          inFlightPaths.delete(String(path));
           // The hook fires BEFORE the value is captured, so a "concurrent
           // write landing just before this read" is modelled faithfully.
           if (onGet && String(path).includes(onGet.match)) {
-            const { fn } = onGet; onGet = null; fn({ getPath: at, setPath: put });
+            if (onGet.skip > 0) onGet.skip -= 1;
+            else { const { fn } = onGet; onGet = null; fn({ getPath: at, setPath: put }); }
           }
           const v = at(path);
-          const val = v === undefined ? null : v;
+          // A DEEP COPY, because the real SDK hands back a detached snapshot.
+          // Returning the live object would make every read alias the store, so
+          // a value captured earlier would silently follow later writes — and a
+          // drift fence comparing the two could never see drift at all.
+          const val = v === undefined ? null : (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
           return { val: () => val, exists: () => val !== null };
         },
         async set(value) { put(path || "", value); },
@@ -248,6 +268,136 @@ test("negative loser cells transfer as negatives — the shortage signal is pres
   assert.deepStrictEqual(totalsByLocation(db.data), before);
 });
 
+// ─── NO LOCATION IS SPECIAL — the Pine refusal, removed 2026-08-22 ───────────
+// Until this date a merge was refused outright if EITHER product held a cell at
+// marathon-pine or hub3. That exclusion was copied from the headwear one-size
+// collapse (which rewrote size keys on Pine's qty-0 reconciliation husks) and
+// protected nothing about merges: a merge never moves stock between locations,
+// so Pine's units stay at Pine. These tests pin the replacement contract —
+// every location goes through one code path, sign and all.
+
+// The live case that exposed it: "Lacoste Audyssor White Gray" merged into
+// "Lacoste Audysol White". Survivor hub1 17 / central 16 / marathon-pine 7 /
+// hub3 −2; loser hub1 13. Reproduced cell for cell.
+function lacosteWorld() {
+  return {
+    locations: LOCATIONS,
+    products: {
+      pLoser: { id: "pLoser", name: "Lacoste Audyssor White Gray", sizes: ["8"] },
+      pSurvivor: { id: "pSurvivor", name: "Lacoste Audysol White", sizes: ["8"] },
+    },
+    stock: {
+      hub1: {
+        pSurvivor: { "8": { qty: 17, v: 3, mv: "s1" } },
+        pLoser: { "8": { qty: 13, v: 5, mv: "l1" } },
+      },
+      central: { pSurvivor: { "8": { qty: 16, v: 2, mv: "s2" } } },
+      "marathon-pine": { pSurvivor: { "8": { qty: 7, v: 1, mv: "s3" } } },
+      hub3: { pSurvivor: { "8": { qty: -2, v: 4, mv: "s4" } } },
+    },
+    barcodes: {},
+    style_code_index: {},
+  };
+}
+
+test("THE LIVE CASE: a merge where a product holds Pine and hub3 stock SUCCEEDS", async () => {
+  const db = fakeDb(lacosteWorld());
+  const before = totalsByLocation(db.data);
+  const out = await run(db);
+  assert.strictEqual(out.ok, true, "no location may refuse a merge");
+
+  // Pine's units stay at Pine, untouched and unchanged in total.
+  assert.deepStrictEqual(db.data.stock["marathon-pine"].pSurvivor["8"],
+    { qty: 7, v: 1, mv: "s3" }, "Pine's cell is not even rewritten — nothing moved there");
+  assert.strictEqual(db.data.stock.central.pSurvivor["8"].qty, 16, "Central keeps its 16");
+  // The one collision sums, at its own location.
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["8"].qty, 30, "hub1: 17 + 13, at hub1");
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["8"].v, 4, "…and v goes 3 → 4, exactly +1");
+  assert.strictEqual(db.data.stock.hub1.pLoser, undefined, "the loser's hub1 node is gone");
+  // The negative cell keeps its sign — not refused, not zeroed.
+  assert.strictEqual(db.data.stock.hub3.pSurvivor["8"].qty, -2, "hub3 stays at −2, sign intact");
+
+  // Per-location totals conserved EXACTLY, for every location.
+  assert.deepStrictEqual(totalsByLocation(db.data), before);
+  assert.deepStrictEqual(before,
+    { hub1: 30, central: 16, "marathon-pine": 7, hub3: -2 }, "…and those totals are the real ones");
+});
+
+test("Pine and hub3 stock on EITHER side merges — loser side too, qty-0 husks included", async () => {
+  for (const loc of ["marathon-pine", "hub3"]) {
+    // Loser holds it.
+    const w = baseWorld();
+    w.stock[loc] = { pLoser: { "6": { qty: 4, v: 0, mv: "x" } } };
+    const db = fakeDb(w);
+    const before = totalsByLocation(db.data);
+    assert.strictEqual((await run(db)).ok, true, `a loser cell at ${loc} must not refuse`);
+    assert.strictEqual(db.data.stock[loc].pSurvivor["6"].qty, 4, `${loc}'s 4 stay at ${loc}`);
+    assert.strictEqual(db.data.stock[loc].pSurvivor["6"].v, 0, "a new cell is born at v=0");
+    assert.strictEqual(db.data.stock[loc].pLoser, undefined);
+    assert.deepStrictEqual(totalsByLocation(db.data), before);
+
+    // Survivor holds it — a qty-0 reconciliation husk, the exact shape the old
+    // guard called "presence". It is simply left alone.
+    const w2 = baseWorld();
+    w2.stock[loc] = { pSurvivor: { "6": { qty: 0, v: 7, mv: "x" } } };
+    const db2 = fakeDb(w2);
+    const before2 = totalsByLocation(db2.data);
+    assert.strictEqual((await run(db2)).ok, true, `a survivor husk at ${loc} must not refuse`);
+    assert.deepStrictEqual(db2.data.stock[loc].pSurvivor["6"], { qty: 0, v: 7, mv: "x" },
+      "an untouched survivor cell is not rewritten");
+    assert.deepStrictEqual(totalsByLocation(db2.data), before2);
+  }
+});
+
+test("a NEGATIVE loser cell at Pine transfers with its sign, and sums into a negative survivor cell", async () => {
+  const w = baseWorld();
+  w.stock["marathon-pine"] = {
+    pLoser: { "6": { qty: -3, v: 1, mv: "x" } },
+    pSurvivor: { "6": { qty: -2, v: 5, mv: "y" } },
+  };
+  const db = fakeDb(w);
+  const before = totalsByLocation(db.data);
+  const out = await run(db);
+  assert.strictEqual(db.data.stock["marathon-pine"].pSurvivor["6"].qty, -5,
+    "−2 + −3 = −5 — no clamp, no zeroing");
+  assert.deepStrictEqual(totalsByLocation(db.data), before);
+  // Both ledger legs describe a negative move: the sign flips from/to.
+  const mvL = db.data.stock_movements[out.movementIds.find((id) => id.includes("_L_marathon-pine_6"))];
+  const mvS = db.data.stock_movements[out.movementIds.find((id) => id.includes("_S_marathon-pine_6"))];
+  assert.strictEqual(mvL.qty, 3, "the ledger records magnitude…");
+  assert.strictEqual(mvL.to, "marathon-pine", "…and a negative loser leg reads as an inbound correction");
+  assert.strictEqual(mvL.from, null);
+  assert.deepStrictEqual(mvS.before, { "marathon-pine": -2 });
+  assert.deepStrictEqual(mvS.after, { "marathon-pine": -5 });
+});
+
+test("a second merge of the same pair credits NOTHING extra", async () => {
+  const db = fakeDb(lacosteWorld());
+  await run(db);
+  const afterFirst = JSON.parse(JSON.stringify(db.data.stock));
+  const totals = totalsByLocation(db.data);
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.message, /already merged/);
+    return true;
+  });
+  assert.deepStrictEqual(db.data.stock, afterFirst, "no cell moved a second time");
+  assert.deepStrictEqual(totalsByLocation(db.data), totals);
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["8"].qty, 30, "hub1 is 30, not 43");
+});
+
+test("the loser is a hidden redirect after a Pine-holding merge, and old references resolve", async () => {
+  const w = lacosteWorld();
+  w.barcodes = { "00000801": { productId: "pLoser", size: "8", at: "2026-01-01T00:00:00Z" } };
+  const db = fakeDb(w);
+  await run(db);
+  assert.ok(db.data.products.pLoser, "the record is NOT deleted");
+  assert.strictEqual(db.data.products.pLoser.mergedInto, "pSurvivor");
+  assert.strictEqual(db.data.products.pLoser.name, "Lacoste Audyssor White Gray");
+  assert.strictEqual(db.data.barcodes["00000801"].productId, "pSurvivor",
+    "a label already stuck on stock still scans — to the survivor");
+});
+
 // ─── CLOSURES + AUDIT ────────────────────────────────────────────────────────
 test("the matching duplicate_candidates row closes as merged, keeping its history", async () => {
   const db = fakeDb(baseWorld());
@@ -297,19 +447,6 @@ test("refused: either party already merged away", async () => {
   await assertRefused(fakeDb(w2), {}, /failed-precondition/, /itself merged/);
 });
 
-test("PINE GUARD: stock at marathon-pine or hub3 refuses the whole merge — atomically", async () => {
-  for (const loc of PINE_LOCATIONS) {
-    const w = baseWorld();
-    w.stock[loc] = { pLoser: { "6": { qty: 1, v: 0, mv: "x" } } };
-    await assertRefused(fakeDb(w), {}, /failed-precondition/, /Pine is out of scope/);
-
-    const w2 = baseWorld();
-    w2.stock[loc] = { pSurvivor: { "6": { qty: 0, v: 0, mv: "x" } } };
-    await assertRefused(fakeDb(w2), {}, /failed-precondition/, /Pine is out of scope/,
-      "even a qty-0 Pine cell refuses — presence is the signal");
-  }
-});
-
 test("refused: unreadable location registry — never guessed", async () => {
   const w = baseWorld();
   delete w.locations;
@@ -355,7 +492,140 @@ test("a sale landing on a survivor cell mid-merge REFUSES the merge — never er
   assert.strictEqual(db.updates.length, 0, "the atomic update never ran");
 });
 
-// ─── THE LOCK ────────────────────────────────────────────────────────────────
+test("a sale landing on a LOSER cell mid-merge REFUSES the merge — no unit is conjured", async () => {
+  // The loser lock excludes other MERGES, not a POS sale: until the commit lands
+  // the loser is a normal sellable product. Its quantity is added to the
+  // survivor as an ABSOLUTE number and its node is then deleted, so an
+  // unfenced sale here would vanish and hub2's total would rise by one.
+  const db = fakeDb(baseWorld());
+  db.afterGetOf("stock/hub2/pLoser", ({ getPath, setPath }) => {
+    const cell = getPath("stock/hub2/pLoser/6");
+    setPath("stock/hub2/pLoser/6", { ...cell, qty: cell.qty - 1, v: cell.v + 1 });
+  }, 1); // skip the initial read — fire on the fence's re-read
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.code, /aborted/);
+    assert.match(err.message, /merged away had its stock at hub2 changed/);
+    return true;
+  });
+  assert.strictEqual(db.data.stock.hub2.pLoser["6"].qty, 1, "the concurrent sale's write survives");
+  assert.strictEqual(db.data.stock.hub2.pSurvivor["6"].qty, 5, "the survivor gained nothing");
+  assert.strictEqual(db.updates.length, 0, "the atomic update never ran");
+});
+
+test("a size cell CREATED on the loser mid-merge refuses — the node delete never swallows it unseen", async () => {
+  const db = fakeDb(baseWorld());
+  db.afterGetOf("stock/hub2/pLoser", ({ setPath }) => {
+    setPath("stock/hub2/pLoser/9", { qty: 2, v: 0, mv: "arrival" });
+  }, 1);
+  await assert.rejects(() => run(db), (err) => {
+    assert.match(err.message, /merged away had its stock at hub2 changed/);
+    return true;
+  });
+  assert.strictEqual(db.data.stock.hub2.pLoser["9"].qty, 2, "the new cell survives");
+  assert.strictEqual(db.updates.length, 0);
+});
+
+test("a node appearing at a location the loser held NOTHING at refuses — nothing is stranded", async () => {
+  // A receive landing on the duplicate mid-merge. Its location was never read,
+  // so its cells would be neither transferred nor deleted — left on a record
+  // about to become invisible.
+  const db = fakeDb(baseWorld());
+  db.afterGetOf("stock/trophy/pSurvivor", ({ setPath }) => {
+    setPath("stock/trophy/pLoser", { "6": { qty: 5, v: 0, mv: "receive" } });
+  });
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.message, /merged away had its stock at trophy changed/);
+    return true;
+  });
+  assert.strictEqual(db.data.stock.trophy.pLoser["6"].qty, 5, "the receive survives");
+  assert.strictEqual(db.updates.length, 0);
+});
+
+test("the loser fence is key-order blind — an identical node in a different order commits", async () => {
+  // NOTE the size keys. Integer-like keys ("6", "7") are ordered NUMERICALLY by
+  // the JS spec no matter how they are inserted, so a reversal on those would be
+  // a no-op and this test would prove nothing. Clothing keys reorder for real.
+  const w = baseWorld();
+  w.stock.central.pLoser = { M: { qty: 2, v: 1, mv: "a" }, L: { qty: 3, v: 1, mv: "b" } };
+  const db = fakeDb(w);
+  db.afterGetOf("stock/central/pLoser", ({ getPath, setPath }) => {
+    const node = getPath("stock/central/pLoser");
+    assert.deepStrictEqual(Object.keys(node), ["M", "L"], "the fixture really is insertion-ordered");
+    const flipped = Object.fromEntries(Object.entries(node).reverse());
+    assert.deepStrictEqual(Object.keys(flipped), ["L", "M"], "…and the flip really flips");
+    setPath("stock/central/pLoser", flipped);
+  }, 1);
+  const out = await run(db);
+  assert.strictEqual(out.ok, true, "a re-ordered but identical node must not refuse");
+  assert.strictEqual(db.data.stock.central.pSurvivor.M.qty, 2);
+  assert.strictEqual(db.data.stock.central.pSurvivor.L.qty, 3);
+});
+
+test("the drift fences read in ONE round trip — a slower fence would widen the window it closes", async () => {
+  // The fences run LAST, so every serial read between the first fence read and
+  // the commit is race window they added themselves — and the widest of those
+  // gaps would land on the survivor, the live sellable record a POS sale hits.
+  //
+  // THIS ASSERTS THE PATHS, NOT A COUNT. A bare "peak concurrency >= 8" is
+  // satisfied by the eight loser probes ALONE, so it stays green with the
+  // survivor fence fully serialised — the exact regression the comment above
+  // says matters most — and it is also satisfied by any unrelated read loop
+  // that happens to be parallel. Naming the paths makes both mutations visible:
+  // the survivor's cell read carries a size suffix, which no node read has.
+  const db = fakeDb(baseWorld());
+  await run(db);
+  const peak = db.peakConcurrentPaths();
+  const wantLoser = Object.keys(LOCATIONS).map((loc) => `stock/${loc}/pLoser`);
+  const wantSurvivor = ["stock/central/pSurvivor/6", "stock/hub2/pSurvivor/6"];
+  for (const want of [...wantSurvivor, ...wantLoser]) {
+    assert.ok(peak.includes(want),
+      `${want} must be in flight alongside the other fence reads — peak was [${peak.join(", ")}]`);
+  }
+});
+
+test("a fence read that fails takes NOTHING down with it — no unhandled rejection", async () => {
+  // The fences issue ALL their reads together but await them in two groups.
+  // When a SURVIVOR read fails, the loser reads are still in flight with
+  // nothing awaiting them — and in Node 22 a promise that rejects with no
+  // handler attached terminates the process; in a Cloud Function, the instance,
+  // mid-request. Both failures are modelled: the survivor probe rejects
+  // immediately, and a loser probe rejects a tick later, after the survivor
+  // group has already thrown and abandoned it.
+  //
+  // The loser failure must fire on the FENCE read only. Every loser node path
+  // is read twice — once in preparation, once by the fence — and failing the
+  // first would abort the merge long before the fence exists.
+  const escaped = [];
+  const onUnhandled = (err) => escaped.push(err);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const db = fakeDb(baseWorld());
+    const realRef = db.ref;
+    let loserReads = 0;
+    db.ref = (path = "") => {
+      const r = realRef(path);
+      if (String(path) === "stock/hub2/pSurvivor/6") {
+        return { ...r, get: async () => { throw new Error("survivor read failed"); } };
+      }
+      if (String(path) === "stock/in_transit/pLoser" && (loserReads += 1) > 1) {
+        return { ...r, get: () => new Promise((_, rej) => setTimeout(() => rej(new Error("loser read failed")), 1)) };
+      }
+      return r;
+    };
+    await assert.rejects(() => run(db), /survivor read failed/);
+    assert.strictEqual(loserReads, 2, "the fence really did re-read the loser node");
+    // Give the abandoned loser rejection a full turn of the loop to surface.
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepStrictEqual(escaped.map((e) => e.message), [], "no rejection may escape unhandled");
+    assert.strictEqual(db.updates.length, 0, "nothing was written");
+    assert.strictEqual((db.data.product_merges_locks || {}).pLoser, undefined, "the lock is released");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("a fresh concurrent lock aborts the second merge; a stale one is taken over", async () => {
   const w = baseWorld();
   w.product_merges_locks = { pLoser: { mergeId: "other", at: NOW - 1000, by: "admin2" } };
@@ -371,7 +641,7 @@ test("a fresh concurrent lock aborts the second merge; a stale one is taken over
 
 test("a refused merge releases its lock; an applied merge keeps a tombstone", async () => {
   const w = baseWorld();
-  w.stock["marathon-pine"] = { pLoser: { "6": { qty: 1, v: 0, mv: "x" } } };
+  delete w.locations; // refuses INSIDE the try, i.e. with the lock already held
   const db = fakeDb(w);
   await assert.rejects(() => run(db));
   assert.strictEqual((db.data.product_merges_locks || {}).pLoser, undefined, "lock released on refusal");

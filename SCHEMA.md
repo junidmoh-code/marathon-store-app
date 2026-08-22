@@ -578,8 +578,11 @@ applied merge, created in the SAME atomic update as the merge itself.
 Merge invariants (pinned by `functions/test/product-merge.test.cjs`): per-location
 totals are conserved exactly; the loser's stock nodes are DELETED (a qty-0 cell
 still arms the refill engine, so none may remain); everything lands in ONE atomic
-multi-path update; any stock at Pine (`marathon-pine` / `hub3`) refuses the whole
-merge; anything uncertain refuses (`MergeRefused`), writing nothing.
+multi-path update; NO location refuses a merge (the Pine/`hub3` refusal was
+removed 2026-08-22 — a merge never moves stock between locations, so no location
+can make one unsafe); a concurrent write to EITHER party's cells between the
+reads and the commit refuses (the drift fence, both sides); anything uncertain
+refuses (`MergeRefused`), writing nothing.
 
 `/product_merges_locks/{loserId}` — server-side concurrency lock (`{mergeId, at,
 by}`); create-only transaction, stale after 10 min, kept as a tombstone once a

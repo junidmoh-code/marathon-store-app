@@ -38,12 +38,21 @@
 // A merge writes TWO movements per moved cell — the loser's decrement and the
 // survivor's increment — so summing the ledger per product stays re-derivable.
 //
-// ── PINE IS OUT OF SCOPE — refused, not skipped ──────────────────────────────
-// Pine (marathon-pine, and its hub3 lane) mixes its own product with Marathon
-// and Trophy product and is handled separately. A merge involving a product
-// that holds ANY stock cell at those locations is REFUSED with a clear message,
-// never partially applied — skipping the Pine cells would leave stock stranded
-// on a hidden record.
+// ── EVERY LOCATION IS TREATED THE SAME — no location refuses a merge ─────────
+// There was, until 2026-08-22, a guard that refused any merge where either
+// product held a cell at marathon-pine or hub3. It was a copy of the HEADWEAR
+// one-size collapse's scope decision, where Pine was excluded because its cells
+// were qty-0 reconciliation husks and that migration REWROTE SIZE KEYS and
+// minted /stock_targets rows off them. A merge does neither, and — the point of
+// this whole module — a merge does not move stock BETWEEN locations: Pine's
+// units stay at Pine, Central's at Central. There is nothing location-specific
+// left for a location guard to protect, so there is no location guard. Every
+// REGISTERED location is read, summed and transferred by the same code path,
+// negatives included. (Registered is the operative word: the read loop walks
+// /locations, so a cell filed under an id that is NOT in the registry is never
+// seen — it is neither transferred nor deleted. That is the registry's job, not
+// a location guard's, and an unreadable registry already refuses.)
+// See MERGE-PINE-INVESTIGATION.md for the full trace.
 //
 // ── FAIL CLOSED, ALWAYS ──────────────────────────────────────────────────────
 // Anything uncertain — a missing record, an already-merged party, a lock held
@@ -52,7 +61,6 @@
 
 "use strict";
 
-const PINE_LOCATIONS = ["marathon-pine", "hub3"];
 const MERGE_LOCK_STALE_MS = 10 * 60 * 1000; // takeover window for a crashed merge
 
 // Byte-compatible with src/utils/sizeKey.js — the ONE cross-app encoding.
@@ -79,8 +87,18 @@ class MergeRefused extends Error {
 
 const asQty = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
 
+// Key-order-independent equality for the drift fences. RTDB hands back plain
+// objects whose key order is the wire's, not ours, so a raw JSON.stringify
+// comparison could refuse a merge that nothing actually touched.
+function stableJson(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(",")}}`;
+}
+
 // A stock node's countable size cells. "_meta" (and any non-object child) is
-// bookkeeping, not stock — but its EXISTENCE still matters for the Pine guard.
+// bookkeeping, not stock — the node still gets deleted whole, _meta included.
 function sizeCellsOf(node) {
   const out = {};
   if (!node || typeof node !== "object") return out;
@@ -157,14 +175,6 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       const sNode = (await db.ref(`stock/${loc}/${survivorId}`).get()).val();
       if (lNode) { loserNodes[loc] = lNode; loserCells[loc] = sizeCellsOf(lNode); }
       if (sNode) survivorCells[loc] = sizeCellsOf(sNode);
-    }
-
-    // Pine guard — ANY presence at a Pine location refuses the whole merge.
-    for (const loc of PINE_LOCATIONS) {
-      if (loserNodes[loc] || survivorCells[loc]) {
-        throw new MergeRefused("failed-precondition",
-          `Merge refused: a product holds stock at ${loc}. Pine is out of scope for merges — resolve its Pine stock first.`);
-      }
     }
 
     // ── BUILD THE ONE ATOMIC UPDATE ──────────────────────────────────────────
@@ -329,16 +339,69 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     // commit and REFUSE on any drift (v or qty). The remaining window is the
     // milliseconds between this recheck and the update — down from the full
     // preparation time — and a refused merge writes nothing and can simply be
-    // retried. (Loser cells are protected by the loser lock above.)
+    // retried.
+    //
+    // BOTH SIDES ARE FENCED. The loser lock above excludes other MERGES, not a
+    // POS sale or a transfer: until the commit lands the loser is a normal,
+    // visible, sellable product. Its cells are read once (above), added to the
+    // survivor as ABSOLUTE quantities, and then the whole node is DELETED — so
+    // a sale landing on a loser cell in between would be added to the survivor
+    // at its pre-sale quantity and then erased with the node, conjuring a unit
+    // out of nothing and breaking the one invariant this module exists to hold.
+    // The loser node is therefore re-read WHOLE, not cell by cell: a concurrent
+    // write can also CREATE a size cell that the node delete would swallow
+    // unseen.
+    // ONE ROUND TRIP, BOTH SIDES. Every fence read is issued together and
+    // awaited once, then judged. Reading them in sequence would push the
+    // commit 10+ round trips past the FIRST fence read — and the widest of
+    // those gaps would sit on the survivor, the live sellable record a POS
+    // sale actually hits. A fence that takes longer to check widens the very
+    // window it exists to close, so the checks must not queue behind each
+    // other. Judging happens after all reads land, so the refusal reported is
+    // deterministic regardless of which read returned first.
+    // Every probe gets a rejection handler THE MOMENT it is created. The two
+    // Promise.all calls are awaited in sequence, so if a SURVIVOR read fails
+    // the loser reads are still in flight with nothing awaiting them — and in
+    // Node 22 a promise that rejects with no handler attached terminates the
+    // process, which in a Cloud Function kills the instance mid-request.
+    // Attaching a no-op catch marks the promise handled without consuming it:
+    // awaiting it later still throws normally.
+    const probe = (path) => {
+      const p = db.ref(path).get();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+      return p;
+    };
+    const survivorProbes = [];
     for (const [loc, cells] of Object.entries(beforeSurvivorCells)) {
       for (const [sizeKey, sCell] of Object.entries(cells)) {
-        const live = (await db.ref(`stock/${loc}/${survivorId}/${sizeKey}`).get()).val();
-        const seenV = sCell && typeof sCell.v === "number" ? sCell.v : null;
-        const liveV = live && typeof live.v === "number" ? live.v : null;
-        if (seenV !== liveV || asQty(live) !== asQty(sCell)) {
-          throw new MergeRefused("aborted",
-            `The surviving product's stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
-        }
+        survivorProbes.push({ loc, sizeKey, sCell, p: probe(`stock/${loc}/${survivorId}/${sizeKey}`) });
+      }
+    }
+    const loserProbes = locationIds.map((loc) => ({
+      loc, node: loserNodes[loc] || null, p: probe(`stock/${loc}/${loserId}`),
+    }));
+    const survivorLive = await Promise.all(survivorProbes.map((x) => x.p));
+    const loserLive = await Promise.all(loserProbes.map((x) => x.p));
+
+    for (let i = 0; i < survivorProbes.length; i += 1) {
+      const { loc, sCell } = survivorProbes[i];
+      const live = survivorLive[i].val();
+      const seenV = sCell && typeof sCell.v === "number" ? sCell.v : null;
+      const liveV = live && typeof live.v === "number" ? live.v : null;
+      if (seenV !== liveV || asQty(live) !== asQty(sCell)) {
+        throw new MergeRefused("aborted",
+          `The surviving product's stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
+      }
+    }
+    // EVERY registered location, not just the ones the loser held: a receive or
+    // a transfer_in landing during preparation would create a node the merge
+    // never read, so it would be neither transferred nor deleted — stranding
+    // stock on a record that is about to become invisible.
+    for (let i = 0; i < loserProbes.length; i += 1) {
+      const { loc, node } = loserProbes[i];
+      if (stableJson(loserLive[i].val()) !== stableJson(node)) {
+        throw new MergeRefused("aborted",
+          `The product being merged away had its stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
       }
     }
 
@@ -358,4 +421,4 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
   }
 }
 
-module.exports = { performMerge, MergeRefused, PINE_LOCATIONS, encodeSizeKey, decodeSizeKey };
+module.exports = { performMerge, MergeRefused, encodeSizeKey, decodeSizeKey };
