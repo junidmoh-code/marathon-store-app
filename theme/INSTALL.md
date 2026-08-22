@@ -20,7 +20,7 @@ part, and I did not work around it.**
 
 Re-verified against the live shop on 2026-08-21:
 
-```
+```text
 GraphQL  { themes { … } }                → ACCESS_DENIED
                                            "Required access: `read_themes` access scope"
 REST     /admin/api/2026-07/themes.json  → 403
@@ -208,7 +208,7 @@ listings.
 
 **Search** — type each of these:
 
-```
+```text
 adidas   adizero   lacoste   samba   air max   gripshot
 adidos   lacosteh  sambba
 ```
@@ -274,7 +274,7 @@ product page.
 The home page's running order is POS sell-through, measured once and stored in a
 theme setting so the page has no runtime dependency on anything. To refresh it:
 
-```
+```shell
 node scripts/shopify/sell-through.mjs
 ```
 
@@ -329,7 +329,7 @@ categories by tag and reaches every product — but the **home page rails** are
 filled from collections, so those categories get no rail. Repair is one
 idempotent command, dry-run by default:
 
-```
+```shell
 node scripts/shopify/sync-collections.mjs             # plan only, writes nothing
 node scripts/shopify/sync-collections.mjs --commit    # apply
 ```
@@ -340,7 +340,7 @@ deleted or unpublished, and no RTDB node is touched.
 **The dry run was already done** — 2026-08-21, took roughly an hour because it
 reads current membership for all 3,457 products before it plans anything:
 
-```
+```text
 would-change: 515 · already-correct: 154 · failed: 49 · live-drift: 3
 ```
 
