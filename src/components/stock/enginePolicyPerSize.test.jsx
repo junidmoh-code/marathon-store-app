@@ -19,8 +19,55 @@ import TestRenderer, { act } from "react-test-renderer";
 import {
   policyFromDraft, validateDraft, previewKey, changedFields, armedLocations,
   draftFromEntry, editorRows, fillAllSizes, seedPerSizeLocation, isPerSizeRow,
-  sizeLabel, sizeRank, bySizeRank, canSave,
+  sizeLabel, sizeRank, bySizeRank, canSave, mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
+
+// ═══ THE MAIN LIST — a group is one entry, its members are inside it ════════
+describe("mainListEntries", () => {
+  const census = {
+    categories: [
+      { key: "t-shirts", label: "T-shirts", products: 300, ownRowCells: 1870, armedEffective: [], memberOfGroup: null },
+      { key: "caps", label: "Caps", products: 94, ownRowCells: 188, armedEffective: ["hub2"], memberOfGroup: null },
+      { key: "sneakers", label: "Sneakers", products: 1246, ownRowCells: 0, armedEffective: [], memberOfGroup: "footwear-all" },
+      { key: "slides", label: "Slides", products: 51, ownRowCells: 0, armedEffective: ["hub2"], memberOfGroup: "footwear-all" },
+      { key: "jeans", label: "Jeans", products: 0, ownRowCells: 0, armedEffective: [], memberOfGroup: null },
+    ],
+    groupEntries: [
+      { key: "group:footwear-all", isGroup: true, label: "Sneakers", products: 1297, ownRowCells: 0, armed: false, armedEffective: ["hub2"] },
+    ],
+  };
+  it("hides every member — even one with its own armed entry — and lists the group once, sorted in", () => {
+    const keys = mainListEntries(census).map((c) => c.key);
+    expect(keys).not.toContain("sneakers");
+    expect(keys).not.toContain("slides");
+    expect(keys.filter((k) => k === "group:footwear-all")).toHaveLength(1);
+  });
+  it("ranks a DISARMED group below the governed band even when it holds numbers", () => {
+    const keys = mainListEntries(census).map((c) => c.key);
+    expect(keys).toEqual(["caps", "group:footwear-all", "t-shirts", "jeans"]);
+    const armed = { ...census, groupEntries: [{ ...census.groupEntries[0], armed: true }] };
+    expect(mainListEntries(armed).map((c) => c.key)).toEqual(["caps", "group:footwear-all", "t-shirts", "jeans"]);
+    // …alphabetical inside the governed band once armed: Caps < Sneakers
+  });
+  it("survives a census with no groupEntries at all (the shape before this pass)", () => {
+    expect(mainListEntries({ categories: census.categories.slice(0, 2) }).map((c) => c.key)).toEqual(["caps", "t-shirts"]);
+    expect(mainListEntries(null)).toEqual([]);
+  });
+});
+
+describe("previewFromArmModel", () => {
+  it("reshapes setGroup's dry-run model into the preview panel's fields and carries the armed state", () => {
+    const m = previewFromArmModel({ totalRequests: 2176, totalUnits: 4000, cap: 75, exceedsCap: true,
+      perMember: [{ key: "sneakers", requests: 2020, overriddenProducts: 3 }, { key: "slides", requests: 156 }] }, { armed: false });
+    expect(m.totalRequests).toBe(2176);
+    expect(m.cap).toBe(75);
+    expect(m.exceedsCap).toBe(true);
+    expect(m.overriddenProducts).toBe(3);
+    expect(m.ifArmed).toBe(true);
+    expect(m.armed).toBe(false);
+    expect(previewFromArmModel(null)).toBe(null);
+  });
+});
 
 // ═══ PER-SIZE, AS RULES ══════════════════════════════════════════════════════
 describe("a per-size draft", () => {
@@ -261,11 +308,32 @@ const CENSUS = {
   history: [],
   groups: {
     "footwear-all": {
-      label: "All footwear except soccer boots", armed: false,
-      memberCategoryKeys: ["sneakers", "slides"],
+      label: "Sneakers", armed: false,
+      memberCategoryKeys: ["boots", "designer-shoes", "kids-shoes", "loafers", "running-shoes", "slides", "sneakers"],
       policy: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
     },
   },
+  // THE GROUP AS ONE ENTRY — the same fields a category carries, counts summed.
+  groupEntries: [
+    {
+      key: "group:footwear-all", isGroup: true, groupKey: "footwear-all", label: "Sneakers",
+      group: { label: "Sneakers", armed: false,
+        memberCategoryKeys: ["boots", "designer-shoes", "kids-shoes", "loafers", "running-shoes", "slides", "sneakers"],
+        policy: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } } },
+      memberCategoryKeys: ["boots", "designer-shoes", "kids-shoes", "loafers", "running-shoes", "slides", "sneakers"],
+      members: [
+        { key: "sneakers", label: "Sneakers", products: 1246, units: 16872, ownPolicy: false, imageUrl: null },
+        { key: "slides", label: "Slides", products: 51, units: 300, ownPolicy: true, imageUrl: null },
+      ],
+      armed: false, products: 1297, units: 17172, perSize: true,
+      entry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
+      effectiveEntry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
+      armedEffective: ["hub2"], policySource: "group", memberOfGroup: null,
+      carriage: { hub2: { carries: true, products: 951, units: 9300 }, "marathon-pe": { carries: false, products: 0, units: 0 } },
+      ownRowCells: 0, ownRowProducts: 0, sizeRun: ["5_5", "7", "8"], sizeRunPartial: ["5_5"], sizeRunExtra: [], sizeRunEmpty: false,
+      imageUrl: null,
+    },
+  ],
   categories: [
     {
       key: "caps-beanies", label: "Caps & Beanies", products: 94, units: 512, perSize: false,
@@ -277,13 +345,24 @@ const CENSUS = {
       ownRowCells: 188, ownRowProducts: 94, sizeRun: [], sizeRunExtra: ["S", "M"], sizeRunEmpty: true,
       imageUrl: null,
     },
+    // A MEMBER of the (disarmed) group: no entry of its own, nothing in force,
+    // folded into the group on the list and reachable from inside it.
     {
-      key: "sneakers", label: "Sneakers", products: 1246, units: 16872, perSize: true,
-      entry: null, effectiveEntry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
-      armed: [], armedEffective: ["hub2"], policySource: "group", groupKey: "footwear-all",
-      groupLabel: "All footwear except soccer boots",
+      key: "sneakers", label: "Sneakers", products: 1246, units: 16872, perSize: false,
+      entry: null, effectiveEntry: null,
+      armed: [], armedEffective: [], policySource: null, groupKey: null, groupLabel: null,
+      memberOfGroup: "footwear-all",
       carriage: { hub2: { carries: true, products: 900, units: 9000 } },
       ownRowCells: 0, ownRowProducts: 0, sizeRun: ["5_5", "7", "8"], sizeRunExtra: [], sizeRunEmpty: false,
+      imageUrl: null,
+    },
+    {
+      key: "slides", label: "Slides", products: 51, units: 300, perSize: true,
+      entry: { perSize: true, hub2: { target: 3, minQty: 1 } }, effectiveEntry: { perSize: true, hub2: { target: 3, minQty: 1 } },
+      armed: ["hub2"], armedEffective: ["hub2"], policySource: "category", groupKey: null, groupLabel: null,
+      memberOfGroup: "footwear-all",
+      carriage: { hub2: { carries: true, products: 51, units: 300 } },
+      ownRowCells: 0, ownRowProducts: 0, sizeRun: ["7", "8"], sizeRunExtra: [], sizeRunEmpty: false,
       imageUrl: null,
     },
   ],
@@ -309,18 +388,36 @@ async function renderCard() {
   return tree;
 }
 const textOf = (tree) => JSON.stringify(tree.toJSON());
+// The rendered TEXT under a test instance — what a person reads on a button —
+// rather than its React children, which carry elements (and circular fibres).
+const instText = (inst) => (inst.children || []).map((c) => (typeof c === "string" ? c : instText(c))).join(" ");
+const buttonTextOf = (tree) => tree.root.findAll((n) => n.type === "button").map(instText).join(" ").toLowerCase();
 const styleTag = (tree) => tree.root.findAllByType("style").map((n) => n.children.join("")).join("");
 
 beforeEach(() => { callableMock.mockClear(); });
 
 describe("the rebuilt screen", () => {
-  it("lists every category that has a policy of any kind, and says which", async () => {
+  it("lists categories and the Sneakers GROUP as ONE entry — members folded in, not listed", async () => {
     const tree = await renderCard();
     const t = textOf(tree);
     expect(t).toContain("Caps &amp; Beanies".replace("&amp;", "&"));
     expect(t).toContain("Sneakers");
-    // The grouped one says so on the list, before it is opened.
-    expect(t).toContain("in All footwear except soccer boots");
+    expect(t).toContain("7 categories");
+    // ONE "Sneakers" row (the group), not two: the member category is inside it.
+    const opens = tree.root.findAll((n) => n.type === "button" && /^Open /.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    expect(opens.filter((l) => l === "Open Sneakers")).toHaveLength(1);
+    expect(opens).not.toContain("Open Slides");
+    // and there is no separate GROUPS section
+    expect(t).not.toContain("Groups");
+  });
+
+  it("a group entry sorts in with everything else, and a disarmed one is not ranked as governed", async () => {
+    const tree = await renderCard();
+    const opens = tree.root.findAll((n) => n.type === "button" && /^Open /.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    // Caps is governed (armed) → first band; the disarmed group has products → second.
+    expect(opens.indexOf("Open Caps & Beanies")).toBeLessThan(opens.indexOf("Open Sneakers"));
   });
 
   it('says "N with their own rows", never "overridden"', async () => {
@@ -333,19 +430,19 @@ describe("the rebuilt screen", () => {
   it('has NO "Clear the N old rows" control anywhere', async () => {
     // The button was removed outright. Its absence is the assertion, because a
     // control that deletes hundreds of hand-made rows must not come back by
-    // accident.
+    // accident. The check is on BUTTONS: the words "old rows" now name a chip
+    // and a stat, and neither removes anything.
     const tree = await renderCard();
-    const t = textOf(tree).toLowerCase();
-    expect(t).not.toContain("clear the");
-    expect(t).not.toContain("old rows");
+    const buttonText = buttonTextOf(tree);
+    for (const word of ["clear", "delete", "remove"]) expect(buttonText).not.toContain(word);
   });
 
-  it("shows a group as not armed, and explains what that means", async () => {
+  it("shows the group as not armed — and carries no paragraph explaining it", async () => {
     const tree = await renderCard();
     const t = textOf(tree);
-    expect(t).toContain("All footwear except soccer boots");
     expect(t).toContain("not armed");
-    expect(t).toContain("cannot produce a single refill");
+    expect(t).not.toContain("cannot produce a single refill");
+    expect(t).not.toContain("grouping never");
   });
 
   it("has NO bottom tab bar — out of scope for this branch", async () => {
@@ -414,10 +511,52 @@ describe("the category detail screen", () => {
     expect(t).toContain("Arm this store");
   });
 
-  it("warns that saving a grouped category takes it out of the group", async () => {
+  it("opens a group to its member list, a member from inside it, and says in ONE line that own numbers win", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Sneakers");
-    expect(textOf(tree)).toContain("takes it out of");
+    const t = textOf(tree);
+    expect(t).toContain("A category's own numbers beat the group's.");
+    expect(t).toContain("Open member Slides".replace("Open member ", "")); // the member row
+    // the member with its own entry says so
+    expect(t).toContain("own numbers");
+    // tap the member
+    const btn = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Open member Sneakers")[0];
+    await act(async () => { btn.props.onClick(); });
+    const t2 = textOf(tree);
+    expect(t2).toContain("Back to Sneakers");
+    expect(t2).toContain("its own numbers");
+    // Back returns to the GROUP, not the list
+    const back = tree.root.findAll((n) => n.type === "button" && String(n.props.children) === "Back to Sneakers")[0];
+    await act(async () => { back.props.onClick(); });
+    expect(textOf(tree)).toContain("A category's own numbers beat the group's.");
+  });
+
+  it("a group's Preview and Save go through setGroup with the live group as the expectation — armed untouched", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && String(n.props.children) === "Preview")[0];
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, armModel: { totalRequests: 3, totalUnits: 5, cap: 75, perMember: [] } } }));
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.find((c) => c[0]?.action === "setGroup" && c[0]?.dryRun === true)?.[0];
+    expect(dry).toBeTruthy();
+    expect(dry.groupKey).toBe("footwear-all");
+    expect(dry.group.armed).toBe(false);
+    expect(dry.group.label).toBe("Sneakers");
+    expect(dry.group.memberCategoryKeys).toHaveLength(7);
+    expect(dry.group.policy.hub2.sizes["7"]).toEqual({ target: 2, minQty: 1 });
+    // Not armed → the panel says so, and shows what arming would cost
+    expect(textOf(tree)).toContain("Not armed");
+    expect(textOf(tree)).toContain("Refills if armed");
+    // Save
+    const saveBtn = tree.root.findAll((n) => n.type === "button" && String(n.props.children) === "Save policy")[0];
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, action: "setGroup", noChange: true } }));
+    await act(async () => { saveBtn.props.onClick(); });
+    const save = callableMock.mock.calls.find((c) => c[0]?.action === "setGroup" && c[0]?.dryRun !== true)?.[0];
+    expect(save).toBeTruthy();
+    expect(save.expectedBefore).toEqual(CENSUS.groupEntries[0].group);
+    expect(save.group.armed).toBe(false);
+    // and NO category write happened for any member
+    expect(callableMock.mock.calls.some((c) => c[0]?.categoryKey && "policy" in (c[0] || {}))).toBe(false);
   });
 
   it("expands a sized category into one row per size, in size order", async () => {
@@ -429,7 +568,7 @@ describe("the category detail screen", () => {
   });
 
   it("refuses a per-size editor when the size run cannot be derived", async () => {
-    const c = { ...CENSUS, categories: [{ ...CENSUS.categories[1], sizeRun: [], sizeRunEmpty: true }] };
+    const c = { ...CENSUS, categories: [], groupEntries: [{ ...CENSUS.groupEntries[0], sizeRun: [], sizeRunEmpty: true }] };
     callableMock.mockImplementationOnce(async () => ({ data: c }));
     const tree = await renderCard();
     await act(async () => {
@@ -450,8 +589,7 @@ describe("the category detail screen", () => {
     // …and there is no CONTROL that removes one. (The prose says rows are never
     // deleted, so a naive substring check on "delete" would match its own
     // reassurance — the assertion is on the buttons.)
-    const buttonText = tree.root.findAll((n) => n.type === "button")
-      .map((n) => JSON.stringify(n.props.children)).join(" ").toLowerCase();
+    const buttonText = buttonTextOf(tree);
     for (const word of ["delete", "remove", "clear"]) expect(buttonText).not.toContain(word);
     expect(t).toContain("Rows are never deleted from this screen");
   });

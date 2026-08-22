@@ -554,3 +554,49 @@ export function lastChange(historyEntries) {
   if (!applied.length) return null;
   return applied.reduce((best, h) => (h.at > best.at ? h : best));
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE MAIN LIST — A GROUP IS ONE ENTRY, ITS MEMBERS ARE INSIDE IT
+// ═════════════════════════════════════════════════════════════════════════════
+// The census returns categories AND groupEntries (one per group, carrying the
+// same fields a category carries, counts summed). The list shows the group
+// entry sorted in with everything else and HIDES its members — they are
+// reached from inside the group, where any one can still be given numbers of
+// its own. Hidden means not on this list, not gone: the member entries stay in
+// the census so the detail screen can open them.
+//
+// Order: governed first (they are what somebody came to change), then anything
+// with products or rows, then the empty rest — alphabetical inside each. A
+// group is "governed" only when it is ARMED and names a location: a disarmed
+// group with numbers in it governs nothing, and the list must not rank it as
+// if it did.
+export function mainListEntries(census) {
+  const cats = Array.isArray(census?.categories) ? census.categories : [];
+  const groups = Array.isArray(census?.groupEntries) ? census.groupEntries : [];
+  const visible = [...cats.filter((c) => !c.memberOfGroup), ...groups];
+  const governed = (c) => (c.isGroup ? (c.armed === true && (c.armedEffective || []).length > 0) : (c.armedEffective || []).length > 0);
+  const band = (c) => (governed(c) ? 0 : (c.products > 0 || c.ownRowCells > 0) ? 1 : 2);
+  return visible.sort((a, b) => band(a) - band(b) || String(a.label).localeCompare(String(b.label)));
+}
+
+// A group's preview comes back from setGroup's dry run as an `armModel` —
+// what the next scan would ask for IF THE GROUP WERE ARMED, per member. The
+// detail screen renders every preview through one panel, so the model is
+// reshaped to the category preview's fields here. `armed` is carried so the
+// panel can say the honest thing about a disarmed group: the next scan asks
+// for nothing from it, whatever the numbers.
+export function previewFromArmModel(armModel, { armed = false } = {}) {
+  if (!armModel || typeof armModel !== "object") return null;
+  return {
+    totalRequests: armModel.totalRequests || 0,
+    totalUnits: armModel.totalUnits || 0,
+    cap: armModel.cap ?? null,
+    centralOnHand: null,
+    legs: [],
+    overriddenProducts: (armModel.perMember || []).reduce((n, m) => n + (m.overriddenProducts || 0), 0),
+    perMember: armModel.perMember || [],
+    exceedsCap: armModel.exceedsCap === true,
+    ifArmed: true,
+    armed: armed === true,
+  };
+}

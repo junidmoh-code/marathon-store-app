@@ -70,6 +70,7 @@ import {
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
   nextScanAt, previewVerdict, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, bySizeRank, sizeLabel,
+  mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
@@ -206,7 +207,8 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const [census, setCensus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [openKey, setOpenKey] = useState("");     // the category on the detail screen
+  const [openKey, setOpenKey] = useState("");     // the category (or group) on the detail screen
+  const [parentKey, setParentKey] = useState(""); // the group a member was opened FROM, so Back returns to it
   const [draft, setDraft] = useState({});
   const [preview, setPreview] = useState(null);   // { key, model, before, changes }
   const [busy, setBusy] = useState("");
@@ -245,17 +247,15 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const categories = useMemo(() => {
-    const list = census?.categories || [];
-    // Governed first (they are what somebody came to change), then anything
-    // with products or rows, then the empty rest — alphabetical inside each.
-    return [...list].sort((a, b) => {
-      const band = (c) => (c.armedEffective?.length ? 0 : (c.products > 0 || c.ownRowCells > 0) ? 1 : 2);
-      return band(a) - band(b) || String(a.label).localeCompare(String(b.label));
-    });
-  }, [census]);
+  // THE MAIN LIST: categories and groups sorted in together, a group's members
+  // folded into the group's entry. See mainListEntries.
+  const categories = useMemo(() => mainListEntries(census), [census]);
+  // EVERY entry, members included — the detail screen can open a member from
+  // inside its group even though the main list does not show it.
+  const allEntries = useMemo(() => [...(census?.categories || []), ...(census?.groupEntries || [])], [census]);
 
-  const open = categories.find((c) => c.key === openKey) || null;
+  const open = allEntries.find((c) => c.key === openKey) || null;
+  const parent = parentKey ? allEntries.find((c) => c.key === parentKey) || null : null;
   const destinations = census?.destinations || [];
   const errors = useMemo(() => validateDraft(draft), [draft]);
   const keyNow = useMemo(() => previewKey(openKey, draft, { perSize: open?.perSize }), [openKey, draft, open]);
@@ -265,17 +265,24 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const scan = nextScanAt(serverNowMs());
   const stamp = lastChange(census?.history);
 
-  const openCategory = (c) => {
+  const openCategory = (c, from = null) => {
     setOpenKey(c.key);
+    setParentKey(from ? from.key : "");
     setPreview(null);
     setPanel("");
+    setRows(null);
     // A GROUPED category's editor opens on the GROUP'S numbers, because those
     // are the numbers in force. Saving them writes an entry of its own, which
-    // takes the category out of the group — said plainly in the detail header
-    // rather than discovered afterwards.
+    // takes the category out of the group — said in one line in the detail
+    // header rather than discovered afterwards. A GROUP opens on its own policy.
     setDraft(draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations }));
   };
-  const closeCategory = () => { setOpenKey(""); setDraft({}); setPreview(null); setPanel(""); setRows(null); };
+  // Back from a member returns to its group; Back from anything else to the list.
+  const closeCategory = () => {
+    if (parent) { openCategory(parent); return; }
+    setOpenKey(""); setParentKey(""); setDraft({}); setPreview(null); setPanel(""); setRows(null);
+  };
+  const closeAll = () => { setOpenKey(""); setParentKey(""); setDraft({}); setPreview(null); setPanel(""); setRows(null); };
 
   const setField = (loc, field, value, sizeKey = null) => {
     setPreview(null);   // belt to the previewKey's braces: any edit invalidates
@@ -357,16 +364,29 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     });
   };
 
+  // The group object a save or preview sends: the live group with ONLY its
+  // policy replaced. label, members and armed go back exactly as they came —
+  // this screen edits numbers; arming is a separate deliberate act and is not
+  // offered here.
+  const groupFor = (g, policy) => ({ ...(g.group || {}), policy: policy === null ? null : policy });
+
   const runPreview = async () => {
     if (busy || Object.keys(errors).length) return;
     setBusy("preview");
     const forKey = keyNow;
     try {
-      const res = await setCategoryPolicyFn()({ categoryKey: openKey, policy: proposed, dryRun: true });
-      // The preview is stamped with the key of the values it was computed FROM.
-      // If the owner edited a field while it was in flight, this preview is
-      // about numbers that are no longer on screen and must not enable Save.
-      setPreview({ key: forKey, model: res.data.preview.after, before: res.data.preview.before, changes: res.data.changes });
+      if (open?.isGroup) {
+        // A group previews through setGroup's dry run, which models every
+        // member as if the group were armed and writes nothing.
+        const res = await setCategoryPolicyFn()({ action: "setGroup", groupKey: open.groupKey, group: groupFor(open, proposed), dryRun: true });
+        setPreview({ key: forKey, model: previewFromArmModel(res.data.armModel, { armed: open.armed }), before: null, changes: banner });
+      } else {
+        const res = await setCategoryPolicyFn()({ categoryKey: openKey, policy: proposed, dryRun: true });
+        // The preview is stamped with the key of the values it was computed FROM.
+        // If the owner edited a field while it was in flight, this preview is
+        // about numbers that are no longer on screen and must not enable Save.
+        setPreview({ key: forKey, model: res.data.preview.after, before: res.data.preview.before, changes: res.data.changes });
+      }
     } catch (e) {
       flash("bad", e?.message || String(e));
     } finally {
@@ -378,19 +398,25 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     if (!saveable) return;
     setBusy("save");
     try {
-      const res = await setCategoryPolicyFn()({
-        categoryKey: openKey,
-        policy: proposed,
-        // The exact entry this editor was opened on. The server refuses the
-        // write if live no longer matches it, so a change somebody else made
-        // while this was open is never silently discarded. A GROUPED category
-        // has no entry of its own, so the expectation is null — which is true,
-        // and which the server checks.
-        expectedBefore: open?.entry ?? null,
-      });
+      const res = open?.isGroup
+        // A GROUP saves through setGroup: the live group with only its policy
+        // replaced, and the live group as the expectation — armed stays what
+        // it was.
+        ? await setCategoryPolicyFn()({ action: "setGroup", groupKey: open.groupKey, group: groupFor(open, proposed), expectedBefore: open.group ?? null })
+        : await setCategoryPolicyFn()({
+          categoryKey: openKey,
+          policy: proposed,
+          // The exact entry this editor was opened on. The server refuses the
+          // write if live no longer matches it, so a change somebody else made
+          // while this was open is never silently discarded. A GROUPED category
+          // has no entry of its own, so the expectation is null — which is true,
+          // and which the server checks.
+          expectedBefore: open?.entry ?? null,
+        });
       if (res.data.noChange) flash("ok", "Nothing to save — these are the numbers already live.");
+      else if (open?.isGroup && !open.armed) flash("ok", "Saved. The group is not armed, so the next scan asks for nothing from it.");
       else flash("ok", `Saved. The next scan (${scan.label}) uses these numbers.`);
-      closeCategory();
+      closeAll();
       await load(true);
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -402,19 +428,30 @@ function EnginePolicyAuthed({ viewer, onExit }) {
 
   const revert = async (h) => {
     if (busy) return;
-    if (h.kind === "rows" || h.kind === "group") {
-      flash("bad", "Row edits and group changes are not reverted from here yet — the entry above records exactly what they were.");
+    if (h.kind === "rows") {
+      flash("bad", "Row edits are not reverted from here — the entry records exactly what they were.");
       return;
     }
+    const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
-      `Put ${h.categoryKey} back to how it was before this change?\n\n` +
-      (h.changes || []).map((c) => `  ${c.loc || ""} ${c.field}: ${c.to ?? "not set"} -> ${c.from ?? "not set"}`).join("\n"));
+      `Put ${what} back to how it was before this change?\n\n` +
+      (h.kind === "group"
+        ? `label ${h.after?.label ?? "—"} -> ${h.before?.label ?? "—"}, armed ${String(h.after?.armed ?? "—")} -> ${String(h.before?.armed ?? "—")}`
+        : (h.changes || []).map((c) => `  ${c.loc || ""} ${c.field}: ${c.to ?? "not set"} -> ${c.from ?? "not set"}`).join("\n")));
     if (!ok) return;
     setBusy("revert");
     try {
-      await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null });
-      flash("ok", `${h.categoryKey} put back to how it was on ${fmtWhen(h.at)}.`);
-      closeCategory();
+      if (h.kind === "group") {
+        // The group's previous state, whole, with the state it became as the
+        // expectation — same drift discipline as a category revert. A revert
+        // that would re-ARM a group goes through the same cap gate as any
+        // other arming write; the server refuses it over the cap.
+        await setCategoryPolicyFn()({ action: "setGroup", groupKey: h.groupKey, group: h.before ?? null, expectedBefore: h.after ?? null });
+      } else {
+        await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null });
+      }
+      flash("ok", `${what} put back to how it was on ${fmtWhen(h.at)}.`);
+      closeAll();
       await load(true);
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -441,9 +478,10 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     setPanel("rows"); setRows(null); setRowDraft({});
     setBusy("rows");
     try {
-      const res = await setCategoryPolicyFn()(loc
-        ? { action: "rows", categoryKey: key, loc }
-        : { action: "rows", categoryKey: key });
+      // A GROUP's rows are every member's rows — the server sums them the same
+      // way the chip did.
+      const who = open?.isGroup ? { groupKey: open.groupKey } : { categoryKey: key };
+      const res = await setCategoryPolicyFn()(loc ? { action: "rows", ...who, loc } : { action: "rows", ...who });
       setRows(res.data.rows || []);
       // The server caps the list. Held separately from `rows` so the panel can
       // say "showing N of M" honestly rather than silently rendering a prefix.
@@ -477,7 +515,9 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     if (!edits.length) return;
     setBusy("rows-save");
     try {
-      const res = await setCategoryPolicyFn()({ action: "setRows", categoryKey: openKey, rows: edits });
+      const res = await setCategoryPolicyFn()(open?.isGroup
+        ? { action: "setRows", groupKey: open.groupKey, rows: edits }
+        : { action: "setRows", categoryKey: openKey, rows: edits });
       flash("ok", res.data.noChange ? "Nothing to save — those are the numbers already on the rows."
         : `${res.data.rowCount} ${res.data.rowCount === 1 ? "row" : "rows"} updated.`);
       setRowDraft({});
@@ -491,7 +531,8 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   };
 
   // ── RENDER ────────────────────────────────────────────────────────────────
-  const governed = categories.filter((c) => (c.armedEffective || []).length).length;
+  const governed = categories.filter((c) => (c.isGroup ? c.armed === true && (c.armedEffective || []).length : (c.armedEffective || []).length)).length;
+  const oldRows = (census?.categories || []).reduce((n, c) => n + (c.ownRowCells || 0), 0);
 
   return (
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, color: "#fff", padding: "1rem 1rem 4rem" }}>
@@ -506,7 +547,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
 
         {open ? (
           <CategoryDetail
-            category={open} destinations={destinations} draft={draft} errors={errors}
+            category={open} parent={parent} destinations={destinations} draft={draft} errors={errors}
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
             scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
             onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
@@ -514,6 +555,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
             onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
             onSaveRows={saveRows} onRevert={revert}
+            onOpenMember={(m) => { const e = allEntries.find((c) => c.key === m.key); if (e) openCategory(e, open); }}
           />
         ) : (
           <>
@@ -544,8 +586,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
                 sub={scan.at ? "every 15 min, 07:00–19:00" : scan.label} />
               <Tile label="Refills per scan" value={census?.cap ?? "…"}
                 sub="shared across every category" />
-              <Tile label="Groups" value={Object.keys(census?.groups || {}).length}
-                sub={groupsSub(census?.groups)} />
+              <Tile label="Old rows" value={loading ? "…" : oldRows} sub="kept — the engine reads them first" />
             </div>
 
             {loading && <div style={{ color: GRAY, padding: "2rem 0" }}>Reading the policy…</div>}
@@ -558,8 +599,6 @@ function EnginePolicyAuthed({ viewer, onExit }) {
                 <button onClick={() => load(true)} style={{ ...bGray, marginTop: ".8rem" }}>Try again</button>
               </div>
             )}
-
-            {!loading && !error && <Groups groups={census?.groups} cap={census?.cap} />}
 
             {!loading && !error && categories.map((c) => (
               <CategoryRow key={c.key} category={c} onOpen={() => openCategory(c)} />
@@ -583,13 +622,6 @@ const rowSeed = (rows, id) => {
   const r = (rows || []).find((x) => `${x.loc}::${x.pid}::${x.sizeKey}` === id) || {};
   return { target: r.target == null ? "" : String(r.target), minQty: r.minQty == null ? "" : String(r.minQty),
     reorderPoint: r.reorderPoint == null ? "" : String(r.reorderPoint) };
-};
-
-const groupsSub = (groups) => {
-  const g = Object.values(groups || {});
-  if (!g.length) return "none yet";
-  const armed = g.filter((x) => x?.armed === true).length;
-  return armed ? `${armed} armed` : "none armed";
 };
 
 function Tile({ label, value, sub }) {
@@ -626,9 +658,20 @@ function Chip({ tone = "gray", children, onClick, title }) {
 function categoryChips(c) {
   const out = [];
   out.push({ tone: "gray", text: c.perSize ? "per size" : "one size" });
-  if (c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
-  if ((c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
-  else out.push({ tone: "gray", text: "no policy" });
+  // A GROUP is one entry with a small count of what it holds. Its armed state
+  // is the group's flag: a disarmed group with numbers in it is "not armed",
+  // never "armed at N" — the numbers are not in the engine's resolution.
+  if (c.isGroup) {
+    const n = (c.memberCategoryKeys || []).length;
+    out.push({ tone: "blue", text: `${n} ${n === 1 ? "category" : "categories"}` });
+    if (c.armed === true && (c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
+    else out.push({ tone: "gray", text: "not armed" });
+  } else {
+    if (c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
+    else if (c.memberOfGroup && !c.entry) out.push({ tone: "blue", text: "in its group" });
+    if ((c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
+    else out.push({ tone: "gray", text: "no policy" });
+  }
   if (c.ownRowCells > 0) {
     out.push({ tone: "amber", text: `${c.ownRowProducts} with their own rows`, rows: true });
   }
@@ -661,54 +704,13 @@ function CategoryRow({ category: c, onOpen }) {
   );
 }
 
-// ── GROUPS ───────────────────────────────────────────────────────────────────
-// Read and explain, on this build. A group is created and edited by the
-// callable (setGroup); the one thing this panel deliberately does NOT offer is
-// an Arm button for a group the model says is over the per-scan cap — the
-// server refuses it anyway, and offering a control that always fails is worse
-// than not offering it.
-function Groups({ groups, cap }) {
-  const list = Object.entries(groups || {});
-  if (!list.length) return null;
-  return (
-    <div style={{ marginBottom: "1.2rem" }}>
-      <div style={{ color: GRAY, fontSize: ".72rem", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>
-        Groups
-      </div>
-      {list.map(([key, g]) => (
-        <div key={key} style={{ ...GLASS, padding: ".8rem .9rem", marginBottom: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-            <div style={{ fontWeight: 700, fontSize: ".95rem", flex: 1, minWidth: 0 }}>{g?.label || key}</div>
-            <Chip tone={g?.armed === true ? "green" : "gray"}>{g?.armed === true ? "armed" : "not armed"}</Chip>
-          </div>
-          <div style={{ color: GRAY, fontSize: ".78rem", marginTop: 6, lineHeight: 1.5 }}>
-            {(g?.memberCategoryKeys || []).length} categories: {(g?.memberCategoryKeys || []).join(", ")}
-          </div>
-          {g?.armed !== true && (
-            <div style={{ color: "#6b7280", fontSize: ".75rem", marginTop: 6, lineHeight: 1.5 }}>
-              Not armed. A group that is not armed is not in the engine's resolution at all —
-              it cannot produce a single refill, whatever numbers it holds. Arming it is refused
-              while it would ask for more than the {cap ?? "per-scan"} refills a scan allows,
-              which is shared with every other category.
-            </div>
-          )}
-          <div style={{ color: "#4b5563", fontSize: ".72rem", marginTop: 6, lineHeight: 1.5 }}>
-            A category with numbers of its own ignores its group entirely — grouping never
-            overrides a setting somebody made on purpose.
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // THE CATEGORY DETAIL SCREEN
 // ═════════════════════════════════════════════════════════════════════════════
 function CategoryDetail({
-  category: c, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
+  category: c, parent, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
   saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
-  onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert,
+  onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
   const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
@@ -730,17 +732,18 @@ function CategoryDetail({
           </div>
           <div style={{ marginTop: 8, color: GRAY, fontSize: ".85rem", lineHeight: 1.5 }}>{headline}</div>
         </div>
-        <button onClick={onBack} style={bGhost}>Back</button>
+        <button onClick={onBack} style={bGhost}>{parent ? `Back to ${parent.label}` : "Back"}</button>
       </div>
 
-      {c.policySource === "group" && (
-        <div style={{ ...GLASS, padding: ".8rem 1rem", marginBottom: "1rem",
-          border: "1px solid rgba(74,127,255,.35)", color: "#dbe6ff", fontSize: ".85rem", lineHeight: 1.55 }}>
-          These numbers come from the <b>{c.groupLabel || c.groupKey}</b> group, not from this
-          category. Saving them here gives {c.label} numbers of its own — which takes it out of
-          the group, so a later change to the group stops reaching it.
+      {/* A MEMBER opened from inside its group: one line, because it is the
+          one thing about this screen that is not obvious from the numbers. */}
+      {!c.isGroup && c.memberOfGroup && (
+        <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
+          Saving here gives {c.label} its own numbers — they beat {parent?.label || c.groupLabel || "the group"}'s.
         </div>
       )}
+
+      {c.isGroup && <MemberList group={c} onOpen={onOpenMember} />}
 
       <div className="ep-stats" style={{ marginBottom: "1.2rem" }}>
         <Tile label="On hand" value={c.units} sub="units across every location" />
@@ -756,7 +759,9 @@ function CategoryDetail({
       ) : panel === "history" ? (
         <div>
           <button onClick={() => onPanel("")} style={{ ...bGhost, marginBottom: ".8rem" }}>Back to the policy</button>
-          <History entries={(census?.history || []).filter((h) => !h.categoryKey || h.categoryKey === c.key)}
+          <History entries={(census?.history || []).filter((h) => c.isGroup
+            ? (h.groupKey === c.groupKey || (c.memberCategoryKeys || []).includes(h.categoryKey))
+            : (!h.categoryKey || h.categoryKey === c.key))}
             onRevert={onRevert} busy={busy} />
         </div>
       ) : (
@@ -805,6 +810,35 @@ function CategoryDetail({
 }
 
 const carriedCount = (c) => Object.values(c.carriage || {}).filter((v) => v?.carries).length;
+
+// ── THE MEMBERS OF A GROUP ───────────────────────────────────────────────────
+// Compact and tappable: any member can still be given numbers of its own, and
+// the one rule that makes grouping safe is stated in ONE line above the list.
+function MemberList({ group: g, onOpen }) {
+  const members = g.members || [];
+  return (
+    <div style={{ ...GLASS, padding: ".6rem .9rem", marginBottom: "1.2rem" }}>
+      <div style={{ color: GRAY, fontSize: ".78rem", padding: "2px 0 6px" }}>
+        A category's own numbers beat the group's.
+      </div>
+      {members.map((m) => (
+        <button key={m.key} type="button" className="ep-cat" onClick={() => onOpen(m)}
+          aria-label={`Open member ${m.label}`}
+          style={{ padding: "6px 0", borderTop: "1px solid rgba(255,255,255,.05)" }}>
+          <CategoryImage category={m} size={28} />
+          <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 600, fontSize: ".88rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.label}</span>
+            <span style={{ color: GRAY, fontSize: ".76rem", whiteSpace: "nowrap" }}>
+              {m.products} {m.products === 1 ? "product" : "products"} · {m.units} on hand
+            </span>
+            {m.ownPolicy && <Chip tone="green">own numbers</Chip>}
+          </div>
+          <div style={{ color: "#4b5563", fontSize: "1.1rem", flex: "0 0 auto" }} aria-hidden="true">›</div>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 // The one number a leg is summarised by in the header. A per-size leg has no
 // single number, so it says how many sizes it names rather than inventing one.
@@ -1018,6 +1052,25 @@ function PreviewPanel({ preview, keyNow, cap, busy, category, errors, onRun }) {
     );
   }
   const m = preview.model;
+  if (m?.ifArmed) {
+    // A GROUP. The model is what arming it would cost; the honest headline for
+    // a disarmed group is that the next scan asks for nothing from it.
+    return (
+      <div style={{ marginTop: "1rem", padding: ".9rem 1rem", borderRadius: RADIUS,
+        background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.3)" }}>
+        <div style={{ fontWeight: 700, fontSize: ".9rem", color: BLUE_L }}>
+          {m.armed ? "What happens on the next scan" : "Not armed — the next scan asks for nothing from this group"}
+        </div>
+        <div className="ep-stats" style={{ margin: ".8rem 0" }}>
+          <Stat label={m.armed ? "Refills asked for" : "Refills if armed"} value={m.totalRequests} of={cap != null ? `of ${cap} per scan` : ""} warn={cap != null && m.totalRequests > cap} />
+          <Stat label="Units wanted" value={m.totalUnits} />
+          <Stat label="Categories" value={(m.perMember || []).length} />
+          <Stat label="Own rows" value={m.overriddenProducts} warn={m.overriddenProducts > 0} />
+        </div>
+        <RunButton />
+      </div>
+    );
+  }
   return (
     <div style={{ marginTop: "1rem", padding: ".9rem 1rem", borderRadius: RADIUS,
       background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.3)" }}>
@@ -1188,7 +1241,7 @@ function History({ entries, onRevert, busy }) {
               {(h.changes || []).length > 6 && ` … +${h.changes.length - 6}`}
             </div>
           </div>
-          {h.status === "applied" && !h.kind && (
+          {h.status === "applied" && h.kind !== "rows" && (
             <button onClick={() => onRevert(h)} disabled={!!busy}
               style={{ ...bGhost, padding: "6px 10px", fontSize: ".75rem", opacity: busy ? .5 : 1 }}>Revert</button>
           )}
