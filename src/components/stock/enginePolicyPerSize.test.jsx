@@ -305,7 +305,9 @@ globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => 
 const CENSUS = {
   destinations: ["hub2", "marathon-pe", "trophy"],
   cap: 75,
-  history: [],
+  // 2026-08-22 10:24 UTC = 12:24 SAST — the stamp reads "22 Aug at 12:24".
+  history: [{ id: "h1", status: "applied", at: Date.UTC(2026, 7, 22, 10, 24), by: "gunidmoh@gmail.com",
+    categoryKey: "caps-beanies", changes: [{ loc: "hub2", field: "target", from: 8, to: 10 }] }],
   groups: {
     "footwear-all": {
       label: "Sneakers", armed: false,
@@ -420,10 +422,11 @@ describe("the rebuilt screen", () => {
     expect(opens.indexOf("Open Caps & Beanies")).toBeLessThan(opens.indexOf("Open Sneakers"));
   });
 
-  it('says "N with their own rows", never "overridden"', async () => {
+  it('says "N old rows", never "overridden" and never "with their own rows"', async () => {
     const tree = await renderCard();
     const t = textOf(tree);
-    expect(t).toContain("94 with their own rows");
+    expect(t).toContain("188 old rows");
+    expect(t).not.toContain("with their own rows");
     expect(t.toLowerCase()).not.toContain("overridden");
   });
 
@@ -468,17 +471,27 @@ describe("the layout that was broken", () => {
   it("gives the location label a shrinkable track that ellipses instead of wrapping", async () => {
     const tree = await renderCard();
     const css = styleTag(tree);
-    // minmax(0,1fr) is what lets the track shrink below its content; without it
-    // the label pushed the inputs off the row, which is the bug being fixed.
-    expect(css).toMatch(/\.ep-loc\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)/);
     expect(css).toMatch(/\.ep-loc-name\s*>\s*span\s*\{[^}]*white-space:nowrap/);
     expect(css).toMatch(/text-overflow:ellipsis/);
   });
 
-  it("stacks the numbers below the label at phone width and beside it above 560px", async () => {
+  it("draws EACH LOCATION AS ITS OWN BORDERED BOX, separated from the next", async () => {
     const tree = await renderCard();
     const css = styleTag(tree);
-    expect(css).toMatch(/@media\s*\(min-width:560px\)\s*\{[\s\S]*?\.ep-loc\s*\{[^}]*minmax\(0,1fr\)\s+260px/);
+    expect(css).toMatch(/\.ep-box\s*\{[^}]*border:\s*1px solid/);
+    expect(css).toMatch(/\.ep-box\s*\{[^}]*margin-bottom:\s*\d+px/);
+    expect(css).toMatch(/\.ep-box\s*\{[^}]*border-radius/);
+  });
+
+  it("gives the Keep / Minimum / Ask at header row THE SAME three tracks as the inputs, so each label sits over its input", async () => {
+    const tree = await renderCard();
+    const css = styleTag(tree);
+    const cols = css.match(/\.ep-cols\s*\{([^}]*)\}/)[1];
+    const nums = css.match(/\.ep-nums\s*\{([^}]*)\}/)[1];
+    const track = (s) => s.match(/grid-template-columns:\s*([^;]+);/)[1].trim();
+    expect(track(cols)).toBe(track(nums));
+    // and they stay equal above 560px, where both switch to fixed tracks
+    expect(css).toMatch(/@media\s*\(min-width:560px\)\s*\{\s*\.ep-cols,\s*\.ep-nums\s*\{[^}]*repeat\(3,/);
   });
 });
 
@@ -488,27 +501,102 @@ describe("the category detail screen", () => {
     await act(async () => { btn.props.onClick(); });
   };
 
-  it("shows the four stats, the legend and a Preview button", async () => {
+  it("shows the four stats as label + number, NO legend, and Preview / Save / History", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Caps & Beanies");
     const t = textOf(tree);
-    for (const s of ["On hand", "Products", "Locations", "Own rows"]) expect(t).toContain(s);
-    expect(t).toContain("how many the shelf should hold when it is full");
-    expect(t).toContain("hold the request back until the shelf drops");
+    for (const s of ["On hand", "Products", "Locations", "Old rows"]) expect(t).toContain(s);
+    // the legend block is GONE — the column header inside every box replaces it
+    expect(t).not.toContain("how many the shelf should hold");
+    expect(t).not.toContain("hold the request back");
+    expect(t).not.toContain("shows as urgent");
+    // and no explanatory sub-line under a stat card
+    for (const sub of ["units across every location", "in this category", "carry it today", "rows the engine reads first"]) {
+      expect(t).not.toContain(sub);
+    }
     expect(t).toContain("Preview");
     expect(t).toContain("Save policy");
     expect(t).toContain("Policy history");
   });
 
-  it("shows an em dash for a location with no policy, with the reason and its action", async () => {
+  it("puts a Keep / Minimum / Ask at header row INSIDE EVERY location box that has inputs, coloured per column", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const boxes = tree.root.findAll((n) => n.props?.className === "ep-box");
+    expect(boxes.length).toBe(3);                       // hub2, marathon-pe, trophy
+    const withInputs = boxes.filter((b) => b.findAll((n) => n.type === "input").length > 0);
+    expect(withInputs.length).toBe(1);                  // only hub2 is armed
+    for (const b of withInputs) {
+      const heads = b.findAll((n) => n.props?.className === "ep-col-head");
+      expect(heads.map(instText).map((x) => x.trim())).toEqual(["Keep", "Minimum", "Ask at"]);
+      // each head carries the colour of its input's accent border
+      const inputs = b.findAll((n) => n.type === "input");
+      heads.forEach((h, i) => expect(inputs[i].props.style.borderLeft).toContain(h.props.style.color));
+    }
+    // arm a second location and the header appears in THAT box too — it is per box, never a legend
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const boxes2 = tree.root.findAll((n) => n.props?.className === "ep-box");
+    const withInputs2 = boxes2.filter((b) => b.findAll((n) => n.type === "input").length > 0);
+    expect(withInputs2.length).toBe(2);
+    for (const b of withInputs2) expect(b.findAll((n) => n.props?.className === "ep-col-head").length).toBe(3);
+  });
+
+  it("renders a validation error INSIDE the box it belongs to, below the inputs, not overlapping the next box", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
+    await act(async () => { keep.props.onChange({ target: { value: "" } }); });
+    const hub2Box = tree.root.findAll((n) => n.props?.className === "ep-box" && n.props["data-loc"] === "hub2")[0];
+    const errs = hub2Box.findAll((n) => n.props?.className === "ep-err");
+    expect(errs.length).toBe(1);
+    expect(instText(errs[0])).toContain("Keep is required");
+    // the error is a normal-flow child of the box, after the inputs — no negative margin anywhere on it
+    expect(errs[0].props.style?.marginTop ?? 0).not.toBeLessThan(0);
+    const kids = hub2Box.children;
+    const idxInputs = kids.findIndex((k) => k?.props?.className === "ep-nums");
+    const idxErr = kids.findIndex((k) => k?.props?.className === "ep-err");
+    expect(idxErr).toBeGreaterThan(idxInputs);
+    // and NOT in any other box
+    for (const b of tree.root.findAll((n) => n.props?.className === "ep-box" && n.props["data-loc"] !== "hub2")) {
+      expect(b.findAll((n) => n.props?.className === "ep-err").length).toBe(0);
+    }
+  });
+
+  it("shows an em dash for a location with no policy, one short line and its action", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Caps & Beanies");
     const t = textOf(tree);
     expect(t).toContain("—");
-    expect(t).toContain("not stocked by the engine here");
+    expect(t).toContain("40 carried · 112 units");
     expect(t).toContain("Stock here");
-    expect(t).toContain("not carried");
+    expect(t).toContain("not carried here");
     expect(t).toContain("Arm this store");
+    // the long reason sentences are gone
+    expect(t).not.toContain("not stocked by the engine here");
+    expect(t).not.toContain("this store does not stock this category");
+  });
+
+  it('replaces the grey "also holds cells at…" paragraph with an "N old rows" chip that opens the list', async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const t = textOf(tree);
+    expect(t).not.toContain("also holds cells");
+    expect(t).not.toContain("with their own rows");
+    expect(t).toContain("188 old rows");
+    const chip = tree.root.findAll((n) => n.type === "button" && instText(n).includes("old rows"))[0];
+    await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
+    expect(textOf(tree)).toContain("Black Cap");
+  });
+
+  it("marks a size only SOME of a group's members carry, and offers Same for every size", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const t = textOf(tree);
+    expect(t).toContain("◐");
+    const line = tree.root.findAll((n) => n.type === "span" && instText(n).includes("only some of the")).map(instText)[0];
+    expect(line).toContain("only some of the 7 categories carry this size");
+    expect(t).toContain("Same for every size");
   });
 
   it("opens a group to its member list, a member from inside it, and says in ONE line that own numbers win", async () => {
@@ -580,17 +668,89 @@ describe("the category detail screen", () => {
   it("opens the explicit rows for editing from the chip", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Caps & Beanies");
-    const chip = tree.root.findAll((n) => n.type === "button"
-      && String(n.props.children).includes("with their own rows"))[0];
+    const chip = tree.root.findAll((n) => n.type === "button" && instText(n).includes("old rows"))[0];
     await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
     const t = textOf(tree);
     expect(t).toContain("Black Cap");
-    expect(t).toContain("BEFORE it reads the category policy");
-    // …and there is no CONTROL that removes one. (The prose says rows are never
-    // deleted, so a naive substring check on "delete" would match its own
-    // reassurance — the assertion is on the buttons.)
+    // the explanatory paragraphs are gone…
+    expect(t).not.toContain("BEFORE it reads the category policy");
+    expect(t).not.toContain("Rows are never deleted from this screen");
+    // …and there is still no CONTROL that removes one.
     const buttonText = buttonTextOf(tree);
     for (const word of ["delete", "remove", "clear"]) expect(buttonText).not.toContain(word);
-    expect(t).toContain("Rows are never deleted from this screen");
+  });
+});
+
+// ═══ THE STRIP — what is gone, and the standing rule ════════════════════════
+describe("the stripped screen", () => {
+  const openFirst = async (tree, label) => {
+    const btn = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === `Open ${label}`)[0];
+    await act(async () => { btn.props.onClick(); });
+  };
+  // Every rendered string on the screen, longest first.
+  const strings = (tree) => {
+    const out = [];
+    // the <style> element's CSS is not text anyone reads
+    const walk = (n) => { if (typeof n === "string") out.push(n); else if (n?.type !== "style") (n?.children || []).forEach(walk); };
+    walk(tree.root);
+    return out;
+  };
+
+  it("the list header is the title and the stamp — no subtitle, no by-line, no group key", async () => {
+    const tree = await renderCard();
+    const t = textOf(tree);
+    expect(t).toContain("Engine Policy");
+    expect(t).toContain("Last changed 22 Aug at 12:24");
+    expect(t).not.toContain("What each category keeps at every location");
+    expect(t).not.toContain("by gunidmoh");
+    expect(t).not.toContain("— caps-beanies");
+  });
+
+  it("stat cards are label + number only", async () => {
+    const tree = await renderCard();
+    const t = textOf(tree);
+    for (const sub of ["the rest fall through", "shared across every category", "none armed", "none yet", "every 15 min"]) {
+      expect(t).not.toContain(sub);
+    }
+    expect(t).toContain("Governed");
+    expect(t).toContain("Refills per scan");
+    expect(t).toContain("Old rows");
+  });
+
+  it("has no GROUPS block and none of its prose, and no footer paragraph", async () => {
+    const tree = await renderCard();
+    const t = textOf(tree);
+    expect(t).not.toContain("Groups");
+    expect(t).not.toContain("cannot produce a single refill");
+    expect(t).not.toContain("grouping never overrides");
+    expect(t).not.toContain("read live by the refill engine");
+  });
+
+  it("NO PARAGRAPH ANYWHERE — no rendered text node longer than one short line, on the list, the detail, the preview or the rows panel", async () => {
+    const LIMIT = 110;
+    const tree = await renderCard();
+    const check = (where) => {
+      const long = strings(tree).filter((s) => s.length > LIMIT);
+      expect(long, `${where}: ${JSON.stringify(long)}`).toEqual([]);
+    };
+    check("list");
+    await openFirst(tree, "Caps & Beanies");
+    check("detail");
+    // a validation message
+    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
+    await act(async () => { keep.props.onChange({ target: { value: "" } }); });
+    check("detail with error");
+    await act(async () => { keep.props.onChange({ target: { value: "10" } }); });
+    // the preview panel with a model
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 12, totalUnits: 30, centralOnHand: 100, legs: [{ parked: 2 }], overriddenProducts: 94, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    expect(textOf(tree)).not.toContain("This is a ceiling");
+    check("preview");
+    // the rows panel
+    const chip = tree.root.findAll((n) => n.type === "button" && instText(n).includes("old rows"))[0];
+    await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
+    check("rows");
   });
 });
