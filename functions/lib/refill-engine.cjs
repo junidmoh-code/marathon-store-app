@@ -22,6 +22,11 @@
 //  • intent    — "move qty of (product,size) source→dest", surfaced as a
 //                /refill_requests record (+ an R### order for store legs)
 
+// Group and per-size resolution lives in a LEAF module (it requires nothing),
+// so this file can consume it without the module that reasons about this file
+// having to reach back in. See policy-resolve.cjs for the precedence order.
+const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor } = require("./policy-resolve.cjs");
+
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
   const s = String(size == null ? "" : size).trim();
@@ -365,18 +370,38 @@ function subcategoryRun(config, products, pid, dest) {
 //   letter run below, exactly like a human-written 0 row. The moment real
 //   units of that size arrive anywhere, the same test arms it automatically:
 //   the category — not a row — is the policy.
+//
+// ═══ TWO EXTENSIONS, 2026-08-22 ══════════════════════════════════════════════
+//
+// GROUPS. A category with no entry of its own falls through to an ARMED group
+// that names it (/config/refillEngine/policyGroups). A category WITH its own
+// entry never consults a group — not per location, at all — so grouping can
+// never override a deliberate per-category setting, and can never arm a shop
+// the category's own policy deliberately left out. A DISARMED group is not in
+// the resolution at all. All of that is locationPolicyFor's job; see
+// policy-resolve.cjs.
+//
+// PER-SIZE MAPS. Under perSize:true a location may hold
+// { sizes: { "<encodedSize>": { target, minQty, reorderPoint? } } } instead of
+// one collapsed number. The engine walks exactly the sizes named there.
+// Size keys are ENCODED — 5.5 is stored "5_5", the same key as the /stock cell
+// it governs, because RTDB cannot hold a "." in a key at all.
+//
+// The return shape gains `sizes`. Everything that only tests this function for
+// truthiness (managedPids, the class filter, the decision gate) is unaffected;
+// sizesFor and categoryPolicyTarget read it.
 function categoryPolicyEntry(config, products, pid, dest) {
   const key = products?.[pid]?.categoryKey;
   if (typeof key !== "string" || !key) return null;
-  const cat = config?.categoryPolicy?.[key];
-  if (!cat || typeof cat !== "object" || Array.isArray(cat)) return null;
-  const loc = cat[dest];
-  if (!loc || typeof loc !== "object" || Array.isArray(loc)) return null;
   // target must be a positive finite number — the entry arms; the computed
   // dead-size 0 below is the only zero this branch ever produces. Garbage
-  // (string "5", NaN, negative) arms nothing, the conservative side.
-  if (typeof loc.target !== "number" || !Number.isFinite(loc.target) || loc.target <= 0) return null;
-  return { target: loc.target, reorderPoint: loc.reorderPoint, minQty: loc.minQty, perSize: cat.perSize === true };
+  // (string "5", NaN, negative) arms nothing, the conservative side. Under a
+  // per-size map the same test is applied per row, and a map in which no row
+  // passes it arms nothing either.
+  const r = locationPolicyFor(config, key, dest);
+  if (!r) return null;
+  return { target: r.target, reorderPoint: r.reorderPoint, minQty: r.minQty,
+    perSize: r.perSize, sizes: r.sizes, policySource: r.source, groupKey: r.groupKey };
 }
 
 // Units of one size across EVERY location — the per-size dead-size test.
@@ -392,14 +417,36 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
   const entry = categoryPolicyEntry(config, products, pid, dest);
   if (!entry) return null;
   const rp = entry.reorderPoint;
-  const shaped = (target) => ({
+  const shape = (target, minQty, reorderPoint) => ({
     target,
-    minQty: typeof entry.minQty === "number" && Number.isFinite(entry.minQty) && entry.minQty >= 0
-      ? entry.minQty
+    minQty: typeof minQty === "number" && Number.isFinite(minQty) && minQty >= 0
+      ? minQty
       : (target > 0 ? Math.ceil(target / 2) : 0),
-    reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
+    reorderPoint: typeof reorderPoint === "number" && Number.isFinite(reorderPoint) && reorderPoint >= 0
+      ? reorderPoint : null,
     source: "category_policy",
   });
+  const shaped = (target) => shape(target, entry.minQty, rp);
+  // ── PER-SIZE MAP ───────────────────────────────────────────────────────────
+  // The entry names its sizes one by one, each with its own three numbers.
+  // A size the map does not name resolves NOTHING here and falls through — the
+  // map speaks for what it names and no more, which is the same promise the
+  // one-size mode makes about the "_" cell.
+  //
+  // The dead-size rule is kept: a named size with zero units ANYWHERE in the
+  // network resolves an explicit 0 — a stop, not a fall-through — so a paper-
+  // only size can never be re-armed by the letter run below, and arms itself
+  // the moment real units arrive. Identical to the uniform per-size branch, so
+  // switching a category from one collapsed number to a full map changes which
+  // numbers apply and nothing about how absence behaves.
+  if (entry.sizes) {
+    if (encodeSizeKey(size) === "_") return null;
+    const row = entry.sizes[encodeSizeKey(size)];
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    if (typeof row.target !== "number" || !Number.isFinite(row.target) || row.target <= 0) return null;
+    if (!productSizes(products, pid).includes(String(size))) return null;
+    return shape(sizeUnitsAnywhere(stock, pid, size) > 0 ? row.target : 0, row.minQty, row.reorderPoint);
+  }
   if (!entry.perSize) {
     // One-size mode: the "_" cell only; letters fall through (see block above).
     return encodeSizeKey(size) === "_" ? shaped(entry.target) : null;
@@ -1022,7 +1069,14 @@ function computeRefillPlan(snapshot) {
     // `target <= 0` guard skips them at nearly zero cost.
     const cat = categoryPolicyEntry(config, products, pid, dest);
     if (cat) {
-      if (cat.perSize) for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
+      // A per-size MAP walks exactly the sizes it names, intersected with what
+      // the product declares — categoryPolicyTarget refuses an undeclared size
+      // anyway, and walking it would cost a resolveTarget call per phantom cell
+      // on every product in the category.
+      if (cat.sizes) {
+        const declared = new Set(productSizes(products, pid).map(encodeSizeKey));
+        for (const k of Object.keys(cat.sizes)) if (declared.has(k)) out.add(k);
+      } else if (cat.perSize) for (const s of productSizes(products, pid)) out.add(encodeSizeKey(s));
       else out.add("_");
     }
     if (!ruleOn && !footOn) return out;
@@ -2005,4 +2059,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, armedGroupForCategory, effectivePolicyFor };

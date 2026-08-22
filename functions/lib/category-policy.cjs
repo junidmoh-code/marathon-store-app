@@ -64,6 +64,11 @@
 // measured rather than assumed.
 
 const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
+// Group and per-size resolution, from the leaf module the ENGINE consumes — so
+// "which policy speaks here" is answered once. A copy on this side would drift
+// the first time the precedence changed, and the model's whole value is that it
+// does not.
+const { effectivePolicyFor, locationEntryMode } = require("./policy-resolve.cjs");
 
 // The map's own vocabulary. Kept here rather than inline so the callable, the
 // card and the script cannot disagree about what a field is called.
@@ -249,9 +254,18 @@ function modelCategoryPolicy({
   categoryKey, locations, maxIntentsPerRun, maxUnitsPerIntent,
 }) {
   const { pids, byLocation: carriage } = carriageForCategory({ products, stock, categoryKey, locations });
-  const cat = config?.categoryPolicy?.[categoryKey];
+  // ── THE POLICY THAT ACTUALLY SPEAKS FOR THIS CATEGORY ─────────────────────
+  // Its own entry, or — only when it has none — an ARMED group's. Reading
+  // config.categoryPolicy directly here under-reported a grouped category to
+  // zero: no armed locations, no legs, "the next scan asks for nothing", while
+  // the engine refilled it. Same bug shape as the unarmed-legs one the
+  // differential fuzz caught, same direction.
+  const eff = effectivePolicyFor(config, categoryKey);
+  const cat = eff ? eff.entry : null;
+  const policySource = eff ? eff.source : null;         // "category" | "group" | null
+  const policyGroupKey = eff ? eff.groupKey : null;
   const armedLocs = isPlainObject(cat)
-    ? Object.keys(cat).filter((k) => k !== "perSize" && isPlainObject(cat[k]))
+    ? Object.keys(cat).filter((k) => k !== "perSize" && locationEntryMode(cat[k]) !== "invalid")
     : [];
   // ── THE LEGS ARE NOT JUST THE ARMED ONES ──────────────────────────────────
   // The engine's managedPids starts from Object.keys(targets[dest]) — a product
@@ -360,7 +374,16 @@ function modelCategoryPolicy({
         const declared = (products[pid]?.sizes || []).map(String).find((sz) => encodeSizeKey(sz) === k);
         add(declared === undefined ? k : declared);
       }
-      if (perSize) for (const sz of (products[pid]?.sizes || []).map(String)) { if (sz !== "_") add(sz); }
+      // The sizes the MAP contributes, mirroring the engine's sizesFor(): a
+      // per-size MAP walks exactly the sizes it names (intersected with what the
+      // product declares); uniform per-size walks every declared size; one-size
+      // walks the "_" sentinel alone.
+      const locSizes = perSize && isPlainObject(cat?.[loc]?.sizes) ? cat[loc].sizes : null;
+      if (locSizes) {
+        for (const sz of (products[pid]?.sizes || []).map(String)) {
+          if (sz !== "_" && locSizes[encodeSizeKey(sz)]) add(sz);
+        }
+      } else if (perSize) for (const sz of (products[pid]?.sizes || []).map(String)) { if (sz !== "_") add(sz); }
       else add("_");
 
       // The sizes THIS map entry speaks for, encoded — the test that separates
@@ -369,6 +392,9 @@ function modelCategoryPolicy({
       // row there is a legacy row rather than an override — there is nothing to
       // override.
       const mapSpeaksFor = new Set(!armedLocs.includes(loc) ? []
+        : locSizes
+          ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_")
+              .map(encodeSizeKey).filter((k) => locSizes[k])
         : perSize
           ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_").map(encodeSizeKey)
           : ["_"]);
@@ -433,6 +459,7 @@ function modelCategoryPolicy({
     }
     const c = carriage[loc] || { carries: false, products: 0, units: 0 };
     const mapped = isPlainObject(cat) && isPlainObject(cat[loc]) ? cat[loc] : null;
+    const mappedMode = mapped ? locationEntryMode(mapped) : null;
     legs.push({
       loc,
       carries: c.carries,
@@ -442,9 +469,15 @@ function modelCategoryPolicy({
       // "live" | "shadow" | "off" — only a live destination has its requests
       // written by the scan.
       mode: modeOf(loc),
-      target: mapped?.target ?? null,
-      minQty: mapped?.minQty ?? null,
-      reorderPoint: mapped?.reorderPoint ?? null,
+      // A per-size location has no single number. `shape` says which of the two
+      // shapes the leg carries, and `sizes` holds the map when it is per-size —
+      // reporting target:null next to a fully-armed leg would read as "not set".
+      // (NOT `mode` — that name is already the DESTINATION's live/shadow/off.)
+      shape: mappedMode,
+      target: mappedMode === "uniform" ? (mapped.target ?? null) : null,
+      minQty: mappedMode === "uniform" ? (mapped.minQty ?? null) : null,
+      reorderPoint: mappedMode === "uniform" ? (mapped.reorderPoint ?? null) : null,
+      sizes: mappedMode === "per-size" ? mapped.sizes : null,
       source: src,
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
       inFlight, parkedNoSource, parkedNothingAnywhere,
@@ -481,6 +514,10 @@ function modelCategoryPolicy({
   return {
     categoryKey,
     perSize,
+    // Where these numbers came from. A grouped category's preview must say so —
+    // editing the category's own policy would take it OUT of the group, which
+    // is a bigger change than the numbers on screen suggest.
+    policySource, policyGroupKey,
     products: pids.length,
     armedLocations: armedLocs,
     // Legs that produce refills off explicit rows alone, with no map entry.
