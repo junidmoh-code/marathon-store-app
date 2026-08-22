@@ -691,6 +691,26 @@ describe("the category detail screen", () => {
     expect(filled).toEqual(["Hub 2 7 Keep"]);
   });
 
+  it('lets "Stop stocking here" un-arm a location and still save', async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const stop = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Stop stocking here")[0];
+    await act(async () => { stop.props.onClick(); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true,
+      preview: { after: { totalRequests: 0, totalUnits: 0, centralOnHand: 5, legs: [], overriddenProducts: 0 },
+        before: { totalRequests: 1, totalUnits: 2, centralOnHand: 5, legs: [], overriddenProducts: 0 } }, changes: [] } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const saveBtn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Save policy")[0];
+    // The guard against deleting an unseen leg must not block the control whose
+    // whole job is removing a leg the owner CAN see.
+    expect(saveBtn.props.disabled).toBe(false);
+    expect(textOf(tree)).not.toContain("saving is blocked");
+  });
+
   it("expands a sized category into one row per size, in size order", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Sneakers");

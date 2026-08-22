@@ -322,10 +322,18 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   // writable by Admin SDK and the console, so such a leg can exist. It would
   // have been silently deleted by the next save, and the drift check could not
   // see it: live still matched what was rendered. (Adversarial review, #404.)
+  // THE TEST IS "DID THE EDITOR DRAW A ROW FOR IT", NOT "IS IT IN THE DRAFT".
+  // Keying it on the draft blocked the one control whose whole job is to remove
+  // a location from the draft: "Stop stocking here" un-armed the leg and then
+  // made Save permanently unavailable. A leg the editor RENDERED can be dropped
+  // on purpose; a leg it never rendered is one nobody has seen, and that is the
+  // one a whole-entry .set() would delete unnoticed. (CodeRabbit, PR #404.)
   const unrenderedLegs = useMemo(() => {
     const named = open?.isGroup ? (open.policyLocations || []) : Object.keys(open?.entry || {}).filter((k) => k !== "perSize");
-    return named.filter((loc) => !(loc in (draft || {})));
-  }, [open, draft]);
+    const rendered = new Set(editorRows({ entry: open?.effectiveEntry || open?.entry,
+      carriage: open?.carriage, destinations }).map((r) => r.loc));
+    return named.filter((loc) => !rendered.has(loc));
+  }, [open, destinations]);
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy })
     && unrenderedLegs.length === 0;
   const scan = nextScanAt(serverNowMs());
