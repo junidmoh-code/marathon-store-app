@@ -74,7 +74,15 @@ import {
 import { serverNowMs } from "../../utils/serverTime";
 import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
 
-const setCategoryPolicyFn = () => httpsCallable(functions, "setCategoryPolicy");
+// 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
+// httpsCallable to 70,000ms, so without this the three heavy actions — the
+// census, the explicit-row list, and the model that runs before a group may be
+// armed — could fail on the client with deadline-exceeded while the function
+// carried on running to completion. The owner reads that as "the screen is
+// broken", and worse, a save whose response was never received looks like a
+// save that did not happen. (CodeRabbit, PR #401.)
+const CALLABLE_TIMEOUT_MS = 300000;
+const setCategoryPolicyFn = () => httpsCallable(functions, "setCategoryPolicy", { timeout: CALLABLE_TIMEOUT_MS });
 
 const LOC_LABELS = { hub2: "Hub 2", hub1: "Hub 1", hub3: "Hub 3", central: "Central", "marathon-pe": "Marathon PE", "marathon-pine": "Marathon Pine", trophy: "Trophy" };
 const locLabel = (l) => LOC_LABELS[l] || l;
@@ -205,6 +213,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const [note, setNote] = useState(null);         // { kind, text }
   const [panel, setPanel] = useState("");         // "" | "rows" | "history" | "groups"
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
+  const [rowsMeta, setRowsMeta] = useState(null); // { total, truncated, limit, loc, locations, byLocation }
   const [rowDraft, setRowDraft] = useState({});
 
   // The timer is held and cleared, rather than fired and forgotten. Two real
@@ -294,7 +303,14 @@ function EnginePolicyAuthed({ viewer, onExit }) {
       // button is not offered.
       const from = Object.keys(sizes).sort(bySizeRank).map((k) => sizes[k]).find((r) => String(r?.target ?? "").trim() !== "");
       if (!from) return d;
-      return { ...d, [loc]: fillAllSizes(sizeRun, from) };
+      // THE UNION THE PANEL RENDERS, not the derived run alone. SizeRows draws
+      // sizeRun ∪ the draft's own keys, because a stored size can fall outside
+      // the current run once the run shrinks. Filling from sizeRun alone
+      // DISCARDED those sizes: the owner saw one, typed a number into it,
+      // tapped "Same across all sizes", and watched it vanish — and the save
+      // then un-armed it. (CodeRabbit, PR #401.)
+      const union = [...new Set([...(sizeRun || []), ...Object.keys(sizes)])].sort(bySizeRank);
+      return { ...d, [loc]: fillAllSizes(union, from) };
     });
   };
 
@@ -412,12 +428,18 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   // truth for the products that carry them; this reads them and lets them be
   // edited in place. NOTHING HERE DELETES ONE — the server refuses it, and
   // there is no control for it either.
-  const openRows = async (key) => {
+  const openRows = async (key, loc = null) => {
     setPanel("rows"); setRows(null); setRowDraft({});
     setBusy("rows");
     try {
-      const res = await setCategoryPolicyFn()({ action: "rows", categoryKey: key });
+      const res = await setCategoryPolicyFn()(loc
+        ? { action: "rows", categoryKey: key, loc }
+        : { action: "rows", categoryKey: key });
       setRows(res.data.rows || []);
+      // The server caps the list. Held separately from `rows` so the panel can
+      // say "showing N of M" honestly rather than silently rendering a prefix.
+      setRowsMeta({ total: res.data.total, truncated: !!res.data.truncated, limit: res.data.limit,
+        loc: res.data.loc || null, locations: res.data.locations || [], byLocation: res.data.byLocation || {} });
     } catch (e) {
       flash("bad", e?.message || String(e));
       setPanel("");
@@ -449,7 +471,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
       flash("ok", res.data.noChange ? "Nothing to save — those are the numbers already on the rows."
         : `${res.data.rowCount} ${res.data.rowCount === 1 ? "row" : "rows"} updated.`);
       setRowDraft({});
-      await openRows(openKey);
+      await openRows(openKey, rowsMeta?.loc || null);
       await load(true);
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -476,10 +498,10 @@ function EnginePolicyAuthed({ viewer, onExit }) {
           <CategoryDetail
             category={open} destinations={destinations} draft={draft} errors={errors}
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
-            scan={scan} saveable={saveable} panel={panel} rows={rows} rowDraft={rowDraft}
+            scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
             onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
             onSwitchShape={switchShape} onPreview={runPreview} onSave={save} onBack={closeCategory}
-            onPanel={setPanel} onOpenRows={() => openRows(open.key)} onRowField={(id, f, v) =>
+            onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
             onSaveRows={saveRows} onRevert={revert}
           />
@@ -675,7 +697,7 @@ function Groups({ groups, cap }) {
 // ═════════════════════════════════════════════════════════════════════════════
 function CategoryDetail({
   category: c, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
-  saveable, panel, rows, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
+  saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
   onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert,
 }) {
   const armed = c.armedEffective || [];
@@ -719,8 +741,8 @@ function CategoryDetail({
       </div>
 
       {panel === "rows" ? (
-        <RowsPanel category={c} rows={rows} rowDraft={rowDraft} busy={busy}
-          onRowField={onRowField} onSave={onSaveRows} onClose={() => onPanel("")} />
+        <RowsPanel category={c} rows={rows} meta={rowsMeta} rowDraft={rowDraft} busy={busy}
+          onRowField={onRowField} onSave={onSaveRows} onClose={() => onPanel("")} onNarrow={onOpenRows} />
       ) : panel === "history" ? (
         <div>
           <button onClick={() => onPanel("")} style={{ ...bGhost, marginBottom: ".8rem" }}>Back to the policy</button>
@@ -1028,7 +1050,7 @@ function Stat({ label, value, of, warn }) {
 // There is no delete control, and there is no "clear them all" button. The
 // server refuses both; this panel does not offer them either, because a control
 // that always fails is worse than no control.
-function RowsPanel({ category: c, rows, rowDraft, busy, onRowField, onSave, onClose }) {
+function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave, onClose, onNarrow }) {
   const dirty = Object.keys(rowDraft).length;
   return (
     <div>
@@ -1054,6 +1076,30 @@ function RowsPanel({ category: c, rows, rowDraft, busy, onRowField, onSave, onCl
           /stock_targets and needs its own preview and its own rollback file.
         </div>
       </div>
+
+      {/* THE LIST IS CAPPED, AND IT SAYS SO. t-shirts has 1,870 rows; sending
+          them all and drawing three inputs each was five and a half thousand
+          inputs on a phone. A prefix shown silently would be worse than a
+          prefix shown honestly. */}
+      {rows && meta?.truncated && (
+        <div style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: ".8rem",
+          border: "1px solid rgba(251,191,36,.35)", color: AMBER, fontSize: ".82rem", lineHeight: 1.5 }}>
+          Showing the first {rows.length} of {meta.total} rows. Narrow to one location to see the rest.
+        </div>
+      )}
+      {rows && (meta?.locations || []).length > 1 && (
+        <div className="ep-chips" style={{ marginBottom: ".8rem" }}>
+          <Chip tone={meta.loc ? "gray" : "blue"} onClick={meta.loc ? () => onNarrow(null) : undefined}>
+            All {meta.total != null ? `(${meta.total})` : ""}
+          </Chip>
+          {meta.locations.map((l) => (
+            <Chip key={l} tone={meta.loc === l ? "blue" : "gray"}
+              onClick={meta.loc === l ? undefined : () => onNarrow(l)}>
+              {locLabel(l)}{meta.byLocation?.[l] != null && !meta.loc ? ` (${meta.byLocation[l]})` : ""}
+            </Chip>
+          ))}
+        </div>
+      )}
 
       {!rows && <div style={{ color: GRAY, padding: "1rem 0" }}>Reading the rows…</div>}
       {rows && !rows.length && <div style={{ color: GRAY, padding: "1rem 0" }}>No rows on this category.</div>}

@@ -268,10 +268,17 @@ async function geminiImage(apiKey, prompt) {
 
   console.log(`\n── GENERATING ${line(79)}`);
   for (const key of todo) {
-    if (spent >= MAX_SPEND_USD) {
-      console.log(`  🛑 spend ceiling reached at $${spent.toFixed(3)} — stopping with ${todo.length - results.length} left.`);
+    // ── RESERVE BEFORE THE CALL, RECONCILE AFTER ──────────────────────────────
+    // `spent` used to update only from the RESPONSE, so the check at the top of
+    // the loop could not stop an over-budget request — it could only notice one
+    // after it had been paid for. The upper bound for one request is reserved
+    // first and replaced with the measured figure once it comes back, so the
+    // ceiling is a ceiling rather than a report. (CodeRabbit, PR #401.)
+    if (spent + ESTIMATE_PER_IMAGE_USD > MAX_SPEND_USD) {
+      console.log(`  🛑 spend ceiling would be crossed by the next image ($${spent.toFixed(3)} + $${ESTIMATE_PER_IMAGE_USD}) — stopping with ${todo.length - results.length} left.`);
       break;
     }
+    spent += ESTIMATE_PER_IMAGE_USD;                 // reserved; reconciled below
     const prompt = PROMPT_TEMPLATE(SUBJECTS[key]);
     try {
       // ── 429 IS NOT A FAILURE, IT IS A QUEUE ────────────────────────────────
@@ -299,7 +306,7 @@ async function geminiImage(apiKey, prompt) {
         }
       }
       const { buffer, costUSD, mime } = gen;
-      spent += costUSD;
+      spent += costUSD - ESTIMATE_PER_IMAGE_USD;     // reconcile the reservation
 
       // A UNIQUE PATH PER GENERATION. Overwriting the previous object would
       // change what an already-cached URL points at, and the cache header below
@@ -319,10 +326,29 @@ async function geminiImage(apiKey, prompt) {
       });
       const url = `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
 
-      // ONE FIELD. `update` on the entry, never `set` — the registry entry
-      // carries the category's label, size run, flags and legacy mapping, and
-      // this script has no business touching any of them.
-      await db.ref(`settings/productTaxonomy/cats/${key}`).update({ imageUrl: url });
+      // ── ONE FIELD, AND AN UPLOAD THAT DOES NOT OUTLIVE ITS REFERENCE ──────
+      // `update`, never `set` — the registry entry carries the category's
+      // label, size run, flags and legacy mapping, and this script has no
+      // business touching any of them.
+      //
+      // If the database write fails after the upload succeeds, the object is
+      // ORPHANED: nothing references it, the next run still sees no imageUrl,
+      // generates another paid image, and the first one sits in the bucket
+      // forever. It is deleted here rather than left — it is seconds old, its
+      // path is unique to this generation, and nothing can be pointing at it.
+      // The path is printed either way, so a failed cleanup is recoverable by
+      // hand. (CodeRabbit, PR #401.)
+      try {
+        await db.ref(`settings/productTaxonomy/cats/${key}`).update({ imageUrl: url });
+      } catch (dbErr) {
+        let cleaned = false;
+        try { await bucket.file(path).delete(); cleaned = true; } catch { /* reported below */ }
+        results.push({ key, label: cats[key].label, prompt, path, url, costUSD,
+          error: `registry write failed: ${String(dbErr.message || dbErr)}`,
+          orphanCleaned: cleaned });
+        console.log(`  ✗ ${pad(key, 20)} registry write failed; uploaded object ${cleaned ? "deleted" : `LEFT AT ${path} — delete it by hand`}`);
+        continue;
+      }
 
       results.push({ key, label: cats[key].label, prompt, path, url, costUSD, bytes: buffer.length });
       console.log(`  ✓ ${pad(key, 20)} $${costUSD.toFixed(4)}  ${(buffer.length / 1024).toFixed(0)}kB  ${path}`);

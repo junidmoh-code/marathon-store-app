@@ -16,7 +16,7 @@
 // The owner check and the drift checks are mutation-proven in
 // scripts/mutation-proof-policy-groups-write.mjs.
 
-const { test } = require("node:test");
+const { test, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { applyCategoryPolicy, invalidateCensusCache } = require("../lib/category-policy-write.cjs");
 const { makeFakeDb, readAt } = require("./helpers/fake-rtdb.cjs");
@@ -72,6 +72,13 @@ const call = (db, data, opts = {}) => applyCategoryPolicy({
 const groupAt = (db, k) => readAt(db.state.root, `config/refillEngine/policyGroups/${k}`);
 const rowAt = (db, loc, pid, sz) => readAt(db.state.root, `stock_targets/${loc}/${pid}/${sz}`);
 const history = (db) => Object.values(readAt(db.state.root, "engine_policy_history") || {});
+
+// The census cache is MODULE-LEVEL SHARED STATE. Several tests here omitted the
+// reset and ran against whatever a previous test left behind, which made the
+// file order-dependent — green in the order it happens to run, and a mystery
+// the first time somebody adds a test in the middle. One reset, in one place.
+// (CodeRabbit, PR #401.)
+beforeEach(() => { invalidateCensusCache(); });
 
 async function rejects(fn, code, match) {
   await assert.rejects(fn, (e) => {

@@ -6,7 +6,10 @@
 // test is decoration.
 
 const test = require("node:test");
-const assert = require("node:assert");
+// STRICT, like the three sibling suites. Loose deepEqual let a size-run
+// assertion pass on [7, 8] where the contract is ["7", "8"] — and the whole
+// point of the encoded key is that it is a STRING. (CodeRabbit, PR #401.)
+const assert = require("node:assert/strict");
 
 const {
   locationEntryMode, validateLocationEntry, validatePolicyGroup,

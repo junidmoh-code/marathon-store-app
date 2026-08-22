@@ -81,6 +81,20 @@ const TARGETS_PATH = "stock_targets";
 // row change in this repo.
 const MAX_ROW_EDITS_PER_CALL = 200;
 
+// ── AND THE READ IS BOUNDED TOO ──────────────────────────────────────────────
+// The row list used to return EVERY explicit row for a category with no limit.
+// t-shirts has 1,870 of them, measured live 2026-08-22: the whole list crossed
+// the callable in one payload and the panel drew three inputs per row — five
+// and a half thousand inputs, on a phone, on a shop network. The write path
+// already caps a save at 200; the read had no matching bound, which is the
+// wrong way round, because the read is the one that happens every time the chip
+// is tapped. (CodeRabbit, PR #401.)
+//
+// The response now carries `total`, `truncated` and the per-location counts, so
+// the panel can say "showing N of M" honestly and offer a location to narrow
+// to, rather than silently showing a prefix.
+const MAX_ROWS_PER_READ = 300;
+
 // The three fields this screen owns, normalised for comparison. An absent
 // reorderPoint is null, never 0 — the two are different policies, and a drift
 // check that conflated them would refuse a save that changed nothing.
@@ -581,17 +595,26 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     if (typeof categoryKey !== "string" || !categoryKey) {
       throw httpsError("invalid-argument", "categoryKey is required to list rows.");
     }
-    const rowLocs = rowLocationsFor(cfg);
+    const allRowLocs = rowLocationsFor(cfg);
+    // An optional narrowing. Validated against the known set rather than
+    // interpolated on trust — this string becomes a path segment.
+    const onlyLoc = typeof d.loc === "string" && d.loc ? d.loc : null;
+    if (onlyLoc && !allRowLocs.includes(onlyLoc)) {
+      throw httpsError("invalid-argument", `unknown location "${onlyLoc}"`);
+    }
+    const rowLocs = onlyLoc ? [onlyLoc] : allRowLocs;
     const products = await readMapPaged(db, "products");
     const pids = new Set(Object.keys(products).filter((pid) => products[pid]?.categoryKey === categoryKey));
-    const rows = [];
+    const all = [];
+    const byLocation = {};
     for (const loc of rowLocs) {
       const t = await readMapPaged(db, `${TARGETS_PATH}/${loc}`);
       for (const [pid, bySize] of Object.entries(t)) {
         if (!pids.has(pid)) continue;
         for (const [sizeKey, row] of Object.entries(bySize || {})) {
           if (!isPlainObject(row)) continue;
-          rows.push({
+          byLocation[loc] = (byLocation[loc] || 0) + 1;
+          all.push({
             loc, pid, sizeKey,
             name: products[pid]?.name || "",
             target: typeof row.target === "number" ? row.target : null,
@@ -601,8 +624,16 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
         }
       }
     }
-    rows.sort((a, b) => a.name.localeCompare(b.name) || a.loc.localeCompare(b.loc) || a.sizeKey.localeCompare(b.sizeKey));
-    return { ok: true, action: "rows", categoryKey, rows, count: rows.length, serverNowMs: nowMs };
+    all.sort((a, b) => a.name.localeCompare(b.name) || a.loc.localeCompare(b.loc) || a.sizeKey.localeCompare(b.sizeKey));
+    const rows = all.slice(0, MAX_ROWS_PER_READ);
+    return {
+      ok: true, action: "rows", categoryKey, rows,
+      count: rows.length, total: all.length,
+      truncated: all.length > rows.length,
+      limit: MAX_ROWS_PER_READ,
+      loc: onlyLoc, locations: allRowLocs, byLocation,
+      serverNowMs: nowMs,
+    };
   }
 
   // ── EDIT EXPLICIT ROWS IN PLACE ───────────────────────────────────────────
@@ -921,5 +952,6 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 module.exports = {
   applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
   modelGroupArming, rowLocationsFor, deriveSizeRun,
-  HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH, MAX_ROW_EDITS_PER_CALL, httpsError, readMapPaged,
+  HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH,
+  MAX_ROW_EDITS_PER_CALL, MAX_ROWS_PER_READ, httpsError, readMapPaged,
 };

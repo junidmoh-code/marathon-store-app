@@ -41,6 +41,7 @@ import { createRequire } from "module";
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
 const { applyCategoryPolicy } = require("../functions/lib/category-policy-write.cjs");
+const { encodeSizeKey } = require("../functions/lib/refill-engine.cjs");
 
 const EXECUTE = process.argv.includes("--execute");
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
@@ -78,7 +79,14 @@ const db = admin.database();
     const sizes = {};
     for (const [sizeKey, t] of Object.entries(run)) {
       if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) continue;
-      sizes[sizeKey] = { target: t, minQty: Math.max(1, t - 1), reorderPoint: 0 };
+      // ENCODE, even though footwearRunByLocation is already keyed in stored
+      // form today ("5_5"). The validator refuses any key where
+      // encodeSizeKey(k) !== k, so a decimal in that config would fail this
+      // script with invalid-argument while the census — which does encode —
+      // reported a clean model. The two agree by accident right now and would
+      // diverge the first time a half size is added by hand.
+      // (CodeRabbit, PR #401.)
+      sizes[encodeSizeKey(sizeKey)] = { target: t, minQty: Math.max(1, t - 1), reorderPoint: 0 };
     }
     if (Object.keys(sizes).length) policy[loc] = { sizes };
   }

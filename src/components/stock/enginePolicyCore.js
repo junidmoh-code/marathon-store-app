@@ -454,7 +454,12 @@ export function changedFields(before, after) {
             text: `${sizeLabel(sz)} — ${COLUMN_LABELS[f]} ${from === null ? "not set" : from} -> ${to === null ? "not set" : to}` });
         }
       }
-      continue;
+      // ON PER-SIZE → UNIFORM, KEEP GOING. `continue`ing here listed every old
+      // size going to "not set" and then said "now set as one number for the
+      // whole shop" — without ever showing WHAT that one number is. The banner
+      // is the last thing the owner reads before saving, so the number that now
+      // governs the entire location has to be in it. (CodeRabbit, PR #401.)
+      if (isPerSizeRow(al)) continue;
     }
     for (const f of FIELD_ORDER) {
       const from = bl && typeof bl[f] === "number" ? bl[f] : null;
