@@ -2590,6 +2590,30 @@ const RoleIcons = {
       <path d="M16 10a4 4 0 0 1-8 0"/>
     </svg>
   ),
+  attention: (
+    // A pennant on a staff — "this one is flagged". Deliberately unlike every
+    // other tile: nothing else in this set is a diagonal silhouette on a
+    // vertical, so Attention is recognisable by outline alone at 30px, before
+    // any of the detail resolves. It used to share the Stock grid, which made
+    // the two indistinguishable at a glance on the same screen.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="5" y1="3" x2="5" y2="21"/>
+      <path d="M5 4h12l-2.5 4L17 12H5z"/>
+    </svg>
+  ),
+  total_stock: (
+    // Three boxes stacked — units of goods piled up, which is the one thing this
+    // screen reports. Checked against the tiles it sits nearest before choosing:
+    // the Warehouse cube is a single hexagonal solid and the Stock grid is one
+    // framed rectangle, so a cluster of three separate squares shares an outline
+    // with neither. A cylinder stack was drawn and rejected — it renders as the
+    // universal database symbol, which is the wrong language for a shop screen.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="8" y="3" width="8" height="8" rx="1"/>
+      <rect x="3" y="13" width="8" height="8" rx="1"/>
+      <rect x="13" y="13" width="8" height="8" rx="1"/>
+    </svg>
+  ),
   social: (
     // lucide-style "megaphone" — content going out. Same stroke/weight as
     // every other tile icon.
@@ -2825,12 +2849,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Attention — the BUYING read of the same stock: what to reorder, what's
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
-      canAccessStock                                           && { key:"attention", icon:RoleIcons.stock, name:"Attention", desc:"Low stock, overstock & non-movers", onClick:()=>onSelect(ROLES.ATTENTION) },
+      canAccessStock                                           && { key:"attention", icon:RoleIcons.attention, name:"Attention", desc:"Low stock, overstock & non-movers", onClick:()=>onSelect(ROLES.ATTENTION) },
       // Total Stock — the pre-order research read: one number per product, every
       // size, everywhere except Pine and Hub 3. Its own card rather than a Stock
       // tab because it answers a BUYING question, not a warehouse one (owner
       // decision 2026-08-22). Same access as Stock; read-only end to end.
-      canAccessStock                                           && { key:"total_stock", icon:RoleIcons.stock, name:"Total Stock", desc:"One total per product", onClick:()=>onSelect(ROLES.TOTAL_STOCK) },
+      canAccessStock                                           && { key:"total_stock", icon:RoleIcons.total_stock, name:"Total Stock", desc:"One total per product", onClick:()=>onSelect(ROLES.TOTAL_STOCK) },
       // Marketing — the products picked out of Attention, in two fixed lists
       // (Marketing / Display). Picking happens on the Attention grid; this card
       // is where you review what was picked.
