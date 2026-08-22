@@ -662,6 +662,35 @@ describe("the category detail screen", () => {
     expect(callableMock.mock.calls.some((c) => c[0]?.categoryKey && "policy" in (c[0] || {}))).toBe(false);
   });
 
+  it("a member with NO entry of its own is asked before its first save — and a refused confirm writes nothing", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const member = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Open member Sneakers")[0];
+    await act(async () => { member.props.onClick(); });
+    // arm hub2 (carried) so there is something to save
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
+    await act(async () => { keep.props.onChange({ target: { value: "3" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const hadConfirm = "confirm" in globalThis.window;
+    const prev = globalThis.window.confirm;
+    const asked = [];
+    globalThis.window.confirm = (msg) => { asked.push(msg); return false; };
+    try {
+      const saveBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Save policy")[0];
+      await act(async () => { saveBtn.props.onClick(); });
+    } finally {
+      if (hadConfirm) globalThis.window.confirm = prev; else delete globalThis.window.confirm;
+    }
+    expect(asked.length).toBe(1);
+    expect(asked[0]).toContain("will get its own numbers and stop following Sneakers");
+    expect(callableMock.mock.calls.some((c) => c[0]?.categoryKey === "sneakers" && "policy" in (c[0] || {}) && !c[0].dryRun)).toBe(false);
+  });
+
   it("saving a MEMBER writes the category (never the group) and returns to the GROUP, not the list", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Sneakers");

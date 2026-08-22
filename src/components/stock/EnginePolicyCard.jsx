@@ -440,6 +440,9 @@ function EnginePolicyAuthed({ viewer, onExit }) {
       reopenAfterLoad.current = backTo;
       await load(true);
     } catch (e) {
+      // A reload that failed after a successful write must not leave the
+      // reopen armed for some later, unrelated refresh. (Delta review, #405.)
+      reopenAfterLoad.current = "";
       flash("bad", e?.message || String(e));
       if (/changed while/i.test(e?.message || "")) await load(true);
     } finally {
