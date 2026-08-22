@@ -46,9 +46,15 @@ let lastReadAt = null;
 // screen is visible to the person paying for it, not buried in a report.
 let bytesRead = 0;
 let readsIssued = 0;
+// How many times loadTotals has been entered. One per page of rows is correct.
+// A screen that re-enters once per ARRIVING ROW still downloads nothing extra
+// (inflight dedupes the reads) but multiplies promise chains quadratically, so
+// this counter is what a test can hold the screen to.
+let batches = 0;
 
 export function totalsBytesRead() { return bytesRead; }
 export function totalsReadsIssued() { return readsIssued; }
+export function totalsBatches() { return batches; }
 export function cachedTotals(productId) { return cache.get(productId) || null; }
 export function cachedCount() { return cache.size; }
 export function totalsFailed(productId) { return failed.has(productId); }
@@ -64,7 +70,7 @@ export function forgetTotals(productId) {
 }
 
 // Test seam only — the card never calls this.
-export function __resetTotalsCache() { cache.clear(); inflight.clear(); failed.clear(); bytesRead = 0; readsIssued = 0; lastReadAt = null; }
+export function __resetTotalsCache() { cache.clear(); inflight.clear(); failed.clear(); bytesRead = 0; readsIssued = 0; batches = 0; lastReadAt = null; }
 
 // One product, every location. Ten small reads, summed by the pure core.
 //
@@ -117,6 +123,7 @@ export function productTotals(productId, locationIds) {
 // `onRow(productId, totals)` fires as each lands, so rows fill in progressively
 // instead of the screen sitting blank until the slowest read returns.
 export async function loadTotals(productIds, locationIds, onRow, concurrency = 6) {
+  batches += 1;
   const queue = [...new Set(productIds || [])];
   // A concurrency of 0 would spawn no workers, resolve immediately and leave
   // every row uncounted with no error — a silent no-op that looks like success.
