@@ -196,6 +196,29 @@ test("a per-size map keeps the dead-size rule: a size with no units anywhere res
   assert.equal(t.target, 0, "size 8 holds nothing anywhere — a stop, not a fall-through");
 });
 
+test("a HALF SIZE resolves — the map is keyed by the stored form, not the declared one", () => {
+  // 5.5 is stored "5_5" everywhere: the /stock cell, the /stock_targets row, and
+  // this map. An unencoded lookup would find nothing for it — silently, and for
+  // the second-largest size band in the live footwear catalogue (538 cells,
+  // 865 units measured 2026-07-30). The engine is asked with the DECLARED size
+  // "5.5", so the encode has to happen inside the lookup.
+  const products = { h1: { id: "h1", name: "Half", category: "Footwear", categoryKey: "sneakers",
+    productType: "sneaker", sizes: ["5.5", "7"] } };
+  const stock = { hub2: { h1: { "5_5": { qty: 0 } } }, central: { h1: { "5_5": { qty: 9 } } } };
+  const c = cfg({ armed: false, categoryPolicy: { sneakers: { perSize: true, hub2: {
+    sizes: { "5_5": { target: 4, minQty: 2 } },
+  } } } });
+  const t = resolveTarget({ targets: {}, config: c, products, stock }, "hub2", "h1", "5.5");
+  assert.ok(t, "the half size must resolve through the map");
+  assert.equal(t.target, 4);
+  const p = computeRefillPlan({
+    nowMs: NOW, config: c, targets: {}, stock, products, openIndex: {},
+    refillRequests: {}, orders: {}, movements: [], targetDecisions: {}, rejectStreak: {}, retryState: {},
+  });
+  assert.equal(p.intents.length, 1, "the half-size cell must produce a real intent");
+  assert.equal(p.intents[0].size, "5.5");
+});
+
 test("a per-size map is refused outside per-size mode and arms nothing", () => {
   const c = cfg({ armed: false, categoryPolicy: { sneakers: { hub2: { sizes: { 7: { target: 4, minQty: 2 } } } } } });
   assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null);

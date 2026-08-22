@@ -145,7 +145,10 @@ const MUTATIONS = [
     file: ENGINE,
     from: `    const row = entry.sizes[encodeSizeKey(size)];`,
     to: `    const row = entry.sizes[size];`,
-    nodeTests: DIFF_TESTS,
+    // NOT the differential fuzz: an unencoded lookup breaks the model and the
+    // engine IDENTICALLY, so the two still agree and the fuzz stays green. The
+    // guard has to be a direct assertion that a half size resolves at all.
+    nodeTests: ENGINE_TESTS,
   },
   // ── VALIDATION ────────────────────────────────────────────────────────────
   {

@@ -81,6 +81,12 @@
 
 const { encodeSizeKey } = require("./refill-engine.cjs");
 const { validatePolicyEntry, MAX_TARGET } = require("./category-policy.cjs");
+// Resolution itself lives in the LEAF module the ENGINE consumes, so there is
+// exactly ONE implementation of "which policy speaks here". A copy on this side
+// would agree with the engine right up until the precedence changed, and this
+// module's whole job is to be the same answer the scan will give.
+const { locationEntryMode, armedGroupForCategory, effectivePolicyFor, locationPolicyFor } =
+  require("./policy-resolve.cjs");
 
 const GROUPS_PATH = "config/refillEngine/policyGroups";
 const MAX_GROUP_MEMBERS = 60;
@@ -88,20 +94,6 @@ const MAX_SIZES_PER_LOCATION = 40;
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const KEY_RE = /^[A-Za-z0-9_-]+$/;
-
-// ── SHAPE OF ONE LOCATION ENTRY ──────────────────────────────────────────────
-// "uniform" | "per-size" | "invalid". Callers branch on this rather than
-// sniffing for `.sizes` themselves, so a third shape can never be invented in
-// one place and missed in another.
-function locationEntryMode(locEntry) {
-  if (!isPlainObject(locEntry)) return "invalid";
-  const hasSizes = isPlainObject(locEntry.sizes);
-  const hasTarget = locEntry.target !== undefined;
-  if (hasSizes && hasTarget) return "invalid";      // never both
-  if (hasSizes) return "per-size";
-  if (hasTarget) return "uniform";
-  return "invalid";
-}
 
 // The sizes a per-size location entry speaks for, ENCODED, in map order.
 function sizesOfLocationEntry(locEntry) {
@@ -217,41 +209,6 @@ function validatePolicyGroup(groupKey, group, {
   // refusal here would stop a correct change.
   void categoryPolicy;
   return null;
-}
-
-// ── RESOLUTION — WHICH ARMED GROUP SPEAKS FOR A CATEGORY ─────────────────────
-// Returns { groupKey, group, overlaps } or null. `overlaps` names the other
-// armed groups that also claim it, so a caller can surface a state the write
-// path refuses but the live node might already hold.
-//
-// A category with its OWN entry in categoryPolicy returns null: own beats group,
-// entirely, and the check is here rather than in each caller so it cannot be
-// forgotten by one of them.
-function armedGroupForCategory(config, categoryKey) {
-  if (typeof categoryKey !== "string" || !categoryKey) return null;
-  const own = config?.categoryPolicy?.[categoryKey];
-  if (isPlainObject(own)) return null;                    // OWN POLICY WINS
-  const groups = config?.policyGroups;
-  if (!isPlainObject(groups)) return null;
-  const claiming = Object.keys(groups).sort().filter((gk) => {
-    const g = groups[gk];
-    if (!isPlainObject(g)) return false;
-    if (g.armed !== true) return false;                   // DISARMED = NOT IN THE RESOLUTION
-    if (!isPlainObject(g.policy)) return false;           // no numbers = nothing to resolve
-    return Array.isArray(g.memberCategoryKeys) && g.memberCategoryKeys.includes(categoryKey);
-  });
-  if (!claiming.length) return null;
-  return { groupKey: claiming[0], group: groups[claiming[0]], overlaps: claiming.slice(1) };
-}
-
-// The policy object a category resolves through, and where it came from.
-// { entry, source: "category" | "group", groupKey } — or null.
-function effectivePolicyFor(config, categoryKey) {
-  const own = config?.categoryPolicy?.[categoryKey];
-  if (isPlainObject(own)) return { entry: own, source: "category", groupKey: null };
-  const g = armedGroupForCategory(config, categoryKey);
-  if (!g) return null;
-  return { entry: g.group.policy, source: "group", groupKey: g.groupKey };
 }
 
 // ── SIZE RUN, FROM LIVE DATA ─────────────────────────────────────────────────
@@ -425,6 +382,6 @@ function mergeCandidates({ taxonomy, countsByCategory, movementByCategory, polic
 module.exports = {
   GROUPS_PATH, MAX_GROUP_MEMBERS, MAX_SIZES_PER_LOCATION, MAX_TARGET,
   locationEntryMode, sizesOfLocationEntry, validateLocationEntry, validatePolicyGroup,
-  armedGroupForCategory, effectivePolicyFor,
+  armedGroupForCategory, effectivePolicyFor, locationPolicyFor,
   sizeRunForCategory, sizeRank, fillAllSizes, mergeCandidates,
 };
