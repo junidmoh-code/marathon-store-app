@@ -64,6 +64,11 @@
 // measured rather than assumed.
 
 const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
+// Group and per-size resolution, from the leaf module the ENGINE consumes — so
+// "which policy speaks here" is answered once. A copy on this side would drift
+// the first time the precedence changed, and the model's whole value is that it
+// does not.
+const { effectivePolicyFor, locationEntryMode } = require("./policy-resolve.cjs");
 
 // The map's own vocabulary. Kept here rather than inline so the callable, the
 // card and the script cannot disagree about what a field is called.
@@ -89,6 +94,12 @@ const MAX_REORDER_POINT = 500;
 const REFUSED_CATEGORY_KEYS = new Set(["visors"]);
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+
+// A per-size map is bounded: the biggest real run in the catalogue is 12 shoe
+// sizes, and a location holding forty of them is a data fault, not a policy.
+const MAX_SIZES_PER_LOCATION = 40;
+// A single RTDB key segment. RTDB additionally forbids . # $ [ ] outright.
+const KEY_RE = /^[A-Za-z0-9_-]+$/;
 
 // refill-engine.cjs's `num()`, mirrored: anything that is not a finite number
 // is 0, NOT coerced. Callers then apply their own `|| 1` fallback exactly as
@@ -134,10 +145,49 @@ function validatePolicyEntry(entry, { where = "entry" } = {}) {
   return null;
 }
 
+// ── VALIDATION — ONE LOCATION ────────────────────────────────────────────────
+// Delegates each row to the shipped validatePolicyEntry so the ranges, the
+// minQty-alongside-target rule and the "Ask at below Keep" rule are the SAME
+// rules a uniform entry gets. A per-size row that a uniform entry would have
+// been refused for must not sneak through because it is nested one level down.
+function validateLocationEntry(locEntry, { where, perSize, allowedSizes }) {
+  const mode = locationEntryMode(locEntry);
+  if (mode === "invalid") {
+    if (isPlainObject(locEntry) && isPlainObject(locEntry.sizes) && locEntry.target !== undefined) {
+      return `${where}: hold either one number for the whole location or a size-by-size map, not both`;
+    }
+    return `${where}: must be an object with a target, or a "sizes" map`;
+  }
+  if (mode === "uniform") return validatePolicyEntry(locEntry, { where });
+
+  // per-size
+  if (!perSize) return `${where}: size-by-size numbers need the category to be in per-size mode`;
+  const keys = Object.keys(locEntry.sizes);
+  if (!keys.length) return `${where}: the size map is empty — give at least one size a number, or remove the location`;
+  if (keys.length > MAX_SIZES_PER_LOCATION) return `${where}: more than ${MAX_SIZES_PER_LOCATION} sizes at one location`;
+  for (const k of Object.keys(locEntry)) {
+    if (k !== "sizes") return `${where}: unknown field "${k}" next to a size map`;
+  }
+  for (const k of keys) {
+    // The key must already BE the encoded form. Accepting "5.5" and encoding it
+    // here would be accepting a key RTDB cannot store, and the caller would
+    // have written it under a different key than the one validated.
+    if (!KEY_RE.test(k)) return `${where}: size key ${JSON.stringify(k)} must be letters, digits, hyphens or underscores (5.5 is stored as 5_5)`;
+    if (encodeSizeKey(k) !== k) return `${where}: size key ${JSON.stringify(k)} is not in its stored form (expected ${JSON.stringify(encodeSizeKey(k))})`;
+    if (k === "_") return `${where}: "_" is the one-size cell and cannot appear in a per-size map`;
+    if (Array.isArray(allowedSizes) && allowedSizes.length && !allowedSizes.includes(k)) {
+      return `${where}: ${k} is not one of this category's sizes (${allowedSizes.join(", ")})`;
+    }
+    const err = validatePolicyEntry(locEntry.sizes[k], { where: `${where} ${k}` });
+    if (err) return err;
+  }
+  return null;
+}
+
 // A whole category's proposed entry: { perSize?: bool, "<loc>": {…} }.
 // `knownLocations` and `knownCategoryKeys` are passed in (never hardcoded) so
 // this file has no private idea of what the estate looks like.
-function validateCategoryPolicy(categoryKey, cat, { knownLocations, knownCategoryKeys }) {
+function validateCategoryPolicy(categoryKey, cat, { knownLocations, knownCategoryKeys, allowedSizes }) {
   if (typeof categoryKey !== "string" || !categoryKey) return "categoryKey must be a non-empty string";
   // A SINGLE RTDB KEY SEGMENT, checked here rather than trusted. The key is
   // interpolated straight into `config/refillEngine/categoryPolicy/${key}`, and
@@ -165,7 +215,13 @@ function validateCategoryPolicy(categoryKey, cat, { knownLocations, knownCategor
     if (Array.isArray(knownLocations) && knownLocations.length && !knownLocations.includes(loc)) {
       return `unknown location "${loc}"`;
     }
-    const err = validatePolicyEntry(cat[loc], { where: loc });
+    // Either shape. `allowedSizes` is the category's DERIVED size run when the
+    // caller has it (the callable always does) — so a per-size map can never
+    // name a size the category does not have, which is the whole reason the run
+    // is derived from live data rather than typed.
+    const err = validateLocationEntry(cat[loc], {
+      where: loc, perSize: cat.perSize === true, allowedSizes,
+    });
     if (err) return err;
   }
   return null;
@@ -249,9 +305,18 @@ function modelCategoryPolicy({
   categoryKey, locations, maxIntentsPerRun, maxUnitsPerIntent,
 }) {
   const { pids, byLocation: carriage } = carriageForCategory({ products, stock, categoryKey, locations });
-  const cat = config?.categoryPolicy?.[categoryKey];
+  // ── THE POLICY THAT ACTUALLY SPEAKS FOR THIS CATEGORY ─────────────────────
+  // Its own entry, or — only when it has none — an ARMED group's. Reading
+  // config.categoryPolicy directly here under-reported a grouped category to
+  // zero: no armed locations, no legs, "the next scan asks for nothing", while
+  // the engine refilled it. Same bug shape as the unarmed-legs one the
+  // differential fuzz caught, same direction.
+  const eff = effectivePolicyFor(config, categoryKey);
+  const cat = eff ? eff.entry : null;
+  const policySource = eff ? eff.source : null;         // "category" | "group" | null
+  const policyGroupKey = eff ? eff.groupKey : null;
   const armedLocs = isPlainObject(cat)
-    ? Object.keys(cat).filter((k) => k !== "perSize" && isPlainObject(cat[k]))
+    ? Object.keys(cat).filter((k) => k !== "perSize" && locationEntryMode(cat[k]) !== "invalid")
     : [];
   // ── THE LEGS ARE NOT JUST THE ARMED ONES ──────────────────────────────────
   // The engine's managedPids starts from Object.keys(targets[dest]) — a product
@@ -360,7 +425,16 @@ function modelCategoryPolicy({
         const declared = (products[pid]?.sizes || []).map(String).find((sz) => encodeSizeKey(sz) === k);
         add(declared === undefined ? k : declared);
       }
-      if (perSize) for (const sz of (products[pid]?.sizes || []).map(String)) { if (sz !== "_") add(sz); }
+      // The sizes the MAP contributes, mirroring the engine's sizesFor(): a
+      // per-size MAP walks exactly the sizes it names (intersected with what the
+      // product declares); uniform per-size walks every declared size; one-size
+      // walks the "_" sentinel alone.
+      const locSizes = perSize && isPlainObject(cat?.[loc]?.sizes) ? cat[loc].sizes : null;
+      if (locSizes) {
+        for (const sz of (products[pid]?.sizes || []).map(String)) {
+          if (sz !== "_" && locSizes[encodeSizeKey(sz)]) add(sz);
+        }
+      } else if (perSize) for (const sz of (products[pid]?.sizes || []).map(String)) { if (sz !== "_") add(sz); }
       else add("_");
 
       // The sizes THIS map entry speaks for, encoded — the test that separates
@@ -369,6 +443,9 @@ function modelCategoryPolicy({
       // row there is a legacy row rather than an override — there is nothing to
       // override.
       const mapSpeaksFor = new Set(!armedLocs.includes(loc) ? []
+        : locSizes
+          ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_")
+              .map(encodeSizeKey).filter((k) => locSizes[k])
         : perSize
           ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_").map(encodeSizeKey)
           : ["_"]);
@@ -433,6 +510,7 @@ function modelCategoryPolicy({
     }
     const c = carriage[loc] || { carries: false, products: 0, units: 0 };
     const mapped = isPlainObject(cat) && isPlainObject(cat[loc]) ? cat[loc] : null;
+    const mappedMode = mapped ? locationEntryMode(mapped) : null;
     legs.push({
       loc,
       carries: c.carries,
@@ -442,9 +520,15 @@ function modelCategoryPolicy({
       // "live" | "shadow" | "off" — only a live destination has its requests
       // written by the scan.
       mode: modeOf(loc),
-      target: mapped?.target ?? null,
-      minQty: mapped?.minQty ?? null,
-      reorderPoint: mapped?.reorderPoint ?? null,
+      // A per-size location has no single number. `shape` says which of the two
+      // shapes the leg carries, and `sizes` holds the map when it is per-size —
+      // reporting target:null next to a fully-armed leg would read as "not set".
+      // (NOT `mode` — that name is already the DESTINATION's live/shadow/off.)
+      shape: mappedMode,
+      target: mappedMode === "uniform" ? (mapped.target ?? null) : null,
+      minQty: mappedMode === "uniform" ? (mapped.minQty ?? null) : null,
+      reorderPoint: mappedMode === "uniform" ? (mapped.reorderPoint ?? null) : null,
+      sizes: mappedMode === "per-size" ? mapped.sizes : null,
       source: src,
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
       inFlight, parkedNoSource, parkedNothingAnywhere,
@@ -481,6 +565,10 @@ function modelCategoryPolicy({
   return {
     categoryKey,
     perSize,
+    // Where these numbers came from. A grouped category's preview must say so —
+    // editing the category's own policy would take it OUT of the group, which
+    // is a bigger change than the numbers on screen suggest.
+    policySource, policyGroupKey,
     products: pids.length,
     armedLocations: armedLocs,
     // Legs that produce refills off explicit rows alone, with no map entry.
@@ -517,7 +605,8 @@ function modelCategoryPolicy({
 const defaultMinQty = (target) => (typeof target === "number" && target > 0 ? Math.ceil(target / 2) : 0);
 
 module.exports = {
-  POLICY_FIELDS, MAX_TARGET, MAX_REORDER_POINT, REFUSED_CATEGORY_KEYS,
+  POLICY_FIELDS, MAX_TARGET, MAX_REORDER_POINT, REFUSED_CATEGORY_KEYS, MAX_SIZES_PER_LOCATION,
+  validateLocationEntry,
   ENGINE_DEFAULT_MAX_UNITS_PER_INTENT, ENGINE_DEFAULT_MAX_INTENTS_PER_RUN,
   validatePolicyEntry, validateCategoryPolicy, diffCategoryPolicy,
   carriageForCategory, modelCategoryPolicy, defaultMinQty,

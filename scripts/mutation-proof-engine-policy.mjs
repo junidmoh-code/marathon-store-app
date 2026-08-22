@@ -128,8 +128,15 @@ const MUTATIONS = [
     id: "M-DRIFT",
     guard: "A change landing mid-save aborts the write — the check immediately before the mutation",
     file: WRITE,
-    from: `  if (!sameValue(liveNow ?? null, before)) {`,
-    to: `  if (false) {`,
+    // The preceding read is part of the anchor. The bare `if` line stopped
+    // being unique the moment the GROUP write path gained the same
+    // check — its four-space-indented copy CONTAINS the two-space text, so the
+    // harness reported ANCHOR-AMBIGUOUS and credited nothing. Reported, not
+    // silently skipped, which is the only reason it was caught. (PR #401.)
+    from: `  const liveNow = await val(db, \`\${POLICY_PATH}/\${categoryKey}\`);
+  if (!sameValue(liveNow ?? null, before)) {`,
+    to: `  const liveNow = await val(db, \`\${POLICY_PATH}/\${categoryKey}\`);
+  if (false) {`,
     nodeTests: SERVER_TESTS,
   },
   {
@@ -191,9 +198,11 @@ const MUTATIONS = [
     id: "M-BLANK",
     guard: 'A blank "Ask at" stays ABSENT — turning it into 0 silently changes every location it touches',
     file: CORE,
-    from: `    const rp = numOrNull(row?.reorderPoint);
-    if (rp !== null) entry.reorderPoint = rp;`,
-    to: `    entry.reorderPoint = numOrNull(row?.reorderPoint) ?? 0;`,
+    // policyFromDraft's body moved into entryFromStrings when the per-size
+    // shape landed — same code, one indent level out. (PR #401.)
+    from: `  const rp = numOrNull(row?.reorderPoint);
+  if (rp !== null) entry.reorderPoint = rp;`,
+    to: `  entry.reorderPoint = numOrNull(row?.reorderPoint) ?? 0;`,
     tests: CORE_TESTS,
   },
   // ── THE MODEL'S SOURCE GATE ───────────────────────────────────────────────

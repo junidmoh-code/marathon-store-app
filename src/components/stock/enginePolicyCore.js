@@ -37,6 +37,49 @@ export const defaultMinQty = (target) =>
 
 const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
+// ═════════════════════════════════════════════════════════════════════════════
+// PER-SIZE POLICY — THE SECOND SHAPE
+// ═════════════════════════════════════════════════════════════════════════════
+// A location entry is one of two things, never both:
+//
+//   UNIFORM   { target, minQty, reorderPoint? }        one number for the shop
+//   PER-SIZE  { sizes: { "<storedSize>": { … } } }     one row per size
+//
+// In the DRAFT (what the inputs hold) that is expressed by the presence of a
+// `sizes` object on the location's row. Every function below that predates this
+// behaves exactly as it did when `sizes` is absent, which is what keeps the
+// shipped one-size path — and its tests — untouched.
+//
+// SIZE KEYS ARE STORED KEYS. 5.5 is "5_5" everywhere: in /stock, in a
+// /stock_targets row, and here. RTDB cannot hold a "." in a key at all, so
+// there is no other option, and a policy keyed the other way would silently
+// miss the second-largest size band in the catalogue.
+export const encodeSizeKeyClient = (size) => {
+  const s = String(size == null ? "" : size).trim();
+  if (!s) return "_";
+  return s.replace(/[.#$/\[\]\s]/g, "_");
+};
+
+export const isPerSizeRow = (row) => isObj(row) && isObj(row.sizes);
+
+// Letters first, then numerics ascending, then anything else. Mirrors
+// hubSizeRank.js and functions/lib/policy-groups.cjs — pinned equal by test.
+const LETTER_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
+const NUMERIC_SIZE = /^\d+(?:\.\d+)?$/;
+export function sizeRank(s) {
+  const raw = String(s ?? "");
+  const i = LETTER_ORDER.indexOf(raw.toUpperCase());
+  if (i >= 0) return i;
+  const token = raw.replace("_", ".");
+  if (!NUMERIC_SIZE.test(token)) return 999;
+  return 100 + Number.parseFloat(token);
+}
+export const bySizeRank = (a, b) => sizeRank(a) - sizeRank(b) || String(a).localeCompare(String(b));
+
+// The display form of a stored key: "5_5" reads as 5.5 to a person, and the
+// screen is for a person. Only the display changes — nothing writes this back.
+export const sizeLabel = (k) => (/^\d+_\d+$/.test(String(k)) ? String(k).replace("_", ".") : String(k));
+
 // ── ROW STATE ────────────────────────────────────────────────────────────────
 // One of three, and the third is the one people get wrong:
 //
@@ -62,11 +105,43 @@ export function categoryRowState({ entry, overriddenProducts = 0 }) {
 // sides, so the card never shows a location as armed that the engine ignores.
 export function armedLocations(entry) {
   if (!isObj(entry)) return [];
+  const perSize = entry.perSize === true;
   return Object.entries(entry)
-    .filter(([loc, e]) => loc !== "perSize" && isObj(e)
-      && typeof e.target === "number" && Number.isFinite(e.target) && e.target > 0)
+    .filter(([loc, e]) => loc !== "perSize" && isObj(e) && locationArms(e, perSize))
     .map(([loc]) => loc)
     .sort();
+}
+
+// Does ONE location entry arm, by the engine's own test? Mirrors
+// policy-resolve.cjs locationEntryMode + locationPolicyFor, and the mirroring is
+// pinned by a differential test over a shape table rather than by this comment.
+//
+// Three shapes used to disagree, all in the unsafe direction — the card showed
+// a location as armed where the engine is silent, which is the exact thing this
+// function exists to prevent:
+//
+//   { hub2: { sizes: {…} } }               a size map with NO perSize:true
+//   { hub2: { target: 5, sizes: {…} } }    both shapes at one location
+//
+// The first describes cells the engine will never ask this entry about; the
+// second is ambiguous and the engine refuses it outright. (Adversarial review,
+// PR #401.)
+function locationArms(e, perSize) {
+  const hasSizes = isObj(e.sizes);
+  const hasTarget = e.target !== undefined;
+  if (hasSizes && hasTarget) return false;            // never both
+  if (hasSizes) {
+    // A PER-SIZE MAP ARMS THE LOCATION, and it has no `target` of its own —
+    // but only under perSize:true. Testing for a positive target alone reported
+    // a fully-armed per-size leg as unarmed, so the editor rendered no row for
+    // it, the draft omitted it, and the save (which .set()s the whole entry)
+    // would have DELETED it. Same data-loss shape as the armed-non-destination
+    // bug, same invisibility to the drift check.
+    if (!perSize) return false;
+    return Object.values(e.sizes).some((r) => isObj(r)
+      && typeof r.target === "number" && Number.isFinite(r.target) && r.target > 0);
+  }
+  return typeof e.target === "number" && Number.isFinite(e.target) && e.target > 0;
 }
 
 // ── EDITOR ROWS ──────────────────────────────────────────────────────────────
@@ -94,6 +169,10 @@ export function editorRows({ entry, carriage, destinations }) {
       productsCarried: c.products || 0,
       unitsHeld: c.units || 0,
       armed: armed.has(loc),
+      // "uniform" | "per-size" | null — which of the two shapes this leg holds
+      // today. The editor renders one row or a run of size rows accordingly.
+      shape: e ? (isObj(e.sizes) ? "per-size" : "uniform") : null,
+      sizes: isObj(e?.sizes) ? e.sizes : null,
       // A location that does not carry the category is NOT editable, whatever
       // the map currently says. An already-armed uncarried location stays
       // visible and editable so it can be corrected — refusing to let the owner
@@ -117,13 +196,29 @@ export function draftFromEntry({ entry, carriage, destinations }) {
   const out = {};
   for (const r of rows) {
     if (!r.armed) continue;
-    out[r.loc] = {
-      target: r.target == null ? "" : String(r.target),
-      minQty: r.minQty == null ? "" : String(r.minQty),
-      reorderPoint: r.reorderPoint == null ? "" : String(r.reorderPoint),
-    };
+    if (r.sizes) {
+      // A per-size leg becomes a map of string rows, one per size the entry
+      // names, in size order. `sizes` present IS the shape marker; there is no
+      // separate mode flag to get out of step with it.
+      const sizes = {};
+      for (const k of Object.keys(r.sizes).sort(bySizeRank)) sizes[k] = strRow(r.sizes[k]);
+      out[r.loc] = { sizes };
+      continue;
+    }
+    out[r.loc] = strRow(r);
   }
   return out;
+}
+
+// Numbers (or absent) in, the strings an input holds out. "" survives as a
+// distinct value: a blank "Ask at" means ABSENT (top up eagerly), which is a
+// different policy from 0 (ask only when the shelf is empty).
+function strRow(e) {
+  return {
+    target: e?.target == null ? "" : String(e.target),
+    minQty: e?.minQty == null ? "" : String(e.minQty),
+    reorderPoint: e?.reorderPoint == null ? "" : String(e.reorderPoint),
+  };
 }
 
 // Seed a location that is being armed for the first time. Minimum is filled in
@@ -161,18 +256,41 @@ export function onTargetChanged(row, nextTarget) {
 export function policyFromDraft(draft, { perSize = false } = {}) {
   const out = {};
   for (const [loc, row] of Object.entries(draft || {})) {
-    const target = numOrNull(row?.target);
-    if (target === null) continue;
-    const entry = { target };
-    const min = numOrNull(row?.minQty);
-    entry.minQty = min === null ? defaultMinQty(target) : min;
-    const rp = numOrNull(row?.reorderPoint);
-    if (rp !== null) entry.reorderPoint = rp;
-    out[loc] = entry;
+    // ── PER-SIZE ────────────────────────────────────────────────────────────
+    // Every size is written INDIVIDUALLY. "Same across all sizes" is a
+    // quick-fill in the editor, not a storage shape: a collapsed number would
+    // have to be re-expanded by every reader, and the first reader to expand it
+    // differently would be a silent divergence.
+    if (isPerSizeRow(row)) {
+      const sizes = {};
+      for (const [sizeKey, sr] of Object.entries(row.sizes)) {
+        const e = entryFromStrings(sr);
+        if (e) sizes[sizeKey] = e;
+      }
+      // A location whose every size was cleared is DROPPED — the same way a
+      // uniform row with no target is. That is how a leg is un-armed.
+      if (Object.keys(sizes).length) out[loc] = { sizes };
+      continue;
+    }
+    const entry = entryFromStrings(row);
+    if (entry) out[loc] = entry;
   }
   if (!Object.keys(out).length) return null;
   if (perSize) out.perSize = true;
   return out;
+}
+
+// One { target, minQty, reorderPoint? } from three strings, or null when there
+// is no target at all. A blank or absent "Ask at" is OMITTED, never zeroed.
+function entryFromStrings(row) {
+  const target = numOrNull(row?.target);
+  if (target === null) return null;
+  const entry = { target };
+  const min = numOrNull(row?.minQty);
+  entry.minQty = min === null ? defaultMinQty(target) : min;
+  const rp = numOrNull(row?.reorderPoint);
+  if (rp !== null) entry.reorderPoint = rp;
+  return entry;
 }
 
 // Strings in, numbers or null out. A blank is null (absent). Anything that is
@@ -194,6 +312,20 @@ function numOrNull(s) {
 export function validateDraft(draft) {
   const errors = {};
   for (const [loc, row] of Object.entries(draft || {})) {
+    if (isPerSizeRow(row)) {
+      // Each size is held to the SAME rules a whole-location row is, and the
+      // error is keyed per size so the message lands on the input that caused
+      // it rather than at the top of a run of twelve.
+      let filled = 0;
+      for (const [sizeKey, sr] of Object.entries(row.sizes)) {
+        if (String(sr?.target ?? "").trim() === "") continue;   // blank size = not stocked here
+        filled += 1;
+        const err = validateOneRow(sr);
+        if (err) errors[`${loc}::${sizeKey}`] = err;
+      }
+      if (!filled) errors[loc] = "Give at least one size a number, or remove the location";
+      continue;
+    }
     const raw = String(row?.target ?? "").trim();
     if (raw === "") { errors[loc] = "Keep is required — clear the whole row to stop stocking this category here"; continue; }
     if (!/^\d+$/.test(raw) || Number(raw) < 1) { errors[loc] = "Keep must be a whole number of 1 or more"; continue; }
@@ -213,6 +345,25 @@ export function validateDraft(draft) {
   return errors;
 }
 
+// The rules for ONE row, shared by the whole-location path above and by every
+// size inside a per-size leg. Returns a message or null.
+function validateOneRow(row) {
+  const raw = String(row?.target ?? "").trim();
+  if (raw === "") return "Keep is required — clear it to stop stocking this size here";
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) return "Keep must be a whole number of 1 or more";
+  const target = Number(raw);
+  if (target > 500) return "Keep cannot be more than 500";
+  const minRaw = String(row?.minQty ?? "").trim();
+  if (minRaw !== "" && (!/^\d+$/.test(minRaw) || Number(minRaw) > target)) {
+    return `Minimum must be a whole number no higher than Keep (${target})`;
+  }
+  const rpRaw = String(row?.reorderPoint ?? "").trim();
+  if (rpRaw === "") return null;
+  if (!/^\d+$/.test(rpRaw)) return "Ask at must be a whole number, or blank";
+  if (Number(rpRaw) >= target) return `Ask at must be below Keep (${target}) — at or above it the setting does nothing`;
+  return null;
+}
+
 // ── THE PREVIEW KEY ──────────────────────────────────────────────────────────
 // The identity of the numbers a preview was computed from. Save is enabled only
 // while the preview in hand carries the key of what is currently on screen —
@@ -223,9 +374,41 @@ export function previewKey(categoryKey, draft, { perSize = false } = {}) {
   const locs = Object.keys(draft || {}).sort();
   const body = locs.map((loc) => {
     const r = draft[loc] || {};
+    // A per-size leg's key covers EVERY size. Keying it on the location alone
+    // would let a preview survive an edit to any size in the run — a
+    // reassurance about numbers that are no longer on screen, which is the one
+    // thing this key exists to prevent.
+    if (isPerSizeRow(r)) {
+      const inner = Object.keys(r.sizes).sort().map((k) =>
+        `${k}=${FIELD_ORDER.map((f) => String(r.sizes[k]?.[f] ?? "").trim()).join("/")}`).join(",");
+      return `${loc}:{${inner}}`;
+    }
     return `${loc}:${FIELD_ORDER.map((f) => String(r[f] ?? "").trim()).join("/")}`;
   }).join("|");
   return `${categoryKey}::${perSize ? "size" : "one"}::${body}`;
+}
+
+// ── "SAME ACROSS ALL SIZES" ──────────────────────────────────────────────────
+// The quick-fill. Writes the three values into EVERY size in the run as its own
+// row — the editor then shows twelve identical rows, each of which can be
+// changed on its own, and the save writes twelve entries. Nothing anywhere
+// stores "they are all 4".
+export function fillAllSizes(sizeRun, row) {
+  const sizes = {};
+  for (const k of (sizeRun || [])) {
+    sizes[k] = {
+      target: String(row?.target ?? ""),
+      minQty: String(row?.minQty ?? ""),
+      reorderPoint: String(row?.reorderPoint ?? ""),
+    };
+  }
+  return { sizes };
+}
+
+// Seed a per-size leg from the category's derived run, every size blank. The
+// owner then types once and quick-fills, or fills the sizes they care about.
+export function seedPerSizeLocation(sizeRun) {
+  return fillAllSizes(sizeRun, { target: "", minQty: "", reorderPoint: "" });
 }
 
 export function canSave({ preview, previewKeyNow, errors, busy }) {
@@ -249,12 +432,49 @@ export function changedFields(before, after) {
     const al = isObj(a[loc]) ? a[loc] : null;
     if (bl && !al) { out.push({ loc, label: "Stopped stocking here", from: "armed", to: "removed" }); continue; }
     if (!bl && al) out.push({ loc, label: "Started stocking here", from: "not armed", to: "armed" });
+    // ── A LEG THAT CHANGED SHAPE ────────────────────────────────────────────
+    // One number for the whole shop, or a number per size. Reporting only the
+    // fields would have shown "Keep 5 -> not set" for a leg that is now fully
+    // armed size by size, which reads as an un-arming and is the opposite of
+    // what happened.
+    if (bl && al && isPerSizeRow(bl) !== isPerSizeRow(al)) {
+      out.push({ loc, label: "Changed", from: isPerSizeRow(bl) ? "size by size" : "one number",
+        to: isPerSizeRow(al) ? "size by size" : "one number",
+        text: `now set ${isPerSizeRow(al) ? "size by size" : "as one number for the whole shop"}` });
+    }
+    if (isPerSizeRow(bl) || isPerSizeRow(al)) {
+      const bs = isPerSizeRow(bl) ? bl.sizes : {};
+      const as = isPerSizeRow(al) ? al.sizes : {};
+      for (const sz of [...new Set([...Object.keys(bs), ...Object.keys(as)])].sort(bySizeRank)) {
+        for (const f of FIELD_ORDER) {
+          const from = isObj(bs[sz]) && typeof bs[sz][f] === "number" ? bs[sz][f] : null;
+          const to = isObj(as[sz]) && typeof as[sz][f] === "number" ? as[sz][f] : null;
+          if (from === to) continue;
+          out.push({ loc, size: sz, field: f, label: COLUMN_LABELS[f], from, to,
+            text: `${sizeLabel(sz)} — ${COLUMN_LABELS[f]} ${from === null ? "not set" : from} -> ${to === null ? "not set" : to}` });
+        }
+      }
+      // ON PER-SIZE → UNIFORM, KEEP GOING. `continue`ing here listed every old
+      // size going to "not set" and then said "now set as one number for the
+      // whole shop" — without ever showing WHAT that one number is. The banner
+      // is the last thing the owner reads before saving, so the number that now
+      // governs the entire location has to be in it. (CodeRabbit, PR #401.)
+      if (isPerSizeRow(al)) continue;
+    }
+    // `leftPerSize` prefixes the uniform lines when the leg just came OUT of
+    // per-size, so the banner does not read as a contradiction: the per-size
+    // block above has already said every old size went to "not set", and a bare
+    // "Keep not set -> 7" next to it looks like a second, unrelated change
+    // rather than the number that replaced them. (Delta review, PR #401.)
+    const leftPerSize = isPerSizeRow(bl) && !isPerSizeRow(al);
     for (const f of FIELD_ORDER) {
-      const from = bl && typeof bl[f] === "number" ? bl[f] : null;
+      const from = leftPerSize ? null : (bl && typeof bl[f] === "number" ? bl[f] : null);
       const to = al && typeof al[f] === "number" ? al[f] : null;
       if (from === to) continue;
-      out.push({ loc, field: f, label: COLUMN_LABELS[f], from, to,
-        text: `${COLUMN_LABELS[f]} ${from === null ? "not set" : from} -> ${to === null ? "not set" : to}` });
+      out.push({ loc, field: f, label: COLUMN_LABELS[f], from, to, leftPerSize,
+        text: leftPerSize
+          ? `the whole shop — ${COLUMN_LABELS[f]} ${to === null ? "not set" : to}`
+          : `${COLUMN_LABELS[f]} ${from === null ? "not set" : from} -> ${to === null ? "not set" : to}` });
     }
   }
   return out;

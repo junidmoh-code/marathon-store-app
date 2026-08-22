@@ -3460,8 +3460,13 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 //
 // DEPLOY BY NAME. functions/ is shared with marathon-pos-app:
 //   firebase deploy --only functions:setCategoryPolicy
+// 300s, not 120: the redesign added three actions that page the catalogue —
+// the explicit-row list, the derived size run, and the model that runs before a
+// group may be armed (which walks every member). 120s was chosen when the only
+// heavy path was the census; a timeout here reads to the owner as "the screen
+// is broken", not "that took a while".
 exports.setCategoryPolicy = onCall(
-  { region: "europe-west1", timeoutSeconds: 120, memory: "512MiB" },
+  { region: "europe-west1", timeoutSeconds: 300, memory: "512MiB" },
   async (request) => {
     // assertAdmin ALSO runs here, above the module, so the gate survives a
     // refactor of either side. The module's own check is the one the mutation
