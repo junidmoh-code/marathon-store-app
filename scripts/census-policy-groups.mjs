@@ -257,9 +257,11 @@ const line = (n = 92) => "─".repeat(n);
     console.log(`  🛑 STOP — writing the group DISARMED moved ${disarmedDelta} of something. It must move nothing.`);
   }
 
-  console.log(`\n  ARMED TODAY: no. This group does not exist in the live config yet, and when it is`);
-  console.log(`  written it is written with armed:false — which takes it out of the resolution order`);
-  console.log(`  entirely, so it cannot produce a single intent whatever these numbers say.`);
+  const liveGroup = groups[GROUP_KEY];
+  console.log(`\n  LIVE STATE: ${liveGroup ? `written, armed=${liveGroup.armed}` : "not written yet"}.`);
+  console.log(`  ARMED TODAY: no. armed:false takes a group out of the resolution order ENTIRELY —`);
+  console.log(`  the lookup returns before it reads the policy — so it cannot produce a single`);
+  console.log(`  intent whatever these numbers say. The delta above measures exactly that.`);
 
   // ── 3. PER-SIZE SHAPES IN THE LIVE DATA ────────────────────────────────────
   console.log(`\n── 3. PER-SIZE SHAPES — SIZE RUNS DERIVED FROM LIVE DATA ${line(33)}`);
