@@ -2,8 +2,10 @@
 // Reachable from a Leftover card and from a duplicate collision during
 // scanning. Two screens, exactly as specified:
 //
-//   1. TARGET  — a search field AND a scan button; both land on the same
-//                confirm. Only visible (non-merged) products are offered.
+//   1. TARGET  — the PHOTO-CAPTURE LABEL READER first, a name search below,
+//                and the shop-barcode scanner as a secondary action. All
+//                three land on the same confirm. Only visible (non-merged)
+//                products are offered.
 //   2. CONFIRM — both products side by side: photos and EVERY stock cell each
 //                one holds, plus the direction (which record disappears). A
 //                merge can NEVER complete without this screen.
@@ -21,9 +23,13 @@ import { isMergedAway } from "../../utils/mergedProducts";
 import { FONT, CARD, BORDER, GRAY, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
 import { labelFor } from "./locations";
 import { sizeLabelOf } from "./hubCountCore";
-import { locationsHolding } from "./hubCleanupCore";
-import { fetchProductFollowingMerge } from "./hubCleanupStore";
+import { locationsHolding, labelTokenSet, mergeTokenCandidates } from "./hubCleanupCore";
+import {
+  fetchProductFollowingMerge, lookupStyleClaim, resolveAnyCodes, matchLabelAlias,
+} from "./hubCleanupStore";
+import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 import CameraScanner from "./CameraScanner.jsx";
+import { TongueLabelReader } from "./TongueLabelReader.jsx";
 
 const mergeProductsFn = httpsCallable(functions, "mergeProducts");
 
@@ -54,6 +60,25 @@ function CellList({ product, allStock, registry }) {
   );
 }
 
+// ─── FINDING THE TARGET BY PHOTOGRAPHING THE LABEL (owner spec 2026-08-22) ───
+// THE DEFECT THIS REPLACES: the only camera on this screen was CameraScanner —
+// a LIVE barcode stream. A tongue label carries no barcode, so it never
+// resolved, and the operator typed a name instead: the exact act that makes
+// the duplicates this screen exists to clean up.
+//
+// The fix is a PORT, not a second implementation. The primary action is the
+// shared TongueLabelReader (three-frame burst, ≤1024px downscale, image-hash
+// OCR cache) used unchanged by register/count/assistant, and the candidate
+// gather is the count flow's own pooling — labelTokenSet + mergeTokenCandidates
+// over every code-shaped token the label printed, in ONE merged list. No token
+// is auto-picked and no row resolves itself: a merge is destructive, so the
+// operator always taps the photo they recognise. The live scanner survives as
+// a clearly-secondary action for shop barcode stickers on boxes.
+const viaLabel = (codes) => (codes || [])
+  .map((c) => formatStyleCodeForDisplay(c) || c)
+  .filter(Boolean)
+  .join(" · ");
+
 export default function MergeProducts({
   initialLoser, initialSurvivor = null, products = [], allStock, registry,
   onEnsureStock, onScanLookup, onClose, onMerged,
@@ -62,6 +87,10 @@ export default function MergeProducts({
   const [survivor, setSurvivor] = useState(initialSurvivor);
   const [query, setQuery] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
+  // The label read's pooled candidates: { rows: [{ product, codes, via }],
+  // tokens, unloadedIds, sweepFailed }. Never auto-applied.
+  const [suggest, setSuggest] = useState(null);
+  const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(null);
@@ -77,6 +106,83 @@ export default function MergeProducts({
     const pool = products.filter((p) => p && p.id && !isMergedAway(p) && p.id !== loser?.id);
     return query.trim() ? searchProducts(pool, query, { limit: 12 }) : [];
   }, [products, query, loser]);
+
+
+  // A product this screen may offer as the survivor: real, loadable, not
+  // merged away, and not the record being merged away itself.
+  const offerable = (p) => !!(p && p.id && !isMergedAway(p) && p.id !== loser?.id);
+
+  // ── THE LABEL READ → ONE POOLED CANDIDATE LIST ─────────────────────────────
+  // Every code-shaped token the label printed is resolved, and everything any
+  // of them owns lands in the SAME list with the number that found it. This is
+  // the count flow's gather (hubCleanupCore.mergeTokenCandidates), called with
+  // this screen's catalogue.
+  const handleLabelCode = async (display, meta = null) => {
+    setError("");
+    setSuggest(null);
+    setReading(true);
+    try {
+      const tokens = labelTokenSet(display, meta && meta.allCodes);
+      if (!tokens.length) { setError("That read carried no number — search by name instead."); return; }
+      // Single-key /style_code_index reads, one per token, in parallel.
+      const claimResults = await Promise.all(tokens.map((t) => lookupStyleClaim(t).catch(() => null)));
+      const claims = {};
+      tokens.forEach((t, i) => { claims[t] = claimResults[i]; });
+      // The server sweep is the ONLY way an alias-only owner is visible, and it
+      // reads /label_aliases whole-node — so it runs on MULTI-token labels
+      // only, exactly as the count flow gates it.
+      let sweep = null;
+      if (tokens.length > 1) {
+        try { sweep = await resolveAnyCodes(tokens); } catch { sweep = null; }
+      }
+      const serverOwners = sweep ? sweep.owners : [];
+      const localIds = new Set((products || []).map((p) => p && p.id));
+      const wanted = [...new Set(serverOwners.map((o) => o && o.productId))]
+        .filter((id) => id && !localIds.has(id));
+      const fetched = await Promise.all(wanted.map((id) => fetchProductFollowingMerge(id).catch(() => null)));
+      const resolved = {};
+      wanted.forEach((id, i) => { if (fetched[i]) resolved[id] = fetched[i]; });
+      const merged = mergeTokenCandidates({ tokens, products, claims, serverOwners, resolved });
+      const rows = merged.candidates
+        .filter((c) => offerable(c.product))
+        .map((c) => ({ product: c.product, codes: c.codes, via: viaLabel(c.codes) }));
+      const shown = tokens.map((t) => formatStyleCodeForDisplay(t) || t).join(" · ");
+      if (!rows.length) {
+        setSuggest({ rows: [], tokens, unloadedIds: merged.unloadedIds, sweepFailed: tokens.length > 1 && !sweep,
+                     note: `Nothing this screen can offer answers to ${shown} — search by name below.` });
+        return;
+      }
+      setSuggest({ rows, tokens, unloadedIds: merged.unloadedIds, sweepFailed: tokens.length > 1 && !sweep, note: "" });
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally { setReading(false); }
+  };
+
+  // A read that yielded no code at all still carries the label's WORDING —
+  // the alias store answers it, and its candidates pool into the same list.
+  const handleLabelTokens = async (tokens) => {
+    setError("");
+    setSuggest(null);
+    setReading(true);
+    try {
+      const match = await matchLabelAlias(tokens).catch(() => null);
+      const cands = (match && Array.isArray(match.candidates)) ? match.candidates : [];
+      const rows = [];
+      for (const c of cands) {
+        const id = c && c.productId;
+        if (!id) continue;
+        let p = (products || []).find((x) => x && x.id === id) || null;
+        if (!p) p = await fetchProductFollowingMerge(id).catch(() => null);
+        if (offerable(p) && !rows.some((r) => r.product.id === p.id)) {
+          rows.push({ product: p, codes: [], via: "this label's wording" });
+        }
+      }
+      setSuggest({ rows, tokens: [], unloadedIds: [], sweepFailed: false,
+                   note: rows.length ? "" : "That label's wording doesn't match a product — search by name below." });
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally { setReading(false); }
+  };
 
   const handleScan = async (code) => {
     setCameraOpen(false);
@@ -141,13 +247,58 @@ export default function MergeProducts({
             </div>
 
             <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>WHICH PRODUCT IS IT REALLY?</div>
-            <button type="button" onClick={() => setCameraOpen(true)}
-              style={{ width: "100%", minHeight: 64, borderRadius: 14, fontSize: 17, fontWeight: 800, cursor: "pointer",
-                       background: "rgba(74,127,255,.16)", border: "2px solid rgba(74,127,255,.5)", color: "#D7E3FF", marginBottom: 10 }}>
-              📷 Scan the real shoe
-            </button>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="…or search by name"
-                   style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 52, fontSize: 15 }} />
+
+            {/* THE PRIMARY ACTION — the shared photo-capture label reader, the
+                same component and pipeline the count and register passes use.
+                Nothing here is typed unless everything else fails. */}
+            <TongueLabelReader big busy={busy || reading} onCode={handleLabelCode} onTokens={handleLabelTokens} />
+
+            {/* THE POOLED SUGGESTIONS — every candidate any of the label's
+                numbers found, in ONE list, each row the PHOTO first and the
+                number that found it. Nothing is auto-picked: the operator
+                taps the shoe they recognise. */}
+            {suggest && (
+              <div style={{ marginTop: 14 }}>
+                {suggest.rows.length > 0 && (
+                  <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 8 }}>
+                    {suggest.rows.length === 1
+                      ? "This label found one product — tap it if it's the shoe in your hand."
+                      : `This label's numbers found ${suggest.rows.length} products — tap the right one.`}
+                  </div>
+                )}
+                {suggest.note && <div style={{ fontSize: 13, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>{suggest.note}</div>}
+                {suggest.sweepFailed && (
+                  <div style={{ fontSize: 12, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>
+                    The label-code index couldn't be reached, so this label's other numbers weren't fully checked.
+                  </div>
+                )}
+                {suggest.unloadedIds && suggest.unloadedIds.length > 0 && (
+                  <div style={{ fontSize: 12, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>
+                    {suggest.unloadedIds.length} further product{suggest.unloadedIds.length === 1 ? "" : "s"} answer
+                    {suggest.unloadedIds.length === 1 ? "s" : ""} to this label but couldn't be loaded — reload before trusting this list.
+                  </div>
+                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {suggest.rows.map((r) => (
+                    <button key={r.product.id} type="button" onClick={() => { setSurvivor(r.product); setError(""); }}
+                      style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left", cursor: "pointer",
+                               background: CARD, border: "1px solid rgba(74,127,255,.35)", borderRadius: 14 }}>
+                      <Photo url={r.product.photoUrl} size={72} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.3 }}>{r.product.name}</div>
+                        <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3 }}>found by {r.via}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* THE FALLBACK — name search, below the suggestions, unchanged. */}
+            <div style={{ marginTop: 18 }}>
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="…or search by name"
+                     style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 52, fontSize: 15 }} />
+            </div>
             {error && <div style={{ color: RED, fontSize: 13, marginTop: 10 }}>{error}</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 12 }}>
               {candidates.map((p) => (
@@ -162,6 +313,14 @@ export default function MergeProducts({
                 </button>
               ))}
             </div>
+
+            {/* SECONDARY — the live barcode stream, kept for the shop barcode
+                sticker on a box. It never read tongue labels and no longer
+                pretends to. */}
+            <button type="button" onClick={() => setCameraOpen(true)}
+              style={{ ...bGhost, width: "100%", minHeight: 46, marginTop: 18, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+              ⌗ Scan a shop barcode sticker instead
+            </button>
           </>
         ) : (
           // ── SCREEN 2: the visual confirm — nothing commits without it ──────
