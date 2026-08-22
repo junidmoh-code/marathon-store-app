@@ -81,6 +81,15 @@ const TARGETS_PATH = "stock_targets";
 // row change in this repo.
 const MAX_ROW_EDITS_PER_CALL = 200;
 
+// The three fields this screen owns, normalised for comparison. An absent
+// reorderPoint is null, never 0 — the two are different policies, and a drift
+// check that conflated them would refuse a save that changed nothing.
+const shapeOf = (r) => ({
+  target: r?.target ?? null,
+  minQty: r?.minQty ?? null,
+  reorderPoint: typeof r?.reorderPoint === "number" ? r.reorderPoint : null,
+});
+
 // Canonical JSON, for equality only. Key order in RTDB is not stable across
 // reads, so a raw JSON.stringify comparison would report drift that is not
 // there — and a drift check that cries wolf gets switched off.
@@ -609,7 +618,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       throw httpsError("invalid-argument", `at most ${MAX_ROW_EDITS_PER_CALL} rows per save — split the change.`);
     }
     const knownLocs = new Set(knownLocations);
-    const update = {}, applied = [], changes = [];
+    const update = {}, applied = [], changes = [], expectations = [];
     for (const e of edits) {
       if (!isPlainObject(e)) throw httpsError("invalid-argument", "each row edit must be an object.");
       const { loc, pid, sizeKey } = e;
@@ -633,18 +642,23 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
           `${loc} / ${pid} / ${sizeKey} has no row today. This screen edits rows that already exist; it does not create them.`,
           { missing: { loc, pid, sizeKey } });
       }
-      // DRIFT, per row. `expected` is what the editor rendered.
-      if (isPlainObject(e.expected)) {
-        const liveShape = { target: live.target ?? null, minQty: live.minQty ?? null,
-          reorderPoint: typeof live.reorderPoint === "number" ? live.reorderPoint : null };
-        const wantShape = { target: e.expected.target ?? null, minQty: e.expected.minQty ?? null,
-          reorderPoint: typeof e.expected.reorderPoint === "number" ? e.expected.reorderPoint : null };
-        if (!sameValue(liveShape, wantShape)) {
-          throw httpsError("failed-precondition",
-            `${loc} / ${pid} / ${sizeKey} changed while this was open. Close and re-open the list.`,
-            { drift: true, live: liveShape });
-        }
+      // ── DRIFT, PER ROW, AND IT IS NOT OPTIONAL ──────────────────────────
+      // `expected` is what the editor rendered. It was optional, which meant a
+      // caller that omitted it got NO drift protection at all — and the one
+      // shape most likely to omit it is a retry or a script, exactly where
+      // silently reverting somebody else's write does the most damage. It is
+      // required now.
+      if (!isPlainObject(e.expected)) {
+        throw httpsError("invalid-argument",
+          `${loc} / ${pid} / ${sizeKey}: expected is required — send the numbers the editor was opened on, so a change made underneath is refused rather than overwritten.`);
       }
+      const wantShape = shapeOf(e.expected);
+      if (!sameValue(shapeOf(live), wantShape)) {
+        throw httpsError("failed-precondition",
+          `${loc} / ${pid} / ${sizeKey} changed while this was open. Close and re-open the list.`,
+          { drift: true, live: shapeOf(live) });
+      }
+      expectations.push({ path, wantShape });
       // The whole row is REPLACED with the validated shape, so a blank "Ask at"
       // removes the field rather than leaving the old one behind — the same
       // absent-is-not-zero rule the map obeys. Every other field the row carries
@@ -670,6 +684,24 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       rowCount: applied.length, before: applied.map((a) => ({ loc: a.loc, pid: a.pid, sizeKey: a.sizeKey, row: a.before })),
       changes, status: "pending",
     });
+    // ── RE-VERIFY IMMEDIATELY BEFORE THE WRITE ───────────────────────────────
+    // The loop above is up to 200 sequential round-trips; on a large category
+    // that is seconds, and the values it read are seconds old by the time the
+    // update goes out. Without this, a concurrent write landing mid-batch — an
+    // auto-adopt run, a second admin tab — was silently reverted, with no error
+    // and no trace in the returned diff, which was computed against the stale
+    // read. The category-policy and group writes both re-read immediately
+    // before their mutation for exactly this reason; this path did not.
+    // (Architecture review, PR #401.)
+    for (const { path, wantShape } of expectations) {
+      const nowLive = await val(db, path);
+      if (!isPlainObject(nowLive) || !sameValue(shapeOf(nowLive), wantShape)) {
+        await historyRef.update({ status: "aborted_on_drift", driftedPath: path, liveAtAbort: nowLive ?? null });
+        throw httpsError("failed-precondition",
+          `${path} changed while this was being saved. Nothing was written.`,
+          { drift: true, path, live: nowLive ?? null, historyId: historyRef.key });
+      }
+    }
     await db.ref().update(update);
     invalidateCensusCache();
     await historyRef.update({ status: "applied", verifiedAt: nowMs });
@@ -707,8 +739,19 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // the cap is SHARED with every clothing category, so it would not merely be
     // slow, it would starve everything else. That is not a confirmation dialog's
     // job; it is a refusal with the number in it.
+    // THE TEST IS THE RESULTING STATE, NOT THE TRANSITION. An earlier version
+    // gated on `before?.armed !== true`, so it fired once — when a group was
+    // first armed — and never again. Editing an ALREADY-ARMED group then
+    // skipped the cap entirely: adding forty categories to memberCategoryKeys,
+    // or raising every target from 5 to 100, left `before.armed === true`, so
+    // the model never ran and the write went straight through. That is the
+    // 2,176-against-75 scenario this gate exists for, reached by the one path
+    // the gate did not cover. (Architecture review, PR #401.)
+    //
+    // Every write that leaves the group armed is modelled now. It costs a
+    // catalogue page per group edit, and group edits are rare.
     let armModel = null;
-    if (after && after.armed === true && before?.armed !== true) {
+    if (after && after.armed === true) {
       armModel = await modelGroupArming(db, { config: cfg, groupKey, group: after, knownLocations });
       if (armModel.exceedsCap) {
         throw httpsError("failed-precondition",

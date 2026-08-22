@@ -17,6 +17,9 @@
 //   M-ROW-BLANK     turn a blank "Ask at" into 0 on a row edit
 //   M-CAP           let a group be armed over the per-scan cap
 //   M-CAP-2         model arming AFTER the write instead of before
+//   M-CAP-3         gate on the TRANSITION into arming, not the resulting state
+//   M-ROW-EXPECT    make `expected` optional again on a row edit
+//   M-ROW-REVERIFY  drop the re-read immediately before the multi-path write
 //   M-GROUP-ABSENT  let an omitted `group` field delete a live group
 //   M-GROUP-DRIFT   delete the group's pre-write drift check
 //   M-SIZES-SERVER  trust the client's sizes instead of the derived run
@@ -77,11 +80,11 @@ const MUTATIONS = [
     id: "M-ROW-DRIFT",
     guard: "A row whose numbers moved under the editor is refused, not overwritten",
     file: WRITE,
-    from: `        if (!sameValue(liveShape, wantShape)) {
-          throw httpsError("failed-precondition",
-            \`\${loc} / \${pid} / \${sizeKey} changed while this was open. Close and re-open the list.\`,
-            { drift: true, live: liveShape });
-        }`,
+    from: `      if (!sameValue(shapeOf(live), wantShape)) {
+        throw httpsError("failed-precondition",
+          \`\${loc} / \${pid} / \${sizeKey} changed while this was open. Close and re-open the list.\`,
+          { drift: true, live: shapeOf(live) });
+      }`,
     to: ``,
     nodeTests: TESTS,
   },
@@ -125,9 +128,35 @@ const MUTATIONS = [
     guard: "…and it is modelled BEFORE the write, not reported after it",
     file: WRITE,
     from: `    let armModel = null;
-    if (after && after.armed === true && before?.armed !== true) {`,
+    if (after && after.armed === true) {`,
     to: `    let armModel = null;
-    if (false && after && after.armed === true && before?.armed !== true) {`,
+    if (false && after && after.armed === true) {`,
+    nodeTests: TESTS,
+  },
+  {
+    id: "M-CAP-3",
+    guard: "The cap gate is on the RESULTING state — editing an already-armed group must not skip it",
+    file: WRITE,
+    from: `    if (after && after.armed === true) {`,
+    to: `    if (after && after.armed === true && before?.armed !== true) {`,
+    nodeTests: TESTS,
+  },
+  {
+    id: "M-ROW-EXPECT",
+    guard: "`expected` is required on every row edit — optional drift protection is none",
+    file: WRITE,
+    from: `      if (!isPlainObject(e.expected)) {`,
+    to: `      if (false && !isPlainObject(e.expected)) {`,
+    nodeTests: TESTS,
+  },
+  {
+    id: "M-ROW-REVERIFY",
+    guard: "Rows are re-read immediately before the write — a concurrent change is not silently reverted",
+    file: WRITE,
+    from: `    for (const { path, wantShape } of expectations) {
+      const nowLive = await val(db, path);`,
+    to: `    for (const { path, wantShape } of []) {
+      const nowLive = await val(db, path);`,
     nodeTests: TESTS,
   },
   // ── GROUPS ────────────────────────────────────────────────────────────────

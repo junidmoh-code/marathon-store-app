@@ -324,7 +324,8 @@ test("a blank Ask at removes the field rather than leaving the old one behind", 
   const db = makeFakeDb(world());
   invalidateCensusCache();
   await call(db, { action: "setRows", rows: [
-    { loc: "hub2", pid: "c1", sizeKey: "S", target: 4, minQty: 2 },   // no reorderPoint
+    { loc: "hub2", pid: "c1", sizeKey: "S", target: 4, minQty: 2,     // no reorderPoint
+      expected: { target: 2, minQty: 1, reorderPoint: 1 } },
   ] });
   const row = rowAt(db, "hub2", "c1", "S");
   assert.equal(row.target, 4);
@@ -349,7 +350,8 @@ test("a row edit records the whole previous row in history before it writes", as
   const db = makeFakeDb(world());
   invalidateCensusCache();
   await call(db, { action: "setRows", categoryKey: "caps-beanies", rows: [
-    { loc: "hub2", pid: "c1", sizeKey: "_", target: 8, minQty: 4 },
+    { loc: "hub2", pid: "c1", sizeKey: "_", target: 8, minQty: 4,
+      expected: { target: 6, minQty: 3, reorderPoint: null } },
   ] });
   const h = history(db).filter((x) => x.kind === "rows");
   assert.equal(h.length, 1);
@@ -366,6 +368,74 @@ test("a path segment that is not a single key is refused", async () => {
   ]) {
     await rejects(() => call(db, { action: "setRows", rows: [bad] }), "invalid-argument");
   }
+});
+
+test("expected is REQUIRED on every row edit — no drift protection is not an option", async () => {
+  // It used to be optional, so a caller that omitted it got none — and the
+  // callers most likely to omit it (a retry, a script) are exactly where
+  // silently reverting somebody else's write does the most damage.
+  const db = makeFakeDb(world());
+  invalidateCensusCache();
+  await rejects(() => call(db, { action: "setRows",
+    rows: [{ loc: "hub2", pid: "c1", sizeKey: "_", target: 8, minQty: 4 }] }),
+  "invalid-argument", /expected is required/);
+  assert.equal(rowAt(db, "hub2", "c1", "_").target, 6);
+});
+
+test("a row that moves BETWEEN the read and the write aborts the whole batch", async () => {
+  // The per-row read happens in a loop of up to 200 round-trips; on a large
+  // category the values it read are seconds old by the time the update goes
+  // out. Without the re-verify, a concurrent write landing mid-batch was
+  // silently reverted, with no error and no trace in the returned diff.
+  const db = makeFakeDb(world());
+  invalidateCensusCache();
+  const realUpdate = db.ref().update.bind(db.ref());
+  void realUpdate;
+  // Simulate the concurrent writer by mutating the tree after the reads but
+  // before the write — done by hooking the history push, which happens between
+  // the two.
+  const origPush = db.ref("engine_policy_history").push;
+  let fired = false;
+  const hook = () => {
+    if (fired) return;
+    fired = true;
+    db.ref("stock_targets/hub2/c1/_").set({ target: 99, minQty: 1 });
+  };
+  const origRef = db.ref.bind(db);
+  db.ref = (p) => {
+    const r = origRef(p);
+    if (p === "engine_policy_history") {
+      const push = r.push.bind(r);
+      r.push = () => { const h = push(); const set = h.set.bind(h); h.set = async (v) => { const out = await set(v); hook(); return out; }; return h; };
+    }
+    return r;
+  };
+  void origPush;
+  await rejects(() => call(db, { action: "setRows", rows: [
+    { loc: "hub2", pid: "c1", sizeKey: "_", target: 8, minQty: 4, expected: { target: 6, minQty: 3, reorderPoint: null } },
+  ] }), "failed-precondition", /changed while this was being saved/);
+  db.ref = origRef;
+  assert.equal(rowAt(db, "hub2", "c1", "_").target, 99, "the concurrent write must survive, not be reverted");
+});
+
+test("EDITING AN ALREADY-ARMED GROUP IS RE-MODELLED — the cap gate is on the resulting state", async () => {
+  // The gate used to fire only on the transition into arming, so an armed group
+  // could then be edited freely: forty more categories, or every target raised,
+  // and the model never ran. That is the 2,176-against-75 scenario reached
+  // through the one path the gate did not cover.
+  const db = makeFakeDb(world());
+  invalidateCensusCache();
+  await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP({ armed: true }) });
+  invalidateCensusCache();
+  // Now raise the numbers hard, with `armed` unchanged at true, and drop the cap
+  // so the modelled volume is over it.
+  await db.ref("config/refillEngine/maxIntentsPerRun").set(1);
+  await rejects(() => call(db, { action: "setGroup", groupKey: "footwear-all",
+    group: GROUP({ armed: true, policy: { perSize: true, hub2: { sizes: {
+      7: { target: 50, minQty: 25 }, 8: { target: 50, minQty: 25 },
+    } } } }) }), "failed-precondition", /against a limit of 1/);
+  // …and the group still holds its previous numbers.
+  assert.equal(groupAt(db, "footwear-all").policy.hub2.sizes["7"].target, 2);
 });
 
 test("a batch bigger than the cap is refused rather than half-applied", async () => {

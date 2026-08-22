@@ -429,13 +429,19 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const saveRows = async () => {
     const edits = Object.entries(rowDraft).map(([id, r]) => {
       const [loc, pid, sizeKey] = id.split("::");
+      // `expected` is REQUIRED by the server — it is what this list was
+      // rendered from, and it is how a change somebody else made while the list
+      // was open gets refused instead of silently reverted. A row that is not
+      // in `rows` cannot have been edited here, so it is dropped rather than
+      // sent without one.
       const src = (rows || []).find((x) => `${x.loc}::${x.pid}::${x.sizeKey}` === id);
+      if (!src) return null;
       const n = (v) => { const t = String(v ?? "").trim(); return /^\d+$/.test(t) ? Number(t) : null; };
       return {
         loc, pid, sizeKey, target: n(r.target), minQty: n(r.minQty), reorderPoint: n(r.reorderPoint),
-        expected: src ? { target: src.target, minQty: src.minQty, reorderPoint: src.reorderPoint } : undefined,
+        expected: { target: src.target, minQty: src.minQty, reorderPoint: src.reorderPoint },
       };
-    });
+    }).filter(Boolean);
     if (!edits.length) return;
     setBusy("rows-save");
     try {
