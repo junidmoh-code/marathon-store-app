@@ -188,13 +188,18 @@ export function postBlocker(post, { now = Date.now(), requireDue = false } = {})
   // it was meant to go out.
   const videos = media.filter((m) => m.type === "video").length;
   if (videos && videos !== media.length) {
-    return "A post is either one video or a set of photos — not both.";
+    return "A post is either video or photos — not both.";
   }
-  if (videos > 1) return "Only one video per post.";
   for (const key of on) {
     const p = platform(key);
     if (!p) return `Unknown platform "${key}".`;
     if (videos && !p.video) return `${p.label} cannot take a video.`;
+    // Facebook's Page API takes ONE video or SEVERAL photos, never several
+    // videos — publishFacebook throws on it. Instagram's carousel is happy
+    // with several, so this is checked per platform rather than banned
+    // outright: banning it would refuse a post Instagram can take, and no
+    // generator kind produces one anyway.
+    if (videos > 1 && key === "facebook") return "Facebook takes one video per post.";
     if (media.length > p.mediaMax) return `${p.label} takes at most ${p.mediaMax} items; this post has ${media.length}.`;
   }
   if (requireDue && !isDue(post, now)) {

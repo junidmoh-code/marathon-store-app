@@ -118,11 +118,25 @@ describe("the gate refuses what the senders cannot send", () => {
   // the queue showed the post as fine, Junid approved it, and it parked in
   // Failed on the evening it was meant to go out.
   it("refuses a mixed video and photo set", () => {
-    expect(postBlocker(ok({ media: [...item("video"), ...item("image")] }))).toMatch(/either one video or a set of photos/i);
+    expect(postBlocker(ok({ media: [...item("video"), ...item("image")] }))).toMatch(/either video or photos/i);
   });
 
-  it("refuses more than one video", () => {
-    expect(postBlocker(ok({ media: item("video", 2) }))).toMatch(/only one video/i);
+  // Facebook's Page API takes one video or several photos, never several
+  // videos — but Instagram's carousel is fine with them, so the rule is
+  // per-platform rather than a blanket ban that would refuse a post Instagram
+  // could take.
+  it("refuses several videos when Facebook is on", () => {
+    expect(postBlocker(ok({
+      media: item("video", 2),
+      platforms: { instagram: true, facebook: true, tiktok: false },
+    }))).toMatch(/Facebook takes one video/i);
+  });
+
+  it("allows several videos when Facebook is off", () => {
+    expect(postBlocker(ok({
+      media: item("video", 2),
+      platforms: { instagram: true, facebook: false, tiktok: false },
+    }))).toBeNull();
   });
 
   it("still allows a single video and a pure photo set", () => {

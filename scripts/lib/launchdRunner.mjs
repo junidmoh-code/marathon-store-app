@@ -82,6 +82,11 @@ function processAlive(pid) {
 export async function runTick({
   name, logDir, script, args = [], cwd,
   staleLockMs = 30 * 60 * 1000,
+  // A HARD ceiling on the child. Without one, a run hung on a call with no
+  // timeout of its own (firebase-admin retries indefinitely) holds the lock
+  // until someone notices — which on a three-times-a-week cadence could be
+  // days. Killed, the tick fails loudly and the next one runs.
+  maxRunMs = 60 * 60 * 1000,
   busyWhen = () => true,
   idleLine = null,
 }) {
@@ -142,22 +147,22 @@ export async function runTick({
           : null;
         if (owner) {
           const age = held.startedAt ? Date.now() - held.startedAt : null;
-          // ── PID REUSE AFTER AN UNCLEAN REBOOT ────────────────────────────
-          // A lock survives a power cut carrying a pid that the OS later hands
-          // to something else entirely. processAlive then says "alive" forever
-          // and the job never runs again — silently, on a schedule nobody is
-          // watching. A live run is never interrupted on age alone, but a lock
-          // older than this cannot be a live run of THIS program: the child is
-          // bounded far below it.
-          const IMPOSSIBLE_AGE_MS = Math.max(staleLockMs * 4, 6 * 60 * 60 * 1000);
-          if (age !== null && age > IMPOSSIBLE_AGE_MS) {
-            log(`⚠ lock from pid ${owner} is ${Math.round(age / 3600000)}h old — older than any real run, so the pid has almost certainly been reused. Reclaiming.`);
-          } else {
-            if (age !== null && age > staleLockMs) {
-              log(`⚠ run pid ${owner} has been going ${Math.round(age / 60000)} min — still alive, so this tick stands down. If it is genuinely stuck: kill ${owner}`);
-            }
-            return false;
+          // ── A LIVE OWNER ALWAYS WINS. NO EXCEPTIONS, INCLUDING AGE ───────
+          // An earlier version stole the lock from a pid it had just confirmed
+          // was ALIVE, once the lock passed an "impossible age", on the premise
+          // that the child is time-bounded. The child is not time-bounded by
+          // anything except maxRunMs below — and before that existed, a run
+          // hung on an RTDB call would have had its lock stolen and a second
+          // publisher started alongside it. That is the one outcome this lock
+          // exists to prevent, so age is a reason to SHOUT and never to steal.
+          //
+          // The pid-reuse case that motivated the exception is handled properly
+          // instead: maxRunMs kills a hung child, so a lock naming a live pid
+          // that is genuinely ours cannot outlive it by hours.
+          if (age !== null && age > staleLockMs) {
+            log(`⚠ run pid ${owner} has been going ${Math.round(age / 60000)} min — still alive, so this tick stands down. If it is genuinely stuck: kill ${owner}`);
           }
+          return false;
         }
         const stolen = `${LOCK_FILE}.stale.${process.pid}`;
         try { renameSync(LOCK_FILE, stolen); } catch { continue; }
@@ -266,10 +271,20 @@ export async function runTick({
   child.stdout.on("data", (b) => onChunk(b.toString(), false));
   child.stderr.on("data", (b) => onChunk(b.toString(), true));
 
+  let killedForTime = false;
+  const killTimer = setTimeout(() => {
+    killedForTime = true;
+    log(`✗✗ run exceeded ${Math.round(maxRunMs / 60000)} min — killing it. A hung run must not hold the schedule.`);
+    try { child.kill("SIGTERM"); } catch { /* already gone */ }
+    setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, 10_000).unref?.();
+  }, maxRunMs);
+  killTimer.unref?.();
+
   const code = await new Promise((resolve) => {
-    child.on("close", (c) => resolve(c ?? 1));
+    child.on("close", (c) => resolve(killedForTime ? 1 : (c ?? 1)));
     child.on("error", (e) => { log(`✗ could not start ${script}: ${String(e?.message || e)}`); resolve(1); });
   });
+  clearTimeout(killTimer);
 
   // Flush partial lines held at end of run.
   for (const s of Object.values(streams)) {

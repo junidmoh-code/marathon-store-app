@@ -158,13 +158,58 @@ export async function discardPost(postId) {
 }
 
 /**
- * Put a failed item back in the queue for another look. The per-platform
- * attempt counters are cleared with it — otherwise an item that exhausted its
- * retries would be approved again and refused on the first tick, which reads
- * as the retry being broken.
+ * Put a failed item back in the queue for another look.
+ *
+ * ── WHAT IT CLEARS, AND WHAT IT MUST NOT ────────────────────────────────────
+ * The obvious version writes `results: null`, and that is a double-post
+ * waiting to happen. It deletes the WHOLE results subtree — including every
+ * platform recorded "ok", and including the "sending" marker that is the only
+ * thing standing between an unconfirmed send and a second live post. A post
+ * that reached Instagram and stalled on Facebook would, after one tap of this
+ * button, be re-sent to BOTH.
+ *
+ * So it clears only what is safe to clear: errored platforms, and only their
+ * attempt counters. An "ok" result is a fact about the world and is kept
+ * forever. A "sending" result is an open question and is kept until a person
+ * answers it — see resolveSending.
  */
-export async function retryPost(postId) {
-  return writePost(postId, { status: "draft", results: null });
+export async function retryPost(postId, post = null) {
+  const results = (post && post.results) || {};
+  const next = {};
+  for (const [key, r] of Object.entries(results)) {
+    if (!r || typeof r !== "object") continue;
+    if (r.state === "ok" || r.state === "sending") { next[key] = r; continue; }
+    next[key] = null;   // errored or skipped: forget it and let it try again
+  }
+  return writePost(postId, { status: "draft", results: next, needsCheck: null });
+}
+
+/**
+ * Answer the one question the publisher cannot: did this actually post?
+ *
+ * A "sending" record means we asked a platform to publish and never learned the
+ * answer. The publisher will not guess — guessing wrong posts twice — so it
+ * holds the item and asks. This is the control that lets the answer be given.
+ *
+ * `didPost: true`  → recorded as posted. Nothing is ever sent for it again.
+ * `didPost: false` → recorded as an error, so the ordinary retry path applies.
+ *
+ * Without this the held state was a dead end: the only button on a failed post
+ * wiped the results, which re-sent everything.
+ */
+export async function resolveSending(postId, platformKey, didPost) {
+  if (!PLATFORM_KEYS.includes(platformKey)) return { ok: false, message: `Unknown platform "${platformKey}".` };
+  try {
+    await update(ref(database, `${POSTS_PATH}/${safeSeg(postId)}/results/${safeSeg(platformKey)}`), {
+      state: didPost ? "ok" : "error",
+      error: didPost ? null : "an earlier send was never confirmed; marked as not posted by hand",
+      resolvedByHand: true,
+      at: serverNowMs(),
+    });
+    return { ok: true };
+  } catch (err) {
+    return writeError(err);
+  }
 }
 
 export async function editCaption(postId, caption) {
@@ -228,13 +273,15 @@ async function writePost(postId, fields) {
  * so a re-fetched row is merged rather than duplicated. The cost is up to
  * pageSize wasted rows in the pathological case; the alternative loses data.
  *
- * `done` is therefore judged on NEW ids, not on page length — an inclusive
- * page that returns only rows the caller already holds is the end of the list,
- * and testing length alone would loop on it forever.
+ * `done` is judged on page LENGTH. A full page carrying nothing new is not the
+ * end of the list — it is a tie group at least a page wide — so that case steps
+ * the cursor past the tie and walks on. Judging `done` on freshness alone would
+ * stop dead there and make every older reference unreachable, which is the same
+ * data loss as the exclusive cursor, arrived at from the other direction.
  *
  * Returns { refs, done }.
  */
-export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, held = null } = {}) {
+export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, held = null, _stepped = false } = {}) {
   let q = query(ref(database, REFS_PATH), orderByChild("addedAt"), limitToLast(pageSize));
   if (Number.isFinite(before)) {
     q = query(ref(database, REFS_PATH), orderByChild("addedAt"), startAt(0), endAt(before), limitToLast(pageSize));
@@ -246,9 +293,17 @@ export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, hel
     .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   const heldIds = held instanceof Set ? held : new Set((held || []).map((r) => r && r.id));
   const fresh = refs.filter((r) => !heldIds.has(r.id));
-  // Short page ⇒ the end. Full page of nothing new ⇒ also the end (every row
-  // was a boundary re-fetch).
-  return { refs, done: refs.length < pageSize || (before !== null && fresh.length === 0) };
+
+  // A FULL page with nothing new means the boundary timestamp is shared by at
+  // least a whole page of references. Step past it rather than stopping — one
+  // extra query, and only in a case that needs `pageSize` uploads inside the
+  // same millisecond. `_stepped` bounds it to a single retry so no input can
+  // make this recurse.
+  if (before !== null && refs.length >= pageSize && fresh.length === 0 && !_stepped) {
+    return loadRefPage({ before: before - 1, pageSize, held, _stepped: true });
+  }
+
+  return { refs, done: refs.length < pageSize };
 }
 
 /** Merge a fetched page into the held list, newest first, de-duplicated by id. */

@@ -30,11 +30,11 @@ import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, input as i
 import {
   PLATFORMS, PLATFORM_KEYS, QUEUE_FILTERS, CAPTION_MAX,
   postKind, platform, enabledPlatforms, postBlocker, describePost, resultLine,
-  formatSlot, toLocalInput, fromLocalInput, captionFor,
+  formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
 } from "./socialCore";
 import {
   loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, discardPost, retryPost,
-  editCaption, reschedulePost, setPlatforms,
+  editCaption, reschedulePost, setPlatforms, resolveSending,
 } from "./socialStore";
 import StyleLibraryCard from "./StyleLibraryCard";
 import GenerateCard from "./GenerateCard";
@@ -227,9 +227,40 @@ function PostRow({ post, onChanged, onNotice }) {
               </div>
               {PLATFORM_KEYS.filter((k) => post.results[k]).map((k) => {
                 const state = post.results[k].state;
+                const unconfirmed = needsVerification(post, k);
                 return (
-                  <div key={k} style={{ fontSize: 11.5, marginBottom: 3, color: state === "ok" ? GREEN : state === "skipped" ? GRAY : RED }}>
-                    <strong>{platform(k).label}</strong> — {resultLine(post, k)}
+                  <div key={k} style={{ marginBottom: unconfirmed ? 9 : 3 }}>
+                    <div style={{ fontSize: 11.5, color: state === "ok" ? GREEN : state === "skipped" ? GRAY : RED }}>
+                      <strong>{platform(k).label}</strong> — {resultLine(post, k)}
+                      {post.results[k].permalink && (
+                        <> · <a href={post.results[k].permalink} target="_blank" rel="noopener noreferrer"
+                               style={{ color: BLUE_L }}>open</a></>
+                      )}
+                    </div>
+                    {/* ── THE ANSWER ONLY A PERSON HAS ────────────────────
+                        We asked the platform to publish and never heard back.
+                        The publisher will not guess — guessing wrong posts
+                        twice — so it holds the item and asks here. Without
+                        this control the held state was a dead end. ── */}
+                    {unconfirmed && (
+                      <div style={{ marginTop: 5, paddingLeft: 2 }}>
+                        <div style={{ fontSize: 11, color: AMBER, marginBottom: 5, lineHeight: 1.45 }}>
+                          Open {platform(k).label} and look. Is this post there?
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <button disabled={busy}
+                                  onClick={() => run(() => resolveSending(post.id, k, true), "Marked as posted — it will not be sent again.")}
+                                  style={{ ...bGreen, padding: "6px 11px", fontSize: "0.75rem" }}>
+                            Yes, it posted
+                          </button>
+                          <button disabled={busy}
+                                  onClick={() => run(() => resolveSending(post.id, k, false), "Marked as not posted — it can be tried again.")}
+                                  style={{ ...bGray, padding: "6px 11px", fontSize: "0.75rem" }}>
+                            No, it didn't
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -252,7 +283,7 @@ function PostRow({ post, onChanged, onNotice }) {
               </button>
             )}
             {post.status === "failed" && (
-              <button disabled={busy} onClick={() => run(() => retryPost(post.id), "Back in the queue with its retries cleared.")}
+              <button disabled={busy} onClick={() => run(() => retryPost(post.id, post), "Back in the queue. Anything already posted stays posted.")}
                       style={bBlue}>
                 Put back in the queue
               </button>

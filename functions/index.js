@@ -3858,14 +3858,20 @@ exports.generateSocialPosts = onCall(
     // that does not fit the partial-read rule, and it is called out rather than
     // hidden.
     //
-    // INACTIVE and UNSELLABLE locations are dropped here, not later: every
-    // location kept costs one point read PER SHORTLISTED PRODUCT. Carrying
-    // in_transit (never sellable) and the two drained-and-retired buckets
-    // meant ~27% of ~880 reads were fetched only to be discarded.
+    // ONLY the unsellable locations are dropped, and that list is
+    // UNSELLABLE_LOCATIONS — the same one the Shopify inventory push uses.
+    //
+    // An earlier version also dropped `active: false` locations to save reads.
+    // That quietly re-opened the very divergence the stock-parity test exists
+    // to close, one level ABOVE where that test can see it: the retired
+    // `studio` and `base` buckets still hold real /stock counts, networkTotals
+    // counts them, and so social would have seen LESS stock than Shopify
+    // sells. Safe in direction (a missed post, not a sold-out link) and wrong
+    // in principle — the two must answer identically, and a saving of a few
+    // hundred point reads is not worth a second source of truth.
     const locationsSnap = await db.ref("locations").once("value");
-    const locations = Object.entries(locationsSnap.val() || {})
-      .filter(([id, v]) => v && v.active !== false && !socialSelect.UNSELLABLE_LOCATIONS.has(id))
-      .map(([id]) => id);
+    const locations = Object.keys(locationsSnap.val() || {})
+      .filter((id) => !socialSelect.UNSELLABLE_LOCATIONS.has(id));
     const products = {}, stockByPid = {};
     const READ_BATCH = 20;
     for (let i = 0; i < shortlist.length; i += READ_BATCH) {

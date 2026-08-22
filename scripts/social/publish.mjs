@@ -42,7 +42,7 @@
 import { createRequire } from "module";
 import {
   postBlocker, outstandingPlatforms, attemptsExhausted, captionFor, needsVerification,
-  MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot,
+  MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot, nextSlots,
 } from "../../src/components/social/socialCore.js";
 import { readSecret, credentialStatus } from "./secrets.mjs";
 import { publishInstagram, publishFacebook, metaPreflight } from "./meta.mjs";
@@ -64,6 +64,10 @@ admin.initializeApp({
 const db = admin.database();
 
 const POSTS = "social_posts";
+// The next posting slot after `from`. A local twin of nextSlots in socialCore —
+// importing it would be cleaner, but this file already imports that module, so
+// it simply uses it.
+const socialNextSlot = (from) => nextSlots(from + 1000, 1)[0] || null;
 const log = (...a) => console.log(...a);
 // ── WARNINGS GO TO STDERR, ON PURPOSE ────────────────────────────────────────
 // The launchd wrapper buffers stdout until it can classify the tick, and an
@@ -104,7 +108,11 @@ async function reclaimStaleClaims() {
   const rows = Object.entries(snap.val() || {});
   let reclaimed = 0;
   for (const [id, post] of rows) {
-    const age = Date.now() - Number(post.updatedAt || 0);
+    // claimedAt, never updatedAt — see claim(). A post with no claimedAt at all
+    // was claimed by a build older than this field; fall back to updatedAt so
+    // it can still be recovered rather than sitting forever.
+    const claimedAt = Number(post.claimedAt) || Number(post.updatedAt) || 0;
+    const age = Date.now() - claimedAt;
     if (!(age > STALE_CLAIM_MS)) continue;
     // Transactional so a live run that is merely slow cannot have its claim
     // stolen out from under it by a concurrent tick.
@@ -140,7 +148,17 @@ async function claim(postId) {
     return "posting";
   });
   // committed with a value of "posting" is the only outcome that means WE won.
-  return res.committed && res.snapshot.val() === "posting";
+  const won = res.committed && res.snapshot.val() === "posting";
+  // ── STAMP WHEN THE CLAIM WAS TAKEN, NOT WHEN THE POST WAS LAST EDITED ─────
+  // reclaimStaleClaims used to measure staleness from `updatedAt`, which is the
+  // last time ANYTHING on the post changed. A post approved on Monday and
+  // scheduled for Saturday carries a five-day-old updatedAt, so the instant it
+  // was claimed it already looked abandoned — and a concurrent publisher could
+  // reclaim a live claim and send the same post alongside it. `claimedAt` is
+  // written by the claim and by nothing else, so it can only ever mean "this
+  // run took it at this moment".
+  if (won) await db.ref(`${POSTS}/${postId}/claimedAt`).set(Date.now());
+  return won;
 }
 
 /**
@@ -396,8 +414,19 @@ async function main() {
             // NOT a failure and NOT a retry — nothing is broken, the platform
             // simply is not wired up. It never reached a send, so the
             // in-flight marker is replaced outright.
+            // `attempts` is preserved when the platform has genuinely FAILED
+            // before. Resetting it unconditionally let a Secret Manager outage
+            // erase two real Instagram failures and present the post as
+            // "nothing is broken, just skipped" — while handing it four fresh
+            // attempts. It is only reset when there was no real failure to
+            // forget, which is the ordinary "TikTok isn't connected" case.
+            const prevState = (item.results?.[key] || {}).state;
+            const keepAttempts = prevState === "error" || prevState === "sending";
             await db.ref(`${POSTS}/${post.id}/results/${key}`).update({
-              state: "skipped", error: err.message, attempts: 0, at: Date.now(),
+              state: "skipped",
+              error: err.message,
+              ...(keepAttempts ? {} : { attempts: 0 }),
+              at: Date.now(),
             });
             log(`  ${key}: SKIPPED — ${err.message}`);
             anySkipped = true;
@@ -439,8 +468,15 @@ async function main() {
         // landed in the Posted tab having reached nobody, and was never
         // surfaced again. It stays approved so it goes out the day the
         // platform is connected.
-        await setStatus(post.id, "approved");
-        warn(`  → NOTHING WAS SENT — every platform on this post is skipped. It stays approved and visible.`);
+        // ── AND IT MOVES TO THE BACK OF THE QUEUE ───────────────────────
+        // Left with its original (past) scheduledAt it sorted to the FRONT of
+        // `due` on every run, forever. Six TikTok-only posts would occupy all
+        // six slots of every run and no real post would ever be reached again.
+        // Pushing it to the next slot keeps it approved, keeps it visible, and
+        // keeps it retried — without starving everything behind it.
+        const nextSlot = socialNextSlot(Date.now());
+        await setStatus(post.id, "approved", nextSlot ? { scheduledAt: nextSlot } : {});
+        warn(`  → NOTHING WAS SENT — every platform on this post is skipped. It stays approved${nextSlot ? `, moved to ${formatSlot(nextSlot)}` : ""}.`);
         skipped++;
       } else if (allExhausted || (!anyRetryable && !anyOk)) {
         await setStatus(post.id, "failed");
