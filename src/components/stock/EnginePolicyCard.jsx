@@ -429,6 +429,15 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   // edited in place. NOTHING HERE DELETES ONE — the server refuses it, and
   // there is no control for it either.
   const openRows = async (key, loc = null) => {
+    // NARROWING THROWS THE DRAFT AWAY, so it asks first. The panel renders
+    // "Save N rows" directly above the location chips; tapping one used to
+    // clear the edits with no warning at all. (Delta review, PR #401.)
+    if (Object.keys(rowDraft).length) {
+      const n = Object.keys(rowDraft).length;
+      const ok = window.confirm(
+        `You have ${n} unsaved ${n === 1 ? "row" : "rows"}.\n\nChanging which rows are shown discards ${n === 1 ? "it" : "them"}. Continue?`);
+      if (!ok) return;
+    }
     setPanel("rows"); setRows(null); setRowDraft({});
     setBusy("rows");
     try {
@@ -438,7 +447,8 @@ function EnginePolicyAuthed({ viewer, onExit }) {
       setRows(res.data.rows || []);
       // The server caps the list. Held separately from `rows` so the panel can
       // say "showing N of M" honestly rather than silently rendering a prefix.
-      setRowsMeta({ total: res.data.total, truncated: !!res.data.truncated, limit: res.data.limit,
+      setRowsMeta({ total: res.data.total, matching: res.data.matching ?? res.data.total,
+        truncated: !!res.data.truncated, narrowingHelps: !!res.data.narrowingHelps, limit: res.data.limit,
         loc: res.data.loc || null, locations: res.data.locations || [], byLocation: res.data.byLocation || {} });
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -1084,18 +1094,25 @@ function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave
       {rows && meta?.truncated && (
         <div style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: ".8rem",
           border: "1px solid rgba(251,191,36,.35)", color: AMBER, fontSize: ".82rem", lineHeight: 1.5 }}>
-          Showing the first {rows.length} of {meta.total} rows. Narrow to one location to see the rest.
+          Showing the first {rows.length} of {meta.matching} rows
+          {meta.loc ? ` at ${locLabel(meta.loc)}` : ""}.{" "}
+          {meta.narrowingHelps
+            ? "Narrow to one location to see the rest."
+            : "There is no further way to narrow this list yet — the rest are edited with a reviewed script."}
         </div>
       )}
       {rows && (meta?.locations || []).length > 1 && (
         <div className="ep-chips" style={{ marginBottom: ".8rem" }}>
+          {/* Every count here is the FULL count for that location, whatever is
+              currently narrowed to — the server counts all locations and
+              narrows only the rows it returns. */}
           <Chip tone={meta.loc ? "gray" : "blue"} onClick={meta.loc ? () => onNarrow(null) : undefined}>
             All {meta.total != null ? `(${meta.total})` : ""}
           </Chip>
           {meta.locations.map((l) => (
             <Chip key={l} tone={meta.loc === l ? "blue" : "gray"}
               onClick={meta.loc === l ? undefined : () => onNarrow(l)}>
-              {locLabel(l)}{meta.byLocation?.[l] != null && !meta.loc ? ` (${meta.byLocation[l]})` : ""}
+              {locLabel(l)}{meta.byLocation?.[l] != null ? ` (${meta.byLocation[l]})` : ""}
             </Chip>
           ))}
         </div>

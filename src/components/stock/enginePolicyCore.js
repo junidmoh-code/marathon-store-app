@@ -461,12 +461,20 @@ export function changedFields(before, after) {
       // governs the entire location has to be in it. (CodeRabbit, PR #401.)
       if (isPerSizeRow(al)) continue;
     }
+    // `leftPerSize` prefixes the uniform lines when the leg just came OUT of
+    // per-size, so the banner does not read as a contradiction: the per-size
+    // block above has already said every old size went to "not set", and a bare
+    // "Keep not set -> 7" next to it looks like a second, unrelated change
+    // rather than the number that replaced them. (Delta review, PR #401.)
+    const leftPerSize = isPerSizeRow(bl) && !isPerSizeRow(al);
     for (const f of FIELD_ORDER) {
-      const from = bl && typeof bl[f] === "number" ? bl[f] : null;
+      const from = leftPerSize ? null : (bl && typeof bl[f] === "number" ? bl[f] : null);
       const to = al && typeof al[f] === "number" ? al[f] : null;
       if (from === to) continue;
-      out.push({ loc, field: f, label: COLUMN_LABELS[f], from, to,
-        text: `${COLUMN_LABELS[f]} ${from === null ? "not set" : from} -> ${to === null ? "not set" : to}` });
+      out.push({ loc, field: f, label: COLUMN_LABELS[f], from, to, leftPerSize,
+        text: leftPerSize
+          ? `the whole shop — ${COLUMN_LABELS[f]} ${to === null ? "not set" : to}`
+          : `${COLUMN_LABELS[f]} ${from === null ? "not set" : from} -> ${to === null ? "not set" : to}` });
     }
   }
   return out;

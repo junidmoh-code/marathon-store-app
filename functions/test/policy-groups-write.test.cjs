@@ -277,6 +277,36 @@ test("the row list reads every explicit row on the category's products", async (
   assert.equal(byKey["hub2/c1/S"].name, "Black Cap");
 });
 
+test("the row list is BOUNDED, and its counts stay true when narrowed", async () => {
+  // t-shirts has 1,870 rows live; sending them all and drawing three inputs
+  // each was five and a half thousand inputs on a phone. The bound is on the
+  // PAYLOAD — the counts still describe the whole category, because an "All"
+  // chip reading the narrowed count is a lie. (CodeRabbit + delta review, #401.)
+  const w = world();
+  // marathon-pe, not trophy: the world's config.mode names hub2 and
+  // marathon-pe only, so trophy is not a row location and rows there would
+  // (correctly) not be read at all.
+  w.stock_targets["marathon-pe"] = { c1: { _: { target: 4, minQty: 2 } } };
+  const db = makeFakeDb(w);
+  const all = await call(db, { action: "rows", categoryKey: "caps-beanies" });
+  assert.equal(all.total, 3);
+  assert.equal(all.matching, 3);
+  assert.deepEqual(all.byLocation, { hub2: 2, "marathon-pe": 1 });
+  assert.equal(all.truncated, false);
+
+  const narrowed = await call(db, { action: "rows", categoryKey: "caps-beanies", loc: "marathon-pe" });
+  assert.equal(narrowed.rows.length, 1);
+  assert.equal(narrowed.matching, 1, "how many the narrowing has");
+  assert.equal(narrowed.total, 3, "…but the category still has three, and the chip says so");
+  assert.deepEqual(narrowed.byLocation, { hub2: 2, "marathon-pe": 1 }, "every location is still counted");
+});
+
+test("an unknown loc is refused before it becomes a path segment", async () => {
+  const db = makeFakeDb(world());
+  await rejects(() => call(db, { action: "rows", categoryKey: "caps-beanies", loc: "../../config" }),
+    "invalid-argument", /unknown location/);
+});
+
 test("a row is EDITED IN PLACE, and every field the row carries survives", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();

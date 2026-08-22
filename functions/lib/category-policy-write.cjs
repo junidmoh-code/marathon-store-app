@@ -602,12 +602,16 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     if (onlyLoc && !allRowLocs.includes(onlyLoc)) {
       throw httpsError("invalid-argument", `unknown location "${onlyLoc}"`);
     }
-    const rowLocs = onlyLoc ? [onlyLoc] : allRowLocs;
+    // EVERY LOCATION IS COUNTED, whatever `loc` narrows the RESULT to. Counting
+    // only the narrowed location made `total` mean "rows at Hub 2" while the
+    // panel rendered it on an "All" chip — so narrowing a 1,870-row category to
+    // one shop made the All chip read "All (240)". The bound this action exists
+    // for is on the PAYLOAD, not on the count. (Delta review, PR #401.)
     const products = await readMapPaged(db, "products");
     const pids = new Set(Object.keys(products).filter((pid) => products[pid]?.categoryKey === categoryKey));
     const all = [];
     const byLocation = {};
-    for (const loc of rowLocs) {
+    for (const loc of allRowLocs) {
       const t = await readMapPaged(db, `${TARGETS_PATH}/${loc}`);
       for (const [pid, bySize] of Object.entries(t)) {
         if (!pids.has(pid)) continue;
@@ -625,11 +629,21 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       }
     }
     all.sort((a, b) => a.name.localeCompare(b.name) || a.loc.localeCompare(b.loc) || a.sizeKey.localeCompare(b.sizeKey));
-    const rows = all.slice(0, MAX_ROWS_PER_READ);
+    const shown = onlyLoc ? all.filter((r) => r.loc === onlyLoc) : all;
+    const rows = shown.slice(0, MAX_ROWS_PER_READ);
     return {
       ok: true, action: "rows", categoryKey, rows,
-      count: rows.length, total: all.length,
-      truncated: all.length > rows.length,
+      count: rows.length,
+      // `total` is every row on the category. `matching` is how many the
+      // current narrowing has. Two numbers because the panel shows both, and
+      // conflating them is what made the All chip lie.
+      total: all.length,
+      matching: shown.length,
+      truncated: shown.length > rows.length,
+      // Whether narrowing further can help. Once a SINGLE location is still
+      // over the limit there is no other axis, and telling the owner to "narrow
+      // to one location" while they already have is worse than saying so.
+      narrowingHelps: !onlyLoc && shown.length > rows.length,
       limit: MAX_ROWS_PER_READ,
       loc: onlyLoc, locations: allRowLocs, byLocation,
       serverNowMs: nowMs,

@@ -353,6 +353,13 @@ async function geminiImage(apiKey, prompt) {
       results.push({ key, label: cats[key].label, prompt, path, url, costUSD, bytes: buffer.length });
       console.log(`  ✓ ${pad(key, 20)} $${costUSD.toFixed(4)}  ${(buffer.length / 1024).toFixed(0)}kB  ${path}`);
     } catch (e) {
+      // RELEASE THE RESERVATION. A refused request is not billed, so a failed
+      // generation must not consume budget. Leaking it meant a run against an
+      // empty account burned $0.095 of phantom spend per key, stopped early
+      // with "spend ceiling would be crossed" after about 52 zero-cost
+      // failures, and wrote a JSON reporting money nobody was charged.
+      // (Delta review, PR #401.)
+      spent -= ESTIMATE_PER_IMAGE_USD;
       results.push({ key, label: cats[key].label, prompt, error: String(e.message || e) });
       console.log(`  ✗ ${pad(key, 20)} ${String(e.message || e).slice(0, 90)}`);
     }

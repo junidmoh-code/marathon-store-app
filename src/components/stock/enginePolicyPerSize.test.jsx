@@ -162,6 +162,23 @@ describe("the changed-fields banner", () => {
     expect(out.find((c) => c.size === "S")?.text).toMatch(/^S — Keep 4 -> 6$/);
   });
 
+  it("shows the NEW number when a leg leaves per-size, and reads coherently", () => {
+    // It used to `continue` past the uniform loop, so the banner listed every
+    // old size going to "not set" and said "now one number for the whole shop"
+    // without ever showing what that number is — and the banner is the last
+    // thing read before saving. (CodeRabbit, PR #401.)
+    const before = { perSize: true, hub2: { sizes: { S: { target: 5, minQty: 3 } } } };
+    const after = { perSize: true, hub2: { target: 7, minQty: 4 } };
+    const out = changedFields(before, after);
+    const keep = out.find((c) => c.field === "target" && !c.size);
+    expect(keep).toBeTruthy();
+    expect(keep.to).toBe(7);
+    // …and it does not read as a second, unrelated change alongside the
+    // per-size lines that already said everything went to "not set".
+    expect(keep.text).toBe("the whole shop — Keep 7");
+    expect(keep.leftPerSize).toBe(true);
+  });
+
   it("reports a shape change as a shape change, not as an un-arming", () => {
     const before = { perSize: true, hub2: { target: 5, minQty: 3 } };
     const after = { perSize: true, hub2: { sizes: { S: { target: 5, minQty: 3 } } } };
