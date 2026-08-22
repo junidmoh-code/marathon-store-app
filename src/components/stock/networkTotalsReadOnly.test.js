@@ -20,8 +20,9 @@ const OWNED = ["networkTotalsCore.js", "networkTotalsStore.js", "NetworkTotals.j
 // A FREE call only — "(^|[^.\\w])name(" — so `cache.set(…)` on a Map and
 // `negatives.push(…)` on an array stay legal while the modular SDK's own
 // `set(ref, …)` / `update(ref, …)` / `push(ref, …)` cannot appear. (No
-// lookbehind: a (?<!…) here would be a parse-time SyntaxError on an older
-// tablet and blank the whole app — see noLookbehind.test.js.)
+// lookbehind: a negative-lookbehind assertion here would be a parse-time
+// SyntaxError on an older tablet and blank the whole app — and the repo-wide
+// guard in noLookbehind.test.js scans this file too, comments included.)
 const FREE_CALL = (name) => `(^|[^.\\w])${name}\\s*\\(`;
 const FORBIDDEN = [
   FREE_CALL("set"), FREE_CALL("update"), FREE_CALL("push"), FREE_CALL("remove"),
