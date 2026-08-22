@@ -50,7 +50,7 @@ function usePath(path, enabled = true) {
 //             gate, never `value != null`.
 //   error   — the read failed. Callers must degrade rather than block: an
 //             unreadable node means "this input is unknown", not "stop".
-function usePathState(path, enabled = true) {
+export function usePathState(path, enabled = true) {
   const authReady = useAuthReady();
   const [state, setState] = useState({ value: null, settled: false, error: false });
   useEffect(() => {

@@ -66,6 +66,7 @@ import RefillQueue from "./components/stock/RefillQueue";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
+import NetworkTotals from "./components/stock/NetworkTotals";
 import AttentionView from "./components/stock/AttentionView";
 import MarketingView from "./components/stock/MarketingView";
 import { hasStockAccess } from "./components/stock/stockAccess";
@@ -317,7 +318,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", SOCIAL: "social" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2825,6 +2826,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
       canAccessStock                                           && { key:"attention", icon:RoleIcons.stock, name:"Attention", desc:"Low stock, overstock & non-movers", onClick:()=>onSelect(ROLES.ATTENTION) },
+      // Total Stock — the pre-order research read: one number per product, every
+      // size, everywhere except Pine and Hub 3. Its own card rather than a Stock
+      // tab because it answers a BUYING question, not a warehouse one (owner
+      // decision 2026-08-22). Same access as Stock; read-only end to end.
+      canAccessStock                                           && { key:"total_stock", icon:RoleIcons.stock, name:"Total Stock", desc:"One total per product", onClick:()=>onSelect(ROLES.TOTAL_STOCK) },
       // Marketing — the products picked out of Attention, in two fixed lists
       // (Marketing / Display). Picking happens on the Attention grid; this card
       // is where you review what was picked.
@@ -17353,7 +17359,7 @@ function AppInner() {
   useEffect(() => {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
-    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING) && !canAccessStock) { setRole(null); return; }
+    if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
@@ -17637,6 +17643,7 @@ function AppInner() {
         actorRole={stockRole} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.ATTENTION) view = canAccessStock ? <AttentionView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.MARKETING) view = canAccessStock ? <MarketingView products={products} onExit={() => setRole(null)} /> : null;
   // The Display Register route is GONE (2026-08-06): displays are hub stock and
