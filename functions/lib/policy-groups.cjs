@@ -109,7 +109,7 @@ function sizesOfLocationEntry(locEntry) {
 // so overlapping membership is refused against what is actually there rather
 // than against an assumption.
 function validatePolicyGroup(groupKey, group, {
-  knownCategoryKeys, knownLocations, existingGroups, categoryPolicy,
+  knownCategoryKeys, knownLocations, existingGroups, categoryPolicy, allowedSizes = null,
 } = {}) {
   if (typeof groupKey !== "string" || !groupKey) return "groupKey must be a non-empty string";
   if (!KEY_RE.test(groupKey)) {
@@ -155,7 +155,10 @@ function validatePolicyGroup(groupKey, group, {
       if (Array.isArray(knownLocations) && knownLocations.length && !knownLocations.includes(loc)) {
         return `unknown location "${loc}"`;
       }
-      const err = validateLocationEntry(p[loc], { where: loc, perSize: p.perSize === true, allowedSizes: null });
+      // `allowedSizes` is the group's DERIVED run — the union of its members'
+      // runs (sizeRunForGroup) — when the caller has it; the callable always
+      // does. A per-size group write can then never name a size no member has.
+      const err = validateLocationEntry(p[loc], { where: loc, perSize: p.perSize === true, allowedSizes });
       if (err) return err;
     }
   }

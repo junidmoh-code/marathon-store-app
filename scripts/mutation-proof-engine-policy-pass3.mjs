@@ -13,6 +13,13 @@
 //   M3-CLOTHING    the clothing rule resolves a different number
 //   M3-UNION       the group's run becomes the INTERSECTION of its members'
 //   M3-PARTIAL     sizes only some members carry stop being marked
+//   M3W-GROUP-SIZES  a per-size group write trusts the client's sizes
+//   M3W-RUN-EMPTY    a group with no derivable run is given a per-size policy
+//   M3W-UNION-STOP   a union over the stop is accepted
+//   M3W-MEMBER-OF    members are flagged only while the group is armed
+//   M3W-GROUP-SUM    the group entry reports one member's count, not the sum
+//   M3W-DRYRUN-MODEL a dry run on a disarmed group stops modelling
+//   M3W-ROWS-GROUP   the group's rows list returns one category's rows
 //
 // The GOLDEN test catches the middle four by hash; the named property tests
 // catch them by name. A guard is PROVEN only if the suite fails under the
@@ -26,7 +33,9 @@ import { execFileSync } from "node:child_process";
 const RESOLVE = "functions/lib/policy-resolve.cjs";
 const ENGINE = "functions/lib/refill-engine.cjs";
 const GROUPS = "functions/lib/policy-groups.cjs";
+const WRITE = "functions/lib/category-policy-write.cjs";
 const TESTS = ["test/engine-policy-pass3.test.cjs"];
+const WRITE_TESTS = ["test/engine-policy-pass3-write.test.cjs"];
 
 const MUTATIONS = [
   {
@@ -104,6 +113,63 @@ const MUTATIONS = [
     from: `  const partial = sizes.filter((s) => carriedBy[s].length < membersWithRun.length);`,
     to: `  const partial = [];`,
     nodeTests: TESTS,
+  },
+  // ── THE CALLABLE ──────────────────────────────────────────────────────────
+  {
+    id: "M3W-GROUP-SIZES",
+    guard: "A PER-SIZE GROUP WRITE IS VALIDATED AGAINST THE DERIVED UNION — never the client's list",
+    file: WRITE,
+    from: `      allowedSizes: groupAllowedSizes,`,
+    to: `      allowedSizes: null,`,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M3W-RUN-EMPTY",
+    guard: "A group whose members have no derivable run is REFUSED a per-size policy, not guessed one",
+    file: WRITE,
+    from: `      if (groupRun.empty) {`,
+    to: `      if (false && groupRun.empty) {`,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M3W-UNION-STOP",
+    guard: "A union over the stop REFUSES a per-size group policy",
+    file: WRITE,
+    from: `      if (groupRun.overStop) {`,
+    to: `      if (false && groupRun.overStop) {`,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M3W-MEMBER-OF",
+    guard: "Members are flagged memberOfGroup WHILE DISARMED — the list folds them whatever the armed state",
+    file: WRITE,
+    from: `      memberOfGroup: memberOf[key] || null,`,
+    to: `      memberOfGroup: g ? g.groupKey : null,`,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M3W-GROUP-SUM",
+    guard: "The group entry's counts are the SUM of its members', not one member's",
+    file: WRITE,
+    from: `      products: sum("products"),`,
+    to: `      products: memberRows[0]?.products || 0,`,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M3W-DRYRUN-MODEL",
+    guard: "A dry run MODELS a disarmed group — the preview has a number to show before arming",
+    file: WRITE,
+    from: `(after.armed === true || d.dryRun === true)) {`,
+    to: `(after.armed === true)) {`,
+    nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M3W-ROWS-GROUP",
+    guard: "The rows list for a GROUP returns every member's rows",
+    file: WRITE,
+    from: `    const pids = new Set(Object.keys(products).filter((pid) => rowKeys.has(products[pid]?.categoryKey)));`,
+    to: `    const pids = new Set(Object.keys(products).filter((pid) => products[pid]?.categoryKey === categoryKey));`,
+    nodeTests: WRITE_TESTS,
   },
 ];
 

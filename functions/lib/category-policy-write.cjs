@@ -53,7 +53,7 @@ const {
   validateCategoryPolicy, diffCategoryPolicy, modelCategoryPolicy, defaultMinQty,
   carriageForCategory, validateLocationEntry, REFUSED_CATEGORY_KEYS,
 } = require("./category-policy.cjs");
-const { validatePolicyGroup, sizeRunForCategory, fillAllSizes } = require("./policy-groups.cjs");
+const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory } = require("./policy-resolve.cjs");
 const { encodeSizeKey } = require("./refill-engine.cjs");
 
@@ -341,6 +341,21 @@ async function deriveSizeRun(db, { config, categoryKey, knownLocations }) {
   return sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, locations: locs });
 }
 
+// The derived size run for a GROUP: the union of its members' runs, read on
+// demand, the same sizeRunForGroup the census uses. A per-size group write is
+// validated against THIS list, not the one the client offered.
+async function deriveGroupSizeRun(db, { config, group, knownLocations }) {
+  const locs = [...new Set([...rowLocationsFor(config), ...(knownLocations || [])])];
+  const products = await readMapPaged(db, "products");
+  const stock = {}, targets = {};
+  for (const loc of locs) {
+    stock[loc] = await readMapPaged(db, `stock/${loc}`);
+    targets[loc] = await readMapPaged(db, `${TARGETS_PATH}/${loc}`);
+  }
+  const taxonomy = await val(db, "settings/productTaxonomy");
+  return sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys: group?.memberCategoryKeys, locations: locs });
+}
+
 // ── THE CENSUS ───────────────────────────────────────────────────────────────
 // What the card's LIST needs, answered server-side in one call: per category,
 // the product count, units on hand, which locations carry it, whether it is
@@ -448,6 +463,15 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // (8 rows). They are real policy of a kind and are listed, read-only.
   const rowOnlyKeys = Object.keys(rowsByCategory).filter((k) => !keys.includes(k)).sort();
 
+  // Which group NAMES each category — armed or not. armedGroupForCategory
+  // answers only for an ARMED group, and the list needs to fold a member into
+  // its group's entry whatever the group's armed state: a disarmed group is
+  // still the thing the owner opens to see those categories.
+  const memberOf = {};
+  for (const [gk, g] of Object.entries(groups)) {
+    for (const m of (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : [])) memberOf[m] = memberOf[m] || gk;
+  }
+
   const categories = [];
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
@@ -491,6 +515,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       policySource: eff ? eff.source : null,
       groupKey: g ? g.groupKey : null,
       groupLabel: g ? (g.group.label || g.groupKey) : null,
+      // The group that NAMES this category, armed or not. The card folds every
+      // member into its group's entry on the main list and reaches it from
+      // inside that entry; this is the field that says so.
+      memberOfGroup: memberOf[key] || null,
       effectiveEntry: effEntry,
       armedEffective: effArmed,
       // The shape each armed location holds — "uniform" or "per-size".
@@ -528,7 +556,87 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
     });
   }
-  return { categories, destinations, groups, rowLocations: rowLocs };
+  // ── A GROUP AS ONE ENTRY ──────────────────────────────────────────────────
+  // The list presents a group the way it presents a category: one row, one
+  // photo, the combined counts, its armed state. The members are reachable
+  // from inside it. Everything a category entry carries is carried here in
+  // the same field, so the detail screen is the SAME screen — and the numbers
+  // are SUMMED from the member entries computed above rather than derived a
+  // second way.
+  const groupEntries = [];
+  for (const gk of Object.keys(groups).sort()) {
+    const g = groups[gk];
+    if (!isPlainObject(g)) continue;
+    const memberKeys = Array.isArray(g.memberCategoryKeys) ? g.memberCategoryKeys : [];
+    const memberRows = memberKeys.map((mk) => categories.find((c) => c.key === mk)).filter(Boolean);
+    const policyEntry = isPlainObject(g.policy) ? g.policy : null;
+    const armedLocs = policyEntry
+      ? Object.keys(policyEntry).filter((k) => k !== "perSize" && locationEntryMode(policyEntry[k]) !== "invalid") : [];
+    const carriage = {};
+    for (const c of memberRows) {
+      for (const [loc, v] of Object.entries(c.carriage || {})) {
+        const t = carriage[loc] || (carriage[loc] = { carries: false, products: 0, units: 0 });
+        t.carries = t.carries || v?.carries === true;
+        t.products += v?.products || 0;
+        t.units += v?.units || 0;
+      }
+    }
+    // THE UNION of the members' derived runs, sizes only some carry marked.
+    const run = sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys: memberKeys, locations: stockLocs });
+    const ownRowsByLocation = {};
+    for (const c of memberRows) for (const [loc, n] of Object.entries(c.ownRowsByLocation || {})) ownRowsByLocation[loc] = (ownRowsByLocation[loc] || 0) + n;
+    // The photo: the member with the most products that has one. A group is
+    // not a thing that was photographed; its biggest member was.
+    const image = [...memberRows].filter((c) => c.imageUrl).sort((a, b) => b.products - a.products)[0]?.imageUrl || null;
+    const sum = (f) => memberRows.reduce((n, c) => n + (c[f] || 0), 0);
+    groupEntries.push({
+      key: `group:${gk}`,
+      isGroup: true,
+      groupKey: gk,
+      group: g,
+      label: typeof g.label === "string" && g.label.trim() ? g.label : gk,
+      imageUrl: image,
+      memberCategoryKeys: memberKeys,
+      members: memberRows.map((c) => ({
+        key: c.key, label: c.label, products: c.products, units: c.units, imageUrl: c.imageUrl,
+        // A member with its OWN entry is inert under the group: own beats group.
+        ownPolicy: !!c.entry, armedOwn: c.armed,
+        sizeRun: c.sizeRun, sizeRunEmpty: c.sizeRunEmpty,
+        ownRowCells: c.ownRowCells, ownRowProducts: c.ownRowProducts,
+      })),
+      armed: g.armed === true,
+      inTaxonomy: false, active: true, refused: false, rowOnly: false,
+      sizeMode: policyEntry?.perSize === true ? "list" : "one",
+      perSize: policyEntry?.perSize === true,
+      entry: policyEntry,
+      policySource: "group",
+      groupLabel: typeof g.label === "string" ? g.label : gk,
+      memberOfGroup: null,
+      effectiveEntry: policyEntry,
+      armedEffective: armedLocs,
+      shapes: policyEntry ? Object.fromEntries(armedLocs.map((l) => [l, locationEntryMode(policyEntry[l])])) : {},
+      sizeRun: run.sizes,
+      sizeRunExtra: [],
+      sizeRunEmpty: run.empty,
+      sizeRunPartial: run.partial,
+      sizeRunCarriedBy: run.carriedBy,
+      sizeRunByMember: run.byMember,
+      sizeRunOverStop: run.overStop,
+      ownRowCells: sum("ownRowCells"),
+      ownRowProducts: sum("ownRowProducts"),
+      ownRowsByLocation,
+      products: sum("products"),
+      units: sum("units"),
+      carriage,
+      overriddenProducts: sum("overriddenProducts"),
+      overriddenCells: sum("overriddenCells"),
+      legacyRowProducts: sum("legacyRowProducts"),
+      legacyRowCells: sum("legacyRowCells"),
+      resolvesMapCells: sum("resolvesMapCells"),
+      resolvesMapProducts: sum("resolvesMapProducts"),
+    });
+  }
+  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
@@ -592,9 +700,15 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   // with the product's name and the current three numbers, so the card can show
   // them as the current values rather than as a warning count.
   if (d.action === "rows") {
-    if (typeof categoryKey !== "string" || !categoryKey) {
+    // A GROUP's rows are the rows of all its members — the "N old rows" chip
+    // on a group entry sums them, and opening it has to show the same rows.
+    const rowGroupKey = typeof d.groupKey === "string" && d.groupKey ? d.groupKey : null;
+    const rowGroup = rowGroupKey ? (isPlainObject(cfg.policyGroups) ? cfg.policyGroups[rowGroupKey] : null) : null;
+    if (rowGroupKey && !isPlainObject(rowGroup)) throw httpsError("invalid-argument", `unknown group "${rowGroupKey}"`);
+    if (!rowGroupKey && (typeof categoryKey !== "string" || !categoryKey)) {
       throw httpsError("invalid-argument", "categoryKey is required to list rows.");
     }
+    const rowKeys = new Set(rowGroupKey ? (Array.isArray(rowGroup.memberCategoryKeys) ? rowGroup.memberCategoryKeys : []) : [categoryKey]);
     const allRowLocs = rowLocationsFor(cfg);
     // An optional narrowing. Validated against the known set rather than
     // interpolated on trust — this string becomes a path segment.
@@ -608,7 +722,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // one shop made the All chip read "All (240)". The bound this action exists
     // for is on the PAYLOAD, not on the count. (Delta review, PR #401.)
     const products = await readMapPaged(db, "products");
-    const pids = new Set(Object.keys(products).filter((pid) => products[pid]?.categoryKey === categoryKey));
+    const pids = new Set(Object.keys(products).filter((pid) => rowKeys.has(products[pid]?.categoryKey)));
     const all = [];
     const byLocation = {};
     for (const loc of allRowLocs) {
@@ -632,7 +746,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     const shown = onlyLoc ? all.filter((r) => r.loc === onlyLoc) : all;
     const rows = shown.slice(0, MAX_ROWS_PER_READ);
     return {
-      ok: true, action: "rows", categoryKey, rows,
+      ok: true, action: "rows", categoryKey: categoryKey || null, groupKey: rowGroupKey, rows,
       count: rows.length,
       // `total` is every row on the category. `matching` is how many the
       // current narrowing has. Two numbers because the panel shows both, and
@@ -725,7 +839,8 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // reasoning as the policy write below.
     const historyRef = db.ref(HISTORY_PATH).push();
     await historyRef.set({
-      kind: "rows", categoryKey: categoryKey || null, at: nowMs, by: callerEmail, byUid: callerUid || null,
+      kind: "rows", categoryKey: categoryKey || null, groupKey: typeof d.groupKey === "string" && d.groupKey ? d.groupKey : null,
+      at: nowMs, by: callerEmail, byUid: callerUid || null,
       rowCount: applied.length, before: applied.map((a) => ({ loc: a.loc, pid: a.pid, sizeKey: a.sizeKey, row: a.before })),
       changes, status: "pending",
     });
@@ -767,8 +882,35 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     const liveGroups = isPlainObject(cfg.policyGroups) ? cfg.policyGroups : {};
     const before = liveGroups[groupKey] ?? null;
     const after = d.group;
+    // ── THE SIZES A GROUP MAY BE GIVEN A POLICY ON ──────────────────────────
+    // The UNION of its members' derived runs, read live at the moment of the
+    // write — never the list the client offered. Only read when the edit
+    // actually carries a size map, because deriving it pages the catalogue.
+    // Two refusals: no member has a run (a per-size policy would be a guess),
+    // and a union over MAX_GROUP_UNION (the brief's stop — an editor with more
+    // rows than that is a guess dressed as a list).
+    let groupAllowedSizes = null;
+    let groupRun = null;
+    const groupCarriesSizeMap = isPlainObject(after?.policy)
+      && Object.keys(after.policy).some((k) => k !== "perSize" && locationEntryMode(after.policy[k]) === "per-size");
+    if (groupCarriesSizeMap) {
+      const members = Array.isArray(after.memberCategoryKeys) ? after.memberCategoryKeys : [];
+      groupRun = await deriveGroupSizeRun(db, { config: cfg, group: { memberCategoryKeys: members }, knownLocations });
+      if (groupRun.empty) {
+        throw httpsError("failed-precondition",
+          `No size run can be worked out for the "${groupKey}" group from the live data — no member declares a size, holds a cell or has a row. A size-by-size policy here would be a guess.`,
+          { sizeRunEmpty: true });
+      }
+      if (groupRun.overStop) {
+        throw httpsError("failed-precondition",
+          `The "${groupKey}" group's members between them carry ${groupRun.sizes.length} sizes — more than the ${MAX_GROUP_UNION} a size-by-size policy may cover. Narrow the group before setting numbers size by size.`,
+          { sizeRunOverStop: true, sizes: groupRun.sizes });
+      }
+      groupAllowedSizes = groupRun.sizes;
+    }
     const err = validatePolicyGroup(groupKey, after, {
       knownCategoryKeys, knownLocations, existingGroups: liveGroups, categoryPolicy: cfg.categoryPolicy,
+      allowedSizes: groupAllowedSizes,
     });
     if (err) throw httpsError("invalid-argument", err);
     for (const m of (after?.memberCategoryKeys || [])) {
@@ -795,9 +937,16 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     //
     // Every write that leaves the group armed is modelled now. It costs a
     // catalogue page per group edit, and group edits are rare.
+    // A DRY RUN MODELS THE GROUP WHATEVER ITS ARMED STATE, so the preview on a
+    // disarmed group can say what arming it would cost — the number the owner
+    // is meant to read before deciding to arm. Modelling writes nothing and
+    // refuses nothing; the refusal below fires only when the write would
+    // LEAVE the group armed.
     let armModel = null;
-    if (after && after.armed === true) {
+    if (after && isPlainObject(after.policy) && (after.armed === true || d.dryRun === true)) {
       armModel = await modelGroupArming(db, { config: cfg, groupKey, group: after, knownLocations });
+    }
+    if (after && after.armed === true) {
       if (armModel.exceedsCap) {
         throw httpsError("failed-precondition",
           `Arming "${groupKey}" would ask for ${armModel.totalRequests} refills on the next scan, against a limit of ${armModel.cap} shared with every other category. That is ${Math.round(armModel.totalRequests / armModel.cap)}x the limit. Bring the numbers down, or arm fewer categories, before turning it on.`,
@@ -806,7 +955,8 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     }
 
     if (d.dryRun === true) {
-      return { ok: true, dryRun: true, action: "setGroup", groupKey, before, after, armModel };
+      return { ok: true, dryRun: true, action: "setGroup", groupKey, before, after, armModel,
+        armedNow: after?.armed === true, sizeRun: groupRun ? groupRun.sizes : null, sizeRunPartial: groupRun ? groupRun.partial : null };
     }
     if (sameValue(before, after)) {
       return { ok: true, action: "setGroup", noChange: true, groupKey, before, after };
@@ -965,7 +1115,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
 module.exports = {
   applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
-  modelGroupArming, rowLocationsFor, deriveSizeRun,
+  modelGroupArming, rowLocationsFor, deriveSizeRun, deriveGroupSizeRun,
   HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH,
   MAX_ROW_EDITS_PER_CALL, MAX_ROWS_PER_READ, httpsError, readMapPaged,
 };
