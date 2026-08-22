@@ -26,6 +26,18 @@
 //   M-SIZE-RUN      let the size run be the raw union again (registry ignored,
 //                   and a one-size category handed a run of legacy letter cells)
 //
+// ── THE FREEZE ON CLOTHING ───────────────────────────────────────────────────
+// Three attackers for the property the per-size work is conditional on: that
+// none of it moved a single existing intent. Two of them widen a SCALAR entry,
+// which is the shape every armed clothing-adjacent category uses today, and the
+// third moves one cell at random. All three are caught by replaying the live
+// snapshot rather than by any hand-written expectation.
+//
+//   M-SCALAR        let a scalar entry answer for a SIZED cell as well as "_"
+//   M-SCALAR-2      turn a scalar entry's absent Ask at into 0 — a different
+//                   policy at every location it touches
+//   M-CLOTHING      move one resolved cell and watch the snapshot catch it
+//
 // Same discipline as scripts/mutation-proof-engine-policy.mjs: ERROR is not
 // FAIL, anchors must be unique, restore is signal-safe, and the tree must be
 // clean before anything is touched.
@@ -44,6 +56,9 @@ const CORE_TESTS = ["test/policy-groups.test.cjs"];
 const ENGINE_TESTS = ["test/policy-groups-engine.test.cjs"];
 const DIFF_TESTS = ["test/policy-groups-differential.test.cjs"];
 const ALL_TESTS = [...CORE_TESTS, ...ENGINE_TESTS, ...DIFF_TESTS];
+// The frozen live snapshot of clothing resolution — 520 cells cut from the
+// production database, replayed cell for cell.
+const FROZEN_TESTS = ["test/clothing-resolution-frozen.test.cjs"];
 
 const MUTATIONS = [
   // ── THE PROPERTY THE FOOTWEAR GROUP IS SEEDED ON ──────────────────────────
@@ -191,6 +206,40 @@ const MUTATIONS = [
     from: `  const offered = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);`,
     to: `  const offered = union;`,
     nodeTests: CORE_TESTS,
+  },
+
+  // ── THE FREEZE ─────────────────────────────────────────────────────────────
+  {
+    id: "M-SCALAR",
+    guard: "A SCALAR policy speaks for the \"_\" cell ALONE — nothing widened it to sized cells",
+    file: ENGINE,
+    from: `    return encodeSizeKey(size) === "_" ? shaped(entry.target) : null;`,
+    to: `    return shaped(entry.target);`,
+    nodeTests: [...FROZEN_TESTS, ...ENGINE_TESTS],
+  },
+  {
+    id: "M-SCALAR-2",
+    guard: "An absent Ask at stays null — 0 is a different policy (propose only at zero on hand)",
+    file: ENGINE,
+    from: `    reorderPoint: typeof reorderPoint === "number" && Number.isFinite(reorderPoint) && reorderPoint >= 0
+      ? reorderPoint : null,`,
+    to: `    reorderPoint: typeof reorderPoint === "number" && Number.isFinite(reorderPoint) && reorderPoint >= 0
+      ? reorderPoint : 0,`,
+    // The frozen fixture alone does NOT catch this: every category-policy cell
+    // in it carries an explicit Ask at, so mapping absent→0 changes none of
+    // them. Said plainly rather than papered over — the property lives in the
+    // engine tests, and this names them so the guard is proven where it is
+    // actually held.
+    nodeTests: [...FROZEN_TESTS, ...ENGINE_TESTS, ...DIFF_TESTS],
+  },
+  {
+    id: "M-CLOTHING",
+    guard: "CLOTHING RESOLUTION IS FROZEN — the live snapshot replays cell for cell",
+    file: ENGINE,
+    from: `function resolveTarget({ targets, config, products, stock }, dest, pid, size) {`,
+    to: `function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+  if (String(size) === "M" && dest === "hub2") return { target: 99, minQty: 1, reorderPoint: null, source: "explicit" };`,
+    nodeTests: FROZEN_TESTS,
   },
 ];
 
