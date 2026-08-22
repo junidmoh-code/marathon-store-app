@@ -23,7 +23,8 @@
 //   M-SIZEKEY       look the size up unencoded (5.5 would never be found)
 //   M-ARM-EMPTY     let a group be armed with no numbers behind it
 //   M-OVERLAP       let a category belong to two groups
-//   M-SIZE-RUN      let the size run be the raw union again (registry ignored)
+//   M-SIZE-RUN      let the size run be the raw union again (registry ignored,
+//                   and a one-size category handed a run of legacy letter cells)
 //
 // Same discipline as scripts/mutation-proof-engine-policy.mjs: ERROR is not
 // FAIL, anchors must be unique, restore is signal-safe, and the tree must be
@@ -187,7 +188,7 @@ const MUTATIONS = [
     id: "M-SIZE-RUN",
     guard: "The offered size run is registry ∩ live data — the raw union puts garment letters on sneakers",
     file: GROUPS,
-    from: `  const offered = taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union;`,
+    from: `  const offered = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);`,
     to: `  const offered = union;`,
     nodeTests: CORE_TESTS,
   },
