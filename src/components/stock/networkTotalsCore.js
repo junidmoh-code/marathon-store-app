@@ -17,6 +17,16 @@
 // into a silent zero. sumProduct() adds the raw qty and separately reports every
 // negative cell it passed, so the card can SHOW the drag instead of hiding it.
 //
+// ── _meta IS NOT A CELL ──────────────────────────────────────────────────────
+// `/stock/{loc}/{pid}/_meta` sits at the SIZE level and is an object, so a naive
+// reader counts it as a cell with no qty. The total stays right (it contributes
+// 0) but everything the card says ABOUT the total goes wrong: a product whose
+// only remaining node at a location is a drained cell's surviving _meta would
+// claim "1 cell across 1 location" instead of "no stock recorded anywhere" —
+// suppressing the one honest zero-state this module exists to protect. Every
+// other stock reader in this repo skips it (hubCountCore, hubCleanupCore,
+// product-merge, missingFootwearCore, refillSatisfied); so does this one.
+//
 // ── ARRAY-SHAPED CELL MAPS ───────────────────────────────────────────────────
 // RTDB hands back a JS ARRAY, not an object, when a node's keys are consecutive
 // numeric strings — which is exactly what a sneaker's size run ("6","7","8"…)
@@ -51,6 +61,7 @@ export function sumProduct(byLoc) {
     if (!cells || typeof cells !== "object") continue;
     let locTotal = 0, locCells = 0;
     for (const sizeKey of Object.keys(cells)) {
+      if (sizeKey === "_meta") continue;
       const cell = cells[sizeKey];
       if (!cell || typeof cell !== "object") continue;
       const qty = typeof cell.qty === "number" && Number.isFinite(cell.qty) ? cell.qty : 0;

@@ -40,6 +40,23 @@ describe("sumProduct — every size at every location", () => {
     expect(sumProduct({ hub1: arr }).cellCount).toBe(3);
   });
 
+  // /stock/{loc}/{pid}/_meta sits at the SIZE level and is an object, so a naive
+  // reader counts it as a cell. The total survives (it has no qty) but every
+  // claim the card makes about the total does not.
+  it("does not count _meta as a cell", () => {
+    const withMeta = sumProduct({ central: { _meta: { lastCountedAt: "2026-08-01" }, S: cell(4) } });
+    expect(withMeta.total).toBe(4);
+    expect(withMeta.cellCount).toBe(1);
+
+    // The case that matters: a location holding ONLY a surviving _meta must not
+    // turn "no stock recorded anywhere" into "1 cell across 1 location".
+    const onlyMeta = sumProduct({ hub3: { _meta: { drainedAt: "2026-07-26" } } });
+    expect(onlyMeta.total).toBe(0);
+    expect(onlyMeta.cellCount).toBe(0);
+    expect(onlyMeta.locationCount).toBe(0);
+    expect(onlyMeta.perLocation).toEqual({});
+  });
+
   it("ignores a location that holds no cells at all", () => {
     const r = sumProduct({ central: { S: cell(5) }, studio: null, base: {} });
     expect(r.total).toBe(5);

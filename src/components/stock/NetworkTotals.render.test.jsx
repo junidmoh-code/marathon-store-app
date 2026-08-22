@@ -36,6 +36,8 @@ const reads = {
   "stock/hub3/drag":          { S: cell(-50), M: cell(-2) },                  // the honest negative
   "stock/central/drag":       { S: cell(10) },
   "stock/hub1/runner":        (() => { const a = []; a[6] = cell(4); a[7] = cell(3); return a; })(),
+  // A one-size product: the "_" sentinel key, plus a _meta node at the size level.
+  "stock/central/onesize":    { _: cell(-4), _meta: { drainedAt: "2026-07-26" } },
   // "ghost" has no cells at any location — the 196-product case.
 };
 
@@ -48,9 +50,15 @@ for (const name of ["set", "update", "push", "remove", "runTransaction", "setWit
 }
 
 const readCalls = [];
+// Paths listed here reject, so a dropped read can be told apart from a slow one.
+const failPaths = new Set();
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
-  get: (r) => { readCalls.push(r.path); return Promise.resolve({ val: () => reads[r.path] ?? null }); },
+  get: (r) => {
+    readCalls.push(r.path);
+    if (failPaths.has(r.path)) return Promise.reject(new Error("permission_denied"));
+    return Promise.resolve({ val: () => reads[r.path] ?? null });
+  },
   onValue: (r, cb) => { readCalls.push(r.path); cb({ val: () => reads[r.path] ?? null }); return () => {}; },
   ...writeSpies,
 }));
@@ -58,7 +66,7 @@ vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 
 const { default: NetworkTotals } = await import("./NetworkTotals.jsx");
-const { __resetTotalsCache, totalsBytesRead, totalsReadsIssued } = await import("./networkTotalsStore.js");
+const { __resetTotalsCache, totalsBytesRead, totalsReadsIssued, loadTotals } = await import("./networkTotalsStore.js");
 
 const PRODUCTS = [
   { id: "wide",   name: "Nike Air Force 1 Cream Black Grey", sizes: ["S", "M"], photoUrl: null },
@@ -66,6 +74,7 @@ const PRODUCTS = [
   { id: "drag",   name: "Puma Suede Classic Navy",           sizes: ["S", "M"], photoUrl: null },
   { id: "runner", name: "New Balance 574 Evergreen",         sizes: ["6", "7"], photoUrl: null },
   { id: "ghost",  name: "Converse Chuck 70 Parchment",       sizes: ["S"],      photoUrl: null },
+  { id: "onesize", name: "Lacoste Original Eau de Toilette",  sizes: [],         photoUrl: null },
 ];
 
 const textOf = (n) => {
@@ -102,7 +111,7 @@ const clickText = async (tree, label) => {
   await act(async () => {});
 };
 
-beforeEach(() => { __resetTotalsCache(); readCalls.length = 0; for (const s of Object.values(writeSpies)) s.mockClear(); });
+beforeEach(() => { __resetTotalsCache(); readCalls.length = 0; failPaths.clear(); for (const s of Object.values(writeSpies)) s.mockClear(); });
 
 describe("the number itself", () => {
   it("sums every size at every location into one figure per product", async () => {
@@ -147,6 +156,79 @@ describe("negatives are visible, not clamped", () => {
     await clickText(tree, "Least first");
     expect(rowTexts(tree)[0]).toContain("Puma Suede");
     expect(rowTexts(tree).at(-1)).toContain("Air Force");
+  });
+});
+
+describe("the one-size sentinel and _meta", () => {
+  it("renders the one-size key as one size, not as a full stop", async () => {
+    const tree = await mount();
+    const row = rowTexts(tree).find((r) => r.includes("Lacoste"));
+    expect(totalOf(row)).toBe(-4);
+    // A broad _ → . replace would print "central .: -4".
+    expect(row).not.toMatch(/central \.:/);
+    expect(row).toContain("central _: -4");
+  });
+
+  it("does not count the _meta node beside it as a cell", async () => {
+    const tree = await mount();
+    const row = rowTexts(tree).find((r) => r.includes("Lacoste"));
+    expect(row).toContain("1 cell across 1 location");   // the "_" cell only
+  });
+});
+
+describe("a read that fails", () => {
+  it("shows no number and offers a retry, rather than counting forever or showing 0", async () => {
+    failPaths.add("stock/hub3/drag");
+    const tree = await mount();
+    const row = rowTexts(tree).find((r) => r.includes("Puma Suede"));
+    expect(row).toContain("could not be read");
+    expect(row).toContain("Retry");
+    expect(totalOf(row)).toBe(null);          // NOT 0, and NOT the partial 10
+    expect(screen(tree)).toContain("could not be read");
+  });
+
+  it("re-reads that product when Retry is pressed, and only that product", async () => {
+    failPaths.add("stock/hub3/drag");
+    const tree = await mount();
+    readCalls.length = 0;
+    failPaths.clear();
+    await clickText(tree, "Retry");
+    const retried = readCalls.filter((p) => p.startsWith("stock/"));
+    expect(new Set(retried.map((p) => p.split("/")[2]))).toEqual(new Set(["drag"]));
+    expect(totalOf(rowTexts(tree).find((r) => r.includes("Puma Suede")))).toBe(-42);
+  });
+
+  it("keeps the other products' totals — one bad location does not poison the page", async () => {
+    failPaths.add("stock/hub3/drag");
+    const tree = await mount();
+    expect(totalOf(rowTexts(tree).find((r) => r.includes("Air Force")))).toBe(110);
+    expect(totalOf(rowTexts(tree).find((r) => r.includes("Ultraboost")))).toBe(18);
+  });
+});
+
+describe("Refresh", () => {
+  it("re-reads the page so a number he is about to order against is current", async () => {
+    const tree = await mount();
+    const before = totalsReadsIssued();
+    reads["stock/central/mid"] = { S: cell(99) };
+    await clickText(tree, "Refresh");
+    expect(totalsReadsIssued()).toBeGreaterThan(before);
+    expect(totalOf(rowTexts(tree).find((r) => r.includes("Ultraboost")))).toBe(105);   // 99 + 6
+    reads["stock/central/mid"] = { S: cell(12) };
+  });
+});
+
+describe("StrictMode", () => {
+  it("still renders totals after React's development mount / unmount / remount", async () => {
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(
+        <React.StrictMode><NetworkTotals products={PRODUCTS} registry={registry} /></React.StrictMode>,
+      );
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(totalOf(rowTexts(tree).find((r) => r.includes("Air Force")))).toBe(110);
   });
 });
 
@@ -229,6 +311,20 @@ describe("it writes nothing", () => {
     for (const [name, spy] of Object.entries(writeSpies)) {
       expect(spy, `write API ${name} was called`).not.toHaveBeenCalled();
     }
+  });
+});
+
+describe("loadTotals is not a silent no-op", () => {
+  it("still reads when asked for a concurrency of zero", async () => {
+    const seen = [];
+    await loadTotals(["wide"], LOCS, (id, totals) => seen.push([id, totals.total]), 0);
+    expect(seen).toEqual([["wide", 110]]);
+  });
+
+  it("resolves on an empty list without reading anything", async () => {
+    readCalls.length = 0;
+    await loadTotals([], LOCS, () => {});
+    expect(readCalls).toHaveLength(0);
   });
 });
 
