@@ -5,7 +5,7 @@
 // meaning zero — and then break each one on purpose to prove the test would
 // notice (a green test over a property nobody can violate proves nothing).
 import { describe, it, expect } from "vitest";
-import { sumProduct, sortRows, visibleProducts } from "./networkTotalsCore";
+import { sumProduct, sortRows, visibleProducts, countedLocations, EXCLUDED_LOCATIONS } from "./networkTotalsCore";
 
 const cell = (qty) => ({ qty, v: 3, mv: "m1", lastType: "received", state: "live" });
 
@@ -71,47 +71,93 @@ describe("sumProduct — every size at every location", () => {
   });
 });
 
-describe("sumProduct — negatives are added, never clamped", () => {
-  it("lets a negative cell drag the total down", () => {
-    const r = sumProduct({ central: { S: cell(10) }, hub3: { S: cell(-50) } });
-    expect(r.total).toBe(-40);                // NOT 10, NOT 0
-    expect(r.negativeUnits).toBe(-50);
-    expect(r.negatives).toEqual([{ locationId: "hub3", sizeKey: "S", qty: -50 }]);
+describe("sumProduct — a negative cell counts as zero", () => {
+  // OWNER DECISION 2026-08-22, reversing how this first shipped: the card is a
+  // clean list of names and numbers, so a negative cell adds nothing and is
+  // never mentioned. The trade is real and deliberate — this screen reports
+  // what can be counted on, not what the ledger says. The ledger's negatives
+  // remain Inventory Health's Negative Inventory card's business.
+  it("does not let a negative cell drag the total down", () => {
+    const r = sumProduct({ central: { S: cell(10) }, hub2: { S: cell(-50) } });
+    expect(r.total).toBe(10);              // not −40
   });
 
-  it("reports every negative cell so the card can show where the drag is", () => {
-    const r = sumProduct({
-      "marathon-pe": { S: cell(-3), M: cell(4) },
-      trophy: { "5_5": cell(-2) },
-    });
-    expect(r.total).toBe(-1);
-    expect(r.negatives).toHaveLength(2);
-    expect(r.negativeUnits).toBe(-5);
+  it("never returns a negative total, however the negatives are arranged", () => {
+    expect(sumProduct({ central: { S: cell(-50) } }).total).toBe(0);
+    expect(sumProduct({ central: { S: cell(-3), M: cell(1) } }).total).toBe(1);
+    expect(sumProduct({ a: { S: cell(-3) }, b: { S: cell(-9) } }).total).toBe(0);
   });
 
-  it("a net zero reached by cancellation is not the same as no stock", () => {
-    const r = sumProduct({ central: { S: cell(5) }, hub3: { S: cell(-5) } });
-    expect(r.total).toBe(0);
-    expect(r.cellCount).toBe(2);              // the card says "2 cells", not "none recorded"
-    expect(r.negatives).toHaveLength(1);
+  it("reports nothing about negatives at all", () => {
+    const r = sumProduct({ hub2: { S: cell(-50) } });
+    expect(r.negatives).toBeUndefined();
+    expect(r.negativeUnits).toBeUndefined();
   });
 
-  // MUTATION PROOF. Break the clamp property four different ways; every shape
-  // must be caught. A single Math.max mutant would let a test that only checks
-  // one arrangement pass.
-  it("would catch a clamp introduced in any of four shapes", () => {
-    const input = { central: { S: cell(10) }, hub3: { S: cell(-50) }, hub2: { M: cell(-4) } };
-    const honest = sumProduct(input);
-    const clampCell    = () => 10 + 0 + 0;                       // clamp each cell at 0
-    const clampLoc     = () => 10 + 0 + 0;                       // clamp each location at 0
-    const clampTotal   = () => Math.max(0, honest.total);        // clamp the final answer
-    const dropNegative = () => 10;                               // skip negative cells entirely
-    for (const mutant of [clampCell, clampLoc, clampTotal, dropNegative]) {
-      expect(honest.total).not.toBe(mutant());
+  // A negative cell is still a CELL — it exists, it just adds nothing. Folding
+  // it out of cellCount would make a location that holds a cell look like one
+  // that never had one.
+  it("still counts a negative cell as a cell that exists", () => {
+    const r = sumProduct({ hub2: { S: cell(-50) } });
+    expect(r.cellCount).toBe(1);
+    expect(r.locationCount).toBe(1);
+    expect(r.perLocation).toEqual({ hub2: 0 });
+  });
+
+  // MUTATION PROOF, the other way round now: prove the clamp is per CELL and not
+  // per location or per total, because those three agree on simple inputs and
+  // disagree exactly where it matters.
+  it("clamps per cell, not per location and not on the final answer", () => {
+    const input = { central: { S: cell(10), M: cell(-4) }, hub2: { S: cell(-50) } };
+    expect(sumProduct(input).total).toBe(10);
+    const clampPerLocation = Math.max(0, 10 - 4) + Math.max(0, -50);   // 6
+    const clampFinalOnly   = Math.max(0, 10 - 4 - 50);                 // 0
+    const noClampAtAll     = 10 - 4 - 50;                              // −44
+    for (const wrong of [clampPerLocation, clampFinalOnly, noClampAtAll]) {
+      expect(sumProduct(input).total).not.toBe(wrong);
     }
-    expect(honest.total).toBe(-44);
-    // and a mutant that merely stopped REPORTING the negatives would be caught too
-    expect(honest.negatives.length).toBeGreaterThan(0);
+  });
+});
+
+describe("countedLocations — everywhere except Pine and Hub 3", () => {
+  const ALL = ["studio", "central", "base", "hub1", "hub2", "hub3", "marathon-pe", "trophy", "marathon-pine", "in_transit"];
+
+  it("drops exactly Pine and Hub 3, and keeps everything else", () => {
+    expect(countedLocations(ALL)).toEqual(
+      ["base", "central", "hub1", "hub2", "in_transit", "marathon-pe", "studio", "trophy"],
+    );
+  });
+
+  it("names the exclusions in one place so the number and the caption agree", () => {
+    expect(EXCLUDED_LOCATIONS).toEqual(["marathon-pine", "hub3"]);
+    for (const id of EXCLUDED_LOCATIONS) expect(countedLocations(ALL)).not.toContain(id);
+  });
+
+  // Studio and Base were consolidated into Central in July 2026. They stay in
+  // /locations as active:false so historical movements remain valid, but they
+  // are not places any more and their cells must not reach this number.
+  it("drops a retired location on the registry's own active flag", () => {
+    const reg = Object.fromEntries(ALL.map((id) => [id, { id, active: id !== "studio" && id !== "base" }]));
+    expect(countedLocations(ALL, reg)).toEqual(["central", "hub1", "hub2", "in_transit", "marathon-pe", "trophy"]);
+  });
+
+  // An id the registry does not describe is COUNTED. A location holding units
+  // should show up in the total and be noticed, not vanish from it silently.
+  it("counts a location the registry does not describe", () => {
+    expect(countedLocations(["central", "newplace"], { central: { active: true } })).toEqual(["central", "newplace"]);
+  });
+
+  it("counts everything when there is no registry to consult", () => {
+    expect(countedLocations(["studio", "central"])).toEqual(["central", "studio"]);
+  });
+
+  it("keeps a location that merely looks similar", () => {
+    expect(countedLocations(["hub1", "hub2", "hub30", "pine"])).toEqual(["hub1", "hub2", "hub30", "pine"]);
+  });
+
+  it("copes with an empty or missing registry", () => {
+    expect(countedLocations([])).toEqual([]);
+    expect(countedLocations(null)).toEqual([]);
   });
 });
 
@@ -121,7 +167,6 @@ describe("sumProduct — a product with no stock anywhere", () => {
     expect(r.total).toBe(0);
     expect(r.cellCount).toBe(0);
     expect(r.locationCount).toBe(0);
-    expect(r.negatives).toEqual([]);
   });
 
   it("survives null and undefined without throwing", () => {

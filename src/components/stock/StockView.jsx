@@ -20,7 +20,6 @@ import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
 import MoveExcess from "./MoveExcess";
 import InTransit from "./InTransit";
-import NetworkTotals from "./NetworkTotals";
 
 // Stock rework: Transfer (assistant-style) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -32,7 +31,6 @@ const BASE_TABS = [
   ["intransit", "In Transit"],
   // "Health" moved to its own home-screen module (HealthView) — owner decision.
   ["locate",    "Where is it"],
-  ["totals",    "How many"],   // READ-ONLY network totals — one number per product (2026-08-22)
   ["setqty",    "Set Qty"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
@@ -55,7 +53,6 @@ const TAB_ICON = {
   intransit: <><path d="M10 17h4V5H2v12h3" /><path d="M20 17h2v-3.34a4 4 0 0 0-1.17-2.83L19 9h-5v8h1" /><circle cx="7.5" cy="17.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>,
   excess:   <><path d="M12 3v11" /><path d="m8 10 4 4 4-4" /><path d="M4 21h16" /></>,
   locate:   <><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></>,
-  totals:   <><path d="M4 20V10" /><path d="M10 20V4" /><path d="M16 20v-7" /><path d="M22 20H2" /></>,
   setqty:   <path d="M12 5v14M5 12h14" />,
   history:  <><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></>,
   adjust:   <><path d="M20 7h-9M4 7h3M14 17h6M4 17h6" /><circle cx="9" cy="7" r="2.5" /><circle cx="14" cy="17" r="2.5" /></>,
@@ -67,7 +64,6 @@ const TAB_META = {
   intransit: ["In Transit", "Cross-building sends awaiting receive."],
   excess:   ["Move Excess", "Bulk hub 2 → central rebalance (admin)."],
   locate:   ["Where is it", "Find any product across every location."],
-  totals:   ["How many", "One total per product — every size, every location."],
   setqty:   ["Set Qty", "Set received / opening on-hand."],
   history:  ["History", "The full movement ledger."],
   adjust:   ["Adjust", "Admin stock corrections."],
@@ -75,7 +71,7 @@ const TAB_META = {
   recount:  ["Counted", "Review & post counted differences."],
 };
 const TAB_GROUPS = [
-  ["Move & find", ["transfer", "intransit", "locate", "totals", "setqty"]],
+  ["Move & find", ["transfer", "intransit", "locate", "setqty"]],
   ["Audit", ["history", "adjust", "count", "recount", "excess"]],
 ];
 
@@ -110,7 +106,6 @@ export default function StockView({ products = [], onExit }) {
       {tab === "intransit" && <InTransit {...shared} />}
       {tab === "excess"   && isAdmin && <MoveExcess {...shared} />}
       {tab === "locate"   && <Locator {...shared} />}
-      {tab === "totals"   && <NetworkTotals {...shared} />}
       {tab === "setqty"   && canStock && <SetQuantity {...shared} canStock={canStock} isAdmin={isAdmin} />}
       {tab === "adjust"   && <Adjust {...shared} isAdmin={isAdmin} />}
       {tab === "history"  && <MovementHistory {...shared} />}

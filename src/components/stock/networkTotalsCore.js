@@ -1,7 +1,21 @@
-// ─── NETWORK TOTALS — PURE LOGIC ──────────────────────────────────────────────
-// One number per product: every size, at every location, added together. This
-// module holds all of the arithmetic and none of the RTDB, so the rules below
-// can be tested and mutation-proved without a database.
+// ─── TOTAL STOCK — PURE LOGIC ─────────────────────────────────────────────────
+// One number per product: every size, at every COUNTED location, added together.
+// This module holds all of the arithmetic and none of the RTDB, so the rules
+// below can be tested and mutation-proved without a database.
+//
+// ── WHICH LOCATIONS COUNT ────────────────────────────────────────────────────
+// Every LIVE location except Pine and Hub 3 — owner decision 2026-08-22.
+//
+// "Live" is read from the registry's own `active` flag, not from a list here.
+// Studio and Base were consolidated into Central in July 2026 and are carried in
+// /locations as active:false purely so historical movements stay valid; they do
+// not exist as places any more. Deriving the set from `active` means a location
+// retired later drops out of this number on its own, with no code change.
+//
+// The two named exclusions are a separate thing — Pine and Hub 3 are live, they
+// are simply not part of the pool he reorders against. They live in
+// EXCLUDED_LOCATIONS below rather than in the screen, so the number and the
+// caption that explains it can never drift apart.
 //
 // ── WHY THIS EXISTS SEPARATELY FROM THE LOCATOR ──────────────────────────────
 // Locator answers "where is it" — it sums `product.sizes`, the sizes the product
@@ -11,11 +25,17 @@
 // those units are still on a shelf. This module sums the CELLS THAT EXIST, never
 // a declared size list, so nothing physical can fall out of the total.
 //
-// ── NEGATIVES ARE NEVER CLAMPED ──────────────────────────────────────────────
-// 980 cells in the live data are negative, totalling −1,583 units, and hub3 is
-// net −749 on its own. A clamp would turn the single loudest signal in the data
-// into a silent zero. sumProduct() adds the raw qty and separately reports every
-// negative cell it passed, so the card can SHOW the drag instead of hiding it.
+// ── NEGATIVE CELLS DO NOT COUNT ──────────────────────────────────────────────
+// OWNER DECISION 2026-08-22, and a deliberate reversal of how this shipped an
+// hour earlier: a negative cell contributes ZERO, and nothing about it is shown.
+// The card is a clean list of names and numbers for the pre-order research pass,
+// and a −50 in the middle of it was noise he did not want.
+//
+// Stated plainly because it is a real trade: 980 cells in the live data are
+// negative (−1,583 units) and hub3 was net −749 on its own, so this card is
+// "what we can count on having", not "what the ledger says". The negatives are
+// still real, still visible in Inventory Health's Negative Inventory card, and
+// still the ledger's problem to fix — they are just not this screen's job.
 //
 // ── _meta IS NOT A CELL ──────────────────────────────────────────────────────
 // `/stock/{loc}/{pid}/_meta` sits at the SIZE level and is an object, so a naive
@@ -34,25 +54,46 @@
 // Object.keys() covers both shapes (it skips array holes), so every reader here
 // goes through it and never assumes an object.
 
+// The two locations this card does not count. Owner's call: Pine and Hub 3 are
+// not part of the pool he reorders against, so their units would distort the
+// research number rather than inform it. Named here once; the screen reads this
+// list to build both the read plan and the line that tells him what it summed.
+export const EXCLUDED_LOCATIONS = ["marathon-pine", "hub3"];
+
+// The locations to sum. `registry` is the /locations map ({ id: {active,…} });
+// a location is counted when it is not explicitly retired (active === false) and
+// is not one of the two named exclusions.
+//
+// THE REGISTRY IS THE CLOSED SET, and that is the whole answer to "what about a
+// location in /stock that isn't in /locations". Nothing here enumerates /stock's
+// own top level, because listing its keys means downloading the 5.36 MB node
+// this screen exists to avoid — and it would buy nothing, since the live
+// stock_movements rules validate `from`/`to` against /locations existence, so
+// units cannot legitimately reach an unregistered location in the first place.
+// An id passed in that the registry does not describe is still counted (a caller
+// that knows about a location is trusted); the screen simply never has one.
+export function countedLocations(locationIds, registry) {
+  return [...(locationIds || [])]
+    .filter((id) => !EXCLUDED_LOCATIONS.includes(id))
+    .filter((id) => (registry && registry[id] ? registry[id].active !== false : true))
+    .sort();
+}
+
 // Every location's cell map for ONE product, summed.
 //
 //   byLoc: { locationId: { sizeKey: cell } | [ …cells ] | null }
 //
 // Returns:
-//   total          net units across every location and every size, RAW
-//   cellCount      how many cells were counted
+//   total          units across every counted location and every size, with any
+//                  negative cell contributing zero
+//   cellCount      how many cells were counted (a negative cell still counts as
+//                  a cell — it exists, it just adds nothing)
 //   locationCount  how many locations hold at least one cell
-//   negatives      [{ locationId, sizeKey, qty }] — every cell below zero
-//   negativeUnits  the sum of those (a negative number, or 0)
-//   perLocation    { locationId: net units } — only locations with cells
+//   perLocation    { locationId: units } — only locations with cells
 //
-// A product with no cells anywhere returns total 0 with cellCount 0. That is the
-// honest answer for the 196 live products in that state: zero, not blank, not an
-// error, and `cellCount === 0` lets the card say "none recorded anywhere" rather
-// than implying a counted zero.
+// A product with no cells anywhere returns total 0 with cellCount 0.
 export function sumProduct(byLoc) {
-  let total = 0, cellCount = 0, negativeUnits = 0;
-  const negatives = [];
+  let total = 0, cellCount = 0;
   const perLocation = {};
   let locationCount = 0;
 
@@ -64,15 +105,14 @@ export function sumProduct(byLoc) {
       if (sizeKey === "_meta") continue;
       const cell = cells[sizeKey];
       if (!cell || typeof cell !== "object") continue;
-      const qty = typeof cell.qty === "number" && Number.isFinite(cell.qty) ? cell.qty : 0;
-      locTotal += qty;
+      const raw = typeof cell.qty === "number" && Number.isFinite(cell.qty) ? cell.qty : 0;
+      locTotal += raw > 0 ? raw : 0;      // a negative cell adds nothing
       locCells += 1;
-      if (qty < 0) { negatives.push({ locationId, sizeKey, qty }); negativeUnits += qty; }
     }
     if (locCells > 0) { perLocation[locationId] = locTotal; locationCount += 1; cellCount += locCells; total += locTotal; }
   }
 
-  return { total, cellCount, locationCount, negatives, negativeUnits, perLocation };
+  return { total, cellCount, locationCount, perLocation };
 }
 
 // Order rows for display. Rows whose total has NOT arrived yet sort last in both
