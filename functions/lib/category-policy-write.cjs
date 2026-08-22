@@ -51,13 +51,35 @@
 
 const {
   validateCategoryPolicy, diffCategoryPolicy, modelCategoryPolicy, defaultMinQty,
-  carriageForCategory,
+  carriageForCategory, validateLocationEntry, REFUSED_CATEGORY_KEYS,
 } = require("./category-policy.cjs");
+const { validatePolicyGroup, sizeRunForCategory, fillAllSizes } = require("./policy-groups.cjs");
+const { effectivePolicyFor, locationEntryMode, armedGroupForCategory } = require("./policy-resolve.cjs");
+const { encodeSizeKey } = require("./refill-engine.cjs");
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
 const HISTORY_PATH = "engine_policy_history";
 const POLICY_PATH = "config/refillEngine/categoryPolicy";
+const GROUPS_PATH = "config/refillEngine/policyGroups";
+const TARGETS_PATH = "stock_targets";
+
+// ── EDITING AN EXPLICIT ROW: WHAT IS AND IS NOT ALLOWED ──────────────────────
+// Junid has armed clothing by hand over months — 7,797 rows on 1,666 products,
+// measured live 2026-08-22. Those rows are the SOURCE OF TRUTH for the products
+// that carry them, not a mess to be tidied. So this path:
+//
+//   • UPDATES a row that already exists, in place
+//   • REFUSES to create a row that does not exist (that is arming a new cell,
+//     which is a different act with a different blast radius)
+//   • REFUSES to delete a row, always, under any argument
+//
+// The third is a hard constraint of this build, not a default. There is no
+// flag, no `force`, and no code path below that calls .remove() or writes null
+// to a row. If a row ever needs to go, it goes through a reviewed bulk script
+// with its own preview and its own rollback file, the same as every other bulk
+// row change in this repo.
+const MAX_ROW_EDITS_PER_CALL = 200;
 
 // Canonical JSON, for equality only. Key order in RTDB is not stable across
 // reads, so a raw JSON.stringify comparison would report drift that is not
@@ -145,6 +167,27 @@ function normalizePolicy(input) {
     if (loc === "perSize") continue;
     if (raw === null || raw === undefined) continue;      // location removed
     if (typeof raw !== "object" || Array.isArray(raw)) { out[loc] = raw; continue; }
+    // ── A PER-SIZE MAP IS NORMALISED ROW BY ROW ─────────────────────────────
+    // The uniform path below stamps `target` and a defaulted `minQty` onto the
+    // location object. Run over a size map that produced { sizes, target:
+    // undefined, minQty: 0 } — a shape the validator then refused with "unknown
+    // field target next to a size map", which reads as the caller's mistake and
+    // was this function's. Each size row gets the SAME treatment a uniform entry
+    // gets — minQty defaulted from ceil(keep / 2), a blank Ask at dropped rather
+    // than zeroed — and the location object itself is left alone.
+    if (raw.sizes && typeof raw.sizes === "object" && !Array.isArray(raw.sizes) && raw.target === undefined) {
+      const sizes = {};
+      for (const [sk, row] of Object.entries(raw.sizes)) {
+        if (row === null || row === undefined) continue;          // size removed
+        if (typeof row !== "object" || Array.isArray(row)) { sizes[sk] = row; continue; }
+        const e = { ...row, target: row.target };
+        e.minQty = row.minQty === undefined || row.minQty === null ? defaultMinQty(row.target) : row.minQty;
+        if (row.reorderPoint === undefined || row.reorderPoint === null) delete e.reorderPoint;
+        sizes[sk] = e;
+      }
+      out[loc] = { ...raw, sizes };
+      continue;
+    }
     // Unknown fields are CARRIED THROUGH, not stripped. Stripping them would
     // make the validator's unknown-field guard unreachable and turn a typo
     // ("reorderpoint: 2") into a silently ignored edit that the owner watches
@@ -207,6 +250,74 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   };
 }
 
+// The locations that can hold an explicit row worth reading: every configured
+// destination, plus any location the map or a group already arms. Central is a
+// source, not a destination, and has no rows.
+function rowLocationsFor(config) {
+  const out = new Set(Object.keys(config?.mode || {}));
+  const collect = (entry) => {
+    if (!isPlainObject(entry)) return;
+    for (const k of Object.keys(entry)) if (k !== "perSize" && isPlainObject(entry[k])) out.add(k);
+  };
+  for (const e of Object.values(isPlainObject(config?.categoryPolicy) ? config.categoryPolicy : {})) collect(e);
+  for (const g of Object.values(isPlainObject(config?.policyGroups) ? config.policyGroups : {})) collect(g?.policy);
+  return [...out];
+}
+
+// ── WHAT ARMING A GROUP WOULD COST, BEFORE IT IS ALLOWED ─────────────────────
+// Models EVERY member through the same modelCategoryPolicy the preview panel
+// uses, against a copy of the config with the group armed — never written. The
+// number is a ceiling by the same construction as every other number that
+// function produces, which is the right direction for a gate: it refuses on the
+// worst case rather than being talked past by the best one.
+async function modelGroupArming(db, { config, groupKey, group, knownLocations }) {
+  const configAfter = {
+    ...config,
+    policyGroups: { ...(config.policyGroups || {}), [groupKey]: { ...group, armed: true } },
+  };
+  const involved = new Set(["central", ...Object.keys(config.mode || {})]);
+  for (const k of Object.keys(group.policy || {})) if (k !== "perSize") involved.add(k);
+  for (const loc of [...involved]) { const src = config.routes?.[loc]; if (src) involved.add(src); }
+  const carriageLocs = [...new Set([...involved, ...(knownLocations || [])])];
+
+  const products = await readMapPaged(db, "products");
+  const stock = {}, targets = {}, openIndex = {};
+  for (const loc of carriageLocs) stock[loc] = await readMapPaged(db, `stock/${loc}`);
+  for (const loc of involved) {
+    targets[loc] = await readMapPaged(db, `${TARGETS_PATH}/${loc}`);
+    openIndex[loc] = await readMapPaged(db, `refill_engine/open/${loc}`);
+  }
+  const perMember = [];
+  let totalRequests = 0, totalUnits = 0;
+  for (const key of (group.memberCategoryKeys || [])) {
+    const m = modelCategoryPolicy({
+      config: configAfter, products, stock, targets, openIndex, categoryKey: key,
+      locations: carriageLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent,
+    });
+    perMember.push({ key, products: m.products, requests: m.totalRequests, units: m.totalUnits,
+      liveRequests: m.liveRequests, policySource: m.policySource });
+    totalRequests += m.totalRequests;
+    totalUnits += m.totalUnits;
+  }
+  const cap = typeof config.maxIntentsPerRun === "number" && config.maxIntentsPerRun > 0 ? config.maxIntentsPerRun : 200;
+  return { groupKey, perMember, totalRequests, totalUnits, cap, exceedsCap: totalRequests > cap };
+}
+
+// The derived size run for ONE category, read on demand. Same function the
+// census uses, so the run the editor offered and the run the server enforces
+// are the same list rather than two derivations that agree today.
+async function deriveSizeRun(db, { config, categoryKey, knownLocations }) {
+  const locs = [...new Set([...rowLocationsFor(config), ...(knownLocations || [])])];
+  const products = await readMapPaged(db, "products");
+  const stock = {}, targets = {};
+  for (const loc of locs) {
+    stock[loc] = await readMapPaged(db, `stock/${loc}`);
+    targets[loc] = await readMapPaged(db, `${TARGETS_PATH}/${loc}`);
+  }
+  const taxonomy = await val(db, "settings/productTaxonomy");
+  return sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, locations: locs });
+}
+
 // ── THE CENSUS ───────────────────────────────────────────────────────────────
 // What the card's LIST needs, answered server-side in one call: per category,
 // the product count, units on hand, which locations carry it, whether it is
@@ -245,8 +356,13 @@ function invalidateCensusCache() { censusCache = null; }
 
 async function buildCensus(db, { config, taxonomy, knownLocations }) {
   const policy = isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {};
+  const groups = isPlainObject(config.policyGroups) ? config.policyGroups : {};
   const cats = isPlainObject(taxonomy?.cats) ? taxonomy.cats : {};
-  const keys = [...new Set([...Object.keys(policy), ...Object.keys(cats)])].sort();
+  // Every key the map names, every key the taxonomy knows, and every key a
+  // GROUP names. The last one matters: a grouped category with no entry of its
+  // own is governed, and it must be in the list that governs it.
+  const groupedKeys = Object.values(groups).flatMap((g) => (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : []));
+  const keys = [...new Set([...Object.keys(policy), ...Object.keys(cats), ...groupedKeys])].sort();
 
   const destinations = Object.keys(config.mode || {});
   // Every location the map ALREADY names, even one that is not a configured
@@ -254,10 +370,17 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // `targets[loc] === undefined`, so resolveTarget found no explicit row and
   // the census reported "0 overridden" for a category that was in fact fully
   // overridden there — the single number this screen is built around.
+  // GROUPS COUNT TOO — including disarmed ones. A disarmed group resolves
+  // nothing, but its locations are exactly what the editor will show when
+  // somebody opens it, and reading a location's rows only once it is armed means
+  // the numbers appear for the first time at the moment they start to matter.
   const armedAnywhere = new Set();
-  for (const entry of Object.values(isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {})) {
-    if (isPlainObject(entry)) for (const k of Object.keys(entry)) if (k !== "perSize" && isPlainObject(entry[k])) armedAnywhere.add(k);
-  }
+  const collectLocs = (entry) => {
+    if (!isPlainObject(entry)) return;
+    for (const k of Object.keys(entry)) if (k !== "perSize" && isPlainObject(entry[k])) armedAnywhere.add(k);
+  };
+  for (const entry of Object.values(isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {})) collectLocs(entry);
+  for (const g of Object.values(isPlainObject(config.policyGroups) ? config.policyGroups : {})) collectLocs(g?.policy);
   // The locations the card can show, arm, or reason about — plus central, the
   // only place a hub deficit can be filled from. Reading the rest (studio,
   // in_transit, base) was reading them for nothing.
@@ -278,26 +401,83 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     openIndex[loc] = await readMapPaged(db, `refill_engine/open/${loc}`);
   }
 
+  // ── ROWS PER CATEGORY, FOR EVERY CATEGORY ────────────────────────────────
+  // The shipped census computed the explicit-row count only where the map was
+  // ARMED, so an unarmed clothing category with hundreds of hand-made rows
+  // reported zero — t-shirts has 1,870 of them. The chip says "N with their own
+  // rows" for every category now, which is only true if every category is
+  // counted. Cheap: it walks the targets maps that are already in memory and
+  // never calls the resolver.
+  const rowsByCategory = {};
+  for (const loc of rowLocs) {
+    for (const [pid, bySize] of Object.entries(targets[loc] || {})) {
+      const key = products[pid]?.categoryKey;
+      if (!key) continue;
+      const r = rowsByCategory[key] || (rowsByCategory[key] = { cells: 0, products: new Set(), byLocation: {} });
+      const n = Object.keys(bySize || {}).length;
+      r.cells += n;
+      r.products.add(pid);
+      r.byLocation[loc] = (r.byLocation[loc] || 0) + n;
+    }
+  }
+  // A category that exists ONLY as rows — no taxonomy entry, no map entry. Live
+  // today that is `visors` (12 rows, refused by owner decision) and `packaging`
+  // (8 rows). They are real policy of a kind and are listed, read-only.
+  const rowOnlyKeys = Object.keys(rowsByCategory).filter((k) => !keys.includes(k)).sort();
+
   const categories = [];
-  for (const key of keys) {
+  for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
     const armed = entry ? Object.keys(entry).filter((k) => k !== "perSize" && isPlainObject(entry[k])) : [];
     const { pids, byLocation } = carriageForCategory({ products, stock, categoryKey: key, locations: stockLocs });
-    // resolveTarget is only run where the map is armed. An unarmed category
-    // resolves nothing through it by definition, and walking every product at
-    // every location for forty categories would be a minute of nothing.
-    const m = armed.length
+    // The GROUP that speaks for this category, if it has no entry of its own.
+    const g = armedGroupForCategory(config, key);
+    const eff = effectivePolicyFor(config, key);
+    const effEntry = eff ? eff.entry : null;
+    const effArmed = isPlainObject(effEntry)
+      ? Object.keys(effEntry).filter((k) => k !== "perSize" && locationEntryMode(effEntry[k]) !== "invalid") : [];
+    // resolveTarget is only run where SOMETHING is armed — its own entry or its
+    // group's. An unarmed, ungrouped category resolves nothing through the map
+    // by definition, and walking every product at every location for forty
+    // categories would be a minute of nothing.
+    const m = effArmed.length
       ? modelCategoryPolicy({ config, products, stock, targets, openIndex, categoryKey: key,
           locations: stockLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent })
       : null;
+    // The size run the per-size editor may offer, DERIVED from live data. An
+    // empty run at a category the registry calls sized is a STOP — the card
+    // refuses the per-size editor rather than offering a guessed list.
+    const run = sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: key, locations: stockLocs });
+    const rows = rowsByCategory[key];
     categories.push({
       key,
       label: cats[key]?.label || key,
       inTaxonomy: !!cats[key],
       active: cats[key]?.active !== false,
-      sizeMode: entry?.perSize === true ? "list" : (cats[key]?.sizeMode || "one"),
-      perSize: entry?.perSize === true,
+      sizeMode: effEntry?.perSize === true ? "list" : (cats[key]?.sizeMode || "one"),
+      perSize: effEntry?.perSize === true,
       entry,
+      // Where the numbers on screen come from. A grouped category shows the
+      // group's numbers and must SAY SO — editing them here would give it an
+      // entry of its own, which takes it out of the group. That is a bigger
+      // change than the numbers suggest and the card says it out loud.
+      policySource: eff ? eff.source : null,
+      groupKey: g ? g.groupKey : null,
+      groupLabel: g ? (g.group.label || g.groupKey) : null,
+      effectiveEntry: effEntry,
+      armedEffective: effArmed,
+      // The shape each armed location holds — "uniform" or "per-size".
+      shapes: isPlainObject(effEntry)
+        ? Object.fromEntries(effArmed.map((l) => [l, locationEntryMode(effEntry[l])])) : {},
+      sizeRun: run.sizes,
+      sizeRunExtra: run.extra,
+      sizeRunEmpty: run.empty,
+      // Explicit rows, counted for EVERY category rather than only armed ones.
+      ownRowCells: rows ? rows.cells : 0,
+      ownRowProducts: rows ? rows.products.size : 0,
+      ownRowsByLocation: rows ? rows.byLocation : {},
+      rowOnly: !cats[key] && !entry,
+      refused: REFUSED_CATEGORY_KEYS.has(key),
       armed,
       products: pids.length,
       units: Object.values(byLocation).reduce((n, v) => n + v.units, 0),
@@ -321,7 +501,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
     });
   }
-  return { categories, destinations };
+  return { categories, destinations, groups, rowLocations: rowLocs };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
@@ -356,7 +536,10 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // other route (a script, the console) invalidates it too — the cache can
     // go stale on stock movements within the TTL, never on the policy itself,
     // which is what this screen is actually about. `refresh: true` skips it.
-    const key = canonical({ policy: cfg.categoryPolicy ?? null, cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null });
+    // policyGroups is in the cache key for the same reason categoryPolicy is:
+    // arming a group through any other route must not be served a stale list.
+    const key = canonical({ policy: cfg.categoryPolicy ?? null, groups: cfg.policyGroups ?? null,
+      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null });
     const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
     const census = fresh && d.refresh !== true
       ? censusCache.payload
@@ -377,6 +560,197 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     };
   }
 
+  // ── THE EXPLICIT-ROW LIST — "N with their own rows", opened for editing ───
+  // Read-only. Returns every /stock_targets row on the products in a category,
+  // with the product's name and the current three numbers, so the card can show
+  // them as the current values rather than as a warning count.
+  if (d.action === "rows") {
+    if (typeof categoryKey !== "string" || !categoryKey) {
+      throw httpsError("invalid-argument", "categoryKey is required to list rows.");
+    }
+    const rowLocs = rowLocationsFor(cfg);
+    const products = await readMapPaged(db, "products");
+    const pids = new Set(Object.keys(products).filter((pid) => products[pid]?.categoryKey === categoryKey));
+    const rows = [];
+    for (const loc of rowLocs) {
+      const t = await readMapPaged(db, `${TARGETS_PATH}/${loc}`);
+      for (const [pid, bySize] of Object.entries(t)) {
+        if (!pids.has(pid)) continue;
+        for (const [sizeKey, row] of Object.entries(bySize || {})) {
+          if (!isPlainObject(row)) continue;
+          rows.push({
+            loc, pid, sizeKey,
+            name: products[pid]?.name || "",
+            target: typeof row.target === "number" ? row.target : null,
+            minQty: typeof row.minQty === "number" ? row.minQty : null,
+            reorderPoint: typeof row.reorderPoint === "number" ? row.reorderPoint : null,
+          });
+        }
+      }
+    }
+    rows.sort((a, b) => a.name.localeCompare(b.name) || a.loc.localeCompare(b.loc) || a.sizeKey.localeCompare(b.sizeKey));
+    return { ok: true, action: "rows", categoryKey, rows, count: rows.length, serverNowMs: nowMs };
+  }
+
+  // ── EDIT EXPLICIT ROWS IN PLACE ───────────────────────────────────────────
+  // One multi-path update, so a half-applied batch is not a state the estate can
+  // end up in. Every edit is checked against the row that is LIVE right now: an
+  // absent row is refused (this path never creates), and a row whose current
+  // numbers do not match what the editor was opened on is refused (somebody else
+  // changed it while this was open). Deletion is not expressible.
+  if (d.action === "setRows") {
+    const edits = Array.isArray(d.rows) ? d.rows : null;
+    if (!edits || !edits.length) throw httpsError("invalid-argument", "rows must be a non-empty list of edits.");
+    if (edits.length > MAX_ROW_EDITS_PER_CALL) {
+      throw httpsError("invalid-argument", `at most ${MAX_ROW_EDITS_PER_CALL} rows per save — split the change.`);
+    }
+    const knownLocs = new Set(knownLocations);
+    const update = {}, applied = [], changes = [];
+    for (const e of edits) {
+      if (!isPlainObject(e)) throw httpsError("invalid-argument", "each row edit must be an object.");
+      const { loc, pid, sizeKey } = e;
+      for (const [name, v] of [["loc", loc], ["pid", pid], ["sizeKey", sizeKey]]) {
+        if (typeof v !== "string" || !v || !/^[A-Za-z0-9_-]+$/.test(v)) {
+          throw httpsError("invalid-argument", `${name} ${JSON.stringify(v)} is not a single key segment.`);
+        }
+      }
+      if (knownLocs.size && !knownLocs.has(loc)) throw httpsError("invalid-argument", `unknown location "${loc}"`);
+      const next = { target: e.target, minQty: e.minQty };
+      if (e.reorderPoint !== undefined && e.reorderPoint !== null) next.reorderPoint = e.reorderPoint;
+      const err = validateLocationEntry(next, { where: `${loc} ${pid} ${sizeKey}`, perSize: false });
+      if (err) throw httpsError("invalid-argument", err);
+
+      const path = `${TARGETS_PATH}/${loc}/${pid}/${sizeKey}`;
+      const live = await val(db, path);
+      // NEVER CREATE. An absent row here is either a stale list or an attempt to
+      // arm a new cell through the wrong door; both are refused, loudly.
+      if (!isPlainObject(live)) {
+        throw httpsError("failed-precondition",
+          `${loc} / ${pid} / ${sizeKey} has no row today. This screen edits rows that already exist; it does not create them.`,
+          { missing: { loc, pid, sizeKey } });
+      }
+      // DRIFT, per row. `expected` is what the editor rendered.
+      if (isPlainObject(e.expected)) {
+        const liveShape = { target: live.target ?? null, minQty: live.minQty ?? null,
+          reorderPoint: typeof live.reorderPoint === "number" ? live.reorderPoint : null };
+        const wantShape = { target: e.expected.target ?? null, minQty: e.expected.minQty ?? null,
+          reorderPoint: typeof e.expected.reorderPoint === "number" ? e.expected.reorderPoint : null };
+        if (!sameValue(liveShape, wantShape)) {
+          throw httpsError("failed-precondition",
+            `${loc} / ${pid} / ${sizeKey} changed while this was open. Close and re-open the list.`,
+            { drift: true, live: liveShape });
+        }
+      }
+      // The whole row is REPLACED with the validated shape, so a blank "Ask at"
+      // removes the field rather than leaving the old one behind — the same
+      // absent-is-not-zero rule the map obeys. Every other field the row carries
+      // is preserved: the engine reads target/minQty/reorderPoint, but a row may
+      // hold provenance the scan wrote and this screen has no business dropping.
+      const preserved = { ...live };
+      delete preserved.target; delete preserved.minQty; delete preserved.reorderPoint;
+      update[path] = { ...preserved, ...next };
+      applied.push({ loc, pid, sizeKey, before: live, after: update[path] });
+      for (const f of ["target", "minQty", "reorderPoint"]) {
+        const from = typeof live[f] === "number" ? live[f] : null;
+        const to = typeof next[f] === "number" ? next[f] : null;
+        if (from !== to) changes.push({ loc, pid, sizeKey, field: f, from, to });
+      }
+    }
+    if (!changes.length) return { ok: true, action: "setRows", noChange: true, changes: [] };
+
+    // HISTORY FIRST, holding every `before` in full — same ordering and same
+    // reasoning as the policy write below.
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({
+      kind: "rows", categoryKey: categoryKey || null, at: nowMs, by: callerEmail, byUid: callerUid || null,
+      rowCount: applied.length, before: applied.map((a) => ({ loc: a.loc, pid: a.pid, sizeKey: a.sizeKey, row: a.before })),
+      changes, status: "pending",
+    });
+    await db.ref().update(update);
+    invalidateCensusCache();
+    await historyRef.update({ status: "applied", verifiedAt: nowMs });
+    return { ok: true, action: "setRows", categoryKey: categoryKey || null, changes,
+      rowCount: applied.length, historyId: historyRef.key, history: await readHistory(db) };
+  }
+
+  // ── GROUPS ────────────────────────────────────────────────────────────────
+  // One write path for creating, editing, arming and deleting a group. Arming
+  // is not a separate verb: it is the `armed` field, validated with everything
+  // else, so a group can never be armed by a call that skipped the shape check.
+  if (d.action === "setGroup") {
+    const groupKey = d.groupKey;
+    if (!("group" in d)) {
+      throw httpsError("invalid-argument",
+        "group is required — send `group: null` to delete it. Omitting it is refused, because a dropped field must not delete a live group.");
+    }
+    const liveGroups = isPlainObject(cfg.policyGroups) ? cfg.policyGroups : {};
+    const before = liveGroups[groupKey] ?? null;
+    const after = d.group;
+    const err = validatePolicyGroup(groupKey, after, {
+      knownCategoryKeys, knownLocations, existingGroups: liveGroups, categoryPolicy: cfg.categoryPolicy,
+    });
+    if (err) throw httpsError("invalid-argument", err);
+    for (const m of (after?.memberCategoryKeys || [])) {
+      if (REFUSED_CATEGORY_KEYS.has(m)) {
+        throw httpsError("invalid-argument", `"${m}" carries no policy by owner decision and cannot be put in a group`);
+      }
+    }
+
+    // ── ARMING IS MODELLED BEFORE IT IS ALLOWED ──────────────────────────────
+    // A group that would produce more requests in one scan than the per-scan cap
+    // does not get armed from this screen. Measured live 2026-08-22, arming
+    // footwear-all would produce 2,176 requests against a cap of 75 — 29x, and
+    // the cap is SHARED with every clothing category, so it would not merely be
+    // slow, it would starve everything else. That is not a confirmation dialog's
+    // job; it is a refusal with the number in it.
+    let armModel = null;
+    if (after && after.armed === true && before?.armed !== true) {
+      armModel = await modelGroupArming(db, { config: cfg, groupKey, group: after, knownLocations });
+      if (armModel.exceedsCap) {
+        throw httpsError("failed-precondition",
+          `Arming "${groupKey}" would ask for ${armModel.totalRequests} refills on the next scan, against a limit of ${armModel.cap} shared with every other category. That is ${Math.round(armModel.totalRequests / armModel.cap)}x the limit. Bring the numbers down, or arm fewer categories, before turning it on.`,
+          { overCap: true, model: armModel });
+      }
+    }
+
+    if (d.dryRun === true) {
+      return { ok: true, dryRun: true, action: "setGroup", groupKey, before, after, armModel };
+    }
+    if (sameValue(before, after)) {
+      return { ok: true, action: "setGroup", noChange: true, groupKey, before, after };
+    }
+    if (d.expectedBefore !== undefined && !sameValue(before, d.expectedBefore === null ? null : d.expectedBefore)) {
+      throw httpsError("failed-precondition",
+        "The group changed while this was open. Close and re-open it to see the current numbers.",
+        { drift: true, live: before });
+    }
+
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({
+      kind: "group", groupKey, at: nowMs, by: callerEmail, byUid: callerUid || null,
+      before, after, armed: after?.armed === true,
+      modelled: armModel ? { requests: armModel.totalRequests, units: armModel.totalUnits, cap: armModel.cap } : null,
+      status: "pending",
+    });
+    const liveNow = await val(db, `${GROUPS_PATH}/${groupKey}`);
+    if (!sameValue(liveNow ?? null, before)) {
+      await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
+      throw httpsError("failed-precondition", "The group changed while this was being saved. Nothing was written.",
+        { drift: true, live: liveNow ?? null, historyId: historyRef.key });
+    }
+    await db.ref(`${GROUPS_PATH}/${groupKey}`).set(after);
+    invalidateCensusCache();
+    const written = await val(db, `${GROUPS_PATH}/${groupKey}`);
+    const verified = sameValue(written ?? null, after);
+    await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
+    if (!verified) {
+      throw httpsError("internal", "The group was written but did not read back as expected.",
+        { historyId: historyRef.key, written: written ?? null });
+    }
+    return { ok: true, action: "setGroup", groupKey, before, after, armModel,
+      historyId: historyRef.key, history: await readHistory(db) };
+  }
+
   // ── UN-ARMING MUST BE SAID, NOT IMPLIED ───────────────────────────────────
   // `policy: null` is the documented off switch and stays legal. An ABSENT
   // policy field is refused outright: a truncated payload, a renamed field or a
@@ -388,7 +762,30 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       'policy is required — send `policy: null` to un-arm a category. Omitting it is refused, because a dropped field must not delete a live policy.');
   }
   const policyAfter = normalizePolicy(d.policy);
-  const err = validateCategoryPolicy(categoryKey, policyAfter, { knownLocations, knownCategoryKeys });
+  // ── THE SIZES THIS CATEGORY MAY BE GIVEN A POLICY ON ──────────────────────
+  // Derived from live data — what its products declare, what /stock holds, what
+  // /stock_targets rows exist — intersected with the registry's declared run.
+  // Only read when the edit actually carries a per-size map, because deriving it
+  // costs a catalogue page and a uniform edit has no use for it.
+  let allowedSizes = null;
+  const carriesSizeMap = isPlainObject(policyAfter)
+    && Object.keys(policyAfter).some((k) => k !== "perSize" && locationEntryMode(policyAfter[k]) === "per-size");
+  if (carriesSizeMap) {
+    const run = await deriveSizeRun(db, { config: cfg, categoryKey, knownLocations });
+    if (run.empty) {
+      // Two different problems, two different sentences. A one-size category is
+      // not broken — it simply has no sizes, and its map speaks for the "_" cell
+      // alone. A sized category with no derivable run IS broken, and offering an
+      // editor for it would mean guessing.
+      throw httpsError(run.oneSize ? "invalid-argument" : "failed-precondition",
+        run.oneSize
+          ? `"${categoryKey}" is a one-size category — it has no sizes to set numbers against. Any letter cells it still holds are legacy rows, editable in the "with their own rows" list.`
+          : `No size run can be worked out for "${categoryKey}" from the live data — no product declares a size, no cell exists and no row exists. A size-by-size policy here would be a guess.`,
+        { sizeRunEmpty: true, oneSize: run.oneSize });
+    }
+    allowedSizes = run.sizes;
+  }
+  const err = validateCategoryPolicy(categoryKey, policyAfter, { knownLocations, knownCategoryKeys, allowedSizes });
   if (err) throw httpsError("invalid-argument", err);
 
   const before = cfg.categoryPolicy?.[categoryKey] ?? null;
@@ -476,5 +873,6 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
 module.exports = {
   applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
-  HISTORY_PATH, POLICY_PATH, httpsError, readMapPaged,
+  modelGroupArming, rowLocationsFor, deriveSizeRun,
+  HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH, MAX_ROW_EDITS_PER_CALL, httpsError, readMapPaged,
 };

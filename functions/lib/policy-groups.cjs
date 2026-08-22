@@ -80,7 +80,11 @@
 // would be a silent divergence.
 
 const { encodeSizeKey } = require("./refill-engine.cjs");
-const { validatePolicyEntry, MAX_TARGET } = require("./category-policy.cjs");
+// validateLocationEntry lives in category-policy.cjs, not here: the CATEGORY
+// validator needs it too, and category-policy.cjs cannot require this file
+// without a cycle. Re-exported below so callers have one import either way.
+const { validatePolicyEntry, validateLocationEntry, MAX_SIZES_PER_LOCATION, MAX_TARGET } =
+  require("./category-policy.cjs");
 // Resolution itself lives in the LEAF module the ENGINE consumes, so there is
 // exactly ONE implementation of "which policy speaks here". A copy on this side
 // would agree with the engine right up until the precedence changed, and this
@@ -90,7 +94,6 @@ const { locationEntryMode, armedGroupForCategory, effectivePolicyFor, locationPo
 
 const GROUPS_PATH = "config/refillEngine/policyGroups";
 const MAX_GROUP_MEMBERS = 60;
-const MAX_SIZES_PER_LOCATION = 40;
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const KEY_RE = /^[A-Za-z0-9_-]+$/;
@@ -99,45 +102,6 @@ const KEY_RE = /^[A-Za-z0-9_-]+$/;
 function sizesOfLocationEntry(locEntry) {
   if (locationEntryMode(locEntry) !== "per-size") return [];
   return Object.keys(locEntry.sizes);
-}
-
-// ── VALIDATION — ONE LOCATION ────────────────────────────────────────────────
-// Delegates each row to the shipped validatePolicyEntry so the ranges, the
-// minQty-alongside-target rule and the "Ask at below Keep" rule are the SAME
-// rules a uniform entry gets. A per-size row that a uniform entry would have
-// been refused for must not sneak through because it is nested one level down.
-function validateLocationEntry(locEntry, { where, perSize, allowedSizes }) {
-  const mode = locationEntryMode(locEntry);
-  if (mode === "invalid") {
-    if (isPlainObject(locEntry) && isPlainObject(locEntry.sizes) && locEntry.target !== undefined) {
-      return `${where}: hold either one number for the whole location or a size-by-size map, not both`;
-    }
-    return `${where}: must be an object with a target, or a "sizes" map`;
-  }
-  if (mode === "uniform") return validatePolicyEntry(locEntry, { where });
-
-  // per-size
-  if (!perSize) return `${where}: size-by-size numbers need the category to be in per-size mode`;
-  const keys = Object.keys(locEntry.sizes);
-  if (!keys.length) return `${where}: the size map is empty — give at least one size a number, or remove the location`;
-  if (keys.length > MAX_SIZES_PER_LOCATION) return `${where}: more than ${MAX_SIZES_PER_LOCATION} sizes at one location`;
-  for (const k of Object.keys(locEntry)) {
-    if (k !== "sizes") return `${where}: unknown field "${k}" next to a size map`;
-  }
-  for (const k of keys) {
-    // The key must already BE the encoded form. Accepting "5.5" and encoding it
-    // here would be accepting a key RTDB cannot store, and the caller would
-    // have written it under a different key than the one validated.
-    if (!KEY_RE.test(k)) return `${where}: size key ${JSON.stringify(k)} must be letters, digits, hyphens or underscores (5.5 is stored as 5_5)`;
-    if (encodeSizeKey(k) !== k) return `${where}: size key ${JSON.stringify(k)} is not in its stored form (expected ${JSON.stringify(encodeSizeKey(k))})`;
-    if (k === "_") return `${where}: "_" is the one-size cell and cannot appear in a per-size map`;
-    if (Array.isArray(allowedSizes) && allowedSizes.length && !allowedSizes.includes(k)) {
-      return `${where}: ${k} is not one of this category's sizes (${allowedSizes.join(", ")})`;
-    }
-    const err = validatePolicyEntry(locEntry.sizes[k], { where: `${where} ${k}` });
-    if (err) return err;
-  }
-  return null;
 }
 
 // ── VALIDATION — A WHOLE GROUP ───────────────────────────────────────────────
@@ -258,12 +222,27 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
     }
   }
   const union = [...new Set([...declared, ...stocked, ...rowed])].sort(bySizeRank);
-  const taxSizes = (taxonomy?.cats?.[categoryKey]?.sizes || [])
-    .map((s) => encodeSizeKey(s)).filter((s) => s !== "_");
-  const offered = taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union;
-  const extra = taxSizes.length ? union.filter((s) => !taxSizes.includes(s)) : [];
+  const registered = taxonomy?.cats?.[categoryKey];
+  const taxSizes = (registered?.sizes || []).map((s) => encodeSizeKey(s)).filter((s) => s !== "_");
+  // ── A ONE-SIZE CATEGORY HAS NO RUN, WHATEVER ITS CELLS SAY ────────────────
+  // caps-beanies is one-size and carries 188 explicit rows on letter sizes,
+  // every one left behind by the headwear collapse. The raw union therefore
+  // produces a five-letter "size run" for a category whose map speaks for the
+  // "_" cell alone — and a per-size editor built on it would let the owner write
+  // a policy the engine can never consult. So a registry entry that declares
+  // one-size (sizeMode "one", or a sizes list holding nothing but "_") has an
+  // EMPTY offered run, and every real cell goes to `extra` where it belongs: a
+  // legacy row, visible, edited through the explicit-rows path.
+  const oneSize = !!registered && (registered.sizeMode === "one" || taxSizes.length === 0);
+  const offered = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);
+  const extra = oneSize ? union : (taxSizes.length ? union.filter((s) => !taxSizes.includes(s)) : []);
   return {
     sizes: offered,
+    // The registry calls this category one-size. Reported rather than folded
+    // into `empty`, because the two need different sentences: "this category has
+    // no sizes" and "this category's sizes cannot be worked out" are different
+    // problems with different fixes.
+    oneSize,
     // Real cells outside the registry's run. Never editable as policy — the map
     // would be speaking for a size the category does not have — but visible,
     // because their rows produce real refills.
