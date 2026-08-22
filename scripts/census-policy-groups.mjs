@@ -111,10 +111,17 @@ const line = (n = 92) => "─".repeat(n);
   console.log(`  products ${Object.keys(products).length}   locations ${allLocs.length}`);
 
   // ── MOVEMENT, for the merge proposals ──────────────────────────────────────
-  // Units that left a shelf in the window, by category. Sales only — a transfer
-  // moves a unit between our own shelves and says nothing about demand. The
-  // window is the scan's own by default so the number is comparable to what the
-  // engine reasons about.
+  // Units that left a shelf in the window, by category. SALES ONLY — a transfer
+  // moves a unit between our own shelves and says nothing about demand — net of
+  // returns, which are the same sale coming back.
+  //
+  // The ledger's type is "sold", not "sale". Filtering on "sale" matched nothing
+  // and reported every category at zero movement, which silently disabled the
+  // twinned-merge proposal entirely: the first run of this script produced two
+  // "tiny" proposals and no twinned ones, and it looked like a finding rather
+  // than a typo. The live type histogram over 7 days is transfer_out 2264, sold
+  // 1949, transfer_in 1205, received 880, adjustment 646, return 152.
+  const SALE_TYPES = new Set(["sold"]);
   const windowStart = new Date(Date.now() - MOVEMENT_DAYS * 86400000).toISOString();
   const mvSnap = await db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value");
   const movementByCategory = {};
@@ -122,11 +129,12 @@ const line = (n = 92) => "─".repeat(n);
   mvSnap.forEach((c) => {
     mvCount += 1;
     const m = c.val() || {};
-    if (String(m.type || "") !== "sale") return;
+    const type = String(m.type || "");
+    if (!SALE_TYPES.has(type) && type !== "return") return;
     const key = products[m.productId]?.categoryKey;
     if (!key) return;
     const q = Math.abs(typeof m.qty === "number" && Number.isFinite(m.qty) ? m.qty : 0);
-    movementByCategory[key] = (movementByCategory[key] || 0) + q;
+    movementByCategory[key] = Math.max((movementByCategory[key] || 0) + (type === "return" ? -q : q), 0);
   });
   console.log(`  ledger slice: ${mvCount} movements in the ${MOVEMENT_DAYS}-day window`);
 
@@ -187,19 +195,29 @@ const line = (n = 92) => "─".repeat(n);
   console.log(`  proposed numbers: the location's own footwear run, reorderPoint 0`);
   console.log(`  locations with a run: ${modelLocs.join(", ") || "(none — nothing to model)"}`);
 
-  // modelCategoryPolicy reads the map through the ENGINE's resolveTarget, which
-  // does not know about groups yet (that lands in the next commit). Injecting
-  // the group's policy as each member's own entry gives the identical answer by
-  // construction and keeps this census honest about what it measured.
+  // The group is modelled AS A GROUP — armed:true in a throwaway copy of the
+  // config, never written anywhere — so the number below comes through the same
+  // resolution the scan would use, group precedence included. Modelling it by
+  // injecting the policy as each member's own entry would have measured a
+  // different arrangement and quietly answered a different question.
   const groupModel = [];
   let groupRequests = 0, groupUnits = 0;
+  const armedCfg = {
+    ...config,
+    policyGroups: {
+      ...groups,
+      [GROUP_KEY]: {
+        label: `All footwear except ${GROUP_EXCLUDE.join(", ")}`,
+        memberCategoryKeys: members, armed: true, policy: groupPolicyProposed,
+      },
+    },
+  };
   for (const k of members) {
-    const cfg = { ...config, categoryPolicy: { ...policy, [k]: groupPolicyProposed } };
     const m = modelCategoryPolicy({
-      config: cfg, products, stock, targets, openIndex, categoryKey: k,
+      config: armedCfg, products, stock, targets, openIndex, categoryKey: k,
       locations: allLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent,
     });
-    groupModel.push({ key: k, products: m.products, requests: m.totalRequests, units: m.totalUnits,
+    groupModel.push({ key: k, products: m.products, policySource: m.policySource, requests: m.totalRequests, units: m.totalUnits,
       liveRequests: m.liveRequests, liveUnits: m.liveUnits, centralOnHand: m.centralOnHand,
       overriddenProducts: m.overriddenProducts, legacyRowCells: m.legacyRowCells });
     groupRequests += m.totalRequests;
@@ -221,6 +239,24 @@ const line = (n = 92) => "─".repeat(n);
     console.log(`  ✓ under the cap — but the group is still seeded DISARMED, and the footwear kill`);
     console.log(`    switch (footwearTargets) is a SEPARATE switch that this build does not touch.`);
   }
+  // ── THE SEEDED STATE, MEASURED RATHER THAN ASSERTED ───────────────────────
+  // Write the group DISARMED into a copy of the live config and re-run the same
+  // model. If a single number moves, the seed is not inert and this build stops.
+  const disarmedCfg = { ...config, policyGroups: { ...groups,
+    [GROUP_KEY]: { ...armedCfg.policyGroups[GROUP_KEY], armed: false } } };
+  let disarmedDelta = 0;
+  for (const k of members) {
+    const before = modelCategoryPolicy({ config, products, stock, targets, openIndex, categoryKey: k,
+      locations: allLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent });
+    const after = modelCategoryPolicy({ config: disarmedCfg, products, stock, targets, openIndex, categoryKey: k,
+      locations: allLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent });
+    disarmedDelta += Math.abs(after.totalRequests - before.totalRequests) + Math.abs(after.totalUnits - before.totalUnits);
+  }
+  console.log(`\n  SEEDED DISARMED, measured against the live snapshot: delta ${disarmedDelta} across all ${members.length} members.`);
+  if (disarmedDelta !== 0) {
+    console.log(`  🛑 STOP — writing the group DISARMED moved ${disarmedDelta} of something. It must move nothing.`);
+  }
+
   console.log(`\n  ARMED TODAY: no. This group does not exist in the live config yet, and when it is`);
   console.log(`  written it is written with armed:false — which takes it out of the resolution order`);
   console.log(`  entirely, so it cannot produce a single intent whatever these numbers say.`);
@@ -317,7 +353,7 @@ const line = (n = 92) => "─".repeat(n);
       policyGroups: groups,
     },
     group: {
-      key: GROUP_KEY, top: GROUP_TOP, exclude: GROUP_EXCLUDE,
+      key: GROUP_KEY, top: GROUP_TOP, exclude: GROUP_EXCLUDE, disarmedDelta,
       members, excluded, missingExclusions,
       armedInThisBuild: false,
       proposedPolicy: groupPolicyProposed,
