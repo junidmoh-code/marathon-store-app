@@ -320,3 +320,21 @@ describe("an armed location that is not a configured destination", () => {
     expect(policyFromDraft(draft)).toEqual({ trophy: { target: 4, minQty: 2 } });
   });
 });
+
+it("the verdict says which requests the scan works out but does not send", () => {
+  // A shadow/off destination has its requests computed and never written.
+  // Reporting only the total overstates what actually happens.
+  const v = previewVerdict({
+    totalRequests: 12, totalUnits: 40, centralOnHand: 100, cap: 75,
+    overriddenProducts: 0, legs: [],
+    nonLiveLegs: [{ loc: "hub1", mode: "shadow", requests: 5 }],
+  });
+  expect(v).toMatch(/at most 12 refills/);
+  expect(v).toMatch(/5 of those are for hub1 \(shadow\)/);
+  expect(v).toMatch(/7 actually go out/);
+});
+
+it("says nothing about non-live legs when every destination is live", () => {
+  const v = previewVerdict({ totalRequests: 3, totalUnits: 9, centralOnHand: 50, cap: 75, overriddenProducts: 0, legs: [], nonLiveLegs: [] });
+  expect(v).not.toMatch(/does not send/);
+});

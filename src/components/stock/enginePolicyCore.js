@@ -313,6 +313,15 @@ export function previewVerdict(model, { cap, centralOnHand } = {}) {
   if (model.overriddenProducts > 0) {
     parts.push(`${model.overriddenProducts} ${model.overriddenProducts === 1 ? "product is" : "products are"} still on their own rows and ignore these numbers entirely.`);
   }
+  // A destination that is not live has its requests COMPUTED but never written
+  // (refill-scan only persists for mode "live"). Reporting the total without
+  // this overstates what actually happens, which is the one thing this sentence
+  // exists not to do.
+  const nonLive = Array.isArray(model.nonLiveLegs) ? model.nonLiveLegs : [];
+  if (nonLive.length) {
+    const n = nonLive.reduce((t, l) => t + (l.requests || 0), 0);
+    parts.push(`${n} of those ${n === 1 ? "is" : "are"} for ${nonLive.map((l) => `${l.loc} (${l.mode})`).join(", ")}, which the scan works out but does not send — so ${model.totalRequests - n} actually go out.`);
+  }
   return parts.join(" ");
 }
 

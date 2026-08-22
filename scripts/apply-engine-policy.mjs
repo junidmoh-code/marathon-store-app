@@ -163,7 +163,11 @@ const ROLLBACK = join(ROOT, "var", `engine-policy-rollback-${CATEGORY}-${stamp}.
   // .toISOString() throws a RangeError, the outer catch would print FAILED and
   // exit 1 — announcing a failure for a write that had already succeeded, and
   // swallowing the post-verify line that says so.
-  const auditAt = Number.isFinite(audit?.at) ? new Date(audit.at).toISOString() : "unknown";
+  // Number.isFinite is not enough: 1e20 is finite and still yields an Invalid
+  // Date, whose toISOString() throws the same RangeError. Build the Date and
+  // ask IT.
+  const auditDate = new Date(audit?.at);
+  const auditAt = Number.isFinite(auditDate.getTime()) ? auditDate.toISOString() : "unknown";
   console.log(`  audit: status=${audit?.status ?? "missing"} by=${audit?.by ?? "unknown"} at=${auditAt}`);
   console.log(ok ? `  ✓ POST-VERIFY PASSED — live reads back exactly what was intended.`
                  : `  ✗ POST-VERIFY FAILED — live does not match. Roll back with ${ROLLBACK}.`);

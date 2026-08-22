@@ -34,14 +34,19 @@
 // ── WHAT THIS RULE CHANGES, AND WHAT IT DELIBERATELY DOES NOT ────────────────
 //   /config/refillEngine   — REPLACES the stockRole gate with the owner's
 //                            email. Four accounts become one.
-//   /engine_policy_history — NEW node. Readable by any signed-in non-anonymous
-//                            session; writable by NOBODY. Every entry is
-//                            written by the setCategoryPolicy callable through
-//                            the Admin SDK, which is not subject to rules, so
-//                            no client needs write access — and an audit trail
-//                            a client can rewrite is not an audit trail.
-//                            ".indexOn" on "at" so the history read is a query
-//                            rather than a download.
+//   /engine_policy_history — NEW node. Readable and writable by NOBODY. Both
+//                            halves go through the setCategoryPolicy callable,
+//                            which uses the Admin SDK and is not subject to
+//                            rules, so no client needs either. An audit trail a
+//                            client can rewrite is not an audit trail — and one
+//                            any staff account can READ hands them the owner's
+//                            email and the whole policy decision trail
+//                            (`by`, `byUid`, `before`, `after`, `modelled`) for
+//                            nothing. An earlier draft granted read to every
+//                            signed-in session out of habit; there is no caller
+//                            that needs it. ".indexOn" on "at" stays, so the
+//                            server-side history read is a query rather than a
+//                            download.
 //
 //   /config ".read" IS NOT TOUCHED. The live rule already excludes anonymous
 //   sessions and is correct as it stands. An earlier draft of this script
@@ -65,7 +70,7 @@ const RULE_REFILL_ENGINE = `
 // A NEW top-level node, alongside "config", "orders" and the rest.
 const RULE_HISTORY = `
 "engine_policy_history": {
-  ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+  ".read": false,
   ".write": false,
   ".indexOn": ["at"]
 }
@@ -110,7 +115,9 @@ ${indent(RULE_HISTORY)}
     session.
 
   • The Cloud Functions are unaffected either way. The scan and
-    setCategoryPolicy both use the Admin SDK, which bypasses rules entirely.
+    setCategoryPolicy both use the Admin SDK, which bypasses rules entirely —
+    which is also why /engine_policy_history can be closed to every client
+    without breaking the card's history list or its Revert button.
 
   AFTER PUBLISHING, verify from a stockRole-admin staff session that a direct
   write to /config/refillEngine/categoryPolicy is refused. Until you have seen
