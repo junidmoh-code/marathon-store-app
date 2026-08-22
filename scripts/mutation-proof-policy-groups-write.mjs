@@ -119,8 +119,8 @@ const MUTATIONS = [
     id: "M-CAP",
     guard: "A group over the per-scan cap cannot be armed from this screen",
     file: WRITE,
-    from: `      if (armModel.exceedsCap) {`,
-    to: `      if (false && armModel.exceedsCap) {`,
+    from: `      if (armModel && armModel.exceedsCap) {`,
+    to: `      if (false && armModel && armModel.exceedsCap) {`,
     nodeTests: TESTS,
   },
   {
