@@ -62,15 +62,42 @@ describe("detection — three trigger categories", () => {
       expect(triggersInText(text), text).toEqual([]);
     }
   });
-  it("deliberate boundaries: teams, supplier marks and 'polo' alone are not triggers", () => {
-    for (const text of ["Barcelona tracksuit", "Arsenal home jersey", "Miami Marlins fitted cap",
-                        "Crystal Palace jersey", "YOMO stylish tracksuit", "Shouzhan shirt",
-                        "Polo golf shirt", "Slip on sneaker white"]) {
+  it("deliberate boundaries: supplier marks, 'polo' alone and bare countries are not triggers", () => {
+    for (const text of ["YOMO stylish tracksuit", "Shouzhan shirt",
+                        "Polo golf shirt", "Slip on sneaker white",
+                        // A COUNTRY IS A PLACE, NOT A MARK. The national
+                        // federation's crest is the mark; the word is not the
+                        // crest, and stripping it would mangle honest
+                        // descriptions. Owner may overrule — see the note in
+                        // shopifyTriggers.js.
+                        "England home jersey white red", "Brazil away shirt yellow",
+                        "Portugal training top"]) {
       expect(triggersInText(text), text).toEqual([]);
     }
     // …but Palace alone IS the skate label, and leading-On IS On Running.
     expect(triggersInText("Palace tri-ferg tee")).toContain("palace");
     expect(triggersInText("On Cloudvista 2")).toContain("cloud");
+  });
+
+  // ── THE BOUNDARY THAT WAS REVERSED, 2026-08-22 ────────────────────────────
+  // Teams and clubs used to be excluded on the reasoning that they are "the
+  // product, not the maker". The owner reversed that after "Seattle Mariners"
+  // was found live. Pinned here so the reversal is visible and cannot be
+  // silently undone by someone reading the old note.
+  it("teams, clubs and leagues ARE triggers now (reverses the old 'teams stay' rule)", () => {
+    for (const [text, label] of [
+      ["Seattle Mariners cap navy", "seattle mariners"],
+      ["Atlanta Braves fitted cap cream", "atlanta braves"],
+      ["Red Sox fitted cap", "red sox"],
+      ["Arsenal home jersey", "arsenal"],
+      ["Barcelona tracksuit", "barcelona"],
+      ["Manchester United Home Long Sleeve Jersey", "manchester united"],
+      ["Paris Saint Germain Woven Tracksuit", "paris saint germain"],
+    ]) {
+      expect(triggersInText(text), text).toContain(label);
+    }
+    // Crystal Palace is still the club, not the skate label.
+    expect(triggersInText("Crystal Palace jersey")).not.toContain("palace");
   });
 });
 
