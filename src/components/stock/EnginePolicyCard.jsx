@@ -63,7 +63,7 @@ import { FONT, BG, BORDER, GLASS, RADIUS, GRAY, GREEN, RED, AMBER, BLUE_L, bGree
 import {
   COLUMN_LABELS, FIELD_ORDER, editorRows, draftFromEntry, seedLocation,
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
-  nextScanAt, previewVerdict, lastChange, defaultMinQty,
+  nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, bySizeRank, sizeLabel,
   mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
@@ -1072,7 +1072,10 @@ function PreviewPanel({ preview, keyNow, cap, busy, category, errors, onRun }) {
     );
   }
   // The verdict's FIRST sentence only — the number that constrains the outcome.
-  const line = String(previewVerdict(m, { cap }) || "").split(/(?<=\.)\s+/)[0];
+  // Cut WITHOUT a lookbehind: see firstSentence in enginePolicyCore.js. An
+  // unsupported lookbehind is a parse-time SyntaxError that takes the whole
+  // bundle down on Safari before 16.4, not a broken line.
+  const line = firstSentence(previewVerdict(m, { cap }));
   return (
     <div style={{ marginTop: "1rem", padding: ".9rem 1rem", borderRadius: RADIUS,
       background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.3)" }}>
