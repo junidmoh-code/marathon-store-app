@@ -205,11 +205,22 @@ const sha = (s) => createHash("sha256").update(s).digest("hex");
       if (perCategory[key] <= 6) sample.push(pid);
     }
     const fx = { at: new Date().toISOString(), note: "cut by scripts/census-engine-policy-sizes.mjs — inputs and the resolution they produced",
-      config: { mode: config.mode, routes: config.routes, categoryPolicy: config.categoryPolicy ?? null,
-        policyGroups: groups, footwearTargets: config.footwearTargets ?? null,
-        ruleBasedTargets: config.ruleBasedTargets ?? null, defaultRunByStore: config.defaultRunByStore ?? null,
-        runByStore: config.runByStore ?? null, subcategoryPolicy: config.subcategoryPolicy ?? null,
-        footwearRunByLocation: config.footwearRunByLocation ?? null, reorderPointByLocation: config.reorderPointByLocation ?? null },
+      // EVERY CONFIG KEY resolveTarget READS, named from the engine rather than
+      // from memory. A key left out here does not fail loudly — it silently
+      // changes the answer, which is how the first cut of this fixture recorded
+      // "subcategory_default" and replayed as "default".
+      config: {
+        mode: config.mode, routes: config.routes,
+        categoryPolicy: config.categoryPolicy ?? null, policyGroups: groups,
+        footwearTargets: config.footwearTargets ?? null,
+        footwearRunByLocation: config.footwearRunByLocation ?? null,
+        footwearReorderPoint: config.footwearReorderPoint ?? null,
+        ruleBasedTargets: config.ruleBasedTargets ?? null,
+        defaultRunByStore: config.defaultRunByStore ?? null,
+        subcategoryRunByLocation: config.subcategoryRunByLocation ?? null,
+        maxIntentsPerRun: config.maxIntentsPerRun ?? null,
+        maxUnitsPerIntent: config.maxUnitsPerIntent ?? null,
+      },
       products: {}, stock: {}, targets: {}, expected: {} };
     for (const pid of sample) fx.products[pid] = products[pid];
     for (const dest of destLocs) {

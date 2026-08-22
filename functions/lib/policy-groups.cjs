@@ -109,7 +109,7 @@ function sizesOfLocationEntry(locEntry) {
 // so overlapping membership is refused against what is actually there rather
 // than against an assumption.
 function validatePolicyGroup(groupKey, group, {
-  knownCategoryKeys, knownLocations, existingGroups, categoryPolicy,
+  knownCategoryKeys, knownLocations, existingGroups, categoryPolicy, allowedSizes,
 } = {}) {
   if (typeof groupKey !== "string" || !groupKey) return "groupKey must be a non-empty string";
   if (!KEY_RE.test(groupKey)) {
@@ -155,7 +155,15 @@ function validatePolicyGroup(groupKey, group, {
       if (Array.isArray(knownLocations) && knownLocations.length && !knownLocations.includes(loc)) {
         return `unknown location "${loc}"`;
       }
-      const err = validateLocationEntry(p[loc], { where: loc, perSize: p.perSize === true, allowedSizes: null });
+      // `allowedSizes` is the GROUP'S derived run — the union of its members'
+      // — when the caller has read it. A size outside that union is a size no
+      // member of this group carries, so a number against it would govern a
+      // cell that cannot exist. Absent (a caller that has not derived the run)
+      // still validates every other rule; the write path always derives it
+      // before letting a size map through.
+      const err = validateLocationEntry(p[loc], {
+        where: loc, perSize: p.perSize === true,
+        allowedSizes: Array.isArray(allowedSizes) ? allowedSizes : null });
       if (err) return err;
     }
   }
@@ -264,6 +272,47 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
   };
 }
 
+// ── SIZE RUN, FOR A WHOLE GROUP ──────────────────────────────────────────────
+// The group is ONE policy over several categories, so its per-size editor needs
+// ONE run. It is the UNION of its members' derived runs — never a hardcoded
+// list, and never one member's run standing in for the rest.
+//
+// UNION, NOT INTERSECTION, and the difference is the whole reason `partial`
+// exists. Intersecting would drop every size only some members carry: live,
+// kids-shoes carries 1–6 and running-shoes 6–12, so the intersection is almost
+// empty and a group policy built on it would arm nothing at either end of the
+// run. The union covers both, and every size is marked with WHICH members
+// actually carry it, so a number typed against a size only one category has is
+// visibly that rather than silently that.
+//
+// A member with no derivable run of its own (a one-size category put in a sized
+// group, or a category with no live data) contributes NOTHING and is named in
+// `membersWithoutRun`. It is not an error — the other members still have a run
+// — but it is not silence either: that member resolves the group's location
+// entries through the "_" cell alone, and the owner should know which ones.
+//
+// Returns { sizes, byMember, carriedBy, partial, membersWithoutRun, empty }.
+// `empty` is a STOP for the per-size editor, exactly as it is for a category.
+function sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations }) {
+  const members = Array.isArray(memberCategoryKeys) ? [...memberCategoryKeys].sort() : [];
+  const byMember = {};
+  const carriedBy = {};
+  const membersWithoutRun = [];
+  for (const key of members) {
+    const run = sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: key, locations });
+    byMember[key] = { sizes: run.sizes, oneSize: run.oneSize, products: run.products, extra: run.extra };
+    if (!run.sizes.length) membersWithoutRun.push(key);
+    for (const s of run.sizes) (carriedBy[s] || (carriedBy[s] = [])).push(key);
+  }
+  const sizes = Object.keys(carriedBy).sort(bySizeRank);
+  // A size some members do not carry. Marked, never dropped: see above.
+  const partial = sizes.filter((s) => carriedBy[s].length < members.length);
+  return {
+    sizes, byMember, carriedBy, partial, membersWithoutRun,
+    members, empty: sizes.length === 0,
+  };
+}
+
 // Letters first in their conventional order, then numerics ascending, then
 // anything else. Mirrors src/components/stock/hubSizeRank.js — pinned equal by
 // test rather than by hope (functions/ is CommonJS, the browser bundle must not
@@ -362,5 +411,5 @@ module.exports = {
   GROUPS_PATH, MAX_GROUP_MEMBERS, MAX_SIZES_PER_LOCATION, MAX_TARGET,
   locationEntryMode, sizesOfLocationEntry, validateLocationEntry, validatePolicyGroup,
   armedGroupForCategory, effectivePolicyFor, locationPolicyFor,
-  sizeRunForCategory, sizeRank, fillAllSizes, mergeCandidates,
+  sizeRunForCategory, sizeRunForGroup, sizeRank, bySizeRank, fillAllSizes, mergeCandidates,
 };
