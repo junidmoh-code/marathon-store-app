@@ -164,7 +164,7 @@ describe("search is the app's search", () => {
     for (const q of ["air force", "af1", "ultrabo", "nke air", "chuck", "zzzz"]) {
       const tree = await mount();
       await typeSearch(tree, q);
-      const expected = searchProducts(PRODUCTS, q, { limit: 60 }).map((p) => p.name);
+      const expected = searchProducts(PRODUCTS, q, { limit: 500 }).map((p) => p.name);
       const got = rowTexts(tree);
       expect(got).toHaveLength(expected.length);
       for (const name of expected) expect(got.some((r) => r.includes(name))).toBe(true);

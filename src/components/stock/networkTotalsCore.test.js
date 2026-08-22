@@ -158,9 +158,17 @@ describe("visibleProducts — the card never asks for more than it shows", () =>
     expect(visibleProducts(cat, [], "   ", 50)).toHaveLength(50);
   });
 
-  it("holds exactly the search matches when there is a query", () => {
+  it("holds one page of the search matches when there is a query", () => {
     const matches = [cat[7], cat[8]];
     expect(visibleProducts(cat, matches, "p7", 25)).toEqual(matches);
+  });
+
+  // Measured on the live catalogue: "nike" matches far more than a screenful and
+  // cost 121 KB unpaged against 44 KB for a page. Both modes page.
+  it("pages a broad search instead of pulling every match at once", () => {
+    const broad = cat.slice(0, 80);
+    expect(visibleProducts(cat, broad, "p", 25)).toHaveLength(25);
+    expect(visibleProducts(cat, broad, "p", 50)).toHaveLength(50);
   });
 
   it("never exceeds the catalogue, and copes with a zero page", () => {

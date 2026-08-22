@@ -77,7 +77,7 @@ export default function NetworkTotals({ products = [], registry }) {
   // The SAME matcher every other product search box in this app uses. Not a
   // second search with its own idea of what "af1" means.
   const matches = useMemo(
-    () => searchProducts(catalogue, query, { limit: 60 }),
+    () => searchProducts(catalogue, query, { limit: 500 }),
     [catalogue, query],
   );
 
@@ -109,7 +109,9 @@ export default function NetworkTotals({ products = [], registry }) {
   );
 
   const settled = rows.filter(r => r.totals);
-  const more = !query.trim() && pageSize < catalogue.length;
+  // The pool the page is drawn from — the search result, or the whole catalogue.
+  const pool = query.trim() ? matches.length : catalogue.length;
+  const more = pageSize < pool;
 
   return (
     <div style={{ maxWidth: 860, margin: "0 auto" }}>
@@ -121,7 +123,7 @@ export default function NetworkTotals({ products = [], registry }) {
       {/* SEARCH */}
       <div style={{ position: "relative", marginBottom: 12 }}>
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", opacity: .4 }}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
-        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search a product, or scroll the list…"
+        <input value={query} onChange={e => { setQuery(e.target.value); setPageSize(PAGE); }} placeholder="Search a product, or scroll the list…"
                style={{ ...input, width: "100%", boxSizing: "border-box", paddingLeft: 40, borderRadius: 13 }} />
       </div>
 
@@ -162,13 +164,13 @@ export default function NetworkTotals({ products = [], registry }) {
 
       {more && (
         <button onClick={() => setPageSize(n => n + PAGE)} style={{ ...bGray, width: "100%", marginTop: 12 }}>
-          Load 25 more · ranking {shown.length} of {catalogue.length} products
+          Load 25 more · ranking {shown.length} of {pool} {query.trim() ? "matches" : "products"}
         </button>
       )}
 
       <div style={{ fontSize: 11, color: "rgba(233,238,255,.32)", marginTop: 14, lineHeight: 1.6, textAlign: "center" }}>
         Ranked over the {settled.length} product{settled.length === 1 ? "" : "s"} counted so far
-        {query.trim() ? " in this search" : ` of ${catalogue.length}`}. This screen only reads —
+        {query.trim() ? ` of ${pool} matching` : ` of ${catalogue.length}`}. This screen only reads —
         it never moves stock. {kb(totalsBytesRead())} of stock data read on this page so far.
       </div>
     </div>
