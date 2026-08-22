@@ -47,8 +47,12 @@
 // this whole module — a merge does not move stock BETWEEN locations: Pine's
 // units stay at Pine, Central's at Central. There is nothing location-specific
 // left for a location guard to protect, so there is no location guard. Every
-// location is read, summed and transferred by the same code path, negatives
-// included. See MERGE-PINE-INVESTIGATION.md for the full trace.
+// REGISTERED location is read, summed and transferred by the same code path,
+// negatives included. (Registered is the operative word: the read loop walks
+// /locations, so a cell filed under an id that is NOT in the registry is never
+// seen — it is neither transferred nor deleted. That is the registry's job, not
+// a location guard's, and an unreadable registry already refuses.)
+// See MERGE-PINE-INVESTIGATION.md for the full trace.
 //
 // ── FAIL CLOSED, ALWAYS ──────────────────────────────────────────────────────
 // Anything uncertain — a missing record, an already-merged party, a lock held
@@ -82,6 +86,16 @@ class MergeRefused extends Error {
 }
 
 const asQty = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
+
+// Key-order-independent equality for the drift fences. RTDB hands back plain
+// objects whose key order is the wire's, not ours, so a raw JSON.stringify
+// comparison could refuse a merge that nothing actually touched.
+function stableJson(value) {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(",")}}`;
+}
 
 // A stock node's countable size cells. "_meta" (and any non-object child) is
 // bookkeeping, not stock — the node still gets deleted whole, _meta included.
@@ -325,7 +339,18 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     // commit and REFUSE on any drift (v or qty). The remaining window is the
     // milliseconds between this recheck and the update — down from the full
     // preparation time — and a refused merge writes nothing and can simply be
-    // retried. (Loser cells are protected by the loser lock above.)
+    // retried.
+    //
+    // BOTH SIDES ARE FENCED. The loser lock above excludes other MERGES, not a
+    // POS sale or a transfer: until the commit lands the loser is a normal,
+    // visible, sellable product. Its cells are read once (above), added to the
+    // survivor as ABSOLUTE quantities, and then the whole node is DELETED — so
+    // a sale landing on a loser cell in between would be added to the survivor
+    // at its pre-sale quantity and then erased with the node, conjuring a unit
+    // out of nothing and breaking the one invariant this module exists to hold.
+    // The loser node is therefore re-read WHOLE, not cell by cell: a concurrent
+    // write can also CREATE a size cell that the node delete would swallow
+    // unseen.
     for (const [loc, cells] of Object.entries(beforeSurvivorCells)) {
       for (const [sizeKey, sCell] of Object.entries(cells)) {
         const live = (await db.ref(`stock/${loc}/${survivorId}/${sizeKey}`).get()).val();
@@ -335,6 +360,14 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
           throw new MergeRefused("aborted",
             `The surviving product's stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
         }
+      }
+    }
+
+    for (const [loc, node] of Object.entries(loserNodes)) {
+      const live = (await db.ref(`stock/${loc}/${loserId}`).get()).val();
+      if (stableJson(live) !== stableJson(node)) {
+        throw new MergeRefused("aborted",
+          `The product being merged away had its stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
       }
     }
 

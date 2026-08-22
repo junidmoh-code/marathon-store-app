@@ -36,13 +36,18 @@ describe("headwear one-size collapse scope", () => {
     for (const loc of PINE) expect(shops).not.toContain(loc);
   });
 
+  // A DOC-LOCK, not a behaviour test: it pins prose, and prose is what tells the
+  // next person why the default above is what it is. Kept deliberately, labelled
+  // honestly — the two tests above are the ones with teeth.
   it("still records WHY Pine is out of scope, so the exclusion is not lost to a refactor", () => {
     expect(source).toMatch(/marathon-pine's three cap cells are all qty 0/);
   });
 });
 
 // The other half of the same contract: the merge core carries no location list
-// at all any more, so no future edit can quietly reinstate one by importing it.
+// at all any more. This catches the naive re-add — a copy-pasted constant or a
+// re-exported list — and nothing subtler: a scope fetched from /config or built
+// by concatenation would pass it untouched. It is a tripwire, not a proof.
 describe("the merge core has no location scope", () => {
   it("exports no Pine constant", async () => {
     const mod = await import("../../functions/lib/product-merge.cjs");
@@ -52,7 +57,7 @@ describe("the merge core has no location scope", () => {
     );
   });
 
-  it("mentions no location id in its source", () => {
+  it("mentions no location id in its executable source (the naive re-add)", () => {
     const merge = readFileSync(fileURLToPath(new URL("../../functions/lib/product-merge.cjs", import.meta.url)), "utf8");
     // Only the removal note may name Pine, and it names it as history.
     const codeLines = merge.split("\n").filter((l) => !l.trim().startsWith("//"));

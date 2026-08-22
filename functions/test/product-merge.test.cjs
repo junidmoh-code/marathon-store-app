@@ -37,22 +37,32 @@ function fakeDb(initial = {}) {
     else node[last] = value;
   };
 
-  let onGet = null; // { match, fn } — fires ONCE after a get whose path includes match
+  // { match, fn, skip } — fires ONCE after a get whose path includes match,
+  // after `skip` earlier matches have gone by. The skip matters for the LOSER
+  // drift fence, which re-reads the very path the initial read used: firing on
+  // the first match would model a write that landed BEFORE the merge looked,
+  // which is not drift at all.
+  let onGet = null;
 
   return {
     data,
     updates,
-    afterGetOf(match, fn) { onGet = { match, fn }; },
+    afterGetOf(match, fn, skip = 0) { onGet = { match, fn, skip }; },
     ref(path = "") {
       return {
         async get() {
           // The hook fires BEFORE the value is captured, so a "concurrent
           // write landing just before this read" is modelled faithfully.
           if (onGet && String(path).includes(onGet.match)) {
-            const { fn } = onGet; onGet = null; fn({ getPath: at, setPath: put });
+            if (onGet.skip > 0) onGet.skip -= 1;
+            else { const { fn } = onGet; onGet = null; fn({ getPath: at, setPath: put }); }
           }
           const v = at(path);
-          const val = v === undefined ? null : v;
+          // A DEEP COPY, because the real SDK hands back a detached snapshot.
+          // Returning the live object would make every read alias the store, so
+          // a value captured earlier would silently follow later writes — and a
+          // drift fence comparing the two could never see drift at all.
+          const val = v === undefined ? null : (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
           return { val: () => val, exists: () => val !== null };
         },
         async set(value) { put(path || "", value); },
@@ -472,7 +482,60 @@ test("a sale landing on a survivor cell mid-merge REFUSES the merge — never er
   assert.strictEqual(db.updates.length, 0, "the atomic update never ran");
 });
 
-// ─── THE LOCK ────────────────────────────────────────────────────────────────
+test("a sale landing on a LOSER cell mid-merge REFUSES the merge — no unit is conjured", async () => {
+  // The loser lock excludes other MERGES, not a POS sale: until the commit lands
+  // the loser is a normal sellable product. Its quantity is added to the
+  // survivor as an ABSOLUTE number and its node is then deleted, so an
+  // unfenced sale here would vanish and hub2's total would rise by one.
+  const db = fakeDb(baseWorld());
+  db.afterGetOf("stock/hub2/pLoser", ({ getPath, setPath }) => {
+    const cell = getPath("stock/hub2/pLoser/6");
+    setPath("stock/hub2/pLoser/6", { ...cell, qty: cell.qty - 1, v: cell.v + 1 });
+  }, 1); // skip the initial read — fire on the fence's re-read
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.code, /aborted/);
+    assert.match(err.message, /merged away had its stock at hub2 changed/);
+    return true;
+  });
+  assert.strictEqual(db.data.stock.hub2.pLoser["6"].qty, 1, "the concurrent sale's write survives");
+  assert.strictEqual(db.data.stock.hub2.pSurvivor["6"].qty, 5, "the survivor gained nothing");
+  assert.strictEqual(db.updates.length, 0, "the atomic update never ran");
+});
+
+test("a size cell CREATED on the loser mid-merge refuses — the node delete never swallows it unseen", async () => {
+  const db = fakeDb(baseWorld());
+  db.afterGetOf("stock/hub2/pLoser", ({ setPath }) => {
+    setPath("stock/hub2/pLoser/9", { qty: 2, v: 0, mv: "arrival" });
+  }, 1);
+  await assert.rejects(() => run(db), (err) => {
+    assert.match(err.message, /merged away had its stock at hub2 changed/);
+    return true;
+  });
+  assert.strictEqual(db.data.stock.hub2.pLoser["9"].qty, 2, "the new cell survives");
+  assert.strictEqual(db.updates.length, 0);
+});
+
+test("the loser fence is key-order blind — an identical node in a different order commits", async () => {
+  // NOTE the size keys. Integer-like keys ("6", "7") are ordered NUMERICALLY by
+  // the JS spec no matter how they are inserted, so a reversal on those would be
+  // a no-op and this test would prove nothing. Clothing keys reorder for real.
+  const w = baseWorld();
+  w.stock.central.pLoser = { M: { qty: 2, v: 1, mv: "a" }, L: { qty: 3, v: 1, mv: "b" } };
+  const db = fakeDb(w);
+  db.afterGetOf("stock/central/pLoser", ({ getPath, setPath }) => {
+    const node = getPath("stock/central/pLoser");
+    assert.deepStrictEqual(Object.keys(node), ["M", "L"], "the fixture really is insertion-ordered");
+    const flipped = Object.fromEntries(Object.entries(node).reverse());
+    assert.deepStrictEqual(Object.keys(flipped), ["L", "M"], "…and the flip really flips");
+    setPath("stock/central/pLoser", flipped);
+  }, 1);
+  const out = await run(db);
+  assert.strictEqual(out.ok, true, "a re-ordered but identical node must not refuse");
+  assert.strictEqual(db.data.stock.central.pSurvivor.M.qty, 2);
+  assert.strictEqual(db.data.stock.central.pSurvivor.L.qty, 3);
+});
+
 test("a fresh concurrent lock aborts the second merge; a stale one is taken over", async () => {
   const w = baseWorld();
   w.product_merges_locks = { pLoser: { mergeId: "other", at: NOW - 1000, by: "admin2" } };

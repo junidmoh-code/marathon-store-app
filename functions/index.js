@@ -3377,8 +3377,9 @@ exports.processStyleCodeCapture = require("./styleCode/processCapture.js").proce
 // conserved), the loser becomes a hidden redirect (`mergedInto`), its barcodes
 // and style-code claims repoint to the survivor, the matching
 // /duplicate_candidates row closes, and the full before-state is recorded at
-// /product_merges/{mergeId}. One atomic multi-path update; Pine stock refuses
-// the merge. All logic in lib/product-merge.cjs (node-tested); auth + IO in
+// /product_merges/{mergeId}. One atomic multi-path update; NO location refuses a
+// merge (the Pine/hub3 refusal was removed 2026-08-22), but a concurrent write
+// to either party's cells does. All logic in lib/product-merge.cjs (node-tested); auth + IO in
 // productMerge/mergeProducts.js.
 //   firebase deploy --only functions:mergeProducts
 exports.mergeProducts = require("./productMerge/mergeProducts.js").mergeProducts;
