@@ -363,7 +363,12 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       }
     }
 
-    for (const [loc, node] of Object.entries(loserNodes)) {
+    // EVERY registered location, not just the ones the loser held: a receive or
+    // a transfer_in landing during preparation would create a node the merge
+    // never read, so it would be neither transferred nor deleted — stranding
+    // stock on a record that is about to become invisible.
+    for (const loc of locationIds) {
+      const node = loserNodes[loc] || null;
       const live = (await db.ref(`stock/${loc}/${loserId}`).get()).val();
       if (stableJson(live) !== stableJson(node)) {
         throw new MergeRefused("aborted",

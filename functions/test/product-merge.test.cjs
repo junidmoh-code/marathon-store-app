@@ -516,6 +516,23 @@ test("a size cell CREATED on the loser mid-merge refuses — the node delete nev
   assert.strictEqual(db.updates.length, 0);
 });
 
+test("a node appearing at a location the loser held NOTHING at refuses — nothing is stranded", async () => {
+  // A receive landing on the duplicate mid-merge. Its location was never read,
+  // so its cells would be neither transferred nor deleted — left on a record
+  // about to become invisible.
+  const db = fakeDb(baseWorld());
+  db.afterGetOf("stock/trophy/pSurvivor", ({ setPath }) => {
+    setPath("stock/trophy/pLoser", { "6": { qty: 5, v: 0, mv: "receive" } });
+  });
+  await assert.rejects(() => run(db), (err) => {
+    assert.ok(err instanceof MergeRefused);
+    assert.match(err.message, /merged away had its stock at trophy changed/);
+    return true;
+  });
+  assert.strictEqual(db.data.stock.trophy.pLoser["6"].qty, 5, "the receive survives");
+  assert.strictEqual(db.updates.length, 0);
+});
+
 test("the loser fence is key-order blind — an identical node in a different order commits", async () => {
   // NOTE the size keys. Integer-like keys ("6", "7") are ordered NUMERICALLY by
   // the JS spec no matter how they are inserted, so a reversal on those would be
