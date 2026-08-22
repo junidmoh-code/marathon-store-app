@@ -333,6 +333,7 @@ const CENSUS = {
       armedEffective: ["hub2"], policySource: "group", memberOfGroup: null,
       carriage: { hub2: { carries: true, products: 951, units: 9300 }, "marathon-pe": { carries: false, products: 0, units: 0 } },
       ownRowCells: 0, ownRowProducts: 0, sizeRun: ["5_5", "7", "8"], sizeRunPartial: ["5_5"], sizeRunExtra: [], sizeRunEmpty: false,
+      sizeRunMembersWithRun: 3,
       imageUrl: null,
     },
   ],
@@ -376,7 +377,9 @@ const callableMock = vi.fn(async (payload) => {
       { loc: "hub2", pid: "c1", sizeKey: "S", name: "Black Cap", target: 2, minQty: 1, reorderPoint: 1 },
     ], count: 1 } };
   }
-  return { data: CENSUS };
+  // A FRESH object each call, as a real callable returns — the reopen-after-
+  // reload effect keys on the census changing identity.
+  return { data: { ...CENSUS } };
 });
 vi.mock("firebase/functions", () => ({ httpsCallable: () => (...a) => callableMock(...a) }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: true } }));
@@ -589,13 +592,25 @@ describe("the category detail screen", () => {
     expect(textOf(tree)).toContain("Black Cap");
   });
 
+  it("says in one line that sizes OUTSIDE the run are not set here", async () => {
+    const c = { ...CENSUS, categories: [{ ...CENSUS.categories[2], perSize: true,
+      entry: { perSize: true, hub2: { sizes: { 7: { target: 3, minQty: 1 } } } }, effectiveEntry: { perSize: true, hub2: { sizes: { 7: { target: 3, minQty: 1 } } } },
+      armedEffective: ["hub2"], memberOfGroup: null, sizeRunExtra: ["XL", "XXL"] }], groupEntries: [] };
+    callableMock.mockImplementationOnce(async () => ({ data: c }));
+    const tree = await renderCard();
+    await openFirst(tree, "Slides");
+    const line = tree.root.findAll((n) => n.type === "div" && instText(n).includes("outside the run")).map(instText)[0];
+    expect(line).toContain("2 sizes outside the run (XL, XXL) not set here");
+  });
+
   it("marks a size only SOME of a group's members carry, and offers Same for every size", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Sneakers");
     const t = textOf(tree);
     expect(t).toContain("◐");
     const line = tree.root.findAll((n) => n.type === "span" && instText(n).includes("only some of the")).map(instText)[0];
-    expect(line).toContain("only some of the 7 categories carry this size");
+    // the denominator is the members that HAVE a run (3), not the member count (7)
+    expect(line).toContain("only some of the 3 categories carry this size");
     expect(t).toContain("Same for every size");
   });
 
@@ -647,6 +662,28 @@ describe("the category detail screen", () => {
     expect(callableMock.mock.calls.some((c) => c[0]?.categoryKey && "policy" in (c[0] || {}))).toBe(false);
   });
 
+  it("saving a MEMBER writes the category (never the group) and returns to the GROUP, not the list", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const member = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Open member Slides")[0];
+    await act(async () => { member.props.onClick(); });
+    expect(textOf(tree)).toContain("Back to Sneakers");
+    // preview then save (Slides has its own entry, so no confirm fires)
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, noChange: true } }));
+    const saveBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Save policy")[0];
+    await act(async () => { saveBtn.props.onClick(); });
+    const write = callableMock.mock.calls.find((c) => c[0]?.categoryKey === "slides" && "policy" in (c[0] || {}) && !c[0].dryRun)?.[0];
+    expect(write).toBeTruthy();
+    expect(write.expectedBefore).toEqual(CENSUS.categories[2].entry);
+    expect(callableMock.mock.calls.some((c) => c[0]?.action === "setGroup" && !c[0]?.dryRun)).toBe(false);
+    // back on the GROUP screen after the reload
+    expect(textOf(tree)).toContain("A category's own numbers beat the group's.");
+  });
+
   it("expands a sized category into one row per size, in size order", async () => {
     const tree = await renderCard();
     await openFirst(tree, "Sneakers");
@@ -687,11 +724,20 @@ describe("the stripped screen", () => {
     const btn = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === `Open ${label}`)[0];
     await act(async () => { btn.props.onClick(); });
   };
-  // Every rendered string on the screen, longest first.
+  // Every rendered string on the screen — AND, for every element, the join of
+  // its direct string children, so a sentence split across {a}{b} children is
+  // measured whole rather than slipping under the limit in pieces.
   const strings = (tree) => {
     const out = [];
     // the <style> element's CSS is not text anyone reads
-    const walk = (n) => { if (typeof n === "string") out.push(n); else if (n?.type !== "style") (n?.children || []).forEach(walk); };
+    const walk = (n) => {
+      if (typeof n === "string") { out.push(n); return; }
+      if (n?.type === "style") return;
+      const kids = n?.children || [];
+      const direct = kids.filter((k) => typeof k === "string").join("");
+      if (direct.length) out.push(direct);
+      kids.forEach(walk);
+    };
     walk(tree.root);
     return out;
   };

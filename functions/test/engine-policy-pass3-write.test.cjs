@@ -119,6 +119,7 @@ test("the census carries the group as ONE entry — counts summed, run united, p
   assert.deepEqual(g.sizeRunCarriedBy["7"], ["sneakers", "slides"]);
   assert.equal(g.sizeRunByMember.boots.empty, true, "boots has no products and no run");
   assert.equal(g.sizeRunOverStop, false);
+  assert.equal(g.sizeRunMembersWithRun, 2, "sneakers and slides have a run; boots does not");
   // The photo is the biggest member's.
   assert.equal(g.imageUrl, "https://x/sneakers.png");
   // The member list, with own-policy flags.
@@ -204,7 +205,10 @@ test("a dry run on a DISARMED group models what arming would cost — writes not
   assert.equal(res.armedNow, false);
   assert.ok(res.armModel, "the model runs on a dry run whatever the armed state");
   assert.equal(typeof res.armModel.totalRequests, "number");
-  assert.ok(res.armModel.perMember.some((m) => m.key === "sneakers"));
+  const sn = res.armModel.perMember.find((m) => m.key === "sneakers");
+  assert.ok(sn);
+  // overriddenProducts travels with the member — s1 carries its own hub2/7 row.
+  assert.equal(sn.overriddenProducts, 1, "the group preview's Old rows number is summed from this");
   assert.deepEqual(groupAt(db, "footwear-all"), live, "nothing written");
   assert.equal(history(db).filter((h) => h.kind === "group").length, 0, "no history on a dry run");
   // …and a dry run that would be OVER the cap still returns rather than refusing,

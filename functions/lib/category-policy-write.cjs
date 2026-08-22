@@ -317,8 +317,13 @@ async function modelGroupArming(db, { config, groupKey, group, knownLocations })
       config: configAfter, products, stock, targets, openIndex, categoryKey: key,
       locations: carriageLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent,
     });
+    // overriddenProducts TRAVELS WITH THE MEMBER. The group preview sums it
+    // into its "Old rows" number; dropping it here made that number 0 for
+    // every group, whatever rows the members carried. (Architecture review,
+    // PR #405.)
     perMember.push({ key, products: m.products, requests: m.totalRequests, units: m.totalUnits,
-      liveRequests: m.liveRequests, policySource: m.policySource });
+      liveRequests: m.liveRequests, policySource: m.policySource,
+      overriddenProducts: m.overriddenProducts || 0 });
     totalRequests += m.totalRequests;
     totalUnits += m.totalUnits;
   }
@@ -467,8 +472,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // answers only for an ARMED group, and the list needs to fold a member into
   // its group's entry whatever the group's armed state: a disarmed group is
   // still the thing the owner opens to see those categories.
+  // Lexicographic, the SAME tiebreak armedGroupForCategory uses, so on the
+  // overlap state a hand-edited node can hold the card attributes a member to
+  // the group the engine resolves it through. (Adversarial review, PR #405.)
   const memberOf = {};
-  for (const [gk, g] of Object.entries(groups)) {
+  for (const gk of Object.keys(groups).sort()) {
+    const g = groups[gk];
     for (const m of (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : [])) memberOf[m] = memberOf[m] || gk;
   }
 
@@ -621,6 +630,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       sizeRunPartial: run.partial,
       sizeRunCarriedBy: run.carriedBy,
       sizeRunByMember: run.byMember,
+      // How many members have a run at all — the denominator "only some of
+      // the N" is measured against, not the full member count.
+      sizeRunMembersWithRun: run.membersWithRun.length,
       sizeRunOverStop: run.overStop,
       ownRowCells: sum("ownRowCells"),
       ownRowProducts: sum("ownRowProducts"),
@@ -889,6 +901,14 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // Two refusals: no member has a run (a per-size policy would be a guess),
     // and a union over MAX_GROUP_UNION (the brief's stop — an editor with more
     // rows than that is a guess dressed as a list).
+    // SHAPE FIRST, DERIVE SECOND. Deriving the run pages the catalogue; a
+    // payload with a duplicate member or a bad key should be refused for that
+    // reason, cheaply, not after a full read with a misleading "no size run".
+    // The same validator runs again below with the derived run in hand.
+    const shapeErr = validatePolicyGroup(groupKey, after, {
+      knownCategoryKeys, knownLocations, existingGroups: liveGroups, categoryPolicy: cfg.categoryPolicy, allowedSizes: null,
+    });
+    if (shapeErr) throw httpsError("invalid-argument", shapeErr);
     let groupAllowedSizes = null;
     let groupRun = null;
     const groupCarriesSizeMap = isPlainObject(after?.policy)
@@ -947,7 +967,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       armModel = await modelGroupArming(db, { config: cfg, groupKey, group: after, knownLocations });
     }
     if (after && after.armed === true) {
-      if (armModel.exceedsCap) {
+      if (armModel && armModel.exceedsCap) {
         throw httpsError("failed-precondition",
           `Arming "${groupKey}" would ask for ${armModel.totalRequests} refills on the next scan, against a limit of ${armModel.cap} shared with every other category. That is ${Math.round(armModel.totalRequests / armModel.cap)}x the limit. Bring the numbers down, or arm fewer categories, before turning it on.`,
           { overCap: true, model: armModel });

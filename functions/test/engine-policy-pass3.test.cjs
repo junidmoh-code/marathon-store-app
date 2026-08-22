@@ -183,7 +183,14 @@ test("3. SCALAR — a uniform entry resolves the same whether or not groups / pe
   assert.deepEqual(resolveTarget(ctx(cfg({ armed: true })), "hub2", "cap1", "_"), cap);
 });
 
-test('3b. SCALAR ≡ "same for every size" — a map naming every declared size with the uniform numbers is indistinguishable', () => {
+// THE CLAIM IS QUALIFIED: identical OVER THE DERIVED RUN. A uniform perSize
+// entry answers for every size a product DECLARES; a per-size map answers only
+// for the sizes it names, and the server lets it name only the derived run
+// (live ∩ registry). A declared size OUTSIDE the registry's run — the 1,246
+// sneakers with garment letters, measured live — is answered by the uniform
+// entry and falls through past a map. The screen says so in one line when a
+// location is switched to size by size. (Adversarial review, PR #405.)
+test('3b. SCALAR ≡ "same for every size" OVER THE DERIVED RUN — a map naming every declared size with the uniform numbers is indistinguishable', () => {
   const uniform = cfg({ groups: false, categoryPolicy: { hoodies: { perSize: true, hub2: { target: 5, minQty: 2, reorderPoint: 1 } } } });
   const filled = cfg({ groups: false, categoryPolicy: { hoodies: { perSize: true,
     hub2: { sizes: fillAllSizes(PRODUCTS.hood1.sizes, { target: 5, minQty: 2, reorderPoint: 1 }) } } } });
@@ -193,6 +200,21 @@ test('3b. SCALAR ≡ "same for every size" — a map naming every declared size 
     }
   }
   assert.deepEqual(plan(filled).intents, plan(uniform).intents, "and the plan is the same plan");
+});
+
+test("3c. …and a declared size OUTSIDE the run is where they differ: the uniform entry answers it, a map cannot name it", () => {
+  const products = { ...PRODUCTS, hood1: { ...PRODUCTS.hood1, sizes: ["S", "M", "L", "XL"] } };   // XL declared, not in the map
+  const stock = { ...STOCK, central: { ...STOCK.central, hood1: { S: { qty: 40 }, M: { qty: 40 }, L: { qty: 40 }, XL: { qty: 40 } } } };
+  const uniform = cfg({ groups: false, categoryPolicy: { hoodies: { perSize: true, hub2: { target: 5, minQty: 2 } } } });
+  const filled = cfg({ groups: false, categoryPolicy: { hoodies: { perSize: true, hub2: { sizes: fillAllSizes(["S", "M", "L"], { target: 5, minQty: 2 }) } } } });
+  const c = (config) => ({ targets: TARGETS, config, products, stock });
+  assert.equal(resolveTarget(c(uniform), "hub2", "hood1", "XL")?.target, 5, "uniform answers XL with the map's 5");
+  // The map does NOT answer XL — and the cell does not go silent: it falls
+  // through to the clothing RULE (defaultRunByStore hub2 XL = 2), which is
+  // not necessarily the conservative direction. That is why the screen says so.
+  const xl = resolveTarget(c(filled), "hub2", "hood1", "XL");
+  assert.equal(xl.source, "default", "falls through past the map to the rule");
+  assert.equal(xl.target, 2);
 });
 
 // ═══ 4. A PER-SIZE POLICY RESOLVES PER SIZE ══════════════════════════════════

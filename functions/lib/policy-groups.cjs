@@ -287,7 +287,9 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
 // offering the list anyway.
 const MAX_GROUP_UNION = 20;
 function sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations }) {
-  const members = Array.isArray(memberCategoryKeys) ? memberCategoryKeys : [];
+  // De-duplicated: the write path refuses a repeated member, but the census
+  // reads the live node unvalidated, and a repeat must not count twice.
+  const members = [...new Set(Array.isArray(memberCategoryKeys) ? memberCategoryKeys.filter((m) => typeof m === "string") : [])];
   const byMember = {};
   const carriedBy = {};
   for (const m of members) {

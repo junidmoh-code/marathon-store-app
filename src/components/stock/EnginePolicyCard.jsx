@@ -213,6 +213,11 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
   const [rowsMeta, setRowsMeta] = useState(null); // { total, truncated, limit, loc, locations, byLocation }
   const [rowDraft, setRowDraft] = useState({});
+  // After a MEMBER is saved the list reloads and the member is folded back
+  // into its group — so the screen returns to the GROUP, not to a list the
+  // member is not on. The key is held here and honoured when the fresh census
+  // arrives. (Adversarial review, PR #405.)
+  const reopenAfterLoad = useRef("");
 
   // The timer is held and cleared, rather than fired and forgotten: a second
   // message inside the window used to inherit the first one's timer, and an
@@ -258,6 +263,15 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());
   const stamp = lastChange(census?.history);
+
+  useEffect(() => {
+    const key = reopenAfterLoad.current;
+    if (!key || !census) return;
+    reopenAfterLoad.current = "";
+    const entry = (census.groupEntries || []).find((c) => c.key === key) || (census.categories || []).find((c) => c.key === key);
+    if (entry) openCategory(entry);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [census]);
 
   const openCategory = (c, from = null) => {
     setOpenKey(c.key);
@@ -317,10 +331,16 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   // it. See the header note.
   const armStore = (loc, carries) => {
     if (!carries) {
+      // A DISARMED GROUP's numbers reach nothing until the group is armed, so
+      // the warning says that instead of promising demand that will not come.
+      const dormant = open?.isGroup && !open.armed;
       const ok = window.confirm(
         `${locLabel(loc)} does not stock ${open?.label} today.\n\n` +
-        `Arming it tells the engine to keep this category there — it will start asking ` +
-        `for every product in the category at ${locLabel(loc)}, not only ones it has sold.\n\n` +
+        (dormant
+          ? `These numbers do nothing while the group is not armed. Once it is armed, the engine will ask ` +
+            `for every product in its ${(open.memberCategoryKeys || []).length} categories at ${locLabel(loc)}, not only ones it has sold.\n\n`
+          : `Arming it tells the engine to keep this category there — it will start asking ` +
+            `for every product in the category at ${locLabel(loc)}, not only ones it has sold.\n\n`) +
         `Arm it anyway?`);
       if (!ok) return;
     }
@@ -387,6 +407,15 @@ function EnginePolicyAuthed({ viewer, onExit }) {
 
   const save = async () => {
     if (!saveable) return;
+    // A MEMBER that has no entry of its own gets one here — and leaves its
+    // group's governance for good, even if the numbers typed are the group's
+    // own. That is a bigger change than the numbers look, so it is confirmed.
+    if (open && !open.isGroup && open.memberOfGroup && !open.entry && typeof window !== "undefined" && window.confirm) {
+      const ok = window.confirm(
+        `${open.label} will get its own numbers and stop following ${parent?.label || open.groupLabel || "its group"}.\n\nContinue?`);
+      if (!ok) return;
+    }
+    const backTo = parent ? parent.key : "";
     setBusy("save");
     try {
       const res = open?.isGroup
@@ -408,6 +437,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
       else if (open?.isGroup && !open.armed) flash("ok", "Saved. The group is not armed, so the next scan asks for nothing from it.");
       else flash("ok", `Saved. The next scan (${scan.label}) uses these numbers.`);
       closeAll();
+      reopenAfterLoad.current = backTo;
       await load(true);
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -520,7 +550,11 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   };
 
   // ── RENDER ────────────────────────────────────────────────────────────────
-  const governed = categories.filter((c) => (c.isGroup ? c.armed === true && (c.armedEffective || []).length : (c.armedEffective || []).length)).length;
+  // Counted over EVERY category, members included — a member with its own
+  // armed entry is governed even though the list folds it into its group.
+  // (Architecture review, PR #405.)
+  const allCats = census?.categories || [];
+  const governed = allCats.filter((c) => (c.armedEffective || []).length).length;
   const oldRows = (census?.categories || []).reduce((n, c) => n + (c.ownRowCells || 0), 0);
 
   return (
@@ -564,7 +598,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
             </div>
 
             <div className="ep-stats" style={{ marginBottom: "1.2rem" }}>
-              <Tile label="Governed" value={loading ? "…" : `${governed} of ${categories.length}`} />
+              <Tile label="Governed" value={loading ? "…" : `${governed} of ${allCats.length}`} />
               <Tile label="Next scan" value={scan.label} />
               <Tile label="Refills per scan" value={census?.cap ?? "…"} />
               <Tile label="Old rows" value={loading ? "…" : oldRows} />
@@ -903,8 +937,8 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
             )}
 
             {inDraft && perSize && (
-              <SizeRows loc={r.loc} row={row} sizeRun={sizeRun} partial={c.sizeRunPartial || []}
-                memberCount={(c.memberCategoryKeys || []).length} errors={errors}
+              <SizeRows loc={r.loc} row={row} sizeRun={sizeRun} partial={c.sizeRunPartial || []} extra={c.sizeRunExtra || []}
+                memberCount={c.sizeRunMembersWithRun ?? (c.memberCategoryKeys || []).length} errors={errors}
                 onField={onField} onQuickFill={onQuickFill} />
             )}
 
@@ -940,7 +974,7 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
 // their inputs. A size only SOME of a group's members carry is marked ◐. The
 // quick-fill copies the first size that has a number into every size — as its
 // own row, which is the point.
-function SizeRows({ loc, row, sizeRun, partial, memberCount, errors, onField, onQuickFill }) {
+function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onField, onQuickFill }) {
   const keys = [...new Set([...(sizeRun || []), ...Object.keys(row.sizes || {})])].sort(bySizeRank);
   const anyFilled = Object.values(row.sizes || {}).some((r) => String(r?.target ?? "").trim() !== "");
   const partialSet = new Set(partial || []);
@@ -978,6 +1012,14 @@ function SizeRows({ loc, row, sizeRun, partial, memberCount, errors, onField, on
           <span style={{ color: "#6b7280", fontSize: ".72rem" }}>{`◐ only some of the ${memberCount} categories carry this size`}</span>
         )}
       </div>
+      {/* Sizes OUTSIDE the run cannot be named here and fall through to the
+          engine's rules — said once, because "same for every size" does not
+          reach them. */}
+      {(extra || []).length > 0 && (
+        <div style={{ color: "#6b7280", fontSize: ".72rem" }}>
+          {`${extra.length} ${extra.length === 1 ? "size" : "sizes"} outside the run (${extra.slice(0, 6).map(sizeLabel).join(", ")}${extra.length > 6 ? "…" : ""}) not set here — they follow the engine's rules`}
+        </div>
+      )}
     </>
   );
 }
