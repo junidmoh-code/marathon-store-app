@@ -201,13 +201,27 @@ function tallyUnits(readyRows, returnRows, fromIso, toIso) {
     events.push(e);
   }
 
+  // ── A PRODUCT ID BECOMES AN RTDB KEY, SO IT MUST BE A LEGAL ONE ──────────
+  // unitsByPid is written straight to /social_signal, where each pid is a KEY.
+  // RTDB rejects keys containing . # $ / [ ] — and rejects the WHOLE write, not
+  // the offending child. One malformed event anywhere in the 58-day window
+  // ("SKU.123" typed into a till) therefore made the cache write throw, which
+  // meant the signal was never cached, which meant every subsequent run
+  // re-paged the entire log and threw again. The signal would be dead until
+  // someone cleaned the log by hand. Same class as the retryHistory outage:
+  // never let free text reach an RTDB key.
+  //
+  // Such an event still counts toward totalUnits (it was a real sale) but
+  // cannot be attributed, which is exactly what `coverage` is for.
+  const ILLEGAL_KEY = /[.#$/[\]]/;
   const unitsByPid = {};
-  let totalUnits = 0, attributedUnits = 0;
+  let totalUnits = 0, attributedUnits = 0, illegalPids = 0;
   for (const e of events) {
     const u = Math.max(1, Number(e.qty) || 1);
     totalUnits += u;
     const pid = typeof e.productId === "string" ? e.productId.trim() : "";
     if (!pid) continue;
+    if (ILLEGAL_KEY.test(pid)) { illegalPids++; continue; }
     attributedUnits += u;
     unitsByPid[pid] = (unitsByPid[pid] || 0) + u;
   }
@@ -217,6 +231,7 @@ function tallyUnits(readyRows, returnRows, fromIso, toIso) {
     attributedUnits,
     coverage: totalUnits ? attributedUnits / totalUnits : 0,
     events: events.length,
+    illegalPids,
   };
 }
 

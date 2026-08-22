@@ -156,9 +156,17 @@ console.log("4/4  verifying the token can see the publishing endpoints…");
 await get(`${igId}/content_publishing_limit`, { access_token: page.access_token })
   .catch((e) => die(`the token cannot reach Instagram publishing: ${e.message}. Re-generate it with instagram_content_publish granted.`));
 
-await writeSecret("meta-page-access-token", page.access_token);
-await writeSecret("meta-page-id", page.id);
-await writeSecret("meta-ig-user-id", igId);
+// Each write is guarded: writeSecret already refuses to let a gaxios error
+// (which carries the base64 token in its request body) escape, and this catch
+// is the second belt — a rejection that reached the top level would be printed
+// by Node's own handler, object and all.
+try {
+  await writeSecret("meta-page-access-token", page.access_token);
+  await writeSecret("meta-page-id", page.id);
+  await writeSecret("meta-ig-user-id", igId);
+} catch (err) {
+  die(`could not store the credentials: ${String(err?.message || err)}`);
+}
 
 console.log(`
 ✓ stored in Secret Manager (project marathon-club):

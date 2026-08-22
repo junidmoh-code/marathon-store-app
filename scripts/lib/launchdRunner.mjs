@@ -121,7 +121,12 @@ export async function runTick({
   }
 
   function acquireLock() {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    // Three rounds, not two. The old bound could STEAL a stale lock on the
+    // final round and then fall out of the loop returning false — the tick
+    // stood down having just cleared the way for nobody. On a Mon/Wed/Sat
+    // cadence that is a post lost until the next slot. Still absolutely
+    // bounded; a contended lock resolves in one extra round.
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const tmp = `${LOCK_FILE}.new.${process.pid}`;
         writeFileSync(tmp, JSON.stringify(lockOwners));
@@ -137,10 +142,22 @@ export async function runTick({
           : null;
         if (owner) {
           const age = held.startedAt ? Date.now() - held.startedAt : null;
-          if (age !== null && age > staleLockMs) {
-            log(`⚠ run pid ${owner} has been going ${Math.round(age / 60000)} min — still alive, so this tick stands down. If it is genuinely stuck: kill ${owner}`);
+          // ── PID REUSE AFTER AN UNCLEAN REBOOT ────────────────────────────
+          // A lock survives a power cut carrying a pid that the OS later hands
+          // to something else entirely. processAlive then says "alive" forever
+          // and the job never runs again — silently, on a schedule nobody is
+          // watching. A live run is never interrupted on age alone, but a lock
+          // older than this cannot be a live run of THIS program: the child is
+          // bounded far below it.
+          const IMPOSSIBLE_AGE_MS = Math.max(staleLockMs * 4, 6 * 60 * 60 * 1000);
+          if (age !== null && age > IMPOSSIBLE_AGE_MS) {
+            log(`⚠ lock from pid ${owner} is ${Math.round(age / 3600000)}h old — older than any real run, so the pid has almost certainly been reused. Reclaiming.`);
+          } else {
+            if (age !== null && age > staleLockMs) {
+              log(`⚠ run pid ${owner} has been going ${Math.round(age / 60000)} min — still alive, so this tick stands down. If it is genuinely stuck: kill ${owner}`);
+            }
+            return false;
           }
-          return false;
         }
         const stolen = `${LOCK_FILE}.stale.${process.pid}`;
         try { renameSync(LOCK_FILE, stolen); } catch { continue; }
@@ -152,10 +169,20 @@ export async function runTick({
   }
 
   function releaseLock() {
-    try {
-      const held = JSON.parse(readFileSync(LOCK_FILE, "utf8"));
-      if (held?.pid !== process.pid) return;   // reclaimed by someone else — not ours to remove
-    } catch { /* unreadable — we are the only known owner */ }
+    // ── ONLY EVER REMOVE A LOCK WE CAN SEE IS OURS ───────────────────────────
+    // The earlier version treated an unreadable or absent lock as "ours" and
+    // unlinked whatever was at the path — the exact inverse of this file's own
+    // rule that an unreadable lock is not proof of anything. If that landed in
+    // the window between another tick's steal-rename and its linkSync, it
+    // deleted the NEW holder's lock and the following tick overlapped a live
+    // run. Re-read once (a holder rewriting its lock is atomic, so a second
+    // failure means it really is unreadable), and on any doubt leave it: a
+    // stale lock is reclaimed by the next tick, an over-eager delete is not
+    // recoverable.
+    let held = null;
+    try { held = JSON.parse(readFileSync(LOCK_FILE, "utf8")); }
+    catch { try { held = JSON.parse(readFileSync(LOCK_FILE, "utf8")); } catch { held = null; } }
+    if (!held || held.pid !== process.pid) return;
     try { unlinkSync(LOCK_FILE); } catch { /* already gone */ }
   }
 

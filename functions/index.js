@@ -3547,6 +3547,8 @@ const SOCIAL_CANDIDATE_DEPTH = 80;
 // uses for the product pipeline (HOUSE_MAX_REFS) — more references means more
 // latency and, past a handful, no more fidelity.
 const SOCIAL_MAX_REFS = 6;
+// How many reference rows are fetched to find SOCIAL_MAX_REFS enabled ones.
+const SOCIAL_REF_PAGE = 150;
 // Hard ceiling on one call, so a repeated tap or a bad client cannot fan out an
 // expensive run. Four posts at ~$0.134 is well under a dollar.
 const SOCIAL_MAX_POSTS = 4;
@@ -3622,8 +3624,15 @@ async function uploadSocialImage(postId, index, buffer, mime = "image/jpeg") {
 // caption engine being down must not make the shop unable to post.
 async function loadSellThroughSignal(db, nowMs) {
   const cached = (await db.ref(SOCIAL_SIGNAL_PATH).once("value")).val();
-  if (cached && Number(cached.computedAt) > nowMs - socialSignal.SIGNAL_TTL_MS && cached.unitsByPid) {
-    return { ...cached, source: "cache" };
+  // The freshness test is `computedAt` ALONE. It used to also require
+  // `cached.unitsByPid`, which looks like a sanity check and is a trap: RTDB
+  // does not store empty objects, so a window in which no sale carried a
+  // productId writes a node with NO unitsByPid child — the check then read
+  // every cache hit as a miss and re-paged /insights_log and /returns_log on
+  // every single Generate tap, forever. Exactly the cost this cache exists to
+  // avoid. An absent map is a real, valid answer: "nothing was attributable".
+  if (cached && Number(cached.computedAt) > nowMs - socialSignal.SIGNAL_TTL_MS) {
+    return { unitsByPid: {}, ...cached, source: "cache" };
   }
   try {
     const { startKey, startMs } = socialSignal.recentDaysStartKey(socialSignal.WINDOW_DAYS, nowMs);
@@ -3647,6 +3656,12 @@ async function loadSellThroughSignal(db, nowMs) {
       pagesTruncated: ready.truncated || returns.truncated,
       computedAt: nowMs,
     };
+    if (record.pagesTruncated) {
+      // A partial window ranks on a fraction of the tills and looks perfect
+      // doing it — `coverage` measures ATTRIBUTION, not completeness, so a
+      // truncated read can report 99.7% and still have missed half the sales.
+      console.warn(`social: sell-through paging hit its ${socialSignal.MAX_PAGES}-page bound — the ranking is a FLOOR, not a total.`);
+    }
     await db.ref(SOCIAL_SIGNAL_PATH).set(record);
     return { ...record, source: "computed" };
   } catch (err) {
@@ -3662,7 +3677,11 @@ async function loadSellThroughSignal(db, nowMs) {
 // is a handful of bounded queries and never a read of the posts node.
 async function loadPostedAtByPid(db) {
   const out = {};
-  const states = ["draft", "approved", "posting", "posted", "failed"];
+  // "discarded" is IN this list on purpose. Junid throwing a draft away is the
+  // strongest signal there is that he does not want that product posted, and
+  // leaving it out meant the next run re-proposed it and spent another $0.134
+  // on the very thing he had just rejected — every day, forever.
+  const states = ["draft", "approved", "posting", "posted", "failed", "discarded"];
   const snaps = await Promise.all(states.map((s) =>
     db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(s).limitToLast(300).once("value")));
   for (const snap of snaps) {
@@ -3680,7 +3699,13 @@ async function loadPostedAtByPid(db) {
 // A bounded page of the Style Reference Library, newest first, enabled only.
 // The buffers are fetched once per RUN and shared by every post in it.
 async function loadSocialStyleRefs(db) {
-  const snap = await db.ref(SOCIAL_REFS_PATH).orderByChild("addedAt").limitToLast(40).once("value");
+  // limitToLast is applied by the server BEFORE this code can filter, so the
+  // page must be wide enough that switching off a batch of recent references
+  // does not hide every enabled one behind them. 40 was the cap AND the page,
+  // which meant uploading 40 references for an experiment and then disabling
+  // them all made every house-style post fail with "add photos to the Style
+  // library" while dozens of enabled ones sat one page deeper.
+  const snap = await db.ref(SOCIAL_REFS_PATH).orderByChild("addedAt").limitToLast(SOCIAL_REF_PAGE).once("value");
   const rows = Object.entries(snap.val() || {})
     .map(([id, r]) => ({ id, ...r }))
     .filter((r) => r && r.enabled !== false)
@@ -3759,11 +3784,15 @@ exports.generateSocialPosts = onCall(
 
     // Which platforms the drafts are proposed for. Junid changes this per post
     // in the queue; this is only the starting position.
-    const platforms = {
-      instagram: data.platforms ? data.platforms.instagram === true : true,
-      facebook: data.platforms ? data.platforms.facebook === true : true,
-      tiktok: data.platforms ? data.platforms.tiktok === true : false,
-    };
+    // An empty object is truthy, so `data.platforms ? … : default` turned
+    // `platforms: {}` into all-false — a post postBlocker refuses forever,
+    // after the image was already paid for. A selection with nothing in it is
+    // not a selection; fall back to the default.
+    const asked = data.platforms && typeof data.platforms === "object" ? data.platforms : null;
+    const anyAsked = asked && ["instagram", "facebook", "tiktok"].some((k) => asked[k] === true);
+    const platforms = anyAsked
+      ? { instagram: asked.instagram === true, facebook: asked.facebook === true, tiktok: asked.tiktok === true }
+      : { instagram: true, facebook: true, tiktok: false };
 
     // ── 1. The storefront's live set — one indexed query ─────────────────────
     const liveSnap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value");
@@ -3796,19 +3825,47 @@ exports.generateSocialPosts = onCall(
     // pure sales sort would starve "new arrivals" of anything to show, because
     // a product that went live on Tuesday has sold nothing yet.
     const byNew = [...prelim].sort((a, b) => b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
+    // ── EACH LIST GETS ITS OWN BUDGET ────────────────────────────────────────
+    // Draining `prelim` first and then topping up from `byNew` looked like a
+    // merge and was dead code: `prelim` is the whole live+on set (~580 rows),
+    // so it filled all 80 places every time and `byNew` contributed nothing.
+    // The effect was exactly what the merge existed to prevent — the shortlist
+    // became the top-80 sellers, and since a product that went live on Tuesday
+    // has sold nothing, "new arrivals" found no fresh candidate and reported
+    // "0 products went live recently" forever.
+    //
+    // So the two lists are interleaved against separate budgets. Newness gets
+    // a smaller share because it is the thinner signal, but a guaranteed one.
+    const NEW_BUDGET = Math.floor(SOCIAL_CANDIDATE_DEPTH * 0.3);
     const shortlist = [];
     const seen = new Set();
-    for (const list of [prelim, byNew]) {
+    const take = (list, budget) => {
+      let taken = 0;
       for (const r of list) {
-        if (shortlist.length >= SOCIAL_CANDIDATE_DEPTH) break;
+        if (taken >= budget || shortlist.length >= SOCIAL_CANDIDATE_DEPTH) break;
         if (seen.has(r.pid)) continue;
         seen.add(r.pid);
         shortlist.push(r.pid);
+        taken++;
       }
-    }
+    };
+    take(byNew, NEW_BUDGET);
+    take(prelim, SOCIAL_CANDIDATE_DEPTH);   // the rest, best sellers first
+    take(byNew, SOCIAL_CANDIDATE_DEPTH);    // and top up if sales ran short
 
+    // /locations is a ~10-row config node, so this is a whole-node read of a
+    // node that is a constant in practice. It is the one read in this function
+    // that does not fit the partial-read rule, and it is called out rather than
+    // hidden.
+    //
+    // INACTIVE and UNSELLABLE locations are dropped here, not later: every
+    // location kept costs one point read PER SHORTLISTED PRODUCT. Carrying
+    // in_transit (never sellable) and the two drained-and-retired buckets
+    // meant ~27% of ~880 reads were fetched only to be discarded.
     const locationsSnap = await db.ref("locations").once("value");
-    const locations = Object.keys(locationsSnap.val() || {});
+    const locations = Object.entries(locationsSnap.val() || {})
+      .filter(([id, v]) => v && v.active !== false && !socialSelect.UNSELLABLE_LOCATIONS.has(id))
+      .map(([id]) => id);
     const products = {}, stockByPid = {};
     const READ_BATCH = 20;
     for (let i = 0; i < shortlist.length; i += READ_BATCH) {
@@ -3849,6 +3906,16 @@ exports.generateSocialPosts = onCall(
       for (const p of Object.values(snap.val() || {})) existingForSlots.push(p);
     }
     const slots = socialScheduleSlots(existingForSlots, kinds.length, nowMs);
+    // ── A MISSING SLOT IS NOT AN EMPTY FIELD ─────────────────────────────────
+    // `scheduledAt: null` means DUE IMMEDIATELY to the publisher (socialCore
+    // isDue), so writing null for the slots that could not be found would send
+    // a whole batch out on the next tick — the very failure the horizon fix in
+    // nextSlots addressed, re-opened from the server side. If the schedule is
+    // genuinely full this far ahead, that is worth SAYING rather than quietly
+    // posting everything at once.
+    if (slots.length < kinds.length) {
+      console.warn(`social: only ${slots.length} free slot(s) for ${kinds.length} post(s) — the rest are not scheduled.`);
+    }
 
     for (const [index, kind] of kinds.entries()) {
       const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
@@ -3858,6 +3925,17 @@ exports.generateSocialPosts = onCall(
       const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
       let media = [];
       let costUSD = 0;
+      // Set once the paid image is in Storage. If the record write then fails,
+      // the object is referenced by nothing and nothing would ever clean it up
+      // — so the catch deletes it. The COST is still counted either way:
+      // estCostUSD is incremented at generation, so the ledger stays honest
+      // about money spent even when the picture is lost.
+      let uploadedPath = null;
+      // What was ACTUALLY sent to the model — library references plus Style Kit
+      // references. Recording only the library share meant a post grounded on
+      // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
+      // trail said it ran ungrounded when it had not.
+      let refsSent = 0;
       try {
         if (!spec.generates) {
           // New arrivals: a carousel of the products' EXISTING photographs.
@@ -3877,6 +3955,7 @@ exports.generateSocialPosts = onCall(
           // $0.134 on one is worse than saying so.
           const kitRefs = styleKit ? (styleKit[picks[0].productType === "clothing" ? "clothing" : "sneaker"] || {}).refs || [] : [];
           const refs = [...library.refs, ...kitRefs].slice(0, SOCIAL_MAX_REFS);
+          refsSent = refs.length;
           if (style === "house" && !refs.length) {
             throw new Error("house style: no usable style references — add photos to the Style library or the AI Studio Style Kit");
           }
@@ -3890,6 +3969,7 @@ exports.generateSocialPosts = onCall(
           costUSD = gen.costUSD;
           estCostUSD += gen.costUSD;
           const { buffer: outBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime);
+          uploadedPath = `aiStudio/social/posts/${postId}/0`;   // for the cleanup below
           media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
         }
 
@@ -3912,23 +3992,44 @@ exports.generateSocialPosts = onCall(
           ...(captionReason ? { captionNote: captionReason } : {}),
           link,
           platforms,
+          // No slot ⇒ the post is created UNSCHEDULED and, crucially, is
+          // reported as such below. It still cannot go out without approval.
           scheduledAt: slots[index] || null,
+          ...(slots[index] ? {} : { unscheduledReason: "no free posting slot was available" }),
           products: picks.map((p) => ({ pid: p.pid, name: p.name, handle: p.handle, slot: p.slot || null })),
           style,
           engine: spec.generates ? "nbpro" : "none",
           costUSD: +costUSD.toFixed(6),
-          refsUsed: spec.generates ? library.refs.length : 0,
+          refsUsed: spec.generates ? refsSent : 0,
           generatedBy: "generator",
           signalSource: signal.source,
           signalCoverage: signal.coverage ?? null,
+          // Recorded per post: a ranking built on a truncated window is a
+          // floor, and the record must say so rather than looking authoritative.
+          signalTruncated: signal.pagesTruncated === true,
           createdAt: nowMs,
           updatedAt: nowMs,
           updatedBy: request.auth.uid,
         });
         for (const p of picks) used.add(p.pid);
-        created.push({ postId, kind, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource });
+        created.push({
+          postId, kind, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
+          scheduledAt: slots[index] || null,
+        });
       } catch (err) {
         console.warn(`social: ${kind} failed:`, err && err.message);
+        // Best-effort cleanup of an image that was paid for, uploaded, and then
+        // orphaned by a failed record write. A failure here is logged and
+        // ignored — an orphan costs pennies of storage; throwing would lose the
+        // reason the post failed in the first place.
+        if (uploadedPath && media.length) {
+          try {
+            const objectPath = decodeURIComponent(new URL(media[0].url).pathname.split("/o/")[1] || "");
+            if (objectPath) await admin.storage().bucket(STORAGE_BUCKET).file(objectPath).delete();
+          } catch (cleanupErr) {
+            console.warn(`social: could not clean up the orphaned image for ${postId}:`, cleanupErr && cleanupErr.message);
+          }
+        }
         skipped.push({ kind, reason: classifyPhotoError(err && err.message, "nbpro") });
       }
     }
@@ -3943,7 +4044,12 @@ exports.generateSocialPosts = onCall(
       created, skipped,
       estCostUSD: +estCostUSD.toFixed(4),
       candidates: candidates.length,
-      signal: { source: signal.source, coverage: signal.coverage ?? null, windowDays: signal.windowDays ?? null },
+      signal: {
+        source: signal.source,
+        coverage: signal.coverage ?? null,
+        windowDays: signal.windowDays ?? null,
+        truncated: signal.pagesTruncated === true,
+      },
       styleRefs: { sent: library.refs.length, inLibrary: library.total },
     };
   }

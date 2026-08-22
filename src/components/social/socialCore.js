@@ -135,10 +135,22 @@ export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "di
 export const QUEUE_FILTERS = [
   { key: "draft", label: "Waiting for you" },
   { key: "approved", label: "Approved" },
+  // "posting" is a tab, not an invisible internal state. A run killed mid-post
+  // (a reboot, launchctl unload, an RTDB blip) leaves its item claimed, and
+  // with no tab for it the item was in NO list — not approved, not posted, not
+  // failed — and nothing ever looked at it again. The publisher now reclaims
+  // stale claims itself, but a state the machine can be in must still be a
+  // state a person can SEE.
+  { key: "posting", label: "Sending" },
   { key: "posted", label: "Posted" },
   { key: "failed", label: "Failed" },
   { key: "discarded", label: "Discarded" },
 ];
+
+// How long a claim may stand before the next run treats it as abandoned and
+// takes it back. Sized well above the slowest realistic run: a ten-item
+// carousel of videos is ten container ingests at up to five minutes each.
+export const STALE_CLAIM_MS = 90 * 60 * 1000;
 
 export const CAPTION_MAX = 2200;   // the queue's own edit cap — the tightest platform
 export const CAPTION_MIN = 12;
@@ -169,10 +181,20 @@ export function postBlocker(post, { now = Date.now(), requireDue = false } = {})
   if (caption.length < CAPTION_MIN) return "The caption is empty or too short.";
   const on = enabledPlatforms(post);
   if (!on.length) return "No platform is selected.";
+  // A mixed video+photo set is refused HERE rather than by Facebook. The gate
+  // must reject what the senders cannot send: publishFacebook throws a
+  // non-retryable error on a mix, so without this the queue showed the post as
+  // perfectly fine, Junid approved it, and it parked in Failed on the evening
+  // it was meant to go out.
+  const videos = media.filter((m) => m.type === "video").length;
+  if (videos && videos !== media.length) {
+    return "A post is either one video or a set of photos — not both.";
+  }
+  if (videos > 1) return "Only one video per post.";
   for (const key of on) {
     const p = platform(key);
     if (!p) return `Unknown platform "${key}".`;
-    if (media.some((m) => m.type === "video") && !p.video) return `${p.label} cannot take a video.`;
+    if (videos && !p.video) return `${p.label} cannot take a video.`;
     if (media.length > p.mediaMax) return `${p.label} takes at most ${p.mediaMax} items; this post has ${media.length}.`;
   }
   if (requireDue && !isDue(post, now)) {
@@ -187,10 +209,35 @@ export function enabledPlatforms(post) {
   return PLATFORM_KEYS.filter((k) => sel[k] === true);
 }
 
-/** Platforms still needing a send: enabled, and not already recorded "ok". */
+/**
+ * Platforms still needing a send: enabled, and not already recorded "ok".
+ *
+ * "sending" is deliberately NOT excluded here — it is still outstanding as far
+ * as the queue is concerned — but the publisher must never blind-retry one.
+ * See needsVerification: a "sending" record means we asked a platform to post
+ * and never learned the answer, and re-sending is how one post becomes two.
+ */
 export function outstandingPlatforms(post) {
   const results = (post && post.results) || {};
   return enabledPlatforms(post).filter((k) => (results[k] || {}).state !== "ok");
+}
+
+/**
+ * Did we ask this platform to publish and never find out whether it worked?
+ *
+ * The window is real: the publish call succeeds on the platform, and the
+ * response is lost — a 502 from Meta's edge, the process killed, the network
+ * dropping between "posted" and "we heard about it". A retry from scratch
+ * creates a SECOND post on a live public account, which cannot be undone by
+ * anything this program does.
+ *
+ * So a "sending" record is never re-sent automatically. It is surfaced for a
+ * human to look at the account and say. That is a worse experience than a
+ * silent retry exactly once in a blue moon, and a far better one than the shop
+ * posting the same picture twice.
+ */
+export function needsVerification(post, platformKey) {
+  return (((post && post.results) || {})[platformKey] || {}).state === "sending";
 }
 
 /**
@@ -389,6 +436,9 @@ export function resultLine(post, platformKey) {
   if (!r || !r.state) return "not sent yet";
   if (r.state === "ok") return `posted${r.at ? ` ${formatSlot(r.at)}` : ""}`;
   if (r.state === "skipped") return r.error ? `skipped — ${r.error}` : "skipped";
+  if (r.state === "sending") {
+    return "sent, but we never got confirmation — CHECK THE ACCOUNT before approving again";
+  }
   const tries = Number(r.attempts || 0);
   return `failed${tries ? ` (${tries}/${MAX_ATTEMPTS})` : ""}${r.error ? ` — ${r.error}` : ""}`;
 }

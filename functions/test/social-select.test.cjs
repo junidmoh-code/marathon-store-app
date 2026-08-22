@@ -34,7 +34,7 @@ function world(over = {}) {
   const photos = pick("photos", undefined);
   return {
     liveNodes: { [pid]: { state, liveState, cleanName, liveAt, ...(photos ? { photos } : {}) } },
-    products: { [pid]: { id: pid, photoUrl: "https://x/p1.jpg", category: "Accessories", categoryKey: "bags", retailPrice: 500, ...product } },
+    products: { [pid]: { id: pid, photoUrl: "https://x/p1.jpg", category: "Accessories", categoryKey: "bags", retailPrice: 500, sizes: ["M"], ...product } },
     stockByPid: { [pid]: stock },
     salesByPid: { [pid]: units },
     postedAtByPid: postedAt ? { [pid]: postedAt } : {},
@@ -43,8 +43,25 @@ function world(over = {}) {
 }
 
 describe("availableUnits", () => {
+  // NOTE: `sizes` is required. Cells whose key is not one of the product's own
+  // sizes are not counted — the same filter the Shopify inventory push applies.
+  // socialStockParity.diff.test.js is the differential that proves the two
+  // agree; these are the unit-level properties.
   test("sums every location", () => {
-    assert.equal(availableUnits({ pine: { M: { qty: 2 } }, hub2: { L: { qty: 5 } } }), 7);
+    assert.equal(availableUnits({ pine: { M: { qty: 2 } }, hub2: { L: { qty: 5 } } }, ["M", "L"]), 7);
+  });
+
+  test("does NOT count a cell for a size the product does not have", () => {
+    // The phantom-cell shape: a stray key holding units the storefront will
+    // never sell. Counting it made the generator post links to sold-out pages.
+    assert.equal(availableUnits({ pine: { M: { qty: 1 }, XL: { qty: 40 } } }, ["M"]), 1);
+    assert.equal(availableUnits({ pine: { _: { qty: 0 }, Free_Size: { qty: 3 } } }, ["Free Size"]), 0);
+  });
+
+  test("no size list means no countable stock", () => {
+    for (const sizes of [undefined, null, [], "M", {}]) {
+      assert.equal(availableUnits({ pine: { M: { qty: 5 } } }, sizes), 0, String(sizes));
+    }
   });
 
   // Matching scripts/shopify/inventory.mjs matters more than the number: if
@@ -52,21 +69,21 @@ describe("availableUnits", () => {
   // refuses to sell.
   test("excludes in_transit — the same location the inventory push excludes", () => {
     assert.ok(UNSELLABLE_LOCATIONS.has("in_transit"));
-    assert.equal(availableUnits({ in_transit: { M: { qty: 99 } } }), 0);
-    assert.equal(availableUnits({ pine: { M: { qty: 1 } }, in_transit: { M: { qty: 99 } } }), 1);
+    assert.equal(availableUnits({ in_transit: { M: { qty: 99 } } }, ["M"]), 0);
+    assert.equal(availableUnits({ pine: { M: { qty: 1 } }, in_transit: { M: { qty: 99 } } }, ["M"]), 1);
   });
 
   test("clamps a negative cell to zero rather than subtracting it", () => {
     // A negative cell is a bookkeeping artefact, never sellable — and it must
     // not eat another location's real stock.
-    assert.equal(availableUnits({ pine: { M: { qty: -5 } }, hub2: { M: { qty: 3 } } }), 3);
+    assert.equal(availableUnits({ pine: { M: { qty: -5 } }, hub2: { M: { qty: 3 } } }, ["M"]), 3);
   });
 
   test("tolerates a bare number cell (old data) and rubbish", () => {
-    assert.equal(availableUnits({ pine: { M: 4 } }), 4);
-    assert.equal(availableUnits({ pine: { M: null, L: undefined, S: "x", XL: {} } }), 0);
-    assert.equal(availableUnits(null), 0);
-    assert.equal(availableUnits({ pine: null }), 0);
+    assert.equal(availableUnits({ pine: { M: 4 } }, ["M"]), 4);
+    assert.equal(availableUnits({ pine: { M: null, L: undefined, S: "x", XL: {} } }, ["M", "L", "S", "XL"]), 0);
+    assert.equal(availableUnits(null, ["M"]), 0);
+    assert.equal(availableUnits({ pine: null }, ["M"]), 0);
   });
 });
 
@@ -166,10 +183,23 @@ describe("buildCandidates — REFUSAL 2: out of stock", () => {
   test("refuses stock that is only in transit", () => {
     assert.equal(buildCandidates(world({ stock: { in_transit: { M: { qty: 10 } } } })).length, 0);
   });
-  test("refuses when negatives cancel the only positive", () => {
+  test("a negative cell does not cancel a real one elsewhere", () => {
     // Clamping is per-cell, so this is genuinely 1 available, not 0 — the test
-    // pins the clamp, which is the behaviour the inventory push has.
-    assert.equal(buildCandidates(world({ stock: { pine: { M: { qty: -9 } }, hub2: { L: { qty: 1 } } } })).length, 1);
+    // pins the clamp, which is the behaviour the inventory push has. Both
+    // sizes must be on the record, or the size filter (correctly) drops the L.
+    assert.equal(buildCandidates(world({
+      product: { sizes: ["M", "L"] },
+      stock: { pine: { M: { qty: -9 } }, hub2: { L: { qty: 1 } } },
+    })).length, 1);
+  });
+
+  test("stock on a size the record no longer lists does not rescue a product", () => {
+    // The same tree, but the record only sells M — which has nothing. Shopify
+    // would show this sold out, so it must not be posted.
+    assert.equal(buildCandidates(world({
+      product: { sizes: ["M"] },
+      stock: { pine: { M: { qty: 0 } }, hub2: { L: { qty: 40 } } },
+    })).length, 0);
   });
   test("accepts a single unit", () => {
     assert.equal(buildCandidates(world({ stock: { pine: { M: { qty: 1 } } } })).length, 1);
@@ -216,7 +246,7 @@ describe("buildCandidates — ranking", () => {
     const liveNodes = {}, products = {}, stockByPid = {}, salesByPid = {};
     for (const s of specs) {
       liveNodes[s.pid] = { state: "live", liveState: "on", cleanName: s.pid, liveAt: s.liveAt ?? NOW - 200 * DAY };
-      products[s.pid] = { id: s.pid, photoUrl: "https://x/p.jpg", category: s.category || "Clothing", categoryKey: s.key || "t-shirts" };
+      products[s.pid] = { id: s.pid, photoUrl: "https://x/p.jpg", category: s.category || "Clothing", categoryKey: s.key || "t-shirts", sizes: ["M"] };
       stockByPid[s.pid] = { pine: { M: { qty: 5 } } };
       salesByPid[s.pid] = s.units ?? 0;
     }
@@ -250,7 +280,7 @@ describe("buildCandidates — ranking", () => {
     const liveNodes = { p1: { state: "live", liveState: "on", cleanName: "n" } };
     const [c] = buildCandidates({
       liveNodes,
-      products: { p1: { id: "p1", photoUrl: "https://x/p.jpg" } },
+      products: { p1: { id: "p1", photoUrl: "https://x/p.jpg", sizes: ["M"] } },
       stockByPid: { p1: { pine: { M: { qty: 1 } } } },
       nowMs: NOW,
     });
@@ -286,7 +316,7 @@ describe("pickForKind", () => {
       const pid = `p${i}`;
       const o = over(i);
       liveNodes[pid] = { state: "live", liveState: "on", cleanName: `Name ${i}`, liveAt: o.liveAt ?? NOW - 5 * DAY };
-      products[pid] = { id: pid, photoUrl: "https://x/p.jpg", category: o.category || "Clothing", categoryKey: o.key || "t-shirts" };
+      products[pid] = { id: pid, photoUrl: "https://x/p.jpg", category: o.category || "Clothing", categoryKey: o.key || "t-shirts", sizes: ["M"] };
       stockByPid[pid] = { pine: { M: { qty: 3 } } };
       salesByPid[pid] = o.units ?? (n - i);
     }

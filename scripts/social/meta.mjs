@@ -57,6 +57,8 @@ export const GRAPH = `https://graph.facebook.com/${GRAPH_VERSION}`;
 // under a minute; five is generous and still bounded, so a stuck container
 // fails the run loudly instead of holding the launchd job open forever.
 export const CONTAINER_POLL_MS = 5000;
+// Hard ceiling on any single HTTP call to Meta.
+export const REQUEST_TIMEOUT_MS = 60000;
 export const CONTAINER_MAX_WAIT_MS = 5 * 60 * 1000;
 
 /** Is this a video? Decided from the record's own type, never from the URL. */
@@ -120,14 +122,30 @@ export function metaError(status, body) {
  * times only buries the real message under three more copies of itself. Both
  * end up visible; only the transient one is tried again.
  */
-export function isRetryable(status, message) {
+// Meta's throttling codes. They arrive as HTTP 400, not 429 — checking only
+// the status code meant a throttled Monday evening permanently parked the
+// week's post after one attempt.
+//   4   Application request limit reached
+//   17  User request limit reached
+//   32  Page request limit reached
+//   613 Calls to this api have exceeded the rate limit
+//   1   / 2  transient "unknown"/"service" errors Meta tells you to retry
+const RETRYABLE_META_CODES = new Set([1, 2, 4, 17, 32, 341, 613]);
+// 190 = token problems (expired, revoked, invalidated). A retry cannot fix any
+// of them; only re-minting the token can, so retrying is four identical lines
+// in a log and four wasted attempts.
+const PERMANENT_META_CODES = new Set([190, 200, 10, 803]);
+
+export function isRetryable(status, message, code = null) {
+  if (code != null) {
+    if (PERMANENT_META_CODES.has(Number(code))) return false;
+    if (RETRYABLE_META_CODES.has(Number(code))) return true;
+  }
   if (status >= 500) return true;
   if (status === 429) return true;
-  const m = String(message || "").toLowerCase();
-  if (/rate limit|too many|temporar|try again|timeout|unknown error|please reduce/i.test(m)) return true;
-  // 190 = token problems (expired, revoked, invalidated). A retry cannot fix
-  // any of them; only Junid re-minting the token can.
-  if (/\[190/.test(String(message))) return false;
+  const m = String(message || "");
+  if (/\[190/.test(m)) return false;
+  if (/rate limit|too many|temporar|try again|timeout|unknown error|please reduce|reduce the amount/i.test(m)) return true;
   return false;
 }
 
@@ -144,19 +162,42 @@ async function graph(path, { method = "GET", token, params = {} } = {}) {
   // The token goes in the Authorization header, never the query string: a URL
   // ends up in access logs, in error messages and in stack traces, and this
   // program's whole discipline is that the token appears in none of those.
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(method === "GET" ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
-    },
-    ...(method === "GET" ? {} : { body }),
-  });
+  // ── A NETWORK FAILURE IS THE MOST RETRYABLE THING THERE IS ───────────────
+  // fetch() REJECTS on DNS failure, a dropped connection, a reset socket — it
+  // does not return a status. Those errors escaped with no `.retryable`, the
+  // publisher read that as permanent, and one flaky moment on the mini's Wi-Fi
+  // parked the week's post in Failed after a single attempt. There is also a
+  // hard timeout: without one a hung socket holds the launchd job open for
+  // undici's default five minutes on top of every other wait.
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(method === "GET" ? {} : { "Content-Type": "application/x-www-form-urlencoded" }),
+      },
+      ...(method === "GET" ? {} : { body }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const e = new Error(
+      err?.name === "TimeoutError" || err?.name === "AbortError"
+        ? `the request to Meta timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
+        : `could not reach Meta: ${String(err?.message || err)}`
+    );
+    e.status = 0;
+    e.retryable = true;
+    throw e;
+  }
   const text = await res.text();
   if (!res.ok) {
+    let code = null;
+    try { code = (typeof text === "string" ? JSON.parse(text) : text)?.error?.code ?? null; } catch { /* not json */ }
     const err = new Error(metaError(res.status, text));
     err.status = res.status;
-    err.retryable = isRetryable(res.status, err.message);
+    err.code = code;
+    err.retryable = isRetryable(res.status, err.message, code);
     throw err;
   }
   try { return JSON.parse(text); } catch { return {}; }

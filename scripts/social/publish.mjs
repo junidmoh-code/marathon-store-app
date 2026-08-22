@@ -41,8 +41,8 @@
 // refusal and must not abort the claim.
 import { createRequire } from "module";
 import {
-  postBlocker, outstandingPlatforms, attemptsExhausted, captionFor,
-  MAX_ATTEMPTS, describePost, formatSlot,
+  postBlocker, outstandingPlatforms, attemptsExhausted, captionFor, needsVerification,
+  MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot,
 } from "../../src/components/social/socialCore.js";
 import { readSecret, credentialStatus } from "./secrets.mjs";
 import { publishInstagram, publishFacebook, metaPreflight } from "./meta.mjs";
@@ -65,13 +65,60 @@ const db = admin.database();
 
 const POSTS = "social_posts";
 const log = (...a) => console.log(...a);
+// ── WARNINGS GO TO STDERR, ON PURPOSE ────────────────────────────────────────
+// The launchd wrapper buffers stdout until it can classify the tick, and an
+// idle tick's buffer is DISCARDED so a quiet log stays quiet. A revoked token
+// or an unreadable Secret Manager was reported on a tick with nothing due —
+// and vanished. Any stderr output forces the runner to go live, so these are
+// the lines that must never be swallowed.
+const warn = (...a) => console.error(...a);
 
 /** Everything approved, newest first. One bounded indexed query — never the node. */
+const APPROVED_PAGE = 100;
 async function loadApproved() {
-  const snap = await db.ref(POSTS).orderByChild("status").equalTo("approved").limitToLast(100).once("value");
-  return Object.entries(snap.val() || {})
+  const snap = await db.ref(POSTS).orderByChild("status").equalTo("approved").limitToLast(APPROVED_PAGE).once("value");
+  const rows = Object.entries(snap.val() || {})
     .map(([id, body]) => ({ id, ...body }))
     .sort((a, b) => (a.scheduledAt || 0) - (b.scheduledAt || 0));
+  // A full page means there may be more, and silently working on a slice of an
+  // unknown whole is how a post waits forever without anybody knowing.
+  if (rows.length >= APPROVED_PAGE) {
+    warn(`⚠ ${APPROVED_PAGE} approved posts came back — there may be more than this run can see.`);
+  }
+  return rows;
+}
+
+// ── RECLAIM ABANDONED CLAIMS ─────────────────────────────────────────────────
+// A run killed between the claim and the final status write leaves its item in
+// "posting" — claimed by a process that no longer exists. Nothing used to look
+// at those again: loadApproved only queries "approved", so the item sat in a
+// state with no owner and no retry.
+//
+// Reclaiming is safe BECAUSE of the per-platform results. Anything that
+// actually reached a platform is recorded "ok" and is not re-sent; anything
+// recorded "sending" is held for a human (see needsVerification). So the worst
+// case of reclaiming is that the remaining platforms are tried again, which is
+// exactly what should happen.
+async function reclaimStaleClaims() {
+  const snap = await db.ref(POSTS).orderByChild("status").equalTo("posting").limitToLast(50).once("value");
+  const rows = Object.entries(snap.val() || {});
+  let reclaimed = 0;
+  for (const [id, post] of rows) {
+    const age = Date.now() - Number(post.updatedAt || 0);
+    if (!(age > STALE_CLAIM_MS)) continue;
+    // Transactional so a live run that is merely slow cannot have its claim
+    // stolen out from under it by a concurrent tick.
+    const res = await db.ref(`${POSTS}/${id}/status`).transaction((cur) => {
+      if (cur === null) return null;
+      if (cur !== "posting") return undefined;
+      return "approved";
+    });
+    if (res.committed && res.snapshot.val() === "approved") {
+      reclaimed++;
+      warn(`⚠ reclaimed ${id} — it was left mid-send ${Math.round(age / 60000)} min ago and is back in the queue.`);
+    }
+  }
+  return reclaimed;
 }
 
 /**
@@ -96,15 +143,37 @@ async function claim(postId) {
   return res.committed && res.snapshot.val() === "posting";
 }
 
-/** Record one platform's outcome. Merge-only: never clobbers a sibling result. */
-async function recordResult(postId, platformKey, patch) {
+/**
+ * Mark a platform as IN FLIGHT before the call is made.
+ *
+ * This is the record that closes the double-post window. Without it, a publish
+ * that succeeded on the platform but whose response was lost — a 502 from
+ * Meta's edge, the process killed mid-call, the network dropping — looked
+ * identical to one that never happened, and the retry created a SECOND live
+ * post that nothing in this program can undo.
+ *
+ * The attempt is counted here too, so a crash between this write and the
+ * outcome still burns an attempt rather than looping forever.
+ */
+async function markSending(postId, platformKey) {
   const ref = db.ref(`${POSTS}/${postId}/results/${platformKey}`);
   const prev = (await ref.once("value")).val() || {};
   await ref.update({
-    ...patch,
-    attempts: Number(prev.attempts || 0) + (patch.state === "ok" ? 0 : 1),
+    state: "sending",
+    attempts: Number(prev.attempts || 0) + 1,
+    error: null,
     at: Date.now(),
   });
+}
+
+/**
+ * Record one platform's outcome. Merge-only: never clobbers a sibling result.
+ * `attempts` is NOT incremented here — markSending already did it before the
+ * call, which is the only place it can be counted safely.
+ */
+async function recordResult(postId, platformKey, patch) {
+  const ref = db.ref(`${POSTS}/${postId}/results/${platformKey}`);
+  await ref.update({ ...patch, at: Date.now() });
 }
 
 async function setStatus(postId, status, extra = {}) {
@@ -219,7 +288,7 @@ async function main() {
   };
   creds.problems = credProblems;
   for (const [name, why] of Object.entries(credProblems)) {
-    log(`⚠ could not read ${name}: ${why}`);
+    warn(`⚠ could not read ${name}: ${why}`);
   }
 
   if (STATUS_ONLY) {
@@ -243,11 +312,16 @@ async function main() {
       const pf = await metaPreflight({ token: creds.token, pageId: creds.pageId, igUserId: creds.igUserId });
       log(`meta: ready — Page "${pf.page}", Instagram ${pf.instagram || "not connected to this Page"}`);
     } catch (err) {
-      log(`meta: PREFLIGHT FAILED — ${err.message}`);
+      warn(`meta: PREFLIGHT FAILED — ${err.message}`);
     }
   } else {
     log("meta: not connected (no token / page id in Secret Manager)");
   }
+
+  // Take back anything a dead run left claimed, BEFORE deciding what is due —
+  // a reclaimed post must be eligible in this same tick, not the next one.
+  const reclaimed = await reclaimStaleClaims();
+  if (reclaimed) log(`reclaimed ${reclaimed} abandoned claim(s)`);
 
   const approved = await loadApproved();
   const now = Date.now();
@@ -278,60 +352,117 @@ async function main() {
 
     if (!(await claim(post.id))) { log(`SKIP ${post.id} — claimed by another run`); skipped++; continue; }
 
-    const outstanding = outstandingPlatforms(fresh);
-    let anyOk = false, anyRetryable = false, anySkipped = false;
+    // ── EVERYTHING FROM HERE IS INSIDE A GUARD ───────────────────────────────
+    // The post is now CLAIMED, which means it is in "posting" and no longer
+    // visible to loadApproved. If anything below throws — an RTDB blip on a
+    // result write, the final read, the status write — an unguarded loop left
+    // it stranded in "posting" forever AND abandoned every remaining post in
+    // the run. The catch puts it back where the next run will find it.
+    try {
+      // Re-read AFTER winning the claim. `fresh` was read before it, and a
+      // caption edited in that window is not the caption that should go out.
+      const claimed = (await db.ref(`${POSTS}/${post.id}`).once("value")).val();
+      if (!claimed) { log(`SKIP ${post.id} — the post was deleted mid-run`); skipped++; continue; }
+      const item = { ...claimed, id: post.id };
 
-    for (const key of outstanding) {
-      if (attemptsExhausted(fresh, key)) {
-        log(`  ${key}: out of retries (${MAX_ATTEMPTS}) — leaving it failed`);
-        continue;
-      }
-      try {
-        const res = await SENDERS[key](fresh, creds);
-        await recordResult(post.id, key, { state: "ok", id: res.id, permalink: res.permalink || null, error: null });
-        log(`  ${key}: posted ${res.permalink || res.id}`);
-        anyOk = true;
-      } catch (err) {
-        if (err.notConnected) {
-          // NOT a failure and NOT a retry: nothing is broken, the platform
-          // simply is not wired up. Recorded so the queue can say so, and
-          // deliberately without incrementing attempts.
-          await db.ref(`${POSTS}/${post.id}/results/${key}`).update({
-            state: "skipped", error: err.message, at: Date.now(),
-          });
-          log(`  ${key}: SKIPPED — ${err.message}`);
-          anySkipped = true;
+      if (DRY_RUN) { log(`WOULD POST ${post.id}`); continue; }
+
+      const outstanding = outstandingPlatforms(item);
+      let anyOk = false, anyRetryable = false, anySkipped = false, anyUnverified = false;
+
+      for (const key of outstanding) {
+        // ── NEVER BLIND-RETRY AN UNCONFIRMED SEND ──────────────────────────
+        // "sending" means we asked the platform to publish and never learned
+        // the answer. Re-sending is how one post becomes two on a live public
+        // account, and nothing here can undo that. Held for a human instead.
+        if (needsVerification(item, key)) {
+          anyUnverified = true;
+          warn(`  ${key}: NEEDS CHECKING — a previous run sent this and never got a confirmation. ` +
+               `Look at the account: if it posted, mark it; if not, un-approve and re-approve to retry.`);
           continue;
         }
-        await recordResult(post.id, key, { state: "error", error: String(err.message).slice(0, 400) });
-        const retry = err.retryable === true;
-        anyRetryable = anyRetryable || retry;
-        log(`  ${key}: FAILED${retry ? " (will retry)" : " (permanent)"} — ${err.message}`);
+        if (attemptsExhausted(item, key)) {
+          log(`  ${key}: out of retries (${MAX_ATTEMPTS}) — leaving it failed`);
+          continue;
+        }
+        try {
+          await markSending(post.id, key);          // BEFORE the call, always
+          const res = await SENDERS[key](item, creds);
+          await recordResult(post.id, key, { state: "ok", id: res.id, permalink: res.permalink || null, error: null });
+          log(`  ${key}: posted ${res.permalink || res.id}`);
+          anyOk = true;
+        } catch (err) {
+          if (err.notConnected) {
+            // NOT a failure and NOT a retry — nothing is broken, the platform
+            // simply is not wired up. It never reached a send, so the
+            // in-flight marker is replaced outright.
+            await db.ref(`${POSTS}/${post.id}/results/${key}`).update({
+              state: "skipped", error: err.message, attempts: 0, at: Date.now(),
+            });
+            log(`  ${key}: SKIPPED — ${err.message}`);
+            anySkipped = true;
+            continue;
+          }
+          await recordResult(post.id, key, { state: "error", error: String(err.message).slice(0, 400) });
+          const retry = err.retryable === true;
+          anyRetryable = anyRetryable || retry;
+          warn(`  ${key}: FAILED${retry ? " (will retry)" : " (permanent)"} — ${err.message}`);
+        }
       }
-    }
 
-    // ── WHERE THE POST LANDS ─────────────────────────────────────────────
-    // Re-read: recordResult wrote per-platform state and we must decide from
-    // what is actually stored, not from what we think we wrote.
-    const after = (await db.ref(`${POSTS}/${post.id}`).once("value")).val();
-    const stillOut = outstandingPlatforms(after).filter((k) => (after.results?.[k] || {}).state !== "skipped");
-    const allExhausted = stillOut.length > 0 && stillOut.every((k) => attemptsExhausted(after, k));
+      // ── WHERE THE POST LANDS ─────────────────────────────────────────────
+      // Decided from what is actually STORED, not from what we think we wrote.
+      const after = (await db.ref(`${POSTS}/${post.id}`).once("value")).val();
+      if (!after) { log(`  → the post was deleted while sending; nothing written back`); continue; }
 
-    if (!stillOut.length) {
-      await setStatus(post.id, "posted", { postedAt: Date.now() });
-      log(`  → posted${anySkipped ? " (some platforms skipped)" : ""}`);
-      posted++;
-    } else if (allExhausted || (!anyRetryable && !anyOk)) {
-      // Either every outstanding platform has burned its retries, or this run
-      // achieved nothing and nothing about it was transient. Park it LOUDLY.
-      await setStatus(post.id, "failed");
-      log(`  → FAILED — ${stillOut.join(", ")} still unsent after ${MAX_ATTEMPTS} attempt(s). It is in the queue's Failed tab.`);
+      const results = after.results || {};
+      const enabled = outstandingPlatforms({ ...after, results: {} });   // every enabled platform
+      const sent = enabled.filter((k) => (results[k] || {}).state === "ok");
+      const stillOut = outstandingPlatforms(after)
+        .filter((k) => (results[k] || {}).state !== "skipped");
+      const allExhausted = stillOut.length > 0 && stillOut.every((k) => attemptsExhausted(after, k));
+
+      if (anyUnverified) {
+        // Held, deliberately, in a state a person must look at. Not "posted"
+        // (we do not know) and not retried (that is the double-post).
+        await setStatus(post.id, "failed", { needsCheck: true });
+        warn(`  → HELD FOR CHECKING — an earlier send was never confirmed. It is in the Failed tab.`);
+        failed++;
+      } else if (!stillOut.length && sent.length) {
+        await setStatus(post.id, "posted", { postedAt: Date.now() });
+        log(`  → posted${anySkipped ? " (some platforms skipped)" : ""}`);
+        posted++;
+      } else if (!stillOut.length && !sent.length) {
+        // ── SKIPPED IS NOT POSTED ──────────────────────────────────────────
+        // Every enabled platform was skipped, so nothing went anywhere. This
+        // used to be marked "posted" with a postedAt — a TikTok-only post
+        // landed in the Posted tab having reached nobody, and was never
+        // surfaced again. It stays approved so it goes out the day the
+        // platform is connected.
+        await setStatus(post.id, "approved");
+        warn(`  → NOTHING WAS SENT — every platform on this post is skipped. It stays approved and visible.`);
+        skipped++;
+      } else if (allExhausted || (!anyRetryable && !anyOk)) {
+        await setStatus(post.id, "failed");
+        warn(`  → FAILED — ${stillOut.join(", ")} unsent after ${MAX_ATTEMPTS} attempt(s). It is in the queue's Failed tab.`);
+        failed++;
+      } else {
+        await setStatus(post.id, "approved");
+        log(`  → partly sent; ${stillOut.join(", ")} will be retried on the next run`);
+      }
+    } catch (err) {
+      // The claim must not outlive the run that took it. Back to approved so
+      // the next tick picks it up; per-platform results already record
+      // anything that did land, so nothing is re-sent.
+      warn(`  ✗ ${post.id} errored mid-send: ${err && err.message}`);
       failed++;
-    } else {
-      // Something is still worth trying. Back to approved so the next run
-      // picks it up — the claim is released, the results survive.
-      await setStatus(post.id, "approved");
-      log(`  → partly sent; ${stillOut.join(", ")} will be retried on the next run`);
+      try {
+        await setStatus(post.id, "approved");
+      } catch (releaseErr) {
+        // Even the release failed. reclaimStaleClaims() at the top of the next
+        // run is the backstop for exactly this.
+        warn(`  ✗ could not release the claim on ${post.id}: ${releaseErr && releaseErr.message} — the next run reclaims it.`);
+      }
     }
   }
 

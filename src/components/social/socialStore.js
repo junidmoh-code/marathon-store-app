@@ -105,15 +105,29 @@ export async function loadPostsByStatus(status) {
   return { posts, truncated: posts.length >= POSTS_PER_STATUS };
 }
 
-/** Counts per status, for the filter chips. One bounded query each. */
-export async function loadStatusCounts() {
-  const entries = await Promise.all(
-    STATUSES.map(async (s) => {
-      const { posts, truncated } = await loadPostsByStatus(s);
-      return [s, { count: posts.length, truncated }];
-    })
-  );
-  return Object.fromEntries(entries);
+/**
+ * How many posts are waiting for Junid — the one number the home tab and the
+ * filter chips actually need.
+ *
+ * ── WHY THIS IS NOT "counts for every status" ───────────────────────────────
+ * The obvious version asks loadPostsByStatus once per status and takes
+ * `.length`. That downloads up to POSTS_PER_STATUS FULL BODIES per status —
+ * captions, media URL lists, product arrays, per-platform results — for five
+ * statuses, on every open of the queue AND after every single write, purely to
+ * render five small numbers. Up to a thousand bodies to count to five. It is
+ * exactly the read shape the rest of this file is built to avoid, and the
+ * Firebase bandwidth bill is what notices.
+ *
+ * So only the DRAFT count is fetched, because "waiting for you" is the number
+ * that changes a decision. Every other chip shows its count only while it is
+ * the selected filter, where the page has already loaded those posts for free.
+ *
+ * Draft is also the smallest set by construction: a draft is either approved or
+ * discarded within days, whereas "posted" grows forever.
+ */
+export async function loadDraftCount() {
+  const { posts, truncated } = await loadPostsByStatus("draft");
+  return { count: posts.length, truncated };
 }
 
 // ── POSTS: WRITE ─────────────────────────────────────────────────────────────
@@ -198,26 +212,43 @@ async function writePost(postId, fields) {
 /**
  * One page of references, NEWEST FIRST.
  *
- * The cursor is `before` — the `addedAt` of the oldest row the caller already
- * holds — applied as endAt(before - 1) so the next page starts strictly older.
- * Using the value alone (not equalTo, not a value+key pair) is correct here
- * because addedAt is a millisecond stamp from serverNowMs: two uploads in the
- * same millisecond would share a boundary, so the caller de-duplicates by id
- * (mergeRefPage below) rather than trusting the range to be exclusive.
+ * ── THE CURSOR IS INCLUSIVE, AND THAT IS THE POINT ──────────────────────────
+ * `before` is the `addedAt` of the oldest row the caller already holds, applied
+ * as endAt(before) — INCLUSIVE, deliberately.
+ *
+ * The exclusive version, endAt(before - 1), silently loses rows. limitToLast on
+ * a value index breaks ties by KEY, so when a page boundary falls inside a
+ * group of references sharing one `addedAt` — two files selected in the same
+ * upload, which is the normal way this library is filled — the page returns
+ * some of that group and `before` becomes their shared timestamp. Asking for
+ * `< before` then skips the rest of the group PERMANENTLY: they appear in no
+ * page, and "Load more" walks straight past them.
+ *
+ * Inclusive re-fetches the boundary rows instead, and mergeRefPage keys by id,
+ * so a re-fetched row is merged rather than duplicated. The cost is up to
+ * pageSize wasted rows in the pathological case; the alternative loses data.
+ *
+ * `done` is therefore judged on NEW ids, not on page length — an inclusive
+ * page that returns only rows the caller already holds is the end of the list,
+ * and testing length alone would loop on it forever.
  *
  * Returns { refs, done }.
  */
-export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE } = {}) {
+export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, held = null } = {}) {
   let q = query(ref(database, REFS_PATH), orderByChild("addedAt"), limitToLast(pageSize));
   if (Number.isFinite(before)) {
-    q = query(ref(database, REFS_PATH), orderByChild("addedAt"), startAt(0), endAt(before - 1), limitToLast(pageSize));
+    q = query(ref(database, REFS_PATH), orderByChild("addedAt"), startAt(0), endAt(before), limitToLast(pageSize));
   }
   const snap = await get(q);
   const val = snap.val() || {};
   const refs = Object.entries(val)
     .map(([id, body]) => ({ id, ...body }))
     .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
-  return { refs, done: refs.length < pageSize };
+  const heldIds = held instanceof Set ? held : new Set((held || []).map((r) => r && r.id));
+  const fresh = refs.filter((r) => !heldIds.has(r.id));
+  // Short page ⇒ the end. Full page of nothing new ⇒ also the end (every row
+  // was a boundary re-fetch).
+  return { refs, done: refs.length < pageSize || (before !== null && fresh.length === 0) };
 }
 
 /** Merge a fetched page into the held list, newest first, de-duplicated by id. */

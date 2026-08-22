@@ -202,7 +202,9 @@ export default function StyleLibraryCard({ onNotice, notice }) {
     const oldest = refs[refs.length - 1].addedAt;
     setBusy(true);
     try {
-      const { refs: page, done: d } = await loadRefPage({ before: oldest });
+      // `held` lets the store tell a boundary re-fetch (see loadRefPage — the
+      // cursor is inclusive on purpose) apart from a genuine end of list.
+      const { refs: page, done: d } = await loadRefPage({ before: oldest, held: refs });
       setRefs((cur) => mergeRefPage(cur, page));
       setDone(d);
     } catch (err) {

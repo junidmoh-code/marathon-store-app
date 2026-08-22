@@ -13,6 +13,7 @@ import {
   captionWithLink, captionFor, truncateWords,
   nextSlots, assignSlots, formatSlot, toLocalInput, fromLocalInput,
   productLink, describePost, resultLine, SLOT_DAYS, SLOT_HOUR_SAST,
+  needsVerification, QUEUE_FILTERS, STALE_CLAIM_MS,
 } from "./socialCore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -105,6 +106,74 @@ describe("postBlocker — the gate", () => {
     it("ignores the schedule entirely when requireDue is off", () => {
       expect(postBlocker(ok({ scheduledAt: 9e12 }), { now: 1 })).toBeNull();
     });
+  });
+});
+
+// ─── FIXES FROM THE ADVERSARIAL REVIEW ───────────────────────────────────────
+// Each of these pins a defect that was real in this branch.
+describe("the gate refuses what the senders cannot send", () => {
+  const item = (type, n = 1) => Array.from({ length: n }, (_, i) => ({ url: `https://x/${i}`, type }));
+
+  // publishFacebook throws a NON-retryable error on a mixed set. Without this
+  // the queue showed the post as fine, Junid approved it, and it parked in
+  // Failed on the evening it was meant to go out.
+  it("refuses a mixed video and photo set", () => {
+    expect(postBlocker(ok({ media: [...item("video"), ...item("image")] }))).toMatch(/either one video or a set of photos/i);
+  });
+
+  it("refuses more than one video", () => {
+    expect(postBlocker(ok({ media: item("video", 2) }))).toMatch(/only one video/i);
+  });
+
+  it("still allows a single video and a pure photo set", () => {
+    expect(postBlocker(ok({ media: item("video") }))).toBeNull();
+    expect(postBlocker(ok({ media: item("image", 4) }))).toBeNull();
+  });
+});
+
+describe("an unconfirmed send is never blind-retried", () => {
+  // The window: the platform published, the response was lost. Re-sending is
+  // how one post becomes two on a live public account.
+  it("flags a platform left in `sending`", () => {
+    const p = ok({ results: { instagram: { state: "sending", attempts: 1 } } });
+    expect(needsVerification(p, "instagram")).toBe(true);
+  });
+
+  it("does not flag any settled state", () => {
+    for (const state of ["ok", "error", "skipped", undefined]) {
+      expect(needsVerification(ok({ results: { instagram: { state } } }), "instagram")).toBe(false);
+    }
+    expect(needsVerification(ok(), "instagram")).toBe(false);
+  });
+
+  it("a `sending` platform is still OUTSTANDING, so it cannot be quietly forgotten", () => {
+    const p = ok({ platforms: { instagram: true }, results: { instagram: { state: "sending" } } });
+    expect(outstandingPlatforms(p)).toEqual(["instagram"]);
+  });
+
+  it("says plainly that a human must look at the account", () => {
+    const line = resultLine(ok({ results: { instagram: { state: "sending" } } }), "instagram");
+    expect(line).toMatch(/never got confirmation/i);
+    expect(line).toMatch(/CHECK THE ACCOUNT/);
+  });
+});
+
+describe("the Sending state is visible to a person", () => {
+  // A post claimed by a run that then died sat in "posting" — a state with no
+  // tab, so it appeared in NO list and nothing ever looked at it again.
+  it("posting is a queue filter", () => {
+    expect(QUEUE_FILTERS.map((f) => f.key)).toContain("posting");
+  });
+
+  it("every status a post can hold has somewhere to be seen", () => {
+    const filters = new Set(QUEUE_FILTERS.map((f) => f.key));
+    for (const s of STATUSES) expect(filters.has(s), `status "${s}" has no queue tab`).toBe(true);
+  });
+
+  it("a stale claim threshold exists and is longer than any real run", () => {
+    // A ten-item carousel of videos is ten container ingests at up to five
+    // minutes each; the threshold must sit above that.
+    expect(STALE_CLAIM_MS).toBeGreaterThan(10 * 5 * 60 * 1000);
   });
 });
 

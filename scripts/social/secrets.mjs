@@ -124,11 +124,27 @@ export async function writeSecret(name, value) {
       throw new Error(`could not create secret "${name}" (HTTP ${err?.response?.status ?? "?"}).`);
     }
   }
-  await client.request({
-    url: `https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/${encodeURIComponent(name)}:addVersion`,
-    method: "POST",
-    data: { payload: { data: Buffer.from(String(value), "utf8").toString("base64") } },
-  });
+  // ── THE ERROR MUST NOT CARRY THE PAYLOAD ─────────────────────────────────
+  // This is the one call in the program that puts a secret in a REQUEST BODY,
+  // and a gaxios error keeps that body on the error object as an enumerable
+  // own property — twice, in `config.data` and `response.config.data`. Node's
+  // uncaught-rejection printer inspects the whole object, so an unhandled 403
+  // here prints the base64 of the Page token straight into the terminal, or
+  // into logs/social-launchd.err.log where it stays.
+  //
+  // So the raw error NEVER escapes. Only the status and the secret NAME do.
+  try {
+    await client.request({
+      url: `https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets/${encodeURIComponent(name)}:addVersion`,
+      method: "POST",
+      data: { payload: { data: Buffer.from(String(value), "utf8").toString("base64") } },
+    });
+  } catch (err) {
+    throw new Error(
+      `could not add a version to secret "${name}" (HTTP ${err?.response?.status ?? "?"}). ` +
+      `Check the service account has roles/secretmanager.secretVersionAdder or secretmanager.admin.`
+    );
+  }
   cache.delete(name);
   // The RETURN VALUE is deliberately a count, not the value. A caller that
   // wants to confirm the write gets "ok", never an echo.

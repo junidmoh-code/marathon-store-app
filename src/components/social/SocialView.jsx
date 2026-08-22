@@ -33,7 +33,7 @@ import {
   formatSlot, toLocalInput, fromLocalInput, captionFor,
 } from "./socialCore";
 import {
-  loadPostsByStatus, approvePost, unapprovePost, discardPost, retryPost,
+  loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, discardPost, retryPost,
   editCaption, reschedulePost, setPlatforms,
 } from "./socialStore";
 import StyleLibraryCard from "./StyleLibraryCard";
@@ -92,6 +92,7 @@ function Cover({ media }) {
 function PostRow({ post, onChanged, onNotice }) {
   const [open, setOpen] = useState(false);
   const [draftCaption, setDraftCaption] = useState(null);
+  const [schedDraft, setSchedDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const kind = postKind(post.kind);
   const blocker = postBlocker(post);
@@ -191,13 +192,26 @@ function PostRow({ post, onChanged, onNotice }) {
           <div style={{ fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: GRAY, fontWeight: 700, margin: "14px 0 6px" }}>
             Scheduled for
           </div>
+          {/* ── WRITES ON COMMIT, NOT ON KEYSTROKE ────────────────────────
+              A datetime-local fires change on every edited segment, so writing
+              from onChange sent a database write per keystroke — and, worse,
+              wrote whatever half-typed date existed in between. Typing the year
+              passes through "0002", which parses to 1902 and is refused, so the
+              reviewer got an error toast while still typing a perfectly valid
+              date. The draft is local until blur or Enter. ── */}
           <input
             type="datetime-local"
-            value={toLocalInput(post.scheduledAt)}
+            value={schedDraft !== null ? schedDraft : toLocalInput(post.scheduledAt)}
             disabled={busy}
-            onChange={(e) => {
-              const ms = fromLocalInput(e.target.value);
-              if (ms !== null) run(() => reschedulePost(post.id, ms), "Rescheduled.");
+            onChange={(e) => setSchedDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            onBlur={() => {
+              if (schedDraft === null) return;
+              const ms = fromLocalInput(schedDraft);
+              setSchedDraft(null);
+              if (ms === null) { onNotice({ kind: "err", text: "That is not a valid date and time." }); return; }
+              if (ms === Number(post.scheduledAt)) return;   // nothing changed
+              run(() => reschedulePost(post.id, ms), "Rescheduled.");
             }}
             style={{ ...inputStyle, fontSize: "0.82rem", colorScheme: "dark" }}
           />
@@ -278,9 +292,11 @@ function Queue({ notice, onNotice }) {
   const [posts, setPosts] = useState(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState(null);
-  // Counts for the chips. Loaded once per visit and refreshed after a write —
-  // five bounded queries, not a subscription.
-  const [counts, setCounts] = useState({});
+  // ONE count is fetched: how many are waiting for Junid. Every other chip
+  // shows a number only while it is selected, from the posts the page has
+  // already loaded — see loadDraftCount in the store for why counting all five
+  // meant downloading a thousand post bodies to render five small numbers.
+  const [draftCount, setDraftCount] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -295,11 +311,7 @@ function Queue({ notice, onNotice }) {
   }, [filter]);
 
   const loadCounts = useCallback(async () => {
-    const next = {};
-    await Promise.all(QUEUE_FILTERS.map(async ({ key }) => {
-      try { next[key] = (await loadPostsByStatus(key)).posts.length; } catch { next[key] = null; }
-    }));
-    setCounts(next);
+    try { setDraftCount((await loadDraftCount()).count); } catch { setDraftCount(null); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -307,13 +319,20 @@ function Queue({ notice, onNotice }) {
 
   const onChanged = useCallback(async () => { await load(); await loadCounts(); }, [load, loadCounts]);
 
+  // The number on a chip: the fetched draft count, or — for whichever filter is
+  // selected — the length of what is already on screen. Never a fetch.
+  const countFor = (key) => {
+    if (key === "draft") return draftCount;
+    return key === filter && posts ? posts.length : null;
+  };
+
   return (
     <div style={{ padding: "6px 14px 0" }}>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
         {QUEUE_FILTERS.map(({ key, label }) => (
           <button key={key} onClick={() => setFilter(key)}
                   style={{ ...(filter === key ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.74rem" }}>
-            {label}{counts[key] ? ` ${counts[key]}` : ""}
+            {label}{countFor(key) ? ` ${countFor(key)}` : ""}
           </button>
         ))}
       </div>

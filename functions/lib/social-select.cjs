@@ -79,6 +79,29 @@ const NEW_ZERO_DAYS = 60;
 const DAY_MS = 86400000;
 
 /**
+ * The stored /stock key for a catalogue size. Mirror of stockSizeKey in
+ * src/utils/sizeKey.js — the ESM module cannot be required from this CJS file,
+ * and socialSizeKey.diff.test.js pins the two across a table including the
+ * awkward ones ("Free Size", "5.5", " 8", null).
+ *
+ * "Free Size" collapsing to "_" is not cosmetic: the one-size work left real
+ * products carrying BOTH a "_" cell and a "Free_Size" cell, and only "_" is
+ * the one the storefront sells from.
+ */
+function stockSizeKey(size) {
+  if (size == null || size === "" || size === "Free Size") return "_";
+  const s = typeof size === "number" ? String(size) : size;
+  if (typeof s !== "string") return s;
+  // The character class is ILLEGAL_RTDB_CHARS from src/utils/sizeKey.js,
+  // verbatim: . # $ [ ] / AND WHITESPACE. The whitespace was missing in the
+  // first version of this mirror, so "one size" encoded to "one size" here and
+  // "one_size" there — a randomised differential caught it on its first
+  // iteration. Real sizes with spaces are common ("one size", " 8" from a
+  // padded import), so this was not a corner case.
+  return s.replace(/[.#$[\]/\s]/g, "_");
+}
+
+/**
  * Network availability for one product, in units.
  *
  * `stockByLocation` is { location: { sizeKey: cell } } for THIS product only —
@@ -86,18 +109,39 @@ const DAY_MS = 86400000;
  * reading the /stock node, so this never becomes a whole-node read. A cell is
  * the movement-stamped object applyMovement writes; a bare number is tolerated
  * for old data, exactly as inventory.mjs tolerates it.
+ *
+ * ── `sizes` IS NOT OPTIONAL DECORATION ──────────────────────────────────────
+ * It is the product record's own size list, and cells whose key is not in it
+ * are NOT COUNTED — the same `if (!(key in totals)) continue` that
+ * scripts/shopify/inventory.mjs networkTotals applies before pushing
+ * availability to Shopify.
+ *
+ * An earlier version summed every cell, and the header claimed it matched the
+ * inventory push. It did not, and the divergence always ran the dangerous way:
+ * social saw MORE stock than the storefront would sell. The live case is the
+ * documented phantom cell — a product whose sizes are ["Free Size"] has its
+ * sellable stock under "_", but a stray "Free_Size" cell may also hold units.
+ * Shopify pushes 0 and shows sold out; the generator saw 3 and posted a link
+ * to a sold-out page.
+ *
+ * A product with no usable size list therefore has no countable stock, which
+ * is the same answer Shopify gives it: no sizes means no variants means
+ * nothing to sell.
  */
-function availableUnits(stockByLocation) {
-  let total = 0;
+function availableUnits(stockByLocation, sizes) {
+  const totals = {};
+  for (const size of Array.isArray(sizes) ? sizes : []) totals[stockSizeKey(size)] = 0;
+  if (!Object.keys(totals).length) return 0;
   for (const [loc, cells] of Object.entries(stockByLocation || {})) {
     if (UNSELLABLE_LOCATIONS.has(loc)) continue;
     if (!cells || typeof cells !== "object") continue;
-    for (const cell of Object.values(cells)) {
+    for (const [key, cell] of Object.entries(cells)) {
+      if (!(key in totals)) continue;   // sizes not in the record don't ship
       const qty = cell !== null && typeof cell === "object" ? cell.qty : cell;
-      total += Math.max(0, Number(qty) || 0);
+      totals[key] += Math.max(0, Number(qty) || 0);
     }
   }
-  return total;
+  return Object.values(totals).reduce((a, b) => a + b, 0);
 }
 
 /**
@@ -199,7 +243,7 @@ function buildCandidates({ liveNodes, products, stockByPid, salesByPid = {}, pos
     if (!name) continue;
 
     // ── REFUSAL 2: out of stock ────────────────────────────────────────────
-    const available = availableUnits((stockByPid || {})[pid]);
+    const available = availableUnits((stockByPid || {})[pid], product.sizes);
     if (available <= 0) continue;
 
     // ── COOLDOWN ───────────────────────────────────────────────────────────
@@ -332,5 +376,5 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
 module.exports = {
   POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS,
   REPOST_COOLDOWN_DAYS, W_SALES, W_NEW, NEW_FULL_DAYS, NEW_ZERO_DAYS,
-  availableUnits, productHandle, outfitSlot, buildCandidates, pickForKind,
+  availableUnits, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,
 };
