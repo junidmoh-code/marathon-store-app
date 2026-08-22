@@ -440,6 +440,10 @@ describe("the rebuilt screen", () => {
 });
 
 describe("the layout that was broken", () => {
+  const openFirst2 = async (tree, label) => {
+    const btn = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === `Open ${label}`)[0];
+    await act(async () => { btn.props.onClick(); });
+  };
   it("keeps the stat block at two columns until 720px", () => {
     // The requirement is literal: never more than two columns at phone width.
     const tree = { root: { findAllByType: () => [] } };
@@ -459,12 +463,15 @@ describe("the layout that was broken", () => {
     expect(css).toMatch(/text-overflow:ellipsis/);
   });
 
-  it("gives every location its own bordered box", async () => {
+  it("gives every location its own bordered box, and renders one per location", async () => {
     const tree = await renderCard();
     const css = styleTag(tree);
     expect(css).toMatch(/\.ep-box\s*\{[^}]*border:1px solid/);
+    // …and the boxes are actually rendered, one per location, rather than the
+    // rule existing with nothing using it. (CodeRabbit, PR #404.)
+    await openFirst2(tree, "Caps & Beanies");
     const boxes = tree.root.findAll((n) => n.props && n.props.className === "ep-box");
-    void boxes;
+    expect(boxes.length).toBe(CENSUS.destinations.length);
   });
 
   it("keeps the error on its OWN row so it cannot overlap the control below", async () => {

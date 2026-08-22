@@ -60,7 +60,21 @@ const PATH = `config/refillEngine/policyGroups/${GROUP_KEY}`;
     console.log("\nDRY RUN — nothing written. Re-run with --execute.");
     process.exit(0);
   }
-  await db.ref(`${PATH}/label`).set(LABEL);
+  // ── THE ARMED CHECK AND THE WRITE ARE ONE OPERATION ─────────────────────
+  // Read-then-write left a window: the group could be armed between the check
+  // above and the write, and the relabel would land on an armed policy anyway.
+  // A transaction on the group node re-tests the state the refusal is about at
+  // the moment it writes, and aborts if it moved. (CodeRabbit, PR #404.)
+  const txn = await db.ref(PATH).transaction((live) => {
+    if (!live || typeof live !== "object") return;          // vanished — abort
+    if (live.armed === true) return;                        // armed underneath — abort
+    if (live.label !== group.label) return;                 // relabelled underneath — abort
+    return { ...live, label: LABEL };
+  });
+  if (!txn.committed) {
+    console.error("REFUSED: the group changed while this was running (armed, relabelled or deleted). Nothing was written.");
+    process.exit(5);
+  }
   const after = (await db.ref(PATH).once("value")).val();
   const ok = after.label === LABEL && after.armed === group.armed
     && JSON.stringify(after.memberCategoryKeys) === JSON.stringify(group.memberCategoryKeys)

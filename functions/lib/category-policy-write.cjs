@@ -445,7 +445,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // have silently zeroed a whole leg's requests. buildPreview already does it.
   const sources = Object.values(config.routes || {});
   const stockLocs = censusLocationsFor(config);
-  const rowLocs = [...new Set([...destinations, ...armedAnywhere])];
+  // THE SAME SET THE SIZE RUN IS DERIVED OVER, not a narrower one. The size-run
+  // helpers read /stock_targets to decide which sizes are real, so reading the
+  // maps over a smaller set here made the census OFFER a narrower run than the
+  // write path ACCEPTS — a row-only size at a route source (central) was
+  // writable and never shown. One set, one answer. (CodeRabbit, PR #404.)
+  const rowLocs = censusLocationsFor(config);
 
   const products = await readMapPaged(db, "products");
   const stock = {}, targets = {}, openIndex = {};
@@ -924,6 +929,19 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     const liveGroups = isPlainObject(cfg.policyGroups) ? cfg.policyGroups : {};
     const before = liveGroups[groupKey] ?? null;
     const after = d.group;
+    // ── THE MEMBER LIST IS CHECKED FOR SHAPE BEFORE ANYTHING READS IT ───────
+    // A group whose memberCategoryKeys is missing, a string, or an object threw
+    // "not iterable" out of the refusal loop below, or reported "no size run
+    // can be worked out" — both instead of validatePolicyGroup's precise
+    // "memberCategoryKeys must name at least one category". Shape first, then
+    // the reads. (CodeRabbit, PR #404.)
+    const membersUsable = after === null || (isPlainObject(after) && Array.isArray(after.memberCategoryKeys));
+    if (!membersUsable) {
+      const shapeErr = validatePolicyGroup(groupKey, after, {
+        knownCategoryKeys, knownLocations, existingGroups: liveGroups, categoryPolicy: cfg.categoryPolicy });
+      throw httpsError("invalid-argument", shapeErr || "group must be an object, or null to delete it");
+    }
+
     // CHEAP REFUSALS FIRST. This used to sit after the size-run derivation, so
     // a group naming a refused category paid for a full catalogue read before
     // being told no. (Architecture review.)

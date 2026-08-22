@@ -66,7 +66,10 @@ test("every clothing cell in the live snapshot resolves to exactly what it did",
 
 test("the snapshot covers every resolution source the estate actually uses", () => {
   const sources = new Set(Object.values(fx.expected).map((v) => v.source));
-  for (const s of ["explicit", "default", "category_policy"]) {
+  // subcategory_default is in the list because the fixture DOES cover it (88
+  // cells live): leaving it out let a regenerated fixture quietly lose every
+  // subcategory resolution and still pass. (CodeRabbit, PR #404.)
+  for (const s of ["explicit", "default", "subcategory_default", "category_policy"]) {
     assert.ok(sources.has(s), `the fixture no longer covers source "${s}" — it is not proving what it says`);
   }
 });

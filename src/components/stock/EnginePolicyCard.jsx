@@ -457,10 +457,19 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   // save need the whole group object with its numbers replaced — never a
   // reconstructed one. `armed` and `memberCategoryKeys` are carried through
   // untouched: editing numbers is not arming, and it does not change who is in.
-  const groupPayload = (policy) => ({
-    label: open?.label, memberCategoryKeys: open?.memberCategoryKeys,
-    armed: open?.armedGroup === true, ...(policy === null ? {} : { policy }),
-  });
+  // START FROM THE LIVE NODE and replace only the numbers. Building the payload
+  // from four fields meant the server's .set() deleted any other key the live
+  // node held — silently, and with the drift check passing, because live still
+  // matched what was rendered. Carrying the node through means an unexpected
+  // key produces validatePolicyGroup's loud "unknown field" refusal instead.
+  // (CodeRabbit, PR #404.)
+  const groupPayload = (policy) => {
+    const live = open?.rawGroup && typeof open.rawGroup === "object" ? open.rawGroup : {};
+    const next = { ...live,
+      label: open?.label, memberCategoryKeys: open?.memberCategoryKeys, armed: open?.armedGroup === true };
+    if (policy === null) delete next.policy; else next.policy = policy;
+    return next;
+  };
   // THE LIVE NODE AS THE SERVER READ IT, never a rebuild: a reconstructed
   // {label, memberCategoryKeys, armed, policy} compares unequal to a live node
   // that lacks a key or carries an extra one, and every save would then fail

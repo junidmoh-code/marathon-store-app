@@ -99,7 +99,12 @@ test("the Sneakers group, disarmed, produces zero intents across all seven membe
 test("relabelling the group to Sneakers changes no resolution at all", () => {
   const before = cfg({ armed: true });
   const after = cfg({ armed: true });
+  // The two sides have to actually DIFFER: cfg() already labels the group
+  // "Sneakers", so assigning it again compared a config with itself.
+  // (CodeRabbit, PR #404.)
+  before.policyGroups["footwear-all"].label = "All footwear except soccer-boots";
   after.policyGroups["footwear-all"].label = "Sneakers";
+  assert.notEqual(before.policyGroups["footwear-all"].label, after.policyGroups["footwear-all"].label);
   for (const size of ["5", "5.5", "6", "12"]) {
     assert.deepEqual(resolveTarget(ctx(after), "hub2", "sn1", size), resolveTarget(ctx(before), "hub2", "sn1", size));
   }

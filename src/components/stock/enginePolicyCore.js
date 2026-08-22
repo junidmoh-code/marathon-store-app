@@ -519,7 +519,23 @@ export function nextScanAt(nowMs) {
 // before a save.
 export function previewVerdictParts(model, opts = {}) {
   const text = previewVerdict(model, opts);
-  return text.split(/(?<=\.)\s+/).filter(Boolean);
+  // Split after each sentence WITHOUT a lookbehind: Safari only gained
+  // lookbehind in 16.4, and the shop tablets are not all on it — an
+  // unsupported group is a SyntaxError at parse time, which takes the whole
+  // bundle down rather than this one line. (CodeRabbit, PR #404.)
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== ".") continue;
+    let j = i + 1;
+    while (j < text.length && /\s/.test(text[j])) j += 1;
+    if (j === i + 1) continue;                       // no space after it — not a break
+    out.push(text.slice(start, i + 1).trim());
+    start = j;
+    i = j - 1;
+  }
+  if (start < text.length) out.push(text.slice(start).trim());
+  return out.filter(Boolean);
 }
 
 export function previewVerdict(model, { cap, centralOnHand } = {}) {
