@@ -545,6 +545,27 @@ export function previewVerdict(model, { cap, centralOnHand } = {}) {
   return parts.join(" ");
 }
 
+// ── THE VERDICT'S FIRST SENTENCE ─────────────────────────────────────────────
+// The panel shows only the leading sentence — the number that constrains the
+// outcome. It used to be cut by splitting on a LOOKBEHIND assertion, and that
+// is not a detail here: Safari only gained lookbehind assertions in 16.4 (March 2023),
+// and an unsupported group is a SyntaxError at PARSE time, not at call time. It
+// does not degrade this one line — the whole bundle fails to load, so the shop
+// screen is blank on any tablet still on iOS 16.3 or older. No device inventory
+// exists to say whether one is (nothing stores a userAgent), so this assumes
+// the worst.
+//
+// Index-based rather than a cleverer regex, and identical in result: everything
+// up to and including the first "." that is followed by whitespace, or the whole
+// string when there is no such break.
+export function firstSentence(text) {
+  const s = String(text ?? "");
+  for (let i = 0; i < s.length; i += 1) {
+    if (s[i] === "." && /\s/.test(s[i + 1] || "")) return s.slice(0, i + 1);
+  }
+  return s;
+}
+
 // ── LAST CHANGE ──────────────────────────────────────────────────────────────
 // The header stamp, from the audit trail. Only APPLIED entries count: an
 // aborted save changed nothing and must not be presented as the current state's
