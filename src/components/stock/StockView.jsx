@@ -32,7 +32,7 @@ const BASE_TABS = [
   ["intransit", "In Transit"],
   // "Health" moved to its own home-screen module (HealthView) — owner decision.
   ["locate",    "Where is it"],
-  ["totals",    "How many"],   // READ-ONLY network totals — one number per product (2026-08-22)
+  ["totals",    "Total Stock"], // READ-ONLY network totals — one number per product (2026-08-22)
   ["setqty",    "Set Qty"],
   ["history",   "History"],
   ["adjust",    "Adjust"],
@@ -67,7 +67,7 @@ const TAB_META = {
   intransit: ["In Transit", "Cross-building sends awaiting receive."],
   excess:   ["Move Excess", "Bulk hub 2 → central rebalance (admin)."],
   locate:   ["Where is it", "Find any product across every location."],
-  totals:   ["How many", "One total per product — every size, every location."],
+  totals:   ["Total Stock", "One total per product — every size, every location."],
   setqty:   ["Set Qty", "Set received / opening on-hand."],
   history:  ["History", "The full movement ledger."],
   adjust:   ["Adjust", "Admin stock corrections."],
