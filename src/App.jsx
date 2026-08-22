@@ -54,6 +54,7 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
+import SocialView from "./components/social/SocialView";
 // The photo regenerator's vocabulary and call-shaping, shared with the same
 // tool on the Shopify product page so the two can never offer different fixes
 // or send differently-shaped requests (src/components/shopify/aiStudioCore.js).
@@ -316,7 +317,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", SOCIAL: "social" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2588,6 +2589,15 @@ const RoleIcons = {
       <path d="M16 10a4 4 0 0 1-8 0"/>
     </svg>
   ),
+  social: (
+    // lucide-style "megaphone" — content going out. Same stroke/weight as
+    // every other tile icon.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1z"/>
+      <path d="M17 8a5 5 0 0 1 0 8"/>
+      <path d="M20 5a9 9 0 0 1 0 14"/>
+    </svg>
+  ),
 };
 
 // Section header svg icons
@@ -2772,6 +2782,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const shopifyVisible = isSuperAdmin || homePerm?.stockRole === "admin";
   const shopifyBadge = useShopifyAwaitingCount(products, shopifyVisible);
 
+  // Social — the content engine's one screen (queue, style library, generator).
+  // Same identities as Shopify Publishing, and for the same reason: it reads
+  // and writes /social_posts and /social_style_refs, whose console rules name
+  // Junid or a stockRole admin. The route below re-checks the same gate.
+  const socialVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
   const groups = [
@@ -2816,6 +2832,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Shopify Publishing — the online-store review queue. Badge = products
       // whose names have never been reviewed (null while loading → no badge).
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
+      // Social — generated posts waiting for approval, the style reference
+      // library, and the generator. Nothing goes out without approval, so
+      // there is deliberately no badge that could read as "something is
+      // happening without you".
+      socialVisible                                            && { key:"social", icon:RoleIcons.social, name:"Social", desc:"Posts · style library · generate", onClick:()=>onSelect(ROLES.SOCIAL) },
       // The Display Register tile is GONE (owner spec 2026-08-06): displays are
       // hub stock now, and the register merged into the Hub Count & Displays
       // card above (HubCleanupCard). We no longer track what is on display.
@@ -17294,6 +17315,8 @@ function AppInner() {
   // Shopify Publishing route — same identities the /shopify_publish console
   // write rule accepts (Junid via super-admin, or a stockRole admin).
   const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
+  // Social route — the same identities the /social_posts console rule accepts.
+  const socialRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
   const canMint = isSuperAdmin || !!permRecord?.stockRole || hasPermission("barcode");
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
@@ -17349,9 +17372,12 @@ function AppInner() {
     // Shopify Publishing mirrors the console write rule on /shopify_publish
     // (super-admin or stockRole admin) — a stale persisted role drops home.
     if (role === ROLES.SHOPIFY_PUBLISH && !shopifyRouteOpen) { setRole(null); return; }
+    // Social obeys the same rule — a role persisted before a permission change
+    // must not strand the user on a view they can no longer read.
+    if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen, socialRouteOpen]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -17619,6 +17645,13 @@ function AppInner() {
   // partial slices only; writes only /shopify_publish (store-enforced).
   else if (role === ROLES.SHOPIFY_PUBLISH) view = shopifyRouteOpen
     ? <ShopifyPublishView products={products} onExit={() => setRole(null)} />
+    : null;
+  // Social — the content engine. Reads /social_posts in bounded per-status
+  // queries and /social_style_refs one page at a time; writes only those two
+  // nodes. It cannot post: the Mac mini publisher does that, and re-checks
+  // approval itself at the moment of sending.
+  else if (role === ROLES.SOCIAL) view = socialRouteOpen
+    ? <SocialView products={products} onExit={() => setRole(null)} />
     : null;
   // ── ENGINE POLICY — GATE 2 OF 3: THE ROUTE ────────────────────────────────
   // Evaluated INDEPENDENTLY of the tile. A persisted role in localStorage, a

@@ -3490,3 +3490,490 @@ exports.setCategoryPolicy = onCall(
     }
   }
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOCIAL CONTENT ENGINE — THE GENERATOR
+// ─────────────────────────────────────────────────────────────────────────────
+// Picks products worth posting and produces the post: an image, a caption, the
+// platforms and a slot in the schedule. Everything it makes lands in
+// /social_posts as a DRAFT. It cannot create an approved post, it never talks
+// to Instagram, Facebook or TikTok, and nothing it writes is sent until Junid
+// has approved that specific item in the queue.
+//
+// ── WHAT IT REUSES, AND WHY IT LIVES IN THIS FILE ────────────────────────────
+// The paid parts of this already exist: the Nano Banana Pro engine, the Style
+// Kit loader, the SSRF-guarded image fetcher, the Storage uploader and the
+// usage ledger were all built for generateProductPhotos and are module-scope
+// helpers here. Reimplementing any of them in a separate module would fork the
+// photo pipeline in two. So the orchestration sits beside its sibling and the
+// PURE parts — what is worth posting, what a caption should say — live in
+// functions/lib/social-select.cjs, social-caption.cjs and social-signal.cjs
+// where they are node-tested.
+//
+// ── THE READ PLAN (no whole-node reads) ──────────────────────────────────────
+//   1. /shopify_publish, ONE indexed query on state == "live". That is the set
+//      of products actually on the storefront — a few hundred rows, the same
+//      read the publishing page has made since #365.
+//   2. The sell-through signal, from a CACHE at /social_signal/sellThrough,
+//      recomputed at most once a day by paging /insights_log BACKWARDS through
+//      its push-key range (social-signal.cjs). /social_signal is written and
+//      read only by this function through the Admin SDK, so it needs no
+//      database rule and never appears in the browser.
+//   3. /products/{pid} and /stock/{loc}/{pid} for the SHORTLIST only — the top
+//      CANDIDATE_DEPTH rows by a preliminary node-only score, not for all 700.
+//      The stock read is per location per product precisely so that "is it in
+//      stock" never becomes a read of the /stock node.
+//   4. /social_style_refs, one bounded newest-first page, for the look.
+//
+// ── PHOTO POLICY ─────────────────────────────────────────────────────────────
+// Junid's painted backdrop is the default (style "house": the scene is
+// CONDITIONED on the Style Kit's photographs of the real backdrop, never
+// described in words). Clean white is available and is for advertising only —
+// it must be asked for explicitly. Nothing existing is regenerated: every
+// generation writes a NEW Storage object and touches no product record, no
+// publishing set and no photo proposal.
+const socialSelect = require("./lib/social-select.cjs");
+const socialCaption = require("./lib/social-caption.cjs");
+const socialSignal = require("./lib/social-signal.cjs");
+
+const SOCIAL_POSTS_PATH = "social_posts";
+const SOCIAL_REFS_PATH = "social_style_refs";
+const SOCIAL_SIGNAL_PATH = "social_signal/sellThrough";
+// The shortlist depth. Deep enough that a flat-lay can spread across
+// categories and an outfit can find four different slots; shallow enough that
+// the per-product reads stay in the hundreds rather than the thousands.
+const SOCIAL_CANDIDATE_DEPTH = 80;
+// Style references sent with one generation. The same ceiling the Style Kit
+// uses for the product pipeline (HOUSE_MAX_REFS) — more references means more
+// latency and, past a handful, no more fidelity.
+const SOCIAL_MAX_REFS = 6;
+// Hard ceiling on one call, so a repeated tap or a bad client cannot fan out an
+// expensive run. Four posts at ~$0.134 is well under a dollar.
+const SOCIAL_MAX_POSTS = 4;
+// Social output geometry. 1080×1350 is Instagram's 4:5 portrait, and it is
+// also inside TikTok's photo ceiling (each image must fit within 1080×1920) —
+// one size that all three platforms accept, so the queue never holds an asset
+// one platform will reject after Junid approved it.
+const SOCIAL_W = 1080, SOCIAL_H = 1350;
+// The public storefront. Same host scripts/shopify/print-menu-plan.mjs prints.
+const SOCIAL_STOREFRONT = "https://marathonclub.co.za";
+
+// Multi-product scene on Nano Banana Pro. The sibling of generateHouseStyleImage:
+// same model, same reference-conditioning, but N products instead of one, each
+// attached as its own text-labelled image so the model cannot confuse which
+// item is which. 4:5 because that is what the platforms want; the product
+// pipeline's 1:1 is a catalogue-grid decision that does not apply here.
+async function generateSocialScene(apiKey, prompt, productImages, refs) {
+  const parts = [{ text: prompt }];
+  productImages.forEach((p, i) => {
+    parts.push({ text: `PRODUCT ${i + 1} — ${p.name}. Render THIS item:` });
+    parts.push(inlineImagePart(p.buffer, p.contentType));
+  });
+  if (refs.length) {
+    parts.push({ text: "STYLE REFERENCES — match this exact scene, backdrop, lighting and mood:" });
+    for (const r of refs) parts.push(inlineImagePart(r.buffer, r.contentType));
+  }
+  return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
+    outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
+    imageConfig: { aspectRatio: "4:5", imageSize: "2K" },
+  });
+}
+
+// Fit the generated scene to the one size all three platforms accept. Never
+// crops: "inside" preserves the whole composition, which matters when the
+// model has spaced four products across the frame. Best-effort — on a sharp
+// failure the raw output is kept rather than the post being lost.
+async function normalizeSocialImage(buffer, fallbackMime) {
+  try {
+    const sharp = require("sharp");
+    const out = await sharp(buffer)
+      .resize(SOCIAL_W, SOCIAL_H, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 90, chromaSubsampling: "4:4:4" })
+      .toBuffer();
+    return { buffer: out, mime: "image/jpeg" };
+  } catch (e) {
+    console.warn("normalizeSocialImage failed, using raw output:", e && e.message);
+    return { buffer, mime: fallbackMime || "image/jpeg" };
+  }
+}
+
+// Generated post media goes to its OWN Storage path, under the aiStudio prefix
+// the Style Kit already owns (public read, super-admin write — the access these
+// files need, with no Storage rule change). Never under products/{id}/: a
+// social scene is not a product photograph and must never be reachable by
+// anything that walks a product's folder.
+async function uploadSocialImage(postId, index, buffer, mime = "image/jpeg") {
+  const token = require("crypto").randomUUID();
+  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+  const path = `aiStudio/social/posts/${postId}/${index}_${token}.${ext}`;
+  await admin.storage().bucket(STORAGE_BUCKET).file(path).save(buffer, {
+    resumable: false,
+    contentType: mime,
+    metadata: { cacheControl: "public, max-age=31536000, immutable", metadata: { firebaseStorageDownloadTokens: token } },
+  });
+  return `https://firebasestorage.googleapis.com/v0/b/${STORAGE_BUCKET}/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+}
+
+// The sell-through signal, cached. Recomputed only when the cache is missing or
+// older than its TTL — paging /insights_log on every Generate tap would be the
+// expensive mistake the cache exists to prevent. A recompute that fails is NOT
+// fatal: the generator falls back to a stale signal, or to no sales signal at
+// all (ranking then on newness alone), and says which in the run report. A
+// caption engine being down must not make the shop unable to post.
+async function loadSellThroughSignal(db, nowMs) {
+  const cached = (await db.ref(SOCIAL_SIGNAL_PATH).once("value")).val();
+  if (cached && Number(cached.computedAt) > nowMs - socialSignal.SIGNAL_TTL_MS && cached.unitsByPid) {
+    return { ...cached, source: "cache" };
+  }
+  try {
+    const { startKey, startMs } = socialSignal.recentDaysStartKey(socialSignal.WINDOW_DAYS, nowMs);
+    const fromIso = new Date(startMs + socialSignal.PAD_MS).toISOString();
+    const toIso = new Date(nowMs + 60000).toISOString();
+    const dbRef = (p) => db.ref(p);
+    const [ready, returns] = await Promise.all([
+      socialSignal.pageBackwards(dbRef, "insights_log", startKey, "ready"),
+      socialSignal.pageBackwards(dbRef, "returns_log", startKey, null),
+    ]);
+    const tally = socialSignal.tallyUnits(ready.rows, returns.rows, fromIso, toIso);
+    const record = {
+      unitsByPid: tally.unitsByPid,
+      totalUnits: tally.totalUnits,
+      attributedUnits: tally.attributedUnits,
+      coverage: +tally.coverage.toFixed(4),
+      events: tally.events,
+      windowDays: socialSignal.WINDOW_DAYS,
+      fromIso,
+      toIso,
+      pagesTruncated: ready.truncated || returns.truncated,
+      computedAt: nowMs,
+    };
+    await db.ref(SOCIAL_SIGNAL_PATH).set(record);
+    return { ...record, source: "computed" };
+  } catch (err) {
+    console.warn("social: sell-through signal failed:", err && err.message);
+    if (cached && cached.unitsByPid) return { ...cached, source: "stale", staleReason: String(err && err.message) };
+    return { unitsByPid: {}, coverage: 0, source: "unavailable", staleReason: String(err && err.message) };
+  }
+}
+
+// Which products have appeared in a post recently, so the generator does not
+// propose the same three best-sellers every week. Read from the posts that are
+// still meaningful — anything not discarded — through the status index, so this
+// is a handful of bounded queries and never a read of the posts node.
+async function loadPostedAtByPid(db) {
+  const out = {};
+  const states = ["draft", "approved", "posting", "posted", "failed"];
+  const snaps = await Promise.all(states.map((s) =>
+    db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(s).limitToLast(300).once("value")));
+  for (const snap of snaps) {
+    for (const post of Object.values(snap.val() || {})) {
+      const at = Number(post && (post.createdAt || post.scheduledAt)) || 0;
+      for (const p of (post && post.products) || []) {
+        if (!p || !p.pid) continue;
+        if (!out[p.pid] || out[p.pid] < at) out[p.pid] = at;
+      }
+    }
+  }
+  return out;
+}
+
+// A bounded page of the Style Reference Library, newest first, enabled only.
+// The buffers are fetched once per RUN and shared by every post in it.
+async function loadSocialStyleRefs(db) {
+  const snap = await db.ref(SOCIAL_REFS_PATH).orderByChild("addedAt").limitToLast(40).once("value");
+  const rows = Object.entries(snap.val() || {})
+    .map(([id, r]) => ({ id, ...r }))
+    .filter((r) => r && r.enabled !== false)
+    .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+  // VIDEO references contribute their NOTE and their poster frame, never a
+  // video body — the image model takes stills, and a 200 MB download in a
+  // Cloud Function to extract one frame we already captured in the browser
+  // would be absurd. The poster is what was stored; the poster is what is sent.
+  const usable = rows.filter((r) => r.thumbUrl || r.type === "image");
+  const chosen = usable.slice(0, SOCIAL_MAX_REFS);
+  const buffers = (await Promise.all(chosen.map(async (r) => {
+    try { return { ...(await fetchImageBuffer(r.thumbUrl || r.url)), note: r.note || "", id: r.id }; }
+    catch (err) { console.warn(`social: style ref ${r.id} fetch failed:`, err && err.message); return null; }
+  }))).filter(Boolean);
+  return { refs: buffers, notes: rows.map((r) => r.note).filter(Boolean).slice(0, 6), total: rows.length };
+}
+
+// The caption. Anthropic, because the key is already a secret this project
+// holds and chatStream proves the model id works against this account. A
+// failure here NEVER loses a paid image: socialCaption.fallbackCaption() puts a
+// plain, honest line on the post, the record is marked captionSource
+// "fallback", and Junid rewrites it in ten seconds if he cares to.
+async function writeSocialCaption({ kind, picks, link, styleNotes }) {
+  const prompt = socialCaption.buildCaptionPrompt({
+    kind,
+    products: picks.map((p) => ({ name: p.name, retailPrice: p.retailPrice, slot: p.slot })),
+    link,
+    styleNotes,
+  });
+  try {
+    const AnthropicCtor = Anthropic.default || Anthropic;
+    const client = new AnthropicCtor({ apiKey: anthropicApiKey.value() });
+    const msg = await client.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 700,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const text = (msg.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+    const read = socialCaption.readCaption(text);
+    if (read.ok) return { caption: read.caption, source: "ai", reason: null };
+    return { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "fallback", reason: read.reason };
+  } catch (err) {
+    console.warn("social: caption call failed:", err && err.message);
+    return {
+      caption: socialCaption.fallbackCaption({ kind, products: picks }),
+      source: "fallback",
+      reason: String(err && err.message).slice(0, 160),
+    };
+  }
+}
+
+exports.generateSocialPosts = onCall(
+  {
+    region: "europe-west1",
+    secrets: [geminiApiKey, anthropicApiKey],
+    memory: "1GiB",
+    timeoutSeconds: 540,
+  },
+  async (request) => {
+    assertAdmin(request);
+    const db = admin.database();
+    const data = request.data || {};
+    const nowMs = Date.now();
+
+    // What to make. `kinds` is a list so one tap can fill a week: ["single",
+    // "outfit", "new_arrivals"]. Unknown kinds are refused by name rather than
+    // skipped — a typo that silently produces nothing is a support call.
+    const wanted = Array.isArray(data.kinds) && data.kinds.length ? data.kinds : ["single"];
+    const unknown = wanted.filter((k) => !socialSelect.KIND_KEYS.includes(k));
+    if (unknown.length) throw new HttpsError("invalid-argument", `unknown post type(s): ${unknown.join(", ")}`);
+    const kinds = wanted.slice(0, SOCIAL_MAX_POSTS);
+
+    // Photo policy: house (the painted backdrop) unless white is explicitly
+    // asked for. The DEFAULT is in this expression, not in the caller.
+    const style = data.style === "white" ? "white" : "house";
+
+    // Which platforms the drafts are proposed for. Junid changes this per post
+    // in the queue; this is only the starting position.
+    const platforms = {
+      instagram: data.platforms ? data.platforms.instagram === true : true,
+      facebook: data.platforms ? data.platforms.facebook === true : true,
+      tiktok: data.platforms ? data.platforms.tiktok === true : false,
+    };
+
+    // ── 1. The storefront's live set — one indexed query ─────────────────────
+    const liveSnap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value");
+    const liveNodes = liveSnap.val() || {};
+
+    // ── 2. Signals ───────────────────────────────────────────────────────────
+    const [signal, postedAtByPid, styleKit, library] = await Promise.all([
+      loadSellThroughSignal(db, nowMs),
+      loadPostedAtByPid(db),
+      style === "house" ? loadStyleKit(db) : Promise.resolve(null),
+      loadSocialStyleRefs(db),
+    ]);
+
+    // ── 3. The shortlist, then its records ───────────────────────────────────
+    // A PRELIMINARY rank on node-only fields (sales + liveAt) decides which
+    // products are worth reading in full. Ranking on the node first is what
+    // keeps step 4 at ~80 products instead of ~700.
+    const prelim = Object.entries(liveNodes)
+      .filter(([, n]) => n && n.state === "live" && n.liveState === "on" && n.cleanName)
+      .map(([pid, n]) => ({
+        pid,
+        units: Number(signal.unitsByPid?.[pid]) || 0,
+        liveAt: Number(n.liveAt) || 0,
+        cooled: Number(postedAtByPid[pid]) || 0,
+      }))
+      .filter((r) => !(r.cooled && nowMs - r.cooled < socialSelect.REPOST_COOLDOWN_DAYS * 86400000))
+      .sort((a, b) => (b.units - a.units) || (b.liveAt - a.liveAt) || (a.pid < b.pid ? -1 : 1));
+
+    // Take the best sellers AND the newest, not just the head of one list — a
+    // pure sales sort would starve "new arrivals" of anything to show, because
+    // a product that went live on Tuesday has sold nothing yet.
+    const byNew = [...prelim].sort((a, b) => b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
+    const shortlist = [];
+    const seen = new Set();
+    for (const list of [prelim, byNew]) {
+      for (const r of list) {
+        if (shortlist.length >= SOCIAL_CANDIDATE_DEPTH) break;
+        if (seen.has(r.pid)) continue;
+        seen.add(r.pid);
+        shortlist.push(r.pid);
+      }
+    }
+
+    const locationsSnap = await db.ref("locations").once("value");
+    const locations = Object.keys(locationsSnap.val() || {});
+    const products = {}, stockByPid = {};
+    const READ_BATCH = 20;
+    for (let i = 0; i < shortlist.length; i += READ_BATCH) {
+      const slice = shortlist.slice(i, i + READ_BATCH);
+      await Promise.all(slice.map(async (pid) => {
+        const [rec, ...cells] = await Promise.all([
+          db.ref(`products/${pid}`).once("value"),
+          ...locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")),
+        ]);
+        const v = rec.val();
+        if (!v) return;
+        products[pid] = v;
+        const tree = {};
+        locations.forEach((loc, j) => { const c = cells[j].val(); if (c) tree[loc] = c; });
+        stockByPid[pid] = tree;
+      }));
+    }
+
+    const shortNodes = {};
+    for (const pid of shortlist) if (liveNodes[pid]) shortNodes[pid] = liveNodes[pid];
+    const candidates = socialSelect.buildCandidates({
+      liveNodes: shortNodes, products, stockByPid,
+      salesByPid: signal.unitsByPid || {}, postedAtByPid, nowMs,
+    });
+
+    // ── 4. Make each post ────────────────────────────────────────────────────
+    const used = new Set();
+    const created = [];
+    const skipped = [];
+    let estCostUSD = 0;
+
+    // Slots for the batch, skipping evenings already taken by a post that is
+    // still going to be sent. Computed HERE rather than per post so two posts
+    // in one run cannot land on the same evening.
+    const existingForSlots = [];
+    for (const s of ["draft", "approved", "posting"]) {
+      const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(s).limitToLast(100).once("value");
+      for (const p of Object.values(snap.val() || {})) existingForSlots.push(p);
+    }
+    const slots = socialScheduleSlots(existingForSlots, kinds.length, nowMs);
+
+    for (const [index, kind] of kinds.entries()) {
+      const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
+      if (!picks.length) { skipped.push({ kind, reason }); continue; }
+
+      const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
+      const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
+      let media = [];
+      let costUSD = 0;
+      try {
+        if (!spec.generates) {
+          // New arrivals: a carousel of the products' EXISTING photographs.
+          // Nothing is generated and nothing is paid for — the photographs the
+          // storefront already leads with are the right pictures for a post
+          // saying "this just went live".
+          media = picks.map((p) => ({ url: p.photoUrl, type: "image", pid: p.pid }));
+        } else {
+          const images = [];
+          for (const p of picks) {
+            const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
+            images.push({ buffer, contentType, name: p.name });
+          }
+          // House style REFUSES to run ungrounded, exactly as the product
+          // pipeline does: a Nano Banana Pro generation with no reference
+          // photographs is an invented backdrop, not our backdrop, and burning
+          // $0.134 on one is worse than saying so.
+          const kitRefs = styleKit ? (styleKit[picks[0].productType === "clothing" ? "clothing" : "sneaker"] || {}).refs || [] : [];
+          const refs = [...library.refs, ...kitRefs].slice(0, SOCIAL_MAX_REFS);
+          if (style === "house" && !refs.length) {
+            throw new Error("house style: no usable style references — add photos to the Style library or the AI Studio Style Kit");
+          }
+          const prompt = socialCaption.buildScenePrompt({
+            kind,
+            productNames: picks.map((p) => p.name),
+            style,
+            styleNotes: library.notes,
+          });
+          const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs);
+          costUSD = gen.costUSD;
+          estCostUSD += gen.costUSD;
+          const { buffer: outBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime);
+          media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
+        }
+
+        // ── THE LINK ─────────────────────────────────────────────────────
+        // One product → that product's page. Several → the storefront's front
+        // door, NOT the first product's page: a flat-lay caption that links to
+        // one of five items sends four out of five interested customers to the
+        // wrong thing. There is no "these five products" URL to link to, and
+        // inventing one that 404s would be worse than the front door.
+        const link = picks.length === 1 ? picks[0].link : SOCIAL_STOREFRONT;
+        const { caption, source: captionSource, reason: captionReason } =
+          await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
+
+        await db.ref(`${SOCIAL_POSTS_PATH}/${postId}`).set({
+          status: "draft",                       // the ONLY status this function writes
+          kind,
+          media,
+          caption,
+          captionSource,
+          ...(captionReason ? { captionNote: captionReason } : {}),
+          link,
+          platforms,
+          scheduledAt: slots[index] || null,
+          products: picks.map((p) => ({ pid: p.pid, name: p.name, handle: p.handle, slot: p.slot || null })),
+          style,
+          engine: spec.generates ? "nbpro" : "none",
+          costUSD: +costUSD.toFixed(6),
+          refsUsed: spec.generates ? library.refs.length : 0,
+          generatedBy: "generator",
+          signalSource: signal.source,
+          signalCoverage: signal.coverage ?? null,
+          createdAt: nowMs,
+          updatedAt: nowMs,
+          updatedBy: request.auth.uid,
+        });
+        for (const p of picks) used.add(p.pid);
+        created.push({ postId, kind, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource });
+      } catch (err) {
+        console.warn(`social: ${kind} failed:`, err && err.message);
+        skipped.push({ kind, reason: classifyPhotoError(err && err.message, "nbpro") });
+      }
+    }
+
+    await logReorderUsage(db, saDateForUsage(nowMs), {
+      at: nowMs, kind: "generateSocialPosts", by: request.auth.uid,
+      postsCreated: created.length, skipped: skipped.length,
+      estimatedCostUSD: +estCostUSD.toFixed(4), style,
+    });
+
+    return {
+      created, skipped,
+      estCostUSD: +estCostUSD.toFixed(4),
+      candidates: candidates.length,
+      signal: { source: signal.source, coverage: signal.coverage ?? null, windowDays: signal.windowDays ?? null },
+      styleRefs: { sent: library.refs.length, inLibrary: library.total },
+    };
+  }
+);
+
+// The three-a-week slots, as the queue and the publisher understand them:
+// Monday, Wednesday and Saturday at 18:00 SAST. A deliberate twin of nextSlots
+// / assignSlots in src/components/social/socialCore.js — the browser shows the
+// dates and this writes them, and social-select.test.cjs pins the two to the
+// same answers. SAST is UTC+2 with no DST, so the conversion is a constant.
+function socialScheduleSlots(existingPosts, count, fromMs) {
+  const SAST = 2 * 60 * 60 * 1000, DAY = 86400000, DAYS = [1, 3, 6], HOUR = 18;
+  const taken = new Set((existingPosts || [])
+    .map((p) => Number(p && p.scheduledAt)).filter((n) => Number.isFinite(n)));
+  const out = [];
+  // The horizon is derived from how many slots are wanted, not fixed — see
+  // nextSlots in socialCore.js for why a flat 28-day walk silently capped at
+  // twelve and turned the overflow into "post immediately".
+  const wanted = count + taken.size + 4;
+  const horizon = Math.min(366, Math.ceil(wanted / DAYS.length) * 7 + 14);
+  const startDay = Math.floor((fromMs + SAST) / DAY);
+  for (let d = 0; d < horizon && out.length < count; d++) {
+    const midnightUtc = (startDay + d) * DAY - SAST;
+    if (!DAYS.includes(new Date(midnightUtc + SAST).getUTCDay())) continue;
+    const slot = midnightUtc + HOUR * 3600000;
+    if (slot < fromMs || taken.has(slot)) continue;
+    out.push(slot);
+  }
+  return out;
+}
+
+// The usage ledger is keyed by SA calendar date, like every other entry in it.
+const saDateForUsage = (ms) => require("./lib/sa-time.cjs").saDateStringFromMs(ms);

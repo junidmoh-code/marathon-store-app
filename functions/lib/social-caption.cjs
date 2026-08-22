@@ -1,0 +1,229 @@
+// ─── SOCIAL — CAPTIONS AND SCENE PROMPTS ─────────────────────────────────────
+// Two prompt builders and one response reader, all pure. The Cloud Function
+// does the calling; nothing here touches a network or a key.
+//
+// ── CAPTIONS NAME PRODUCTS NORMALLY ──────────────────────────────────────────
+// The brand-stripping rule that governs everything pushed to Shopify does NOT
+// apply here, by explicit owner ruling (2026-08-22): the payment gateway
+// keyword-scans the SHOPIFY CATALOGUE, and a social caption is not the
+// catalogue. A caption forbidden from naming what it is selling is a caption
+// nobody can read.
+//
+// So this module deliberately does not import shopifyTriggers.js, and
+// social-caption.test.cjs asserts that it never starts to. The plausible
+// mistake here is not a missing safeguard — it is a future reader noticing the
+// asymmetry with compliance.mjs and "fixing" it.
+//
+// What it DOES enforce is the things a caption must not be regardless: empty,
+// a wall of hashtags, a model apologising, a markdown code fence, or 4,000
+// characters of enthusiasm.
+"use strict";
+
+const CAPTION_MIN = 12;
+const CAPTION_MAX = 2200;   // Instagram's own limit — the tightest of the three
+// A caption is allowed hashtags; it is not allowed to BE hashtags. Beyond this
+// the model has stopped writing and started stuffing.
+const MAX_HASHTAGS = 8;
+
+// ── THE PHOTO POLICY, AS A PROMPT CLAUSE ─────────────────────────────────────
+// Owner ruling: Junid's own painted backdrop is the default look for ordinary
+// posts; clean white is for ADVERTISING only. That is a decision about what
+// the shop looks like, so it is expressed as a scene instruction rather than
+// left to whoever is composing a call — a caller that forgets to pass a style
+// gets the backdrop, because the backdrop is the default in the function
+// signature below, not a value the caller supplies.
+//
+// The backdrop itself is never described in words. It is CONDITIONED on the
+// Style Kit's real photographs of it, exactly as the house-style product
+// pipeline does — a scene the model is shown beats a scene the model is told
+// about, and the shop's backdrop is a specific painted thing no adjective
+// reaches.
+const SCENE_HOUSE = [
+  "The STYLE REFERENCE images show our real shop's painted backdrop and lighting.",
+  "Recreate that scene precisely: the same backdrop, the same surface, the same lighting",
+  "direction, softness and colour grade. The output must look like it was photographed in",
+  "that spot, on the same day, with the same lighting.",
+].join(" ");
+
+const SCENE_WHITE = [
+  "Photograph the products on a clean, seamless pure-white studio background with soft,",
+  "even, shadowless lighting — an advertising still, not a room.",
+].join(" ");
+
+// Every generated scene carries this, after and above anything else in the
+// prompt. Same rule the product pipeline settled on 2026-08-20: transient dirt
+// may go, actual wear stays. A social post is still a picture of a real item a
+// customer will receive, and a scuff quietly healed by an image model is a
+// customer complaint with our own photograph as the evidence.
+const CONDITION_CLAUSE = [
+  "ABSOLUTE RULE, overriding everything above: keep each product EXACTLY as it is.",
+  "Identical shape, proportions, colourway, materials, patterns, logos and text.",
+  "Dust, smudges and packing creases may be cleaned up. Anything set in by WEAR stays —",
+  "scuffs, scratches, fading, worn soles, frayed stitching are part of the item and must",
+  "survive unchanged. Never repair, restore, re-colour or redesign. Render every wordmark",
+  "crisply and correctly spelled; never invent branding the item does not carry.",
+].join(" ");
+
+const KIND_SCENE = {
+  single:
+    "Photograph ONE product as the hero of the frame — filling most of it, sharply lit, " +
+    "shot slightly above eye level.",
+  flatlay:
+    "Arrange ALL of the supplied products as a flat-lay, shot straight down from above: " +
+    "evenly spaced, none overlapping another's branding, all at the same scale relative to " +
+    "each other, with generous even margins.",
+  outfit:
+    "Arrange ALL of the supplied products as ONE complete outfit laid out together — the " +
+    "way a person would set out what they are wearing tomorrow. Shot straight down from " +
+    "above, pieces touching but not overlapping, every product fully visible.",
+  // new_arrivals generates nothing: it is a carousel of the products' existing
+  // photographs. There is no scene to describe.
+};
+
+/**
+ * The image prompt for one generated post.
+ *
+ * @param kind        "single" | "flatlay" | "outfit"
+ * @param productNames the listing names, in the order the images are attached
+ * @param style       "house" (the painted backdrop — the default for ordinary
+ *                    posts) or "white" (advertising only)
+ * @param styleNotes  free-text notes from the Style Reference Library entries
+ *                    that were sent with this generation. Notes only — the
+ *                    IMAGES are attached separately by the caller and are what
+ *                    actually carries the look.
+ */
+function buildScenePrompt({ kind, productNames = [], style = "house", styleNotes = [] } = {}) {
+  const scene = KIND_SCENE[kind];
+  if (!scene) throw new Error(`buildScenePrompt: no scene for kind "${kind}"`);
+  const parts = [
+    "You are photographing products for our shop's social media.",
+    scene,
+    style === "white" ? SCENE_WHITE : SCENE_HOUSE,
+  ];
+  if (productNames.length) {
+    parts.push(
+      `The attached PRODUCT images are, in order: ${productNames.map((n, i) => `(${i + 1}) ${n}`).join("; ")}. ` +
+      "Every one of them must appear in the output, and no product that is not attached may appear."
+    );
+  }
+  const notes = styleNotes.map((n) => String(n || "").trim()).filter(Boolean);
+  if (notes.length) {
+    // The library's notes are Junid's own words about what he liked. They are
+    // a hint, explicitly subordinate to the reference photographs and to the
+    // condition rule — a note reading "make them look new" must not win.
+    parts.push(`Styling notes from our reference library (guidance only): ${notes.slice(0, 6).join(" · ")}`);
+  }
+  parts.push(CONDITION_CLAUSE);
+  parts.push(
+    "Photorealistic, tack-sharp, correctly exposed — indistinguishable from a real photograph " +
+    "of THESE items. No text, no graphics, no watermark, no logo overlay added to the image."
+  );
+  return parts.join("\n\n");
+}
+
+/**
+ * The caption prompt. Deliberately short and concrete: the model is told who
+ * the shop is, what is in the picture (with real prices), and what a caption
+ * for this shop sounds like.
+ */
+function buildCaptionPrompt({ kind, products = [], link = "", styleNotes = [] } = {}) {
+  const lines = products.map((p) => {
+    const price = Number(p.retailPrice) > 0 ? ` — R${Math.round(Number(p.retailPrice))}` : "";
+    const slot = p.slot ? ` [${p.slot}]` : "";
+    return `· ${p.name}${price}${slot}`;
+  });
+  const kindLine = {
+    single: "This post shows ONE product.",
+    flatlay: "This post is a flat-lay of several products photographed together.",
+    new_arrivals: "This post is a carousel of products that JUST went live on the online store.",
+    outfit: "This post is one complete outfit — the pieces listed below, put together.",
+  }[kind] || "This post shows the products listed below.";
+
+  const notes = styleNotes.map((n) => String(n || "").trim()).filter(Boolean).slice(0, 6);
+
+  return [
+    "You write the Instagram, Facebook and TikTok captions for Marathon Club, a sneaker and " +
+    "streetwear shop in Durban, South Africa. Three physical stores and an online store.",
+    "",
+    kindLine,
+    "",
+    "In the picture:",
+    ...lines,
+    "",
+    notes.length ? `The look we go for, in our own words: ${notes.join(" · ")}` : "",
+    "",
+    "Write ONE caption. Rules:",
+    "· Written for a person, not for a search engine. Two or three short lines.",
+    "· Name the products the way a customer would say them. Brand names are fine and expected.",
+    "· South African English, South African rands, no American slang.",
+    "· Prices only if they make the post better; never invent one that is not listed above.",
+    "· No emoji spam — at most two, and only if they earn their place.",
+    `· At most ${MAX_HASHTAGS} hashtags, on their own final line. No hashtag walls.`,
+    "· Do NOT write the link — it is appended automatically.",
+    "· Do not mention that this was generated, and do not describe the photograph.",
+    "",
+    "Reply with the caption text and nothing else — no preamble, no quotes, no markdown.",
+  ].filter((l) => l !== null).join("\n");
+}
+
+/**
+ * Read a model's caption reply into something postable, or refuse it.
+ * Returns { ok, caption, reason }.
+ *
+ * Refusing is the point. An unusable caption that reaches the queue wastes
+ * Junid's review time on something he has to rewrite anyway, and — because the
+ * image was already paid for — a silent pass-through hides a broken prompt
+ * behind a generation that "worked".
+ */
+function readCaption(raw) {
+  let text = String(raw || "");
+  // Models fence prose surprisingly often when the prompt contains a bulleted
+  // spec. Strip a whole-body fence; leave an inline backtick alone.
+  const fence = text.match(/^\s*```[a-z]*\n([\s\S]*?)\n?```\s*$/i);
+  if (fence) text = fence[1];
+  text = text
+    .replace(/\r\n/g, "\n")
+    .replace(/^["'\s]+|["'\s]+$/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (text.length < CAPTION_MIN) return { ok: false, caption: null, reason: "the model returned an empty or near-empty caption" };
+  if (/^(i'm sorry|i cannot|i can't|as an ai|unfortunately, i)/i.test(text)) {
+    return { ok: false, caption: null, reason: "the model refused instead of writing a caption" };
+  }
+  const hashtags = text.match(/#[\p{L}\p{N}_]+/gu) || [];
+  if (hashtags.length > MAX_HASHTAGS) {
+    // Trim rather than refuse — the caption body is usually fine and the tail
+    // is the only problem. Keep the first MAX_HASHTAGS in the order written.
+    let kept = 0;
+    text = text.replace(/#[\p{L}\p{N}_]+/gu, (m) => (++kept <= MAX_HASHTAGS ? m : "")).replace(/[ \t]{2,}/g, " ").trim();
+  }
+  if (text.length > CAPTION_MAX) {
+    const hard = text.slice(0, CAPTION_MAX - 1);
+    text = `${hard.replace(/\s+\S*$/, "").trimEnd()}…`;
+  }
+  return { ok: true, caption: text, reason: null };
+}
+
+/**
+ * The fallback caption, used when the caption model is unreachable or refuses.
+ *
+ * It exists so that a paid image generation is never thrown away for want of
+ * words — the post lands in the queue as a draft with a plain, honest caption
+ * Junid can rewrite in ten seconds, which is strictly better than losing the
+ * picture. It is deliberately plain: nobody should mistake it for the
+ * generated one, and the record marks it (captionSource: "fallback").
+ */
+function fallbackCaption({ kind, products = [] }) {
+  const names = products.map((p) => p.name).filter(Boolean);
+  if (kind === "new_arrivals") return `Just landed in store and online.\n\n${names.slice(0, 5).join("\n")}`;
+  if (kind === "outfit") return `One fit, head to toe.\n\n${names.join("\n")}`;
+  if (kind === "flatlay") return `A few of our favourites right now.\n\n${names.join("\n")}`;
+  return names[0] ? `${names[0]} — in store and online now.` : "In store and online now.";
+}
+
+module.exports = {
+  CAPTION_MIN, CAPTION_MAX, MAX_HASHTAGS,
+  SCENE_HOUSE, SCENE_WHITE, CONDITION_CLAUSE, KIND_SCENE,
+  buildScenePrompt, buildCaptionPrompt, readCaption, fallbackCaption,
+};
