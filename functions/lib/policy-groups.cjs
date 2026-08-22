@@ -293,13 +293,19 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
 //
 // Returns { sizes, byMember, carriedBy, partial, membersWithoutRun, empty }.
 // `empty` is a STOP for the per-size editor, exactly as it is for a category.
-function sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations }) {
+// `precomputed` is a { categoryKey: run } map a caller has ALREADY derived from
+// the same maps — the census derives one per category a moment before it builds
+// the group entries, and deriving them twice walks /products and every /stock
+// and /stock_targets map a second time. It is an optimisation only: a key that
+// is absent is derived here, so the answer is the same either way.
+function sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations, precomputed }) {
   const members = Array.isArray(memberCategoryKeys) ? [...memberCategoryKeys].sort() : [];
   const byMember = {};
   const carriedBy = {};
   const membersWithoutRun = [];
   for (const key of members) {
-    const run = sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: key, locations });
+    const run = (precomputed && precomputed[key])
+      || sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: key, locations });
     byMember[key] = { sizes: run.sizes, oneSize: run.oneSize, products: run.products, extra: run.extra };
     if (!run.sizes.length) membersWithoutRun.push(key);
     for (const s of run.sizes) (carriedBy[s] || (carriedBy[s] = [])).push(key);

@@ -275,6 +275,9 @@ const CENSUS = {
       entry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
       effectiveEntry: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } },
       policySource: "group", armed: ["hub2"], armedEffective: [], policyLocations: ["hub2"],
+      // The live node, verbatim — what the card sends back as expectedBefore.
+      rawGroup: { label: "Sneakers", armed: false, memberCategoryKeys: ["sneakers", "slides"],
+        policy: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } } },
       sizeRun: ["5_5", "7", "8"], sizeRunPartial: ["5_5", "8"],
       sizeRunCarriedBy: { "5_5": ["sneakers"], 7: ["sneakers", "slides"], 8: ["sneakers"] },
       sizeRunExtra: [], sizeRunEmpty: false, membersWithoutRun: [],
@@ -295,7 +298,7 @@ const CENSUS = {
       armed: ["hub2"], armedEffective: ["hub2"], policySource: "category", groupKey: null,
       carriage: { hub2: { carries: true, products: 94, units: 400 }, "marathon-pe": { carries: true, products: 40, units: 112 },
         trophy: { carries: false, products: 0, units: 0 } },
-      ownRowCells: 188, ownRowProducts: 94, sizeRun: [], sizeRunExtra: ["S", "M"], sizeRunEmpty: true,
+      ownRowCells: 188, ownRowProducts: 94, sizeRun: [], sizeRunExtra: ["S", "M"], extraSizeRowCells: 2, sizeRunEmpty: true,
       imageUrl: null,
     },
     {
@@ -560,6 +563,125 @@ describe("the category detail screen", () => {
       && /only /.test(n.props.title));
     expect(marked.length).toBe(2);          // 5.5 and 8 — sneakers only
     expect(marked[0].props.title).toContain("sneakers");
+  });
+
+  // ── THE SAVE PAYLOAD, PINNED ─────────────────────────────────────────────
+  // The failure class this guards is the one this codebase keeps hitting: a
+  // save that writes a field nobody meant it to. Reading the code is not the
+  // same as pinning it. (Architecture review, PR #404.)
+  it("saves a group through setGroup, carrying armed and the membership untouched", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    // Preview first — Save is gated on it.
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true,
+      hypothetical: true, armModel: { totalRequests: 3, totalUnits: 5, cap: 75, perMember: [] } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const saveBtn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Save policy")[0];
+    expect(saveBtn.props.disabled).toBe(false);
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, action: "setGroup" } }));
+    await act(async () => { saveBtn.props.onClick(); });
+    const payload = callableMock.mock.calls.map((c) => c[0]).filter((p) => p?.action === "setGroup" && !p.dryRun).pop();
+    expect(payload.groupKey).toBe("footwear-all");
+    expect(payload.group.armed).toBe(false);                       // never flipped by a numbers edit
+    expect(payload.group.label).toBe("Sneakers");
+    expect(payload.group.memberCategoryKeys).toEqual(["sneakers", "slides"]);
+    expect(payload.group.policy).toEqual({ perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } });
+    // expectedBefore is the LIVE NODE as the census read it, not a rebuild.
+    expect(payload.expectedBefore).toEqual(CENSUS.groupEntries[0].rawGroup);
+    // …and no categoryKey/policy write went out alongside it.
+    expect(callableMock.mock.calls.some((c) => c[0]?.categoryKey && "policy" in c[0])).toBe(false);
+  });
+
+  it("previews a DISARMED group as hypothetical, and does not present it as what will happen", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true,
+      hypothetical: true, armModel: { totalRequests: 3, totalUnits: 5, cap: 75, perMember: [{ key: "sneakers", requests: 3 }] } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const t = textOf(tree);
+    expect(t).toContain("If this were armed");
+    expect(t).not.toContain("What happens on the next scan");
+  });
+
+  it("does not offer a row list from a GROUP header — the list is keyed by category", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const chips = tree.root.findAll((n) => n.type === "button" && /rows/.test(stringsUnder(n)));
+    // Any "rows" control here belongs to a MEMBER in the list below, never to
+    // the group header itself.
+    for (const chip of chips) expect(stringsUnder(chip)).not.toContain("with their own rows");
+  });
+
+  it("does not crash previewing a group whose numbers have all been cleared", async () => {
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const stop = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Stop stocking here")[0];
+    await act(async () => { stop.props.onClick(); });
+    // The server models nothing for a group with no policy, so armModel comes
+    // back null; the panel must say so rather than read totalRequests off it.
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true,
+      hypothetical: false, armModel: null } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    expect(textOf(tree)).toContain("No numbers left");
+  });
+
+  it("says a disarmed group is OFF, never that it has no policy", async () => {
+    const tree = await renderCard();
+    const t = textOf(tree);
+    expect(t).toContain("off — numbers at 1");
+    await openFirst(tree, "Sneakers");
+    expect(textOf(tree)).toContain("not armed");
+    expect(textOf(tree)).not.toContain("No policy — the engine");
+  });
+
+  it("offers size-by-size on a SCALAR category that has a derived run", async () => {
+    // The editor used to be reachable only where a per-size policy had already
+    // been written by a script.
+    const c = { ...CENSUS, groupEntries: [], categories: [{ ...CENSUS.categories[0],
+      perSize: false, sizeRun: ["S", "M", "L"], sizeRunEmpty: false }] };
+    callableMock.mockImplementationOnce(async () => ({ data: c }));
+    const tree = await renderCard();
+    await openFirst(tree, "Caps & Beanies");
+    const btn = tree.root.findAll((n) => n.type === "button"
+      && stringsUnder(n).trim() === "Set it size by size")[0];
+    expect(btn).toBeTruthy();
+    await act(async () => { btn.props.onClick(); });
+    const labels = tree.root.findAll((n) => n.type === "input")
+      .map((n) => n.props["aria-label"]).filter((l) => /Hub 2 .* Keep$/.test(l || ""));
+    expect(labels).toEqual(["Hub 2 S Keep", "Hub 2 M Keep", "Hub 2 L Keep"]);
+  });
+
+  it("seeds a member opened from the group with the member's OWN sizes, not the union", async () => {
+    const c = JSON.parse(JSON.stringify(CENSUS));
+    // slides carries only 7; the group's policy names 5_5, 7 and 8.
+    c.groupEntries[0].entry = { perSize: true, hub2: { sizes: {
+      "5_5": { target: 2, minQty: 1 }, 7: { target: 2, minQty: 1 }, 8: { target: 2, minQty: 1 } } } };
+    c.categories.push({ key: "slides", label: "Slides", products: 51, units: 128, perSize: true,
+      memberOfGroup: "footwear-all", entry: null,
+      effectiveEntry: c.groupEntries[0].entry,
+      armed: [], armedEffective: ["hub2"], policySource: "group", groupKey: "footwear-all",
+      groupLabel: "Sneakers", carriage: { hub2: { carries: true, products: 51, units: 128 } },
+      ownRowCells: 0, ownRowProducts: 0, sizeRun: ["7"], sizeRunExtra: [], extraSizeRowCells: 0,
+      sizeRunEmpty: false, imageUrl: null });
+    callableMock.mockImplementationOnce(async () => ({ data: c }));
+    const tree = await renderCard();
+    await openFirst(tree, "Sneakers");
+    const member = tree.root.findAll((n) => n.type === "button" && /^Slides/.test(stringsUnder(n)))[0];
+    await act(async () => { member.props.onClick(); });
+    const filled = tree.root.findAll((n) => n.type === "input")
+      .filter((n) => /Hub 2 .* Keep$/.test(n.props["aria-label"] || "") && n.props.value !== "")
+      .map((n) => n.props["aria-label"]);
+    // Only its own size carries the group's number; the union's other sizes are
+    // not seeded, because the server would refuse a write naming them.
+    expect(filled).toEqual(["Hub 2 7 Keep"]);
   });
 
   it("expands a sized category into one row per size, in size order", async () => {

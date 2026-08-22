@@ -273,6 +273,19 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   };
 }
 
+// THE LOCATION SET THE SIZE RUN IS DERIVED OVER — one definition, used by the
+// census (which decides what the editor OFFERS) and by the write path (which
+// decides what it ACCEPTS). They were two different sets: the census walked
+// destinations ∪ armed ∪ sources ∪ central, the write path every key under
+// /locations, including studio, in_transit and base. The enforced run was
+// therefore a strict superset of the offered one, and a size that exists only
+// as in-transit stock was writable but never shown. (Adversarial review, #404.)
+function censusLocationsFor(config) {
+  const destinations = Object.keys(config?.mode || {});
+  const sources = Object.values(config?.routes || {});
+  return [...new Set([...destinations, ...rowLocationsFor(config), ...sources, "central"])];
+}
+
 // The locations that can hold an explicit row worth reading: every configured
 // destination, plus any location the map or a group already arms. Central is a
 // source, not a destination, and has no rows.
@@ -330,7 +343,8 @@ async function modelGroupArming(db, { config, groupKey, group, knownLocations })
 // census uses, so the run the editor offered and the run the server enforces
 // are the same list rather than two derivations that agree today.
 async function deriveSizeRun(db, { config, categoryKey, knownLocations }) {
-  const locs = [...new Set([...rowLocationsFor(config), ...(knownLocations || [])])];
+  void knownLocations;
+  const locs = censusLocationsFor(config);
   const products = await readMapPaged(db, "products");
   const stock = {}, targets = {};
   for (const loc of locs) {
@@ -346,7 +360,8 @@ async function deriveSizeRun(db, { config, categoryKey, knownLocations }) {
 // offers and the same one the write path validates against, so the run on
 // screen and the run enforced are one list rather than two derivations.
 async function deriveSizeRunForGroup(db, { config, memberCategoryKeys, knownLocations }) {
-  const locs = [...new Set([...rowLocationsFor(config), ...(knownLocations || [])])];
+  void knownLocations;
+  const locs = censusLocationsFor(config);
   const products = await readMapPaged(db, "products");
   const stock = {}, targets = {};
   for (const loc of locs) {
@@ -429,7 +444,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // destination, so this changes nothing — but one routes edit away it would
   // have silently zeroed a whole leg's requests. buildPreview already does it.
   const sources = Object.values(config.routes || {});
-  const stockLocs = [...new Set([...destinations, ...armedAnywhere, ...sources, "central"])];
+  const stockLocs = censusLocationsFor(config);
   const rowLocs = [...new Set([...destinations, ...armedAnywhere])];
 
   const products = await readMapPaged(db, "products");
@@ -452,11 +467,16 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     for (const [pid, bySize] of Object.entries(targets[loc] || {})) {
       const key = products[pid]?.categoryKey;
       if (!key) continue;
-      const r = rowsByCategory[key] || (rowsByCategory[key] = { cells: 0, products: new Set(), byLocation: {} });
+      const r = rowsByCategory[key] || (rowsByCategory[key] = { cells: 0, products: new Set(), byLocation: {}, bySize: {} });
       const n = Object.keys(bySize || {}).length;
       r.cells += n;
       r.products.add(pid);
       r.byLocation[loc] = (r.byLocation[loc] || 0) + n;
+      // Kept per SIZE as well, so "N old rows" can be a count of ROWS on the
+      // legacy sizes rather than a count of the sizes themselves. A category
+      // with three legacy sizes holding 188 rows read "3 old rows".
+      // (Fable review, PR #404.)
+      for (const sk of Object.keys(bySize || {})) r.bySize[sk] = (r.bySize[sk] || 0) + 1;
     }
   }
   // A category that exists ONLY as rows — no taxonomy entry, no map entry. Live
@@ -465,6 +485,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   const rowOnlyKeys = Object.keys(rowsByCategory).filter((k) => !keys.includes(k)).sort();
 
   const categories = [];
+  // Kept so the group entries below can reuse them rather than deriving the
+  // same runs a second time from the same maps.
+  const runByCategory = {};
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
     const armed = entry ? Object.keys(entry).filter((k) => k !== "perSize" && isPlainObject(entry[k])) : [];
@@ -487,6 +510,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     // empty run at a category the registry calls sized is a STOP — the card
     // refuses the per-size editor rather than offering a guessed list.
     const run = sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: key, locations: stockLocs });
+    runByCategory[key] = run;
     const rows = rowsByCategory[key];
     categories.push({
       key,
@@ -514,6 +538,11 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
         ? Object.fromEntries(effArmed.map((l) => [l, locationEntryMode(effEntry[l])])) : {},
       sizeRun: run.sizes,
       sizeRunExtra: run.extra,
+      // The ROWS sitting on those legacy sizes. Zero is normal and meaningful:
+      // an extra size can come from a /stock cell with no row at all, and a
+      // chip offering to open rows that do not exist is a chip that opens an
+      // empty list.
+      extraSizeRowCells: run.extra.reduce((n, sk) => n + (rowsByCategory[key]?.bySize?.[sk] || 0), 0),
       sizeRunEmpty: run.empty,
       // Explicit rows, counted for EVERY category rather than only armed ones.
       ownRowCells: rows ? rows.cells : 0,
@@ -546,7 +575,8 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   }
   // ── A GROUP IS ONE ENTRY IN THE SAME LIST ────────────────────────────────
   // Not a section above it. See buildGroupEntries.
-  const groupEntries = buildGroupEntries({ config, taxonomy, categories, products, stock, targets, locations: stockLocs });
+  const groupEntries = buildGroupEntries({ config, taxonomy, categories, products, stock, targets,
+    locations: stockLocs, runByCategory });
   const memberKeys = new Set(groupEntries.flatMap((g) => g.memberCategoryKeys));
   for (const c of categories) if (memberKeys.has(c.key)) c.memberOfGroup = groupEntries.find((g) => g.memberCategoryKeys.includes(c.key)).groupKey;
 
@@ -569,7 +599,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
 // NOTHING HERE ARMS ANYTHING. The entry reports `armed` straight off the group
 // node, and a group seeded disarmed reads as disarmed until somebody arms it
 // deliberately, with a preview, through the write path.
-function buildGroupEntries({ config, taxonomy, categories, products, stock, targets, locations }) {
+function buildGroupEntries({ config, taxonomy, categories, products, stock, targets, locations, runByCategory }) {
   const groups = isPlainObject(config?.policyGroups) ? config.policyGroups : {};
   const cats = isPlainObject(taxonomy?.cats) ? taxonomy.cats : {};
   const byKey = Object.fromEntries(categories.map((c) => [c.key, c]));
@@ -581,7 +611,11 @@ function buildGroupEntries({ config, taxonomy, categories, products, stock, targ
     const armedLocs = entry
       ? Object.keys(entry).filter((k) => k !== "perSize" && locationEntryMode(entry[k]) !== "invalid") : [];
     // The union of the members' runs, every size marked with who carries it.
-    const run = sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations });
+    // `runByCategory` is what the census loop ALREADY derived for every category
+    // a moment ago; without it this walked /products and every /stock and
+    // /stock_targets map a second time, once per member. (Architecture review.)
+    const run = sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKeys, locations,
+      precomputed: runByCategory });
     // Carriage is merged across the members: a location carries the group if it
     // carries ANY member, and its counts are the members' counts added up.
     const carriage = {};
@@ -615,10 +649,18 @@ function buildGroupEntries({ config, taxonomy, categories, products, stock, targ
       label: g.label || groupKey,
       // The group borrows the photo of the member it is named after when there
       // is one, and the first member with a photo otherwise.
-      imageUrl: members.find((m) => m.key === groupKey.replace(/-all$/, ""))?.imageUrl
-        || members.find((m) => m.imageUrl)?.imageUrl || null,
+      // The first member that has a photo. There is no "the member it is named
+      // after" rule: the group key and the member keys are independent strings,
+      // and a heuristic that strips "-all" matched nothing for the live group.
+      imageUrl: members.find((m) => m.imageUrl)?.imageUrl || null,
       memberCategoryKeys, members,
       armedGroup: g.armed === true,
+      // THE LIVE NODE, VERBATIM. The card sends this back as `expectedBefore`,
+      // and a rebuilt {label, memberCategoryKeys, armed, policy} would compare
+      // unequal to a node that simply lacks a key — so every save would fail
+      // with "the group changed while this was open", which is both false and
+      // inescapable. (Adversarial review, #404.)
+      rawGroup: g,
       entry, effectiveEntry: entry, policySource: "group",
       perSize: entry?.perSize === true,
       armed: armedLocs, armedEffective: g.armed === true ? armedLocs : [],
@@ -631,7 +673,13 @@ function buildGroupEntries({ config, taxonomy, categories, products, stock, targ
       sizeRun: run.sizes, sizeRunPartial: run.partial, sizeRunByMember: run.byMember,
       sizeRunCarriedBy: run.carriedBy, sizeRunEmpty: run.empty,
       membersWithoutRun: run.membersWithoutRun,
-      sizeRunExtra: [],
+      // Cells the members hold on sizes outside the offered run — the legacy
+      // rows. Aggregated across members rather than left empty: they are only
+      // reachable through a member now, and a count of 0 on the group entry
+      // said there were none. They are counted here and listed per member; the
+      // chip that OPENS them stays on the member, because the row list is
+      // keyed by categoryKey and a group is not one.
+      sizeRunExtra: [...new Set(members.flatMap((m) => runByCategory?.[m.key]?.extra || []))],
       products: productCount, units: unitCount, carriage,
       ownRowCells, ownRowProducts, overriddenProducts: overridden,
       inTaxonomy: false, active: true, refused: false, rowOnly: false,
@@ -876,6 +924,15 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     const liveGroups = isPlainObject(cfg.policyGroups) ? cfg.policyGroups : {};
     const before = liveGroups[groupKey] ?? null;
     const after = d.group;
+    // CHEAP REFUSALS FIRST. This used to sit after the size-run derivation, so
+    // a group naming a refused category paid for a full catalogue read before
+    // being told no. (Architecture review.)
+    for (const m of (after?.memberCategoryKeys || [])) {
+      if (REFUSED_CATEGORY_KEYS.has(m)) {
+        throw httpsError("invalid-argument", `"${m}" carries no policy by owner decision and cannot be put in a group`);
+      }
+    }
+
     // ── THE SIZES THIS GROUP MAY BE GIVEN A POLICY ON ──────────────────────
     // The union of its members' derived runs. Only read when the edit actually
     // carries a size map, because deriving it costs a catalogue page and a
@@ -900,11 +957,6 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       allowedSizes: groupAllowedSizes,
     });
     if (err) throw httpsError("invalid-argument", err);
-    for (const m of (after?.memberCategoryKeys || [])) {
-      if (REFUSED_CATEGORY_KEYS.has(m)) {
-        throw httpsError("invalid-argument", `"${m}" carries no policy by owner decision and cannot be put in a group`);
-      }
-    }
 
     // ── ARMING IS MODELLED BEFORE IT IS ALLOWED ──────────────────────────────
     // A group that would produce more requests in one scan than the per-scan cap
@@ -1104,7 +1156,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
 module.exports = {
   applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
-  modelGroupArming, rowLocationsFor, deriveSizeRun, deriveSizeRunForGroup, buildGroupEntries,
+  modelGroupArming, rowLocationsFor, censusLocationsFor, deriveSizeRun, deriveSizeRunForGroup, buildGroupEntries,
   HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH,
   MAX_ROW_EDITS_PER_CALL, MAX_ROWS_PER_READ, httpsError, readMapPaged,
 };

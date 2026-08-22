@@ -81,7 +81,7 @@ import { FONT, BG, BORDER, GLASS, RADIUS, GRAY, GREEN, RED, AMBER, BLUE_L, bGree
 import {
   COLUMN_LABELS, FIELD_ORDER, armedLocations, editorRows, draftFromEntry, seedLocation,
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
-  nextScanAt, previewVerdict, lastChange, defaultMinQty,
+  nextScanAt, previewVerdict, previewVerdictParts, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, bySizeRank, sizeLabel,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
@@ -248,6 +248,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
   const [rowsMeta, setRowsMeta] = useState(null); // { total, truncated, limit, loc, locations, byLocation }
   const [rowDraft, setRowDraft] = useState({});
+  const [cameFrom, setCameFrom] = useState("");   // the group a member was opened from
 
   // The timer is held and cleared, rather than fired and forgotten. Two real
   // consequences of the naive version: a second message inside the window
@@ -302,10 +303,31 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     || (census?.categories || []).find((c) => c.key === openKey) || null;
   const destinations = census?.destinations || [];
   const errors = useMemo(() => validateDraft(draft), [draft]);
-  const keyNow = useMemo(() => previewKey(openKey, draft, { perSize: open?.perSize }), [openKey, draft, open]);
-  const proposed = useMemo(() => policyFromDraft(draft, { perSize: open?.perSize }), [draft, open]);
+  // ── perSize IS A PROPERTY OF WHAT IS ON SCREEN, NOT ONLY OF WHAT IS STORED ─
+  // A category given size-by-size numbers for the first time has a per-size
+  // DRAFT and a scalar stored entry; keying `perSize` off the stored entry
+  // alone would write a size map with no perSize:true beside it, which the
+  // engine refuses outright (a per-size map outside per-size mode arms
+  // nothing). (Fable review, PR #404.)
+  const draftIsPerSize = useMemo(() => Object.values(draft || {}).some(isPerSizeRow), [draft]);
+  const perSizeNow = !!open?.perSize || draftIsPerSize;
+  const keyNow = useMemo(() => previewKey(openKey, draft, { perSize: perSizeNow }), [openKey, draft, perSizeNow]);
+  const proposed = useMemo(() => policyFromDraft(draft, { perSize: perSizeNow }), [draft, perSizeNow]);
   const banner = useMemo(() => changedFields(open?.entry || null, proposed), [open, proposed]);
-  const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
+  // ── A LEG THE EDITOR NEVER RENDERED MUST NOT BE SAVED AWAY ────────────────
+  // The save .set()s the whole entry, so anything absent from the draft is
+  // deleted. The card and the census answer "is this leg armed?" with slightly
+  // different tests — the client refuses a size map without perSize:true or a
+  // target of 0, the census accepts any well-formed shape — and /config is
+  // writable by Admin SDK and the console, so such a leg can exist. It would
+  // have been silently deleted by the next save, and the drift check could not
+  // see it: live still matched what was rendered. (Adversarial review, #404.)
+  const unrenderedLegs = useMemo(() => {
+    const named = open?.isGroup ? (open.policyLocations || []) : Object.keys(open?.entry || {}).filter((k) => k !== "perSize");
+    return named.filter((loc) => !(loc in (draft || {})));
+  }, [open, draft]);
+  const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy })
+    && unrenderedLegs.length === 0;
   const scan = nextScanAt(serverNowMs());
   const stamp = lastChange(census?.history);
 
@@ -313,7 +335,12 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   // `categories` (the group hides it), so it is looked up in the full census.
   const openMember = (key) => {
     const c = (census?.categories || []).find((x) => x.key === key);
-    if (c) openCategory(c);
+    if (!c) return;
+    // Remember where this was opened from, so Back returns to the group rather
+    // than to the top of the list. (Fable review, PR #404.)
+    const from = openKey;
+    openCategory(c);
+    setCameFrom(from);
   };
 
   const openCategory = (c) => {
@@ -324,9 +351,27 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     // are the numbers in force. Saving them writes an entry of its own, which
     // takes the category out of the group — said plainly in the detail header
     // rather than discovered afterwards.
-    setDraft(draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations }));
+    //
+    // ── AND THE GROUP'S SIZES ARE NOT NECESSARILY ITS SIZES ──────────────────
+    // The group's run is the UNION of its members', so a member opened from
+    // inside it was seeded with sizes it does not carry — and the server, which
+    // validates a category write against THAT CATEGORY'S run, refused the save
+    // outright ("13 is not one of this category's sizes"). The documented way
+    // out of a group could not be executed at all. The seed is narrowed to the
+    // member's own run here. (Adversarial review, #404.)
+    setDraft(narrowToOwnRun(
+      draftFromEntry({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations }), c));
   };
-  const closeCategory = () => { setOpenKey(""); setDraft({}); setPreview(null); setPanel(""); setRows(null); };
+  const closeCategory = () => {
+    const back = cameFrom;
+    setCameFrom("");
+    setPreview(null); setPanel(""); setRows(null);
+    if (back) {
+      const g = (census?.groupEntries || []).find((x) => x.key === back);
+      if (g) { openCategory(g); return; }
+    }
+    setOpenKey(""); setDraft({});
+  };
 
   const setField = (loc, field, value, sizeKey = null) => {
     setPreview(null);   // belt to the previewKey's braces: any edit invalidates
@@ -416,10 +461,11 @@ function EnginePolicyAuthed({ viewer, onExit }) {
     label: open?.label, memberCategoryKeys: open?.memberCategoryKeys,
     armed: open?.armedGroup === true, ...(policy === null ? {} : { policy }),
   });
-  const groupBefore = () => (open?.isGroup
-    ? { label: open.label, memberCategoryKeys: open.memberCategoryKeys,
-        armed: open.armedGroup === true, ...(open.entry ? { policy: open.entry } : {}) }
-    : null);
+  // THE LIVE NODE AS THE SERVER READ IT, never a rebuild: a reconstructed
+  // {label, memberCategoryKeys, armed, policy} compares unequal to a live node
+  // that lacks a key or carries an extra one, and every save would then fail
+  // the drift check with a message that is false. (Adversarial review, #404.)
+  const groupBefore = () => (open?.isGroup ? (open.rawGroup ?? null) : null);
 
   const runPreview = async () => {
     if (busy || Object.keys(errors).length) return;
@@ -432,7 +478,11 @@ function EnginePolicyAuthed({ viewer, onExit }) {
         // A DISARMED group is modelled as "if this were armed" — the server
         // says so, and the panel repeats it rather than presenting a number
         // about a world that does not exist as though it did.
-        setPreview({ key: forKey, model: null, hypothetical: res.data.hypothetical !== false,
+        // POSITIVELY TRUE. Defaulting to hypothetical meant a client running
+        // ahead of the function (no `hypothetical` in the response) headed an
+        // ARMED group's real preview "If this were armed" — the one label that
+        // must never be wrong. (Adversarial review, #404.)
+        setPreview({ key: forKey, model: null, hypothetical: res.data.hypothetical === true,
           armModel: res.data.armModel, changes: [] });
         return;
       }
@@ -595,7 +645,7 @@ function EnginePolicyAuthed({ viewer, onExit }) {
           <CategoryDetail
             category={open} destinations={destinations} draft={draft} errors={errors}
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
-            scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
+            scan={scan} saveable={saveable} unrenderedLegs={unrenderedLegs} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
             onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
             onSwitchShape={switchShape} onPreview={runPreview} onSave={save} onBack={closeCategory}
             onOpenMember={openMember}
@@ -658,6 +708,25 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   );
 }
 
+// Drop from a draft every size the category itself does not carry. Only ever
+// applied when the numbers came from a GROUP (a category's own entry is already
+// about its own sizes, and narrowing it would silently discard the owner's
+// work). A leg left with no sizes at all falls back to a blank row rather than
+// disappearing, so the location is still visible and still editable.
+function narrowToOwnRun(draft, c) {
+  if (!c || c.isGroup || c.policySource !== "group") return draft;
+  const run = new Set(c.sizeRun || []);
+  if (!run.size) return draft;
+  const out = {};
+  for (const [loc, row] of Object.entries(draft || {})) {
+    if (!isPerSizeRow(row)) { out[loc] = row; continue; }
+    const sizes = {};
+    for (const k of Object.keys(row.sizes)) if (run.has(k)) sizes[k] = row.sizes[k];
+    out[loc] = Object.keys(sizes).length ? { sizes } : seedPerSizeLocation([...run]);
+  }
+  return out;
+}
+
 const rowSeed = (rows, id) => {
   const r = (rows || []).find((x) => `${x.loc}::${x.pid}::${x.sizeKey}` === id) || {};
   return { target: r.target == null ? "" : String(r.target), minQty: r.minQty == null ? "" : String(r.minQty),
@@ -703,17 +772,32 @@ function categoryChips(c) {
   out.push({ tone: "gray", text: c.perSize ? "per size" : "one size" });
   if (!c.isGroup && c.policySource === "group") out.push({ tone: "blue", text: `in ${c.groupLabel || c.groupKey}` });
   if ((c.armedEffective || []).length) out.push({ tone: "green", text: `armed at ${c.armedEffective.length}` });
-  else out.push({ tone: "gray", text: "no policy" });
+  // A DISARMED GROUP HOLDING NUMBERS IS "off", NOT "no policy". It has a full
+  // per-size policy at N locations; it is simply not in the engine's resolution
+  // until somebody arms it, and "no policy" said the opposite of that.
+  // (Fable review, PR #404.)
+  else if (c.isGroup && (c.policyLocations || []).length) {
+    out.push({ tone: "amber", text: `off — numbers at ${c.policyLocations.length}` });
+  } else out.push({ tone: "gray", text: "no policy" });
+  // ── THE ROW CHIPS ARE NOT TAPPABLE ON A GROUP ────────────────────────────
+  // The explicit-row list is keyed by categoryKey, and a group is not one. A
+  // tappable chip here would have called the server with "group:footwear-all"
+  // and rendered an empty list — a control that silently does nothing. The
+  // counts still SHOW (they are the members' rows added up, and the map's
+  // numbers do not reach those products), and each member's own chip opens its
+  // own rows from inside the group. (Architecture review, PR #404.)
   if (c.ownRowCells > 0) {
-    out.push({ tone: "amber", text: `${c.ownRowProducts} with their own rows`, rows: true });
+    out.push({ tone: "amber", text: `${c.ownRowProducts} with their own rows`, rows: !c.isGroup });
   }
   // ── "N OLD ROWS" ─────────────────────────────────────────────────────────
   // Replaces the grey paragraph that used to sit under the location table
   // explaining that a category "also holds cells at S, M, L…". It is a chip
   // that OPENS those rows, in the same list every other row is edited in.
-  if ((c.sizeRunExtra || []).length) {
-    out.push({ tone: "amber", text: `${c.sizeRunExtra.length} old rows`, rows: true,
-      title: `Cells at ${c.sizeRunExtra.map(sizeLabel).join(", ")} — sizes this category does not come in` });
+  // The count is of ROWS, not of sizes, and the chip only appears when there
+  // are rows to open. (Fable review, PR #404.)
+  if ((c.extraSizeRowCells || 0) > 0) {
+    out.push({ tone: "amber", text: `${c.extraSizeRowCells} old rows`, rows: !c.isGroup,
+      title: `Rows at ${(c.sizeRunExtra || []).map(sizeLabel).join(", ")} — sizes this category does not come in` });
   }
   if (c.refused) out.push({ tone: "red", text: "no policy by decision" });
   if (c.rowOnly) out.push({ tone: "gray", text: "not in the taxonomy" });
@@ -749,13 +833,17 @@ function CategoryRow({ category: c, onOpen }) {
 // ═════════════════════════════════════════════════════════════════════════════
 function CategoryDetail({
   category: c, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
-  saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
+  saveable, unrenderedLegs, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
   onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
   const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
-  const headline = armed.length
-    ? armed.map((l) => `${locLabel(l)} ${headlineNumber(c.effectiveEntry?.[l])}`).join(" · ")
+  // The locations to summarise: what the ENGINE acts on, or — for a disarmed
+  // group — the locations its policy holds numbers for. Reporting "No policy"
+  // for a group that holds a full per-size policy was simply untrue.
+  const summarised = armed.length ? armed : (c.isGroup ? (c.policyLocations || []) : []);
+  const headline = summarised.length
+    ? `${summarised.map((l) => `${locLabel(l)} ${headlineNumber(c.effectiveEntry?.[l])}`).join(" · ")}${armed.length ? "" : " — not armed"}`
     : "No policy — the engine's own rules decide";
 
   return (
@@ -834,6 +922,11 @@ function CategoryDetail({
             category={c} errors={errors} onRun={onPreview} />
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: "1rem" }}>
+            {(unrenderedLegs || []).length > 0 && (
+              <div style={{ color: RED, fontSize: ".8rem", width: "100%" }}>
+                {unrenderedLegs.map(locLabel).join(", ")} holds numbers this editor cannot show — saving is blocked so it is not deleted.
+              </div>
+            )}
             <button onClick={onSave} disabled={!saveable}
               style={{ ...bGreen, opacity: saveable ? 1 : .35, cursor: saveable ? "pointer" : "default" }}>
               {busy === "save" ? "Saving…" : "Save policy"}
@@ -889,7 +982,13 @@ function ColumnHeads({ lead = false }) {
 
 function LocationTable({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSwitchShape }) {
   const sizeRun = c.sizeRun || [];
-  const canPerSize = c.perSize && sizeRun.length > 0;
+  // A DERIVED RUN IS THE ONLY CONDITION. It used to also require the stored
+  // policy to already be perSize, so a category that had never been given a
+  // size-by-size policy could never be given one from this screen — the editor
+  // existed and was reachable only where a script had already written the
+  // shape. A one-size category still has no run, and still gets no editor.
+  // (Fable review, PR #404.)
+  const canPerSize = sizeRun.length > 0;
   return (
     <div>
       {rows.map((r) => {
@@ -1044,6 +1143,7 @@ function MemberList({ group, onOpenMember }) {
             style={{ ...bGhost, padding: "6px 10px", fontSize: ".78rem", display: "flex", alignItems: "center", gap: 6 }}>
             <span>{m.label}</span>
             <span style={{ color: "#6b7280" }}>{m.products ?? 0}</span>
+            {m.ownRowCells > 0 && <Chip tone="amber">{m.ownRowCells} rows</Chip>}
             {m.hasOwnPolicy && <Chip tone="green">own numbers</Chip>}
           </button>
         ))}
@@ -1108,6 +1208,22 @@ function PreviewPanel({ preview, keyNow, cap, busy, category, errors, onRun }) {
     );
   }
   const m = preview.model;
+  // A GROUP WITH NO NUMBERS HAS NOTHING TO MODEL. Clearing a group's only leg
+  // and pressing Preview returned armModel: null (the server only models a
+  // policy that exists), and this function then read totalRequests off it and
+  // white-screened the detail view. (Fable review, PR #404.)
+  if (!m) {
+    return (
+      <div style={{ marginTop: "1rem", padding: ".9rem 1rem", borderRadius: RADIUS,
+        background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.35)" }}>
+        <div style={{ fontWeight: 700, fontSize: ".9rem", color: AMBER }}>No numbers left</div>
+        <div style={{ color: "#e5e7eb", fontSize: ".85rem", marginTop: 6 }}>
+          Saving removes this policy — the engine falls back to its own rules.
+        </div>
+        <RunButton />
+      </div>
+    );
+  }
   return (
     <div style={{ marginTop: "1rem", padding: ".9rem 1rem", borderRadius: RADIUS,
       background: "rgba(74,127,255,.06)", border: "1px solid rgba(74,127,255,.3)" }}>
@@ -1118,9 +1234,9 @@ function PreviewPanel({ preview, keyNow, cap, busy, category, errors, onRun }) {
         <Stat label="Below target, unfillable" value={(m.legs || []).reduce((n, l) => n + (l.parked || 0), 0)} of="nothing upstream" />
         <Stat label="On their own rows" value={m.overriddenProducts} of="these numbers do not reach them" warn={m.overriddenProducts > 0} />
       </div>
-      <div style={{ fontSize: ".85rem", lineHeight: 1.55, color: "#e5e7eb" }}>
-        {previewVerdict(m, { cap })}
-      </div>
+      {previewVerdictParts(m, { cap }).map((line, i) => (
+        <div key={i} style={{ fontSize: ".85rem", lineHeight: 1.5, color: "#e5e7eb", marginTop: i ? 4 : 0 }}>{line}</div>
+      ))}
       <div style={{ marginTop: ".7rem", fontSize: ".74rem", color: "#4b5563", lineHeight: 1.5 }}>
         A ceiling — the scan can ask for less, never more.
         {category.ownRowProducts > 0 && ` ${category.ownRowProducts} products have their own rows and are not reached by these numbers.`}

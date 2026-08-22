@@ -508,6 +508,20 @@ export function nextScanAt(nowMs) {
 // server returned. It leads with the number that constrains the outcome, and it
 // never claims certainty the model does not have: the model is a ceiling, so
 // the wording is "at most".
+// The verdict as SEPARATE SHORT LINES — one fact each. The panel renders these
+// as lines rather than joining them, because the standing rule for this screen
+// is that nothing is a paragraph. previewVerdict below joins them for callers
+// (and tests) that want the sentence.
+//
+// The verdict itself is not cut down: it is the one place a number alone IS
+// ambiguous — "12 refills" means something different against a cap of 75 with
+// 40 units at Central than it does with 400 — and it is the last thing read
+// before a save.
+export function previewVerdictParts(model, opts = {}) {
+  const text = previewVerdict(model, opts);
+  return text.split(/(?<=\.)\s+/).filter(Boolean);
+}
+
 export function previewVerdict(model, { cap, centralOnHand } = {}) {
   if (!model) return "Run a preview to see what the next scan would do.";
   const req = model.totalRequests || 0;

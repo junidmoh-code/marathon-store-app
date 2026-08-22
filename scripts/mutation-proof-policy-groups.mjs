@@ -35,6 +35,10 @@
 //                   derived run (any size at all becomes writable)
 //   M-MEMBER-HIDDEN stop marking a member category, so it lists twice — once
 //                   beside its group and once inside it
+//   M-SCALAR        widen a scalar entry beyond the "_" cell, so per-size
+//                   "capability" silently changes an existing scalar policy
+//   M-SCALAR-2      turn a scalar entry's absent Ask at into 0 — a different
+//                   policy at every location it touches
 //   M-CLOTHING      change the clothing default run by one, and watch the
 //                   frozen live snapshot catch it
 //
@@ -244,6 +248,24 @@ const MUTATIONS = [
     from: `  for (const c of categories) if (memberKeys.has(c.key)) c.memberOfGroup = groupEntries.find((g) => g.memberCategoryKeys.includes(c.key)).groupKey;`,
     to: ``,
     nodeTests: WRITE_TESTS,
+  },
+  {
+    id: "M-SCALAR",
+    guard: "A SCALAR policy still speaks for the \"_\" cell ALONE — per-size did not widen it",
+    file: ENGINE,
+    from: `    return encodeSizeKey(size) === "_" ? shaped(entry.target) : null;`,
+    to: `    return shaped(entry.target);`,
+    nodeTests: [...PASS3_TESTS, ...FROZEN_TESTS],
+  },
+  {
+    id: "M-SCALAR-2",
+    guard: "A scalar entry's absent Ask at stays null — not 0, which is a different policy",
+    file: ENGINE,
+    from: `    reorderPoint: typeof reorderPoint === "number" && Number.isFinite(reorderPoint) && reorderPoint >= 0
+      ? reorderPoint : null,`,
+    to: `    reorderPoint: typeof reorderPoint === "number" && Number.isFinite(reorderPoint) && reorderPoint >= 0
+      ? reorderPoint : 0,`,
+    nodeTests: [...PASS3_TESTS, ...FROZEN_TESTS],
   },
   {
     id: "M-CLOTHING",

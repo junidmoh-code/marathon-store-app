@@ -25,7 +25,7 @@ const assert = require("node:assert/strict");
 const { applyCategoryPolicy, invalidateCensusCache } = require("../lib/category-policy-write.cjs");
 const { makeFakeDb, readAt } = require("./helpers/fake-rtdb.cjs");
 
-const OWNER = "gunidmoh@gmail.com";
+const OWNER = "junidmoh@gmail.com";
 const NOW = Date.parse("2026-08-22T09:00:00.000Z");
 
 const GROUP = {
@@ -205,6 +205,30 @@ test("a member's own policy is untouched by any group edit", async () => {
   await call(db, { action: "setGroup", groupKey: "footwear-all", expectedBefore: GROUP,
     group: { ...GROUP, policy: { perSize: true, hub2: { sizes: { 7: { target: 6, minQty: 3 } } } } } });
   assert.deepEqual(readAt(db.state.root, "config/refillEngine/categoryPolicy"), before);
+});
+
+test("the group's old-row count is the rows on legacy sizes, not the number of sizes", async () => {
+  const db = makeFakeDb(world());
+  const res = await call(db, { action: "census" });
+  const sneakers = res.categories.find((c) => c.key === "sneakers");
+  // s1 carries one row at size 8, which IS in the run — so no legacy rows.
+  assert.equal(sneakers.extraSizeRowCells, 0);
+  const tee = res.categories.find((c) => c.key === "t-shirts");
+  assert.equal(typeof tee.extraSizeRowCells, "number");
+});
+
+test("a refused category is refused BEFORE the size run is derived", async () => {
+  const db = makeFakeDb(world());
+  const reads = [];
+  const realRef = db.ref.bind(db);
+  db.ref = (p) => { reads.push(String(p ?? "")); return realRef(p); };
+  await assert.rejects(
+    () => call(db, { action: "setGroup", groupKey: "footwear-all", expectedBefore: GROUP,
+      group: { ...GROUP, memberCategoryKeys: [...GROUP.memberCategoryKeys, "visors"],
+        policy: { perSize: true, hub2: { sizes: { 7: { target: 2, minQty: 1 } } } } } }),
+    /visors/);
+  assert.equal(reads.filter((r) => r.startsWith("products")).length, 0,
+    "the catalogue must not be paged for a group that is refused on its members");
 });
 
 test("NO /stock_targets row is touched by a group write", async () => {
