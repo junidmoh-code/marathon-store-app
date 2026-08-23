@@ -264,6 +264,38 @@ export function photoFailureSuffix(failures) {
 }
 
 /**
+ * Turn a thrown callable error into something worth showing a human.
+ *
+ * This used to append "— is generateProductPhotos deployed?" to anything
+ * carrying `internal`, and on 2026-08-23 that guess sent a real outage down a
+ * day-long false trail: the project's billing account had been closed, and the
+ * one thing that was demonstrably fine was the deploy. `internal` means the
+ * server threw without saying why — it is NOT evidence about deployment, and
+ * this must never claim otherwise.
+ *
+ * `not-found` IS that evidence: the callable genuinely isn't there.
+ */
+export function explainPhotoCallError(err) {
+  const m = String((err && err.message) || err || "").trim();
+  if (!m) return "The photo run failed, and no reason came back.";
+
+  // The server names billing itself now (photoRunFailure). Say it once.
+  if (/billing/i.test(m)) return m;
+
+  if (/not-found/i.test(m)) {
+    return `${m} — generateProductPhotos is not deployed. Deploy functions:generateProductPhotos, then try again.`;
+  }
+
+  if (/internal/i.test(m)) {
+    return `${m} — the server failed before making any image and did not say why. `
+      + `Usual causes: Google Cloud billing is off for the project, or this deployed build is older than the app. `
+      + `The function's logs carry the real reason.`;
+  }
+
+  return m;
+}
+
+/**
  * Read a single-product run's answer.
  *
  * → { ok: true, proposedUrl, engine, costUSD } when an image was made,

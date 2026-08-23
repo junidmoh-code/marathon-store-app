@@ -41,7 +41,7 @@ import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
   toggleFix, fixFits, sanitiseNote, buildGenerateRequest, readGenerateResult,
-  resolveEngine, priceLabelFor, gradeAdmitsWear,
+  resolveEngine, priceLabelFor, gradeAdmitsWear, explainPhotoCallError,
 } from "./aiStudioCore";
 
 const SECTION_LABEL = {
@@ -189,10 +189,7 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
       setCandidate({ proposedUrl: out.proposedUrl, sourceUrl, engine: out.engine, costUSD: out.costUSD });
       setMsg(`Generated${out.engine ? ` on ${out.engine}` : ""} — about $${out.costUSD.toFixed(4)}${out.costLine}. Nothing has changed yet.`);
     } catch (e) {
-      const m = String(e?.message || e);
-      setErr(/internal|not-found/i.test(m)
-        ? `${m} — is generateProductPhotos deployed?`
-        : m);
+      setErr(explainPhotoCallError(e));
     } finally {
       setGenerating(false);
       runningRef.current = false;

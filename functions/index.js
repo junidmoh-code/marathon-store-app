@@ -2527,6 +2527,44 @@ function classifyPhotoError(msg, engName) {
   return (m || "failed").slice(0, 140);
 }
 
+// Turn a failure that killed the WHOLE run into something the app can show a
+// human. Without this the callable answers a bare `internal`, and on 2026-08-23
+// that cost a day: the project's billing account had been closed, every image
+// call died, and the app's own guess — "is generateProductPhotos deployed?" —
+// pointed at the one thing that was healthy. The function was deployed the
+// whole time. Never make the client guess a cause the server already knows.
+//
+// An HttpsError thrown deliberately (assertAdmin, bad arguments) is already a
+// finished message and passes through untouched.
+function photoRunFailure(err) {
+  if (err instanceof HttpsError) return err;
+  const m = String((err && err.message) || err || "");
+
+  // Billing. `billingEnabled: true` on the project does NOT mean the account
+  // behind it is open, which is exactly how this hid for a day.
+  if (/billing (is |account )?(is )?(disabled|closed)|billing account .* (disabled|closed)/i.test(m)) {
+    return new HttpsError(
+      "failed-precondition",
+      "Google Cloud billing is disabled for this project, so no photo can be generated. " +
+      "Check that marathon-club is linked to an OPEN billing account — a closed one still " +
+      "reports billingEnabled: true. Topping up AI credits does not fix this.",
+    );
+  }
+
+  // The API keys live in Secret Manager, which itself needs a live project.
+  if (/secret|SECRET_MANAGER|permission denied on resource project/i.test(m)) {
+    return new HttpsError(
+      "failed-precondition",
+      "The server could not read its API keys from Secret Manager. That usually means the " +
+      "project's billing or the Secret Manager API is off, not that a key is wrong: " + m.slice(0, 200),
+    );
+  }
+
+  // Anything else: still better than `internal` — carry the real text across so
+  // whoever reads the toast has something to search for.
+  return new HttpsError("internal", `The photo run failed before any image was made: ${m.slice(0, 300)}`);
+}
+
 exports.generateProductPhotos = onCall(
   {
     region: "europe-west1",
@@ -2535,192 +2573,204 @@ exports.generateProductPhotos = onCall(
     timeoutSeconds: 540,
   },
   async (request) => {
-    assertAdmin(request);
-    const db = admin.database();
-    const data = request.data || {};
-    // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
-    const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
-    const limit = Math.min(wanted, PHOTO_MAX_BATCH);
-    const quality = ["low", "medium", "high"].includes(data.quality) ? data.quality : PHOTO_DEFAULT_QUALITY;
-    // Per-call engine OVERRIDE (studio "compare" / per-product re-run). When absent,
-    // each product is auto-routed by category (defaultEngineFor): Footwear → Gemini,
-    // everything else → OpenAI.
-    const engineOverride = ["openai", "gemini"].includes(data.engine) ? data.engine : null;
-    // style:"house" = Marathon house-style scene (Style Kit references + Nano
-    // Banana Pro, engine override ignored). Anything else = the classic white-bg
-    // pipeline, byte-for-byte unchanged.
-    const style = data.style === "house" ? "house" : "white";
-    // Optional per-run instruction (the studio "regenerate note" / fix chips) — a
-    // short, sanitised hint appended to the prompt so the engine knows what to fix.
-    const note = typeof data.note === "string"
-      ? data.note.replace(/[^\x20-\x7E\u00A0-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
-      : "";
-
-    // ── SCOPE, WITHOUT READING THE CATALOGUE FOR ONE PRODUCT ─────────────────
-    // A named-ids call (the Studio's Regenerate, and every call from the
-    // Shopify product page) used to read ALL of /products and ALL of
-    // /aiAssistant/photoProposals to re-shoot ONE photo — 4,275 records and
-    // ~3,500 proposal nodes off the wire for a single image. Those two reads
-    // exist for the unattended sweep, which genuinely has to scan to find the
-    // next N products missing a photo; a caller that already knows the id
-    // needs neither. Fetch exactly the named records instead.
-    let products, existing = {};
-    const namedIds = resolveNamedIds(data, PHOTO_MAX_BATCH);
-    if (!needsCatalogueScan(namedIds)) {
-      const snaps = await Promise.all(namedIds.map((id) => db.ref(`products/${id}`).once("value")));
-      products = {};
-      snaps.forEach((s, i) => { const v = s.val(); if (v) products[namedIds[i]] = v; });
-    } else {
-      const [prodSnap, propSnap] = await Promise.all([
-        db.ref("products").once("value"),
-        db.ref(PHOTO_PROPOSALS_PATH).once("value"),
-      ]);
-      products = prodSnap.val() || {};
-      existing = propSnap.val() || {};
+    // Any failure that escapes the whole run — as opposed to one product's
+    // generation, which is caught per-product below — leaves this callable as a
+    // bare `internal` with no detail attached. Map the causes we can recognise
+    // onto a message that names them. See photoRunFailure.
+    try {
+      return await generateProductPhotosRun(request);
+    } catch (err) {
+      throw photoRunFailure(err);
     }
-
-    // ── THE PHOTO TO RE-SHOOT ────────────────────────────────────────────────
-    // Normally the product record's hero. Shopify Publishing needs an override
-    // because its photo set is NOT the record's: the reviewer taps a slot in
-    // the publishing strip and expects that image re-shot, and a custom
-    // publishing set may not contain the hero at all. Single-product calls
-    // only — a source photo means nothing applied across a batch. Untrusted
-    // input, so it is bounded here and fetched through fetchImageBuffer's
-    // existing SSRF guard (https + *.googleapis.com, no redirects) like any
-    // other URL.
-    const sourceUrl = resolveSourceUrl(data, namedIds);
-
-    // Named ids keep the caller's order; the sweep filters, sorts and caps.
-    // Both branches live in lib/photo-scope.cjs and are node-tested.
-    const ids = pickIds({ namedIds, products, existing, sourceUrl, data, limit });
-
-    const OpenAINS = require("openai");
-    const OpenAI = OpenAINS.default || OpenAINS;
-    const openaiClient = new OpenAI({ apiKey: openaiApiKey.value() });
-    // Lazy, cached engines — only the providers actually used get built.
-    const engineCache = {};
-    const getEngine = (name) => (engineCache[name] || (engineCache[name] = makeEngine(name, openaiClient, OpenAINS)));
-
-    // House style: load the Style Kit (locked prompts + enabled refs) once —
-    // the ref buffers are shared across every product in this batch.
-    const styleKit = style === "house" ? await loadStyleKit(db) : null;
-
-    let processed = 0, failed = 0, estCostUSD = 0;
-    const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
-    const sample = [];
-    const failures = [];   // { id, name, reason } — surfaced to the Studio UI (capped)
-
-    let cursor = 0;
-    async function worker() {
-      while (cursor < ids.length) {
-        const id = ids[cursor++];
-        const p = products[id];
-        const isClothing = p.category === "Clothing" || p.productType === "clothing";
-        // House style always runs on Nano Banana Pro; templates key on productType.
-        const template = isClothing ? "clothing" : "sneaker";
-        const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
-        try {
-          // The override when the caller named one, else the record's hero.
-          const srcUrl = sourceUrl || p.photoUrl;
-          const { buffer, contentType } = await fetchImageBuffer(srcUrl);
-          // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
-          const size = isClothing ? "1024x1536" : PHOTO_SIZE;
-          const kit = styleKit ? styleKit[template] : null;
-          // Never write a style:"house" proposal that isn't actually reference-
-          // conditioned: if the template has no enabled refs (or every ref fetch
-          // failed), fail this product loudly instead of burning an NB Pro gen on
-          // an ungrounded result. The Style Kit panel warns when a template is empty.
-          if (kit && !kit.refs.length) {
-            throw new Error(`house style: no usable ${template} Style Kit references`);
-          }
-          // name-aware + optional per-run fix note; house swaps in the template's locked prompt
-          const prompt = buildPhotoPrompt(p.name, note, kit ? kit.prompt : PHOTO_PROMPT);
-          // Sneaker house shots include the product's own box photo when one is
-          // saved (photoBoxUrl). Best-effort: a broken box URL downgrades to the
-          // no-box prompt path instead of failing the product.
-          let box = null;
-          if (kit && template === "sneaker" && p.photoBoxUrl) {
-            try { box = await fetchImageBuffer(p.photoBoxUrl); }
-            catch (err) { console.warn(`generateProductPhotos: ${id} box photo fetch failed:`, err && err.message); }
-          }
-          const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName)
-            .generate(buffer, contentType, { quality, size, prompt, box, refs: kit ? kit.refs : undefined });
-          // White: trim + centre on a uniform white square so the catalogue grid is
-          // consistent. House: keep the generated scene — resize only.
-          const { buffer: outBuf, mime } = kit
-            ? await normalizeHouseStyle(rawBuf, rawMime)
-            : await normalizeForCatalogue(rawBuf, rawMime);
-          const proposedUrl = await uploadProposalImage(id, outBuf, mime);
-          estCostUSD += costUSD;
-          costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
-          // ── A sourceUrl CALL WRITES NO PROPOSAL NODE ─────────────────────
-          // /aiAssistant/photoProposals is keyed by product id and written
-          // with .set() — a whole-node REPLACE. It belongs to the AI Studio
-          // review lane, and a caller that re-shoots one slot of a Shopify
-          // publishing set must not write into it, for two reasons that both
-          // end in real damage:
-          //
-          //   · It would silently destroy an unreviewed AI Studio candidate
-          //     for the same product — already generated, already paid for.
-          //   · Worse, `originalUrl` on that node is what AI Studio's approve
-          //     writes into products/{id}/photoUrlOriginal. A publishing photo
-          //     can itself be a generated image, so approving such a proposal
-          //     in the OTHER surface would overwrite the record's pointer to
-          //     the TRUE original with a generated one — the file survives in
-          //     Storage with nothing left referencing it. "Originals are never
-          //     overwritten" has to hold across both surfaces, not one.
-          //
-          // So the image is returned and nothing is recorded. It stays in
-          // Storage as an immutable object; if the caller discards it, it is
-          // an orphan, which is the honest price of not corrupting a lane that
-          // belongs to somebody else.
-          if (mayRecordProposal(sourceUrl)) {
-            await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
-              // Unchanged, and deliberately so: this branch only runs when NO
-              // sourceUrl was named, so p.photoUrl is what was read. Prefer the
-              // TRUE original — if this product was already approved once,
-              // p.photoUrl is itself a generated image, and photoUrlOriginal is
-              // the record's only pointer back to the real photograph.
-              originalUrl: p.photoUrlOriginal || p.photoUrl,
-              proposedUrl,
-              name: p.name || "",
-              productType: p.productType || null,
-              engine: engName,                 // which engine made THIS proposal
-              costUSD: +costUSD.toFixed(6),     // its per-image cost
-              status: "pending",          // pending | approved | rejected (set by the review UI)
-              at: Date.now(),
-              by: request.auth.uid,
-              // House-style provenance (absent on white runs — their records are unchanged).
-              ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
-            });
-          }
-          processed++;
-          // `sourceUrl` echoes back the image this generation was ACTUALLY made
-          // from. A caller that asked for a specific photo can compare it and
-          // refuse to show a side-by-side against a different one — which is
-          // what a deployed build older than this argument would produce, and
-          // what a rollback would produce again.
-          if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl });
-        } catch (err) {
-          failed++;
-          if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });
-          console.warn(`generateProductPhotos: ${id} (${engName}) failed:`, err && err.message);
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(PHOTO_CONCURRENCY, ids.length || 1) }, worker));
-
-    estCostUSD = +estCostUSD.toFixed(4);
-    const today = new Date().toISOString().slice(0, 10);
-    await logReorderUsage(db, today, {
-      at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
-      imagesGenerated: processed, failed, quality, estimatedCostUSD: estCostUSD,
-      engine: style === "house" ? "nbpro" : (engineOverride || "auto"), style, costByEngine,
-    });
-
-    return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample, failures };
   }
 );
+
+async function generateProductPhotosRun(request) {
+  assertAdmin(request);
+  const db = admin.database();
+  const data = request.data || {};
+  // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
+  const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
+  const limit = Math.min(wanted, PHOTO_MAX_BATCH);
+  const quality = ["low", "medium", "high"].includes(data.quality) ? data.quality : PHOTO_DEFAULT_QUALITY;
+  // Per-call engine OVERRIDE (studio "compare" / per-product re-run). When absent,
+  // each product is auto-routed by category (defaultEngineFor): Footwear → Gemini,
+  // everything else → OpenAI.
+  const engineOverride = ["openai", "gemini"].includes(data.engine) ? data.engine : null;
+  // style:"house" = Marathon house-style scene (Style Kit references + Nano
+  // Banana Pro, engine override ignored). Anything else = the classic white-bg
+  // pipeline, byte-for-byte unchanged.
+  const style = data.style === "house" ? "house" : "white";
+  // Optional per-run instruction (the studio "regenerate note" / fix chips) — a
+  // short, sanitised hint appended to the prompt so the engine knows what to fix.
+  const note = typeof data.note === "string"
+    ? data.note.replace(/[^\x20-\x7E\u00A0-\uFFFF]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+    : "";
+
+  // ── SCOPE, WITHOUT READING THE CATALOGUE FOR ONE PRODUCT ─────────────────
+  // A named-ids call (the Studio's Regenerate, and every call from the
+  // Shopify product page) used to read ALL of /products and ALL of
+  // /aiAssistant/photoProposals to re-shoot ONE photo — 4,275 records and
+  // ~3,500 proposal nodes off the wire for a single image. Those two reads
+  // exist for the unattended sweep, which genuinely has to scan to find the
+  // next N products missing a photo; a caller that already knows the id
+  // needs neither. Fetch exactly the named records instead.
+  let products, existing = {};
+  const namedIds = resolveNamedIds(data, PHOTO_MAX_BATCH);
+  if (!needsCatalogueScan(namedIds)) {
+    const snaps = await Promise.all(namedIds.map((id) => db.ref(`products/${id}`).once("value")));
+    products = {};
+    snaps.forEach((s, i) => { const v = s.val(); if (v) products[namedIds[i]] = v; });
+  } else {
+    const [prodSnap, propSnap] = await Promise.all([
+      db.ref("products").once("value"),
+      db.ref(PHOTO_PROPOSALS_PATH).once("value"),
+    ]);
+    products = prodSnap.val() || {};
+    existing = propSnap.val() || {};
+  }
+
+  // ── THE PHOTO TO RE-SHOOT ────────────────────────────────────────────────
+  // Normally the product record's hero. Shopify Publishing needs an override
+  // because its photo set is NOT the record's: the reviewer taps a slot in
+  // the publishing strip and expects that image re-shot, and a custom
+  // publishing set may not contain the hero at all. Single-product calls
+  // only — a source photo means nothing applied across a batch. Untrusted
+  // input, so it is bounded here and fetched through fetchImageBuffer's
+  // existing SSRF guard (https + *.googleapis.com, no redirects) like any
+  // other URL.
+  const sourceUrl = resolveSourceUrl(data, namedIds);
+
+  // Named ids keep the caller's order; the sweep filters, sorts and caps.
+  // Both branches live in lib/photo-scope.cjs and are node-tested.
+  const ids = pickIds({ namedIds, products, existing, sourceUrl, data, limit });
+
+  const OpenAINS = require("openai");
+  const OpenAI = OpenAINS.default || OpenAINS;
+  const openaiClient = new OpenAI({ apiKey: openaiApiKey.value() });
+  // Lazy, cached engines — only the providers actually used get built.
+  const engineCache = {};
+  const getEngine = (name) => (engineCache[name] || (engineCache[name] = makeEngine(name, openaiClient, OpenAINS)));
+
+  // House style: load the Style Kit (locked prompts + enabled refs) once —
+  // the ref buffers are shared across every product in this batch.
+  const styleKit = style === "house" ? await loadStyleKit(db) : null;
+
+  let processed = 0, failed = 0, estCostUSD = 0;
+  const costByEngine = { openai: 0, gemini: 0, nbpro: 0 };
+  const sample = [];
+  const failures = [];   // { id, name, reason } — surfaced to the Studio UI (capped)
+
+  let cursor = 0;
+  async function worker() {
+    while (cursor < ids.length) {
+      const id = ids[cursor++];
+      const p = products[id];
+      const isClothing = p.category === "Clothing" || p.productType === "clothing";
+      // House style always runs on Nano Banana Pro; templates key on productType.
+      const template = isClothing ? "clothing" : "sneaker";
+      const engName = style === "house" ? "nbpro" : (engineOverride || defaultEngineFor(p));
+      try {
+        // The override when the caller named one, else the record's hero.
+        const srcUrl = sourceUrl || p.photoUrl;
+        const { buffer, contentType } = await fetchImageBuffer(srcUrl);
+        // OpenAI uses a portrait frame for tall garments; Gemini ignores size.
+        const size = isClothing ? "1024x1536" : PHOTO_SIZE;
+        const kit = styleKit ? styleKit[template] : null;
+        // Never write a style:"house" proposal that isn't actually reference-
+        // conditioned: if the template has no enabled refs (or every ref fetch
+        // failed), fail this product loudly instead of burning an NB Pro gen on
+        // an ungrounded result. The Style Kit panel warns when a template is empty.
+        if (kit && !kit.refs.length) {
+          throw new Error(`house style: no usable ${template} Style Kit references`);
+        }
+        // name-aware + optional per-run fix note; house swaps in the template's locked prompt
+        const prompt = buildPhotoPrompt(p.name, note, kit ? kit.prompt : PHOTO_PROMPT);
+        // Sneaker house shots include the product's own box photo when one is
+        // saved (photoBoxUrl). Best-effort: a broken box URL downgrades to the
+        // no-box prompt path instead of failing the product.
+        let box = null;
+        if (kit && template === "sneaker" && p.photoBoxUrl) {
+          try { box = await fetchImageBuffer(p.photoBoxUrl); }
+          catch (err) { console.warn(`generateProductPhotos: ${id} box photo fetch failed:`, err && err.message); }
+        }
+        const { buffer: rawBuf, costUSD, mime: rawMime } = await getEngine(engName)
+          .generate(buffer, contentType, { quality, size, prompt, box, refs: kit ? kit.refs : undefined });
+        // White: trim + centre on a uniform white square so the catalogue grid is
+        // consistent. House: keep the generated scene — resize only.
+        const { buffer: outBuf, mime } = kit
+          ? await normalizeHouseStyle(rawBuf, rawMime)
+          : await normalizeForCatalogue(rawBuf, rawMime);
+        const proposedUrl = await uploadProposalImage(id, outBuf, mime);
+        estCostUSD += costUSD;
+        costByEngine[engName] = +(costByEngine[engName] + costUSD).toFixed(6);
+        // ── A sourceUrl CALL WRITES NO PROPOSAL NODE ─────────────────────
+        // /aiAssistant/photoProposals is keyed by product id and written
+        // with .set() — a whole-node REPLACE. It belongs to the AI Studio
+        // review lane, and a caller that re-shoots one slot of a Shopify
+        // publishing set must not write into it, for two reasons that both
+        // end in real damage:
+        //
+        //   · It would silently destroy an unreviewed AI Studio candidate
+        //     for the same product — already generated, already paid for.
+        //   · Worse, `originalUrl` on that node is what AI Studio's approve
+        //     writes into products/{id}/photoUrlOriginal. A publishing photo
+        //     can itself be a generated image, so approving such a proposal
+        //     in the OTHER surface would overwrite the record's pointer to
+        //     the TRUE original with a generated one — the file survives in
+        //     Storage with nothing left referencing it. "Originals are never
+        //     overwritten" has to hold across both surfaces, not one.
+        //
+        // So the image is returned and nothing is recorded. It stays in
+        // Storage as an immutable object; if the caller discards it, it is
+        // an orphan, which is the honest price of not corrupting a lane that
+        // belongs to somebody else.
+        if (mayRecordProposal(sourceUrl)) {
+          await db.ref(`${PHOTO_PROPOSALS_PATH}/${id}`).set({
+            // Unchanged, and deliberately so: this branch only runs when NO
+            // sourceUrl was named, so p.photoUrl is what was read. Prefer the
+            // TRUE original — if this product was already approved once,
+            // p.photoUrl is itself a generated image, and photoUrlOriginal is
+            // the record's only pointer back to the real photograph.
+            originalUrl: p.photoUrlOriginal || p.photoUrl,
+            proposedUrl,
+            name: p.name || "",
+            productType: p.productType || null,
+            engine: engName,                 // which engine made THIS proposal
+            costUSD: +costUSD.toFixed(6),     // its per-image cost
+            status: "pending",          // pending | approved | rejected (set by the review UI)
+            at: Date.now(),
+            by: request.auth.uid,
+            // House-style provenance (absent on white runs — their records are unchanged).
+            ...(kit ? { style: "house", template, refsUsed: kit.refs.length } : {}),
+          });
+        }
+        processed++;
+        // `sourceUrl` echoes back the image this generation was ACTUALLY made
+        // from. A caller that asked for a specific photo can compare it and
+        // refuse to show a side-by-side against a different one — which is
+        // what a deployed build older than this argument would produce, and
+        // what a rollback would produce again.
+        if (sample.length < 20) sample.push({ id, name: p.name || "", proposedUrl, engine: engName, sourceUrl: srcUrl });
+      } catch (err) {
+        failed++;
+        if (failures.length < 50) failures.push({ id, name: p.name || "", reason: classifyPhotoError(err && err.message, engName) });
+        console.warn(`generateProductPhotos: ${id} (${engName}) failed:`, err && err.message);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(PHOTO_CONCURRENCY, ids.length || 1) }, worker));
+
+  estCostUSD = +estCostUSD.toFixed(4);
+  const today = new Date().toISOString().slice(0, 10);
+  await logReorderUsage(db, today, {
+    at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
+    imagesGenerated: processed, failed, quality, estimatedCostUSD: estCostUSD,
+    engine: style === "house" ? "nbpro" : (engineOverride || "auto"), style, costByEngine,
+  });
+
+  return { processed, failed, total: ids.length, estCostUSD, costByEngine, sample, failures };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Chat proxy (marathon-ai frontend → Anthropic) — Phase 3 backend

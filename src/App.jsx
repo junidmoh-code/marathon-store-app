@@ -59,7 +59,7 @@ import SocialView from "./components/social/SocialView";
 // tool on the Shopify product page so the two can never offer different fixes
 // or send differently-shaped requests (src/components/shopify/aiStudioCore.js).
 import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngineStr,
-         photoFailureSuffix, toggleFix, fixFits } from "./components/shopify/aiStudioCore";
+         explainPhotoCallError, photoFailureSuffix, toggleFix, fixFits } from "./components/shopify/aiStudioCore";
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
@@ -3376,8 +3376,7 @@ function AdminReviewPhotosTab({ products = [] }) {
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}${photoFailureSuffix(d.failures)}.`);
       setSelectedIds(new Set()); setPicking(false);
     } catch (e) {
-      const m = String(e?.message || e);
-      setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
+      setRunMsg(`Couldn't run: ${explainPhotoCallError(e)}`);
     } finally { setRunBusy(false); }
   };
 
@@ -3496,8 +3495,7 @@ function AdminReviewPhotosTab({ products = [] }) {
       const d = res?.data || {};
       setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}${photoFailureSuffix(d.failures)}.`);
     } catch (e) {
-      const m = String(e?.message || e);
-      setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
+      setRunMsg(`Couldn't run: ${explainPhotoCallError(e)}`);
     } finally { setRunBusy(false); }
   };
   // Re-shoot THIS one product. opts from the Regenerate popup: { note, engine }.
@@ -3521,7 +3519,7 @@ function AdminReviewPhotosTab({ products = [] }) {
       }));
       const d = res?.data || {};
       setRunMsg(d.processed ? `Regenerated “${row.name || row.id}” (${quality}, ≈ $${Number(d.estCostUSD || 0).toFixed(4)})${costByEngineStr(d.costByEngine)}.` : `Regenerate failed for “${row.name || row.id}”${photoFailureSuffix(d.failures)}.`);
-    } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${e?.message || e}`); }
+    } catch (e) { setRunMsg(`Regenerate failed for “${row.name || row.id}”: ${explainPhotoCallError(e)}`); }
     finally { setRegenIds(s => { const n = new Set(s); n.delete(row.id); return n; }); }
   };
 

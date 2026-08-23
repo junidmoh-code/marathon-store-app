@@ -6,6 +6,7 @@ import {
   PHOTO_PRESETS, PHOTO_ENGINES, FIX_PRESETS, NOTE_MAX, STYLE_HOUSE, STYLE_WHITE,
   toggleFix, fixFits, sanitiseNote, buildGenerateRequest, readGenerateResult,
   costByEngineStr, photoFailureSuffix, resolveEngine, priceLabelFor, gradeAdmitsWear,
+  explainPhotoCallError,
 } from "./aiStudioCore";
 import { triggersInText } from "../../utils/shopifyTriggers";
 import { CONDITIONS } from "./publishShared";
@@ -361,5 +362,51 @@ describe("gradeAdmitsWear", () => {
     for (const g of ["Light scuffing", "Some marks", "Shows wear"]) {
       expect(gradeAdmitsWear(g), `"${g}" should warn`).toBe(true);
     }
+  });
+});
+
+describe("explainPhotoCallError", () => {
+  // The regression this exists for: on 2026-08-23 a closed Google Cloud billing
+  // account killed every generation, and the app answered "is
+  // generateProductPhotos deployed?" about a function that was deployed and
+  // healthy. `internal` must never be reported as evidence about the deploy.
+  it("does not blame the deploy for an `internal`", () => {
+    const out = explainPhotoCallError(new Error("internal"));
+    expect(out).not.toMatch(/is generateProductPhotos deployed/i);
+    expect(out).toMatch(/did not say why/i);
+    expect(out).toMatch(/billing/i);
+    expect(out).toMatch(/logs/i);
+  });
+
+  it("passes the server's billing message straight through, once", () => {
+    const m = "Google Cloud billing is disabled for this project, so no photo can be generated.";
+    expect(explainPhotoCallError(new Error(m))).toBe(m);
+  });
+
+  it("billing wins over internal when both words appear", () => {
+    const m = "internal: billing is disabled for this project";
+    expect(explainPhotoCallError(new Error(m))).toBe(m);
+    expect(explainPhotoCallError(new Error(m))).not.toMatch(/did not say why/i);
+  });
+
+  it("DOES blame the deploy for not-found, which is real evidence", () => {
+    const out = explainPhotoCallError(new Error("not-found"));
+    expect(out).toMatch(/not deployed/i);
+    expect(out).toMatch(/functions:generateProductPhotos/);
+  });
+
+  it("returns an unrecognised message unchanged", () => {
+    expect(explainPhotoCallError(new Error("permission-denied: Admin only.")))
+      .toBe("permission-denied: Admin only.");
+  });
+
+  it("never returns an empty string", () => {
+    for (const v of [null, undefined, "", new Error("")]) {
+      expect(explainPhotoCallError(v).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("accepts a bare string as well as an Error", () => {
+    expect(explainPhotoCallError("not-found")).toMatch(/not deployed/i);
   });
 });
