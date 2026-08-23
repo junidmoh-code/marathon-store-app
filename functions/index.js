@@ -589,6 +589,45 @@ function assertAdmin(request) {
   }
 }
 
+// ─── PHOTO GENERATION — ITS OWN GATE ─────────────────────────────────────────
+// generateProductPhotos used to sit behind assertAdmin, i.e. the super-admin
+// email and nobody else. That is why "let someone regenerate a photo" had no
+// answer short of making them the owner: there was no smaller grant to give.
+//
+// This gate accepts the super-admin OR an account carrying the named permission
+// `photo_generation`, and NOTHING else about that account matters — not its
+// role, not its stockRole, not any other permission. It is deliberately the
+// narrowest possible grant, because the thing it opens spends money on every
+// call (~$0.067 a white-background image, ~$0.134 a house-style one).
+//
+// WHY THE FLAG AND NOT THE ARRAY: the source of truth for a grant is the
+// `permissions` array, but this reads /users/{uid}/permFlags/photo_generation —
+// the same scalar the RTDB rules read (see permFlagsFor in
+// src/components/permissionCatalog.js). Reading the same field as the rules
+// means a server refusal and a client refusal can never disagree; reading the
+// array here would let the two drift the moment a mirror write failed. Both are
+// written in one update(), so in practice they agree — this just makes the
+// server take its answer from the field that is hardest to fake.
+//
+// FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
+// is unreachable is not a gate.
+async function assertPhotoGeneration(request) {
+  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  let granted = false;
+  try {
+    const snap = await admin.database().ref(`users/${uid}/permFlags/photo_generation`).once("value");
+    granted = snap.val() === true;
+  } catch (err) {
+    console.error("assertPhotoGeneration: permission read failed:", err.message);
+    throw new HttpsError("unavailable", "Could not check permissions. Try again.");
+  }
+  if (!granted) {
+    throw new HttpsError("permission-denied", "Photo generation permission required.");
+  }
+}
+
 exports.getBroadcastGroups = onCall(
   { region: "us-central1", secrets: [broadcastToken] },
   async (request) => {
@@ -2535,7 +2574,8 @@ exports.generateProductPhotos = onCall(
     timeoutSeconds: 540,
   },
   async (request) => {
-    assertAdmin(request);
+    // Its OWN permission, not the blanket admin gate — see assertPhotoGeneration.
+    await assertPhotoGeneration(request);
     const db = admin.database();
     const data = request.data || {};
     // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
@@ -2712,8 +2752,17 @@ exports.generateProductPhotos = onCall(
 
     estCostUSD = +estCostUSD.toFixed(4);
     const today = new Date().toISOString().slice(0, 10);
+    // ── THE SPEND LEDGER ────────────────────────────────────────────────────
+    // Already written for every run; `byEmail` is new. `by` is a Firebase uid,
+    // which is unreadable to a human — a ledger that says
+    // "oBvHU5gjelRbnyFW2KnNLP9Rofy2 spent $4.02" answers nobody's question
+    // without a second lookup. The email is stamped at write time because the
+    // account it names may be renamed or deleted later, and a spend record must
+    // still say who spent it. There is no cap here on purpose (owner decision
+    // 2026-08-23): this is visibility, not a control.
     await logReorderUsage(db, today, {
-      at: Date.now(), kind: "generateProductPhotos", by: request.auth.uid,
+      at: Date.now(), kind: "generateProductPhotos",
+      by: request.auth.uid, byEmail: request.auth.token?.email || null,
       imagesGenerated: processed, failed, quality, estimatedCostUSD: estCostUSD,
       engine: style === "house" ? "nbpro" : (engineOverride || "auto"), style, costByEngine,
     });
@@ -2944,8 +2993,26 @@ const VALID_PERMISSIONS = [
   "product_admin",   "insights",      "broadcast",     "customer_data",
   "stock_management","stock_add",     "barcode",       "user_management",
   "display_checks",  // Display Checks module (clothing) — mirrors permissionCatalog.js
+  // Online & Content — surfaces that used to be gated on stockRole "admin" and
+  // so could only be granted by handing out stock-write over the whole estate.
+  // Both mirror permissionCatalog.js; see permFlagsFor there for why each one
+  // also needs a flag in /users/{uid}/permFlags before a RULE can read it.
+  "shopify_publish",  // Shopify Publishing (writes /shopify_publish)
+  "photo_generation", // generateProductPhotos — SPENDS MONEY per image
   "display_refills", // legacy no-op — kept for back-compat only
 ];
+
+// Server-side twin of permFlagsFor() in src/components/permissionCatalog.js.
+// The two cannot share a module (that one is ESM in the bundle, this is CJS in
+// functions), so the shape is duplicated deliberately and pinned by a test that
+// runs both over the same inputs and requires identical output.
+function permFlagsFor(permissions) {
+  const flags = {};
+  for (const key of Array.isArray(permissions) ? permissions : []) {
+    if (typeof key === "string" && key) flags[key] = true;
+  }
+  return Object.keys(flags).length ? flags : null;
+}
 const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
 // Stock role gates inventory WRITES in the RTDB rules, separate from the app
 // role. createStaffUser accepts an optional stockRole so a Warehouse account is
@@ -3191,6 +3258,12 @@ exports.createStaffUser = onCall(
         displayName: cleanDisplayName,
         role,
         permissions,
+        // The rules-readable mirror, written in the SAME set() as the array it
+        // mirrors. Without it a brand-new account granted shopify_publish would
+        // see the card (the client reads the array) and then be refused by RTDB
+        // on its first write (the rule reads the map) — the worst kind of
+        // permission bug, because it looks granted.
+        permFlags: permFlagsFor(permissions),
         createdAt: admin.database.ServerValue.TIMESTAMP,
       });
     } catch (err) {

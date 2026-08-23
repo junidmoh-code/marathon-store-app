@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
+import AiSpendTab from "./components/AiSpendTab";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
@@ -2864,7 +2865,14 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // mirroring the console write rule on /shopify_publish; the route below
   // re-checks the same gate. The badge is how many products have never been
   // reviewed — a session-cached shallow key read, no node bodies.
-  const shopifyVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+  // `shopify_publish` (User Management → Online & Content) is a way in ON ITS
+  // OWN. stockRole "admin" stays accepted so nobody loses the card today, but it
+  // is no longer the ONLY way to have it: that was the over-grant — a stock
+  // WRITE level that also opens the refill-engine kill switch, /stock_targets,
+  // /locations, /reports and every /config branch. The console rule on
+  // /shopify_publish accepts the same three identities, so the tile, the route
+  // and the database agree.
+  const shopifyVisible = isSuperAdmin || homePerm?.stockRole === "admin" || hasPermission("shopify_publish");
   const shopifyBadge = useShopifyAwaitingCount(products, shopifyVisible);
 
   // Social — the content engine's one screen (queue, style library, generator).
@@ -2932,7 +2940,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
-      isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
+      // AI Studio — super-admin sees every tool; `photo_generation` sees the
+      // Photo Studio and NOTHING else (the view filters its own tool list, and
+      // the description below changes to match so the card never promises a tab
+      // that will not be there). Name Cleanup, Reorder and Style Kit stay
+      // super-admin, so this grant buys exactly one capability.
+      (isSuperAdmin || hasPermission("photo_generation")) && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc: isSuperAdmin ? "Photos · Names · Reorder · Voice" : "Regenerate product photos", onClick:()=>onSelect(ROLES.AI_STUDIO) },
       // ── ENGINE POLICY — GATE 1 OF 3 ──────────────────────────────────────
       // The tile does not render for anyone else. It calls the SAME function
       // the route gate calls (src/config/enginePolicy.js) so the two can never
@@ -5161,6 +5174,14 @@ function SizeQtyGrid({ sizes, values, onChange }) {
 
 // Tool nav icons take currentColor so active/inactive tinting is pure CSS.
 const AI_TOOL_ICON = {
+  // Spend — a banknote. Distinct from every other tool icon here (the repo has a
+  // guard that home tiles keep distinct icons; the same courtesy applies inside
+  // the studio, where four look-alike glyphs would make the rail unreadable).
+  spend: (
+    <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>
+    </svg>
+  ),
   photos: (
     <svg viewBox="0 0 24 24" width="17" height="17" stroke="currentColor" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
@@ -5182,11 +5203,16 @@ const AI_TOOL_ICON = {
     </svg>
   ),
 };
+// `photoPerm: true` = a tool a `photo_generation` holder may also see. Exactly
+// one tool carries it. Everything else is super-admin only, so granting photo
+// generation opens the Photo Studio and nothing beside it — including Spend,
+// which is the owner's own view of the bill and not a staff surface.
 const AI_TOOLS = [
-  { id: "photos",   label: "Photo Studio", desc: "White-bg + house-style shots" },
+  { id: "photos",   label: "Photo Studio", desc: "White-bg + house-style shots", photoPerm: true },
   { id: "stylekit", label: "Style Kit",    desc: "House-style references" },
   { id: "names",    label: "Name Cleanup", desc: "Tidy product names" },
   { id: "reorder",  label: "Reorder",      desc: "Plan + slow movers" },
+  { id: "spend",    label: "Spend",        desc: "What AI is costing, and who spent it" },
 ];
 
 // Matches the sidebar breakpoint: true below `px` wide (tablet and down).
@@ -5245,8 +5271,16 @@ function AiStatCard({ label, value, sub, tint, icon }) {
 }
 
 function AiStudioView({ products, onExit }) {
-  const { user } = usePermissions();
+  const { user, isSuperAdmin } = usePermissions();
   const [tool, setTool] = usePersistedTab("aistudio", "photos");
+  // The tool list this viewer may use. A `photo_generation` holder gets the one
+  // tool their permission buys; the super-admin gets all of them.
+  const tools = useMemo(() => (isSuperAdmin ? AI_TOOLS : AI_TOOLS.filter((t) => t.photoPerm)), [isSuperAdmin]);
+  // usePersistedTab restores whatever was last open — including, for an account
+  // that used to be super-admin or that simply has a stale localStorage entry, a
+  // tool this viewer is no longer allowed. Fall back to the first tool they DO
+  // have rather than rendering a body the gate above already refused.
+  const activeId = tools.some((t) => t.id === tool) ? tool : tools[0].id;
   const narrow = useIsNarrow(980);
 
   // Stat-row data — live, same sources the tools themselves use.
@@ -5283,7 +5317,7 @@ function AiStudioView({ products, onExit }) {
   const badgeOf = (id) => id === "photos" ? pendingPhotos : id === "names" ? pendingNames : 0;
 
   const navItem = (t) => {
-    const on = tool === t.id;
+    const on = activeId === t.id;
     const badge = badgeOf(t.id);
     return (
       <button key={t.id} onClick={() => setTool(t.id)}
@@ -5316,7 +5350,7 @@ function AiStudioView({ products, onExit }) {
         <div style={{ fontSize:22, fontWeight:800, fontStyle:"italic", letterSpacing:-.6, color:"#fff" }}>marathon</div>
         <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF", marginTop:1 }}>CLUB</div>
       </div>
-      {AI_TOOLS.map(navItem)}
+      {tools.map(navItem)}
       <div style={{ flex:1 }}/>
       {switchViewBtn}
       <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, padding:"10px 12px", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12 }}>
@@ -5325,7 +5359,7 @@ function AiStudioView({ products, onExit }) {
         </span>
         <span style={{ minWidth:0 }}>
           <span style={{ display:"block", fontSize:12, fontWeight:700, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{(user?.email || "").split("@")[0]}</span>
-          <span style={{ display:"block", fontSize:10.5, color:"rgba(255,255,255,.4)" }}>Super admin</span>
+          <span style={{ display:"block", fontSize:10.5, color:"rgba(255,255,255,.4)" }}>{isSuperAdmin ? "Super admin" : "Photo generation"}</span>
         </span>
       </div>
     </aside>
@@ -5333,8 +5367,8 @@ function AiStudioView({ products, onExit }) {
 
   const chips = (
     <div style={{ display:"flex", gap:8, flexWrap:"wrap", margin:"16px 0 0" }}>
-      {AI_TOOLS.map(t => {
-        const on = tool === t.id;
+      {tools.map(t => {
+        const on = activeId === t.id;
         const badge = badgeOf(t.id);
         return (
           <button key={t.id} onClick={() => setTool(t.id)}
@@ -5351,12 +5385,16 @@ function AiStudioView({ products, onExit }) {
     </div>
   );
 
-  const activeTool = AI_TOOLS.find(t => t.id === tool) || AI_TOOLS[0];
+  const activeTool = tools.find(t => t.id === activeId) || tools[0];
+  // Dispatch on activeId, never on the raw persisted `tool`: the fallback above
+  // is what keeps a stale tab from mounting a super-admin tool for someone who
+  // only holds photo_generation.
   const toolBody =
-    tool === "names"    ? <AdminReviewNamesTab products={products} /> :
-    tool === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
-    tool === "stylekit" ? <StyleKitPanel /> :
-                          <AdminReviewPhotosTab products={products} />;
+    activeId === "names"    ? <AdminReviewNamesTab products={products} /> :
+    activeId === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
+    activeId === "stylekit" ? <StyleKitPanel /> :
+    activeId === "spend"    ? <AiSpendTab /> :
+                              <AdminReviewPhotosTab products={products} />;
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, display:"flex" }}>
@@ -5369,7 +5407,7 @@ function AiStudioView({ products, onExit }) {
                 <span style={{ color:"#4A7FFF" }}>{RoleIcons.ai_studio}</span>
                 <span style={{ fontSize:25, fontWeight:800, letterSpacing:-.5 }}>AI Studio</span>
               </div>
-              <div style={{ fontSize:13, color:"rgba(255,255,255,.5)", marginTop:4 }}>Every AI tool in one place — super admin only.</div>
+              <div style={{ fontSize:13, color:"rgba(255,255,255,.5)", marginTop:4 }}>{isSuperAdmin ? "Every AI tool in one place — super admin only." : "Regenerate product photos. Every image is logged with its cost."}</div>
             </div>
             {narrow && switchViewBtn}
           </div>
@@ -17192,9 +17230,12 @@ function AppInner() {
   const stockHoldRouteOpen = STOCK_HOLD_ENABLED && !!authUser;
   // Shopify Publishing route — same identities the /shopify_publish console
   // write rule accepts (Junid via super-admin, or a stockRole admin).
-  const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
+  const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin" || hasPermission("shopify_publish");
   // Social route — the same identities the /social_posts console rule accepts.
   const socialRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
+  // AI Studio route — super-admin, or a `photo_generation` holder (who gets the
+  // Photo Studio tool only; AiStudioView decides that, not this gate).
+  const aiStudioRouteOpen = isSuperAdmin || hasPermission("photo_generation");
   const canMint = isSuperAdmin || !!permRecord?.stockRole || hasPermission("barcode");
 
   // hash tracks the URL fragment for the #admin sign-in trigger and any
@@ -17241,7 +17282,7 @@ function AppInner() {
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
     // leaving them on the null view.
-    if (role === ROLES.AI_STUDIO && !isSuperAdmin) { setRole(null); return; }
+    if (role === ROLES.AI_STUDIO && !aiStudioRouteOpen) { setRole(null); return; }
     // Display Checks is gated on the master flag + module access (not a plain
     // permission map) — drop a stale/persisted role that no longer qualifies.
     if (role === ROLES.DISPLAY_CHECKS && !displayChecksRouteOpen) { setRole(null); return; }
@@ -17261,7 +17302,7 @@ function AppInner() {
     if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen, socialRouteOpen, permRecord]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen, socialRouteOpen, aiStudioRouteOpen, permRecord]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -17495,7 +17536,7 @@ function AppInner() {
   // AI Studio is route-guarded on the REAL isSuperAdmin flag (verified email),
   // not a grantable permission string — a non-super-admin who lands here via a
   // persisted role or manual state gets null and drops back to the selector.
-  else if (role === ROLES.AI_STUDIO) view = isSuperAdmin ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.AI_STUDIO) view = aiStudioRouteOpen ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
   // Display Checks — route-guarded on the module gate (master flag + super-admin
   // or store-scoped grant); a viewer who no longer qualifies gets null and the
   // reset effect drops them home. Shell only — reads no data.

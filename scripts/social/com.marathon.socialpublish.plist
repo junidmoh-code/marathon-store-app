@@ -32,6 +32,17 @@
       soon as it wakes. That is the behaviour we want: an approved post goes
       out late rather than being skipped for the week.
 
+  NODE PATH: /opt/homebrew/bin/node, the SAME interpreter the reconciler's
+  agent names. This is an Apple-silicon Mac mini, where Homebrew installs under
+  /opt/homebrew; /usr/local/bin/node — the Intel-era path this file used to
+  name — DOES NOT EXIST on that machine. launchd resolves ProgramArguments[0]
+  itself and does not consult PATH, so the EnvironmentVariables PATH below
+  could not have rescued it: every fire would have died before node started,
+  leaving nothing but a spawn error in social-launchd.err.log while the job
+  still reported itself loaded. The installer rewrites this line to whichever
+  node it actually finds and refuses to install if that binary is missing, so
+  the two can never drift apart again.
+
   INSTALL: see scripts/social/SOCIAL-SETUP.md. Paths below assume the repo is
   checked out at /Users/marathonclub/marathon-store-app — change BOTH the
   ProgramArguments path and WorkingDirectory if it lives elsewhere.
@@ -46,7 +57,7 @@
   <key>Label</key><string>com.marathon.socialpublish</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>/opt/homebrew/bin/node</string>
     <string>/Users/marathonclub/marathon-store-app/scripts/social/publish-runner.mjs</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>

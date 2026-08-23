@@ -41,7 +41,7 @@ import { ref, onValue, update } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
-import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS } from "./permissionCatalog";
+import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS, permFlagsFor } from "./permissionCatalog";
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
@@ -608,7 +608,11 @@ function UserDetailView({ user, onBack }) {
     stockF.setOptimistic(stockRole);
     haptic(12);
     const ok = await writePatch(
-      { role: roleKey, permissions: perms, stockRole: stockRole || null },
+      // permFlags rides in the SAME update() as permissions — see permFlagsFor.
+      // A preset REPLACES the permission set, so the mirror must be replaced
+      // too; update() overwrites a named child wholesale, so the old flags go
+      // with it rather than lingering as a grant nobody can see in the editor.
+      { role: roleKey, permissions: perms, permFlags: permFlagsFor(perms), stockRole: stockRole || null },
       "role",
     );
     if (ok) { flashSaved("permissions"); flashSaved("stockRole"); }   // light every section the preset touched
@@ -622,7 +626,9 @@ function UserDetailView({ user, onBack }) {
     permsF.setOptimistic(next);    // optimistic — instant
     haptic();
 
-    const patch = { permissions: next };
+    // permFlags is written from the SAME `next` array, in the same patch, so the
+    // rules-readable mirror and the array can never disagree about this account.
+    const patch = { permissions: next, permFlags: permFlagsFor(next) };
     // AUTO-LINK: granting a stock permission with no stockRole would open the
     // screen but silently block every write. Set a sensible role so it works.
     let autoStock = null;
