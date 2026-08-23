@@ -85,7 +85,17 @@ if [ ! -f "$SA_JSON" ]; then
 fi
 ok "service-account JSON present at $SA_JSON"
 # The ACCOUNT is printed; the key never is.
-SA_EMAIL=$(/usr/bin/python3 -c "import json,sys;print(json.load(open('$SA_JSON'))['client_email'])" 2>/dev/null || echo "unreadable")
+#
+# A file that exists but cannot be parsed — a truncated download, a wrong file
+# at the right path — is treated as an ERROR, not as "unreadable, carry on".
+# Accepting it would register a schedule that authenticates against nothing and
+# fails every Saturday at 18:00, having reported itself INSTALLED.
+SA_EMAIL=$(/usr/bin/python3 -c "import json;print(json.load(open('$SA_JSON'))['client_email'])" 2>/dev/null || true)
+if [ -z "$SA_EMAIL" ]; then
+  bad "$SA_JSON is not a readable service-account key (no client_email)."
+  bad "REFUSING to install a schedule that cannot authenticate."
+  exit 2
+fi
 echo "     running as: $SA_EMAIL"
 echo "     (this account needs roles/secretmanager.secretAccessor — granted from the laptop)"
 
