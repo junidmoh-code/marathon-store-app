@@ -92,6 +92,16 @@ describe("never empty", () => {
     expect(t.indexOf("closest we have")).toBeLessThan(t.indexOf("search by name"));
   });
 
+  it("a catalogue holding ONLY the loser is said honestly — no heading over a void", async () => {
+    let tr;
+    act(() => {
+      tr = TestRenderer.create(<MergeProducts initialLoser={LOSER} products={[LOSER]} allStock={{}} registry={{}} onClose={() => {}} onMerged={() => {}} />);
+    });
+    await act(async () => { await readerProps.onCode("ZZ9999999", { allCodes: ["ZZ9999999"], auto: false }); });
+    expect(textOf(tr)).toContain("nothing else in this catalogue to offer");
+    expect(cards(tr)).toHaveLength(0);
+  });
+
   it("a code-less reading with no alias match also fills the panel", async () => {
     const tr = mount();
     await act(async () => { await readerProps.onTokens(["TIMBERLAND", "MOTION", "GTX"], { modelName: "TIMBERLAND MOTION 6 MID GTX" }); });

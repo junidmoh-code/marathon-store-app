@@ -180,16 +180,19 @@ describe("the label is a SET — every token, as separate tokens", () => {
 });
 
 describe("the flow is never lost", () => {
-  it("without getUserMedia the tap opens the file input directly — no overlay, no dead end", async () => {
+  it("without getUserMedia the tap CLICKS the file input directly — no overlay, no dead end", async () => {
     setNavigator(undefined);
     expect(cameraStreamAvailable()).toBe(false);
-    const tr = await mount();
-    const fileInput = tr.root.findAll((n) => n.type === "input" && n.props.type === "file")[0];
-    expect(fileInput).toBeTruthy();
-    // react-test-renderer has no DOM: a click on the ref is a no-op, but the
-    // OVERLAY must not open and nothing may throw.
+    const click = vi.fn();
+    let tr;
+    await act(async () => {
+      tr = TestRenderer.create(<TongueLabelReader onCode={vi.fn()} />, {
+        createNodeMock: (el) => (el.type === "input" && el.props.type === "file" ? { click } : null),
+      });
+    });
     await act(async () => { buttonWith(tr, "Photograph the tongue label").props.onClick(); });
     expect(tr.root.findAllByType(LabelCamera)).toHaveLength(0);
+    expect(click).toHaveBeenCalledTimes(1);
   });
 
   it("with a stream API that REJECTS, the overlay offers the single-photo fallback", async () => {

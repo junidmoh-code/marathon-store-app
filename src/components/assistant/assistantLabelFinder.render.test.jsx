@@ -21,6 +21,7 @@ const lookupStyleClaim = vi.fn(async () => null);
 const resolveAnyCodes = vi.fn(async () => ({ resolved: null, owners: [] }));
 const matchLabelAlias = vi.fn(async () => ({ band: "low", candidates: [] }));
 const fetchProductFollowingMerge = vi.fn(async () => null);
+const lookupCodeAlias = vi.fn(async () => null);
 const addLabelAlias = vi.fn();
 const recordLabelCodes = vi.fn();
 vi.mock("../stock/hubCleanupStore", () => ({
@@ -28,6 +29,7 @@ vi.mock("../stock/hubCleanupStore", () => ({
   resolveAnyCodes: (...a) => resolveAnyCodes(...a),
   matchLabelAlias: (...a) => matchLabelAlias(...a),
   fetchProductFollowingMerge: (...a) => fetchProductFollowingMerge(...a),
+  lookupCodeAlias: (...a) => lookupCodeAlias(...a),
   addLabelAlias: (...a) => addLabelAlias(...a),
   recordLabelCodes: (...a) => recordLabelCodes(...a),
 }));
@@ -66,6 +68,7 @@ beforeEach(() => {
   resolveAnyCodes.mockImplementation(async () => ({ resolved: null, owners: [] }));
   matchLabelAlias.mockImplementation(async () => ({ band: "low", candidates: [] }));
   fetchProductFollowingMerge.mockImplementation(async () => null);
+  lookupCodeAlias.mockImplementation(async () => null);
 });
 
 describe("every token, one list, nothing auto-picked", () => {
@@ -101,6 +104,26 @@ describe("every token, one list, nothing auto-picked", () => {
     expect(cardFor(tr, "Timberland Euro Hiker Black")).toBeTruthy();
     expect(cardFor(tr, "Timberland Field Boot")).toBeTruthy();
     expect(cardFor(tr, "Timberland Sprint Trekker")).toBeTruthy();
+  });
+
+  it("a SINGLE-token label still asks the exact code-alias store — an alias-only owner opens (CodeRabbit #334, kept)", async () => {
+    // A Lacoste production line filed as a code alias by an earlier
+    // multi-token read; the frame today reads only that one number.
+    lookupCodeAlias.mockImplementation(async (code) => (code === "A9999" ? "pAliased" : null));
+    const { onFound } = mount();
+    await act(async () => { await readerProps.onCode("A9999", { allCodes: ["A9999"], auto: false }); });
+    expect(lookupCodeAlias).toHaveBeenCalledWith("A9999");
+    expect(onFound).toHaveBeenCalledWith(ALIASED);
+  });
+
+  it("a FAILED single-token alias lookup is SAID — never 'nothing owns it', never a silent open", async () => {
+    lookupCodeAlias.mockImplementation(async () => { throw new Error("index down"); });
+    const { tr, onFound } = mount();
+    await act(async () => { await readerProps.onCode("A8425", { allCodes: ["A8425"], auto: false }); });
+    expect(onFound).not.toHaveBeenCalled();
+    const t = textOf(tr);
+    expect(t).toContain("label-code index couldn't be reached");
+    expect(cardFor(tr, "Timberland Euro Hiker Black")).toBeTruthy();
   });
 
   it("a FAILED sweep is said, and a lone local hit is NOT opened behind it", async () => {
@@ -147,6 +170,25 @@ describe("the panel is NEVER empty", () => {
     expect(onFound).not.toHaveBeenCalled();
     expect(textIn(cardFor(tr, "Timberland Sprint Trekker"))).toContain("found by this label's wording");
     expect(cardFor(tr, "Timberland 6-Inch Wheat")).toBeTruthy();
+  });
+
+  it("an EMPTY catalogue is said honestly — no heading over a void", async () => {
+    const onFound = vi.fn();
+    let tr;
+    act(() => { tr = TestRenderer.create(<AssistantLabelFinder products={[]} onFound={onFound} onClose={() => {}} />); });
+    await act(async () => { await readerProps.onCode("ZZ9999999", { allCodes: ["ZZ9999999"], auto: false }); });
+    expect(textOf(tr)).toContain("nothing else in this catalog to offer");
+    expect(textOf(tr)).not.toContain("closest we have");
+  });
+
+  it("\"show me everything\" opens the whole catalogue beneath the suggestions", async () => {
+    const { tr, onFound } = mount();
+    await act(async () => { await readerProps.onCode("ZZ9999999", { allCodes: ["ZZ9999999"], auto: false }); });
+    const esc = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("show me everything"))[0];
+    expect(esc).toBeTruthy();
+    await act(async () => { esc.props.onClick(); });
+    expect(textOf(tr)).toContain("Everything else");
+    expect(onFound).not.toHaveBeenCalled();
   });
 
   it("a code-less reading with NO alias match still fills the panel", async () => {

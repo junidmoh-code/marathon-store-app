@@ -24,7 +24,7 @@ const MUTATIONS = [
     id: "M1",
     guard: "The primary-code rank table: a flipped rank (numeric over article) must fail",
     file: "src/utils/labelPrimary.js",
-    from: `  "numeric-6-3": 1,`,
+    from: `  "numeric-6-3": 2,`,
     to: `  "numeric-6-3": -1,`,
     tests: ["src/utils/labelPrimary.test.js", ...READER_TESTS],
   },
@@ -32,8 +32,8 @@ const MUTATIONS = [
     id: "M2",
     guard: "Ties keep READING order — a last-wins tie-break must fail",
     file: "src/utils/labelPrimary.js",
-    from: `    if (r < bestRank) { bestRank = r; best = i; }`,
-    to: `    if (r <= bestRank) { bestRank = r; best = i; }`,
+    from: `    if (r < bestRank || (r === bestRank && len > bestLen)) { bestRank = r; bestLen = len; best = i; }`,
+    to: `    if (r < bestRank || (r === bestRank && len >= bestLen)) { bestRank = r; bestLen = len; best = i; }`,
     tests: ["src/utils/labelPrimary.test.js"],
   },
   {
@@ -73,16 +73,16 @@ const MUTATIONS = [
     id: "M7",
     guard: "The merge picker is NEVER EMPTY — zeroing the pad must fail",
     file: "src/components/stock/MergeProducts.jsx",
-    from: `      fillToMin: Math.max(0, MIN_ROWS - exactRows.length),`,
-    to: `      fillToMin: 0,`,
+    from: `    exactRows, products: (products || []).filter(offerable), excludeIds: [loser?.id], ...args,`,
+    to: `    exactRows, products: (products || []).filter(offerable), excludeIds: [loser?.id], ...args, minRows: 0,`,
     tests: ["src/components/stock/mergePickerNeverEmpty.render.test.jsx"],
   },
   {
     id: "M8",
     guard: "The assistant finder is NEVER EMPTY — zeroing the pad must fail",
     file: "src/components/assistant/AssistantLabelFinder.jsx",
-    from: `      fillToMin: Math.max(0, MIN_ROWS - exactRows.length),`,
-    to: `      fillToMin: 0,`,
+    from: `    exactRows, products: (products || []).filter(offerable), ...args,`,
+    to: `    exactRows, products: (products || []).filter(offerable), ...args, minRows: 0,`,
     tests: ["src/components/assistant/assistantLabelFinder.render.test.jsx"],
   },
   {
@@ -95,18 +95,21 @@ const MUTATIONS = [
   },
   {
     id: "M10",
-    guard: "Registration files the label's WORDING beside the codes — dropping it must fail",
+    guard: "Registration files only AGREED wording — filing a single frame's OCR as an alias must fail",
     file: "src/components/stock/HubCleanup.jsx",
-    from: `    setAliasTokens(source === "label" && Array.isArray(tokens) && tokens.length >= 2 ? tokens : null);`,
-    to: `    setAliasTokens(null);`,
+    from: `    setAliasTokens(source === "label" && tokensAgreed && Array.isArray(tokens) && tokens.length >= 2 ? tokens : null);`,
+    to: `    setAliasTokens(source === "label" && Array.isArray(tokens) && tokens.length >= 2 ? tokens : null);`,
     tests: SURFACES,
   },
   {
     id: "M11",
     guard: "The count's link panel renders the SHARED cards — a private list must fail",
     file: "src/components/stock/HubCleanup.jsx",
-    from: `            <CandidateCards suggestions={suggestions} limit={suggestShown} photoSize={110} cta="Link →"`,
-    to: `            <CandidateCards suggestions={suggestions} limit={suggestShown} photoSize={72} cta="Link →"`,
+    from: `            <CandidateCards suggestions={suggestions} limit={suggestShown} photoSize={110} cta="Link →"
+                            disabled={busy} onPick={(p) => onPick(p)} />`,
+    to: `            {suggestions.slice(0, suggestShown).map((s) => (
+              <button key={s.product.id} type="button" disabled={busy} onClick={() => onPick(s.product)}>{s.product.name} Link →</button>
+            ))}`,
     tests: SURFACES,
   },
   {
@@ -124,6 +127,53 @@ const MUTATIONS = [
     from: `                  : \`Read \${formattedChosen} as the style number — every number on this label is saved with it. Wrong? Tap the right one:\`,`,
     to: `                  : \`The label shows more than one code-looking number — tap the style number:\`,`,
     tests: [...READER_TESTS],
+  },
+  {
+    id: "M14",
+    guard: "Inside a rank the LONGER token heads the set — a shortest-wins tie-break must fail",
+    file: "src/utils/labelPrimary.js",
+    from: `    if (r < bestRank || (r === bestRank && len > bestLen)) { bestRank = r; bestLen = len; best = i; }`,
+    to: `    if (r < bestRank || (r === bestRank && len < bestLen)) { bestRank = r; bestLen = len; best = i; }`,
+    tests: ["src/utils/labelPrimary.test.js", "src/utils/multiTokenLabel.test.js"],
+  },
+  {
+    id: "M15",
+    guard: "The finder asks the code-alias store on a single-token label — dropping the lookup must fail",
+    file: "src/components/assistant/AssistantLabelFinder.jsx",
+    from: `          const owner = await lookupCodeAlias(scanNorm);
+          if (owner) serverOwners.push({ productId: owner, code: scanNorm, via: "alias" });`,
+    to: `          const owner = null;`,
+    tests: ["src/components/assistant/assistantLabelFinder.render.test.jsx"],
+  },
+  {
+    id: "M16",
+    guard: "A thrown alias lookup is an index FAILURE, said out loud — swallowing it must fail",
+    file: "src/components/assistant/AssistantLabelFinder.jsx",
+    from: `        } catch { sweepFailed = true; }
+      }
+      const localIds`,
+    to: `        } catch { /* swallowed */ }
+      }
+      const localIds`,
+    tests: ["src/components/assistant/assistantLabelFinder.render.test.jsx"],
+  },
+  {
+    id: "M17",
+    guard: "The override chip carries the SAME meta as the head-of-set call — dropping colorway must fail",
+    file: "src/components/stock/TongueLabelReader.jsx",
+    from: `                      colorway: readNote.colorway || null,
+                      upc: readNote.upc || null,`,
+    to: `                      colorway: null,
+                      upc: null,`,
+    tests: READER_TESTS,
+  },
+  {
+    id: "M18",
+    guard: "No getUserMedia → the file input is CLICKED — a no-op branch must fail",
+    file: "src/components/stock/TongueLabelReader.jsx",
+    from: `                 onClick={() => { if (cameraStreamAvailable()) setCameraOpen(true); else if (fileRef.current) fileRef.current.click(); }}`,
+    to: `                 onClick={() => { if (cameraStreamAvailable()) setCameraOpen(true); }}`,
+    tests: READER_TESTS,
   },
 ];
 
