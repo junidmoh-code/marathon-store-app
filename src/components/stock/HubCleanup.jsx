@@ -1676,27 +1676,14 @@ function LinkPanel({ panel, products, busy, onPick, onNote, onClose }) {
               ? "Is it one of these? Compare the shoe in your hand to the photo."
               : "Nothing matched closely — the closest we have. Compare the photos carefully."}
           </div>
+          {/* THE SHARED PICKER ROW (shared/CandidateCards, 2026-08-23) — the
+              same renderer the choose panel, the intake gate, the merge
+              picker and the assistant finder use. Photo large, name, code,
+              and the reason naming which token found the row. A row is a
+              button; the tap goes to onPick, which owns the filing. */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {suggestions.slice(0, suggestShown).map((s) => (
-              <button key={s.product.id} type="button" disabled={busy} onClick={() => onPick(s.product)}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 12px", textAlign: "left",
-                         cursor: "pointer", background: "rgba(74,127,255,.08)",
-                         border: "1px solid rgba(120,150,255,.35)", borderRadius: 13 }}>
-                <Photo url={s.product.photoUrl} size={72} radius={12} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.product.name}</div>
-                  {s.code && (
-                    <div style={{ fontSize: 11.5, color: GRAY, fontVariantNumeric: "tabular-nums" }}>
-                      {formatStyleCodeForDisplay(s.code)}{s.field === "pending" ? " (pending)" : ""}
-                    </div>
-                  )}
-                  <div style={{ fontSize: 11.5, color: "#AFC6FF", lineHeight: 1.45, marginTop: 3 }}>
-                    {s.reasons.join(" · ")}
-                  </div>
-                </div>
-                <span style={{ fontSize: 12, fontWeight: 800, color: BLUE_L, flexShrink: 0 }}>Link →</span>
-              </button>
-            ))}
+            <CandidateCards suggestions={suggestions} limit={suggestShown} photoSize={110} cta="Link →"
+                            disabled={busy} onPick={(p) => onPick(p)} />
           </div>
           {suggestions.length > suggestShown && (
             <button type="button" onClick={() => setSuggestShown((n) => n + SUGGEST_PAGE)}
@@ -2024,14 +2011,18 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
 
   // The shared tongue-label reader hands back the chosen code — one capture
   // path for BOTH passes (owner reversal 2026-08-06), never a second build.
-  const takeCode = (code, { source, labelPhoto: photo, allCodes: codes = null }) => {
+  const takeCode = (code, { source, labelPhoto: photo, allCodes: codes = null, tokens = null }) => {
     setChosenCode(code);
     setCodeSource(source);
     setLabelPhoto(source === "label" ? photo : null);
     // Every code-shaped token the label printed (multi-token labels) — the
     // save files them ALL as identities of this product (owner spec 2026-08-08).
     setAllCodes(Array.isArray(codes) && codes.length > 1 ? codes : null);
-    setAliasTokens(null);
+    // The label's WORDING (model line and the rest) rides a coded read too
+    // (owner spec 2026-08-23: every token on the label belongs to the shoe a
+    // human just confirmed) — filed as an alias beside the codes, never into
+    // styleCodeNormalised. A typed code carries no wording.
+    setAliasTokens(source === "label" && Array.isArray(tokens) && tokens.length >= 2 ? tokens : null);
     setSkipReason(null);
   };
   // A reading with no printed article number: filed as an ALIAS on save —
@@ -2098,7 +2089,10 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
     ? { skipped: skipReason }
     : chosenCode
       ? { code: chosenCode, source: codeSource || "manual", labelPhoto: codeSource === "label" ? labelPhoto : null,
-          ...(allCodes ? { allCodes } : {}) }
+          ...(allCodes ? { allCodes } : {}),
+          // The wording files as an alias ALONGSIDE the code (registerDisplayUnit
+          // files aliasTokens whenever present, code or no code).
+          ...(aliasTokens ? { aliasTokens } : {}) }
       : aliasTokens
         ? { aliasTokens }
         : null;

@@ -30,6 +30,8 @@ import {
 import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 import CameraScanner from "./CameraScanner.jsx";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
+import CandidateCards from "../shared/CandidateCards.jsx";
+import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 
 const mergeProductsFn = httpsCallable(functions, "mergeProducts");
 
@@ -90,6 +92,11 @@ export default function MergeProducts({
   // The label read's pooled candidates: { rows: [{ product, codes, via }],
   // tokens, unloadedIds, sweepFailed }. Never auto-applied.
   const [suggest, setSuggest] = useState(null);
+  // "It's not one of these — show me everything": the whole offerable
+  // catalogue, paged, beneath the same heading. The honest exit when the
+  // photos on screen are not the shoe in hand.
+  const [showAll, setShowAll] = useState(false);
+  const [allLimit, setAllLimit] = useState(40);
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -117,9 +124,32 @@ export default function MergeProducts({
   // of them owns lands in the SAME list with the number that found it. This is
   // the count flow's gather (hubCleanupCore.mergeTokenCandidates), called with
   // this screen's catalogue.
+  // The rows CandidateCards renders — the shared admin picker row: PHOTO
+  // first, name, the code, and a reason naming WHICH token found it. Exact
+  // owners (the index / alias store / a stamped product) lead; beneath them
+  // the ranked suggestions, padded with the closest catalogue rows so THE
+  // PANEL IS NEVER EMPTY (owner spec 2026-08-23) — a filler is labelled as
+  // one and never outranks a real match.
+  const MIN_ROWS = 8;
+  const exactRow = (product, codes, reason) => ({
+    product, code: codes && codes.length ? codes[0] : null, field: "confirmed", tier: "exact", score: 105,
+    reasons: [reason],
+  });
+  const padWithSuggestions = (exactRows, { kind, normalised, allCodes, modelName, tokens, aliasCandidates }) => {
+    const pool = (products || []).filter(offerable);
+    const excludeIds = [loser?.id, ...exactRows.map((r) => r.product.id)].filter(Boolean);
+    const ranked = buildLinkSuggestions({
+      kind, normalised, allCodes, modelName, tokens, aliasCandidates,
+      excludeIds, products: pool, includeExact: false,
+      fillToMin: Math.max(0, MIN_ROWS - exactRows.length),
+    });
+    return exactRows.concat(ranked);
+  };
+
   const handleLabelCode = async (display, meta = null) => {
     setError("");
     setSuggest(null);
+    setShowAll(false);
     setReading(true);
     try {
       const tokens = labelTokenSet(display, meta && meta.allCodes);
@@ -143,16 +173,15 @@ export default function MergeProducts({
       const resolved = {};
       wanted.forEach((id, i) => { if (fetched[i]) resolved[id] = fetched[i]; });
       const merged = mergeTokenCandidates({ tokens, products, claims, serverOwners, resolved });
-      const rows = merged.candidates
+      const exact = merged.candidates
         .filter((c) => offerable(c.product))
-        .map((c) => ({ product: c.product, codes: c.codes, via: viaLabel(c.codes) }));
-      const shown = tokens.map((t) => formatStyleCodeForDisplay(t) || t).join(" · ");
-      if (!rows.length) {
-        setSuggest({ rows: [], tokens, unloadedIds: merged.unloadedIds, sweepFailed: tokens.length > 1 && !sweep,
-                     note: `Nothing this screen can offer answers to ${shown} — search by name below.` });
-        return;
-      }
-      setSuggest({ rows, tokens, unloadedIds: merged.unloadedIds, sweepFailed: tokens.length > 1 && !sweep, note: "" });
+        .map((c) => exactRow(c.product, c.codes, `found by ${viaLabel(c.codes)}`));
+      const rows = padWithSuggestions(exact, {
+        kind: "code", normalised: tokens[0], allCodes: tokens,
+        modelName: (meta && meta.modelName) || null, tokens: (meta && meta.tokens) || null,
+      });
+      setSuggest({ rows, exactCount: exact.length, tokens, unloadedIds: merged.unloadedIds,
+                   sweepFailed: tokens.length > 1 && !sweep });
     } catch (err) {
       setError(String(err?.message || err));
     } finally { setReading(false); }
@@ -160,25 +189,28 @@ export default function MergeProducts({
 
   // A read that yielded no code at all still carries the label's WORDING —
   // the alias store answers it, and its candidates pool into the same list.
-  const handleLabelTokens = async (tokens) => {
+  const handleLabelTokens = async (tokens, meta = null) => {
     setError("");
     setSuggest(null);
+    setShowAll(false);
     setReading(true);
     try {
       const match = await matchLabelAlias(tokens).catch(() => null);
       const cands = (match && Array.isArray(match.candidates)) ? match.candidates : [];
-      const rows = [];
+      const exact = [];
       for (const c of cands) {
         const id = c && c.productId;
         if (!id) continue;
         let p = (products || []).find((x) => x && x.id === id) || null;
         if (!p) p = await fetchProductFollowingMerge(id).catch(() => null);
-        if (offerable(p) && !rows.some((r) => r.product.id === p.id)) {
-          rows.push({ product: p, codes: [], via: "this label's wording" });
+        if (offerable(p) && !exact.some((r) => r.product.id === p.id)) {
+          exact.push(exactRow(p, [], "found by this label's wording"));
         }
       }
-      setSuggest({ rows, tokens: [], unloadedIds: [], sweepFailed: false,
-                   note: rows.length ? "" : "That label's wording doesn't match a product — search by name below." });
+      const rows = padWithSuggestions(exact, {
+        kind: "tokens", tokens, modelName: (meta && meta.modelName) || null, aliasCandidates: cands,
+      });
+      setSuggest({ rows, exactCount: exact.length, tokens: [], unloadedIds: [], sweepFailed: false });
     } catch (err) {
       setError(String(err?.message || err));
     } finally { setReading(false); }
@@ -259,14 +291,13 @@ export default function MergeProducts({
                 taps the shoe they recognise. */}
             {suggest && (
               <div style={{ marginTop: 14 }}>
-                {suggest.rows.length > 0 && (
-                  <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 8 }}>
-                    {suggest.rows.length === 1
-                      ? "This label found one product — tap it if it's the shoe in your hand."
-                      : `This label's numbers found ${suggest.rows.length} products — tap the right one.`}
-                  </div>
-                )}
-                {suggest.note && <div style={{ fontSize: 13, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>{suggest.note}</div>}
+                <div style={{ fontSize: 12.5, color: suggest.exactCount ? GRAY : AMBER, marginBottom: 8, lineHeight: 1.5 }}>
+                  {suggest.exactCount === 1
+                    ? "This label found one product — tap it if it's the shoe in your hand. The rows beneath are the closest others."
+                    : suggest.exactCount > 1
+                      ? `This label's numbers found ${suggest.exactCount} products — tap the right one. The rows beneath are the closest others.`
+                      : "Nothing matched this label closely — these are the closest we have. Tap the photo that is the shoe in your hand, or search by name below."}
+                </div>
                 {suggest.sweepFailed && (
                   <div style={{ fontSize: 12, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>
                     The label-code index couldn't be reached, so this label's other numbers weren't fully checked.
@@ -278,19 +309,39 @@ export default function MergeProducts({
                     {suggest.unloadedIds.length === 1 ? "s" : ""} to this label but couldn't be loaded — reload before trusting this list.
                   </div>
                 )}
+                {/* THE SHARED PICKER ROW — the same component the count and
+                    the intake gate render. Photo large, name, the matching
+                    number, and the reason naming which token found it. A row
+                    is a button; nothing here auto-picks. */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {suggest.rows.map((r) => (
-                    <button key={r.product.id} type="button" onClick={() => { setSurvivor(r.product); setError(""); }}
-                      style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 12px", textAlign: "left", cursor: "pointer",
-                               background: CARD, border: "1px solid rgba(74,127,255,.35)", borderRadius: 14 }}>
-                      <Photo url={r.product.photoUrl} size={72} />
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.3 }}>{r.product.name}</div>
-                        <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3 }}>found by {r.via}</div>
-                      </div>
-                    </button>
-                  ))}
+                  <CandidateCards suggestions={suggest.rows} limit={suggest.rows.length} photoSize={110} cta="TAP"
+                                  disabled={busy} onPick={(p) => { setSurvivor(p); setError(""); }} />
                 </div>
+                {!showAll && (
+                  <button type="button" onClick={() => setShowAll(true)}
+                    style={{ ...bGhost, width: "100%", minHeight: 48, marginTop: 10, fontSize: 13.5 }}>
+                    It's not one of these — show me everything
+                  </button>
+                )}
+                {showAll && (() => {
+                  const pool = (products || []).filter(offerable);
+                  const shownIds = new Set(suggest.rows.map((r) => r.product.id));
+                  const rest = pool.filter((p) => !shownIds.has(p.id))
+                    .map((p) => ({ product: p, code: p.styleCodeNormalised || null, field: null, reasons: ["everything else in the catalogue"] }));
+                  return (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12.5, color: GRAY, marginBottom: 8 }}>Everything else — {rest.length} product{rest.length === 1 ? "" : "s"}. Narrow it with the name search below.</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <CandidateCards suggestions={rest} limit={allLimit} photoSize={72} cta="TAP"
+                                        disabled={busy} onPick={(p) => { setSurvivor(p); setError(""); }} />
+                      </div>
+                      {rest.length > allLimit && (
+                        <button type="button" onClick={() => setAllLimit((n) => n + 40)}
+                          style={{ ...bGhost, width: "100%", minHeight: 44, marginTop: 8, fontSize: 13 }}>Show more</button>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 

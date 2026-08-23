@@ -160,12 +160,16 @@ describe("chooseFromLabelRead — the server pick resolves without erasing", () 
     expect(out.allCandidates).toEqual(["A6CWNEN3", "A8425"]);
   });
 
-  it("a preferred that names none of the candidates fails closed to asking", () => {
+  it("a preferred that names none of the candidates is ignored — the RULE heads the set, nobody is asked", () => {
     const out = chooseFromLabelRead({
       candidates: ["A6CWNEN3", "A8425"], displayCandidates: ["A6CWNEN3", "A8425"],
       preferred: "ZZ9999999",
     });
-    expect(out.kind).toBe("options");
+    expect(out.kind).toBe("chosen");
+    expect(out.autoSource).toBe("rule");
+    // Timberland: A8425 (adidas-block shape, rank 0) heads A6CWNEN3 (label-serial, rank 2).
+    expect(out.code).toBe("A8425");
+    expect(out.allCandidates).toEqual(["A6CWNEN3", "A8425"]);
   });
 
   it("EXISTING contracts unchanged: one candidate chooses, zero candidates fall to tokens", () => {

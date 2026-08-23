@@ -58,9 +58,11 @@ describe("alias-lookup failure handling (CodeRabbit PR #334)", () => {
     expect(src).toMatch(/try \{\s*\n\s*aliasOwner = await lookupCodeAlias\(normalised\);\s*\n\s*\} catch \(err\) \{/);
     expect(branch).toMatch(/return;/);
   });
-  it("assistant finder: a FAILED codeLookup says so — never \"nothing owns it\"", () => {
-    const app = readFileSync(join(here, "..", "..", "App.jsx"), "utf8");
-    expect(app).toMatch(/aliasOwner = await lookupCodeAlias\(normaliseStyleCode\(display\)\);\s*\n\s*\} catch \{/);
-    expect(app).toMatch(/Couldn't check \$\{display\} against the label-code index/);
+  it("assistant finder: a FAILED any-token sweep says so — never \"nothing owns it\"", () => {
+    const finder = readFileSync(join(here, "..", "assistant", "AssistantLabelFinder.jsx"), "utf8");
+    expect(finder).toMatch(/try \{ sweep = await resolveAnyCodes\(tokens\); \} catch \{ sweepFailed = true; \}/);
+    expect(finder).toMatch(/The label-code index couldn't be reached, so this label's other numbers weren't fully checked/);
+    // …and a lone candidate is NOT opened when the sweep failed — the list shows instead.
+    expect(finder).toMatch(/exact\.length === 1 && !merged\.unloadedIds\.length && !sweepFailed/);
   });
 });

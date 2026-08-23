@@ -379,7 +379,7 @@ describe("\"it's not one of these\" — the escape, and every fallback behind it
     const timberRow = rowFor(tr, "Timberland 6-Inch Wheat");
     expect(textIn(timberRow)).toContain("already registered with exactly this code");
     // Strongest evidence sorts first (exact scores above every other tier).
-    const rankedNames = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("Link →"))
+    const rankedNames = tr.root.findAll((n) => (n.type === "button" || n.props?.role === "button") && textIn(n).includes("Link →"))
       .map((n) => textIn(n));
     expect(rankedNames[0]).toContain("Timberland 6-Inch Wheat");
   });

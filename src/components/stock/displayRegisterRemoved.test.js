@@ -136,13 +136,17 @@ describe("the merge redirect wiring holds (review round pins)", () => {
 
   it("fix-4 pins: the assistant finder is wired, explicit about the tongue label, informative on a miss", () => {
     const app = readFileSync(join(SRC, "App.jsx"), "utf8");
-    expect(app).toMatch(/function AssistantLabelFinder/);
+    // The finder moved into its own module (2026-08-23) so it renders in a
+    // test like every other label surface; App.jsx mounts it.
+    expect(app).toMatch(/import AssistantLabelFinder from "\.\/components\/assistant\/AssistantLabelFinder"/);
     expect((app.match(/setLabelFinderOpen\(true\)/g) || []).length).toBe(2);   // mobile + desktop buttons
-    expect(app).toMatch(/Find by the tongue label/);
-    expect(app).toMatch(/Not the shop barcode sticker, not the box/);
-    // A clean read with no registered owner says EXACTLY that — never generic:
-    expect(app).toMatch(/isn't registered to any product — search by name instead/);
-    expect(app).toMatch(/no registered product carries it — search by name instead/);
+    const finder = readFileSync(join(SRC, "components/assistant/AssistantLabelFinder.jsx"), "utf8");
+    expect(finder).toMatch(/export default function AssistantLabelFinder/);
+    expect(finder).toMatch(/Find by the tongue label/);
+    expect(finder).toMatch(/Not the shop barcode sticker, not the box/);
+    // A clean read with no registered owner is NEVER a dead end (owner spec
+    // 2026-08-23: the panel is never empty) — the closest rows, honestly headed:
+    expect(finder).toMatch(/nothing matched closely, but these are the closest we have/);
   });
 
   it("fix-3 pins: zero-seeds ride the save through setCellState; the run resets per category", () => {
@@ -171,7 +175,8 @@ describe("the merge redirect wiring holds (review round pins)", () => {
     // back records from the CURRENT catalog:
     expect(app).toMatch(/if \(!seed \|\| !seed\.ok\) failedSeeds\.push\(zSize\);/);
     expect(app).toMatch(/could not be created/);
-    expect(app).toMatch(/return products\.find\(\(x\) => x && x\.id === fetched\.id\) \|\| null;/);
+    const finderSrc = readFileSync(join(SRC, "components/assistant/AssistantLabelFinder.jsx"), "utf8");
+    expect(finderSrc).toMatch(/return \(products \|\| \[\]\)\.find\(\(x\) => x && x\.id === fetched\.id\) \|\| null;/);
     const reader = readFileSync(join(SRC, "components/stock/TongueLabelReader.jsx"), "utf8");
     // Manual entry can never race a burst still reading:
     expect(reader).toMatch(/if \(reading \|\| busy\) return;/);

@@ -120,9 +120,14 @@ describe("the style-number step", () => {
   it("a tongue-label read: one clean candidate is chosen, several become options, none says why", () => {
     expect(chooseFromLabelRead({ candidates: ["CT8527016"], displayCandidates: ["CT8527-016"] }))
       .toEqual({ kind: "chosen", code: "CT8527-016", allCandidates: ["CT8527016"] });
+    // Several candidates and NO server pick: the reader no longer asks (owner
+    // spec 2026-08-23) — the deterministic rule heads the set, every token rides.
     const many = chooseFromLabelRead({ candidates: ["CT8527016", "DD1391100"], displayCandidates: ["CT8527-016", "DD1391-100"] });
-    expect(many.kind).toBe("options");
-    expect(many.options).toEqual(["CT8527-016", "DD1391-100"]);
+    expect(many.kind).toBe("chosen");
+    expect(many.auto).toBe(true);
+    expect(many.autoSource).toBe("rule");
+    expect(many.code).toBe("CT8527-016");
+    expect(many.allCandidates).toEqual(["CT8527016", "DD1391100"]);
     // The failure copy says what to DO, not just that it failed:
     expect(chooseFromLabelRead({ candidates: [], errors: [{ tier: "vision", message: "x" }] }).message).toMatch(/Type the style number/);
     expect(chooseFromLabelRead({ candidates: [] }).message).toMatch(/no readable style number/);
@@ -150,12 +155,16 @@ describe("the style-number step", () => {
     expect(out.auto).toBe(true);
     // ALL tokens ride along so the caller files every one as an identity.
     expect(out.allCandidates).toEqual(["190935505", "74075035"]);
-    // Fail closed: an autoPick that is NOT one of this read's candidates asks.
+    // Fail closed: an autoPick that is NOT one of this read's candidates is
+    // IGNORED — the rule decides instead, and it never says "layout".
     const stale = chooseFromLabelRead({ ...read, autoPick: "CT8527016" });
-    expect(stale.kind).toBe("options");
-    expect(stale.candidates).toEqual(["190935505", "74075035"]);
-    // No rule → the manual tap fallback, exactly as before.
-    expect(chooseFromLabelRead({ ...read, autoPick: null }).kind).toBe("options");
+    expect(stale.kind).toBe("chosen");
+    expect(stale.autoSource).toBe("rule");
+    expect(stale.allCandidates).toEqual(["190935505", "74075035"]);
+    // No rule → the deterministic rule, never a question.
+    const none = chooseFromLabelRead({ ...read, autoPick: null });
+    expect(none.kind).toBe("chosen");
+    expect(none.autoSource).toBe("rule");
   });
 
   it("a code another live product owns is a conflict; merged-away owners don't count", () => {
