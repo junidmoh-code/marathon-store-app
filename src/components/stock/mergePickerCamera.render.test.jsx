@@ -78,7 +78,9 @@ const ALL_STOCK = {
 const THREE = { allCodes: ["A6CWNEN3", "A8425", "TB0A2Q1M"], auto: true };
 
 const textIn = (inst) => (typeof inst === "string" ? inst : (inst.children || []).map(textIn).join(" "));
-const buttons = (tr) => tr.root.findAll((n) => n.type === "button");
+// A row is the shared CandidateCards card (a div with role="button") or a
+// plain button — both are tappable rows to the operator.
+const buttons = (tr) => tr.root.findAll((n) => n.type === "button" || (n.type === "div" && n.props.role === "button"));
 const buttonWith = (tr, needle) => buttons(tr).filter((n) => textIn(n).includes(needle))[0];
 const rowFor = (tr, name) => buttons(tr).filter((n) => textIn(n).includes(name))[0];
 const allText = (tr) => JSON.stringify(tr.toJSON());

@@ -27,7 +27,7 @@
 // comes from the entry point the operator chose ("Add Sneaker" ⇒ sneakers) and
 // nowhere else.
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import {
@@ -35,7 +35,7 @@ import {
   formatStyleCodeForDisplay,
   isKnownStyleCodeFormat,
 } from "../../utils/styleCode";
-import { prepareLabelPhoto } from "../../utils/labelPhoto";
+import { TongueLabelReader } from "../stock/TongueLabelReader";
 import { STYLE_CODE_LOOKUP_ENABLED } from "../../config/styleCode";
 import StyleCodeBypass from "./StyleCodeBypass";
 import { serverNowMs } from "../../utils/serverTime";
@@ -46,12 +46,10 @@ import {
   TARGET_READY, TARGET_CHOOSE,
   BLOCK_CLAIM_UNAVAILABLE, BLOCK_PRODUCT_UNAVAILABLE,
 } from "./styleCodeGateLogic";
-import { learnLabelLayout } from "../stock/hubCleanupStore";
 import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 import CandidateCards from "../shared/CandidateCards";
 
 const resolveStyleCodeFn = httpsCallable(functions, "resolveStyleCode");
-const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
 // Read-only any-token ownership — the pre-duplicate step's server half
 // (review, PR #354): alias-only owners never stamp a product row, so the
 // local ranking alone cannot see them.
@@ -147,7 +145,6 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   // The pre-form duplicate question (capture-only mode): the payload held back
   // while the operator answers "is it one of these?", plus the ranked matches.
   const [similarStep, setSimilarStep] = useState(null); // { payload, suggestions }
-  const fileRef = useRef(null);
 
   const normalised = normaliseStyleCode(typed);
   const canSubmit = !!normalised && !busy;
@@ -159,82 +156,75 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
   // Null until they choose — there is deliberately no default.
   const [selectedProductId, setSelectedProductId] = useState(null);
 
-  // ── Tier 1–2: photograph the label ────────────────────────────────────────
-  async function handleLabelPhoto(e) {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    setError(null); setReadNote(null); setBusy("reading");
+  // ── Tier 1–2: photograph the label — THE SHARED READER ───────────────────
+  // This gate used to own a second capture implementation: one file-input
+  // photo, no burst, no QR step, and a "Found N possible codes — tap the right
+  // one" question. It is now a consumer of the ONE reader every other surface
+  // uses (stock/TongueLabelReader.jsx: three-frame burst, ≤1024px downscale,
+  // image-hash OCR cache, deterministic head-of-set — never a question). What
+  // stays here is what is THIS surface's job: binding the read to the photo as
+  // evidence, and keeping the code field the operator can still edit by hand.
+  function clearLabelEvidence() {
     // CLEAR THE BINDING FIRST. A retake that fails must not leave the NEW photo
-    // paired with the PREVIOUS code — that was the gap the first version of this
-    // guard left open. Nothing is evidence again until a read succeeds.
+    // paired with the PREVIOUS code — nothing is evidence again until a read
+    // succeeds.
     setLabelPhoto(null); setPhotoForCode(null); setLabelExtras(null); setLabelAllCodes(null);
-    try {
-      // Downscaled to 1024px in the browser BEFORE it is sent anywhere.
-      const photo = await prepareLabelPhoto(file);
-      setLabelPhoto(photo);
-      const res = await readStyleCodeLabelFn({ imageBase64: photo.base64, mimeType: "image/jpeg" });
-      const data = (res && res.data) || {};
-      const candidates = Array.isArray(data.candidates) ? data.candidates : [];
-      // Whatever else this label printed. Server-validated; null means the
-      // label simply doesn't print it (most don't).
-      if (data.colorway || data.upc || data.modelName || (Array.isArray(data.tokens) && data.tokens.length)) {
-        setLabelExtras({
-          colorway: data.colorway || null, upc: data.upc || null, modelName: data.modelName || null,
-          // The label's stable word set (owner spec 2026-08-13) — evidence
-          // from the same photo, feeds the pre-duplicate ranking's name tier.
-          tokens: Array.isArray(data.tokens) && data.tokens.length ? data.tokens : null,
-        });
-      }
-
-      if (candidates.length === 1) {
-        // VALIDATE BEFORE USE — the server already did, this is the client's own
-        // guard so a bad deploy on either side cannot put prose in the field.
-        const code = candidates[0];
-        if (!isKnownStyleCodeFormat(code)) {
-          setReadNote({ tone: "warn", text: "That photo produced something that isn't a style code. Type it instead." });
-        } else {
-          setTyped(formatStyleCodeForDisplay(code));
-          setPhotoForCode(code); // this photo IS the evidence for this code
-          setReadNote({ tone: "good", text: `Read from the label: ${formatStyleCodeForDisplay(code)}. Check it matches the shoe, then continue.` });
-        }
-      } else if (candidates.length > 1) {
-        setLabelAllCodes(candidates);
-        // A learned layout rule answers this question when a human already has
-        // (server autoPick, owner spec 2026-08-08); tier 2's own read
-        // (`preferred`, owner spec 2026-08-13) answers next — the full token
-        // set stays in labelAllCodes and files as identities either way. Fail
-        // closed: the pick must be one of THIS read's candidates or the chips
-        // ask as before.
-        const pick = typeof data.autoPick === "string" && candidates.includes(data.autoPick) ? data.autoPick
-          : (typeof data.preferred === "string" && candidates.includes(data.preferred) ? data.preferred : null);
-        if (pick) {
-          setTyped(formatStyleCodeForDisplay(pick));
-          setPhotoForCode(pick);
-          setReadNote({
-            tone: "good",
-            text: pick === data.autoPick
-              ? `The label shows ${candidates.length} code-shaped numbers — picked ${formatStyleCodeForDisplay(pick)} as the style number (learned from earlier labels). Wrong one? Tap the other:`
-              : `The label shows ${candidates.length} code-shaped numbers — read ${formatStyleCodeForDisplay(pick)} as the style number; the others are saved with it. Wrong one? Tap the other:`,
-            options: candidates.filter((c) => c !== pick),
-          });
-        } else {
-          setReadNote({
-            tone: "warn",
-            text: `Found ${candidates.length} possible codes — tap the right one, or type it.`,
-            options: candidates,
-          });
-        }
-      } else if ((data.errors || []).length) {
-        setReadNote({ tone: "warn", text: "The label reader is unavailable right now. Type the code from the tongue label." });
-      } else {
-        setReadNote({ tone: "warn", text: "Couldn't read a code off that photo. Try a straighter, closer shot — or type it." });
-      }
-    } catch (err) {
-      setError((err && err.message) || "Couldn't process that photo.");
-    } finally {
-      setBusy(null);
+  }
+  function takeLabelExtras(meta) {
+    const tokens = Array.isArray(meta && meta.tokens) && meta.tokens.length ? meta.tokens : null;
+    const colorway = (meta && meta.colorway) || null;
+    const upc = (meta && meta.upc) || null;
+    const modelName = (meta && meta.modelName) || null;
+    // Whatever else this label printed. Server-validated; null means the
+    // label simply doesn't print it (most don't). The label's stable word set
+    // (owner spec 2026-08-13) feeds the pre-duplicate ranking's name tier.
+    setLabelExtras(colorway || upc || modelName || tokens ? { colorway, upc, modelName, tokens } : null);
+  }
+  function takeLabelRead(code, meta = {}) {
+    setError(null); setReadNote(null);
+    if (meta.source !== "label") {
+      // The reader's own typed escape is hidden here (typed={false}); a
+      // non-label source can only be a programmatic caller — treat as typed.
+      setTyped(formatStyleCodeForDisplay(code)); clearLabelEvidence();
+      return;
     }
+    clearLabelEvidence();
+    const normalisedCode = normaliseStyleCode(code);
+    // VALIDATE BEFORE USE — the reader already did, this is the gate's own
+    // guard so a bad deploy on either side cannot put prose in the field.
+    if (!normalisedCode || !isKnownStyleCodeFormat(normalisedCode)) {
+      setReadNote({ tone: "warn", text: "That photo produced something that isn't a style code. Type it instead." });
+      return;
+    }
+    setLabelPhoto(meta.labelPhoto || null);
+    takeLabelExtras(meta);
+    const all = Array.isArray(meta.allCodes) && meta.allCodes.length > 1 ? meta.allCodes : null;
+    setLabelAllCodes(all);
+    setTyped(formatStyleCodeForDisplay(normalisedCode));
+    setPhotoForCode(normalisedCode); // this photo IS the evidence for this code
+    // ONE line here; the reader above already shows the override chips for a
+    // multi-code label, so this note never repeats that question's wording.
+    const others = all ? all.length - 1 : 0;
+    setReadNote({
+      tone: "good",
+      text: others > 0
+        ? `Read from the label: ${formatStyleCodeForDisplay(normalisedCode)} — and ${others} other number${others === 1 ? "" : "s"} on it ${others === 1 ? "is" : "are"} saved with it. Check it matches the shoe, then continue.`
+        : `Read from the label: ${formatStyleCodeForDisplay(normalisedCode)}. Check it matches the shoe, then continue.`,
+    });
+  }
+  // A label with NO code-shaped token but readable wording (≥2 tokens seen in
+  // two of three frames). The gate cannot pass on wording alone — the style
+  // code is the point of this step — so it keeps the wording as evidence and
+  // says plainly what the ways forward are (type the code, or the bypass).
+  function takeLabelTokens(tokens, meta = {}) {
+    setError(null);
+    clearLabelEvidence();
+    setLabelPhoto(meta.labelPhoto || null);
+    takeLabelExtras({ ...meta, tokens });
+    setReadNote({
+      tone: "warn",
+      text: `No style code on that label — its wording (${tokens.slice(0, 6).join(" ")}) was read. If the label prints a code, type it below; if this shoe has none, use “This shoe has no readable style number”.`,
+    });
   }
 
   // Server half of the pre-duplicate question (review, PR #354): alias-only
@@ -465,21 +455,18 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
 
           <div>
             <div style={label}>Photograph the tongue label</div>
-            <input ref={fileRef} type="file" accept="image/*" capture="environment"
-                   onChange={handleLabelPhoto} style={{ display: "none" }} />
-            <button type="button" disabled={!!busy} onClick={() => fileRef.current && fileRef.current.click()}
-              style={{ background: "rgba(60,110,255,.05)", border: "2px dashed rgba(60,110,255,.28)",
-                       borderRadius: 12, padding: "20px", color: "rgba(233,238,255,.62)",
-                       cursor: busy ? "default" : "pointer", fontSize: 14, fontWeight: 700,
-                       width: "100%", minHeight: 68, opacity: busy ? 0.6 : 1 }}>
-              {busy === "reading" ? "Reading the label…" : labelPhoto ? "Photo taken — tap to retake" : "📷  Take a photo of the label"}
-            </button>
+            {/* THE SHARED READER — the same component, burst and cache as the
+                count, register, merge picker and assistant finder. The gate
+                owns the code field below, so the reader's typed escape is off. */}
+            <TongueLabelReader busy={!!busy} typed={false} onCode={takeLabelRead} onTokens={takeLabelTokens} />
             {labelPhoto && (
               <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <img src={labelPhoto.dataUrl} alt="label"
-                     style={{ width: 96, height: 96, objectFit: "cover", borderRadius: 10,
-                              border: "1px solid rgba(60,110,255,.25)",
-                              opacity: photoMatchesCode ? 1 : 0.4 }} />
+                {labelPhoto.dataUrl && (
+                  <img src={labelPhoto.dataUrl} alt="label"
+                       style={{ width: 96, height: 96, objectFit: "cover", borderRadius: 10,
+                                border: "1px solid rgba(60,110,255,.25)",
+                                opacity: photoMatchesCode ? 1 : 0.4 }} />
+                )}
                 {!photoMatchesCode && (
                   <span style={{ ...meta, color: AMBER, maxWidth: 260 }}>
                     The code was changed after this photo, so it is no longer kept as evidence for it.
@@ -493,27 +480,6 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
           {readNote && (
             <Note tone={readNote.tone}>
               {readNote.text}
-              {readNote.options && (
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-                  {readNote.options.map((c) => (
-                    <button key={c} type="button"
-                      onClick={() => {
-                        // The tap teaches the layout rule (and an override of an
-                        // auto-pick is exactly how a wrong rule gets corrected,
-                        // then killed — lib/label-layout.cjs). Best-effort.
-                        if (labelAllCodes && labelAllCodes.length > 1) {
-                          learnLabelLayout({ codes: labelAllCodes, chosenCode: c }).catch(() => {});
-                        }
-                        setTyped(formatStyleCodeForDisplay(c)); setPhotoForCode(normaliseStyleCode(c)); setReadNote(null);
-                      }}
-                      style={{ background: "rgba(74,127,255,.14)", border: `1px solid ${BLUE}`, color: "#fff",
-                               borderRadius: 10, padding: "10px 14px", fontWeight: 800, cursor: "pointer",
-                               fontFamily: "ui-monospace, monospace", minHeight: 44 }}>
-                      {formatStyleCodeForDisplay(c)}
-                    </button>
-                  ))}
-                </div>
-              )}
             </Note>
           )}
 

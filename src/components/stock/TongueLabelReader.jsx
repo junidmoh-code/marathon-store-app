@@ -3,8 +3,18 @@
 // view can reuse the identical pipeline: three-frame burst capture, QR/
 // DataMatrix first, the readStyleCodeLabel OCR funnel (image-hash cached
 // server-side — a retake re-bills nothing), format codes preferred, token
-// readings for the alias store. ONE implementation, three consumers
-// (register, count, assistant).
+// readings for the alias store. ONE implementation, FIVE consumers: register
+// (HubCleanup RegisterPanel), count (HubCleanup), the merge target picker
+// (MergeProducts), the assistant product finder (App AssistantLabelFinder) and
+// add-product intake (admin StyleCodeGate) — src/labelReaderSurfaces.test.jsx
+// pins that no surface grows a second copy.
+//
+// THE READER NEVER ASKS WHICH CODE (owner spec 2026-08-23). A label is a SET of
+// tokens; every one is handed to the consumer in `allCodes` (codes) and
+// `tokens` (the label's wording). When the server offers no pick, the head of
+// the set is chosen by the deterministic rule in utils/labelPrimary.js and
+// announced with override chips — a tap still teaches the layout rule, but the
+// flow never waits for one.
 
 import React, { useEffect, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
@@ -22,6 +32,14 @@ import { FONT, bBlue, bGray, bGhost, input } from "./ui";
 const readStyleCodeLabelFn = httpsCallable(functions, "readStyleCodeLabel");
 // Hidden mount ids are per-instance — two readers can be mounted at once.
 let qrReaderSeq = 0;
+
+// getUserMedia exists on iPhone Safari and Android Chrome over https; it is
+// missing on http origins and some embedded WebViews. Checked at tap time so
+// the reader can skip the stream overlay and open the file input directly.
+export function cameraStreamAvailable() {
+  return typeof navigator !== "undefined" && !!navigator.mediaDevices
+    && typeof navigator.mediaDevices.getUserMedia === "function";
+}
 
 function BigButton({ children, onClick, tone = "blue", disabled, style }) {
   const tones = {
@@ -65,6 +83,10 @@ export function LabelCamera({
 
   useEffect(() => {
     let cancelled = false;
+    // No camera stream API at all (an old WebView, an http origin, a locked-down
+    // browser): the flow is NOT lost — the single-photo file input takes over
+    // straight away, the same frame pipeline downstream.
+    if (!cameraStreamAvailable()) { setError(true); return undefined; }
     navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
       .then((stream) => {
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
@@ -89,7 +111,7 @@ export function LabelCamera({
     canvas.toBlob((blob) => {
       if (!blob) { resolve(null); return; }
       const reader = new FileReader();
-      reader.onload = () => resolve({ base64: String(reader.result).split(",")[1] || "", blob });
+      reader.onload = () => resolve({ dataUrl: String(reader.result), base64: String(reader.result).split(",")[1] || "", blob });
       reader.onerror = () => resolve(null);
       reader.readAsDataURL(blob);
     }, "image/jpeg", 0.85);
@@ -154,7 +176,7 @@ export function LabelCamera({
 // re-bills no vision call), with typed entry as the always-available fallback.
 // Copy is explicit on purpose — the operator must never wonder whether this is
 // the shop-barcode scan. It is not.
-export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }) {
+export function TongueLabelReader({ busy, big = false, onCode, onTokens = null, typed: typedEntry = true }) {
   const [qrId] = useState(() => `label-qr-still-reader-${++qrReaderSeq}`);
   const [reading, setReading] = useState(false);
   const [readNote, setReadNote] = useState(null);          // { text, options? }
@@ -185,7 +207,6 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
       } catch { /* no machine-readable code — OCR takes over */ }
 
       const frameTokens = [];
-      let sawOptions = null;
       let frameError = null;
       // The model-name line off ANY frame survives to the token path below —
       // a code-less read still often prints the model name, and the link
@@ -217,10 +238,20 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           onCode(formattedChosen, {
             source: "label", labelPhoto: frame,
             allCodes: out.allCandidates || null, auto: !!out.auto,
+            autoSource: out.autoSource || null,
             modelName: typeof data.modelName === "string" ? data.modelName : null,
             // The label's stable word set (owner spec 2026-08-13) — rides to
             // the link panel's name tier even when the read carried codes.
             tokens: Array.isArray(data.tokens) ? data.tokens : null,
+            // Everything ELSE the same read extracted — the intake gate binds
+            // these to the photo as evidence (non-authoritative by policy).
+            colorway: typeof data.colorway === "string" && data.colorway ? data.colorway : null,
+            upc: typeof data.upc === "string" && data.upc ? data.upc : null,
+            // A coded read short-circuits on its first readable frame (one
+            // bill, not three), so its WORDING is one frame's OCR and has NOT
+            // passed the ≥2-of-3 agreement the token path enforces. Consumers
+            // may RANK on it; they must not FILE it as an identity.
+            tokensAgreed: false,
           });
           // A learned-layout pick must never be INVISIBLE (Sonnet review,
           // PR #334): the flow proceeds, but the pick is announced with the
@@ -232,45 +263,30 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           if (out.auto && Array.isArray(out.allCandidates) && out.allCandidates.length > 1) {
             setReadNote({
               // Honest provenance: a layout rule was LEARNED from earlier
-              // answers; tier 2's preference was READ off this very label.
+              // answers; tier 2's preference was READ off this very label; the
+              // RULE is this app's own deterministic choice (utils/labelPrimary).
+              // None of these waits for an answer — the chips are an override.
               text: out.autoSource === "read"
                 ? `Read ${formattedChosen} as the style number — the label's other number(s) are saved with it. Wrong? Tap the right one:`
-                : `Read ${formattedChosen} as the style number — learned from earlier labels like this one. Wrong? Tap the right one:`,
+                : out.autoSource === "layout"
+                  ? `Read ${formattedChosen} as the style number — learned from earlier labels like this one. Wrong? Tap the right one:`
+                  : `Read ${formattedChosen} as the style number — every number on this label is saved with it. Wrong? Tap the right one:`,
               options: out.allCandidates.filter((c) => formatStyleCodeForDisplay(c) !== formattedChosen).map(formatStyleCodeForDisplay),
               candidates: out.allCandidates,
               labelPhoto: frame,
               modelName: typeof data.modelName === "string" ? data.modelName : null,
               tokens: Array.isArray(data.tokens) ? data.tokens : null,
+              colorway: typeof data.colorway === "string" && data.colorway ? data.colorway : null,
+              upc: typeof data.upc === "string" && data.upc ? data.upc : null,
             });
           }
           return;
         }
-        if (out.kind === "options" && !sawOptions) {
-          sawOptions = {
-            out, frame,
-            modelName: typeof data.modelName === "string" ? data.modelName : null,
-            tokens: Array.isArray(data.tokens) ? data.tokens : null,
-          };
-        }
         if (out.kind === "tokens") frameTokens.push(out.tokens);
-      }
-      if (sawOptions) {
-        // A layout no rule decides yet — the manual tap is the fallback, and
-        // the tap TEACHES: it learns the layout rule and files every token
-        // (candidates rides along so the tap handler has the full set).
-        setReadNote({
-          text: "The label shows more than one code-looking number — tap the style number:",
-          options: sawOptions.out.options,
-          candidates: sawOptions.out.candidates || null,
-          labelPhoto: sawOptions.frame,
-          modelName: sawOptions.modelName,
-          tokens: sawOptions.tokens,
-        });
-        return;
       }
       const merged = mergeFrameTokens(frameTokens);
       if (merged.length >= 2 && onTokens) {
-        onTokens(merged, { labelPhoto: frames[0], modelName: sawModelName });
+        onTokens(merged, { labelPhoto: frames[0], modelName: sawModelName, tokens: merged, tokensAgreed: true });
         return;
       }
       setReadNote({ text: frameError && frameTokens.length === 0
@@ -317,7 +333,8 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
     <div>
       <input ref={fileRef} type="file" accept="image/*" capture="environment"
              onChange={handleLabelPhoto} style={{ display: "none" }} />
-      <BigButton tone="blue" disabled={busy || reading} onClick={() => setCameraOpen(true)}
+      <BigButton tone="blue" disabled={busy || reading}
+                 onClick={() => { if (cameraStreamAvailable()) setCameraOpen(true); else if (fileRef.current) fileRef.current.click(); }}
                  style={big ? { minHeight: 84, fontSize: 20 } : { minHeight: 64, fontSize: 17 }}>
         {reading ? "Reading the tongue label…" : "📷 Photograph the tongue label"}
       </BigButton>
@@ -348,11 +365,16 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
                       learnLabelLayout({ codes: readNote.candidates, chosenCode: c }).catch(() => {});
                     }
                     setReadNote(null);
+                    // The SAME meta the head-of-set call carried — an override
+                    // must never cost the intake gate its colourway/UPC evidence.
                     onCode(f, {
                       source: "label", labelPhoto: readNote.labelPhoto || null,
-                      allCodes: readNote.candidates || null,
+                      allCodes: readNote.candidates || null, auto: false, autoSource: "override",
                       modelName: readNote.modelName || null,
                       tokens: readNote.tokens || null,
+                      colorway: readNote.colorway || null,
+                      upc: readNote.upc || null,
+                      tokensAgreed: false,
                     });
                   }}
                   style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>
@@ -361,13 +383,18 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null }
           )}
         </div>
       )}
-      <form onSubmit={(e) => { e.preventDefault(); applyTyped(); }}
-            style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <input value={typed} onChange={(e) => setTyped(e.target.value)}
-               placeholder="…or type the style number, e.g. CT8527-016"
-               style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
-        <button type="submit" disabled={!typed.trim() || reading || busy} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
-      </form>
+      {/* Typed entry is the LAST-RESORT escape hatch (tier 4) — never the
+          design. A host that already owns a code field (the intake gate)
+          passes typed={false} so the screen never shows two of them. */}
+      {typedEntry && (
+        <form onSubmit={(e) => { e.preventDefault(); applyTyped(); }}
+              style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          <input value={typed} onChange={(e) => setTyped(e.target.value)}
+                 placeholder="…or type the style number, e.g. CT8527-016"
+                 style={{ ...input, flex: 1, minHeight: 48, fontSize: 15 }} />
+          <button type="submit" disabled={!typed.trim() || reading || busy} style={{ ...bGray, minHeight: 48, padding: "0 16px" }}>Set</button>
+        </form>
+      )}
     </div>
   );
 }

@@ -98,7 +98,9 @@ const PRODUCTS = [
 
 const textOf = (tr) => JSON.stringify(tr.toJSON());
 const textIn = (inst) => (typeof inst === "string" ? inst : (inst.children || []).map(textIn).join(" "));
-const buttonWith = (tr, needle) => tr.root.findAll((n) => n.type === "button" && textIn(n).includes(needle))[0];
+// A tappable row is a <button> or the shared CandidateCards card (a div with
+// role="button") — the link panel renders the shared card since 2026-08-23.
+const buttonWith = (tr, needle) => tr.root.findAll((n) => (n.type === "button" || (n.type === "div" && n.props?.role === "button")) && textIn(n).includes(needle))[0];
 
 async function mountOnCountTab() {
   let tr;
@@ -267,7 +269,7 @@ describe("the link panel's ranked suggestions", () => {
     });
     const search = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "Search the catalogue by name…")[0];
     await act(async () => { search.props.onChange({ target: { value: "Gripshot Navy" } }); });
-    const row = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("Lacoste Gripshot Navy"))[0];
+    const row = tr.root.findAll((n) => (n.type === "button" || n.props?.role === "button") && textIn(n).includes("Lacoste Gripshot Navy"))[0];
     await act(async () => { row.props.onClick(); });
     expect(readerProps).toBeTruthy();
     await act(async () => { readerProps.onCode("742CFA0013-2G4", { source: "label", labelPhoto: null }); });
@@ -294,7 +296,7 @@ describe("the link panel's ranked suggestions", () => {
     });
     const search = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "Search the catalogue by name…")[0];
     await act(async () => { search.props.onChange({ target: { value: "Gripshot Navy" } }); });
-    const row = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("Lacoste Gripshot Navy"))[0];
+    const row = tr.root.findAll((n) => (n.type === "button" || n.props?.role === "button") && textIn(n).includes("Lacoste Gripshot Navy"))[0];
     await act(async () => { row.props.onClick(); });
     await act(async () => { readerProps.onCode("742CFA0013-2G4", { source: "label", labelPhoto: null }); });
     const after = textOf(tr);
@@ -316,7 +318,7 @@ describe("the link panel's ranked suggestions", () => {
     });
     const search = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "Search the catalogue by name…")[0];
     await act(async () => { search.props.onChange({ target: { value: "Gripshot Navy" } }); });
-    const row = tr.root.findAll((n) => n.type === "button" && textIn(n).includes("Lacoste Gripshot Navy"))[0];
+    const row = tr.root.findAll((n) => (n.type === "button" || n.props?.role === "button") && textIn(n).includes("Lacoste Gripshot Navy"))[0];
     await act(async () => { row.props.onClick(); });
     expect(readerProps).toBeTruthy();
     await act(async () => { readerProps.onCode("999AAA9999ZZ9", { source: "label", labelPhoto: null }); });
