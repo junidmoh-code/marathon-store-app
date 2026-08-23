@@ -169,3 +169,59 @@ export async function credentialStatus() {
   }
   return out;
 }
+
+// ── CAN THIS IDENTITY STORE A SECRET? ────────────────────────────────────────
+// Asked BEFORE the Meta dance, never after. The setup script's last act is to
+// write three secrets, and the identity that can READ them is deliberately not
+// the identity that can WRITE them:
+//
+//   the Mac mini's service account   secretmanager.versions.access ONLY.
+//     firebase-adminsdk-fbsvc@…      That is roles/secretmanager.secretAccessor
+//                                    and it is all the PUBLISHER ever needs.
+//
+//   Junid's gcloud ADC               roles/owner — creates secrets and adds
+//     (~/.config/gcloud/…)           versions. This is what setup must run as.
+//
+// google-auth-library picks GOOGLE_APPLICATION_CREDENTIALS over ADC whenever
+// that variable is set. The Mac mini is a machine where it very plausibly IS
+// set — the reconciler's launchd agent sets it, and anyone who copied a command
+// out of that job's context carries it into their shell. The result was the
+// worst possible ordering: create the Facebook app, grant five scopes, generate
+// a one-hour token, exchange it, read the Page, verify Instagram — and only
+// then discover the store is refused. The token has to be re-generated because
+// the fix (open a new shell) loses the hour.
+//
+// So this runs first and costs one API call. It asks the permission service
+// what THIS credential may do, rather than inferring it from which file is on
+// disk — the honest question, and the one that keeps giving the right answer
+// after someone re-grants a role.
+const WRITE_PERMS = ["secretmanager.secrets.create", "secretmanager.versions.add"];
+
+export async function secretWriteCheck() {
+  const client = await authClient();
+  let granted = [];
+  try {
+    const res = await client.request({
+      url: `https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions`,
+      method: "POST",
+      data: { permissions: [...WRITE_PERMS, "secretmanager.versions.access"] },
+    });
+    granted = res?.data?.permissions || [];
+  } catch (err) {
+    // A credential that cannot even ASK is a credential that cannot write.
+    // Reported as "unknown" rather than "denied": the difference matters when
+    // the cause is an expired refresh token, whose fix is a login, not a grant.
+    return { ok: false, unknown: true, status: err?.response?.status ?? null, granted: [] };
+  }
+  const missing = WRITE_PERMS.filter((p) => !granted.includes(p));
+  return { ok: missing.length === 0, unknown: false, missing, granted };
+}
+
+// Which credential file google-auth-library is about to use. Names a PATH and
+// never opens it — the point is to tell an operator which of the two identities
+// above is in play, and the path is the only part of that which is not secret.
+export function credentialSource() {
+  return process.env.GOOGLE_APPLICATION_CREDENTIALS
+    ? { kind: "GOOGLE_APPLICATION_CREDENTIALS", path: process.env.GOOGLE_APPLICATION_CREDENTIALS }
+    : { kind: "gcloud application-default credentials", path: "~/.config/gcloud/application_default_credentials.json" };
+}
