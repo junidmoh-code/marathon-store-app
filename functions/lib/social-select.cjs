@@ -236,11 +236,26 @@ function buildCandidates({ liveNodes, products, stockByPid, salesByPid = {}, pos
     const photoUrl = photos[0] || product.photoUrl;
     if (!photoUrl) continue;
 
-    // The listing title. Never product.name: that is the internal name, it is
-    // not what the storefront shows, and it is the field that carries brand
-    // words into places they should not go.
+    // ── TWO NAMES, AND THEY ARE NOT INTERCHANGEABLE ────────────────────────
+    // `name` is the STOREFRONT title from shopify_publish/{pid}/cleanName. It
+    // is deliberately brand-stripped, because the payment gateway keyword-scans
+    // the Shopify catalogue, and it is what the product handle and therefore
+    // the product URL are derived from. It must not change.
+    //
+    // `displayName` is the TRUE product name from products/{pid}/name — "Nike
+    // Air Force 1 Cream Black Grey" where the storefront says "Sneaker Cream
+    // Black Grey", "Lacoste L12 100ML" where it says "Fragrance 100ML". Owner
+    // ruling 2026-08-23: the stripping rule exists for the gateway scanning
+    // Shopify, and that does not reach Instagram. Captions and on-image labels
+    // use the real name; a caption that cannot say "Lacoste" is a caption that
+    // cannot sell a Lacoste polo.
+    //
+    // Nothing that reaches Shopify uses displayName. handle and link below stay
+    // derived from `name`, so storefront URLs are untouched.
     const name = typeof node.cleanName === "string" && node.cleanName.trim() ? node.cleanName.trim() : null;
     if (!name) continue;
+    const trueName = typeof product.name === "string" && product.name.trim() ? product.name.trim() : null;
+    const displayName = trueName || name;
 
     // ── REFUSAL 2: out of stock ────────────────────────────────────────────
     const available = availableUnits((stockByPid || {})[pid], product.sizes);
@@ -256,6 +271,7 @@ function buildCandidates({ liveNodes, products, stockByPid, salesByPid = {}, pos
       product,
       node,
       name,
+      displayName,
       handle,
       link: handle ? `${storefront}/products/${handle}` : storefront,
       photoUrl,

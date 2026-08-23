@@ -29,7 +29,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen, bRed } from "../stock/ui";
 import {
   PLATFORMS, PLATFORM_KEYS, QUEUE_FILTERS, CAPTION_MAX,
-  postKind, platform, enabledPlatforms, postBlocker, postReadiness, describePost, resultLine,
+  postKind, platform, enabledPlatforms, postReadiness, describePost, resultLine,
   formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
 } from "./socialCore";
 import {
@@ -95,11 +95,11 @@ function PostRow({ post, onChanged, onNotice }) {
   const [schedDraft, setSchedDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const kind = postKind(post.kind);
-  // What stops this from being SENT (the status line), and separately what stops
-  // it from being APPROVED. Not the same question: a draft is by definition not
-  // approved, so gating Approve on postBlocker greyed the button forever and gave
-  // "Not approved yet" as the reason it could not be approved.
-  const blocker = postBlocker(post);
+  // What stops this from being APPROVED. Deliberately NOT postBlocker: that
+  // refuses anything not already approved, so a draft always fails it. Gating
+  // the button on it greyed it forever; keying only its OPACITY on it left the
+  // button clickable but painted dead, which reads to a person as broken in
+  // exactly the same way. Both are now the same single question.
   const notReady = postReadiness(post);
   const caption = draftCaption !== null ? draftCaption : (post.caption || "");
   const captionDirty = draftCaption !== null && draftCaption.trim() !== (post.caption || "").trim();
@@ -277,7 +277,7 @@ function PostRow({ post, onChanged, onNotice }) {
             {post.status === "draft" && (
               <button disabled={busy || !!notReady}
                       onClick={() => run(() => approvePost(post.id), "Approved — it goes out on its scheduled run.")}
-                      style={{ ...bGreen, opacity: blocker ? 0.45 : 1, cursor: blocker ? "not-allowed" : "pointer" }}>
+                      style={{ ...bGreen, opacity: notReady ? 0.45 : 1, cursor: notReady ? "not-allowed" : "pointer" }}>
                 Approve
               </button>
             )}
