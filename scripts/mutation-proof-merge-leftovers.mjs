@@ -83,7 +83,7 @@ const MUTATIONS = [
     name: "the footwear filter is dropped and a t-shirt is offered for a shoe",
     shape: "a comparison removed",
     file: "src/components/stock/mergeSearch.js",
-    from: `    && productIsFootwear(p) === loserIsFootwear`,
+    from: `    && (!loserIsFootwear || productIsFootwear(p))`,
     to: `    && true`,
     test: "src/components/stock/mergeSearch.test.js",
     runner: "vitest",
@@ -146,7 +146,7 @@ const MUTATIONS = [
     name: "only the style-code FIELD counts, aliases and claims ignored",
     shape: "a predicate narrowed to one store",
     file: "src/utils/labelIdentity.js",
-    from: `  const entry = (product.id && identityMap && identityMap[product.id]) || null;
+    from: `  const entry = entryFor(identityMap, product.id);
   if (!entry) return false;
   return (Array.isArray(entry.c) && entry.c.length > 0)
       || (Array.isArray(entry.a) && entry.a.length > 0);`,
@@ -244,7 +244,8 @@ const MUTATIONS = [
     shape: "a lookup broadened",
     file: "functions/lib/product-merge.cjs",
     from: [
-      '      const node = (await db.ref(`${COUNTED_PATH}/${loc}/${sessionId}`).get()).val();',
+      '      const node = await readOrRefuse(db, `${COUNTED_PATH}/${loc}/${sessionId}`,',
+      '        `The count records at ${loc} could not be read — merge refused rather than guessed.`);',
       '      countedByLoc[loc] = countedCellKeys(node);',
     ].join("\n"),
     to: [
@@ -319,8 +320,11 @@ const MUTATIONS = [
     name: "the confirm screen commits before the outcome is known",
     shape: "a disabled gate loosened",
     file: "src/components/stock/MergeProducts.jsx",
-    from: `            <button type="button" disabled={busy || !allStock || plan === null} onClick={commit}`,
-    to: `            <button type="button" disabled={busy || !allStock} onClick={commit}`,
+    from: `    if (plan === null || plan === PLAN_ERROR) {
+      setError("The outcome hasn't been worked out yet — nothing was changed.");
+      return;
+    }`,
+    to: `    // guard removed`,
     test: "src/components/stock/mergeScreen.render.test.jsx",
     runner: "vitest",
   },
@@ -331,6 +335,116 @@ const MUTATIONS = [
     from: '      text: `${row.removeQty} at ${locLabel} will be removed — already counted under this product`,',
     to: '      text: "something happens",',
     test: "src/components/stock/mergeScreen.render.test.jsx",
+    runner: "vitest",
+  },
+  {
+    name: "a badly-categorised shoe loses access to its sneaker twin",
+    shape: "a one-directional filter made symmetric again",
+    file: "src/components/stock/mergeSearch.js",
+    from: `    && (!loserIsFootwear || productIsFootwear(p))`,
+    to: `    && productIsFootwear(p) === loserIsFootwear`,
+    test: "src/components/stock/mergeSearch.test.js",
+    runner: "vitest",
+  },
+  {
+    name: "nameless products lead the default list again",
+    shape: "a sort comparator reverted",
+    file: "src/components/stock/mergeSearch.js",
+    from: `    if (!an !== !bn) return an ? -1 : 1;`,
+    to: `    // nameless rows sort first again`,
+    test: "src/components/stock/mergeSearch.test.js",
+    runner: "vitest",
+  },
+  {
+    name: "a nameless row renders as a blank card",
+    shape: "a fallback label removed",
+    file: "src/components/stock/mergeSearch.js",
+    from: '  return `(no name \u2014 id ${product && product.id ? String(product.id) : "unknown"})`;',
+    to: `  return "";`,
+    test: "src/components/stock/mergeSearch.test.js",
+    runner: "vitest",
+  },
+  {
+    name: "a failed plan claims the loser holds no stock and lets the merge fire",
+    shape: "an error state collapsed onto the empty one",
+    file: "src/components/stock/MergeProducts.jsx",
+    from: `        if (alive) { setPlanFailed(Object.keys(loserCells)); setPlan(PLAN_ERROR); }`,
+    to: `        if (alive) { setPlanFailed(Object.keys(loserCells)); setPlan([]); }`,
+    test: "src/components/stock/mergeScreen.render.test.jsx",
+    runner: "vitest",
+  },
+  {
+    name: "an unreadable count node is silently treated as 'nothing counted'",
+    shape: "a fail-closed read made fail-soft",
+    file: "functions/lib/product-merge.cjs",
+    from: [
+      '    return (await db.ref(path).get()).val();',
+      '  } catch (err) {',
+      '    throw new MergeRefused("failed-precondition", `${message} (${err && err.message ? err.message : err})`);',
+      '  }',
+    ].join("\n"),
+    to: [
+      '    return (await db.ref(path).get()).val();',
+      '  } catch {',
+      '    return null;',
+      '  }',
+    ].join("\n"),
+    test: "test/merge-counted-removal.test.cjs",
+    runner: "node",
+  },
+  {
+    name: "a removal commits on a count record that was staled mid-merge",
+    shape: "a fence loop deleted",
+    file: "functions/lib/product-merge.cjs",
+    from: `      if (!countRecordCounts(removalLive[i].val())) {`,
+    to: `      if (false) {`,
+    test: "test/merge-counted-removal.test.cjs",
+    runner: "node",
+  },
+  {
+    name: "a superseded identity response overwrites a just-filed registration",
+    shape: "a version guard removed",
+    file: "src/utils/labelIdentityStore.js",
+    from: `        if (startedAt === version) latest = map;   // otherwise superseded — discard`,
+    to: `        latest = map;`,
+    test: "src/utils/labelIdentityStore.test.js",
+    runner: "vitest",
+  },
+  {
+    name: "every registration costs a full 150KB refetch again",
+    shape: "a patch turned back into an invalidate",
+    file: "src/utils/labelIdentityStore.js",
+    from: `  if (c.length === prev.c.length && a.length === prev.a.length) return;
+  latest = { ...latest, [productId]: { c, a } };`,
+    to: `  if (c.length === prev.c.length && a.length === prev.a.length) return;
+  needsFetch = true;`,
+    test: "src/utils/labelIdentityStore.test.js",
+    runner: "vitest",
+  },
+  {
+    name: "a hostile product id breaks the whole identity map",
+    shape: "a null prototype removed",
+    file: "functions/lib/label-identity.cjs",
+    from: `  const map = Object.create(null);`,
+    to: `  const map = {};`,
+    test: "test/label-identity.test.cjs",
+    runner: "node",
+  },
+  {
+    // NOTE: mutating ONLY the hasOwnProperty call is not observable — the
+    // typeof check below it independently rejects the inherited FUNCTIONS
+    // ("constructor", "toString", "valueOf"), and Object.prototype itself
+    // carries no `c`/`a`. Both guards are kept because each covers a case the
+    // other does not, but the load-bearing one for THIS behaviour is the whole
+    // lookup, so that is what this mutation removes.
+    name: "an inherited key fakes a registration and hides a real leftover",
+    shape: "an ownership guard removed",
+    file: "src/utils/labelIdentity.js",
+    from: `  if (!id || !identityMap || !Object.prototype.hasOwnProperty.call(identityMap, id)) return null;
+  const entry = identityMap[id];
+  return entry && typeof entry === "object" ? entry : null;`,
+    to: `  return (id && identityMap && identityMap[id]) || null;`,
+    test: "src/utils/labelIdentity.test.js",
     runner: "vitest",
   },
 ];

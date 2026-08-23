@@ -38,7 +38,7 @@ import CameraScanner from "./CameraScanner.jsx";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import CandidateCards from "../shared/CandidateCards.jsx";
 import IdentityLine from "../shared/IdentityLine.jsx";
-import { mergeTargetPool, mergeTargetMatches } from "./mergeSearch";
+import { mergeTargetPool, mergeTargetMatches, rowLabel } from "./mergeSearch";
 import { identityFor } from "../../utils/labelIdentity";
 import { useLabelIdentity } from "../../utils/labelIdentityStore";
 import { planMerge, outcomeLines } from "./mergeDisposition";
@@ -49,6 +49,11 @@ const mergeProductsFn = httpsCallable(functions, "mergeProducts");
 // How many result rows are on screen before "show more". Not a cap: the list
 // below states how many further matches there are, and the button reaches them.
 const PAGE = 40;
+
+// The plan has three states, not two: null = still working it out, PLAN_ERROR =
+// it could not be worked out, an array = the answer. Collapsing the middle one
+// onto an empty array made the screen state the opposite of the truth.
+const PLAN_ERROR = "error";
 
 function Photo({ url, size = 88 }) {
   if (!url) return <div style={{ width: size, height: size, borderRadius: 14, background: "rgba(120,150,255,.08)",
@@ -92,7 +97,7 @@ function TargetRow({ product, identityMap, allStock, registry, onPick }) {
                  textAlign: "left", cursor: "pointer", background: "transparent", border: "none", color: "inherit" }}>
         <Photo url={product.photoUrl} size={72} />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 14.5, fontWeight: 800, lineHeight: 1.3 }}>{product.name}</div>
+          <div style={{ fontSize: 14.5, fontWeight: 800, lineHeight: 1.3 }}>{rowLabel(product)}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 }}>
             {locs.length === 0
               ? <span style={{ fontSize: 11.5, color: GRAY }}>No stock anywhere</span>
@@ -134,6 +139,14 @@ function OutcomePlan({ plan, planFailed, loser, survivor, allStock, registry }) 
     return (
       <div style={{ marginTop: 14, fontSize: 13, color: AMBER }}>
         Checking what has already been counted at each location…
+      </div>
+    );
+  }
+  if (plan === PLAN_ERROR) {
+    return (
+      <div style={{ marginTop: 14, fontSize: 13, color: RED, lineHeight: 1.55 }}>
+        The outcome could not be worked out — the count records could not be read. Nothing has been changed and this
+        merge cannot go ahead until they can be. Close this and try again.
       </div>
     );
   }
@@ -253,7 +266,11 @@ export default function MergeProducts({
   const [limit, setLimit] = useState(PAGE);
   // A new query starts at the top of its own list — carrying a "show more"
   // depth across searches shows a hundred rows of something nobody asked for.
-  useEffect(() => { setLimit(PAGE); }, [query, loser]);
+  // Functional form so React BAILS OUT when the window is already at PAGE.
+  // A plain setLimit(PAGE) is a state write on every mount, which costs an
+  // extra render pass of the whole screen — including a remount-shaped
+  // re-render of the label reader beneath it.
+  useEffect(() => { setLimit((n) => (n === PAGE ? n : PAGE)); }, [query, loser]);
 
   // A product this screen may offer as the survivor: real, loadable, not
   // merged away, and not the record being merged away itself.
@@ -394,13 +411,26 @@ export default function MergeProducts({
         setPlanFailed(failed);
         setPlan(planMerge({ loserId: loser.id, survivorId: survivor.id, loserCells, countedByLoc }));
       })
-      .catch(() => { if (alive) { setPlanFailed(Object.keys(loserCells)); setPlan([]); } });
+      .catch(() => {
+        // NOT setPlan([]) — an empty plan means "the loser holds nothing
+        // anywhere", and printing that about a product holding 22 units while
+        // enabling the MERGE button is the worst thing this screen could do.
+        // A third state says the truth: we could not work it out.
+        if (alive) { setPlanFailed(Object.keys(loserCells)); setPlan(PLAN_ERROR); }
+      });
     return () => { alive = false; };
   }, [loser, survivor, allStock]);
 
   const swap = () => { const l = loser; setLoser(survivor); setSurvivor(l); };
 
   const commit = async () => {
+    // The guard lives in the FUNCTION, not only on the button. A disabled
+    // attribute is a UI affordance; this is the rule. A merge must never fire
+    // against an outcome nobody was shown.
+    if (plan === null || plan === PLAN_ERROR) {
+      setError("The outcome hasn't been worked out yet — nothing was changed.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -596,12 +626,12 @@ export default function MergeProducts({
               </div>
             )}
 
-            <button type="button" disabled={busy || !allStock || plan === null} onClick={commit}
+            <button type="button" disabled={busy || !allStock || plan === null || plan === PLAN_ERROR} onClick={commit}
               style={{ width: "100%", minHeight: 66, borderRadius: 15, fontSize: 18, fontWeight: 900, fontFamily: FONT,
-                       cursor: busy || !allStock || plan === null ? "not-allowed" : "pointer", marginTop: 16,
-                       opacity: busy || !allStock || plan === null ? 0.5 : 1,
+                       cursor: busy || !allStock || plan === null || plan === PLAN_ERROR ? "not-allowed" : "pointer", marginTop: 16,
+                       opacity: busy || !allStock || plan === null || plan === PLAN_ERROR ? 0.5 : 1,
                        background: "rgba(248,113,113,.16)", border: "2px solid rgba(248,113,113,.55)", color: "#FFC9C9" }}>
-              {busy ? "Merging…" : plan === null ? "Working out what happens…" : "MERGE — one product remains"}
+              {busy ? "Merging…" : plan === PLAN_ERROR ? "Can\u2019t merge — the outcome is unknown" : plan === null ? "Working out what happens…" : "MERGE — one product remains"}
             </button>
             <div style={{ fontSize: 11.5, color: GRAY, marginTop: 10, lineHeight: 1.5 }}>
               Admin-only, atomic, and recorded: the server refuses anything uncertain and keeps the full

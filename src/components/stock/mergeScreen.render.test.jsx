@@ -191,13 +191,20 @@ describe("the confirm screen states the outcome and asks nothing", () => {
     expect(json).toContain("16 at Central will move across");
   });
 
-  it("shows the per-location totals before and after", async () => {
+  it("shows the per-location totals before and after, as one composed line", async () => {
+    // Asserting the individual numbers was VACUOUS: "17" is also the stock
+    // chip, "16" is also the outcome sentence, and "0" matches any inline
+    // style number in the serialised tree. Deleting the whole totals line
+    // still passed. The composed string can only come from that line.
     const tr = await openConfirm();
-    const json = textOf(tr);
-    expect(json).toContain("17");   // survivor at Hub 1, before
-    expect(json).toContain("→");
-    expect(json).toContain("0");    // survivor at Central before → 16 after
-    expect(json).toContain("16");
+    const lines = [...allOfType(tr, "div"), ...allOfType(tr, "span")].map(flatText);
+    // A removal: the survivor's total at Hub 1 does NOT move.
+    expect(lines.some((l) => l.includes("Lacoste Audysol White at Hub 1: 17 → 17"))).toBe(true);
+    // A transfer: Central goes 0 → 16.
+    expect(lines.some((l) => l.includes("Lacoste Audysol White at Central: 0 → 16"))).toBe(true);
+    // And the loser ends at zero at both.
+    expect(lines.some((l) => l.includes("Lacoste Audyssor White Gray (dup): 6 → 0"))).toBe(true);
+    expect(lines.some((l) => l.includes("Lacoste Audyssor White Gray (dup): 16 → 0"))).toBe(true);
   });
 
   it("offers NO choice and NO toggle about what happens to the stock", async () => {
@@ -245,5 +252,32 @@ describe("the confirm screen states the outcome and asks nothing", () => {
     expect(waiting[0].props.disabled).toBe(true);
     spy.mockRestore();
     if (resolvePlan) resolvePlan({ countedByLoc: {}, failed: [] });
+  });
+});
+
+describe("when the outcome cannot be worked out", () => {
+  it("never claims the loser holds no stock, and refuses to commit", async () => {
+    const mod = await import("./mergeDispositionStore");
+    const spy = vi.spyOn(mod, "loadCountedFor").mockRejectedValue(new Error("denied"));
+    let tr;
+    await act(async () => {
+      tr = TestRenderer.create(
+        <MergeProducts initialLoser={LOSER} initialSurvivor={TWIN} products={[TWIN]}
+                       allStock={ALL_STOCK} registry={REGISTRY}
+                       onClose={() => {}} onMerged={() => {}} />,
+      );
+    });
+    await act(async () => {});
+    const json = textOf(tr);
+    // The sentence that would have been a lie: this loser holds 22 units.
+    expect(json).not.toContain("holds no stock anywhere");
+    expect(json).toContain("The outcome could not be worked out");
+    const commit = buttonsSaying(tr, /Can.t merge/);
+    expect(commit.length).toBe(1);
+    expect(commit[0].props.disabled).toBe(true);
+    expect(buttonsSaying(tr, /MERGE — one product remains/).length).toBe(0);
+    await act(async () => { commit[0].props.onClick?.(); });
+    expect(mergeCall).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

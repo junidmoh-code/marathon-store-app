@@ -17,10 +17,19 @@
 // arrived: an EMPTY map degrades to exactly the old behaviour (the style-code
 // field alone), never to "everything is registered" and never to "nothing is".
 
+// The map arrives as parsed JSON, so it has Object.prototype — and a product id
+// of "constructor" or "toString" would resolve to an inherited function rather
+// than an entry. Every lookup goes through this one guard.
+function entryFor(identityMap, id) {
+  if (!id || !identityMap || !Object.prototype.hasOwnProperty.call(identityMap, id)) return null;
+  const entry = identityMap[id];
+  return entry && typeof entry === "object" ? entry : null;
+}
+
 /** The identity entry for one product, normalised. Never null. */
 export function identityFor(product, identityMap) {
   const id = product && product.id;
-  const entry = (id && identityMap && identityMap[id]) || null;
+  const entry = entryFor(identityMap, id);
   const codes = [];
   const push = (c) => { if (c && !codes.includes(c)) codes.push(c); };
   // The product's own field leads — it is the canonical code, and it is the one
@@ -43,7 +52,7 @@ export function identityFor(product, identityMap) {
 export function isRegistered(product, identityMap) {
   if (!product) return false;
   if (product.styleCodeNormalised) return true;
-  const entry = (product.id && identityMap && identityMap[product.id]) || null;
+  const entry = entryFor(identityMap, product.id);
   if (!entry) return false;
   return (Array.isArray(entry.c) && entry.c.length > 0)
       || (Array.isArray(entry.a) && entry.a.length > 0);
@@ -57,7 +66,7 @@ export function isRegistered(product, identityMap) {
 export function registrationRoute(product, identityMap) {
   if (!product) return null;
   if (product.styleCodeNormalised) return "code";
-  const entry = (product.id && identityMap && identityMap[product.id]) || null;
+  const entry = entryFor(identityMap, product.id);
   if (!entry) return null;
   if (Array.isArray(entry.c) && entry.c.length) return "claim-or-alias";
   if (Array.isArray(entry.a) && entry.a.length) return "claim-or-alias";

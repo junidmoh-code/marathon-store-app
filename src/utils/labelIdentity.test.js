@@ -72,3 +72,19 @@ describe("searchTermsFor", () => {
     expect(terms).toContain("AIR");
   });
 });
+
+describe("a hostile product id cannot fake a registration", () => {
+  it("a product whose id is 'constructor' is not registered by Object.prototype", () => {
+    // The map arrives as parsed JSON, so it HAS Object.prototype. A bare
+    // identityMap[id] lookup would resolve "constructor" to a function and
+    // read as a registered product — quietly hiding a real leftover.
+    expect(isRegistered({ id: "constructor", name: "Odd" }, {})).toBe(false);
+    expect(isRegistered({ id: "toString", name: "Odd" }, {})).toBe(false);
+    expect(isRegistered({ id: "valueOf", name: "Odd" }, {})).toBe(false);
+    expect(identityFor({ id: "constructor" }, {})).toEqual({ codes: [], aliases: [] });
+  });
+
+  it("but a REAL entry under such an id still works", () => {
+    expect(isRegistered({ id: "constructor" }, { constructor: { c: ["X"], a: [] } })).toBe(true);
+  });
+});

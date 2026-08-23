@@ -70,7 +70,7 @@
 "use strict";
 
 const {
-  COUNT_SESSIONS_PATH, COUNTED_PATH, countedCellKeys, planMerge,
+  COUNT_SESSIONS_PATH, COUNTED_PATH, countedCellKeys, countCellKey, countRecordCounts, planMerge,
 } = require("./merge-disposition.cjs");
 
 const MERGE_LOCK_STALE_MS = 10 * 60 * 1000; // takeover window for a crashed merge
@@ -98,6 +98,19 @@ class MergeRefused extends Error {
 }
 
 const asQty = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
+
+/**
+ * Read a path, or REFUSE with a coded message. A raw throw from a `.get()`
+ * escapes as a generic "internal" error, which tells the operator nothing and
+ * reads like a bug rather than a retryable condition.
+ */
+async function readOrRefuse(db, path, message) {
+  try {
+    return (await db.ref(path).get()).val();
+  } catch (err) {
+    throw new MergeRefused("failed-precondition", `${message} (${err && err.message ? err.message : err})`);
+  }
+}
 
 // Key-order-independent equality for the drift fences. RTDB hands back plain
 // objects whose key order is the wire's, not ours, so a raw JSON.stringify
@@ -192,22 +205,42 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
 
     // ── THE COUNT STATE, READ ONLY WHERE IT CAN CHANGE THE ANSWER ────────────
     // Only a location the LOSER holds stock at has a cell to dispose of, so the
-    // counted node is read for those locations and no others. A location with
-    // no open count session, or an unreadable node, yields an EMPTY counted set
-    // — and an empty set makes every cell TRANSFER, which is the pre-existing
-    // behaviour. The count state can only ever turn a transfer into a removal
-    // on positive evidence; it can never fail into one.
-    const sessions = (await db.ref(COUNT_SESSIONS_PATH).get()).val() || {};
+    // counted node is read for those locations and no others.
+    //
+    // A location with NO OPEN SESSION is not an error — it has counted nothing,
+    // so its set is empty and every cell there transfers. That is the normal
+    // case at Central.
+    //
+    // A node that CANNOT BE READ is different, and it REFUSES. Two reasons, and
+    // either is sufficient. First, this module's rule everywhere else is that
+    // uncertainty refuses rather than guesses — the /locations read above
+    // already works exactly this way. Second, the client has already told the
+    // operator, per location, what will happen; silently transferring because a
+    // read failed would do something other than what the screen said, on stock.
+    // A refused merge writes nothing and can be retried.
+    const sessions = await readOrRefuse(db, COUNT_SESSIONS_PATH,
+      "The hub count sessions could not be read — merge refused rather than guessed.") || {};
     const countedByLoc = {};
+    const sessionIdByLoc = {};
     for (const loc of Object.keys(loserCells)) {
       const sessionId = sessions[loc] && sessions[loc].sessionId;
       if (!sessionId) { countedByLoc[loc] = new Set(); continue; }
-      const node = (await db.ref(`${COUNTED_PATH}/${loc}/${sessionId}`).get()).val();
+      sessionIdByLoc[loc] = sessionId;
+      const node = await readOrRefuse(db, `${COUNTED_PATH}/${loc}/${sessionId}`,
+        `The count records at ${loc} could not be read — merge refused rather than guessed.`);
       countedByLoc[loc] = countedCellKeys(node);
     }
     const plan = planMerge({ loserId, survivorId, loserCells, countedByLoc });
     const removeKeys = new Set();
-    for (const row of plan) for (const c of row.remove) removeKeys.add(`${row.loc}/${c.sizeKey}`);
+    const removalFenceCells = [];   // the exact records each removal rests on
+    for (const row of plan) {
+      for (const c of row.remove) {
+        removeKeys.add(`${row.loc}/${c.sizeKey}`);
+        removalFenceCells.push({
+          loc: row.loc, sizeKey: c.sizeKey, sessionId: sessionIdByLoc[row.loc],
+        });
+      }
+    }
 
     // ── BUILD THE ONE ATOMIC UPDATE ──────────────────────────────────────────
     const updates = {};
@@ -435,8 +468,20 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     const loserProbes = locationIds.map((loc) => ({
       loc, node: loserNodes[loc] || null, p: probe(`stock/${loc}/${loserId}`),
     }));
+    // THE REMOVAL FENCE. A transfer is fenced by the survivor cell it writes;
+    // a REMOVAL writes no survivor cell, so nothing above covers the one fact
+    // it rests on — that this shelf, in this size, is counted under the
+    // survivor. If that record were staled or deleted between the read and the
+    // commit, the merge would write off units nobody ever counted. Each
+    // removal re-reads its OWN count record (a single key, not the node) in the
+    // same round trip as everything else.
+    const removalProbes = removalFenceCells.map((c) => ({
+      ...c,
+      p: probe(`${COUNTED_PATH}/${c.loc}/${c.sessionId}/${countCellKey(survivorId, c.sizeKey)}`),
+    }));
     const survivorLive = await Promise.all(survivorProbes.map((x) => x.p));
     const loserLive = await Promise.all(loserProbes.map((x) => x.p));
+    const removalLive = await Promise.all(removalProbes.map((x) => x.p));
 
     for (let i = 0; i < survivorProbes.length; i += 1) {
       const { loc, sCell } = survivorProbes[i];
@@ -457,6 +502,14 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       if (stableJson(loserLive[i].val()) !== stableJson(node)) {
         throw new MergeRefused("aborted",
           `The product being merged away had its stock at ${loc} changed while the merge was being prepared. Nothing was changed — try again.`);
+      }
+    }
+
+    for (let i = 0; i < removalProbes.length; i += 1) {
+      const { loc, sizeKey } = removalProbes[i];
+      if (!countRecordCounts(removalLive[i].val())) {
+        throw new MergeRefused("aborted",
+          `The count of ${decodeSizeKey(sizeKey)} at ${loc} changed while the merge was being prepared, so its stock is no longer safe to write off. Nothing was changed — try again.`);
       }
     }
 

@@ -43,15 +43,25 @@
 // which the live taxonomy files under footwear but the classifier's key list
 // (a marathon-pos-app MIRROR, and therefore not editable from here) omits.
 //
-// ── THE ONE PLACE THE POOL IS NOT FOOTWEAR-ONLY ──────────────────────────────
-// The picker is also reachable from a duplicate collision on a NON-footwear
-// product. Restricting the pool to footwear there would leave a duplicated
-// t-shirt with no target at all — removing a working path to obey an
-// instruction that was about shoes. So the rule is stated as "same side of the
-// classifier as the LOSER": a footwear loser gets a footwear-only pool (the
-// instruction, exactly), a non-footwear loser gets the non-footwear pool. You
-// can never merge a t-shirt into a sneaker either way, which is the property
-// the footwear filter was protecting.
+// ── THE FILTER IS ONE-DIRECTIONAL, AND THAT IS DELIBERATE ────────────────────
+// A FOOTWEAR loser gets a footwear-only pool — the owner's instruction, exactly.
+// A NON-FOOTWEAR loser gets the WHOLE pool, not the non-footwear complement.
+//
+// The symmetric version ("the same side of the classifier as the loser") was
+// written first and is wrong, for the reason this whole PR exists. The picker is
+// reachable from a duplicate collision on a badly-categorised record — a
+// `designer-shoes` key the classifier does not admit, or an empty categoryKey
+// with a legacy `category` of "Sneakers" rather than the exact string
+// "Footwear". Those records read as NOT footwear, so a symmetric filter would
+// hand them the non-footwear complement and hide their real sneaker twin
+// completely, ending on "there is nothing else in this catalogue to merge
+// into". Badly-categorised junk is precisely the population that produces
+// unmergeable duplicates, so the filter would have bitten hardest exactly where
+// the feature is needed.
+//
+// One-directional keeps the property the footwear filter was protecting — you
+// can never merge a sneaker into a t-shirt, because a footwear loser only ever
+// sees footwear — while never letting the classifier produce a dead end.
 
 import { productIsFootwear } from "../../utils/footwearLine.js";
 import { isMergedAway } from "../../utils/mergedProducts.js";
@@ -64,7 +74,7 @@ export function mergeTargetPool(products, loser) {
   return (products || []).filter((p) => (
     p && p.id && !isMergedAway(p)
     && p.id !== (loser && loser.id)
-    && productIsFootwear(p) === loserIsFootwear
+    && (!loserIsFootwear || productIsFootwear(p))
   ));
 }
 
@@ -113,6 +123,35 @@ export function matchesQuery(product, rawQuery, identityMap) {
  */
 export function mergeTargetMatches(pool, query, identityMap) {
   const out = (pool || []).filter((p) => matchesQuery(p, query, identityMap));
-  out.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  // NAMELESS ROWS SORT LAST. An empty string sorts FIRST, which put anonymous
+  // cards at the top of the default list — the first thing an operator sees
+  // when the screen opens, and the worst possible first row for a destructive,
+  // admin-only action taken against an unidentifiable record.
+  out.sort((a, b) => {
+    const an = displayName(a);
+    const bn = displayName(b);
+    if (!an !== !bn) return an ? -1 : 1;
+    return an.localeCompare(bn);
+  });
   return out;
+}
+
+/**
+ * The name to RENDER. `/products` has no schema, so a name can be missing,
+ * empty, numeric or an object — and an object handed straight to React as a
+ * child crashes the whole merge screen. Coerced here, once, and never rendered
+ * as an unexplained blank row.
+ */
+export function displayName(product) {
+  const raw = product && product.name;
+  if (raw == null) return "";
+  if (typeof raw === "object") return "";
+  return String(raw).trim();
+}
+
+/** What the row shows when there is no usable name — never a blank card. */
+export function rowLabel(product) {
+  const name = displayName(product);
+  if (name) return name;
+  return `(no name — id ${product && product.id ? String(product.id) : "unknown"})`;
 }

@@ -18,7 +18,7 @@
 // utils/productIdentity.identityFor — this file has no store, no fetch and no
 // opinion about where the map came from, so it renders identically in a test.
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 
 const GRAY = "rgba(233,238,255,.5)";
@@ -34,10 +34,18 @@ async function copyText(text) {
     const el = document.createElement("textarea");
     el.value = text;
     el.setAttribute("readonly", "");
+    el.contentEditable = "true";
     el.style.position = "fixed";
     el.style.opacity = "0";
     document.body.appendChild(el);
+    // iOS Safari ignores a bare select() on a readonly textarea — it needs the
+    // focus and an explicit range, which is why the plain pattern returns false
+    // on the very devices this app runs on. The primary navigator.clipboard
+    // path works on the HTTPS origin; this is the degraded case, and a visible
+    // "copy failed" beats a dead tap either way.
+    el.focus();
     el.select();
+    if (typeof el.setSelectionRange === "function") el.setSelectionRange(0, text.length);
     const ok = document.execCommand && document.execCommand("copy");
     document.body.removeChild(el);
     return !!ok;
@@ -48,6 +56,12 @@ async function copyText(text) {
 
 function Chip({ text, label, tone = "code", disabled }) {
   const [state, setState] = useState(null); // "copied" | "failed"
+  // The flash timer is owned, not fired and forgotten: a second tap must reset
+  // it (otherwise tap 2's "✓ copied" is cleared early by tap 1's timer), and an
+  // unmount must cancel it. These chips sit inside rows that unmount the moment
+  // the operator picks the product.
+  const timer = useRef(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   const tones = {
     code:  { bg: "rgba(74,127,255,.14)", border: "1px solid rgba(74,127,255,.42)", color: "#CFE0FF" },
     alias: { bg: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.16)", color: "rgba(233,238,255,.72)" },
@@ -58,11 +72,12 @@ function Chip({ text, label, tone = "code", disabled }) {
       onClick={async () => {
         const ok = await copyText(text);
         setState(ok ? "copied" : "failed");
-        setTimeout(() => setState(null), 1400);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => { timer.current = null; setState(null); }, 1400);
       }}
       title={`Tap to copy ${text}`}
-      style={{ fontSize: 12.5, fontWeight: 800, padding: "6px 10px", borderRadius: 9,
-               fontFamily: "inherit", cursor: disabled ? "default" : "pointer",
+      style={{ fontSize: 12.5, fontWeight: 800, padding: "0 12px", borderRadius: 9,
+               minHeight: 44, fontFamily: "inherit", cursor: disabled ? "default" : "pointer",
                letterSpacing: ".02em", maxWidth: "100%", overflow: "hidden",
                textOverflow: "ellipsis", whiteSpace: "nowrap",
                background: t.bg, border: t.border, color: t.color }}>

@@ -21,6 +21,11 @@ const ACTOR = { uid: "admin1", email: "gunidmoh@gmail.com" };
 function fakeDb(initial = {}) {
   const data = JSON.parse(JSON.stringify(initial));
   const updates = [];
+  // { match, fn, skip } — fires ONCE after a get whose path includes `match`,
+  // once `skip` earlier matches have gone by, modelling a concurrent write that
+  // lands AFTER the merge read that path.
+  let onGet = null;
+  const failing = new Set();
   const at = (path) => String(path).split("/").filter(Boolean)
     .reduce((n, k) => (n == null ? undefined : n[k]), data);
   const put = (path, value) => {
@@ -37,10 +42,17 @@ function fakeDb(initial = {}) {
   return {
     data,
     updates,
+    afterGetOf(match, fn, skip = 0) { onGet = { match, fn, skip }; },
+    failGet(prefix) { failing.add(prefix); },
     ref(path = "") {
       return {
         async get() {
           await Promise.resolve();
+          for (const p of failing) if (String(path).startsWith(p)) throw new Error("PERMISSION_DENIED");
+          if (onGet && String(path).includes(onGet.match)) {
+            if (onGet.skip > 0) onGet.skip -= 1;
+            else { const { fn } = onGet; onGet = null; fn({ getPath: at, setPath: put }); }
+          }
           const v = at(path);
           const val = v === undefined ? null : (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
           return { val: () => val, exists: () => val !== null };
@@ -298,4 +310,46 @@ test("counted records from an OLD session are ignored — only the live session 
   const db = fakeDb(w);
   const out = await run(db);
   assert.deepStrictEqual(out.removed, []);
+});
+
+// ─── THE REMOVAL FENCE — the one window a removal could be wrong ─────────────
+test("a removal REFUSES if its count record is staled between the read and the commit", async () => {
+  const db = fakeDb(world());
+  // A concurrent shipment release stales the survivor's counted cell after the
+  // merge has read it. A transfer would be caught by the survivor-cell fence;
+  // a removal writes no survivor cell, so it needs its own.
+  db.afterGetOf("stock/hub1/pLoser", ({ setPath }) => {
+    setPath(`settings/hubSneakerCount/counted/hub1/${HUB1_SESSION}/pSurvivor::9/staleAt`, NOW);
+  }, 1);
+  await assert.rejects(() => run(db), (err) => err.refused && /no longer safe to write off/i.test(err.message));
+  assert.strictEqual(db.data.stock.hub1.pLoser["9"].qty, 6, "nothing was written off");
+  assert.ok(db.data.stock.central.pLoser, "and nothing else was committed either");
+});
+
+test("a removal REFUSES if its count record is deleted between the read and the commit", async () => {
+  const db = fakeDb(world());
+  db.afterGetOf("stock/hub1/pLoser", ({ setPath }) => {
+    setPath(`settings/hubSneakerCount/counted/hub1/${HUB1_SESSION}/pSurvivor::9`, null);
+  }, 1);
+  await assert.rejects(() => run(db), (err) => err.refused);
+  assert.strictEqual(db.data.stock.hub1.pLoser["9"].qty, 6);
+});
+
+// ─── UNREADABLE COUNT RECORDS REFUSE, THEY DO NOT GUESS ─────────────────────
+test("an unreadable count node refuses with a coded message and releases the lock", async () => {
+  const db = fakeDb(world());
+  db.failGet("settings/hubSneakerCount/counted/hub1");
+  await assert.rejects(() => run(db), (err) => err.refused
+    && err.code === "failed-precondition"
+    && /count records at hub1 could not be read/i.test(err.message));
+  assert.deepStrictEqual(db.data.product_merges_locks, {}, "the lock is released on the refusal");
+  assert.strictEqual(db.data.stock.hub1.pLoser["9"].qty, 6, "nothing was changed");
+});
+
+test("an unreadable SESSIONS node refuses too — it is never treated as 'nothing counted'", async () => {
+  const db = fakeDb(world());
+  db.failGet("settings/hubSneakerCount/sessions");
+  await assert.rejects(() => run(db), (err) => err.refused
+    && /hub count sessions could not be read/i.test(err.message));
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["9"].qty, 17, "and hub 1 was NOT silently double-counted");
 });

@@ -3,7 +3,7 @@
 // the defect: a twin that cannot be found can never be merged.
 
 import { describe, it, expect } from "vitest";
-import { mergeTargetPool, mergeTargetMatches, matchesQuery } from "./mergeSearch.js";
+import { mergeTargetPool, mergeTargetMatches, matchesQuery, rowLabel, displayName } from "./mergeSearch.js";
 
 const sneaker = (over = {}) => ({
   id: "s1", name: "Nike Air Force 1 White", categoryKey: "sneakers", ...over,
@@ -45,11 +45,31 @@ describe("the pool", () => {
     expect(pool.map((x) => x.id).sort()).toEqual(["ks", "lg", "sb", "sl"]);
   });
 
-  it("a NON-footwear loser gets the non-footwear pool — a duplicate t-shirt keeps a target", () => {
+  it("a NON-footwear loser gets the WHOLE pool — never a dead end", () => {
     const shirtLoser = { id: "tl", name: "Nike Tee (dup)", categoryKey: "t-shirts" };
     const shirt = { id: "t1", name: "Nike Tee", categoryKey: "t-shirts" };
     const pool = mergeTargetPool([shirt, sneaker()], shirtLoser);
-    expect(pool.map((x) => x.id)).toEqual(["t1"]);
+    expect(pool.map((x) => x.id).sort()).toEqual(["s1", "t1"]);
+  });
+
+  it("a BADLY-CATEGORISED shoe can still reach its real sneaker twin", () => {
+    // designer-shoes is footwear in the live taxonomy but absent from the
+    // cross-app classifier's key list, so it reads as NOT footwear. A symmetric
+    // filter would have hidden its twin completely.
+    const odd = { id: "ds", name: "Gucci Ace (dup)", categoryKey: "designer-shoes" };
+    const twin = sneaker({ id: "real", name: "Gucci Ace" });
+    expect(mergeTargetPool([twin], odd).map((x) => x.id)).toEqual(["real"]);
+  });
+
+  it("a legacy record with a non-'Footwear' category still reaches its twin", () => {
+    const odd = { id: "lg", name: "Air Max (dup)", category: "Sneakers" };  // not the exact legacy string
+    const twin = sneaker({ id: "real", name: "Nike Air Max" });
+    expect(mergeTargetPool([twin], odd).map((x) => x.id)).toEqual(["real"]);
+  });
+
+  it("a FOOTWEAR loser still never sees a t-shirt — the property being protected", () => {
+    const shirt = { id: "t1", name: "Nike Tee", categoryKey: "t-shirts" };
+    expect(mergeTargetPool([shirt, sneaker()], LOSER).map((x) => x.id)).toEqual(["s1"]);
   });
 });
 
@@ -110,5 +130,32 @@ describe("results", () => {
       "", null,
     );
     expect(hits.map((h) => h.name)).toEqual(["Alpha", "Bravo"]);
+  });
+});
+
+describe("a product with no usable name is still identifiable, and never leads", () => {
+  const nameless = { id: "n1", categoryKey: "sneakers" };
+  const objectName = { id: "n2", categoryKey: "sneakers", name: { en: "oops" } };
+
+  it("renders a label naming its id rather than a blank card", () => {
+    expect(rowLabel(nameless)).toBe("(no name — id n1)");
+    expect(rowLabel(objectName)).toBe("(no name — id n2)");
+    expect(rowLabel(sneaker())).toBe("Nike Air Force 1 White");
+  });
+
+  it("an object name never reaches the renderer as an object", () => {
+    expect(typeof displayName(objectName)).toBe("string");
+    expect(displayName(objectName)).toBe("");
+  });
+
+  it("nameless rows sort LAST, so they are never the first thing an operator taps", () => {
+    const hits = mergeTargetMatches(
+      mergeTargetPool([nameless, sneaker({ id: "z", name: "Zebra" }), sneaker({ id: "a", name: "Alpha" })], LOSER), "", null,
+    );
+    expect(hits.map((h) => h.id)).toEqual(["a", "z", "n1"]);
+  });
+
+  it("a nameless product is still findable by its code", () => {
+    expect(matchesQuery(nameless, "BQ681", { n1: { c: ["BQ6817302"], a: [] } })).toBe(true);
   });
 });

@@ -56,7 +56,13 @@ function addCode(map, productId, code) {
  * @returns {object} { [productId]: { c: string[], a: string[][] } }
  */
 function buildIdentityMap(aliasesNode, styleIndexNode) {
-  const map = {};
+  // A NULL-PROTOTYPE map. /label_aliases holds whatever was written to it, and
+  // a record whose productId is "__proto__" (or "constructor", or "toString")
+  // would, on a plain object literal, either hit a setter and create no own
+  // property — leaving `map[pid]` undefined and `entry.c.push` throwing — or
+  // return a function. Either way ONE bad record breaks the whole map and every
+  // screen that reads it. A null prototype has no such keys to collide with.
+  const map = Object.create(null);
 
   for (const rec of Object.values(aliasesNode || {})) {
     if (!rec || typeof rec !== "object") continue;

@@ -75,12 +75,25 @@ import CameraScanner from "./CameraScanner.jsx";
 import CandidateCards from "../shared/CandidateCards.jsx";
 import IdentityLine from "../shared/IdentityLine.jsx";
 import { identityFor } from "../../utils/labelIdentity";
-import { useLabelIdentity, invalidateIdentity } from "../../utils/labelIdentityStore";
+import { useLabelIdentity, invalidateIdentity, noteRegistered } from "../../utils/labelIdentityStore";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import MergeProducts from "./MergeProducts.jsx";
 import HubSneakerCount from "./HubSneakerCount.jsx";
 
 const qtyOf = (cell) => (cell && typeof cell.qty === "number" ? cell.qty : 0);
+
+// The SHOP codes a product carries — the printed sticker and the SKU, not the
+// manufacturer's label number. A leftover has no label identity by definition,
+// but it may well have one of these, and it is the only string on the card an
+// operator can carry to the merge search.
+function shopCodesOf(product) {
+  const out = [];
+  for (const v of [product && product.barcode, product && product.sku, product && product.printedBarcode]) {
+    const s = v == null ? "" : String(v).trim();
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
 
 
 // ─── Shared bits ─────────────────────────────────────────────────────────────
@@ -948,6 +961,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     if (!hubStock || !identity.ready) return [];
     return buildLeftovers({ hub, products, hubStock, registered, allStock, identityMap: identity.map });
   }, [hub, products, hubStock, registered, allStock, identity.map, identity.ready]);
+  // "We don't know yet" and "there is nothing" must never look the same on a
+  // warehouse phone: a green "Nothing left over" tick shown while the identity
+  // stores are still answering reads as "the pass is finished". `ready` goes
+  // true once and never back, so this covers the FIRST load only — a later
+  // refresh keeps the list on screen and says so beside it.
+  const leftoversUnknown = !identity.ready;
 
   const refreshAfterMerge = useCallback(async () => {
     setMerge(null);
@@ -973,9 +992,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       if (!res.ok) { flash("err", res.message || "Could not register."); return; }
       // A registration may have filed a style code, a code alias or a wording
       // alias. The identity map is what Leftovers reads to decide "registered",
-      // so it is dropped HERE — that is what takes the card off the list in the
-      // same session, with no reload (owner rule 2026-08-23).
-      invalidateIdentity();
+      // so it is PATCHED here with exactly what was written — that takes the
+      // card off the list in the same session, with no reload and with no
+      // round trip (owner rule 2026-08-23). A 200-shoe pass used to be 200
+      // refetches of two whole nodes, each one briefly emptying the list.
+      if (styleCode) {
+        noteRegistered(product.id, {
+          codes: [styleCode.code, ...(styleCode.allCodes || [])].filter(Boolean),
+          tokens: styleCode.aliasTokens || null,
+        });
+      }
       setRegistered(await loadRegister(hub));
       setHubStock(await loadHubStock(hub));
       if (res.warning) flash("warn", res.warning, 9000);
@@ -1074,8 +1100,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         }
       }
       // Whichever branch ran, a code or a wording is now filed against p — so
-      // p is REGISTERED and must leave Leftovers immediately.
-      invalidateIdentity();
+      // p is REGISTERED and must leave Leftovers immediately. Patched, not
+      // refetched: the client knows exactly what it just wrote.
+      noteRegistered(p.id, panel.kind === "code"
+        ? { codes: [panel.normalised, ...(panel.allCodes || [])].filter(Boolean) }
+        : { tokens: panel.tokens || null });
       setPanel(countPanelFor(p));
       setQuery("");
     } finally { setBusy(false); }
@@ -1149,7 +1178,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
 
         {/* Tabs + zone progress: scanned versus expected, always visible. */}
         <div style={{ display: "flex", gap: 8, margin: "8px 0 6px" }}>
-          {[["register", "Register"], ["count", "Count"], ["leftovers", `Leftovers${hubStock ? ` · ${leftovers.length}` : ""}`]].map(([id, label]) => (
+          {[["register", "Register"], ["count", "Count"], ["leftovers", `Leftovers${hubStock && !leftoversUnknown ? ` · ${leftovers.length}` : ""}`]].map(([id, label]) => (
             <button key={id} type="button" onClick={() => setTab(id)}
               style={{ ...(tab === id ? tabOn : tabOff), flex: 1, minHeight: 46, fontSize: 14, borderRadius: 12 }}>
               {label}
@@ -1159,7 +1188,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         <div style={{ fontSize: 12.5, color: GRAY, margin: "0 2px 14px", fontVariantNumeric: "tabular-nums" }}>
           {tab === "register" && <>Scanned <strong style={{ color: progress.seen >= progress.expected && progress.expected > 0 ? GREEN : BLUE_L }}>{progress.seen}</strong> of {progress.expected} products holding stock here · {progress.units} display units added</>}
           {tab === "count" && <>Counted <strong style={{ color: countDone >= countTotal && countTotal > 0 ? GREEN : BLUE_L }}>{countDone}</strong> of {Math.max(countTotal, countDone)} size cells</>}
-          {tab === "leftovers" && <>{leftovers.length} products hold stock here but were never seen on the floor</>}
+          {tab === "leftovers" && (leftoversUnknown
+            ? <>checking which products carry a code, a claim or a label alias…</>
+            : <>{leftovers.length} products hold stock here and carry no style code, claim or label alias</>)}
         </div>
 
         {loading && <div style={{ color: GRAY, fontSize: 13, padding: "18px 2px" }}>Loading {CLEANUP_HUB_LABELS[hub]}…</div>}
@@ -1358,7 +1389,13 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
         {!loading && tab === "leftovers" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {!allStock && <div style={{ color: GRAY, fontSize: 13 }}>Loading every location…</div>}
-            {allStock && leftovers.length === 0 && (
+            {leftoversUnknown && (
+              <div style={{ color: AMBER, fontSize: 13 }}>Checking which products are registered…</div>
+            )}
+            {identity.refreshing && !leftoversUnknown && (
+              <div style={{ color: GRAY, fontSize: 12 }}>Refreshing registrations…</div>
+            )}
+            {allStock && !leftoversUnknown && leftovers.length === 0 && (
               <div style={{ textAlign: "center", padding: "40px 16px", color: "rgba(233,238,255,.5)" }}>
                 <div style={{ fontSize: 30, marginBottom: 10 }}>✅</div>
                 <div style={{ fontSize: 15, fontWeight: 700 }}>Nothing left over.</div>
@@ -1376,12 +1413,15 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                       Holds <strong style={{ color: AMBER }}>{hubQty}</strong> at {CLEANUP_HUB_LABELS[hub]}, and carries no
                       style code, claim or label alias
                     </div>
-                    {/* Its identity, such as it is — normally empty here (that
-                        is WHY it is a leftover), but a product can hold a
-                        printed shop barcode with no label number, and reading
-                        that off the card is how the twin gets found. */}
-                    <IdentityLine {...identityFor(product, identity.map)}
-                                  emptyText="No style code, claim or label alias on record" />
+                    {/* A leftover carries no LABEL identity by construction —
+                        that is what puts it on this list — so identityFor()
+                        here could only ever print its empty text, saying twice
+                        what the line above already says. What a leftover CAN
+                        carry is a shop barcode or SKU, and reading that off the
+                        card is a real way to go and find the twin. That is what
+                        this line shows. */}
+                    <IdentityLine codes={shopCodesOf(product)} aliases={[]} compact
+                                  emptyText="No shop barcode either — find the twin by photo" />
                   </div>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 7, margin: "12px 0" }}>

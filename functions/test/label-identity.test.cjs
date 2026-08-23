@@ -69,3 +69,33 @@ test("a falsy entry in a code or sibling map does not register anything", () => 
   assert.ok(!map.p1, "a retracted code alias is not an identity");
   assert.ok(!map.p3, "a retracted sibling is not an identity");
 });
+
+// ─── A HOSTILE PRODUCT ID MUST NOT BREAK THE WHOLE MAP ──────────────────────
+// /label_aliases holds whatever was written to it. On a plain object literal a
+// productId of "__proto__" resolves to Object.prototype — truthy, so the "does
+// this entry exist" check passes, and the very next line throws on undefined.
+// ONE bad record would then take down every screen that reads this map.
+test("a productId of __proto__ does not throw and does not pollute", () => {
+  let map;
+  assert.doesNotThrow(() => {
+    map = buildIdentityMap({ a1: { productId: "__proto__", c: { X: true } } }, null);
+  });
+  assert.deepStrictEqual(map["__proto__"], { c: ["X"], a: [] }, "it is an ordinary entry, not the prototype");
+  assert.strictEqual({}.c, undefined, "nothing leaked onto Object.prototype");
+});
+
+test("the reserved-name product ids are ordinary keys, and real entries survive beside them", () => {
+  let map;
+  assert.doesNotThrow(() => {
+    map = buildIdentityMap(
+      { a1: { productId: "constructor", t: { AA: true, BB: true } },
+        a2: { productId: "toString", c: { Y: true } },
+        a3: { productId: "pReal", c: { Z: true } } },
+      { K: { productId: "__proto__", siblings: { valueOf: true } } },
+    );
+  });
+  assert.deepStrictEqual(map.pReal.c, ["Z"]);
+  assert.deepStrictEqual(map.constructor.a, [["AA", "BB"]]);
+  assert.deepStrictEqual(map.toString.c, ["Y"]);
+  assert.deepStrictEqual(map.valueOf.c, ["K"]);
+});
