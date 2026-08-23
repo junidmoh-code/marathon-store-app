@@ -90,7 +90,15 @@ ok "service-account JSON present at $SA_JSON"
 # at the right path — is treated as an ERROR, not as "unreadable, carry on".
 # Accepting it would register a schedule that authenticates against nothing and
 # fails every Saturday at 18:00, having reported itself INSTALLED.
-SA_EMAIL=$(/usr/bin/python3 -c "import json;print(json.load(open('$SA_JSON'))['client_email'])" 2>/dev/null || true)
+# The type check is inside Python on purpose: `print(None)` emits the four
+# characters "None", which is not empty, so a JSON carrying
+# "client_email": null would have sailed past a shell -z test and installed a
+# schedule whose identity is the literal string None.
+SA_EMAIL=$(/usr/bin/python3 -c "
+import json, sys
+v = json.load(open('$SA_JSON')).get('client_email')
+sys.stdout.write(v.strip() if isinstance(v, str) and v.strip() else '')
+" 2>/dev/null || true)
 if [ -z "$SA_EMAIL" ]; then
   bad "$SA_JSON is not a readable service-account key (no client_email)."
   bad "REFUSING to install a schedule that cannot authenticate."
