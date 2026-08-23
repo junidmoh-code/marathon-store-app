@@ -164,8 +164,8 @@ describe("the label is a SET — every token, as separate tokens", () => {
     expect(meta.modelName).toBe("TIMBERLAND MOTION 6 MID GTX");
   });
 
-  it("the override chip re-fires onCode with the other token, still carrying the full set", async () => {
-    readResponses = [TIMBERLAND];
+  it("the override chip re-fires onCode with the other token, still carrying the full set AND the same evidence", async () => {
+    readResponses = [{ ...TIMBERLAND, colorway: "WHEAT/NUBUCK", upc: "0194213000001" }];
     const onCode = vi.fn();
     const tr = await mount({ onCode });
     await act(async () => { buttonWith(tr, "Photograph the tongue label").props.onClick(); });
@@ -176,6 +176,11 @@ describe("the label is a SET — every token, as separate tokens", () => {
     expect(onCode).toHaveBeenCalledTimes(2);
     expect(onCode.mock.calls[1][0]).toBe("A8425");
     expect(onCode.mock.calls[1][1].allCodes).toEqual(["A6CWNEN3", "A8425"]);
+    // An override must never cost the consumer the read's evidence.
+    expect(onCode.mock.calls[1][1]).toMatchObject({
+      colorway: "WHEAT/NUBUCK", upc: "0194213000001", modelName: "TIMBERLAND MOTION 6 MID GTX",
+      tokens: TIMBERLAND.tokens, autoSource: "override", tokensAgreed: false,
+    });
   });
 });
 
