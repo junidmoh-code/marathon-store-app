@@ -29,8 +29,15 @@ import { fileURLToPath } from "url";
 import { SLOT_DAYS, SLOT_HOUR_SAST } from "../../src/components/social/socialCore.js";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
-const PLIST = read("./com.marathon.socialpublish.plist");
+const PLIST_RAW = read("./com.marathon.socialpublish.plist");
 const INSTALLER_RAW = read("./install-on-mac-mini.sh");
+
+// The plist opens with a long <!-- --> header that discusses the very things
+// asserted below — it names the Intel-era node path it no longer uses, and it
+// quotes the reconciler's checkout path. A bare `toContain` on the raw file is
+// therefore satisfied by the PROSE, so someone could repoint the real
+// WorkingDirectory and leave the comment, and the test would stay green.
+const PLIST = PLIST_RAW.replace(/<!--[\s\S]*?-->/g, "");
 
 // ── ASSERT AGAINST CODE, NOT PROSE ───────────────────────────────────────────
 // Both of these files are heavily commented, and the comments discuss the very
@@ -161,7 +168,13 @@ describe("the two Mac mini jobs can never share a directory", () => {
     // The committed file points at the RECONCILER's path, on purpose — it is
     // the documented default. What makes that safe is the rewrite, so the
     // rewrite is what gets pinned.
-    expect(PLIST).toContain("/Users/marathonclub/marathon-store-app");
+    // Asserted in TAGGED form. The bare path also appears in the plist's header
+    // comment, so `toContain` on the raw file would pass even if the real
+    // WorkingDirectory were repointed — and the installer's sed would then be
+    // rewriting a string that no longer exists, which is exactly the silent
+    // drift this block is named for.
+    expect(PLIST).toMatch(/<string>\/Users\/marathonclub\/marathon-store-app<\/string>/);
+    expect(PLIST).toMatch(/<key>WorkingDirectory<\/key>\s*<string>\/Users\/marathonclub\/marathon-store-app<\/string>/);
     expect(INSTALLER).toMatch(/s#\/Users\/marathonclub\/marathon-store-app#\$CLONE#g/);
   });
 });

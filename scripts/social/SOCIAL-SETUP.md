@@ -61,9 +61,17 @@ top-level keys alongside the existing `shopify_publish`. Parts 2 and 3 are
 independent of the social engine and can be done whenever.
 
 **Add the keys; do not paste over the whole document, and do not run
-`firebase deploy --only database`** — the live rules carry **59 top-level keys**
-(counted against the running database on 2026-08-23) that the repo's
-`database.rules.json` has never held, and either would delete them.
+`firebase deploy --only database`.** Counted against the running database on
+2026-08-23: the live rules carry **59 top-level keys**, the repo's
+`database.rules.json` carries **49**, and live is a strict superset — so
+deploying that file would **delete these 10 keys outright**:
+
+`duplicate_candidates`, `price_history`, `price_history_index`,
+`shopify_publish`, `shopify_sync`, `sneaker_models`, `specials`,
+`stock_provenance`, `style_code_captures`, `style_code_index`
+
+Nothing in the repo file is missing from live, so there is no case in which
+deploying it adds anything — it can only subtract.
 
 *Worked when:* the Social tile opens the queue instead of a permission error.
 Until then the publisher still runs — it uses the Admin SDK and bypasses rules —
@@ -158,6 +166,17 @@ node scripts/social/meta-token.mjs --short-lived <THE TOKEN FROM STEP 6>
 > token is spent. The script now checks this **first** and stops in two seconds
 > with the fix, before contacting Meta at all, so a wrong shell costs you
 > nothing. It prints `0/4  checking these credentials can store a secret…`.
+>
+> If it says **"no usable Google credentials"**, this machine has no
+> application-default login yet. Do it once:
+>
+> ```
+> gcloud auth application-default login
+> ```
+>
+> The check only ever *stops* on a definite no. If it cannot reach IAM or
+> Secret Manager at all it prints a `⚠` and carries on, because a convenience
+> check that blocks setup for unrelated reasons is worse than no check.
 
 It exchanges the one-hour token for a 60-day one, reads your Page from that,
 takes the Page token — **which does not expire, because it was minted from a
@@ -271,7 +290,7 @@ already uses.
 ### Check on it any time
 
 ```
-ssh marathonclub@100.64.186.78 'launchctl print gui/501/com.marathon.socialpublish | head -20'
+ssh marathonclub@100.64.186.78 'launchctl print gui/$(id -u)/com.marathon.socialpublish | head -20'
 ```
 
 `state = not running` between fires is correct — this is a scheduled tick, not a
@@ -296,7 +315,7 @@ quiet night.
 ### Stop it
 
 ```
-ssh marathonclub@100.64.186.78 'launchctl bootout gui/501/com.marathon.socialpublish'
+ssh marathonclub@100.64.186.78 'launchctl bootout gui/$(id -u)/com.marathon.socialpublish'
 ```
 
 ---
