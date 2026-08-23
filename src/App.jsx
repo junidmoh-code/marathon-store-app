@@ -2557,8 +2557,13 @@ const RoleIcons = {
     </svg>
   ),
   broadcast_groups: (
+    // A paper plane — a message going out to the groups. It used to be a horn,
+    // which was fine until the Social tile arrived carrying a speaker-and-waves:
+    // two right-pointing horns on one screen. Send is the more precise idea for
+    // this tile anyway, and it leaves the horn unambiguously Social's.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>
+      <path d="m22 2-7 20-4-9-9-4Z"/>
+      <path d="M22 2 11 13"/>
     </svg>
   ),
   user_management: (
@@ -2582,12 +2587,15 @@ const RoleIcons = {
     </svg>
   ),
   shopify_publish: (
-    // lucide-style "shopping-bag" — the online-store push. Same stroke/weight
-    // as every other tile icon.
+    // Cloud with an up-arrow — pushing the catalogue OUT to the online store.
+    // It was drawing the shopping bag, which is not merely similar to the Store
+    // Assistant tile's icon but byte-for-byte the same path data: two tiles, one
+    // picture. "Publish" is also the truer verb here — the bag says shop, and
+    // the physical shop is what the other tile is for.
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/>
-      <line x1="3" y1="6" x2="21" y2="6"/>
-      <path d="M16 10a4 4 0 0 1-8 0"/>
+      <path d="M12 21v-8"/>
+      <path d="m8.5 16.5 3.5-3.5 3.5 3.5"/>
+      <path d="M20.9 18.1A5 5 0 0 0 18 9h-1.3A8 8 0 1 0 3 16.3"/>
     </svg>
   ),
   attention: (
@@ -2621,6 +2629,60 @@ const RoleIcons = {
       <path d="M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1z"/>
       <path d="M17 8a5 5 0 0 1 0 8"/>
       <path d="M20 5a9 9 0 0 1 0 14"/>
+    </svg>
+  ),
+  health: (
+    // A pulse trace — the reading that tells you whether something is well.
+    // Inventory Health shared the Insights bar chart with three other tiles;
+    // this is the only zigzag in the set, so it separates at a glance.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+    </svg>
+  ),
+  marketing: (
+    // Concentric rings — the shortlist of products picked to push. Checked
+    // against the Admin gear, the other round icon: a gear reads as a toothed
+    // outline and this reads as clean nested circles, which hold apart at 30px.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9"/>
+      <circle cx="12" cy="12" r="5"/>
+      <circle cx="12" cy="12" r="1.4"/>
+    </svg>
+  ),
+  engine_policy: (
+    // Sliders — what each shop keeps and when to reorder, which is a screen of
+    // thresholds and nothing else. Three tracks rather than the Stock section's
+    // two-track Adjust glyph, and that one lives in a different icon set anyway.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="6" x2="21" y2="6"/>
+      <line x1="3" y1="12" x2="21" y2="12"/>
+      <line x1="3" y1="18" x2="21" y2="18"/>
+      <circle cx="8" cy="6" r="2"/>
+      <circle cx="16" cy="12" r="2"/>
+      <circle cx="10" cy="18" r="2"/>
+    </svg>
+  ),
+  barcodes: (
+    // A barcode. Six thin full-height rules at uneven spacing — deliberately not
+    // the Insights chart's three fat bottom-aligned bars, which is the only
+    // other striped icon in the set.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="4" y1="5" x2="4" y2="19"/>
+      <line x1="8" y1="5" x2="8" y2="19"/>
+      <line x1="11" y1="5" x2="11" y2="19"/>
+      <line x1="15" y1="5" x2="15" y2="19"/>
+      <line x1="17.5" y1="5" x2="17.5" y2="19"/>
+      <line x1="20.5" y1="5" x2="20.5" y2="19"/>
+    </svg>
+  ),
+  label_print: (
+    // A printer with a sheet coming out. Both this and Barcodes were drawing the
+    // Stock grid, so the two printing tiles and the Stock tile were one picture
+    // three times over.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 9V3h10v6"/>
+      <path d="M7 18H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/>
+      <rect x="7" y="15" width="10" height="6" rx="1"/>
     </svg>
   ),
 };
@@ -2830,8 +2892,8 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // disp_ reversal, logReturn and the returns_log feed are all intact, and
       // the route below still resolves. Only the way in from the home screen is
       // gone. Restoring it is this one line.
-      { key:"barcodes", icon:RoleIcons.stock, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
-      { key:"label_print", icon:RoleIcons.stock, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
+      { key:"barcodes", icon:RoleIcons.barcodes, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
+      { key:"label_print", icon:RoleIcons.label_print, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
       dcVisible && { key:"display_checks", icon:RoleIcons.display_checks, name:"Display Checks", desc:"Clothing display checks", onClick:()=>onSelect(ROLES.DISPLAY_CHECKS) },
     ].filter(Boolean) },
     { label: "Insights & Display", cards: [
@@ -2845,7 +2907,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       canAccessStock                                           && { key:"stock", icon:RoleIcons.stock, name:"Stock", desc:"Inventory & transfers", onClick:()=>onSelect(ROLES.STOCK) },
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
-      canAccessStock                                           && { key:"health", icon:RoleIcons.insights, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
+      canAccessStock                                           && { key:"health", icon:RoleIcons.health, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
       // Attention — the BUYING read of the same stock: what to reorder, what's
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
@@ -2858,7 +2920,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Marketing — the products picked out of Attention, in two fixed lists
       // (Marketing / Display). Picking happens on the Attention grid; this card
       // is where you review what was picked.
-      canAccessStock                                           && { key:"marketing", icon:RoleIcons.insights, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
+      canAccessStock                                           && { key:"marketing", icon:RoleIcons.marketing, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
       // Shopify Publishing — the online-store review queue. Badge = products
       // whose names have never been reviewed (null while loading → no badge).
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
@@ -2883,7 +2945,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // `enginePolicyViewer` is built from the Firebase Auth email, NOT from a
       // permissions array: Junid's /users record has no permissions array at
       // all, so a permission-based gate would lock out the only intended user.
-      enginePolicyVisibleForViewer(enginePolicyViewer) && { key:"engine_policy", icon:RoleIcons.insights, name:"Engine Policy", desc:"What each shop keeps, and when to reorder", onClick:()=>onSelect(ROLES.ENGINE_POLICY) },
+      enginePolicyVisibleForViewer(enginePolicyViewer) && { key:"engine_policy", icon:RoleIcons.engine_policy, name:"Engine Policy", desc:"What each shop keeps, and when to reorder", onClick:()=>onSelect(ROLES.ENGINE_POLICY) },
     ].filter(Boolean) },
   ];
   const anyCards = groups.some(g => g.cards.length > 0);
