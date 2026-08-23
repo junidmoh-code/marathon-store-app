@@ -32,6 +32,7 @@ import { approveName, publishProduct, setDesiredState, setCondition, setPublishP
          applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
 import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
 import AiStudioCard from "./AiStudioCard";
+import { usePermissions } from "../PermissionsContext";
 
 // The uppercase section label used across the full-page views.
 const SECTION_LABEL = {
@@ -184,6 +185,17 @@ export function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
 // Storage keep the file); the last photo cannot be removed (imageless never
 // ships). Locked while the listing is ON, like the name and condition.
 export function PhotoStrip({ product, node, locked, onChanged }) {
+  // Generating a photo SPENDS MONEY and is its own permission (`photo_generation`),
+  // separate from the one that opens this page. Reaching Shopify Publishing does
+  // not buy the right to spend, so the generate card is hidden unless the viewer
+  // actually holds it — a button that is always going to come back
+  // "permission-denied" from the function is worse than no button.
+  //
+  // This closes a show-and-fail that predates the split: generateProductPhotos
+  // was super-admin-email-only, so every stockRole admin who reached this page
+  // already saw a card that could never work for them.
+  const { hasPermission, isSuperAdmin } = usePermissions();
+  const canGenerate = isSuperAdmin || hasPermission("photo_generation");
   const { photos, custom } = effectivePhotoList(product, node);
   const [sel, setSel] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -305,11 +317,11 @@ export function PhotoStrip({ product, node, locked, onChanged }) {
           {chip("Move ›", () => move(sel, 1), sel === photos.length - 1)}
           {chip("Make primary", () => makePrimary(sel), sel === 0)}
           {chip("Remove from publish set", () => removeAt(sel))}
-          <AiStudioCard
+          {canGenerate && <AiStudioCard
             product={product} node={node} sourceUrl={photos[sel]} photoCount={photos.length}
             busy={busy || uploading}
             onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))}
-            onAdd={(url) => write([...photos, url], () => setSel(photos.length))} />
+            onAdd={(url) => write([...photos, url], () => setSel(photos.length))} />}
         </div>
       )}
       {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}

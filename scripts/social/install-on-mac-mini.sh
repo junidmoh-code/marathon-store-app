@@ -109,9 +109,43 @@ echo "     (this account needs roles/secretmanager.secretAccessor — granted fr
 
 say "5/7  Writing the launchd agent"
 mkdir -p "$HOME/Library/LaunchAgents" "$CLONE/logs"
+
+# ── WHICH NODE, AND WHY THIS IS CHECKED RATHER THAN ASSUMED ──────────────────
+# launchd resolves ProgramArguments[0] ITSELF. It does not consult PATH — not
+# the login shell's, and not the PATH set in EnvironmentVariables inside the
+# plist. So a wrong interpreter path here is not a degraded install, it is a
+# job that dies before node starts, every single fire, while `launchctl print`
+# still cheerfully reports the job as loaded. That failure is invisible until
+# a Saturday post silently does not happen.
+#
+# The committed plist names /opt/homebrew/bin/node (Apple silicon, and the
+# path the reconciler's agent already uses). It previously named the Intel-era
+# /usr/local/bin/node, which does not exist on this machine at all. Rather
+# than trust either constant, resolve it here and REFUSE if what we resolve is
+# not an executable file.
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+if [ -z "$NODE_BIN" ]; then
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node; do
+    # A full `if` rather than `[ -x c ] && NODE_BIN=c`. Bash happens not to fire
+    # `set -e` on that form here (checked), but it relies on a subtle exemption
+    # for the last command of a loop body; an `if` does not rely on anything.
+    if [ -x "$candidate" ]; then NODE_BIN="$candidate"; break; fi
+  done
+fi
+if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+  bad "no usable node interpreter found (looked on PATH, then /opt/homebrew, then /usr/local)."
+  bad "launchd resolves the interpreter path itself, so installing now would register"
+  bad "a schedule that dies before node starts on every fire. REFUSING."
+  exit 2
+fi
+ok "node: $NODE_BIN ($("$NODE_BIN" -v 2>/dev/null || echo 'version unknown'))"
+
 # The committed plist is written for a checkout at ~/marathon-store-app. Rewrite
-# every path to this clone so the two jobs can never share a directory.
+# every path to this clone so the two jobs can never share a directory, and
+# rewrite the interpreter to the one we just proved exists.
 sed -e "s#/Users/marathonclub/marathon-store-app#$CLONE#g" \
+    -e "s#<string>/opt/homebrew/bin/node</string>#<string>$NODE_BIN</string>#" \
+    -e "s#<string>/usr/local/bin/node</string>#<string>$NODE_BIN</string>#" \
     "$CLONE/scripts/social/$PLIST_NAME" > "$PLIST"
 if /usr/bin/plutil -lint "$PLIST" >/dev/null 2>&1; then
   ok "plist is valid: $PLIST"
@@ -121,6 +155,22 @@ else
   bad "CLONE=$CLONE"
   exit 2
 fi
+# The interpreter the plist ENDS UP naming must be executable. Checking the
+# variable would only prove what we intended; this proves what we wrote.
+PLIST_NODE=$(/usr/bin/python3 -c "
+import plistlib, sys
+try:
+    a = plistlib.load(open('$PLIST','rb')).get('ProgramArguments') or []
+    sys.stdout.write(a[0] if a and isinstance(a[0], str) else '')
+except Exception:
+    sys.stdout.write('')
+" 2>/dev/null || true)
+if [ -z "$PLIST_NODE" ] || [ ! -x "$PLIST_NODE" ]; then
+  bad "the plist names an interpreter that is not executable: '\''$PLIST_NODE'\''"
+  bad "launchd would fail to spawn it on every fire. REFUSING to install."
+  exit 2
+fi
+ok "interpreter in the plist is executable: $PLIST_NODE"
 if grep -q "$CLONE/scripts/social/publish-runner.mjs" "$PLIST"; then
   ok "points at $CLONE (not the reconciler)"
 else

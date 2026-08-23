@@ -38,6 +38,27 @@ export const PERMISSION_GROUPS = [
     { key: "broadcast",     label: "Group Broadcast",   desc: "Send WhatsApp broadcasts", sensitive: true },
     { key: "customer_data", label: "Customer Database", desc: "View customer records", sensitive: true },
   ] },
+  // ── ONLINE & CONTENT ───────────────────────────────────────────────────────
+  // Two surfaces that were never wired to this permissions system and so ended
+  // up gated on `stockRole === "admin"` instead — a stock-WRITE level that also
+  // opens the refill-engine kill switch, /stock_targets, /locations, /reports
+  // and every /config/* branch. Handing someone Shopify Publishing meant handing
+  // them all of that, which is exactly how one account ended up far broader than
+  // the job needed (owner, 2026-08-23).
+  //
+  // Both are per-user-only and NEITHER is in ROLE_DEFAULT_PERMS: tapping a role
+  // preset must never hand out the ability to publish to the live shop or to
+  // spend money. Neither carries `stock: true` — they gate no stock write, and
+  // the flag would auto-link a stockRole, re-creating the very over-grant these
+  // keys exist to end (see invariant 1 above).
+  { title: "Online & Content", perms: [
+    { key: "shopify_publish",  label: "Shopify Publishing", desc: "Clean names, condition & publish to the online shop" },
+    // SPENDS REAL MONEY: ~$0.067 a white-background image, ~$0.134 a house-style
+    // one, on every generation. Marked sensitive so the editor styles it as a
+    // consequential grant, and every run is logged with its cost against the
+    // person who ran it (AI Studio → Spend).
+    { key: "photo_generation", label: "Photo Generation",   desc: "Regenerate product photos — spends money per image", sensitive: true },
+  ] },
 ];
 export const ALL_PERMISSIONS = PERMISSION_GROUPS.flatMap((g) => g.perms);
 // Stock permissions that need a stockRole to actually write (drives the auto-link).
@@ -51,3 +72,36 @@ export const ROLE_DEFAULT_PERMS = {
   store_assistant: ["store_assistant", "place_orders"],
   warehouse:       ["warehouse", "source", "stock_management", "stock_add", "barcode"],
 };
+
+
+// ─── RULES-READABLE MIRROR OF THE PERMISSIONS ARRAY ──────────────────────────
+// `permissions` is a JSON ARRAY of strings, and RTDB security rules cannot ask
+// whether an array CONTAINS a value: an array arrives in the rules engine as an
+// object keyed by position ({"0":"insights","1":"barcode"}), so the only thing a
+// rule could test is "is index 3 equal to X" — which changes meaning the moment
+// a different permission is toggled and the array reindexes. That is why
+// /shopify_publish was gated on stockRole in the first place: stockRole is a
+// scalar, and a scalar is the only shape a rule can read.
+//
+// So every write of `permissions` also writes this MAP beside it, and the rules
+// read the map:
+//
+//     root.child('users').child(auth.uid).child('permFlags').child('shopify_publish').val() === true
+//
+// WHY THIS CANNOT DRIFT: the mirror is never patched key-by-key. It is always
+// written as a whole object in the SAME update() call as the array it mirrors,
+// and update() replaces a named child wholesale — so a revoked permission's flag
+// is gone by construction rather than by remembering to delete it.
+//
+// WHY IT IS NOT FORGEABLE: /users is writable ONLY by the super-admin email
+// (live rule, checked 2026-08-23), so a staff member cannot grant themselves a
+// flag any more than they can grant themselves a stockRole.
+export function permFlagsFor(permissions) {
+  const flags = {};
+  for (const key of Array.isArray(permissions) ? permissions : []) {
+    if (typeof key === "string" && key) flags[key] = true;
+  }
+  // RTDB deletes a child set to null. An empty object would be dropped too, but
+  // null says "remove the mirror" explicitly rather than relying on that.
+  return Object.keys(flags).length ? flags : null;
+}
