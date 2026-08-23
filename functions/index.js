@@ -589,6 +589,28 @@ function assertAdmin(request) {
   }
 }
 
+// generateProductPhotos is the ONE paid callable that is not super-admin-only:
+// the `ai_photos` grant opens it to a named staff account. Every other AI Studio
+// callable (names, reorder, voice) stays assertAdmin.
+//
+// The grant is read from RTDB, never from the request: permissions live at
+// /users/{uid}/permissions and the auth token carries no claim for them, so
+// anything the client could hand us would BE the gate rather than pass it. The
+// shape check mirrors AuthGate.jsx exactly — a non-array reads as no grant.
+//
+// A read failure throws, so this fails CLOSED. Correct for a call that spends
+// money: an unverifiable grant is not a grant.
+async function assertPhotoStudio(request) {
+  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Sign in to generate photos.");
+  const snap = await admin.database().ref(`users/${uid}/permissions`).once("value");
+  const perms = snap.val();
+  if (!Array.isArray(perms) || !perms.includes("ai_photos")) {
+    throw new HttpsError("permission-denied", "You do not have permission to generate photos.");
+  }
+}
+
 exports.getBroadcastGroups = onCall(
   { region: "us-central1", secrets: [broadcastToken] },
   async (request) => {
@@ -2535,7 +2557,7 @@ exports.generateProductPhotos = onCall(
     timeoutSeconds: 540,
   },
   async (request) => {
-    assertAdmin(request);
+    await assertPhotoStudio(request);
     const db = admin.database();
     const data = request.data || {};
     // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
@@ -2944,6 +2966,7 @@ const VALID_PERMISSIONS = [
   "product_admin",   "insights",      "broadcast",     "customer_data",
   "stock_management","stock_add",     "barcode",       "user_management",
   "display_checks",  // Display Checks module (clothing) — mirrors permissionCatalog.js
+  "ai_photos",       // AI Photo Studio — generateProductPhotos only (see assertPhotoStudio)
   "display_refills", // legacy no-op — kept for back-compat only
 ];
 const VALID_ROLES = ["admin", "store_assistant", "warehouse"];
