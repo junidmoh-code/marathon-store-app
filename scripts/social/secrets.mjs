@@ -169,3 +169,100 @@ export async function credentialStatus() {
   }
   return out;
 }
+
+// ── CAN THIS IDENTITY STORE A SECRET? ────────────────────────────────────────
+// Asked BEFORE the Meta dance, never after. The setup script's last act is to
+// write three secrets, and the identity that can READ them is deliberately not
+// the identity that can WRITE them:
+//
+//   the Mac mini's service account   secretmanager.versions.access ONLY.
+//     firebase-adminsdk-fbsvc@…      That is roles/secretmanager.secretAccessor
+//                                    and it is all the PUBLISHER ever needs.
+//
+//   Junid's gcloud ADC               roles/owner — creates secrets and adds
+//     (~/.config/gcloud/…)           versions. This is what setup must run as.
+//
+// google-auth-library picks GOOGLE_APPLICATION_CREDENTIALS over ADC whenever
+// that variable is set. The Mac mini is a machine where it very plausibly IS
+// set — the reconciler's launchd agent sets it, and anyone who copied a command
+// out of that job's context carries it into their shell. The result was the
+// worst possible ordering: create the Facebook app, grant five scopes, generate
+// a one-hour token, exchange it, read the Page, verify Instagram — and only
+// then discover the store is refused. The token has to be re-generated because
+// the fix (open a new shell) loses the hour.
+//
+// ── A PREFLIGHT MUST NOT BLOCK MORE THAN IT SAVES ────────────────────────────
+// This check is a CONVENIENCE. Without it the failure still happens, just
+// later; so every outcome it cannot be sure about must let setup proceed. Three
+// outcomes, and only the first two stop anything:
+//
+//   "denied"    we know this credential cannot write — no ADC at all, or the
+//               permissions came back missing. Proceeding is guaranteed to
+//               waste the hour, so stop and name the fix.
+//
+//   "unknown"   we could not find out: the IAM API is disabled, a 5xx, a
+//               network blip. WARN AND CARRY ON. Dying here would make setup
+//               unrunnable for reasons that have nothing to do with whether
+//               the write would have worked.
+//
+//   "ok"        both permissions granted AND Secret Manager itself answered.
+//
+// ── WHY THE SECOND CALL ──────────────────────────────────────────────────────
+// testIamPermissions is pure policy evaluation. It answers "would IAM allow
+// this?" and says nothing about whether secretmanager.googleapis.com is
+// enabled on the project, reachable from this machine, or willing to bill this
+// credential's quota project. An owner gets a clean IAM answer through a
+// disabled API — and then the write fails anyway, which is the exact ordering
+// this function exists to prevent. So we also touch the real host, with the
+// cheapest call it offers.
+const WRITE_PERMS = ["secretmanager.secrets.create", "secretmanager.versions.add"];
+
+export async function secretWriteCheck() {
+  // getClient() REJECTS when there is no ADC at all, or when
+  // GOOGLE_APPLICATION_CREDENTIALS names a file that is missing or unparseable.
+  // It must be inside the guard: an escape here reaches meta-token.mjs's
+  // top-level await, and Node prints a raw stack instead of the one message
+  // that would have told the operator what to do.
+  let client;
+  try {
+    client = await authClient();
+  } catch {
+    return { ok: false, verdict: "denied", reason: "no-credentials", missing: [] };
+  }
+
+  let granted;
+  try {
+    const res = await client.request({
+      url: `https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions`,
+      method: "POST",
+      data: { permissions: [...WRITE_PERMS, "secretmanager.versions.access"] },
+    });
+    granted = res?.data?.permissions || [];
+  } catch (err) {
+    return { ok: false, verdict: "unknown", reason: "iam-check-failed", status: err?.response?.status ?? null, missing: [] };
+  }
+
+  const missing = WRITE_PERMS.filter((p) => !granted.includes(p));
+  if (missing.length) return { ok: false, verdict: "denied", reason: "missing-permissions", missing };
+
+  try {
+    // The cheapest call on the host the write will use. An empty project is a
+    // 200 with no items, so this passes on a first-ever run.
+    await client.request({
+      url: `https://secretmanager.googleapis.com/v1/projects/${PROJECT}/secrets?pageSize=1`,
+    });
+  } catch (err) {
+    return { ok: false, verdict: "unknown", reason: "secretmanager-unreachable", status: err?.response?.status ?? null, missing: [] };
+  }
+
+  return { ok: true, verdict: "ok", missing: [] };
+}
+
+// Which credential file google-auth-library is about to use. Names a PATH and
+// never opens it — the point is to tell an operator which of the two identities
+// above is in play, and the path is the only part of that which is not secret.
+export function credentialSource() {
+  return process.env.GOOGLE_APPLICATION_CREDENTIALS
+    ? { kind: "GOOGLE_APPLICATION_CREDENTIALS", path: process.env.GOOGLE_APPLICATION_CREDENTIALS }
+    : { kind: "gcloud application-default credentials", path: "~/.config/gcloud/application_default_credentials.json" };
+}

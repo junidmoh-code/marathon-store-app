@@ -58,7 +58,7 @@
 //
 // NOTHING IS EVER PRINTED. Not the short-lived token, not the long-lived one,
 // not the page token. The script prints names, ids and "stored".
-import { writeSecret, readSecret, credentialStatus } from "./secrets.mjs";
+import { writeSecret, readSecret, credentialStatus, secretWriteCheck, credentialSource } from "./secrets.mjs";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 const flags = process.argv.slice(2);
@@ -103,6 +103,58 @@ const appSecret = process.env.META_APP_SECRET;
 if (!appId || !appSecret) {
   die("set META_APP_ID and META_APP_SECRET in the environment first (Facebook app → Settings → Basic). " +
       "They are deliberately not command-line arguments — a shell history is not a secret store.");
+}
+
+// ── PREFLIGHT: CAN WE STORE THE RESULT? ──────────────────────────────────────
+// Asked before the first Meta call, because the alternative is discovering it
+// after the last one. Everything below this point spends a token that lasts an
+// hour and cannot be re-used; a permission failure at step 4/4 costs the whole
+// browser pass, not just the run.
+//
+// It stops ONLY on a definite "no". Anything it could not determine is a
+// warning and setup continues — see secretWriteCheck in secrets.mjs. A
+// convenience check that can block setup for reasons unrelated to the thing it
+// checks is worse than no check.
+const src = credentialSource();
+console.log("0/4  checking these credentials can store a secret…");
+console.log(`     using: ${src.kind}`);
+const perm = await secretWriteCheck();
+
+if (perm.verdict === "denied" && perm.reason === "no-credentials") {
+  die(`no usable Google credentials.\n` +
+      (process.env.GOOGLE_APPLICATION_CREDENTIALS
+        ? `  GOOGLE_APPLICATION_CREDENTIALS is set to:\n           ${src.path}\n` +
+          `  and that file is missing or is not a readable key.\n\n` +
+          `  FIX: unset it and use your own login instead:\n` +
+          `           unset GOOGLE_APPLICATION_CREDENTIALS\n` +
+          `           gcloud auth application-default login\n`
+        : `  There is no application-default credential on this machine.\n\n` +
+          `  FIX:     gcloud auth application-default login\n`) +
+      `\n  Nothing has been sent to Meta, so your one-hour token is still good.`);
+}
+
+if (perm.verdict === "denied") {
+  die(`these credentials may READ secrets but not WRITE them (missing: ${perm.missing.join(", ")}).\n` +
+      `  In play: ${src.kind}\n` +
+      (process.env.GOOGLE_APPLICATION_CREDENTIALS
+        ? `           ${src.path}\n\n` +
+          `  That is the PUBLISHER's service account. It holds roles/secretmanager.secretAccessor\n` +
+          `  — read only — which is exactly right for the publisher and not enough for setup.\n\n` +
+          `  FIX: run this again in a shell where the variable is not set:\n` +
+          `           unset GOOGLE_APPLICATION_CREDENTIALS\n` +
+          `       so it falls back to your own gcloud login (roles/owner).\n`
+        : `\n  FIX: log in as the project owner:  gcloud auth application-default login\n`) +
+      `\n  Nothing has been sent to Meta, so your one-hour token is still good.`);
+}
+
+if (perm.verdict === "unknown") {
+  // Deliberately not fatal. This is the pre-preflight behaviour: if the store
+  // is going to fail, it fails at 4/4 exactly as it always did.
+  console.log(`     ⚠ could not confirm write access (${perm.reason}, HTTP ${perm.status ?? "?"}).`);
+  console.log(`       Carrying on — this check is a convenience, not a gate. If the store`);
+  console.log(`       fails at step 4/4, that is what this would have warned about.`);
+} else {
+  console.log(`     ✓ can create secrets and add versions, and Secret Manager answered`);
 }
 
 console.log("1/4  exchanging the short-lived token for a 60-day one…");
