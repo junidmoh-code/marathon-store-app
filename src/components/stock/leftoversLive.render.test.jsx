@@ -27,10 +27,10 @@ vi.mock("./hubCleanupStore", () => ({
   fetchProductFollowingMerge: async () => null,
   lookupStyleClaim: async () => null,
   matchLabelAlias: async () => ({ band: "low", candidates: [] }),
-  addLabelAlias: async () => ({ ok: true }),
+  addLabelAlias: (...a) => addLabelAliasImpl(...a),
   answerStyleCodeSibling: async () => ({}),
   lookupCodeAlias: async () => null,
-  recordLabelCodes: async () => ({ ok: true, attached: [], conflicts: [] }),
+  recordLabelCodes: (...a) => recordLabelCodesImpl(...a),
   resolveAnyCodes: async () => ({ resolved: null, owners: [] }),
   fetchColourwayAnswers: async () => [],
   recordColourwayAnswer: async () => ({}),
@@ -75,10 +75,15 @@ vi.mock("./HubSneakerCount.jsx", () => ({ default: () => null }));
 // The identity map, swapped between renders — this is how "a registration
 // lands" is modelled without a network.
 let IDENTITY = { map: {}, ready: true };
+const noteRegistered = vi.fn();
 vi.mock("../../utils/labelIdentityStore", () => ({
   useLabelIdentity: () => IDENTITY,
   invalidateIdentity: () => {},
+  noteRegistered: (...a) => noteRegistered(...a),
 }));
+// The link-panel write doors, swappable per test so a FAILED write can be modelled.
+let recordLabelCodesImpl = async () => ({ ok: true, attached: [], conflicts: [] });
+let addLabelAliasImpl = async () => ({ ok: true });
 
 const { default: HubCleanup } = await import("./HubCleanup.jsx");
 
@@ -110,7 +115,13 @@ async function openTab(tr, label) {
   await act(async () => {});
 }
 
-beforeEach(() => { readerProps = null; IDENTITY = { map: { pAlias: { c: [], a: [["ADIDAS", "SAMBA", "OG"]] } }, ready: true }; });
+beforeEach(() => {
+  readerProps = null;
+  noteRegistered.mockClear();
+  recordLabelCodesImpl = async () => ({ ok: true, attached: [], conflicts: [] });
+  addLabelAliasImpl = async () => ({ ok: true });
+  IDENTITY = { map: { pAlias: { c: [], a: [["ADIDAS", "SAMBA", "OG"]] } }, ready: true };
+});
 
 describe("Leftovers is computed, never a stored list", () => {
   it("lists the product with NO identity and neither of the registered ones", async () => {
@@ -146,6 +157,15 @@ describe("Leftovers is computed, never a stored list", () => {
     });
     expect(textOf(tr)).not.toContain("Puma Suede Bare");
   });
+
+  it("a leftover card shows the shop barcode it carries as a copyable chip", async () => {
+    const withBarcode = [shoe("pBare", "Puma Suede Bare", { barcode: "6009001234567" }), ...PRODUCTS.slice(1)];
+    const tr = await mount(withBarcode);
+    await openTab(tr, "Leftovers");
+    const chip = buttonWith(tr, "6009001234567");
+    expect(chip).toBeTruthy();
+    expect(chip.props.title).toMatch(/copy/i);
+  });
 });
 
 describe("the count page shows the code", () => {
@@ -174,5 +194,55 @@ describe("the count page shows the code", () => {
     const row = buttonWith(tr, "Puma Suede Bare");
     await act(async () => { row.props.onClick(); });
     expect(textOf(tr)).toContain("No style code on record");
+  });
+});
+
+describe("the list never hides a product on a promise", () => {
+  // Drive the COUNT tab's link panel: a code nobody owns opens "which shoe is
+  // this?", and picking a product files the code through recordLabelCodes.
+  async function pickViaLinkPanel(tr) {
+    await openTab(tr, "Count");
+    await act(async () => { await readerProps.onCode("ZZ9999000", null); });
+    // The panel's last-resort name search — the path the owner's rule is about.
+    const search = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "This is the same shoe as…")[0];
+    await act(async () => { search.props.onChange({ target: { value: "Puma Suede" } }); });
+    const row = buttonWith(tr, "Puma Suede Bare");
+    if (!row) throw new Error("link panel did not offer Puma Suede Bare");
+    await act(async () => { await row.props.onClick(); });
+    await act(async () => {});
+  }
+
+  it("a link that LANDS patches the identity map with the normalised code", async () => {
+    const tr = await mount();
+    await pickViaLinkPanel(tr);
+    expect(noteRegistered).toHaveBeenCalledTimes(1);
+    const [pid, what] = noteRegistered.mock.calls[0];
+    expect(pid).toBe("pBare");
+    expect(what.codes).toContain("ZZ9999000");
+  });
+
+  it("a link whose write FAILS does not patch the map — the card stays until it really lands", async () => {
+    recordLabelCodesImpl = async () => { throw new Error("network blink"); };
+    const tr = await mount();
+    await pickViaLinkPanel(tr);
+    expect(noteRegistered).not.toHaveBeenCalled();
+  });
+
+  it("a code that CLASHED with another product is not filed as this product's registration", async () => {
+    recordLabelCodesImpl = async () => ({ ok: true, attached: [], conflicts: [{ code: "ZZ9999000", productId: "someoneElse" }] });
+    const tr = await mount();
+    await pickViaLinkPanel(tr);
+    expect(noteRegistered).not.toHaveBeenCalled();
+  });
+});
+
+describe("the REGISTER tab while the identity stores are still answering", () => {
+  it("does not claim everything is registered before it knows", async () => {
+    IDENTITY = { map: {}, ready: false, refreshing: true };
+    const tr = await mount();
+    await openTab(tr, "Register");
+    const json = textOf(tr);
+    expect(json).not.toContain("Everything holding stock here has been registered");
+    expect(json).toContain("Checking which products are registered");
   });
 });

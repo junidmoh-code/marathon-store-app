@@ -335,6 +335,22 @@ test("a removal REFUSES if its count record is deleted between the read and the 
   assert.strictEqual(db.data.stock.hub1.pLoser["9"].qty, 6);
 });
 
+test("a removal REFUSES if the LOSER's cell gets counted between the read and the commit", async () => {
+  const db = fakeDb(world());
+  // The other side of the fence. The plan said REMOVE because the survivor's
+  // 9 at hub1 was counted and the loser's was not. A counter then settles the
+  // loser's 9 at hub1 while the merge is being prepared — a verified count now
+  // exists under the loser, and merge-disposition rule 1 says that transfers,
+  // never writes off. The stale plan must not commit.
+  db.afterGetOf("stock/hub1/pLoser", ({ setPath }) => {
+    setPath(`settings/hubSneakerCount/counted/hub1/${HUB1_SESSION}/pLoser::9`,
+      { productId: "pLoser", sizeKey: "9", action: "confirm", actual: 6, settled: true });
+  }, 1);
+  await assert.rejects(() => run(db), (err) => err.refused && /no longer safe to write off/i.test(err.message));
+  assert.strictEqual(db.data.stock.hub1.pLoser["9"].qty, 6, "nothing was written off");
+  assert.strictEqual(db.data.stock.hub1.pSurvivor["9"].qty, 17, "and nothing transferred either");
+});
+
 // ─── UNREADABLE COUNT RECORDS REFUSE, THEY DO NOT GUESS ─────────────────────
 test("an unreadable count node refuses with a coded message and releases the lock", async () => {
   const db = fakeDb(world());

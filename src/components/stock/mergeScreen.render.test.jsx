@@ -38,10 +38,11 @@ vi.mock("../../utils/labelIdentityStore", () => ({
 
 // The count state the confirm screen plans against.
 let COUNTED = {};
+let COUNT_FAILED = [];
 vi.mock("./mergeDispositionStore", () => ({
   loadCountedFor: async ({ locations }) => ({
     countedByLoc: Object.fromEntries(locations.map((l) => [l, new Set(COUNTED[l] || [])])),
-    failed: [],
+    failed: [...COUNT_FAILED],
   }),
 }));
 
@@ -105,7 +106,7 @@ async function render(props) {
   return tr;
 }
 
-beforeEach(() => { IDENTITY = {}; COUNTED = {}; mergeCall.mockClear(); });
+beforeEach(() => { IDENTITY = {}; COUNTED = {}; COUNT_FAILED = []; mergeCall.mockClear(); });
 
 describe("the target list", () => {
   it("shows a zero-stock, photoless, codeless footwear product", async () => {
@@ -252,6 +253,44 @@ describe("the confirm screen states the outcome and asks nothing", () => {
     expect(waiting[0].props.disabled).toBe(true);
     spy.mockRestore();
     if (resolvePlan) resolvePlan({ countedByLoc: {}, failed: [] });
+  });
+});
+
+describe("the confirm screen mirrors the server on an unreadable count node", () => {
+  it("a location whose count records could not be read is the ERROR state, never 'will move across'", async () => {
+    // The server REFUSES on an unreadable counted node (readOrRefuse). The
+    // screen must not promise the opposite — "that stock will MOVE ACROSS" —
+    // and then either be refused, or be read fine server-side and REMOVED at.
+    COUNT_FAILED = ["hub1"];
+    const tr = await render({ products: [TWIN], initialSurvivor: TWIN });
+    await act(async () => {});
+    const json = textOf(tr);
+    expect(json).not.toContain("will move across");
+    expect(json).not.toContain("will be removed");
+    expect(json).toContain("The outcome could not be worked out");
+    expect(json).toContain("Hub 1");
+    const commit = buttonsSaying(tr, /Can.t merge/);
+    expect(commit.length).toBe(1);
+    expect(commit[0].props.disabled).toBe(true);
+    await act(async () => { commit[0].props.onClick?.(); });
+    expect(mergeCall).not.toHaveBeenCalled();
+  });
+
+  it("a loser whose name is an OBJECT still renders the confirm screen, labelled by id", async () => {
+    COUNTED = { hub1: ["twin::9"], central: [] };
+    const odd = { ...LOSER, name: { en: "not a string" } };
+    let tr;
+    await act(async () => {
+      tr = TestRenderer.create(
+        <MergeProducts initialLoser={odd} initialSurvivor={TWIN} products={[TWIN]}
+                       allStock={ALL_STOCK} registry={REGISTRY}
+                       onClose={() => {}} onMerged={() => {}} />,
+      );
+    });
+    await act(async () => {});
+    const json = textOf(tr);
+    expect(json).toContain("6 at Hub 1 will be removed");
+    expect(json).toContain(`(no name — id ${LOSER.id})`);
   });
 });
 

@@ -475,13 +475,21 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     // commit, the merge would write off units nobody ever counted. Each
     // removal re-reads its OWN count record (a single key, not the node) in the
     // same round trip as everything else.
+    // BOTH sides of the decision are fenced. A removal rests on two facts: the
+    // survivor's cell IS counted, and the loser's cell is NOT (a count verified
+    // under the loser transfers, never writes off — merge-disposition rule 1).
+    // Either can change during preparation: a counter can stale the
+    // survivor's record, or SETTLE the loser's. Each removal re-reads its own
+    // two records in the same round trip as everything else.
     const removalProbes = removalFenceCells.map((c) => ({
       ...c,
       p: probe(`${COUNTED_PATH}/${c.loc}/${c.sessionId}/${countCellKey(survivorId, c.sizeKey)}`),
+      pl: probe(`${COUNTED_PATH}/${c.loc}/${c.sessionId}/${countCellKey(loserId, c.sizeKey)}`),
     }));
     const survivorLive = await Promise.all(survivorProbes.map((x) => x.p));
     const loserLive = await Promise.all(loserProbes.map((x) => x.p));
     const removalLive = await Promise.all(removalProbes.map((x) => x.p));
+    const removalLoserLive = await Promise.all(removalProbes.map((x) => x.pl));
 
     for (let i = 0; i < survivorProbes.length; i += 1) {
       const { loc, sCell } = survivorProbes[i];
@@ -507,7 +515,7 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
 
     for (let i = 0; i < removalProbes.length; i += 1) {
       const { loc, sizeKey } = removalProbes[i];
-      if (!countRecordCounts(removalLive[i].val())) {
+      if (!countRecordCounts(removalLive[i].val()) || countRecordCounts(removalLoserLive[i].val())) {
         throw new MergeRefused("aborted",
           `The count of ${decodeSizeKey(sizeKey)} at ${loc} changed while the merge was being prepared, so its stock is no longer safe to write off. Nothing was changed — try again.`);
       }

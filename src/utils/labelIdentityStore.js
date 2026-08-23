@@ -45,6 +45,7 @@ let inFlight = null;        // the request currently running, or null
 let latest = {};            // the last resolved map, PLUS every patch since
 let everLoaded = false;     // we have an answer (a load or a patch)
 let needsFetch = true;      // an invalidate happened, or we never loaded
+let refetchAfter = false;   // an invalidate landed while a request was in flight
 let version = 0;            // bumped by every change; guards stale resolutions
 const listeners = new Set();
 
@@ -81,7 +82,19 @@ export function fetchIdentityMap() {
         needsFetch = true;      // a failure is not cached — the next screen retries
         everLoaded = true;      // "we asked and got nothing" is still an answer
       })
-      .then(() => { inFlight = null; return latest; });
+      .then(() => {
+        inFlight = null;
+        // An invalidate that landed WHILE this request was in flight discarded
+        // its response above (the version moved) and set needsFetch again.
+        // Nothing else would start the replacement — the hooks that bumped on
+        // the invalidate found this request already running and joined it —
+        // so the map would stay stale until the next mount. Chain ONE refetch
+        // here; every waiter on this promise resolves to the fresh map.
+        // Keyed on the invalidate, NOT on needsFetch: a FAILED call also sets
+        // needsFetch, and chaining on that would retry a dead endpoint forever.
+        if (refetchAfter) { refetchAfter = false; return fetchIdentityMap(); }
+        return latest;
+      });
   }
   return inFlight.then(() => latest);
 }
@@ -102,7 +115,11 @@ export function currentIdentityMap() {
  */
 export function noteRegistered(productId, { codes = [], tokens = null } = {}) {
   if (!productId || typeof productId !== "string") return;
-  const prev = latest[productId] || { c: [], a: [] };
+  // Own-property lookup: the map is parsed JSON with Object.prototype behind
+  // it, so a pid like "constructor" would otherwise hand back a function and
+  // `[...prev.c]` would throw. Same guard as utils/labelIdentity.entryFor.
+  const own = Object.prototype.hasOwnProperty.call(latest, productId) ? latest[productId] : null;
+  const prev = (own && typeof own === "object") ? { c: Array.isArray(own.c) ? own.c : [], a: Array.isArray(own.a) ? own.a : [] } : { c: [], a: [] };
   const c = [...prev.c];
   for (const raw of codes) {
     const code = String(raw ?? "").trim();
@@ -130,6 +147,7 @@ export function noteRegistered(productId, { codes = [], tokens = null } = {}) {
  */
 export function invalidateIdentity() {
   needsFetch = true;
+  if (inFlight) refetchAfter = true;   // the running request is stale on arrival
   announce();
 }
 
@@ -183,6 +201,7 @@ export function __resetIdentityCacheForTests() {
   latest = {};
   everLoaded = false;
   needsFetch = true;
+  refetchAfter = false;
   version = 0;
   listeners.clear();
 }

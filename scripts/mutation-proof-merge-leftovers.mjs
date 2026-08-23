@@ -430,6 +430,92 @@ const MUTATIONS = [
     test: "test/label-identity.test.cjs",
     runner: "node",
   },
+  {
+    name: "the leftovers card stops showing the shop barcode that finds the twin",
+    shape: "a spread removed",
+    file: "src/components/stock/HubCleanup.jsx",
+    from: `codes={[...identityFor(product, identity.map).codes, ...shopCodesOf(product)]}`,
+    to: `codes={[...identityFor(product, identity.map).codes]}`,
+    test: "src/components/stock/leftoversLive.render.test.jsx",
+    runner: "vitest",
+  },
+  // ── REVIEW CYCLE 2 (CodeRabbit full review + Opus adversarial, 2026-08-23) ──
+  {
+    name: "a removal commits although the LOSER's cell got counted mid-merge",
+    shape: "half a fence removed",
+    file: "functions/lib/product-merge.cjs",
+    from: `      if (!countRecordCounts(removalLive[i].val()) || countRecordCounts(removalLoserLive[i].val())) {`,
+    to: `      if (!countRecordCounts(removalLive[i].val())) {`,
+    test: "test/merge-counted-removal.test.cjs",
+    runner: "node",
+  },
+  {
+    name: "any signed-in account can pull the whole identity map",
+    shape: "an authorisation call deleted",
+    file: "functions/productIdentity/productIdentity.js",
+    from: `  await assertStyleCodeAccess(request, db); // throws unauthenticated / permission-denied`,
+    to: `  if (!request.auth) throw new HttpsError("unauthenticated", "Sign-in required.");`,
+    test: "test/product-identity-callable.test.cjs",
+    runner: "node",
+  },
+  {
+    name: "the confirm screen promises 'will move across' for a location the server will refuse on",
+    shape: "a fail-closed branch removed on the client",
+    file: "src/components/stock/MergeProducts.jsx",
+    from: `        if (failed.length) { setPlan(PLAN_ERROR); return; }`,
+    to: ``,
+    test: "src/components/stock/mergeScreen.render.test.jsx",
+    runner: "vitest",
+  },
+  {
+    name: "an object-valued product name blanks the confirm screen",
+    shape: "a coercion bypassed",
+    file: "src/components/stock/MergeProducts.jsx",
+    from: `                  {" · "}{rowLabel(loser)}: {row.transferQty + row.removeQty} → 0`,
+    to: `                  {" · "}{loser.name}: {row.transferQty + row.removeQty} → 0`,
+    test: "src/components/stock/mergeScreen.render.test.jsx",
+    runner: "vitest",
+  },
+  {
+    name: "an invalidate that lands mid-flight leaves the map stale until a remount",
+    shape: "a flag never raised",
+    file: "src/utils/labelIdentityStore.js",
+    from: `  if (inFlight) refetchAfter = true;   // the running request is stale on arrival`,
+    to: ``,
+    test: "src/utils/labelIdentityStore.test.js",
+    runner: "vitest",
+  },
+  {
+    name: "a FAILED link write still takes the product off Leftovers",
+    shape: "a persistence guard made unconditional",
+    file: "src/components/stock/HubCleanup.jsx",
+    from: `      if (filedCodes.length || (filedTokens && filedTokens.length)) {
+        noteRegistered(p.id, { codes: filedCodes, tokens: filedTokens });
+      }`,
+    to: `      noteRegistered(p.id, panel.kind === "code"
+        ? { codes: [panel.normalised, ...(panel.allCodes || [])].filter(Boolean) }
+        : { tokens: panel.tokens || null });`,
+    test: "src/components/stock/leftoversLive.render.test.jsx",
+    runner: "vitest",
+  },
+  {
+    name: "the Register tab claims everything is registered before the stores have answered",
+    shape: "a loading gate dropped",
+    file: "src/components/stock/HubCleanup.jsx",
+    from: `                {!leftoversUnknown && leftovers.length === 0 && (`,
+    to: `                {leftovers.length === 0 && (`,
+    test: "src/components/stock/leftoversLive.render.test.jsx",
+    runner: "vitest",
+  },
+  {
+    name: "a removal whose cells cancel to zero is not stated on the screen",
+    shape: "a gate moved from the cell list to the quantity sum",
+    file: "src/components/stock/mergeDisposition.js",
+    from: `  if (row.remove.length) {`,
+    to: `  if (row.removeQty) {`,
+    test: "src/components/stock/mergeDisposition.test.js",
+    runner: "vitest",
+  },
   // NOT LISTED — "an inherited key fakes a registration". The hasOwnProperty
   // guard in utils/labelIdentity.entryFor is defence in depth, not a behaviour.
   // This script tried it (run of 2026-08-23): replacing the whole guarded

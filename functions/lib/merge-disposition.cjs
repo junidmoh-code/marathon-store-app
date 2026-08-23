@@ -74,6 +74,15 @@ function countCellKey(productId, sizeKey) {
 /**
  * Is this count record a usable, current count?
  * Mirrors hubCountCore.recordIsCurrent, plus the unsettled exclusion.
+ *
+ * A "flag" record COUNTS (decision 2026-08-23). flagCell writes it when the
+ * counter typed a shelf number that disagreed with the book and chose to
+ * leave the correction to an admin: the shelf WAS physically counted — that
+ * is the fact this module needs — only the stock write is pending. The
+ * loser's units under that shelf are exactly the double count a flag is
+ * waiting to resolve, and a TRANSFER there would change the cell and trip
+ * the flag's own apply-time fence, forcing a recount. `settled: false` is the
+ * different case: a write was attempted and did not land, so nothing is known.
  */
 function countRecordCounts(rec) {
   return !!rec && !rec.staleAt && rec.settled !== false;

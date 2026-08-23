@@ -998,7 +998,9 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       // refetches of two whole nodes, each one briefly emptying the list.
       if (styleCode) {
         noteRegistered(product.id, {
-          codes: [styleCode.code, ...(styleCode.allCodes || [])].filter(Boolean),
+          // NORMALISED, like the server map's own entries — a raw and a
+          // normalised spelling of one code would otherwise show as two chips.
+          codes: [styleCode.code, ...(styleCode.allCodes || [])].map((c) => normaliseStyleCode(c)).filter(Boolean),
           tokens: styleCode.aliasTokens || null,
         });
       }
@@ -1074,6 +1076,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   const doLinkPick = useCallback(async (p) => {
     if (!panel || panel.mode !== "link" || !p) return;
     setBusy(true);
+    // What was ACTUALLY persisted. The local identity patch below must describe
+    // only that — a failed write, or a code that clashed and was filed as a
+    // duplicate flag rather than a link, must not take the product off
+    // Leftovers on the strength of a registration that never landed.
+    let filedCodes = [];
+    let filedTokens = null;
     try {
       if (panel.kind === "code") {
         const shown = formatStyleCodeForDisplay(panel.normalised) || panel.display;
@@ -1082,7 +1090,11 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             productId: p.id, chosenCode: panel.normalised,
             otherCodes: (panel.allCodes || []).filter((c) => normaliseStyleCode(c) !== panel.normalised),
           });
-          const clash = res && res.conflicts && res.conflicts.find((c) => c.code === panel.normalised);
+          const conflicts = new Set(((res && res.conflicts) || []).map((c) => c && c.code).filter(Boolean));
+          filedCodes = [...new Set([panel.normalised, ...(panel.allCodes || [])]
+            .map((c) => normaliseStyleCode(c)).filter(Boolean))]
+            .filter((c) => !conflicts.has(c));
+          const clash = conflicts.has(panel.normalised);
           if (clash) {
             flash("warn", `${shown} already belongs to another product — flagged as a possible duplicate for review. Counting “${p.name}” anyway.`, 9000);
           } else {
@@ -1094,17 +1106,20 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       } else {
         try {
           await addLabelAlias({ productId: p.id, tokens: panel.tokens });
+          filedTokens = panel.tokens || null;
           flash("ok", `Label linked to “${p.name}” — the next read of it resolves by itself.`);
         } catch (err) {
           flash("warn", `Counting “${p.name}”, but the link could not be saved (${err?.message || err}) — the next read will ask again.`, 8000);
         }
       }
-      // Whichever branch ran, a code or a wording is now filed against p — so
-      // p is REGISTERED and must leave Leftovers immediately. Patched, not
-      // refetched: the client knows exactly what it just wrote.
-      noteRegistered(p.id, panel.kind === "code"
-        ? { codes: [panel.normalised, ...(panel.allCodes || [])].filter(Boolean) }
-        : { tokens: panel.tokens || null });
+      // If a code or a wording was actually filed against p, p is REGISTERED
+      // and must leave Leftovers immediately. Patched, not refetched: the
+      // client knows exactly what it just wrote — and only that. A failed write
+      // leaves the card where it is (the next scan will ask again, as the
+      // warning says), so the list never hides a product on a promise.
+      if (filedCodes.length || (filedTokens && filedTokens.length)) {
+        noteRegistered(p.id, { codes: filedCodes, tokens: filedTokens });
+      }
       setPanel(countPanelFor(p));
       setQuery("");
     } finally { setBusy(false); }
@@ -1241,7 +1256,12 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                               color: "rgba(233,238,255,.55)", marginBottom: 8 }}>
                   Not yet registered — holds stock at {CLEANUP_HUB_LABELS[hub]}
                 </div>
-                {leftovers.length === 0 && (
+                {leftoversUnknown && (
+                  <div style={{ fontSize: 13, color: AMBER, padding: "8px 2px" }}>
+                    Checking which products are registered…
+                  </div>
+                )}
+                {!leftoversUnknown && leftovers.length === 0 && (
                   <div style={{ fontSize: 13, color: GRAY, padding: "8px 2px" }}>
                     Everything holding stock here has been registered. Search above for anything else on the floor.
                   </div>
@@ -1413,15 +1433,19 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                       Holds <strong style={{ color: AMBER }}>{hubQty}</strong> at {CLEANUP_HUB_LABELS[hub]}, and carries no
                       style code, claim or label alias
                     </div>
-                    {/* A leftover carries no LABEL identity by construction —
-                        that is what puts it on this list — so identityFor()
-                        here could only ever print its empty text, saying twice
-                        what the line above already says. What a leftover CAN
-                        carry is a shop barcode or SKU, and reading that off the
-                        card is a real way to go and find the twin. That is what
-                        this line shows. */}
-                    <IdentityLine codes={shopCodesOf(product)} aliases={[]} compact
-                                  emptyText="No shop barcode either — find the twin by photo" />
+                    {/* The spec line: style code and every label alias, on the
+                        leftovers card too, copyable in one tap. A leftover
+                        carries no LABEL identity by construction, so on this
+                        list that part is normally empty — unless the identity
+                        read failed and a coded product is shown here by
+                        fail-soft, in which case its code is exactly what the
+                        operator needs to see. After it come the SHOP codes
+                        (sticker barcode, SKU), which a leftover CAN carry and
+                        which are the one string on the card that finds the
+                        twin in the merge search. */}
+                    <IdentityLine codes={[...identityFor(product, identity.map).codes, ...shopCodesOf(product)]}
+                                  aliases={identityFor(product, identity.map).aliases} compact
+                                  emptyText="No style code, label alias or shop barcode — find the twin by photo" />
                   </div>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 7, margin: "12px 0" }}>

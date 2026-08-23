@@ -93,17 +93,24 @@ describe("the stale-response race", () => {
     expect(map.p1).toBeUndefined();   // the older answer did NOT overwrite the patch
   });
 
-  it("a response superseded by an invalidate while in flight is DISCARDED", async () => {
+  it("a response superseded by an invalidate while in flight is DISCARDED — and the store refetches ITSELF", async () => {
     let release;
-    respond = () => new Promise((r) => { release = () => r({ data: { map: { p1: { c: ["OLD"], a: [] } } } }); });
+    let n = 0;
+    respond = () => {
+      n += 1;
+      // Call 1: the slow, about-to-be-stale answer, released by hand below.
+      // Call 2: the replacement — it must happen WITHOUT anyone asking again.
+      if (n === 1) return new Promise((r) => { release = () => r({ data: { map: { p1: { c: ["OLD"], a: [] } } } }); });
+      return Promise.resolve({ data: { map: { p3: { c: ["FRESH"], a: [] } } } });
+    };
     const inFlight = store.fetchIdentityMap();
     store.noteRegistered("p2", { codes: ["KEEP"] });
-    store.invalidateIdentity();
+    store.invalidateIdentity();          // lands while call 1 is still in flight
     release();
-    await inFlight;
-    respond = async () => ({ data: { map: { p3: { c: ["FRESH"], a: [] } } } });
-    const map = await store.fetchIdentityMap();
-    expect(map.p3.c).toEqual(["FRESH"]);
-    expect(map.p1).toBeUndefined();
+    const map = await inFlight;          // the ORIGINAL waiter, no second call from the test
+    expect(calls).toBe(2);               // the store started the replacement on its own
+    expect(map.p3.c).toEqual(["FRESH"]); // and the original waiter got the fresh map
+    expect(map.p1).toBeUndefined();      // the stale answer never landed
+    expect(store.currentIdentityMap().p3.c).toEqual(["FRESH"]);
   });
 });

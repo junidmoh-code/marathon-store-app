@@ -24,7 +24,9 @@ export function countCellKey(productId, sizeKey) {
   return `${productId}::${sizeKey}`;
 }
 
-/** Is this count record a usable, current count? (recordIsCurrent + settled) */
+/** Is this count record a usable, current count? (recordIsCurrent + settled)
+ *  A "flag" record COUNTS — the shelf was physically counted, only the stock
+ *  correction is pending an admin; see the server copy for the full reasoning. */
 export function countRecordCounts(rec) {
   return !!rec && !rec.staleAt && rec.settled !== false;
 }
@@ -77,13 +79,18 @@ export function planMerge({ loserId, survivorId, loserCells, countedByLoc }) {
 // location, with the before/after totals beside them. No choice, no toggle.
 export function outcomeLines(row, locLabel) {
   const lines = [];
-  if (row.removeQty) {
+  // Gated on the CELL LISTS, not the quantity sums: two removed cells at one
+  // location can cancel (+3 in a 9, −3 in a 10, both counted under the
+  // survivor), the sum is 0, and the screen would then say nothing about a
+  // location the merge still writes off. A list is non-empty exactly when the
+  // disposition applies.
+  if (row.remove.length) {
     lines.push({
       kind: "remove",
       text: `${row.removeQty} at ${locLabel} will be removed — already counted under this product`,
     });
   }
-  if (row.transferQty) {
+  if (row.transfer.length) {
     lines.push({
       kind: "transfer",
       text: `${row.transferQty} at ${locLabel} will move across`,

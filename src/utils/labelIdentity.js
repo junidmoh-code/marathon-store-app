@@ -9,7 +9,7 @@
 // code record — by ANY route, at ANY time, from ANY surface. Three stores hold
 // those facts and only one of them (products/{id}.styleCodeNormalised) is
 // visible to a browser; the other two are Admin-SDK-only and arrive as the
-// `productIdentity` callable's map. See functions/lib/product-identity.cjs.
+// `productIdentity` callable's map. See functions/lib/label-identity.cjs.
 //
 // Everything here is PURE. Fetching and caching is labelIdentityStore.js;
 // keeping the two apart is what lets the Leftovers rule be tested without a

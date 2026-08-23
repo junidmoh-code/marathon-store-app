@@ -49,6 +49,16 @@ test("the count is per SIZE, not per product: size 9 counted, size 10 not", () =
   assert.equal(dispositionForCell({ loserId: L, survivorId: S, sizeKey: "10", countedKeys }), "transfer");
 });
 
+test("a FLAG record is a count — the shelf was physically counted, only the stock write is pending", () => {
+  // flagCell writes { action: "flag", settled: true } when the counter typed a
+  // shelf number that disagreed with the book and left the correction to an
+  // admin. The shelf WAS counted; the loser's units under it are the double
+  // count. Decision recorded in merge-disposition.cjs countRecordCounts.
+  assert.equal(countRecordCounts({ action: "flag", actual: 11, expected: 17, settled: true }), true);
+  assert.equal(dispositionForCell({ loserId: L, survivorId: S, sizeKey: "9",
+    countedKeys: new Set([countCellKey(S, "9")]) }), "remove");
+});
+
 test("a staled record is not a count; an unsettled one is not either", () => {
   assert.equal(countRecordCounts({ actual: 3, settled: true }), true);
   assert.equal(countRecordCounts({ actual: 3, settled: true, staleAt: 123 }), false);

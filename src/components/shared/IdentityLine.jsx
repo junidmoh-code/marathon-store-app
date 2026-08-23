@@ -15,7 +15,7 @@
 // failure is silent-but-visible ("copy failed") rather than a dead tap.
 //
 // It reads NOTHING. The codes and aliases arrive as props from
-// utils/productIdentity.identityFor — this file has no store, no fetch and no
+// utils/labelIdentity.identityFor — this file has no store, no fetch and no
 // opinion about where the map came from, so it renders identically in a test.
 
 import React, { useEffect, useRef, useState } from "react";

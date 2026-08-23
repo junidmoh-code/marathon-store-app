@@ -24,7 +24,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
-import { searchProducts } from "../../utils/productSearch";
 import { isMergedAway } from "../../utils/mergedProducts";
 import { FONT, CARD, BORDER, GRAY, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
 import { labelFor } from "./locations";
@@ -100,7 +99,7 @@ function TargetRow({ product, identityMap, allStock, registry, onPick }) {
           <div style={{ fontSize: 14.5, fontWeight: 800, lineHeight: 1.3 }}>{rowLabel(product)}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 }}>
             {locs.length === 0
-              ? <span style={{ fontSize: 11.5, color: GRAY }}>No stock anywhere</span>
+              ? <span style={{ fontSize: 11.5, color: GRAY }}>{allStock ? "No stock anywhere" : "Loading stock…"}</span>
               : locs.map(({ loc, qty }) => (
                   <span key={loc} style={{ fontSize: 11.5, fontWeight: 800, padding: "4px 8px", borderRadius: 8,
                                            fontVariantNumeric: "tabular-nums",
@@ -145,8 +144,9 @@ function OutcomePlan({ plan, planFailed, loser, survivor, allStock, registry }) 
   if (plan === PLAN_ERROR) {
     return (
       <div style={{ marginTop: 14, fontSize: 13, color: RED, lineHeight: 1.55 }}>
-        The outcome could not be worked out — the count records could not be read. Nothing has been changed and this
-        merge cannot go ahead until they can be. Close this and try again.
+        The outcome could not be worked out — the count records
+        {planFailed.length ? ` at ${planFailed.map((l) => labelFor(l, registry)).join(", ")}` : ""} could not be read.
+        Nothing has been changed and this merge cannot go ahead until they can be. Close this and try again.
       </div>
     );
   }
@@ -162,15 +162,9 @@ function OutcomePlan({ plan, planFailed, loser, survivor, allStock, registry }) 
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>WHAT WILL HAPPEN</div>
-      {planFailed.length > 0 && (
-        <div style={{ fontSize: 12.5, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>
-          The count records at {planFailed.map((l) => labelFor(l, registry)).join(", ")} could not be read, so
-          nothing there is treated as counted — that stock will MOVE ACROSS rather than be removed.
-        </div>
-      )}
       {plan.length === 0 ? (
         <div style={{ fontSize: 13, color: GRAY }}>
-          {loser.name} holds no stock anywhere. Nothing moves and nothing is removed — the record simply becomes a
+          {rowLabel(loser)} holds no stock anywhere. Nothing moves and nothing is removed — the record simply becomes a
           redirect.
         </div>
       ) : (
@@ -189,8 +183,8 @@ function OutcomePlan({ plan, planFailed, loser, survivor, allStock, registry }) 
                   </div>
                 ))}
                 <div style={{ fontSize: 11.5, color: GRAY, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
-                  {survivor.name} at {label}: {before} → {after}
-                  {" · "}{loser.name}: {row.transferQty + row.removeQty} → 0
+                  {rowLabel(survivor)} at {label}: {before} → {after}
+                  {" · "}{rowLabel(loser)}: {row.transferQty + row.removeQty} → 0
                 </div>
               </div>
             );
@@ -409,6 +403,12 @@ export default function MergeProducts({
       .then(({ countedByLoc, failed }) => {
         if (!alive) return;
         setPlanFailed(failed);
+        // MIRROR THE SERVER. An unreadable count node REFUSES there
+        // (product-merge.cjs readOrRefuse) — it is never treated as "nothing
+        // counted". So the screen must not promise "that stock will move
+        // across" for a location the server will either refuse on, or read
+        // fine and REMOVE at. A failed read is the error state, full stop.
+        if (failed.length) { setPlan(PLAN_ERROR); return; }
         setPlan(planMerge({ loserId: loser.id, survivorId: survivor.id, loserCells, countedByLoc }));
       })
       .catch(() => {
@@ -469,7 +469,7 @@ export default function MergeProducts({
               <Photo url={loser?.photoUrl} size={60} />
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 12, color: GRAY }}>Merging away</div>
-                <div style={{ fontSize: 15.5, fontWeight: 800 }}>{loser?.name}</div>
+                <div style={{ fontSize: 15.5, fontWeight: 800 }}>{loser ? rowLabel(loser) : ""}</div>
               </div>
             </div>
 
@@ -596,7 +596,7 @@ export default function MergeProducts({
                 <div key={p.id} style={{ background: CARD, border: `1px solid ${border}`, borderRadius: 16, padding: 12 }}>
                   <div style={{ fontSize: 11, fontWeight: 900, letterSpacing: ".08em", color, marginBottom: 8 }}>{role}</div>
                   <Photo url={p.photoUrl} size={88} />
-                  <div style={{ fontSize: 14.5, fontWeight: 800, margin: "8px 0 2px", lineHeight: 1.3 }}>{p.name}</div>
+                  <div style={{ fontSize: 14.5, fontWeight: 800, margin: "8px 0 2px", lineHeight: 1.3 }}>{rowLabel(p)}</div>
                   {p.styleCode && <div style={{ fontSize: 11, color: GRAY, marginBottom: 6 }}>{p.styleCode}</div>}
                   <div style={{ marginTop: 8 }}>
                     <CellList product={p} allStock={allStock} registry={registry} />

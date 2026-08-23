@@ -443,7 +443,7 @@ export function realSizes(product) {
 // The register record is still honoured — being seen on the floor is still a
 // perfectly good reason not to be a leftover — but it is now one of FOUR
 // reasons, and the other three come from `identityMap` (the productIdentity
-// callable, folded in src/utils/productIdentity.js).
+// callable, folded in src/utils/labelIdentity.js).
 //
 // FAIL SOFT. An absent or empty identityMap degrades to the style-code field
 // plus the register record: fewer exclusions, never more. A product is only
