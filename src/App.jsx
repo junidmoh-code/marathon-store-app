@@ -55,6 +55,7 @@ import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlot
 import StockHoldCard from "./components/stock/StockHoldCard";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
 import SocialView from "./components/social/SocialView";
+import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
 // The photo regenerator's vocabulary and call-shaping, shared with the same
 // tool on the Shopify product page so the two can never offer different fixes
 // or send differently-shaped requests (src/components/shopify/aiStudioCore.js).
@@ -2944,7 +2945,17 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // all, so a permission-based gate would lock out the only intended user.
       enginePolicyVisibleForViewer(enginePolicyViewer) && { key:"engine_policy", icon:RoleIcons.engine_policy, name:"Engine Policy", desc:"What each shop keeps, and when to reorder", onClick:()=>onSelect(ROLES.ENGINE_POLICY) },
     ].filter(Boolean) },
-  ];
+  ]
+    // ── HIDDEN CARDS — GATE 1 OF 2: THE TILE ─────────────────────────────────
+    // Applied to every group at once, AFTER they are assembled, so a card added
+    // later is covered without anyone having to remember. See
+    // src/components/hiddenCards.js for why this is a subtractive per-user list
+    // rather than another permission.
+    //
+    // This is presentation. The route gate below is the twin, and the database
+    // rules are what actually stop a write — hiding a tile is tidying, never
+    // protection.
+    .map((g) => ({ ...g, cards: g.cards.filter((c) => !isCardHidden(c.key, homePerm, isSuperAdmin)) }));
   const anyCards = groups.some(g => g.cards.length > 0);
 
   // ── DESKTOP HOME (≥1024px) — a live retail-ops dashboard: greeting, today's
@@ -17220,6 +17231,12 @@ function AppInner() {
   useEffect(() => {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
+    // ── HIDDEN CARDS — GATE 2 OF 2: THE ROUTE ────────────────────────────
+    // Evaluated INDEPENDENTLY of the tile. Without this the hide would be
+    // theatre: `role` is persisted in localStorage, so a user who had opened
+    // Attention once would keep landing straight back on it every time they
+    // opened the app, tile or no tile.
+    if (isRoleHidden(role, permRecord, isSuperAdmin)) { setRole(null); return; }
     if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
     // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
     // else (e.g. a stale persisted role) back to the selector instead of
@@ -17244,7 +17261,7 @@ function AppInner() {
     if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen, socialRouteOpen]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen, socialRouteOpen, permRecord]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
