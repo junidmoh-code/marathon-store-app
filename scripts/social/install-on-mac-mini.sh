@@ -95,13 +95,33 @@ mkdir -p "$HOME/Library/LaunchAgents" "$CLONE/logs"
 # every path to this clone so the two jobs can never share a directory.
 sed -e "s#/Users/marathonclub/marathon-store-app#$CLONE#g" \
     "$CLONE/scripts/social/$PLIST_NAME" > "$PLIST"
-/usr/bin/plutil -lint "$PLIST" >/dev/null && ok "plist is valid: $PLIST"
-grep -q "$CLONE/scripts/social/publish-runner.mjs" "$PLIST" \
-  && ok "points at $CLONE (not the reconciler)" \
-  || { bad "path rewrite failed"; exit 2; }
-grep -q "<key>RunAtLoad</key><false/>" "$PLIST" \
-  && ok "RunAtLoad is false — loading this posts nothing" \
-  || bad "RunAtLoad is not false; check the plist before continuing"
+if /usr/bin/plutil -lint "$PLIST" >/dev/null 2>&1; then
+  ok "plist is valid: $PLIST"
+else
+  bad "the rewritten plist is not valid — launchd would refuse it."
+  bad "This usually means \$CLONE contains a character sed or XML dislikes."
+  bad "CLONE=$CLONE"
+  exit 2
+fi
+if grep -q "$CLONE/scripts/social/publish-runner.mjs" "$PLIST"; then
+  ok "points at $CLONE (not the reconciler)"
+else
+  bad "path rewrite failed — the plist does not point at this clone."
+  exit 2
+fi
+# This check must STOP the install, not narrate. `bad` only prints — leaving it
+# as the failure branch meant an unsafe plist got a red line and was then
+# bootstrapped anyway, which is the one outcome the check exists to prevent:
+# RunAtLoad true fires a publish the instant the agent loads.
+# The grep is whitespace-tolerant because the plist is hand-formatted and a
+# reflow would otherwise silently turn this guard off.
+if grep -qE "<key>RunAtLoad</key>[[:space:]]*<false/>" "$PLIST"; then
+  ok "RunAtLoad is false — loading this posts nothing"
+else
+  bad "RunAtLoad is not false in $PLIST — loading it could post immediately."
+  bad "REFUSING to install. Fix the plist first."
+  exit 2
+fi
 
 say "6/7  Loading it"
 # bootout first so a re-run replaces cleanly rather than erroring.
@@ -122,7 +142,25 @@ fi
 echo
 say "A read-only smoke test (posts nothing)"
 cd "$CLONE"
-GOOGLE_APPLICATION_CREDENTIALS="$SA_JSON" node scripts/social/publish.mjs --status 2>&1 | sed 's/^/     /' || true
+# The exit status is CHECKED, not discarded. `|| true` hid a genuinely broken
+# install behind a cheerful "INSTALLED" banner.
+#
+# But a NON-ZERO here is not automatically fatal: "Meta is not connected yet" is
+# the expected state until the token is minted, and refusing to install the
+# schedule because of it would be wrong. So the status is reported plainly and
+# the operator is told which it is.
+set +e
+GOOGLE_APPLICATION_CREDENTIALS="$SA_JSON" node scripts/social/publish.mjs --status 2>&1 | sed 's/^/     /'
+SMOKE=${PIPESTATUS[0]}
+set -e
+if [ "$SMOKE" -eq 0 ]; then
+  ok "the publisher runs and can read the queue"
+else
+  bad "the publisher exited $SMOKE — read the output above."
+  bad "If it says the Meta credentials are missing, that is EXPECTED until you"
+  bad "run meta-token.mjs; the schedule is installed and will simply skip."
+  bad "Anything else (RTDB refused, node crashed) needs fixing before Saturday."
+fi
 
 cat <<EOF
 

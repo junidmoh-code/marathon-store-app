@@ -67,14 +67,41 @@ export function isCardHidden(cardKey, permRecord, isSuperAdmin = false) {
   return hiddenCardsFor(permRecord).includes(cardKey);
 }
 
+// ─── WHERE A CARD KEY AND ITS ROLE DISAGREE ──────────────────────────────────
+// Most home tiles are keyed by the role they open, so the two gates can use the
+// same string. TWO ARE NOT, and assuming otherwise made the hide half-work:
+//
+//   card "customers"  opens ROLES.CUSTOMERS_DB     ("customers_db")
+//   card "broadcast"  opens ROLES.BROADCAST_GROUPS ("broadcast_groups")
+//
+// Hiding either by its CARD key removed the tile and left the route wide open —
+// and because `role` is persisted in localStorage, a user who had opened
+// Customers once would have kept landing straight back on it. Exactly the
+// theatre the two-gate design exists to prevent, in the two cards where nobody
+// would have looked.
+//
+// So the mapping is explicit rather than assumed. hiddenCards.test.js parses
+// App.jsx, extracts EVERY card-key→role pair the home grid actually builds, and
+// fails if any pair is not covered — so a card added later with a divergent key
+// breaks the test rather than silently half-hiding.
+const CARD_TO_ROLE = {
+  customers: "customers_db",
+  broadcast: "broadcast_groups",
+};
+
+/** The role a card key opens. Identity for every card that does not diverge. */
+export function roleForCard(cardKey) {
+  return CARD_TO_ROLE[cardKey] || cardKey;
+}
+
 /**
- * The ROLE keys a hidden-card list closes off, for the route gate.
+ * Is this ROLE closed off for this user, by any hidden card?
  *
- * Card keys and role keys are the same string for every card this is used on
- * (`attention`, `total_stock`, `stock`, …) — the home grid builds tiles keyed
- * by the role they open. Kept as its own function anyway so that the day a card
- * key and a role key diverge, there is one place to say so.
+ * Checked against the role a hidden card OPENS, not against the card key —
+ * otherwise the two divergent cards above would pass straight through.
  */
 export function isRoleHidden(role, permRecord, isSuperAdmin = false) {
-  return isCardHidden(role, permRecord, isSuperAdmin);
+  if (isSuperAdmin) return false;
+  if (!role) return false;
+  return hiddenCardsFor(permRecord).some((card) => roleForCard(card) === role);
 }

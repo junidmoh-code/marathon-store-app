@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { hiddenCardsFor, isCardHidden, isRoleHidden } from "./hiddenCards";
+import { hiddenCardsFor, isCardHidden, isRoleHidden, roleForCard } from "./hiddenCards";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -84,6 +84,68 @@ describe("isCardHidden", () => {
     expect(isRoleHidden("attention", mc)).toBe(true);
     expect(isRoleHidden("stock", mc)).toBe(false);
     expect(isRoleHidden("attention", mc, true)).toBe(false);
+  });
+});
+
+// ─── THE CARD-KEY / ROLE DIVERGENCE ──────────────────────────────────────────
+// Two cards are NOT keyed by the role they open. Hiding either by its card key
+// removed the tile and left the route wide open — and since `role` persists in
+// localStorage, the user would have kept landing straight back on it. This is
+// the half of the two-gate design that fails silently, in the two places nobody
+// would have looked.
+describe("hiding a card also closes the ROLE it opens", () => {
+  it("customers → customers_db", () => {
+    const rec = { hiddenCards: ["customers"] };
+    expect(isCardHidden("customers", rec)).toBe(true);
+    expect(isRoleHidden("customers_db", rec)).toBe(true);
+  });
+
+  it("broadcast → broadcast_groups", () => {
+    const rec = { hiddenCards: ["broadcast"] };
+    expect(isCardHidden("broadcast", rec)).toBe(true);
+    expect(isRoleHidden("broadcast_groups", rec)).toBe(true);
+  });
+
+  it("roleForCard is identity for a card that does not diverge", () => {
+    for (const k of ["attention", "total_stock", "stock", "social", "shopify_publish"]) {
+      expect(roleForCard(k)).toBe(k);
+    }
+  });
+
+  it("does not close a role a different card opens", () => {
+    expect(isRoleHidden("customer", { hiddenCards: ["customers"] })).toBe(false);
+    expect(isRoleHidden("stock", { hiddenCards: ["total_stock"] })).toBe(false);
+  });
+
+  // ── THE GUARD ──────────────────────────────────────────────────────────────
+  // Self-maintaining: it reads the home grid's OWN card definitions out of
+  // App.jsx and checks every one. A card added later whose key differs from its
+  // role fails here rather than silently half-hiding, which is exactly how the
+  // two divergent ones got in.
+  it("every card the home grid builds maps to the role it opens", () => {
+    const app = readFileSync(join(HERE, "../App.jsx"), "utf8");
+    const pairs = [...app.matchAll(/key:"([a-z_]+)"[^}]*?onSelect\(ROLES\.([A-Z_]+)\)/g)]
+      .map(([, cardKey, roleConst]) => ({ cardKey, roleConst }));
+    expect(pairs.length).toBeGreaterThan(15);
+
+    // Resolve ROLES.X to its literal value from the ROLES object in App.jsx.
+    const rolesLine = app.match(/const ROLES = \{([^}]*)\};/);
+    expect(rolesLine).not.toBeNull();
+    const roleValues = Object.fromEntries(
+      [...rolesLine[1].matchAll(/([A-Z_]+):\s*"([a-z_]+)"/g)].map(([, k, v]) => [k, v])
+    );
+
+    const broken = [];
+    for (const { cardKey, roleConst } of pairs) {
+      const roleValue = roleValues[roleConst];
+      expect(roleValue, `ROLES.${roleConst} is not defined`).toBeTruthy();
+      // Hiding this card must close BOTH the tile and the route.
+      const rec = { hiddenCards: [cardKey] };
+      if (!isCardHidden(cardKey, rec) || !isRoleHidden(roleValue, rec)) {
+        broken.push(`${cardKey} → ROLES.${roleConst} ("${roleValue}")`);
+      }
+    }
+    expect(broken, `these cards hide the tile but leave the route open:\n  ${broken.join("\n  ")}`).toEqual([]);
   });
 });
 
