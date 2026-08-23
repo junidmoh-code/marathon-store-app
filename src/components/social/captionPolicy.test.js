@@ -1,0 +1,68 @@
+// ── WHAT THE CAPTION MODEL IS AND IS NOT TOLD ────────────────────────────────
+// Two owner rules from 2026-08-23 land in this prompt:
+//
+//   · the physical shops are never mentioned. The prompt used to introduce the
+//     business as having "Three physical stores", which is precisely why real
+//     captions came back saying "in-store and online". The brief no longer
+//     contains a shop for the model to mention.
+//
+//   · prices never appear in caption prose — they are composited onto the
+//     artwork from the product record. The model is not merely asked to leave
+//     them out, it is NOT TOLD THEM. A number it never saw is a number it
+//     cannot quote, round or mistype.
+//
+// The gate that actually stops a bad caption is postBlocker/postReadiness in
+// src/components/social/socialCore.js (see socialShopRule.test.js). This file
+// pins the prompt so the gate is rarely reached.
+// vitest excludes functions/** from its include globs, so this test lives here
+// and reaches the CJS module the same way socialStockParity.diff.test.js does.
+import { describe, it, expect } from "vitest";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { buildCaptionPrompt } = require("../../../functions/lib/social-caption.cjs");
+
+const products = [
+  { name: "Nike Air Force 1 Cream Black Grey", retailPrice: 750, slot: "shoe" },
+  { name: "Lacoste Polo Red", retailPrice: 350, slot: "top" },
+];
+
+describe("the caption prompt withholds prices", () => {
+  const prompt = buildCaptionPrompt({ kind: "outfit", products, link: "https://marathonclub.co.za" });
+
+  it("contains no rand amount from the product records", () => {
+    expect(prompt).not.toMatch(/R\s?750/);
+    expect(prompt).not.toMatch(/R\s?350/);
+    // and no bare figure either — the numbers are simply absent
+    expect(prompt).not.toMatch(/\b750\b/);
+    expect(prompt).not.toMatch(/\b350\b/);
+  });
+
+  it("still names the products, because a caption must be able to say what it sells", () => {
+    expect(prompt).toContain("Nike Air Force 1 Cream Black Grey");
+    expect(prompt).toContain("Lacoste Polo Red");
+  });
+
+  it("tells the model prices are not its job", () => {
+    expect(prompt).toMatch(/NEVER write a price/i);
+  });
+});
+
+describe("the caption prompt describes an online-only business", () => {
+  const prompt = buildCaptionPrompt({ kind: "single", products: [products[0]], link: "x" });
+
+  it("does not claim the business has physical stores", () => {
+    expect(prompt).not.toMatch(/three physical stores/i);
+    expect(prompt).not.toMatch(/physical stores and an online/i);
+  });
+
+  it("says the business is online", () => {
+    expect(prompt).toMatch(/ONLINE/);
+  });
+
+  it("forbids shop, branch, address and opening-hours references", () => {
+    expect(prompt).toMatch(/NEVER mention a physical shop, branch, address or opening hours/i);
+    expect(prompt).toMatch(/in-?store/i);   // named explicitly as a forbidden phrase
+    expect(prompt).toMatch(/REFUSED/);      // and says the post cannot go out
+  });
+});

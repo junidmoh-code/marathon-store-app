@@ -127,10 +127,16 @@ function buildScenePrompt({ kind, productNames = [], style = "house", styleNotes
  * for this shop sounds like.
  */
 function buildCaptionPrompt({ kind, products = [], link = "", styleNotes = [] } = {}) {
+  // ── NO PRICES IN THE CAPTION ───────────────────────────────────────────────
+  // Owner rule, 2026-08-23: the price belongs ON THE ARTWORK, beside the
+  // product, composited as real text from the product record — not written into
+  // caption prose by a language model. So the model is not TOLD the prices at
+  // all. Withholding them is stronger than asking it not to use them: it cannot
+  // quote, round or mistype a number it never saw, and a caption reading
+  // "R1 350" can no longer drift from what the image says.
   const lines = products.map((p) => {
-    const price = Number(p.retailPrice) > 0 ? ` — R${Math.round(Number(p.retailPrice))}` : "";
     const slot = p.slot ? ` [${p.slot}]` : "";
-    return `· ${p.name}${price}${slot}`;
+    return `· ${p.name}${slot}`;
   });
   const kindLine = {
     single: "This post shows ONE product.",
@@ -142,8 +148,12 @@ function buildCaptionPrompt({ kind, products = [], link = "", styleNotes = [] } 
   const notes = styleNotes.map((n) => String(n || "").trim()).filter(Boolean).slice(0, 6);
 
   return [
-    "You write the Instagram, Facebook and TikTok captions for Marathon Club, a sneaker and " +
-    "streetwear shop in Durban, South Africa. Three physical stores and an online store.",
+    // The old wording named "Three physical stores", and the model dutifully
+    // wrote "in-store and online". The online business is separate from the
+    // shops and nothing published may send anyone to one, so the brief no
+    // longer contains a shop for it to mention.
+    "You write the Instagram, Facebook and TikTok captions for Marathon Club, an ONLINE " +
+    "sneaker and streetwear store shipping across South Africa.",
     "",
     kindLine,
     "",
@@ -156,7 +166,12 @@ function buildCaptionPrompt({ kind, products = [], link = "", styleNotes = [] } 
     "· Written for a person, not for a search engine. Two or three short lines.",
     "· Name the products the way a customer would say them. Brand names are fine and expected.",
     "· South African English, South African rands, no American slang.",
-    "· Prices only if they make the post better; never invent one that is not listed above.",
+    "· NEVER mention a physical shop, branch, address or opening hours. Never write " +
+    "\"in store\", \"in-store\", \"visit us\", \"come see us\", \"pop in\" or any branch name. " +
+    "This is an ONLINE store only. A caption that mentions a shop is REFUSED and the post " +
+    "cannot go out.",
+    "· NEVER write a price. Prices appear on the artwork, placed next to the product. " +
+    "Do not write any rand amount, and do not say a product is cheap, on sale or discounted.",
     "· No emoji spam — at most two, and only if they earn their place.",
     `· At most ${MAX_HASHTAGS} hashtags, on their own final line. No hashtag walls.`,
     "· Do NOT write the link — it is appended automatically.",
