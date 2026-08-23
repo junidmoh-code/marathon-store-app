@@ -430,23 +430,17 @@ const MUTATIONS = [
     test: "test/label-identity.test.cjs",
     runner: "node",
   },
-  {
-    // NOTE: mutating ONLY the hasOwnProperty call is not observable — the
-    // typeof check below it independently rejects the inherited FUNCTIONS
-    // ("constructor", "toString", "valueOf"), and Object.prototype itself
-    // carries no `c`/`a`. Both guards are kept because each covers a case the
-    // other does not, but the load-bearing one for THIS behaviour is the whole
-    // lookup, so that is what this mutation removes.
-    name: "an inherited key fakes a registration and hides a real leftover",
-    shape: "an ownership guard removed",
-    file: "src/utils/labelIdentity.js",
-    from: `  if (!id || !identityMap || !Object.prototype.hasOwnProperty.call(identityMap, id)) return null;
-  const entry = identityMap[id];
-  return entry && typeof entry === "object" ? entry : null;`,
-    to: `  return (id && identityMap && identityMap[id]) || null;`,
-    test: "src/utils/labelIdentity.test.js",
-    runner: "vitest",
-  },
+  // NOT LISTED — "an inherited key fakes a registration". The hasOwnProperty
+  // guard in utils/labelIdentity.entryFor is defence in depth, not a behaviour.
+  // This script tried it (run of 2026-08-23): replacing the whole guarded
+  // lookup with a bare `identityMap[id]` was NOT caught, and correctly so —
+  // with a pristine Object.prototype an inherited value is a function that
+  // carries no `c`/`a` arrays, so isRegistered/identityFor/registrationRoute
+  // return exactly the same thing either way. A mutation that changes nothing
+  // observable cannot be caught by a behavioural test, and claiming a catch
+  // would be the structural pin this script exists to avoid.
+  // labelIdentity.test.js:77 keeps the OUTCOME pinned; the guard stays because
+  // a polluted prototype is cheap to defend against.
 ];
 
 function run(m) {
