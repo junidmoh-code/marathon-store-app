@@ -396,7 +396,7 @@ const MUTATIONS = [
     name: "a removal commits on a count record that was staled mid-merge",
     shape: "a fence loop deleted",
     file: "functions/lib/product-merge.cjs",
-    from: `      if (!countRecordCounts(removalLive[i].val())) {`,
+    from: `      if (!countRecordCounts(removalLive[i].val()) || countRecordCounts(removalLoserLive[i].val())) {`,
     to: `      if (false) {`,
     test: "test/merge-counted-removal.test.cjs",
     runner: "node",
