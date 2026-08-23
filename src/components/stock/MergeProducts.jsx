@@ -23,7 +23,7 @@ import { isMergedAway } from "../../utils/mergedProducts";
 import { FONT, CARD, BORDER, GRAY, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
 import { labelFor } from "./locations";
 import { sizeLabelOf } from "./hubCountCore";
-import { locationsHolding, labelTokenSet, mergeTokenCandidates } from "./hubCleanupCore";
+import { locationsHolding, labelTokenSet, mergeTokenCandidates, exactCandidateRow, padCandidateRows } from "./hubCleanupCore";
 import {
   fetchProductFollowingMerge, lookupStyleClaim, resolveAnyCodes, matchLabelAlias,
 } from "./hubCleanupStore";
@@ -31,7 +31,6 @@ import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 import CameraScanner from "./CameraScanner.jsx";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import CandidateCards from "../shared/CandidateCards.jsx";
-import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 
 const mergeProductsFn = httpsCallable(functions, "mergeProducts");
 
@@ -126,30 +125,19 @@ export default function MergeProducts({
   // this screen's catalogue.
   // The rows CandidateCards renders — the shared admin picker row: PHOTO
   // first, name, the code, and a reason naming WHICH token found it. Exact
-  // owners (the index / alias store / a stamped product) lead; beneath them
-  // the ranked suggestions, padded with the closest catalogue rows so THE
-  // PANEL IS NEVER EMPTY (owner spec 2026-08-23) — a filler is labelled as
-  // one and never outranks a real match.
-  const MIN_ROWS = 8;
-  const exactRow = (product, codes, reason) => ({
-    product, code: codes && codes.length ? codes[0] : null, field: "confirmed", tier: "exact", score: 105,
-    reasons: [reason],
+  // owners lead; beneath them the ranked suggestions, padded with the closest
+  // catalogue rows so THE PANEL IS NEVER EMPTY (owner spec 2026-08-23) — the
+  // ONE helper in hubCleanupCore the assistant finder shares.
+  const exactRow = exactCandidateRow;
+  const padWithSuggestions = (exactRows, args) => padCandidateRows({
+    exactRows, products: (products || []).filter(offerable), excludeIds: [loser?.id], ...args,
   });
-  const padWithSuggestions = (exactRows, { kind, normalised, allCodes, modelName, tokens, aliasCandidates }) => {
-    const pool = (products || []).filter(offerable);
-    const excludeIds = [loser?.id, ...exactRows.map((r) => r.product.id)].filter(Boolean);
-    const ranked = buildLinkSuggestions({
-      kind, normalised, allCodes, modelName, tokens, aliasCandidates,
-      excludeIds, products: pool, includeExact: false,
-      fillToMin: Math.max(0, MIN_ROWS - exactRows.length),
-    });
-    return exactRows.concat(ranked);
-  };
 
   const handleLabelCode = async (display, meta = null) => {
     setError("");
     setSuggest(null);
     setShowAll(false);
+    setAllLimit(40);
     setReading(true);
     try {
       const tokens = labelTokenSet(display, meta && meta.allCodes);
@@ -175,7 +163,7 @@ export default function MergeProducts({
       const merged = mergeTokenCandidates({ tokens, products, claims, serverOwners, resolved });
       const exact = merged.candidates
         .filter((c) => offerable(c.product))
-        .map((c) => exactRow(c.product, c.codes, `found by ${viaLabel(c.codes)}`));
+        .map((c) => exactRow(c.product, `found by ${viaLabel(c.codes)}`, c.codes[0] || null));
       const rows = padWithSuggestions(exact, {
         kind: "code", normalised: tokens[0], allCodes: tokens,
         modelName: (meta && meta.modelName) || null, tokens: (meta && meta.tokens) || null,
@@ -193,6 +181,7 @@ export default function MergeProducts({
     setError("");
     setSuggest(null);
     setShowAll(false);
+    setAllLimit(40);
     setReading(true);
     try {
       const match = await matchLabelAlias(tokens).catch(() => null);
@@ -204,7 +193,7 @@ export default function MergeProducts({
         let p = (products || []).find((x) => x && x.id === id) || null;
         if (!p) p = await fetchProductFollowingMerge(id).catch(() => null);
         if (offerable(p) && !exact.some((r) => r.product.id === p.id)) {
-          exact.push(exactRow(p, [], "found by this label's wording"));
+          exact.push(exactRow(p, "found by this label's wording"));
         }
       }
       const rows = padWithSuggestions(exact, {
@@ -296,7 +285,9 @@ export default function MergeProducts({
                     ? "This label found one product — tap it if it's the shoe in your hand. The rows beneath are the closest others."
                     : suggest.exactCount > 1
                       ? `This label's numbers found ${suggest.exactCount} products — tap the right one. The rows beneath are the closest others.`
-                      : "Nothing matched this label closely — these are the closest we have. Tap the photo that is the shoe in your hand, or search by name below."}
+                      : suggest.rows.length
+                        ? "Nothing matched this label closely — these are the closest we have. Tap the photo that is the shoe in your hand, or search by name below."
+                        : "Nothing matched this label, and there is nothing else in this catalogue to offer — search by name below."}
                 </div>
                 {suggest.sweepFailed && (
                   <div style={{ fontSize: 12, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>

@@ -26,15 +26,13 @@
 import React, { useMemo, useState } from "react";
 import { TongueLabelReader } from "../stock/TongueLabelReader";
 import CandidateCards from "../shared/CandidateCards";
-import { labelTokenSet, mergeTokenCandidates } from "../stock/hubCleanupCore";
-import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, resolveAnyCodes } from "../stock/hubCleanupStore";
+import { labelTokenSet, mergeTokenCandidates, exactCandidateRow, padCandidateRows } from "../stock/hubCleanupCore";
+import { lookupStyleClaim, matchLabelAlias, fetchProductFollowingMerge, resolveAnyCodes, lookupCodeAlias } from "../stock/hubCleanupStore";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "../../utils/styleCode";
-import { buildLinkSuggestions } from "../../utils/linkSuggestions";
 import { searchProducts } from "../../utils/productSearch";
 import { isMergedAway } from "../../utils/mergedProducts";
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
-const MIN_ROWS = 8;
 
 const viaLabel = (codes) => (codes || [])
   .map((c) => formatStyleCodeForDisplay(c) || c).filter(Boolean).join(" · ");
@@ -44,6 +42,11 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
   // { text, tone, rows: CandidateCards rows, exactCount }
   const [note, setNote] = useState(null);
   const [query, setQuery] = useState("");
+  // "It's not one of these — show me everything": the whole offerable
+  // catalogue, paged, beneath the same heading (the same escape the count's
+  // picker and the merge picker offer).
+  const [showAll, setShowAll] = useState(false);
+  const [allLimit, setAllLimit] = useState(40);
 
   const finish = (product) => { onFound(product); };
   // The assistant may only be offered what the CURRENT catalog (mode + store
@@ -57,18 +60,12 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
     return (products || []).find((x) => x && x.id === fetched.id) || null;
   };
 
-  const exactRow = (product, reason, code = null) => ({
-    product, code, field: "confirmed", tier: "exact", score: 105, reasons: [reason],
+  const exactRow = exactCandidateRow;
+  // The ONE never-empty pad (hubCleanupCore.padCandidateRows) the merge
+  // picker shares — exact owners lead, the closest catalogue rows fill.
+  const padWithSuggestions = (exactRows, args) => padCandidateRows({
+    exactRows, products: (products || []).filter(offerable), ...args,
   });
-  const padWithSuggestions = (exactRows, { kind, normalised, allCodes, modelName, tokens, aliasCandidates }) => {
-    const pool = (products || []).filter(offerable);
-    const ranked = buildLinkSuggestions({
-      kind, normalised, allCodes, modelName, tokens, aliasCandidates,
-      excludeIds: exactRows.map((r) => r.product.id), products: pool, includeExact: false,
-      fillToMin: Math.max(0, MIN_ROWS - exactRows.length),
-    });
-    return exactRows.concat(ranked);
-  };
   const showList = (rows, exactCount, display) => {
     const anyReal = rows.some((r) => r.tier === "exact" || !r.weak);
     setNote({
@@ -78,13 +75,17 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
         ? "This label's numbers are on more than one product — tap the right one. The rows beneath are the closest others:"
         : anyReal
           ? `No product carries ${display} exactly — but these are close. Check the photo against the shoe:`
-          : `No product carries ${display} exactly — nothing matched closely, but these are the closest we have. Check the photo against the shoe:`,
+          : rows.length
+            ? `No product carries ${display} exactly — nothing matched closely, but these are the closest we have. Check the photo against the shoe:`
+            : `No product carries ${display}, and there is nothing else in this catalog to offer — search by name below.`,
     });
   };
 
   const handleCode = async (display, meta = null) => {
     setBusy(true);
     setNote(null);
+    setShowAll(false);
+    setAllLimit(40);
     try {
       const tokens = labelTokenSet(display, meta && meta.allCodes);
       const scanNorm = tokens[0] || normaliseStyleCode(display);
@@ -101,6 +102,18 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
         try { sweep = await resolveAnyCodes(tokens); } catch { sweepFailed = true; }
       }
       const serverOwners = sweep ? sweep.owners : [];
+      // A SINGLE-token label never runs the whole-node sweep — but the exact
+      // code-alias store (a code filed against a product by an earlier
+      // multi-token read, e.g. a Lacoste production line) must still be
+      // consulted, the same one-key lookup the count flow makes. A failed
+      // lookup is an index failure, said out loud — never "nothing owns it"
+      // (CodeRabbit, PR #334; kept on this surface by PR #417 review).
+      if (tokens.length === 1) {
+        try {
+          const owner = await lookupCodeAlias(scanNorm);
+          if (owner) serverOwners.push({ productId: owner, code: scanNorm, via: "alias" });
+        } catch { sweepFailed = true; }
+      }
       const localIds = new Set((products || []).map((p) => p && p.id));
       const wanted = [...new Set(serverOwners.map((o) => o && o.productId))].filter((id) => id && !localIds.has(id));
       const fetched = await Promise.all(wanted.map((id) => resolveCandidate(id)));
@@ -119,15 +132,20 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
       showList(rows, exact.length, display);
       if (sweepFailed || merged.unloadedIds.length) {
         setNote((n) => n && ({ ...n, warn: sweepFailed
-          ? "The label-code index couldn't be reached, so this label's other numbers weren't fully checked."
+          ? "The label-code index couldn't be reached, so this label's numbers weren't fully checked — the rows are ranked from the catalog alone."
           : `${merged.unloadedIds.length} further product(s) answer to this label but aren't in this catalog — reload before trusting this list.` }));
       }
+    } catch (err) {
+      // Never a dead screen: say what failed and leave name search open.
+      setNote({ rows: [], exactCount: 0, tone: "warn", text: `Couldn't check that label (${err?.message || err}) — try again, or search by name below.` });
     } finally { setBusy(false); }
   };
 
   const handleTokens = async (tokens, meta = null) => {
     setBusy(true);
     setNote(null);
+    setShowAll(false);
+    setAllLimit(40);
     try {
       let match = null;
       let failed = false;
@@ -148,6 +166,8 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
       });
       showList(rows, exact.length, "this wording");
       if (failed) setNote((n) => n && ({ ...n, warn: "Couldn't check that label against the alias store — the rows are ranked from the catalog alone." }));
+    } catch (err) {
+      setNote({ rows: [], exactCount: 0, tone: "warn", text: `Couldn't check that label (${err?.message || err}) — try again, or search by name below.` });
     } finally { setBusy(false); }
   };
 
@@ -184,8 +204,33 @@ export default function AssistantLabelFinder({ products, onFound, onClose }) {
                 select for this sale; nothing is filed from here. */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
               <CandidateCards suggestions={note.rows} limit={note.rows.length} photoSize={96} cta="TAP"
-                              onPick={(p) => finish(p)} />
+                              disabled={busy} onPick={(p) => finish(p)} />
             </div>
+            {!showAll && (
+              <button type="button" onClick={() => setShowAll(true)}
+                style={{ width: "100%", minHeight: 46, marginTop: 10, fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                         background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.16)", color: "rgba(233,238,255,.75)", borderRadius: 12 }}>
+                It's not one of these — show me everything
+              </button>
+            )}
+            {showAll && (() => {
+              const shownIds = new Set(note.rows.map((r) => r.product.id));
+              const rest = (products || []).filter(offerable).filter((p) => !shownIds.has(p.id))
+                .map((p) => ({ product: p, code: p.styleCodeNormalised || null, field: null, reasons: ["everything else in the catalog"] }));
+              return (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 12.5, marginBottom: 8 }}>Everything else — {rest.length} product{rest.length === 1 ? "" : "s"}. Narrow it with the name search below.</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <CandidateCards suggestions={rest} limit={allLimit} photoSize={64} cta="TAP" disabled={busy} onPick={(p) => finish(p)} />
+                  </div>
+                  {rest.length > allLimit && (
+                    <button type="button" onClick={() => setAllLimit((n) => n + 40)}
+                      style={{ width: "100%", minHeight: 44, marginTop: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: FONT,
+                               background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.16)", color: "rgba(233,238,255,.75)", borderRadius: 12 }}>Show more</button>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
         {/* Free text sits BELOW the suggestions — the escape, not the design. */}

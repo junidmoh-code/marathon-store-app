@@ -167,8 +167,8 @@ describe("chooseFromLabelRead — the server pick resolves without erasing", () 
     });
     expect(out.kind).toBe("chosen");
     expect(out.autoSource).toBe("rule");
-    // Timberland: A8425 (adidas-block shape, rank 0) heads A6CWNEN3 (label-serial, rank 2).
-    expect(out.code).toBe("A8425");
+    // Timberland: A6CWNEN3 (longer, more specific) heads A8425 on a loose-shape tie.
+    expect(out.code).toBe("A6CWNEN3");
     expect(out.allCandidates).toEqual(["A6CWNEN3", "A8425"]);
   });
 

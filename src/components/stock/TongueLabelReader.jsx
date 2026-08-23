@@ -247,6 +247,11 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null, 
             // these to the photo as evidence (non-authoritative by policy).
             colorway: typeof data.colorway === "string" && data.colorway ? data.colorway : null,
             upc: typeof data.upc === "string" && data.upc ? data.upc : null,
+            // A coded read short-circuits on its first readable frame (one
+            // bill, not three), so its WORDING is one frame's OCR and has NOT
+            // passed the ≥2-of-3 agreement the token path enforces. Consumers
+            // may RANK on it; they must not FILE it as an identity.
+            tokensAgreed: false,
           });
           // A learned-layout pick must never be INVISIBLE (Sonnet review,
           // PR #334): the flow proceeds, but the pick is announced with the
@@ -271,6 +276,8 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null, 
               labelPhoto: frame,
               modelName: typeof data.modelName === "string" ? data.modelName : null,
               tokens: Array.isArray(data.tokens) ? data.tokens : null,
+              colorway: typeof data.colorway === "string" && data.colorway ? data.colorway : null,
+              upc: typeof data.upc === "string" && data.upc ? data.upc : null,
             });
           }
           return;
@@ -279,7 +286,7 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null, 
       }
       const merged = mergeFrameTokens(frameTokens);
       if (merged.length >= 2 && onTokens) {
-        onTokens(merged, { labelPhoto: frames[0], modelName: sawModelName, tokens: merged });
+        onTokens(merged, { labelPhoto: frames[0], modelName: sawModelName, tokens: merged, tokensAgreed: true });
         return;
       }
       setReadNote({ text: frameError && frameTokens.length === 0
@@ -358,11 +365,16 @@ export function TongueLabelReader({ busy, big = false, onCode, onTokens = null, 
                       learnLabelLayout({ codes: readNote.candidates, chosenCode: c }).catch(() => {});
                     }
                     setReadNote(null);
+                    // The SAME meta the head-of-set call carried — an override
+                    // must never cost the intake gate its colourway/UPC evidence.
                     onCode(f, {
                       source: "label", labelPhoto: readNote.labelPhoto || null,
-                      allCodes: readNote.candidates || null,
+                      allCodes: readNote.candidates || null, auto: false, autoSource: "override",
                       modelName: readNote.modelName || null,
                       tokens: readNote.tokens || null,
+                      colorway: readNote.colorway || null,
+                      upc: readNote.upc || null,
+                      tokensAgreed: false,
                     });
                   }}
                   style={{ ...bBlue, fontSize: 13.5, minHeight: 42, fontVariantNumeric: "tabular-nums" }}>{c}</button>

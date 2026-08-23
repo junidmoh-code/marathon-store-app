@@ -202,10 +202,13 @@ export default function StyleCodeGate({ onCancel, onProceed, onAddStock, product
     setLabelAllCodes(all);
     setTyped(formatStyleCodeForDisplay(normalisedCode));
     setPhotoForCode(normalisedCode); // this photo IS the evidence for this code
+    // ONE line here; the reader above already shows the override chips for a
+    // multi-code label, so this note never repeats that question's wording.
+    const others = all ? all.length - 1 : 0;
     setReadNote({
       tone: "good",
-      text: all
-        ? `The label shows ${all.length} code-shaped numbers — read ${formatStyleCodeForDisplay(normalisedCode)} as the style number; the others are saved with it. Check it matches the shoe, then continue.`
+      text: others > 0
+        ? `Read from the label: ${formatStyleCodeForDisplay(normalisedCode)} — and ${others} other number${others === 1 ? "" : "s"} on it ${others === 1 ? "is" : "are"} saved with it. Check it matches the shoe, then continue.`
         : `Read from the label: ${formatStyleCodeForDisplay(normalisedCode)}. Check it matches the shoe, then continue.`,
     });
   }

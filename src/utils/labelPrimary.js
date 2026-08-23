@@ -15,18 +15,25 @@
 //      own preference) — chooseFromLabelRead applies those before this rule.
 //   2. Otherwise, rank every candidate by the STRENGTH of its format as an
 //      identity, and take the strongest:
-//        rank 0  brand article shapes — lacoste-ref, nike-alpha-6-3,
-//                new-balance, adidas-block
-//        rank 1  bare numeric shapes — numeric-6-3, puma-6-2 (a Lacoste
+//        rank 0  brand article shapes with a colourway/suffix structure —
+//                lacoste-ref, nike-alpha-6-3, new-balance
+//        rank 1  adidas-block (a loose letters+digits block) and
+//                label-serial (a long interleaved run) — both brand-shaped,
+//                neither provably the colourway-specific one
+//        rank 2  bare numeric shapes — numeric-6-3, puma-6-2 (a Lacoste
 //                production line is one of these: a real identity, a weaker
 //                head)
-//        rank 2  label-serial (a per-pair serial rather than a style)
 //        rank 3  anything else that still passed the server's format gate
-//   3. Ties keep the SERVER'S ORDER — the order the tokens were read off the
-//      label, top to bottom. Same label, same answer, every device.
+//   3. Inside a rank the LONGER token wins — a longer token is the more
+//      specific identity, and a wrong head is permanent (it becomes
+//      styleCodeNormalised when the product holds none) while a right one
+//      costs nothing. So on a Timberland label A6CWNEN3 (8) heads A8425 (5).
+//   4. Remaining ties keep the SERVER'S ORDER — the order the tokens were read
+//      off the label, top to bottom. Same label, same answer, every device.
 //
 // On a Lacoste label this heads the set with 45SMA0018 (article) over
-// 352890625 (production); on a Timberland label with A8425 over A6CWNEN3.
+// 352890625 (production) and the serial; on a Timberland label with A6CWNEN3
+// over A8425.
 // Whatever it picks, the OTHER tokens are never dropped — they ride `allCodes`
 // into filing and lookup exactly as before. Pure; no I/O.
 
@@ -36,10 +43,10 @@ const FORMAT_RANK = {
   "lacoste-ref": 0,
   "nike-alpha-6-3": 0,
   "new-balance": 0,
-  "adidas-block": 0,
-  "numeric-6-3": 1,
-  "puma-6-2": 1,
-  "label-serial": 2,
+  "adidas-block": 1,
+  "label-serial": 1,
+  "numeric-6-3": 2,
+  "puma-6-2": 2,
 };
 
 export function primaryCodeRank(code) {
@@ -49,16 +56,18 @@ export function primaryCodeRank(code) {
 
 /**
  * Index (into `candidates`) of the token that heads the set. -1 when empty.
- * Stable: ties resolve to the earliest candidate.
+ * Order: lowest rank, then LONGEST normalised token, then earliest (stable).
  */
 export function choosePrimaryCodeIndex(candidates) {
   const list = Array.isArray(candidates) ? candidates : [];
   let best = -1;
   let bestRank = Infinity;
+  let bestLen = -1;
   list.forEach((c, i) => {
     if (!c) return;
     const r = primaryCodeRank(c);
-    if (r < bestRank) { bestRank = r; best = i; }
+    const len = String(c).replace(/[^A-Za-z0-9]/g, "").length;
+    if (r < bestRank || (r === bestRank && len > bestLen)) { bestRank = r; bestLen = len; best = i; }
   });
   return best;
 }

@@ -78,7 +78,9 @@ describe("the gate pools every label token into the pre-duplicate question", () 
     const { r } = await mountAndPhotograph();
     const field = r.root.findAllByType("input").find((i) => i.props.placeholder === "CT8527-016");
     expect(field.props.value).toBe("45SMA0018");
-    expect(textOf(r.root.findByType("div"))).toContain("read 45SMA0018 as the style number");
+    // The reader announces the head of the set (override chips live there);
+    // the gate's own line names the code and how many ride with it.
+    expect(textOf(r.root.findByType("div"))).toContain("Read from the label: 45SMA0018 — and 2 other numbers on it are saved with it");
   });
 
   it("THE RECOVERY: continuing blocks on 'Lacoster white' via the production token — photo shown, nothing proceeds", async () => {

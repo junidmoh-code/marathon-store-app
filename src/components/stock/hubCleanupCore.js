@@ -12,6 +12,7 @@
 
 import { normaliseStyleCode } from "../../utils/styleCode.js";
 import { choosePrimaryCodeIndex } from "../../utils/labelPrimary.js";
+import { buildLinkSuggestions } from "../../utils/linkSuggestions.js";
 import { isMergedAway } from "../../utils/mergedProducts.js";
 import { productIsFootwear } from "../../utils/footwearLine.js";
 import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSiblings.js";
@@ -486,4 +487,31 @@ export function registrationProgress({ products = [], hubStock = {}, registered 
     if (registeredPids.has(p.id)) seen += 1;
   }
   return { seen, expected, units: Object.values(registered || {}).reduce((n, r) => n + (Number(r && r.qty) || 0), 0) };
+}
+
+// ── THE NEVER-EMPTY CANDIDATE LIST (owner spec 2026-08-23) ───────────────────
+// The merge picker and the assistant finder show the SAME thing after a label
+// read: the exact owners every token found (photo, name, "found by <token>"),
+// then the ranked near-matches, padded with the closest catalogue rows so the
+// panel is never empty. ONE pure helper so the two panels cannot drift.
+//   exactRows     rows already resolved as owners (exactCandidateRow below)
+//   products      the catalogue this surface may offer (already filtered)
+//   excludeIds    ids never to pad with (the merge loser, for instance)
+//   minRows       the floor the pad fills to (default 8)
+//   ...args       buildLinkSuggestions args: kind, normalised, allCodes,
+//                 modelName, tokens, aliasCandidates
+// Exact rows always lead; the pad never outranks them and never repeats them.
+export const NEVER_EMPTY_MIN_ROWS = 8;
+
+export function exactCandidateRow(product, reason, code = null) {
+  return { product, code, field: "confirmed", tier: "exact", score: 105, reasons: [reason] };
+}
+
+export function padCandidateRows({ exactRows = [], products = [], excludeIds = [], minRows = NEVER_EMPTY_MIN_ROWS, ...args } = {}) {
+  const exclude = [...excludeIds, ...exactRows.map((r) => r.product.id)].filter(Boolean);
+  const ranked = buildLinkSuggestions({
+    ...args, excludeIds: exclude, products, includeExact: false,
+    fillToMin: Math.max(0, minRows - exactRows.length),
+  });
+  return exactRows.concat(ranked);
 }

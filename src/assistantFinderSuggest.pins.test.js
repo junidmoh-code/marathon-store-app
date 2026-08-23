@@ -33,7 +33,11 @@ describe("the assistant finder's wiring", () => {
   it("every token pools through the count flow's gather, and the list is padded — never empty", () => {
     expect(finder).toMatch(/labelTokenSet\(display, meta && meta\.allCodes\)/);
     expect(finder).toMatch(/mergeTokenCandidates\(\{ tokens, products, claims, serverOwners, resolved \}\)/);
-    expect(finder).toMatch(/fillToMin: Math\.max\(0, MIN_ROWS - exactRows\.length\)/);
+    // The pad is the ONE shared helper (hubCleanupCore.padCandidateRows), the
+    // same one the merge picker uses — never a private copy.
+    expect(finder).toMatch(/import \{ labelTokenSet, mergeTokenCandidates, exactCandidateRow, padCandidateRows \} from "\.\.\/stock\/hubCleanupCore"/);
+    expect(finder).toMatch(/padCandidateRows\(\{\s*exactRows, products: \(products \|\| \[\]\)\.filter\(offerable\)/);
+    expect(finder).not.toMatch(/buildLinkSuggestions/);
     expect(finder).toMatch(/kind: "tokens", tokens, aliasCandidates: cands/);
   });
 

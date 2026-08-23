@@ -206,7 +206,7 @@ describe("the camera opens and a capture completes on every surface", () => {
     await openCameraAndCapture(tr);
     const t = textOf(tr);
     expect(t).toContain("Style number:");
-    expect(t).toContain("A8425");           // the deterministic head of the set
+    expect(t).toContain("A6CWNEN3");        // the deterministic head of the set (longer token on a loose-shape tie)
     expect(t).not.toContain("tap the style number:");
     // Pick the size and fire the ONE register action (the shop picker is
     // driven elsewhere; the handler is invoked directly here): the store
@@ -219,10 +219,12 @@ describe("the camera opens and a capture completes on every surface", () => {
     await act(async () => { await save.props.onClick(); });
     const payload = registerDisplayUnit.mock.calls[0]?.[0]?.styleCode;
     expect(payload).toBeTruthy();
-    expect(payload.code).toBe("A8425");
+    expect(payload.code).toBe("A6CWNEN3");
     expect(payload.source).toBe("label");
     expect(payload.allCodes).toEqual(["A6CWNEN3", "A8425"]);
-    expect(payload.aliasTokens).toEqual(["A6CWNEN3", "A8425", "GTX", "MID", "MOTION", "TIMBERLAND"]);
+    // A coded read's wording is ONE frame's OCR (tokensAgreed:false) — ranked
+    // on, never filed as a permanent alias (review, PR #417).
+    expect(payload.aliasTokens).toBeUndefined();
   });
 
   it("MERGE PICKER: the burst lists both owners through the shared cards; nothing advances without a tap", async () => {
@@ -255,9 +257,9 @@ describe("the camera opens and a capture completes on every surface", () => {
     });
     await openCameraAndCapture(tr);
     const field = tr.root.findAll((n) => n.type === "input" && n.props.placeholder === "CT8527-016")[0];
-    expect(field.props.value).toBe("A8425");
+    expect(field.props.value).toBe("A6CWNEN3");
     const t = textOf(tr);
-    expect(t).toContain("read A8425 as the style number; the others are saved with it");
+    expect(t).toContain("Read from the label: A6CWNEN3 — and 1 other number on it is saved with it");
     expect(t).not.toContain("tap the right one");
     // The gate does not render a SECOND typed field — the reader's is off here.
     expect(tr.root.findAll((n) => n.type === "input" && /type the style number/.test(n.props.placeholder || ""))).toHaveLength(0);

@@ -152,14 +152,14 @@ describe("the label is a SET — every token, as separate tokens", () => {
     expect(textOf(tr)).toContain("every number on this label is saved with it");
   });
 
-  it("Timberland: BOTH codes ride allCodes; the rule heads the set with A8425", async () => {
+  it("Timberland: BOTH codes ride allCodes; the rule heads the set with the more specific A6CWNEN3", async () => {
     readResponses = [TIMBERLAND];
     const onCode = vi.fn();
     const tr = await mount({ onCode });
     await act(async () => { buttonWith(tr, "Photograph the tongue label").props.onClick(); });
     await act(async () => { await tr.root.findByType(LabelCamera).props.onFrames(FRAMES); });
     const [display, meta] = onCode.mock.calls[0];
-    expect(display).toBe("A8425");
+    expect(display).toBe("A6CWNEN3");
     expect(meta.allCodes).toEqual(["A6CWNEN3", "A8425"]);
     expect(meta.modelName).toBe("TIMBERLAND MOTION 6 MID GTX");
   });
@@ -170,11 +170,11 @@ describe("the label is a SET — every token, as separate tokens", () => {
     const tr = await mount({ onCode });
     await act(async () => { buttonWith(tr, "Photograph the tongue label").props.onClick(); });
     await act(async () => { await tr.root.findByType(LabelCamera).props.onFrames(FRAMES); });
-    const chip = buttonWith(tr, "A6CWNEN3");
+    const chip = buttonWith(tr, "A8425");
     expect(chip).toBeTruthy();
     await act(async () => { chip.props.onClick(); });
     expect(onCode).toHaveBeenCalledTimes(2);
-    expect(onCode.mock.calls[1][0]).toBe("A6CWNEN3");
+    expect(onCode.mock.calls[1][0]).toBe("A8425");
     expect(onCode.mock.calls[1][1].allCodes).toEqual(["A6CWNEN3", "A8425"]);
   });
 });

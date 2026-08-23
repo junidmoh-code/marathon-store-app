@@ -15,12 +15,14 @@ describe("choosePrimaryCode — the head of a multi-code label", () => {
     expect(choosePrimaryCode(["352890625", "45SMA0018"])).toBe("45SMA0018");
   });
 
-  it("Timberland: A8425 (brand block shape) heads A6CWNEN3 (per-pair serial shape)", () => {
-    expect(choosePrimaryCode(["A6CWNEN3", "A8425"])).toBe("A8425");
-    expect(choosePrimaryCode(["A8425", "A6CWNEN3"])).toBe("A8425");
+  it("Timberland: the LONGER, more specific token heads a loose-shape tie — A6CWNEN3 over A8425", () => {
+    // adidas-block and label-serial share a rank; a wrong head is permanent
+    // (it becomes styleCodeNormalised), so the more specific token wins.
+    expect(choosePrimaryCode(["A6CWNEN3", "A8425"])).toBe("A6CWNEN3");
+    expect(choosePrimaryCode(["A8425", "A6CWNEN3"])).toBe("A6CWNEN3");
   });
 
-  it("ties keep the server's (reading) order — same label, same answer", () => {
+  it("full ties (same rank, same length) keep the server's (reading) order — same label, same answer", () => {
     // Two Nike-shaped codes: the first read wins, deterministically.
     expect(choosePrimaryCode(["CT8527016", "DD1391100"])).toBe("CT8527016");
     expect(choosePrimaryCode(["DD1391100", "CT8527016"])).toBe("DD1391100");
@@ -32,10 +34,10 @@ describe("choosePrimaryCode — the head of a multi-code label", () => {
     expect(primaryCodeRank("45SMA0018")).toBe(0);     // lacoste-ref
     expect(primaryCodeRank("CT8527016")).toBe(0);     // nike-alpha-6-3
     expect(primaryCodeRank("M990GL6")).toBe(0);       // new-balance
-    expect(primaryCodeRank("A8425")).toBe(0);         // adidas-block
-    expect(primaryCodeRank("352890625")).toBe(1);     // numeric-6-3
-    expect(primaryCodeRank("19093550")).toBe(1);      // puma-6-2
-    expect(primaryCodeRank("A6CWNEN3")).toBe(2);      // label-serial
+    expect(primaryCodeRank("A8425")).toBe(1);         // adidas-block
+    expect(primaryCodeRank("A6CWNEN3")).toBe(1);      // label-serial
+    expect(primaryCodeRank("352890625")).toBe(2);     // numeric-6-3
+    expect(primaryCodeRank("19093550")).toBe(2);      // puma-6-2
     expect(primaryCodeRank("ZZZZZZZZZZZZZZZZZZZ")).toBe(3); // no known format
   });
 

@@ -2011,18 +2011,20 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
 
   // The shared tongue-label reader hands back the chosen code — one capture
   // path for BOTH passes (owner reversal 2026-08-06), never a second build.
-  const takeCode = (code, { source, labelPhoto: photo, allCodes: codes = null, tokens = null }) => {
+  const takeCode = (code, { source, labelPhoto: photo, allCodes: codes = null, tokens = null, tokensAgreed = false }) => {
     setChosenCode(code);
     setCodeSource(source);
     setLabelPhoto(source === "label" ? photo : null);
     // Every code-shaped token the label printed (multi-token labels) — the
     // save files them ALL as identities of this product (owner spec 2026-08-08).
     setAllCodes(Array.isArray(codes) && codes.length > 1 ? codes : null);
-    // The label's WORDING (model line and the rest) rides a coded read too
-    // (owner spec 2026-08-23: every token on the label belongs to the shoe a
-    // human just confirmed) — filed as an alias beside the codes, never into
-    // styleCodeNormalised. A typed code carries no wording.
-    setAliasTokens(source === "label" && Array.isArray(tokens) && tokens.length >= 2 ? tokens : null);
+    // The label's WORDING files as an alias beside the codes ONLY when it
+    // passed the ≥2-of-3 frame agreement (the reader says so in
+    // tokensAgreed). A coded read's wording is one frame's OCR — it ranks
+    // suggestions, it is never written as a permanent identity (review, PR
+    // #417: a glare-frame "MOTI0N" in /label_aliases is forever). Never into
+    // styleCodeNormalised either way; a typed code carries no wording.
+    setAliasTokens(source === "label" && tokensAgreed && Array.isArray(tokens) && tokens.length >= 2 ? tokens : null);
     setSkipReason(null);
   };
   // A reading with no printed article number: filed as an ALIAS on save —

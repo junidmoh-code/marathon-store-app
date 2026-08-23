@@ -61,7 +61,10 @@ describe("alias-lookup failure handling (CodeRabbit PR #334)", () => {
   it("assistant finder: a FAILED any-token sweep says so — never \"nothing owns it\"", () => {
     const finder = readFileSync(join(here, "..", "assistant", "AssistantLabelFinder.jsx"), "utf8");
     expect(finder).toMatch(/try \{ sweep = await resolveAnyCodes\(tokens\); \} catch \{ sweepFailed = true; \}/);
-    expect(finder).toMatch(/The label-code index couldn't be reached, so this label's other numbers weren't fully checked/);
+    expect(finder).toMatch(/The label-code index couldn't be reached, so this label's numbers weren't fully checked/);
+    // …and the single-token road still asks the exact code-alias store, with a
+    // thrown lookup counted as an index failure (CodeRabbit, PR #334 — kept).
+    expect(finder).toMatch(/const owner = await lookupCodeAlias\(scanNorm\);[\s\S]{0,200}\} catch \{ sweepFailed = true; \}/);
     // …and a lone candidate is NOT opened when the sweep failed — the list shows instead.
     expect(finder).toMatch(/exact\.length === 1 && !merged\.unloadedIds\.length && !sweepFailed/);
   });

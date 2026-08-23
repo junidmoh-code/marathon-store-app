@@ -76,9 +76,9 @@ beforeEach(() => {
 describe("never asks which code", () => {
   it("a two-code read with NO server pick fills the field with the rule's choice and announces the set — no question", async () => {
     const { r } = await mountAndPhotograph();
-    expect(field(r).props.value).toBe("A8425");
+    expect(field(r).props.value).toBe("A6CWNEN3");
     const text = JSON.stringify(r.toJSON());
-    expect(text).toContain("read A8425 as the style number; the others are saved with it");
+    expect(text).toContain("Read from the label: A6CWNEN3 — and 1 other number on it is saved with it");
     expect(text).not.toContain("tap the right one");
     expect(text).not.toContain("tap the style number:");
     // One typed field only — the reader's own escape is off inside the gate.
@@ -90,21 +90,21 @@ describe("never asks which code", () => {
     await act(async () => { await btn(r.root, /continue/i).props.onClick(); });
     expect(onProceed).toHaveBeenCalledTimes(1);
     const payload = onProceed.mock.calls[0][0];
-    expect(payload.styleCodeNormalised).toBe("A8425");
-    expect(payload.labelOtherCodes).toEqual(["A6CWNEN3"]);
+    expect(payload.styleCodeNormalised).toBe("A6CWNEN3");
+    expect(payload.labelOtherCodes).toEqual(["A8425"]);
     expect(payload.labelPhoto).toBeTruthy();
   });
 
   it("a token owned by a DIFFERENT product routes to the duplicate question — never a silent attach", async () => {
-    const timber = { id: "pTimber", name: "Timberland 6-Inch Wheat", styleCodeNormalised: "A6CWNEN3", photoUrl: "https://x/timber.jpg" };
-    const { r, onProceed } = await mountAndPhotograph([timber]);
-    // The OTHER token (A6CWNEN3) belongs to an existing product — the gate
-    // must stop and show it before anything is created.
+    const euro = { id: "pEuro", name: "Timberland Euro Hiker Black", styleCodeNormalised: "A8425", photoUrl: "https://x/euro.jpg" };
+    const { r, onProceed } = await mountAndPhotograph([euro]);
+    // The OTHER token (A8425) belongs to an existing product — the gate must
+    // stop and show it before anything is created.
     await act(async () => { await btn(r.root, /continue/i).props.onClick(); });
     expect(onProceed).not.toHaveBeenCalled();
     const text = JSON.stringify(r.toJSON());
-    expect(text).toContain("Timberland 6-Inch Wheat");
-    expect(text).toMatch(/other token A6CWNEN3|already registered with exactly this code/);
+    expect(text).toContain("Timberland Euro Hiker Black");
+    expect(text).toMatch(/other token A8425|already registered with exactly this code/);
   });
 
   it("a code-less reading keeps the wording as evidence and names the ways forward", async () => {
