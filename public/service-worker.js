@@ -3,7 +3,11 @@
 // assets. Existing clients will fetch the new SW (uncached per firebase.json
 // header), activate it (skipWaiting + clients.claim), and the page will
 // show the "Update available" banner via a message dispatched from here.
-const CACHE_VERSION = "v2";
+// v3 — 2026-08-24. The Approve-button fix (#423) shipped without a bump, so
+// installed PWAs went on serving the cached v2 shell and the button stayed
+// grey on a machine running correct code. Bumping invalidates both caches on
+// activate, which is the whole point of this constant.
+const CACHE_VERSION = "v3";
 const STATIC_CACHE  = `mc-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `mc-runtime-${CACHE_VERSION}`;
 
