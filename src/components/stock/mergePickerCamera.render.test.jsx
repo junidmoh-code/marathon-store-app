@@ -38,6 +38,15 @@ vi.mock("./hubCleanupStore", () => ({
 }));
 
 const mergeCall = vi.fn(async () => ({ data: { moved: [], barcodesRepointed: [] } }));
+// The count state read: every location readable, nothing counted. Without
+// this the mocked `firebase` makes the read fail, and a failed read is (rightly)
+// the screen's ERROR state — which is not what these tests are about.
+vi.mock("./mergeDispositionStore", () => ({
+  loadCountedFor: async ({ locations }) => ({
+    countedByLoc: Object.fromEntries(locations.map((l) => [l, new Set()])),
+    failed: [],
+  }),
+}));
 vi.mock("../../firebase", () => ({ database: {}, functions: {}, auth: {} }));
 vi.mock("firebase/functions", () => ({ httpsCallable: () => (...a) => mergeCall(...a) }));
 

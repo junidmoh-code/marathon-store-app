@@ -42,6 +42,9 @@ import StockView from "./components/stock/StockView";
 // TEMPORARY — hub sneaker stock-take. Both of these render nothing once
 // HUB_SNEAKER_COUNT_ENABLED is flipped off; removing the feature is deleting
 // these three lines plus the two src/components/stock/hubCount* modules.
+import IdentityLine from "./components/shared/IdentityLine.jsx";
+import { identityFor } from "./utils/labelIdentity";
+import { useLabelIdentity } from "./utils/labelIdentityStore";
 import HubCleanup from "./components/stock/HubCleanup";
 import HubCleanupCard from "./components/stock/HubCleanupCard";
 import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
@@ -6524,6 +6527,9 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const extras = Array.isArray(product.gallery) ? product.gallery.filter(Boolean) : [];
 
   // Name — local draft synced from RTDB, write on blur.
+  // Every code and label alias this product answers to — the two admin-only
+  // identity stores folded server-side (utils/labelIdentityStore).
+  const identity = useLabelIdentity();
   const [nameDraft, setNameDraft] = useState(product.name);
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
   const saveName = () => {
@@ -6991,6 +6997,25 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
                  onBlur={saveName}
                  onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
                  style={{ width:"100%", background:"transparent", border:"none", outline:"none", color:"#fff", fontSize:17, fontWeight:500, padding:0, fontFamily:"inherit" }}/>
+        </div>
+      </div>
+
+      {/* STYLE CODE AND LABEL ALIASES ─────────────────────────────────────
+          Owner spec 2026-08-23: the code has to be readable off the product
+          page, not only off the label, so a code can be read here and its twin
+          found in the merge search. Every code this product answers to — its
+          own field, its /style_code_index claim, sibling claims and code
+          aliases — plus every label wording filed against it. Each chip copies
+          itself in one tap. Read-only: this page never files an identity, the
+          register and count passes do. */}
+
+      </div>
+      <div style={{ breakInside:"avoid" }}>
+      <div style={sectionTitle}>Style code</div>
+      <div style={card}>
+        <div style={cardInner}>
+          <IdentityLine {...identityFor(product, identity.map)}
+                        emptyText={identity.ready ? "No style code, claim or label alias on record" : "Loading…"} />
         </div>
       </div>
 
