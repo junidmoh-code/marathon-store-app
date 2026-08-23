@@ -30,7 +30,27 @@ import { SLOT_DAYS, SLOT_HOUR_SAST } from "../../src/components/social/socialCor
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const PLIST = read("./com.marathon.socialpublish.plist");
-const INSTALLER = read("./install-on-mac-mini.sh");
+const INSTALLER_RAW = read("./install-on-mac-mini.sh");
+
+// ── ASSERT AGAINST CODE, NOT PROSE ───────────────────────────────────────────
+// Both of these files are heavily commented, and the comments discuss the very
+// things being asserted — the installer's header explains what RunAtLoad true
+// would do, and the plist's header names the Intel-era node path it no longer
+// uses. Matching the raw text therefore passes on the EXPLANATION of a guard
+// that has been deleted.
+//
+// That is not hypothetical: an earlier version of this file asserted
+// /RunAtLoad.*false/ against the raw installer, and removing the actual guard
+// left all eleven tests green. A test that survives the deletion of the thing
+// it tests is worse than no test. So the shell is stripped to its code lines
+// before anything is asserted about it.
+//
+// Only whole-line comments are stripped. A '#' inside a string or a path is
+// left alone, because guessing at shell quoting would trade this false pass for
+// a false failure.
+const INSTALLER = INSTALLER_RAW.split("\n")
+  .filter((l) => !/^\s*#/.test(l))
+  .join("\n");
 
 // A deliberately small plist reader rather than a dependency. It reads the ONE
 // shape this file uses — <key>K</key><integer>N</integer> inside <dict>s in an
@@ -83,8 +103,18 @@ describe("loading the agent cannot publish", () => {
   });
 
   it("the installer refuses to install a plist that would fire on load", () => {
-    expect(INSTALLER).toMatch(/RunAtLoad.*false/);
-    expect(INSTALLER).toMatch(/REFUSING to install/);
+    // The guard is a grep for the literal plist line. Asserted precisely
+    // (not /RunAtLoad.*false/) so that deleting it fails this test — the
+    // installer says "REFUSING to install" in four other places, so a loose
+    // match for that phrase proves nothing about THIS guard.
+    expect(INSTALLER).toMatch(/grep -qE\s+"<key>RunAtLoad<\/key>\[\[:space:\]\]\*<false\/>"/);
+
+    // And the failure branch must EXIT. This check once only printed a red
+    // line and then bootstrapped the agent anyway, which is precisely the
+    // outcome it exists to prevent.
+    const guard = INSTALLER.slice(INSTALLER.indexOf("RunAtLoad"));
+    const branch = guard.slice(0, guard.indexOf("\nfi"));
+    expect(branch, "the RunAtLoad guard must exit, not merely warn").toMatch(/exit 2/);
   });
 });
 
