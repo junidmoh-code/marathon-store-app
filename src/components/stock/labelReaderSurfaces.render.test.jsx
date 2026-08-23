@@ -103,6 +103,7 @@ vi.mock("./CameraScanner.jsx", () => ({ default: () => null }));
 vi.mock("./HubSneakerCount.jsx", () => ({ default: () => null }));
 
 const { TongueLabelReader, LabelCamera } = await import("./TongueLabelReader.jsx");
+const { default: CandidateCards } = await import("../shared/CandidateCards.jsx");
 const { default: HubCleanup } = await import("./HubCleanup.jsx");
 const { default: MergeProducts } = await import("./MergeProducts.jsx");
 const { default: AssistantLabelFinder } = await import("../assistant/AssistantLabelFinder.jsx");
@@ -174,6 +175,24 @@ describe("the camera opens and a capture completes on every surface", () => {
     // Nothing was counted or filed before a tap.
     expect(recordLabelCodes).not.toHaveBeenCalled();
     expect(t).not.toContain("tap the style number:");
+  });
+
+  it("COUNT (HubCleanup) dead end: a code nothing owns opens the link panel through the SHARED cards, never empty", async () => {
+    readResponse = { candidates: ["ZZ9999999"], displayCandidates: ["ZZ9999999"], tokens: [], modelName: null, errors: [] };
+    let tr;
+    await act(async () => { tr = TestRenderer.create(<HubCleanup products={PRODUCTS} actorRole="warehouse" viewer={{}} />); });
+    const countTab = tr.root.findAll((n) => n.type === "button" && n.children.join("") === "Count")[0];
+    await act(async () => { countTab.props.onClick(); });
+    await openCameraAndCapture(tr);
+    const t = textOf(tr);
+    expect(t).toContain("Nothing matched closely");
+    // The link panel's rows are the SAME component the choose panel, gate,
+    // merge picker and finder render — photo-first cards, not a private list.
+    const cardsOnScreen = tr.root.findAllByType(CandidateCards);
+    expect(cardsOnScreen.length).toBeGreaterThanOrEqual(1);
+    expect(cardsOnScreen[0].props.photoSize).toBeGreaterThanOrEqual(100);
+    expect(cardFor(tr, "Timberland 6-Inch Wheat")).toBeTruthy();
+    expect(recordLabelCodes).not.toHaveBeenCalled();
   });
 
   it("REGISTER (HubCleanup RegisterPanel): the burst lands the head of the set AND keeps every token for the save", async () => {
