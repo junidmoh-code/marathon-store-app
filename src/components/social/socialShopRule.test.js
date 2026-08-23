@@ -148,4 +148,21 @@ describe("the Approve button is wired to readiness, not to approval", () => {
   it("explains the refusal using the same readiness reason it gated on", () => {
     expect(src).toMatch(/Can't approve yet — \{notReady\}/);
   });
+
+  it("PAINTS the button from the same condition it gates on", () => {
+    // The second half of the same bug. `disabled` was fixed but the style was
+    // left keyed on `blocker`, which is truthy for every draft — so the button
+    // was clickable and painted dead, at 45% opacity with a not-allowed
+    // cursor. To a person that is indistinguishable from broken, and it is what
+    // "still not approving" turned out to mean.
+    expect(src).toMatch(/opacity:\s*notReady\s*\?/);
+    expect(src).toMatch(/cursor:\s*notReady\s*\?/);
+    expect(src).not.toMatch(/opacity:\s*blocker\s*\?/);
+    expect(src).not.toMatch(/cursor:\s*blocker\s*\?/);
+  });
+
+  it("does not keep a postBlocker result around for the queue to misuse", () => {
+    // Nothing in this component may key off "is it already approved".
+    expect(src).not.toMatch(/const\s+blocker\s*=/);
+  });
 });
