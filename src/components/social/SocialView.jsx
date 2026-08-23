@@ -29,7 +29,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen, bRed } from "../stock/ui";
 import {
   PLATFORMS, PLATFORM_KEYS, QUEUE_FILTERS, CAPTION_MAX,
-  postKind, platform, enabledPlatforms, postBlocker, describePost, resultLine,
+  postKind, platform, enabledPlatforms, postBlocker, postReadiness, describePost, resultLine,
   formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
 } from "./socialCore";
 import {
@@ -95,7 +95,12 @@ function PostRow({ post, onChanged, onNotice }) {
   const [schedDraft, setSchedDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const kind = postKind(post.kind);
+  // What stops this from being SENT (the status line), and separately what stops
+  // it from being APPROVED. Not the same question: a draft is by definition not
+  // approved, so gating Approve on postBlocker greyed the button forever and gave
+  // "Not approved yet" as the reason it could not be approved.
   const blocker = postBlocker(post);
+  const notReady = postReadiness(post);
   const caption = draftCaption !== null ? draftCaption : (post.caption || "");
   const captionDirty = draftCaption !== null && draftCaption.trim() !== (post.caption || "").trim();
 
@@ -270,7 +275,7 @@ function PostRow({ post, onChanged, onNotice }) {
           {/* ── Decisions ── */}
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginTop: 16 }}>
             {post.status === "draft" && (
-              <button disabled={busy || !!blocker}
+              <button disabled={busy || !!notReady}
                       onClick={() => run(() => approvePost(post.id), "Approved — it goes out on its scheduled run.")}
                       style={{ ...bGreen, opacity: blocker ? 0.45 : 1, cursor: blocker ? "not-allowed" : "pointer" }}>
                 Approve
@@ -294,8 +299,8 @@ function PostRow({ post, onChanged, onNotice }) {
               </button>
             )}
           </div>
-          {blocker && post.status === "draft" && (
-            <div style={{ fontSize: 11.5, color: AMBER, marginTop: 8 }}>Can't approve yet — {blocker}</div>
+          {notReady && post.status === "draft" && (
+            <div style={{ fontSize: 11.5, color: AMBER, marginTop: 8 }}>Can't approve yet — {notReady}</div>
           )}
 
           {/* ── EXACTLY WHAT WILL BE SENT ───────────────────────────────────

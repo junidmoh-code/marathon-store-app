@@ -157,6 +157,118 @@ export const CAPTION_MIN = 12;
 export const MAX_MEDIA = 10;
 export const MAX_ATTEMPTS = 4;     // per platform, across scheduled runs
 
+// ── THE PHYSICAL SHOPS ARE NEVER MENTIONED ───────────────────────────────────
+// Owner rule, 2026-08-23, and a HARD one: the online business is separate from
+// the shops, the shops are already busier than they can serve, and nothing we
+// publish may send anyone to one. No "in store", no branch name, no address, no
+// opening hours — in a caption, on an image, in alt text, in ad copy.
+//
+// It is enforced HERE, as a refusal, rather than only asked for in a prompt,
+// for the same reason brand terms are refused for the Shopify catalogue: a
+// prompt is a request and a gate is a guarantee. The caption prompt was in fact
+// telling the model the shop has "Three physical stores", so it dutifully wrote
+// "in-store and online" — a prompt-only rule would have been fighting the
+// prompt above it.
+//
+// This lives in socialCore.js on purpose. It is the ONE file imported by both
+// the browser queue and scripts/social/publish.mjs on the Mac mini, so a single
+// implementation guards the edit box and the last moment before the first
+// platform call. No mirror, so nothing to drift.
+//
+// ── ON FALSE POSITIVES ───────────────────────────────────────────────────────
+// "Pine" and "Trophy" are branch names AND ordinary words that appear in real
+// product names and colours. Refusing them bare would block honest captions, so
+// a branch name is refused only in a LOCATIONAL frame ("at Pine", "Trophy
+// branch"). The generic phrases below carry no such ambiguity and are refused
+// outright.
+const SHOP_PHRASES = [
+  /\bin[-\s]?store\b/i, /\binstore\b/i, /\bin[-\s]?branch\b/i,
+  /\bvisit (?:us|our|the (?:shop|store))\b/i, /\bcome (?:see us|through|visit|in)\b/i,
+  /\bpop (?:in|by|round)\b/i, /\bswing by\b/i, /\bdrop (?:in|by)\b/i,
+  /\bwalk[-\s]?in\b/i, /\bshowroom\b/i,
+  /\bour (?:shop|store|stores|shops|branch|branches)\b/i,
+  /\b(?:at|in) (?:the|our) (?:shop|store|branch)\b/i,
+  /\bphysical (?:shop|store)s?\b/i,
+  /\bopen(?:ing)? (?:hours|times)\b/i,
+  /\b(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\s*[-\u2013\u2014]\s*(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\b.*\b\d{1,2}\s*(?:am|pm|h\d{2})\b/i,
+  /\b\d{1,2}\s*(?:am|pm)\s*[-\u2013\u2014]\s*\d{1,2}\s*(?:am|pm)\b/i,
+  // A street address: number + street word.
+  /\b\d{1,5}[a-z]?\s+[A-Z][\w'-]*\s+(?:street|st|road|rd|avenue|ave|drive|dr|lane|ln|way|centre|center|mall|arcade)\b/i,
+];
+const BRANCH_NAMES = ["Marathon PE", "Pine", "Trophy"];
+// A branch name only counts when framed as a place.
+const BRANCH_FRAMES = (n) => [
+  new RegExp(`\\b(?:at|in|from|to|near|visit)\\s+${n}\\b`, "i"),
+  new RegExp(`\\b${n}\\s+(?:branch|store|shop|outlet)\\b`, "i"),
+];
+
+/**
+ * Every physical-shop reference in a piece of text. Empty array means clean.
+ * Exported so the queue can show Junid exactly which words are the problem
+ * rather than a bare refusal he has to guess at.
+ */
+export function findShopMentions(text) {
+  const s = String(text == null ? "" : text);
+  const hits = [];
+  for (const re of SHOP_PHRASES) {
+    const m = s.match(re);
+    if (m) hits.push(m[0].trim());
+  }
+  for (const n of BRANCH_NAMES) {
+    for (const re of BRANCH_FRAMES(n)) {
+      const m = s.match(re);
+      if (m) { hits.push(m[0].trim()); break; }
+    }
+  }
+  return [...new Set(hits)];
+}
+
+/** The refusal sentence, or null when the text is clean. */
+export function shopMentionBlocker(text) {
+  const hits = findShopMentions(text);
+  if (!hits.length) return null;
+  return `Mentions the shops (${hits.slice(0, 3).map((h) => `"${h}"`).join(", ")}) — online only, never the physical stores.`;
+}
+
+// ── IS THIS POST FIT TO SEND? ────────────────────────────────────────────────
+// Everything about a post that makes it postable EXCEPT whether it has been
+// approved and whether it is due. Split out because those two are the caller's
+// business, not the content's.
+//
+// This split fixes a real outage. The Approve button was disabled on
+// `postBlocker(post)`, whose FIRST branch refuses anything not already
+// approved — so a draft reported "Not approved yet" as the reason it could not
+// be approved, and the button was grey forever. Nothing could ever be approved
+// through the app; the only posts that ever went out were approved by hand
+// against the database. The gate that decides "may I approve this?" must not
+// require it to already be approved.
+export function postReadiness(post) {
+  if (!post || typeof post !== "object") return "This item is empty.";
+  const media = Array.isArray(post.media) ? post.media.filter((m) => m && m.url) : [];
+  if (!media.length) return "No image or video attached.";
+  if (media.length > MAX_MEDIA) return `Too many items attached (${media.length}; the limit is ${MAX_MEDIA}).`;
+  const caption = typeof post.caption === "string" ? post.caption.trim() : "";
+  if (caption.length < CAPTION_MIN) return "The caption is empty or too short.";
+  // The shop rule is checked on the CAPTION and on any alt text, at the same
+  // gate as everything else, so it cannot be approved past or published past.
+  const shop = shopMentionBlocker([caption, post.altText, post.title].filter(Boolean).join("\n"));
+  if (shop) return shop;
+  const on = enabledPlatforms(post);
+  if (!on.length) return "No platform is selected.";
+  const videos = media.filter((m) => m.type === "video").length;
+  if (videos && videos !== media.length) {
+    return "A post is either video or photos — not both.";
+  }
+  for (const key of on) {
+    const p = platform(key);
+    if (!p) return `Unknown platform "${key}".`;
+    if (videos && !p.video) return `${p.label} cannot take a video.`;
+    if (videos > 1 && key === "facebook") return "Facebook takes one video per post.";
+    if (media.length > p.mediaMax) return `${p.label} takes at most ${p.mediaMax} items; this post has ${media.length}.`;
+  }
+  return null;
+}
+
 // ── THE PUBLISHER'S GATE ─────────────────────────────────────────────────────
 // Returns a plain-sentence reason the post must NOT be sent, or null when it
 // may. Called by the queue (to grey the Approve button and say why) and again
@@ -174,41 +286,17 @@ export function postBlocker(post, { now = Date.now(), requireDue = false } = {})
       ? "Not approved yet — nothing is posted until you approve it."
       : `Not approved (status: ${post.status || "unknown"}).`;
   }
-  const media = Array.isArray(post.media) ? post.media.filter((m) => m && m.url) : [];
-  if (!media.length) return "No image or video attached.";
-  if (media.length > MAX_MEDIA) return `Too many items attached (${media.length}; the limit is ${MAX_MEDIA}).`;
-  const caption = typeof post.caption === "string" ? post.caption.trim() : "";
-  if (caption.length < CAPTION_MIN) return "The caption is empty or too short.";
-  const on = enabledPlatforms(post);
-  if (!on.length) return "No platform is selected.";
-  // A mixed video+photo set is refused HERE rather than by Facebook. The gate
-  // must reject what the senders cannot send: publishFacebook throws a
-  // non-retryable error on a mix, so without this the queue showed the post as
-  // perfectly fine, Junid approved it, and it parked in Failed on the evening
-  // it was meant to go out.
-  const videos = media.filter((m) => m.type === "video").length;
-  if (videos && videos !== media.length) {
-    return "A post is either video or photos — not both.";
-  }
-  for (const key of on) {
-    const p = platform(key);
-    if (!p) return `Unknown platform "${key}".`;
-    if (videos && !p.video) return `${p.label} cannot take a video.`;
-    // Facebook's Page API takes ONE video or SEVERAL photos, never several
-    // videos — publishFacebook throws on it. Instagram's carousel is happy
-    // with several, so this is checked per platform rather than banned
-    // outright: banning it would refuse a post Instagram can take, and no
-    // generator kind produces one anyway.
-    if (videos > 1 && key === "facebook") return "Facebook takes one video per post.";
-    if (media.length > p.mediaMax) return `${p.label} takes at most ${p.mediaMax} items; this post has ${media.length}.`;
-  }
+  // Everything about the CONTENT — media, caption, platforms, and the physical
+  // shop rule — is one shared check, so the queue and the publisher can never
+  // disagree about what is postable.
+  const notReady = postReadiness(post);
+  if (notReady) return notReady;
   if (requireDue && !isDue(post, now)) {
     return `Scheduled for ${formatSlot(post.scheduledAt)} — not due yet.`;
   }
   return null;
 }
 
-/** The platform keys switched ON for this post, in PLATFORMS order. */
 export function enabledPlatforms(post) {
   const sel = (post && post.platforms) || {};
   return PLATFORM_KEYS.filter((k) => sel[k] === true);

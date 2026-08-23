@@ -460,7 +460,11 @@ describe("captions are not subject to the Shopify brand validator", () => {
   });
 
   it("a brand name in a caption survives every transform in this module", () => {
-    const post = ok({ caption: "Nike Air Max 90 in white — R1 899, in store now.", link: "https://marathonclub.co.za/products/x" });
+    // The fixture said "in store now" — incidental to what this test is about
+    // (brand names surviving), and now refused by the physical-shop rule added
+    // 2026-08-23. Changed to an online phrasing so the test goes on measuring
+    // the one thing it was written to measure. See socialShopRule.test.js.
+    const post = ok({ caption: "Nike Air Max 90 in white — online now.", link: "https://marathonclub.co.za/products/x" });
     expect(postBlocker(post)).toBeNull();
     for (const p of PLATFORM_KEYS) {
       const out = captionFor(post, p);
