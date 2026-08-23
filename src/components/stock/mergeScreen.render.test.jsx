@@ -134,10 +134,10 @@ describe("the target list", () => {
     expect(tr.root.findAll((n) => n.type === "img" && n.props.src === "https://x/twin.jpg").length).toBe(1);
     expect(json).toContain("Lacoste Audysol White");
     expect(json).toContain("745SMA00421G");
-    expect(json).toContain("Hub 1");
-    expect(json).toContain("17");
-    expect(json).toContain("Hub 3");
-    expect(json).toContain("-2");          // a negative cell is shown as a negative
+    // The location chips themselves, not merely the strings somewhere on screen.
+    const chips = allOfType(tr, "span").map(flatText);
+    expect(chips).toContain("Hub 1 · 17");
+    expect(chips).toContain("Hub 3 · -2");   // a negative cell is shown as a negative
     // Central holds ZERO of the twin, so it is not a location it holds stock at
     // — the row lists where the stock IS, not every location that ever had a cell.
     expect(json).not.toContain("Central");
@@ -211,6 +211,17 @@ describe("the confirm screen states the outcome and asks nothing", () => {
     expect(allOfType(tr, "input").filter((n) => n.props.type === "checkbox").length).toBe(0);
     expect(allOfType(tr, "input").filter((n) => n.props.type === "radio").length).toBe(0);
     expect(allOfType(tr, "select").length).toBe(0);
+  });
+
+  it("still shows EVERY stock cell of both products — the visual confirm is intact", async () => {
+    const tr = await openConfirm();
+    const lines = [...allOfType(tr, "div"), ...allOfType(tr, "span")].map(flatText);
+    // the loser's cells
+    expect(lines).toContain("Hub 1 · 6");
+    expect(lines).toContain("Central · 16");
+    // the survivor's cells
+    expect(lines).toContain("Hub 1 · 17");
+    expect(lines).toContain("Hub 3 · -2");
   });
 
   it("commits with the two ids and nothing else — the server decides again", async () => {
