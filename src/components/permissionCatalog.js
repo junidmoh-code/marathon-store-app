@@ -27,6 +27,12 @@ export const PERMISSION_GROUPS = [
   { title: "Products & Displays", perms: [
     { key: "product_admin",   label: "Products & Displays", desc: "Manage products, TV display & customer view" },
     { key: "display_checks",  label: "Display Checks", desc: "Clothing display checks" },
+    // Opens the AI Studio's Photo Studio tab ONLY, and authorises the
+    // generateProductPhotos callable. Every tap spends real AI credits, hence
+    // `sensitive` — and hence per-user-only: deliberately absent from every
+    // ROLE_DEFAULT_PERMS entry so no role preset can hand out spending power.
+    // Name Cleanup, Reorder and the Style Kit stay super-admin.
+    { key: "ai_photos",       label: "AI Photo Studio", desc: "Generate product photos (spends AI credits)", sensitive: true },
   ] },
   { title: "Stock", perms: [
     { key: "stock_management", label: "Stock",          desc: "Transfers, locator & history", stock: true },

@@ -6,6 +6,7 @@
 // default), this test fails loudly.
 
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS } from "./permissionCatalog";
 
 const KEY = "display_checks";
@@ -46,5 +47,49 @@ describe("STOCK_PERM_KEYS derivation is sound", () => {
   it("contains exactly the entries flagged stock:true", () => {
     const flagged = ALL_PERMISSIONS.filter((p) => p.stock).map((p) => p.key);
     expect([...STOCK_PERM_KEYS].sort()).toEqual([...flagged].sort());
+  });
+});
+
+// ─── ai_photos — the one grant that spends money ─────────────────────────────
+// Opening the Photo Studio to a staff account means every tap of Generate bills
+// Gemini/OpenAI. The same two invariants as display_checks therefore apply, and
+// matter more: a role preset that auto-granted this would hand spending power to
+// every user of that role at once.
+describe("ai_photos permission — safe grant shape", () => {
+  const KEY_AI = "ai_photos";
+  const aiEntry = ALL_PERMISSIONS.find((p) => p.key === KEY_AI);
+
+  it("is grantable: present in the catalog", () => {
+    expect(aiEntry).toBeTruthy();
+  });
+
+  it("is flagged sensitive (it spends real credits)", () => {
+    expect(aiEntry?.sensitive).toBe(true);
+  });
+
+  it("does NOT carry a stock flag (no stock-role auto-link)", () => {
+    expect(aiEntry?.stock).toBeFalsy();
+    expect(STOCK_PERM_KEYS).not.toContain(KEY_AI);
+  });
+
+  // The load-bearing one. Photo generation must never arrive by role preset.
+  it("is NOT in any ROLE_DEFAULT_PERMS — never role-inherited", () => {
+    for (const role of Object.keys(ROLE_DEFAULT_PERMS)) {
+      expect(ROLE_DEFAULT_PERMS[role], `role ${role} must not auto-grant ${KEY_AI}`).not.toContain(KEY_AI);
+    }
+  });
+
+  // No permission may be granted that createStaffUser would then reject, so the
+  // catalog and the server whitelist have to agree. Read the function source
+  // rather than trusting a copy of the list.
+  it("every catalog key exists in VALID_PERMISSIONS in functions/index.js", () => {
+    const src = readFileSync(new URL("../../functions/index.js", import.meta.url), "utf8");
+    const block = src.match(/const VALID_PERMISSIONS = \[([\s\S]*?)\];/);
+    expect(block, "VALID_PERMISSIONS not found in functions/index.js").toBeTruthy();
+    const serverKeys = [...block[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(serverKeys).toContain(KEY_AI);
+    for (const p of ALL_PERMISSIONS) {
+      expect(serverKeys, `catalog key ${p.key} missing from VALID_PERMISSIONS`).toContain(p.key);
+    }
   });
 });

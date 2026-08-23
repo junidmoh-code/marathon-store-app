@@ -22,6 +22,7 @@ import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCA
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
+import { permittedAiTools, clampAiTool } from "./components/aiStudioAccess";
 import { toAuthPassword } from "./utils/auth-utils";
 import { normalizeSAPhone, isValidLocalSAPhone, toLocalSA, saSignificantDigits, phoneKeyVariants, phoneGroupKey } from "./utils/phone";
 import { filterCustomerList } from "./utils/customerSearch";
@@ -2934,7 +2935,8 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
-      isSuperAdmin && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio", desc:"Photos · Names · Reorder · Voice", onClick:()=>onSelect(ROLES.AI_STUDIO) },
+      (isSuperAdmin || hasPermission("ai_photos")) && { key:"ai_studio", icon:RoleIcons.ai_studio, name:"AI Studio",
+        desc: isSuperAdmin ? "Photos · Names · Reorder · Voice" : "Product photos", onClick:()=>onSelect(ROLES.AI_STUDIO) },
       // ── ENGINE POLICY — GATE 1 OF 3 ──────────────────────────────────────
       // The tile does not render for anyone else. It calls the SAME function
       // the route gate calls (src/config/enginePolicy.js) so the two can never
@@ -5236,9 +5238,14 @@ function AiStatCard({ label, value, sub, tint, icon }) {
   );
 }
 
-function AiStudioView({ products, onExit }) {
+function AiStudioView({ products, fullAccess = false, onExit }) {
   const { user } = usePermissions();
   const [tool, setTool] = usePersistedTab("aistudio", "photos");
+  // An `ai_photos` holder gets the Photo Studio and nothing else. Name Cleanup,
+  // Reorder and the Style Kit stay super-admin — the first two spend on Claude,
+  // and the Style Kit rewrites the house look for EVERY future generation.
+  const tools = permittedAiTools(AI_TOOLS, fullAccess);
+  const activeId = clampAiTool(tool, tools);
   const narrow = useIsNarrow(980);
 
   // Stat-row data — live, same sources the tools themselves use.
@@ -5275,7 +5282,7 @@ function AiStudioView({ products, onExit }) {
   const badgeOf = (id) => id === "photos" ? pendingPhotos : id === "names" ? pendingNames : 0;
 
   const navItem = (t) => {
-    const on = tool === t.id;
+    const on = activeId === t.id;
     const badge = badgeOf(t.id);
     return (
       <button key={t.id} onClick={() => setTool(t.id)}
@@ -5308,7 +5315,7 @@ function AiStudioView({ products, onExit }) {
         <div style={{ fontSize:22, fontWeight:800, fontStyle:"italic", letterSpacing:-.6, color:"#fff" }}>marathon</div>
         <div style={{ fontSize:10.5, fontWeight:700, letterSpacing:5, color:"#4A7FFF", marginTop:1 }}>CLUB</div>
       </div>
-      {AI_TOOLS.map(navItem)}
+      {tools.map(navItem)}
       <div style={{ flex:1 }}/>
       {switchViewBtn}
       <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, padding:"10px 12px", background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", borderRadius:12 }}>
@@ -5325,7 +5332,7 @@ function AiStudioView({ products, onExit }) {
 
   const chips = (
     <div style={{ display:"flex", gap:8, flexWrap:"wrap", margin:"16px 0 0" }}>
-      {AI_TOOLS.map(t => {
+      {tools.map(t => {
         const on = tool === t.id;
         const badge = badgeOf(t.id);
         return (
@@ -5343,12 +5350,12 @@ function AiStudioView({ products, onExit }) {
     </div>
   );
 
-  const activeTool = AI_TOOLS.find(t => t.id === tool) || AI_TOOLS[0];
+  const activeTool = tools.find(t => t.id === activeId) || tools[0];
   const toolBody =
-    tool === "names"    ? <AdminReviewNamesTab products={products} /> :
-    tool === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
-    tool === "stylekit" ? <StyleKitPanel /> :
-                          <AdminReviewPhotosTab products={products} />;
+    activeId === "names"    ? <AdminReviewNamesTab products={products} /> :
+    activeId === "reorder"  ? <InsightReorderTab productPhotoMap={productPhotoMap} /> :
+    activeId === "stylekit" ? <StyleKitPanel /> :
+                              <AdminReviewPhotosTab products={products} />;
 
   return (
     <div style={{ minHeight:"100vh", background:"#000", color:"#fff", fontFamily:FONT, display:"flex" }}>
@@ -5368,8 +5375,10 @@ function AiStudioView({ products, onExit }) {
 
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(175px, 1fr))", gap:12, marginTop:20 }}>
             <AiStatCard label="Photos to review" value={pendingPhotos} sub="awaiting approve / reject" tint="#4A7FFF" icon={AI_TOOL_ICON.photos}/>
-            <AiStatCard label="Names to review"  value={pendingNames}  sub="awaiting approve / reject" tint="#A78BFA" icon={AI_TOOL_ICON.names}/>
-            <AiStatCard label="Reorder plan"     value={reorderValue}  sub={reorderStatus?.state === "running" ? "analysis in progress" : "last analysis run"} tint="#4ACA7A" icon={AI_TOOL_ICON.reorder}/>
+            {/* Names and Reorder are super-admin tools — don't report their
+                queues to someone who cannot open them. */}
+            {fullAccess && <AiStatCard label="Names to review"  value={pendingNames}  sub="awaiting approve / reject" tint="#A78BFA" icon={AI_TOOL_ICON.names}/>}
+            {fullAccess && <AiStatCard label="Reorder plan"     value={reorderValue}  sub={reorderStatus?.state === "running" ? "analysis in progress" : "last analysis run"} tint="#4ACA7A" icon={AI_TOOL_ICON.reorder}/>}
           </div>
 
           {narrow && chips}
@@ -17377,6 +17386,9 @@ function AppInner() {
   // Gates the shared /insights_log subscription (mounted at the bottom of this
   // component): the read is rules-gated on a non-anonymous user.
   const insightsAuthReady = useAuthReady();
+  // AI Studio: the verified super-admin sees every tool; an `ai_photos` holder
+  // gets in for the Photo Studio alone (AiStudioView narrows on fullAccess).
+  const aiStudioRouteOpen = isSuperAdmin || hasPermission("ai_photos");
   // Display Checks route access — master flag + module gate (super-admin, or a
   // store-scoped display_checks grant). Used both to guard a stale persisted role
   // and to mount the view. Dark by default (master flag off).
@@ -17446,10 +17458,11 @@ function AppInner() {
     if (!role) return;
     // Stock is stockRole-gated (not permission-mapped) — drop non-stock users back home.
     if ((role === ROLES.STOCK || role === ROLES.HEALTH || role === ROLES.ATTENTION || role === ROLES.MARKETING || role === ROLES.TOTAL_STOCK) && !canAccessStock) { setRole(null); return; }
-    // AI Studio is isSuperAdmin-gated (not permission-mapped) — drop anyone
-    // else (e.g. a stale persisted role) back to the selector instead of
-    // leaving them on the null view.
-    if (role === ROLES.AI_STUDIO && !isSuperAdmin) { setRole(null); return; }
+    // AI Studio opens for the super-admin (every tool) or an `ai_photos` holder
+    // (Photo Studio only — AiStudioView does that narrowing). Anyone else, e.g.
+    // a stale persisted role, drops back to the selector rather than being left
+    // on the null view.
+    if (role === ROLES.AI_STUDIO && !aiStudioRouteOpen) { setRole(null); return; }
     // Display Checks is gated on the master flag + module access (not a plain
     // permission map) — drop a stale/persisted role that no longer qualifies.
     if (role === ROLES.DISPLAY_CHECKS && !displayChecksRouteOpen) { setRole(null); return; }
@@ -17700,10 +17713,14 @@ function AppInner() {
     view = guard(ROLES.DISPLAY, <TvWithAutoCollect orders={orders} onExit={() => setRole(null)} />);
   }
   else if (role === ROLES.ADMIN)     view = guard(ROLES.ADMIN,            <AdminView     products={products} orders={orders} onExit={() => setRole(null)} />);
-  // AI Studio is route-guarded on the REAL isSuperAdmin flag (verified email),
-  // not a grantable permission string — a non-super-admin who lands here via a
-  // persisted role or manual state gets null and drops back to the selector.
-  else if (role === ROLES.AI_STUDIO) view = isSuperAdmin ? <AiStudioView products={products} onExit={() => setRole(null)} /> : null;
+  // AI Studio is route-guarded on the verified super-admin email OR the
+  // `ai_photos` grant; anyone else who lands here via a persisted role or
+  // manual state gets null and the reset effect drops them home. `fullAccess`
+  // is what narrows the studio to the Photo Studio tab for a grant holder —
+  // and the server re-checks the grant on the callable regardless.
+  else if (role === ROLES.AI_STUDIO) view = aiStudioRouteOpen
+    ? <AiStudioView products={products} fullAccess={isSuperAdmin} onExit={() => setRole(null)} />
+    : null;
   // Display Checks — route-guarded on the module gate (master flag + super-admin
   // or store-scoped grant); a viewer who no longer qualifies gets null and the
   // reset effect drops them home. Shell only — reads no data.
