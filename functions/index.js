@@ -3393,6 +3393,17 @@ exports.mergeProducts = require("./productMerge/mergeProducts.js").mergeProducts
 //   firebase deploy --only functions:labelAlias
 exports.labelAlias = require("./labelAlias/labelAlias.js").labelAlias;
 
+// ─── PRODUCT IDENTITY — productIdentity (every code and alias, in one map) ────
+// READ-ONLY. Folds /label_aliases and /style_code_index into
+// { productId: { c: [codes], a: [[tokens]] } } so a browser can answer two
+// questions it previously could not: "is this product REGISTERED?" (the
+// Leftovers rule — a registered product is never a leftover) and "what codes
+// does it answer to?" (the code line the count, register, detail and leftovers
+// screens now show). Pure fold in lib/label-identity.cjs; auth + IO in
+// productIdentity/productIdentity.js.
+//   firebase deploy --only functions:productIdentity
+exports.productIdentity = require("./productIdentity/productIdentity.js").productIdentity;
+
 // ─── STYLE CODE SIBLINGS — styleCodeSibling (the collision question, answered) ─
 // One printed style code can legitimately own SEVERAL colourway products — the
 // standard Nike tongue label carries no colourway text, so the label cannot

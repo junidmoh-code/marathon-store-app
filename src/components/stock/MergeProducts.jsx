@@ -2,13 +2,19 @@
 // Reachable from a Leftover card and from a duplicate collision during
 // scanning. Two screens, exactly as specified:
 //
-//   1. TARGET  — the PHOTO-CAPTURE LABEL READER first, a name search below,
-//                and the shop-barcode scanner as a secondary action. All
-//                three land on the same confirm. Only visible (non-merged)
-//                products are offered.
-//   2. CONFIRM — both products side by side: photos and EVERY stock cell each
-//                one holds, plus the direction (which record disappears). A
-//                merge can NEVER complete without this screen.
+//   1. TARGET  — the PHOTO-CAPTURE LABEL READER first, an UNCAPPED, PAGED
+//                search below it, and the shop-barcode scanner as a secondary
+//                action. All three land on the same confirm. The search
+//                matches NAME, every style CODE the product answers to, and
+//                every label ALIAS; every row carries the photo, the name, the
+//                code and every location with its quantity. What filters the
+//                pool, and what used to, is stated in mergeSearch.js.
+//   2. CONFIRM — both products side by side, and THE OUTCOME PER LOCATION in
+//                plain words: what will be removed because it has already been
+//                counted under the survivor, and what will move across. One
+//                confirm, no choice, no toggle — the plan comes from the count
+//                records (mergeDisposition.js), and the server works the same
+//                plan out again from its own reads.
 //
 // The commit is the server-side `mergeProducts` callable — atomic, admin-only,
 // reversible, fail-closed (see functions/lib/product-merge.cjs). This
@@ -31,8 +37,18 @@ import { formatStyleCodeForDisplay } from "../../utils/styleCode";
 import CameraScanner from "./CameraScanner.jsx";
 import { TongueLabelReader } from "./TongueLabelReader.jsx";
 import CandidateCards from "../shared/CandidateCards.jsx";
+import IdentityLine from "../shared/IdentityLine.jsx";
+import { mergeTargetPool, mergeTargetMatches } from "./mergeSearch";
+import { identityFor } from "../../utils/labelIdentity";
+import { useLabelIdentity } from "../../utils/labelIdentityStore";
+import { planMerge, outcomeLines } from "./mergeDisposition";
+import { loadCountedFor } from "./mergeDispositionStore";
 
 const mergeProductsFn = httpsCallable(functions, "mergeProducts");
+
+// How many result rows are on screen before "show more". Not a cap: the list
+// below states how many further matches there are, and the button reaches them.
+const PAGE = 40;
 
 function Photo({ url, size = 88 }) {
   if (!url) return <div style={{ width: size, height: size, borderRadius: 14, background: "rgba(120,150,255,.08)",
@@ -57,6 +73,121 @@ function CellList({ product, allStock, registry }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── ONE SEARCH RESULT — enough to identify a twin without opening it ────────
+// Owner spec 2026-08-23: "Every row shows the PHOTO, name, style code, and
+// every location with its quantity." The code line is the shared IdentityLine,
+// so the number on this row is copyable in one tap and is the SAME set of
+// codes the count and detail screens show.
+function TargetRow({ product, identityMap, allStock, registry, onPick }) {
+  const { codes, aliases } = identityFor(product, identityMap);
+  const locs = locationsHolding(product.id, allStock || {});
+  return (
+    <div style={{ background: CARD, border: BORDER, borderRadius: 12, padding: 10 }}>
+      <button type="button" onClick={onPick}
+        style={{ display: "flex", alignItems: "flex-start", gap: 11, padding: 0, width: "100%",
+                 textAlign: "left", cursor: "pointer", background: "transparent", border: "none", color: "inherit" }}>
+        <Photo url={product.photoUrl} size={72} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, lineHeight: 1.3 }}>{product.name}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 }}>
+            {locs.length === 0
+              ? <span style={{ fontSize: 11.5, color: GRAY }}>No stock anywhere</span>
+              : locs.map(({ loc, qty }) => (
+                  <span key={loc} style={{ fontSize: 11.5, fontWeight: 800, padding: "4px 8px", borderRadius: 8,
+                                           fontVariantNumeric: "tabular-nums",
+                                           background: qty < 0 ? "rgba(248,113,113,.12)" : "rgba(74,127,255,.12)",
+                                           border: qty < 0 ? "1px solid rgba(248,113,113,.4)" : "1px solid rgba(74,127,255,.32)",
+                                           color: qty < 0 ? "#FFC9C9" : "#CFE0FF" }}>
+                    {labelFor(loc, registry)} · {qty}
+                  </span>
+                ))}
+          </div>
+        </div>
+      </button>
+      {/* Outside the button: a code chip is itself a button (tap to copy), and
+          a button inside a button is invalid markup that swallows the tap. */}
+      <IdentityLine codes={codes} aliases={aliases} compact
+                    emptyText="No style code on record" />
+    </div>
+  );
+}
+
+// ─── THE OUTCOME, STATED ─────────────────────────────────────────────────────
+// Owner spec 2026-08-23, verbatim: "THE SCREEN STATES THE OUTCOME, per
+// location, in plain words — '6 pairs at Hub 1 will be removed — already
+// counted under this product', '16 at Central will move across' — with
+// per-location totals before and after. One confirm. NO choice, NO toggle."
+//
+// So there is no control in this component. It renders the plan
+// mergeDisposition.planMerge produced and the before/after totals that follow
+// from it arithmetically:
+//   removal  → the survivor's total at that location does NOT change.
+//   transfer → the survivor's total goes up by exactly what the loser held.
+// Either way the loser ends at zero there, because its whole node is deleted.
+function OutcomePlan({ plan, planFailed, loser, survivor, allStock, registry }) {
+  if (!allStock) return null;
+  if (plan === null) {
+    return (
+      <div style={{ marginTop: 14, fontSize: 13, color: AMBER }}>
+        Checking what has already been counted at each location…
+      </div>
+    );
+  }
+  const survivorAt = (loc) => {
+    const node = (allStock[loc] || {})[survivor.id];
+    let n = 0;
+    for (const [k, cell] of Object.entries(node || {})) {
+      if (k === "_meta" || !cell || typeof cell !== "object") continue;
+      if (typeof cell.qty === "number") n += cell.qty;
+    }
+    return n;
+  };
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>WHAT WILL HAPPEN</div>
+      {planFailed.length > 0 && (
+        <div style={{ fontSize: 12.5, color: AMBER, marginBottom: 8, lineHeight: 1.5 }}>
+          The count records at {planFailed.map((l) => labelFor(l, registry)).join(", ")} could not be read, so
+          nothing there is treated as counted — that stock will MOVE ACROSS rather than be removed.
+        </div>
+      )}
+      {plan.length === 0 ? (
+        <div style={{ fontSize: 13, color: GRAY }}>
+          {loser.name} holds no stock anywhere. Nothing moves and nothing is removed — the record simply becomes a
+          redirect.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {plan.map((row) => {
+            const label = labelFor(row.loc, registry);
+            const before = survivorAt(row.loc);
+            const after = before + row.transferQty;
+            return (
+              <div key={row.loc} style={{ background: "rgba(255,255,255,.03)", border: BORDER, borderRadius: 12, padding: "10px 12px" }}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: "#CFE0FF" }}>{label}</div>
+                {outcomeLines(row, label).map((line) => (
+                  <div key={line.kind} style={{ fontSize: 13, marginTop: 5, lineHeight: 1.5,
+                                                color: line.kind === "remove" ? "#FFC9C9" : "#B7F0CC" }}>
+                    {line.kind === "remove" ? "✕ " : "→ "}{line.text}
+                  </div>
+                ))}
+                <div style={{ fontSize: 11.5, color: GRAY, marginTop: 6, fontVariantNumeric: "tabular-nums" }}>
+                  {survivor.name} at {label}: {before} → {after}
+                  {" · "}{loser.name}: {row.transferQty + row.removeQty} → 0
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: GRAY, marginTop: 10, lineHeight: 1.5 }}>
+        Removals are adjustment movements in the ledger naming this merge, never a silent deletion, and the full
+        before-state is kept under /product_merges so a merge can be reversed.
+      </div>
     </div>
   );
 }
@@ -108,11 +239,21 @@ export default function MergeProducts({
     if (!allStock && onEnsureStock) onEnsureStock().catch(() => {});
   }, [allStock, onEnsureStock]);
 
-  const candidates = useMemo(() => {
-    const pool = products.filter((p) => p && p.id && !isMergedAway(p) && p.id !== loser?.id);
-    return query.trim() ? searchProducts(pool, query, { limit: 12 }) : [];
-  }, [products, query, loser]);
-
+  // ── THE SEARCH POOL AND THE MATCHES — uncapped, code- and alias-aware ─────
+  // Both come from mergeSearch.js, which is where every remaining filter is
+  // written down and where the removed ones are listed. The window is a SCREEN
+  // concern: everything matched is here, the list shows `limit` of them and
+  // says how many more there are.
+  const identity = useLabelIdentity();
+  const pool = useMemo(() => mergeTargetPool(products, loser), [products, loser]);
+  const candidates = useMemo(
+    () => mergeTargetMatches(pool, query, identity.map),
+    [pool, query, identity.map],
+  );
+  const [limit, setLimit] = useState(PAGE);
+  // A new query starts at the top of its own list — carrying a "show more"
+  // depth across searches shows a hundred rows of something nobody asked for.
+  useEffect(() => { setLimit(PAGE); }, [query, loser]);
 
   // A product this screen may offer as the survivor: real, loadable, not
   // merged away, and not the record being merged away itself.
@@ -223,6 +364,40 @@ export default function MergeProducts({
     }
   };
 
+  // ── THE PLAN — worked out, not asked ──────────────────────────────────────
+  // The moment both parties are known, the count records for those two ids are
+  // read (ranged, per location — mergeDispositionStore) and the same pure
+  // planner the server runs decides each cell. `plan` is null while it loads;
+  // the confirm button waits for it, because a merge must never commit against
+  // an outcome nobody was shown.
+  const [plan, setPlan] = useState(null);
+  const [planFailed, setPlanFailed] = useState([]);
+  useEffect(() => {
+    if (!loser || !survivor || !allStock) { setPlan(null); return; }
+    let alive = true;
+    const loserCells = {};
+    for (const [loc, prods] of Object.entries(allStock || {})) {
+      const node = prods && prods[loser.id];
+      if (!node) continue;
+      const cells = {};
+      for (const [k, cell] of Object.entries(node)) {
+        if (k === "_meta" || !cell || typeof cell !== "object") continue;
+        cells[k] = cell;
+      }
+      if (Object.keys(cells).length) loserCells[loc] = cells;
+    }
+    setPlan(null);
+    setPlanFailed([]);
+    loadCountedFor({ locations: Object.keys(loserCells), loserId: loser.id, survivorId: survivor.id })
+      .then(({ countedByLoc, failed }) => {
+        if (!alive) return;
+        setPlanFailed(failed);
+        setPlan(planMerge({ loserId: loser.id, survivorId: survivor.id, loserCells, countedByLoc }));
+      })
+      .catch(() => { if (alive) { setPlanFailed(Object.keys(loserCells)); setPlan([]); } });
+    return () => { alive = false; };
+  }, [loser, survivor, allStock]);
+
   const swap = () => { const l = loser; setLoser(survivor); setSurvivor(l); };
 
   const commit = async () => {
@@ -250,6 +425,7 @@ export default function MergeProducts({
             <div style={{ fontSize: 18, fontWeight: 800 }}>Merged.</div>
             <div style={{ fontSize: 13.5, color: GRAY, marginTop: 8, lineHeight: 1.6 }}>
               {done.moved?.length || 0} stock cell{(done.moved?.length || 0) === 1 ? "" : "s"} joined ·{" "}
+              {done.removed?.length || 0} already counted and removed ·{" "}
               {done.barcodesRepointed?.length || 0} barcode{(done.barcodesRepointed?.length || 0) === 1 ? "" : "s"} repointed
               {done.duplicateRowClosed ? " · duplicate flag closed" : ""}
             </div>
@@ -342,19 +518,30 @@ export default function MergeProducts({
                      style={{ ...input, width: "100%", boxSizing: "border-box", minHeight: 52, fontSize: 15 }} />
             </div>
             {error && <div style={{ color: RED, fontSize: 13, marginTop: 10 }}>{error}</div>}
-            <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 12 }}>
-              {candidates.map((p) => (
-                <button key={p.id} type="button" onClick={() => { setSurvivor(p); setError(""); }}
-                  style={{ display: "flex", alignItems: "center", gap: 11, padding: "10px 12px", textAlign: "left", cursor: "pointer",
-                           background: CARD, border: BORDER, borderRadius: 12 }}>
-                  <Photo url={p.photoUrl} size={46} />
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                    {p.styleCode && <div style={{ fontSize: 11, color: GRAY }}>{p.styleCode}</div>}
-                  </div>
-                </button>
+            {/* EVERY MATCH — photo, name, code, and every location with its
+                quantity, so a twin is identifiable without opening it. The
+                list is uncapped; the window below is paged and says how many
+                more there are. */}
+            <div style={{ fontSize: 12.5, color: GRAY, margin: "12px 0 8px" }}>
+              {candidates.length === 0
+                ? (pool.length === 0
+                    ? "There is nothing else in this catalogue to merge into."
+                    : "Nothing matches that. Clear the box to see everything.")
+                : `${candidates.length} product${candidates.length === 1 ? "" : "s"}${query.trim() ? " match" : ""} · showing ${Math.min(limit, candidates.length)}`}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {candidates.slice(0, limit).map((p) => (
+                <TargetRow key={p.id} product={p} identityMap={identity.map}
+                           allStock={allStock} registry={registry}
+                           onPick={() => { setSurvivor(p); setError(""); }} />
               ))}
             </div>
+            {candidates.length > limit && (
+              <button type="button" onClick={() => setLimit((n) => n + PAGE)}
+                style={{ ...bGhost, width: "100%", minHeight: 48, marginTop: 10, fontSize: 13.5 }}>
+                Show {Math.min(PAGE, candidates.length - limit)} more — {candidates.length - limit} still below
+              </button>
+            )}
 
             {/* SECONDARY — the live barcode stream, kept for the shop barcode
                 sticker on a box. It never read tongue labels and no longer
@@ -368,9 +555,10 @@ export default function MergeProducts({
           // ── SCREEN 2: the visual confirm — nothing commits without it ──────
           <>
             <div style={{ fontSize: 13, color: GRAY, lineHeight: 1.55, marginBottom: 14 }}>
-              Stock does <strong style={{ color: "#fff" }}>not move</strong> — each location keeps its quantity, the two
-              records become one. The left product <strong style={{ color: "#FFC9C9" }}>disappears</strong> from search and
-              every list; its barcodes will scan to the survivor.
+              Stock never moves between locations. The left product{" "}
+              <strong style={{ color: "#FFC9C9" }}>disappears</strong> from search and every list; its barcodes will
+              scan to the survivor. What happens to its quantity at each location is worked out below — from what
+              has already been counted — and is not a choice.
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               {[{ p: loser, role: "GOES AWAY", color: RED, border: "rgba(248,113,113,.4)" },
@@ -387,6 +575,13 @@ export default function MergeProducts({
               ))}
             </div>
 
+            {/* ── THE OUTCOME, PER LOCATION, IN PLAIN WORDS ─────────────────
+                One line per location per disposition, with the before and
+                after totals beside it. No control here changes it: the count
+                records decide, and the server decides again the same way. */}
+            <OutcomePlan plan={plan} planFailed={planFailed} loser={loser} survivor={survivor}
+                         allStock={allStock} registry={registry} />
+
             <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
               <button type="button" onClick={swap} disabled={busy}
                 style={{ ...bGray, flex: 1, minHeight: 50, fontSize: 14 }}>⇄ Swap direction</button>
@@ -401,12 +596,12 @@ export default function MergeProducts({
               </div>
             )}
 
-            <button type="button" disabled={busy || !allStock} onClick={commit}
+            <button type="button" disabled={busy || !allStock || plan === null} onClick={commit}
               style={{ width: "100%", minHeight: 66, borderRadius: 15, fontSize: 18, fontWeight: 900, fontFamily: FONT,
-                       cursor: busy || !allStock ? "not-allowed" : "pointer", marginTop: 16,
-                       opacity: busy || !allStock ? 0.5 : 1,
+                       cursor: busy || !allStock || plan === null ? "not-allowed" : "pointer", marginTop: 16,
+                       opacity: busy || !allStock || plan === null ? 0.5 : 1,
                        background: "rgba(248,113,113,.16)", border: "2px solid rgba(248,113,113,.55)", color: "#FFC9C9" }}>
-              {busy ? "Merging…" : "MERGE — one product remains"}
+              {busy ? "Merging…" : plan === null ? "Working out what happens…" : "MERGE — one product remains"}
             </button>
             <div style={{ fontSize: 11.5, color: GRAY, marginTop: 10, lineHeight: 1.5 }}>
               Admin-only, atomic, and recorded: the server refuses anything uncertain and keeps the full

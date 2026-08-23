@@ -8,10 +8,18 @@
 //
 // WHAT A MERGE DOES — and deliberately does NOT do:
 //   • Stock does NOT move between locations. Central keeps its quantity at
-//     Central, Hub 2 keeps its at Hub 2. Each loser cell is added into the
-//     survivor's cell AT THE SAME location+size, and the loser's cell node is
-//     deleted. Per-location totals are conserved exactly — that invariant is
+//     Central, Hub 2 keeps its at Hub 2. Each loser cell is TRANSFERRED into
+//     the survivor's cell AT THE SAME location+size, and the loser's cell node
+//     is deleted. Per-location totals are conserved exactly — that invariant is
 //     what the mutation tests pin.
+//   • …EXCEPT at a cell that has already been COUNTED under the survivor, where
+//     the loser's quantity is REMOVED instead (an adjustment movement off the
+//     loser, nothing added to the survivor). Those pairs were physically
+//     counted once, under the record that survives; transferring them on top
+//     would double the count. The merge works this out itself from the count
+//     records — no question, no toggle, no hub named in code. The whole rule,
+//     and why every uncertain case still transfers, is in
+//     lib/merge-disposition.cjs.
 //   • The loser is NOT deleted. Its /products record stays, gaining only a
 //     `mergedInto` pointer — because its id is stamped on past sales, laybys,
 //     movements and barcode rows, and deleting it would orphan all of them.
@@ -60,6 +68,10 @@
 // A merge must never guess.
 
 "use strict";
+
+const {
+  COUNT_SESSIONS_PATH, COUNTED_PATH, countedCellKeys, planMerge,
+} = require("./merge-disposition.cjs");
 
 const MERGE_LOCK_STALE_MS = 10 * 60 * 1000; // takeover window for a crashed merge
 
@@ -113,7 +125,8 @@ function sizeCellsOf(node) {
  * Perform the merge. `db` is the Admin RTDB (or a test fake with the same
  * surface: ref().get/set/update/transaction).
  *
- * @returns {{ ok: true, mergeId, moved: Array<{loc,size,qty}>, movementIds,
+ * @returns {{ ok: true, mergeId, moved: Array<{loc,size,qty}>,
+ *             removed: Array<{loc,size,qty}>, movementIds,
  *             barcodesRepointed, styleCodesRepointed, duplicateRowClosed }}
  * @throws {MergeRefused} on any refusal — nothing is written.
  */
@@ -177,12 +190,32 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
       if (sNode) survivorCells[loc] = sizeCellsOf(sNode);
     }
 
+    // ── THE COUNT STATE, READ ONLY WHERE IT CAN CHANGE THE ANSWER ────────────
+    // Only a location the LOSER holds stock at has a cell to dispose of, so the
+    // counted node is read for those locations and no others. A location with
+    // no open count session, or an unreadable node, yields an EMPTY counted set
+    // — and an empty set makes every cell TRANSFER, which is the pre-existing
+    // behaviour. The count state can only ever turn a transfer into a removal
+    // on positive evidence; it can never fail into one.
+    const sessions = (await db.ref(COUNT_SESSIONS_PATH).get()).val() || {};
+    const countedByLoc = {};
+    for (const loc of Object.keys(loserCells)) {
+      const sessionId = sessions[loc] && sessions[loc].sessionId;
+      if (!sessionId) { countedByLoc[loc] = new Set(); continue; }
+      const node = (await db.ref(`${COUNTED_PATH}/${loc}/${sessionId}`).get()).val();
+      countedByLoc[loc] = countedCellKeys(node);
+    }
+    const plan = planMerge({ loserId, survivorId, loserCells, countedByLoc });
+    const removeKeys = new Set();
+    for (const row of plan) for (const c of row.remove) removeKeys.add(`${row.loc}/${c.sizeKey}`);
+
     // ── BUILD THE ONE ATOMIC UPDATE ──────────────────────────────────────────
     const updates = {};
     const moved = [];
     const movementIds = [];
     const beforeSurvivorCells = {};
 
+    const removed = [];
     for (const [loc, cells] of Object.entries(loserCells)) {
       for (const [sizeKey, cell] of Object.entries(cells)) {
         const q = asQty(cell);
@@ -192,6 +225,28 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
         const rawSize = decodeSizeKey(sizeKey);
         const mvIdL = `merge_${mergeId}_L_${loc}_${sizeKey}`;
         const mvIdS = `merge_${mergeId}_S_${loc}_${sizeKey}`;
+
+        // ── REMOVAL — this shelf was counted under the survivor ──────────────
+        // No survivor cell is touched: its counted number already contains
+        // these pairs. The write-off is a real adjustment MOVEMENT through the
+        // same ledger contract as every other quantity change here — it is
+        // never a silent deletion, it names the merge in `reason` and `link`,
+        // and the loser's full before-state (this cell included) is recorded
+        // under /product_merges for the reversal.
+        if (removeKeys.has(`${loc}/${sizeKey}`)) {
+          updates[`stock_movements/${mvIdL}`] = {
+            productId: loserId, type: "adjustment", size: rawSize, qty: Math.abs(q),
+            from: q > 0 ? loc : null, to: q < 0 ? loc : null,
+            actor: actor.uid, actorRole: "admin", ts: nowIso, appliedAt: nowIso,
+            reason: "product_merge_counted_removal",
+            before: { [loc]: q }, after: { [loc]: 0 },
+            link: { orderId: null, transferId: null, refillId: null, saleId: null,
+                    deviceId: null, mergeId, mergedInto: survivorId, countedRemoval: true },
+          };
+          removed.push({ loc, size: rawSize, qty: q });
+          movementIds.push(mvIdL);
+          continue;
+        }
 
         // Survivor cell: applyMovement's exact write shape. New cell → v = 0.
         const cellPath = `stock/${loc}/${survivorId}/${sizeKey}`;
@@ -318,7 +373,7 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     const frozen = (v) => (v == null ? null : JSON.parse(JSON.stringify(v)));
     updates[`product_merges/${mergeId}`] = {
       loserId, survivorId, at: now, by: actor.uid, byEmail: actor.email || null,
-      moved, movementIds,
+      moved, removed, movementIds,
       before: {
         loserStock: frozen(loserNodes),             // full nodes, incl. _meta and qty-0 cells
         survivorCells: frozen(beforeSurvivorCells), // only the cells this merge touched
@@ -408,7 +463,7 @@ async function performMerge(db, { loserId, survivorId, actor, nowMs }) {
     await db.ref().update(updates);
 
     return {
-      ok: true, mergeId, moved, movementIds,
+      ok: true, mergeId, moved, removed, movementIds,
       barcodesRepointed: Object.keys(barcodesRepointed),
       styleCodesRepointed: Object.keys(styleCodesRepointed),
       duplicateRowClosed: !!dupRow,

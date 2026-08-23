@@ -15,6 +15,7 @@ import { choosePrimaryCodeIndex } from "../../utils/labelPrimary.js";
 import { buildLinkSuggestions } from "../../utils/linkSuggestions.js";
 import { isMergedAway } from "../../utils/mergedProducts.js";
 import { productIsFootwear } from "../../utils/footwearLine.js";
+import { isRegistered } from "../../utils/labelIdentity.js";
 import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSiblings.js";
 
 // The ONLY hubs this feature touches. A closed list, deliberately NOT derived
@@ -417,10 +418,39 @@ export function realSizes(product) {
 }
 
 // ── LEFTOVERS ────────────────────────────────────────────────────────────────
-// After registration: every footwear product that HOLDS stock at this hub but
-// was never seen on the floor. One card per product; qty per location comes
-// from `allStock` = { loc: { pid: { sizeKey: cell } } }.
-export function buildLeftovers({ hub, products = [], hubStock = {}, registered = {}, allStock = null }) {
+// After registration: every footwear product that HOLDS stock at this hub and
+// is NOT REGISTERED. One card per product; qty per location comes from
+// `allStock` = { loc: { pid: { sizeKey: cell } } }.
+//
+// ── THE RULE, AND THE DEFECT IT REPLACES (owner spec 2026-08-23) ─────────────
+//     A PRODUCT REGISTERED WITH A LABEL NUMBER IS NOT A LEFTOVER. EVER.
+//
+// This list used to key on the REGISTER PASS RECORD — /settings/hubSneakerCount
+// /register/{hub} — i.e. on "was this shoe walked past on the floor during this
+// hub's registration pass". That is a different question from the one the card
+// asks, and it is the wrong one:
+//
+//   • it is per-HUB and per-PASS, so a product registered with its code at the
+//     other hub, at the intake form, at the count, or by the merge picker was
+//     still a leftover here;
+//   • it ignored every identity store. styleCodeNormalised was never consulted,
+//     /style_code_index was never consulted, /label_aliases was never
+//     consulted. A shoe could carry a claimed manufacturer code and sit on this
+//     list forever;
+//   • a NEWLY CREATED product, registered at the moment of creation, appeared
+//     here the instant it was given stock.
+//
+// The register record is still honoured — being seen on the floor is still a
+// perfectly good reason not to be a leftover — but it is now one of FOUR
+// reasons, and the other three come from `identityMap` (the productIdentity
+// callable, folded in src/utils/productIdentity.js).
+//
+// FAIL SOFT. An absent or empty identityMap degrades to the style-code field
+// plus the register record: fewer exclusions, never more. A product is only
+// ever KEPT on the list by the absence of evidence, so a failed identity read
+// can leave a registered product listed for one session — it can never hide an
+// unregistered one, which is the direction that would lose stock.
+export function buildLeftovers({ hub, products = [], hubStock = {}, registered = {}, allStock = null, identityMap = null }) {
   const registeredPids = new Set(Object.values(registered || {}).map((r) => r && r.productId).filter(Boolean));
   const out = [];
   for (const p of products) {
@@ -430,6 +460,7 @@ export function buildLeftovers({ hub, products = [], hubStock = {}, registered =
     const hubQty = totalQty(cells);
     if (hubQty <= 0) continue;                 // nothing actually held here
     if (registeredPids.has(p.id)) continue;    // seen on the floor — not a leftover
+    if (isRegistered(p, identityMap)) continue; // carries a code, a claim or an alias
     out.push({
       product: p,
       hubQty,
