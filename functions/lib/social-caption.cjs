@@ -145,9 +145,14 @@ const DESIGN_RULE = [
 const TYPE_IS_COMPOSITED = [
   "COMPOSITION FOR TYPOGRAPHY, NOT TYPOGRAPHY ITSELF.",
   "Every word, number, price and logo on the finished post is composited afterwards as real text",
-  "from our product records. You therefore must NOT render any lettering, words, numbers, prices,",
-  "labels, watermarks or logos into the image — imagined lettering is always wrong and a wrong",
-  "price is a promise we would have to honour.",
+  "from our product records. You therefore must NOT ADD any lettering, words, numbers, prices,",
+  "captions, labels, watermarks or brand marks OF YOUR OWN into the image — invented lettering is",
+  "always wrong, and an invented price is a promise we would have to honour.",
+  "This is about what you ADD, not about what is already there: branding that is PART OF A PRODUCT",
+  "— the logo on a shoe, the wordmark woven into a jacket, the label printed on a bottle — is part",
+  "of the item and must be rendered faithfully, exactly as it appears in the attached photograph.",
+  "Where the design rule above speaks of a logo or a short statement, it is describing what the",
+  "design layer may later composite; it is not an instruction for you to draw one.",
   "What you must do instead is COMPOSE FOR IT: follow the design rule above and leave the calm,",
   "uncluttered negative space — wall, sky, road, shadow, floor — where that typography will sit,",
   "in the place the composition naturally wants it rather than the same corner every time.",
@@ -294,11 +299,24 @@ function readCaption(raw) {
  * generated one, and the record marks it (captionSource: "fallback").
  */
 function fallbackCaption({ kind, products = [] }) {
-  const names = products.map((p) => p.name).filter(Boolean);
-  if (kind === "new_arrivals") return `Just landed in store and online.\n\n${names.slice(0, 5).join("\n")}`;
+  // ── TWO THINGS THIS MUST NOT DO ────────────────────────────────────────────
+  // 1. It must not name products by their brand-stripped storefront title. This
+  //    is the caption a person actually reads when the AI call fails, and
+  //    "Fragrance 100ML" is not a thing anyone can shop for. displayName is the
+  //    real name; `name` remains the fallback's fallback.
+  //
+  // 2. It must not mention the shops. Three of these lines used to read "in
+  //    store and online" — written before that became a hard rule, and never
+  //    re-read when it did. postReadiness() refuses a shop mention, so those
+  //    lines produced a post that could NEVER be approved, on the one path
+  //    that runs after the image has already been paid for. A fallback whose
+  //    whole job is to rescue a paid generation must not be the thing that
+  //    strands it.
+  const names = products.map((p) => p.displayName || p.name).filter(Boolean);
+  if (kind === "new_arrivals") return `Just landed online.\n\n${names.slice(0, 5).join("\n")}`;
   if (kind === "outfit") return `One fit, head to toe.\n\n${names.join("\n")}`;
   if (kind === "flatlay") return `A few of our favourites right now.\n\n${names.join("\n")}`;
-  return names[0] ? `${names[0]} — in store and online now.` : "In store and online now.";
+  return names[0] ? `${names[0]} — online now.` : "Online now.";
 }
 
 module.exports = {

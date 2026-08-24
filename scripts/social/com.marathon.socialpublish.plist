@@ -10,7 +10,8 @@
     · StartCalendarInterval instead of StartInterval. The reconciler is a
       2-minute poll because Publish is a thing Junid presses and then waits
       for. This is a CADENCE — one post and one story a day — and the times below ARE
-      that cadence: Monday, Wednesday and Saturday at 18:00.
+      that cadence: a feed post every day at 11:00, and a story every day at
+      16:30 — deliberately apart, so the two never fire on the same minute.
 
       These entries must match SLOT_DAYS / SLOT_HOUR_SAST / STORY_HOUR_SAST in
       src/components/social/socialCore.js, which is what the queue shows Junid
@@ -18,17 +19,25 @@
       posts sit "due" until the next agent fire — late, never lost, but late.
       launchd Weekday numbering matches JS getUTCDay: 0/7 Sunday, 1 Monday.
 
-    · The machine's clock is South African, so these are 18:00 SAST. If this
-      agent is ever installed on a machine in another timezone, these times
-      move with it — launchd has no timezone field, and the fix is to convert
-      them by hand, not to add one.
+    · THESE TIMES ARE THE HOST'S LOCAL TIME, NOT SAST. launchd has no timezone
+      field and cannot be given one; StartCalendarInterval is evaluated against
+      whatever the machine's clock says. The Mac mini is set to SAST (verified
+      2026-08-24: `SAST +0200`), so 11:00 here IS 11:00 SAST — but that is a
+      property of the machine, not of this file.
+
+      Change the mini's timezone and every fire moves silently with it: no
+      error, no log line, posts simply going out at the wrong hour. The
+      installer therefore CHECKS the host timezone and refuses to install
+      against a non-SAST clock rather than letting the two drift apart
+      unnoticed. If this agent is ever wanted on a machine in another zone,
+      convert the hours by hand — do not assume the label.
 
     · RunAtLoad is FALSE, unlike the reconciler. Loading the agent — after a
       reboot, or while installing it — must not fire a post. Nothing here is
       urgent enough to justify a publish at an unscheduled moment, and a
       surprise post to a live Instagram account is not recoverable.
 
-    · A missed fire (the mini was asleep or off at 18:00) is run by launchd as
+    · A missed fire (the mini was asleep or off at the scheduled time) is run by launchd as
       soon as it wakes. That is the behaviour we want: an approved post goes
       out late rather than being skipped for the week.
 

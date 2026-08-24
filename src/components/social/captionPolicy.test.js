@@ -18,9 +18,10 @@
 // and reaches the CJS module the same way socialStockParity.diff.test.js does.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
+import { findShopMentions } from "./socialCore.js";
 
 const require = createRequire(import.meta.url);
-const { buildCaptionPrompt } = require("../../../functions/lib/social-caption.cjs");
+const { buildCaptionPrompt, fallbackCaption } = require("../../../functions/lib/social-caption.cjs");
 
 const products = [
   { name: "Nike Air Force 1 Cream Black Grey", retailPrice: 750, slot: "shoe" },
@@ -65,4 +66,46 @@ describe("the caption prompt describes an online-only business", () => {
     expect(prompt).toMatch(/in-?store/i);   // named explicitly as a forbidden phrase
     expect(prompt).toMatch(/REFUSED/);      // and says the post cannot go out
   });
+});
+
+// ── THE FALLBACK MUST NOT STRAND THE POST IT EXISTS TO RESCUE ────────────────
+// fallbackCaption runs when the AI caption call fails or its output is
+// refused — i.e. AFTER the image has already been paid for. Three of its four
+// lines used to read "in store and online", written before that became a hard
+// rule and never re-read when it did. postReadiness() refuses a shop mention,
+// so the rescue path produced a post that could never be approved.
+//
+// Caught by CodeRabbit on PR #426, which spotted the displayName half; the
+// shop-rule half was worse and is the reason these assertions exist.
+describe("the fallback caption is postable", () => {
+  const products = [
+    { name: "Fragrance 100ML", displayName: "Lacoste L12 100ML" },
+    { name: "Sneaker Cream Black Grey", displayName: "Nike Air Force 1 Cream Black Grey" },
+  ];
+
+  for (const kind of ["single", "new_arrivals", "outfit", "flatlay"]) {
+    it(`"${kind}" mentions no shop, so it can actually be approved`, () => {
+      const text = buildFallback(kind, products);
+      expect(findShopMentions(text), text).toEqual([]);
+    });
+
+    it(`"${kind}" names products by their REAL name, not the storefront title`, () => {
+      const text = buildFallback(kind, products);
+      // Every kind names at least one product except those whose line is a
+      // bare statement; when it does name one, it must be the real name.
+      if (/Fragrance 100ML|Sneaker Cream/.test(text)) {
+        throw new Error(`fallback used the brand-stripped storefront name: ${text}`);
+      }
+      expect(text.length).toBeGreaterThan(0);
+    });
+  }
+
+  it("falls back to the storefront name only when there is no real one", () => {
+    const text = buildFallback("single", [{ name: "Fragrance 100ML" }]);
+    expect(text).toContain("Fragrance 100ML");
+  });
+
+  function buildFallback(kind, products) {
+    return fallbackCaption({ kind, products });
+  }
 });
