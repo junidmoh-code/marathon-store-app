@@ -257,15 +257,23 @@ export async function waitForContainer(containerId, token, { sleep = (ms) => new
  * Publish one post to Instagram.
  * @returns { id, permalink }
  */
-export async function publishInstagram({ igUserId, token, media, caption, sleep }) {
+export async function publishInstagram({ igUserId, token, media, caption, sleep, format = "feed" }) {
   const items = (media || []).filter((m) => m && m.url);
   if (!items.length) throw new Error("no media to publish");
   if (items.length > 10) throw new Error(`Instagram takes at most 10 items, got ${items.length}`);
 
+  // ── A STORY IS ONE ITEM ────────────────────────────────────────────────────
+  // There is no such thing as a story carousel on this API. Refused here rather
+  // than sent, because Meta's failure for it is an opaque 400 and the post
+  // would be parked as "failed" with nothing readable to act on.
+  if (format === "story" && items.length > 1) {
+    throw new Error(`a story takes one item, got ${items.length}`);
+  }
+
   let containerId;
   if (items.length === 1) {
     const { id } = await graph(`${igUserId}/media`, {
-      method: "POST", token, params: igContainerPayload(items[0], { caption }),
+      method: "POST", token, params: igContainerPayload(items[0], { caption, format }),
     });
     containerId = id;
     if (isVideo(items[0])) await waitForContainer(containerId, token, { sleep });
