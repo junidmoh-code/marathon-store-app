@@ -251,12 +251,31 @@ else
   bad "Anything else (RTDB refused, node crashed) needs fixing before Saturday."
 fi
 
+# The banner below must describe what was INSTALLED, not what someone typed
+# here months ago. Hard-coding "Mon / Wed / Sat, 18:00" survived the switch to a
+# daily cadence and printed a flat contradiction of the plist one line above it.
+SCHEDULE_SUMMARY=$(/usr/bin/python3 -c "
+import plistlib, collections
+d = plistlib.load(open('$PLIST','rb')).get('StartCalendarInterval') or []
+if isinstance(d, dict): d = [d]
+DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+by = collections.OrderedDict()
+for e in d:
+    t = '%02d:%02d' % (e.get('Hour', 0), e.get('Minute', 0))
+    by.setdefault(t, set()).add(e.get('Weekday'))
+parts = []
+for t, days in sorted(by.items()):
+    label = 'every day' if len(days) == 7 else ' / '.join(DAYS[w % 7] for w in sorted(days))
+    parts.append('%s %s' % (t, label))
+print(('  ·  '.join(parts) + '  (host clock)') if parts else 'no calendar entries')
+" 2>/dev/null || echo "see $PLIST")
+
 cat <<EOF
 
 ═══════════════════════════════════════════════════════════════════════════
  INSTALLED.
 
- Schedule:  Mon / Wed / Sat, 18:00 SAST
+ Schedule:  $SCHEDULE_SUMMARY
  Clone:     $CLONE   (the reconciler's checkout was not touched)
  Log:       $CLONE/logs/social-publish.log
 
