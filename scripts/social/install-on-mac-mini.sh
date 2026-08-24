@@ -267,7 +267,17 @@ parts = []
 for t, days in sorted(by.items()):
     label = 'every day' if len(days) == 7 else ' / '.join(DAYS[w % 7] for w in sorted(days))
     parts.append('%s %s' % (t, label))
-print(('  ·  '.join(parts) + '  (host clock)') if parts else 'no calendar entries')
+iv = plistlib.load(open('$PLIST','rb')).get('StartInterval')
+if parts:
+    print('  ·  '.join(parts) + '  (host clock)')
+elif iv:
+    # A ticking agent has no calendar entries by design: the cadence lives in
+    # each post's scheduledAt and the agent only asks what is due. Saying 'no
+    # calendar entries' described the plist rather than the behaviour, which is
+    # the same kind of lie the hard-coded banner used to tell.
+    print('every %d seconds — publishes whatever is due (slots live in the queue)' % int(iv))
+else:
+    print('no schedule declared')
 " 2>/dev/null || echo "see $PLIST")
 
 cat <<EOF
