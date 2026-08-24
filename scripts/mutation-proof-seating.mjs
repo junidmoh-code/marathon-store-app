@@ -32,6 +32,14 @@
 //   M-GATE-ROUTE   delete the route gate that carries products in  (App.jsx)
 //   M-GATE-CARD    delete the card's own gate                      (EnginePolicyCard)
 //
+// ── REVIEW FIXES (PR #429) — every one of these was a real shipped bug ───────
+//   M-NEST         let a second switch-off nest its own row as prevRow
+//   M-OFF-REREAD   decide the units refusal on the STALE seat
+//   M-OFF-VERIFY   let an unverifiable location list through
+//   M-MOVE-ID      derive the movement id from the clock again
+//   M-MOVE-CATCH   let a post-move throw swallow the fact stock moved
+//   M-CONTEXT      feed the mirror only the seatable locations  (SeatingTab)
+//
 // The three gate mutations each delete ONE gate with the others left intact,
 // which is the only way "independent gates" means anything.
 //
@@ -45,6 +53,7 @@ const CARD = "src/components/stock/EnginePolicyCard.jsx";
 const CORE = "src/components/stock/seatingCore.js";
 const STORE = "src/components/stock/seatingStore.js";
 const ACTIONS = "src/components/stock/SeatingActions.jsx";
+const TAB = "src/components/stock/SeatingTab.jsx";
 
 const CORE_TESTS = ["src/components/stock/seatingCore.test.js"];
 const STORE_TESTS = ["src/components/stock/seatingStore.test.js"];
@@ -77,9 +86,8 @@ const MUTATIONS = [
     id: "M-SIZES",
     guard: "the switch-off covers every DECLARED size, not only the stocked ones",
     file: CORE,
-    from: `  for (const s of productSizes(products, pid)) out.add(engineSizeKey(s));
-  return [...out];`,
-    to: `  return [...out];`,
+    from: `  for (const s of productSizes(products, pid)) out.add(engineSizeKey(s));`,
+    to: ``,
     tests: [...CORE_TESTS, ...STORE_TESTS],
   },
   // ── ATTRIBUTION ───────────────────────────────────────────────────────────
@@ -120,17 +128,18 @@ const MUTATIONS = [
     id: "M-RESEAT-GUESS",
     guard: "a row with no record to restore is reported, never guessed at",
     file: STORE,
-    from: `    else stuck.push(sizeKey);`,
-    to: `    else restore.push({ sizeKey, to: null });`,
+    from: `    if (!r.prevRow || typeof r.prevRow !== "object") { stuck.push(sizeKey); continue; }`,
+    to: `    if (!r.prevRow || typeof r.prevRow !== "object") { restore.push({ sizeKey, to: null }); continue; }`,
     tests: STORE_TESTS,
   },
   {
     id: "M-PREV-NULL",
     guard: "\"there was no row\" is a flag — RTDB deletes a key written null",
     file: STORE,
-    from: `  if (prev && typeof prev === "object") row.prevRow = prev;
-  else row.prevAbsent = true;`,
-    to: `  row.prevRow = prev && typeof prev === "object" ? prev : null;`,
+    from: `  } else row.prevRow = prev;
+  } else row.prevAbsent = true;`,
+    to: `  } else row.prevRow = prev;
+  } else row.prevRow = null;`,
     tests: STORE_TESTS,
   },
   // ── THE PRECEDENCE ORDER ──────────────────────────────────────────────────
@@ -193,11 +202,11 @@ const MUTATIONS = [
     guard: "the switch-off re-reads — a sale landing mid-move is not buried",
     file: STORE,
     from: `  const fresh = await readSeatingContext(locations, seat.pid);
-  const freshCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
-  const freshSeat = seatingAt(freshCtx, seat.loc, seat.pid);
-  const off = await switchOff({ seat: freshSeat, ctx: freshCtx, viewer });`,
-    to: `  const off = await switchOff({ seat: { ...seat, sizes: seat.sizes.map((s) => ({ ...s, qty: 0 })) }, ctx, viewer });`,
-    tests: MOVE_TESTS,
+  liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);
+  seat = liveSeat; ctx = liveCtx;`,
+    to: ``,
+    tests: [...MOVE_TESTS, ...STORE_TESTS],
   },
   {
     id: "M-MOVE-WRITER",
@@ -241,6 +250,132 @@ const MUTATIONS = [
     : <AdminSignInScreen onCancel={() => setRole(null)} />;`,
     to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email }} products={products} onExit={() => setRole(null)} />;`,
     tests: ["src/components/stock/enginePolicyGates.test.jsx"],
+  },
+  // ── REVIEW FIXES, PR #429 ─────────────────────────────────────────────────
+  {
+    id: "M-NEST",
+    guard: "a second switch-off does not nest its own row — Re-seat still reaches the original",
+    file: STORE,
+    from: `    if (prev.source === SEATING_OFF_SOURCE) {
+      if (prev.prevRow && typeof prev.prevRow === "object") row.prevRow = prev.prevRow;
+      else row.prevAbsent = true;
+    } else row.prevRow = prev;`,
+    to: `    row.prevRow = prev;`,
+    tests: STORE_TESTS,
+  },
+  {
+    id: "M-OFF-REREAD",
+    guard: "the units refusal is decided against LIVE data on the button path too",
+    file: STORE,
+    from: `  const fresh = await readSeatingContext(locations, seat.pid);
+  liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);
+  seat = liveSeat; ctx = liveCtx;`,
+    to: ``,
+    tests: STORE_TESTS,
+  },
+  {
+    id: "M-OFF-VERIFY",
+    guard: "an unverifiable location list is refused, not treated as an empty shelf",
+    file: STORE,
+    from: `  if (!Array.isArray(locations) || !locations.includes(seat.loc)) {
+    return { ok: false, reason: "unverified" };
+  }`,
+    to: `  locations = Array.isArray(locations) ? locations : [];`,
+    tests: STORE_TESTS,
+  },
+  {
+    id: "M-MOVE-ID",
+    guard: "the movement id is stable across presses — a double tap sends once",
+    file: STORE,
+    from: `  const batchId = moveBatchId(seat.pid, seat.loc, dest, lines);`,
+    to: `  const batchId = \`seatmove_\${serverNowMs().toString(36)}\`;`,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-MOVE-CATCH",
+    guard: "a throw after the stock moved still reports that it moved",
+    file: STORE,
+    from: `  } catch (e) {
+    return { ok: true, moved, replayed, failed, batchId, switchedOff: false,
+      offReason: "error", offError: e?.message || String(e) };
+  }`,
+    to: `  } catch (e) {
+    throw e;
+  }`,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-CONTEXT",
+    guard: "the carriage context covers every location that can hold a cell, not only the seatable ones",
+    file: TAB,
+    from: `    const ids = new Set(rowLocations);
+    for (const l of allLocationIds(registry)) ids.add(l);
+    return [...ids];`,
+    to: `    return [...rowLocations];`,
+    tests: TAB_TESTS,
+  },
+  // ── ADVERSARIAL REVIEW FIXES, PR #429 ─────────────────────────────────────
+  {
+    id: "M-ONESIZE-COVER",
+    guard: "a one-size category policy's \"_\" cell is covered by the switch-off",
+    file: CORE,
+    from: `  const cat = categoryPolicyEntry(config, products, pid, loc);
+  if (cat && !cat.sizes && !cat.perSize) out.add("_");`,
+    to: ``,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-ONESIZE-MOVE",
+    guard: "the no-size cell reaches applyMovement as \"_\", not a falsy \"\"",
+    file: STORE,
+    from: `qty: s.qty, v: s.v }));`,
+    to: `qty: s.qty, v: s.v })).map((l) => ({ ...l, size: l.size === "_" ? "" : l.size }));`,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-MOVE-ID-VERSION",
+    guard: "the cell version is in the idempotency key — a restocked repeat still travels",
+    file: STORE,
+    from: `...lines.map((l) => \`\${l.sizeKey}:\${l.qty}:\${l.v ?? "x"}\`)`,
+    to: `...lines.map((l) => \`\${l.sizeKey}:\${l.qty}\`)`,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-REPLAY",
+    guard: "an idempotent replay is not counted as units moved",
+    file: STORE,
+    from: `    if (res.ok && res.idempotent) replayed += qty;
+    else if (res.ok) moved += qty;`,
+    to: `    if (res.ok) moved += qty;
+    else if (false) replayed += qty;`,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-NEG-LANE",
+    guard: "the negative leg's REAL direction is checked against Transit",
+    file: STORE,
+    from: `    if (isTransitLane(to, from)) return "The negative would come back through Transit — use the Transfer screen.";`,
+    to: ``,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-NEG-SEATS",
+    guard: "a debt may not be the thing that seats a location",
+    file: STORE,
+    from: `    if (destSeat && !destSeat.hasCell) {
+      return "That location does not carry this line — a negative cannot be the thing that seats it.";
+    }`,
+    to: ``,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-RESEAT-SHAPE",
+    guard: "one unwritable prevRow does not block the whole undo",
+    file: STORE,
+    from: `    if (!writableRow(r.prevRow)) { stuck.push(sizeKey); continue; }`,
+    to: ``,
+    tests: STORE_TESTS,
   },
 ];
 

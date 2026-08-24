@@ -32,7 +32,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { searchProducts } from "../../utils/productSearch";
-import { transferTargets, labelFor, IN_TRANSIT } from "./locations";
+import { transferTargets, labelFor, DEFAULT_LOCATIONS, IN_TRANSIT } from "./locations";
 import { useLocations, useEngineConfig } from "./useStock";
 import { seatingRows, seatingAt, lastTouch, SEAT_REASON } from "./seatingCore";
 import { ProductCard, Badge, SizeFactChip, CHIP_GRID } from "./healthWidgets";
@@ -45,6 +45,16 @@ import { readSeatingContext } from "./seatingStore";
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found",
 // not a mis-pathed read. (Mirrors Transfer.jsx's lookupBarcode.)
 const RTDB_RESERVED = /[.#$[\]/]/;
+
+// EVERY registered location id, active or not. locations.js deliberately has no
+// such export — every picker wants the active ones — but a carriage CONTEXT is
+// not a picker: a deactivated warehouse (studio, base) still holds cells the
+// engine counts. Falls back to the seed exactly as activeLocations does, so an
+// unseeded /locations node does not silently narrow the snapshot.
+function allLocationIds(registry) {
+  const ids = registry && typeof registry === "object" ? Object.keys(registry) : [];
+  return ids.length ? ids : DEFAULT_LOCATIONS.map((l) => l.id);
+}
 
 const TONE = {
   [SEAT_REASON.EXPLICIT_ROW]: GREEN,
@@ -73,10 +83,27 @@ export default function SeatingTab({ products, viewer, flash }) {
   const [camera, setCamera] = useState(false);
   const [open, setOpen] = useState("");        // the location row with its actions expanded
 
-  const locations = useMemo(
+  // ── TWO LISTS, AND THE DIFFERENCE IS LOAD-BEARING ──────────────────────────
+  //
+  // ROWS are the places a product can be SEATED: active, not in_transit.
+  //
+  // The CONTEXT is every location that can hold a cell — in_transit and the
+  // deactivated ones included — because the engine's dead-size rule counts
+  // units ANYWHERE (`sizeUnitsAnywhere` walks Object.keys(stock), refill-engine
+  // .cjs:409). Feeding the mirror a partial snapshot makes a size whose only
+  // units are in transit read as dead, so a per-size category policy resolves 0
+  // and the row says "not carried" for a line the engine is actively seating.
+  // That is live today: six category policies are armed and /stock/in_transit
+  // holds real units. The mirror was right; the data under it was not.
+  const rowLocations = useMemo(
     () => transferTargets(registry).filter((l) => l.id !== IN_TRANSIT).map((l) => l.id),
     [registry],
   );
+  const contextLocations = useMemo(() => {
+    const ids = new Set(rowLocations);
+    for (const l of allLocationIds(registry)) ids.add(l);
+    return [...ids];
+  }, [registry, rowLocations]);
 
   const byId = useMemo(() => Object.fromEntries((products || []).map((p) => [p.id, p])), [products]);
   const product = pid ? byId[pid] : null;
@@ -92,11 +119,11 @@ export default function SeatingTab({ products, viewer, flash }) {
   // not the exception.
   const loadSeq = useRef(0);
   const load = useCallback(async (nextPid) => {
-    if (!nextPid || !locations.length) return;
+    if (!nextPid || !contextLocations.length) return;
     const seq = ++loadSeq.current;
     setLoading(true); setError("");
     try {
-      const next = await readSeatingContext(locations, nextPid);
+      const next = await readSeatingContext(contextLocations, nextPid);
       if (seq !== loadSeq.current) return;
       setCtx(next);
     } catch (e) {
@@ -105,7 +132,7 @@ export default function SeatingTab({ products, viewer, flash }) {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [locations]);
+  }, [contextLocations]);
 
   const choose = useCallback((nextPid) => {
     setPid(nextPid); setOpen(""); setCtx(null); load(nextPid);
@@ -141,7 +168,7 @@ export default function SeatingTab({ products, viewer, flash }) {
     return { products: byId, stock: ctx.stock, targets: ctx.targets, config: engineConfig };
   }, [ctx, product, byId, engineConfig]);
 
-  const rows = useMemo(() => (full ? seatingRows(full, locations, pid) : []), [full, locations, pid]);
+  const rows = useMemo(() => (full ? seatingRows(full, rowLocations, pid) : []), [full, rowLocations, pid]);
   const seatedCount = rows.filter((r) => r.seated).length;
 
   return (
@@ -215,7 +242,8 @@ export default function SeatingTab({ products, viewer, flash }) {
               product={product}
               label={labelFor(seat.loc, registry)}
               registry={registry}
-              locations={locations}
+              locations={contextLocations}
+              destinations={rowLocations}
               ctx={full}
               viewer={viewer}
               expanded={open === seat.loc}
@@ -238,7 +266,7 @@ export default function SeatingTab({ products, viewer, flash }) {
 
 // ── ONE LOCATION ─────────────────────────────────────────────────────────────
 // Carried or not · why · units per size · when the cell last moved.
-function SeatRow({ seat, product, label, registry, locations, ctx, viewer, expanded, onToggle, onDone, onFail }) {
+function SeatRow({ seat, product, label, registry, locations, destinations, ctx, viewer, expanded, onToggle, onDone, onFail }) {
   const tone = TONE[seat.reason] || GRAY;
   const touch = lastTouch(seat);
   const held = seat.sizes.filter((s) => s.hasCell);
@@ -280,6 +308,7 @@ function SeatRow({ seat, product, label, registry, locations, ctx, viewer, expan
           label={label}
           registry={registry}
           locations={locations}
+          destinations={destinations}
           ctx={ctx}
           viewer={viewer}
           onDone={onDone}

@@ -25,12 +25,16 @@ vi.mock("./barcodeListener", () => ({ installBarcodeListener: () => () => {}, su
 const STOCK = {
   trophy: { p1: { M: { qty: 4, lastType: "sold", updatedAt: "2026-08-20T09:00:00.000Z" } } },
   "marathon-pe": { p1: { L: { qty: 0, lastType: "transfer_out", updatedAt: "2026-08-01T09:00:00.000Z" } } },
+  in_transit: { p1: { S: { qty: 2, lastType: "transfer_out", updatedAt: "2026-08-22T09:00:00.000Z" } } },
 };
+// Every path the tab reads, so a read it never makes is visible as an absence.
+const READS = [];
 const TARGETS = { "marathon-pe": { p1: { S: { target: 0, minQty: 0 }, M: { target: 0, minQty: 0 }, L: { target: 0, minQty: 0 } } } };
 
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   get: async (r) => {
+    READS.push(String(r.path));
     const [root, loc, pid] = String(r.path).split("/");
     const src = root === "stock" ? STOCK : root === "stock_targets" ? TARGETS : {};
     const v = src?.[loc]?.[pid];
@@ -47,6 +51,7 @@ vi.mock("./useStock", () => ({
     trophy: { id: "trophy", label: "Trophy", kind: "store", sellable: true, active: true },
     "marathon-pe": { id: "marathon-pe", label: "Marathon PE", kind: "store", sellable: true, active: true },
     in_transit: { id: "in_transit", label: "In Transit", kind: "transit", active: true },
+    base: { id: "base", label: "Base", kind: "warehouse", sellable: false, active: false },
   }),
   useEngineConfig: () => ({ ruleBasedTargets: true, defaultRunByStore: { trophy: { S: 1, M: 2, L: 2 }, "marathon-pe": { S: 1, M: 2, L: 2 } } }),
 }));
@@ -71,7 +76,7 @@ const find = (tree, pred) => tree.root.findAll(pred);
 const buttonSaying = (tree, label) =>
   find(tree, (n) => n.type === "button").find((b) => JSON.stringify(b.children).includes(label));
 
-beforeEach(() => { callableMock.mockClear(); });
+beforeEach(() => { callableMock.mockClear(); READS.length = 0; });
 
 describe("the tab strip", () => {
   it("Engine Policy shows Categories and Seating, and starts on Categories", async () => {
@@ -205,6 +210,45 @@ describe("the actions on a row", () => {
     expect(text(tree)).toContain("size");
     expect(text(tree)).toContain("out of");
     expect(text(tree)).toContain("Trophy");
+  });
+});
+
+// ── THE CONTEXT IS WIDER THAN THE ROWS ───────────────────────────────────────
+// Rows are the places a product can be SEATED. The carriage CONTEXT is every
+// location that can hold a cell, because the engine's dead-size rule counts
+// units anywhere — feeding the mirror a partial snapshot makes a size whose
+// only units are in transit read as dead. (Found in review, PR #429.)
+describe("the carriage context covers every location that can hold a cell", () => {
+  async function loadProduct() {
+    const tree = await renderTab();
+    await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: "navy" } }); });
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    return tree;
+  }
+
+  it("reads in_transit and a DEACTIVATED warehouse, not merely the seatable ones", async () => {
+    await loadProduct();
+    expect(READS).toContain("stock/in_transit/p1");
+    expect(READS).toContain("stock/base/p1");
+    expect(READS).toContain("stock/trophy/p1");
+  });
+
+  it("but never offers them as a seat", async () => {
+    const tree = await loadProduct();
+    const s = text(tree);
+    expect(s).not.toContain("In Transit");
+    expect(s).not.toContain("Base");
+  });
+
+  it("and never offers them as a destination either", async () => {
+    const tree = await loadProduct();
+    await act(async () => { buttonSaying(tree, "Change").props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Move and switch off").props.onClick(); });
+    const s = text(tree);
+    expect(s).toContain("Marathon PE");     // a real destination is offered
+    expect(s).not.toContain("In Transit");  // these are not
+    expect(s).not.toContain("Base");
   });
 });
 

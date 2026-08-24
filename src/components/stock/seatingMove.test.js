@@ -76,14 +76,30 @@ describe("all stock writes go through applyMovement", () => {
     }
   });
 
-  it("the movement id is deterministic, so a repeat is idempotent", async () => {
+  it("the movement id is STABLE across presses, so a double tap sends once", async () => {
+    // It used to be base-36 of serverNowMs, which is different on every press —
+    // so two confirms a second apart sent the stock twice. The id comes from
+    // the move's own content now. (CodeRabbit, PR #429.)
     const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
     await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
-    // Derived from serverNowMs, NOT Date.now: the batch id is base-36 of the
-    // server clock, so the same confirm retried collapses to one movement.
-    const stamp = (1756000000000).toString(36);
-    expect(moves[0].movementId).toBe(`seatmove_${stamp}_p1_M`);
-    expect(moves[0].link.transferId).toBe(`seatmove_${stamp}`);
+    const first = moves[0].movementId;
+    moves.length = 0;
+    await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).toBe(first);
+    expect(first).toMatch(/^seatmove_[a-z0-9]+_p1_M$/);
+  });
+
+  it("a DIFFERENT move gets a different id — the id is not a constant", async () => {
+    const a = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    const idA = moves[0].movementId; moves.length = 0;
+    const b = ctxOf({ trophy: { p1: { M: { qty: 5 } } } });
+    await moveAndSwitchOff({ seat: seatOf(b), ctx: b, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).not.toBe(idA);
+    moves.length = 0;
+    const c = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
+    await moveAndSwitchOff({ seat: seatOf(c), ctx: c, viewer: {}, dest: "central", locations: LOCS });
+    expect(moves[0].movementId).not.toBe(idA);
   });
 
   it("no /stock path is ever written directly", async () => {
@@ -98,7 +114,9 @@ describe("all stock writes go through applyMovement", () => {
 // ── NEGATIVES ────────────────────────────────────────────────────────────────
 describe("a negative travels with its sign", () => {
   it("is sent the other way, so the source rises to 0 and the debt follows", async () => {
-    const ctx = ctxOf({ trophy: { p1: { M: { qty: -2 } } } });
+    // hub2 already carries the line — see the guard test below for why that
+    // matters.
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: -2 } } }, hub2: { p1: { M: { qty: 9 } } } });
     await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
     expect(moves).toHaveLength(1);
     // from the DESTINATION to the SOURCE: trophy -2 → 0, hub2 down by 2.
@@ -115,7 +133,7 @@ describe("a negative travels with its sign", () => {
   });
 
   it("mixed signs each go their own way in one action", async () => {
-    const ctx = ctxOf({ trophy: { p1: { S: { qty: 3 }, M: { qty: -1 } } } });
+    const ctx = ctxOf({ trophy: { p1: { S: { qty: 3 }, M: { qty: -1 } } }, hub2: { p1: { M: { qty: 9 } } } });
     await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
     expect(moves.map((m) => [m.size, m.from, m.to, m.qty]))
       .toEqual([["M", "hub2", "trophy", 1], ["S", "trophy", "hub2", 3]]);
@@ -191,8 +209,125 @@ describe("movePlan", () => {
   it("lists only cells that hold something, in size-key order", () => {
     const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 }, L: { qty: 0 }, S: { qty: -1 } } } });
     expect(movePlan(ctx, "trophy", "p1")).toEqual([
-      { sizeKey: "M", size: "M", qty: 4 },
-      { sizeKey: "S", size: "S", qty: -1 },
+      { sizeKey: "M", size: "M", qty: 4, v: null },
+      { sizeKey: "S", size: "S", qty: -1, v: null },
     ]);
+  });
+});
+
+// ── THE MOVE'S SUCCESS SURVIVES A FAILURE IN WHAT FOLLOWS ────────────────────
+// The one moment where real stock has already moved. A throw on the re-read or
+// the switch-off must not take the message about it down too.
+// (Senior-architect review, PR #429.)
+describe("a throw after the stock moved still reports the move", () => {
+  it("returns moved and batchId, and records the switch-off as not done", async () => {
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
+    const { get } = await import("firebase/database");
+    const spy = vi.spyOn(await import("firebase/database"), "get")
+      .mockRejectedValue(new Error("network"));
+    const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(res.ok).toBe(true);
+    expect(res.moved).toBe(4);
+    expect(res.batchId).toBeTruthy();
+    expect(res.switchedOff).toBe(false);
+    expect(res.offReason).toBe("error");
+    expect(res.offError).toMatch(/network/);
+    spy.mockRestore();
+  });
+});
+
+// ── THE ONE-SIZE CELL ────────────────────────────────────────────────────────
+// applyMovement refuses a falsy size outright (applyMovement.js:97), and
+// rawSizeOf answers "" for the no-size cell — so every one-size line failed
+// with an internal reason printed at the owner. Perfume, watches, and the whole
+// collapsed estate of bags and headwear are one-size.
+// (Adversarial review, PR #429.)
+describe("a one-size product can actually be moved", () => {
+  const PERF = { p9: { id: "p9", name: "Eau", categoryKey: "perfumes" } };
+  const POLICY = { categoryPolicy: { perfumes: { trophy: { target: 4, minQty: 2 }, hub2: { target: 4, minQty: 2 } } } };
+  const pctx = (stock) => ({ products: PERF, stock, targets: {}, config: POLICY });
+
+  it("sends the no-size cell as \"_\", never as an empty string", async () => {
+    const ctx = pctx({ trophy: { p9: { _: { qty: 6 } } } });
+    const seat = seatingAt(ctx, "trophy", "p9");
+    await moveAndSwitchOff({ seat, ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves).toHaveLength(1);
+    expect(moves[0].size).toBe("_");
+    expect(moves[0].qty).toBe(6);
+    // and it is truthy, which is the whole reason it failed before
+    expect(!!moves[0].size).toBe(true);
+  });
+
+  it("labels a failure on that line 'One size', not '_'", () => {
+    const ctx = pctx({ trophy: { p9: { _: { qty: 6 } } } });
+    expect(movePlan(ctx, "trophy", "p9")[0].size).toBe("_");
+  });
+});
+
+// ── A DEBT MAY NOT INVENT CARRIAGE ───────────────────────────────────────────
+describe("moving a negative", () => {
+  it("is refused when the destination does not already carry the line", async () => {
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: -2 } } } });           // hub2 has no cell
+    const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/does not carry this line/);
+    expect(moves).toHaveLength(0);
+  });
+
+  it("is allowed once the destination carries it", async () => {
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: -2 } } }, hub2: { p1: { M: { qty: 0 } } } });
+    const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(res.ok).toBe(true);
+    expect(moves).toHaveLength(1);
+  });
+
+  it("refuses a REVERSED Transit lane — the leg's real direction is what counts", async () => {
+    // trophy → central looks instant; the negative's leg is central → trophy,
+    // which is the A→B two-step lane.
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: -2 } } }, central: { p1: { M: { qty: 5 } } } });
+    const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "central", locations: LOCS });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/Transit/);
+    expect(moves).toHaveLength(0);
+  });
+
+  it("a POSITIVE line to Central is still fine — the reverse check is not blanket", async () => {
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
+    const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "central", locations: LOCS });
+    expect(res.ok).toBe(true);
+  });
+});
+
+// ── AN IDEMPOTENT REPLAY IS NOT A MOVE ───────────────────────────────────────
+describe("a replay is reported as a replay", () => {
+  it("does not count units that never left the shelf", async () => {
+    const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
+    const spy = vi.spyOn(await import("./applyMovement"), "applyMovement")
+      .mockResolvedValue({ ok: true, movementId: "mv1", idempotent: true });
+    const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(res.moved).toBe(0);
+    expect(res.replayed).toBe(4);
+    spy.mockRestore();
+  });
+});
+
+// ── THE VERSION IS IN THE IDEMPOTENCY KEY ────────────────────────────────────
+describe("the same move against a RESTOCKED cell travels", () => {
+  it("a different cell version yields a different movement id", async () => {
+    const a = ctxOf({ trophy: { p1: { M: { qty: 4, v: 7 } } } });
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    const idA = moves[0].movementId; moves.length = 0;
+    // same product, same quantity, same destination — but a later cell state
+    const b = ctxOf({ trophy: { p1: { M: { qty: 4, v: 9 } } } });
+    await moveAndSwitchOff({ seat: seatOf(b), ctx: b, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).not.toBe(idA);
+  });
+
+  it("but the SAME state twice still collapses to one movement", async () => {
+    const a = ctxOf({ trophy: { p1: { M: { qty: 4, v: 7 } } } });
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    const idA = moves[0].movementId; moves.length = 0;
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).toBe(idA);
   });
 });

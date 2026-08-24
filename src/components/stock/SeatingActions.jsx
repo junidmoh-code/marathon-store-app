@@ -24,7 +24,13 @@ import { serverNowMs } from "../../utils/serverTime";
 import { SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGray, bRed, bGreen, bGhost } from "./ui";
 
-export default function SeatingActions({ seat, product, label, registry, locations, ctx, viewer, onDone, onFail }) {
+// `locations` is the CARRIAGE CONTEXT — every location that can hold a cell,
+// in_transit and deactivated ones included, because that is what the engine's
+// dead-size rule counts and what the switch-off re-read must cover.
+// `destinations` is what a human may PICK. They are deliberately not the same
+// list: offering in_transit as a destination would park stock in the transit
+// holding with no /transfers doc and nobody expecting it.
+export default function SeatingActions({ seat, product, label, registry, locations, destinations, ctx, viewer, onDone, onFail }) {
   const [busy, setBusy] = useState("");
   const [confirm, setConfirm] = useState("");   // "" | "off" | "move"
   const [dest, setDest] = useState("");
@@ -93,7 +99,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
           </div>
 
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: ".7rem" }}>
-            {locations.filter((l) => l !== seat.loc).map((l) => (
+            {(destinations || []).filter((l) => l !== seat.loc).map((l) => (
               <button
                 key={l}
                 onClick={() => setDest(l)}
@@ -133,6 +139,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
               onClick={() => run("move",
                 () => moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff: alsoOff, locations }),
                 (r) => `${r.moved} moved to ${labelFor(dest, registry)}`
+                  + (r.replayed ? ` · ${r.replayed} already sent` : "")
                   + (r.failed.length ? ` · ${r.failed.length} failed: ${r.failed.join(" · ")}` : "")
                   + (alsoOff ? (r.switchedOff ? ` · ${label} switched off.` : ` · ${label} left ON (${FAILURES[r.offReason] || r.offReason || "see the row"}).`) : "."))}
               disabled={!!busy || !!destBlocked}
@@ -156,7 +163,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: ".7rem", flexWrap: "wrap" }}>
             <button
-              onClick={() => run("off", () => switchOff({ seat, ctx, viewer }),
+              onClick={() => run("off", () => switchOff({ seat, ctx, viewer, locations }),
                 (r) => `${label} switched off — ${r.rowCount} ${r.rowCount === 1 ? "size" : "sizes"} at 0.`)}
               disabled={!!busy}
               style={{ ...bRed, opacity: busy ? .5 : 1 }}
@@ -202,6 +209,10 @@ export default function SeatingActions({ seat, product, label, registry, locatio
 
 const FAILURES = {
   holds_units: "there is stock here — move it first",
+  // switchOff refuses when it cannot verify the location against live data —
+  // it must say so in words, not print the bare token at the owner.
+  unverified: "could not check this location's stock — reopen the product and try again",
+  error: "the switch-off could not be written",
   destination: "that destination cannot be used",
   nothing_to_move: "nothing here to move",
   no_sizes: "This product declares no sizes and holds no cells here.",

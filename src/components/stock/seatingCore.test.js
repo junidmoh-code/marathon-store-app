@@ -221,3 +221,95 @@ describe("lastTouch", () => {
     expect(lastTouch(seatingAt({ products: P, stock: {}, targets: {}, config: RUN }, "trophy", "p1"))).toBe(null);
   });
 });
+
+// ── THE SNAPSHOT THE MIRROR IS FED ───────────────────────────────────────────
+// The mirror was right; the data under it was not. The dead-size rule counts
+// units ANYWHERE (sizeUnitsAnywhere walks Object.keys(stock)), so a snapshot
+// that omits in_transit or a deactivated warehouse makes a live size read as
+// dead — and the row then says "not carried" for a line the engine is actively
+// seating. Six category policies are armed live and /stock/in_transit holds
+// real units, so this is not hypothetical. (Found in review, PR #429.)
+describe("a partial stock snapshot changes the answer", () => {
+  const PERFUME = { p9: { id: "p9", name: "Eau", sizes: ["100ml"], categoryKey: "perfumes" } };
+  const POLICY = { categoryPolicy: { perfumes: { perSize: true, trophy: { target: 2, minQty: 1 } } } };
+  const ROW = { products: PERFUME, targets: {}, config: POLICY };
+
+  it("units sitting in transit keep the size ALIVE", () => {
+    const whole = { ...ROW, stock: { in_transit: { p9: { "100ml": { qty: 6 } } }, trophy: { p9: { "100ml": { qty: 0 } } } } };
+    expect(resolveTarget(whole, "trophy", "p9", "100ml").target).toBe(2);
+    // and the engine agrees, which is the point
+    expect(engine.resolveTarget(whole, "trophy", "p9", "100ml").target).toBe(2);
+  });
+
+  it("the SAME product reads dead once in_transit is dropped from the snapshot", () => {
+    const partial = { ...ROW, stock: { trophy: { p9: { "100ml": { qty: 0 } } } } };
+    expect(resolveTarget(partial, "trophy", "p9", "100ml").target).toBe(0);
+    expect(seatingAt(partial, "trophy", "p9").seated).toBe(false);
+    // ...so the caller must pass every location that can hold a cell.
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE COVERAGE FUZZ — a different question from the differential fuzz
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The differential fuzz asks "for THIS size, do the two copies agree?" It can
+// never catch a size seatingSizes forgot to return, because it only ever asks
+// about sizes seatingSizes returned. That blind spot hid a live bug: a one-size
+// category policy arms the "_" cell with no carriage gate, and the switch-off
+// covered every size except that one.
+//
+// So this asks the other question: IS THERE ANY SIZE THE ENGINE ARMS THAT THE
+// SWITCH-OFF WOULD NOT COVER? If there is, switching off leaves the shop armed
+// and the screen says it is off — the precise failure the feature exists to
+// end. (Adversarial review, PR #429.)
+describe("no size the engine arms is left uncovered", () => {
+  it("holds over 12,000 randomised (policy, catalogue, stock, location) cases", () => {
+    const r = rng(429429);
+    const PROBE = ["", "S", "M", "L", "XL", "5.5", "8", "100ml", "ONE"];
+    let armed = 0;
+    const misses = [];
+    for (let i = 0; i < 400; i++) {
+      const c = makeCase(r);
+      const ctx = { targets: c.targets, config: c.config, products: c.products, stock: c.stock };
+      for (const loc of LOCS) {
+        const covered = new Set(seatingSizes(ctx, loc, c.pid));
+        for (const size of PROBE) {
+          const t = engine.resolveTarget(ctx, loc, c.pid, size);
+          if (!t || t.target <= 0) continue;           // not armed → nothing to cover
+          armed++;
+          if (!covered.has(engine.encodeSizeKey(size))) {
+            misses.push(`case ${i} ${loc} ${JSON.stringify(size)} armed ${t.target} via ${t.source}`);
+          }
+        }
+      }
+    }
+    expect(armed, "the fuzz must actually arm things").toBeGreaterThan(200);
+    expect(misses.slice(0, 5)).toEqual([]);
+  });
+
+  it("the concrete case that was live: a one-size category policy on a perfume", () => {
+    const products = { p9: { id: "p9", name: "Eau", sizes: ["S", "M"], categoryKey: "perfumes" } };
+    const config = { categoryPolicy: { perfumes: { trophy: { target: 4, minQty: 2 } } } };
+    const ctx = { products, stock: {}, targets: {}, config };
+    // The engine arms the no-size cell at trophy, with no cell and no row.
+    expect(engine.resolveTarget(ctx, "trophy", "p9", "").target).toBe(4);
+    expect(seatingSizes(ctx, "trophy", "p9")).toContain("_");
+    expect(seatingAt(ctx, "trophy", "p9").seated).toBe(true);
+    expect(seatingAt(ctx, "trophy", "p9").reason).toBe(SEAT_REASON.CATEGORY_POLICY);
+  });
+
+  it("a product declaring NO sizes can still be switched off", () => {
+    const products = { p9: { id: "p9", name: "Eau", categoryKey: "perfumes" } };
+    const config = { categoryPolicy: { perfumes: { trophy: { target: 4, minQty: 2 } } } };
+    const ctx = { products, stock: {}, targets: {}, config };
+    // Used to be [] — nothing to write, so the location could not be turned off.
+    expect(seatingSizes(ctx, "trophy", "p9")).toEqual(["_"]);
+  });
+
+  it("a PER-SIZE policy does not gain a phantom \"_\" row", () => {
+    const products = { p9: { id: "p9", name: "Cap", sizes: ["S", "M"], categoryKey: "caps-beanies" } };
+    const config = { categoryPolicy: { "caps-beanies": { perSize: true, trophy: { target: 2, minQty: 1 } } } };
+    expect(seatingSizes({ products, stock: {}, targets: {}, config }, "trophy", "p9")).not.toContain("_");
+  });
+});

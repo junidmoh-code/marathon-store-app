@@ -308,10 +308,29 @@ const SOURCE_TO_REASON = {
 // sizes would leave every unstocked declared size still armed: that is the gap
 // in NoTargetQueue's excludeHere (it iterates card.sizes, which are cell sizes),
 // and it is why this returns the full union.
-export function seatingSizes({ products, stock, targets }, loc, pid) {
+export function seatingSizes({ products, stock, targets, config }, loc, pid) {
   const out = new Set(Object.keys(targets?.[loc]?.[pid] || {}));
   for (const k of Object.keys(stock?.[loc]?.[pid] || {})) out.add(k);
   for (const s of productSizes(products, pid)) out.add(engineSizeKey(s));
+  // ── THE "_" CELL A ONE-SIZE CATEGORY POLICY ARMS ──────────────────────────
+  // sizesFor ends its category branch with a bare `else out.add("_")`
+  // (refill-engine.cjs:1079): a policy in ONE-SIZE mode speaks for the no-size
+  // cell and nothing else. managedPids admits such a product with NO CARRIAGE
+  // GATE AT ALL (:1052), so it is armed at every mapped location even with no
+  // cell and no row anywhere.
+  //
+  // Leaving it out was the exact bug this feature exists to close, inverted: a
+  // perfume with a uniform trophy policy read "Not carried", and a switch-off
+  // wrote rows for its declared letter sizes while the engine went on raising
+  // requests against "_" for ever. A product declaring no sizes could not be
+  // switched off at all — the plan came back empty.
+  //
+  // Found by adversarial review (PR #429) with a COVERAGE fuzz: 54 armed-but-
+  // uncovered cases, every one of them "_" via category_policy. The existing
+  // differential fuzz compares resolveTarget PER SIZE and so could never see
+  // it — it is only ever asked about sizes this function already returned.
+  const cat = categoryPolicyEntry(config, products, pid, loc);
+  if (cat && !cat.sizes && !cat.perSize) out.add("_");
   return [...out];
 }
 
@@ -358,6 +377,9 @@ export function seatingAt(ctx, loc, pid) {
     if (t && t.target > 0 && !best) best = t.source;
     sizes.push({
       sizeKey, size, qty,
+      // The cell's optimistic-concurrency version. Carried so the move can key
+      // its idempotency on the STATE it acted upon — see moveBatchId.
+      v: typeof cell?.v === "number" ? cell.v : null,
       hasCell: cell !== undefined,
       target: t ? t.target : null,
       source: t ? t.source : null,
