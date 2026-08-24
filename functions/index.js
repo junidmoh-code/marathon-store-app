@@ -3755,7 +3755,15 @@ async function compositeSocialDesign(buffer, { products, kind }) {
     if (!rows.length) return { buffer, designed: false, reason: "no product carried a usable price" };
     const sharp = require("sharp");
     const edges = await measureEdges(buffer);
-    const svg = socialDesign.buildOverlay({ products, edges, kind });
+    // The overlay must match the photograph's ACTUAL size: normalizeSocialImage
+    // fits "inside" without enlarging, so it is often a few pixels short of
+    // 1080x1350 and sharp refuses an overlay bigger than its base.
+    const meta = await sharp(buffer).metadata();
+    const svg = socialDesign.buildOverlay({
+      products, edges, kind,
+      width: meta.width || socialDesign.W,
+      height: meta.height || socialDesign.H,
+    });
     const out = await sharp(buffer)
       .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
       .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
