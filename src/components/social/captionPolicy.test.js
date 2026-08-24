@@ -109,3 +109,53 @@ describe("the fallback caption is postable", () => {
     return fallbackCaption({ kind, products });
   }
 });
+
+// ── ONE SOURCE OF TYPE ───────────────────────────────────────────────────────
+// The compositor owns every word and number. The model owns the photograph.
+//
+// This is a regression suite for a real defect: DESIGN_RULE — the owner's
+// graphic direction, which tells a DESIGNER to "sometimes use product names and
+// prices, sometimes a small logo" — was being sent to the IMAGE MODEL. Read by
+// a photographer that is an instruction to draw them, so posts came back with
+// two MARATHON CLUB lockups, two WHOLE OUTFIT totals that disagreed, and an
+// invented laurel-wreath monogram that is not the brand's mark.
+describe("the image model is never asked to draw type", () => {
+  const { buildScenePrompt, DESIGN_RULE } = require("../../../functions/lib/social-caption.cjs");
+  const prompts = ["single", "flatlay", "outfit"].map((k) =>
+    buildScenePrompt({ kind: k, productNames: ["Lacoste Sweatshirt Beige"], style: "house" }));
+
+  it("does not hand the designer's brief to the photographer", () => {
+    // The one sentence that caused it, and the rule it belongs to.
+    for (const p of prompts) {
+      expect(p).not.toMatch(/sometimes use product names and prices/i);
+      expect(p).not.toContain(DESIGN_RULE);
+    }
+  });
+
+  it("forbids drawing the wordmark", () => {
+    for (const p of prompts) expect(p).toMatch(/Do not write MARATHON, CLUB or MARATHON CLUB/i);
+  });
+
+  it("forbids inventing a mark — there is no crest, wreath or monogram", () => {
+    for (const p of prompts) {
+      expect(p).toMatch(/monogram/i);
+      expect(p).toMatch(/no laurel wreath/i);
+    }
+  });
+
+  it("forbids drawing prices, totals and the website", () => {
+    for (const p of prompts) {
+      expect(p).toMatch(/Do not write a product name, a price, a rand amount, a total or a website/i);
+    }
+  });
+
+  it("still asks for the negative space the type will sit in", () => {
+    for (const p of prompts) expect(p).toMatch(/NEGATIVE SPACE/);
+  });
+
+  it("still preserves branding that is part of a product", () => {
+    // The prohibition is about what the model ADDS. A Lacoste crocodile on a
+    // Lacoste sweatshirt must still render.
+    for (const p of prompts) expect(p).toMatch(/PART OF A PRODUCT/);
+  });
+});
