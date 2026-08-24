@@ -129,8 +129,16 @@ describe("re-seat removes the delist fact and nothing else", () => {
       L: { target: 4, minQty: 2 },                          // hand-made
     } } };
     const ctx = ctxOf({}, targets);
-    const { restore } = reseatPlan(ctx, "trophy", "p1");
+    const { restore, stuck } = reseatPlan(ctx, "trophy", "p1");
     expect(restore.map((r) => r.sizeKey)).toEqual(["S"]);
+    // AND IT DOES NOT REPORT THEM EITHER. Landing a foreign row in `stuck`
+    // would be a quieter version of the same mistake: the screen would tell the
+    // owner that somebody else's deliberate exclusion is an undo it failed to
+    // perform, and invite him to go and "fix" it. `stuck` means "a row I wrote
+    // whose record I lost" and nothing else. (This is the assertion that makes
+    // the source check load-bearing — without it, dropping the check merely
+    // reshuffled foreign rows into `stuck` and every test still passed.)
+    expect(stuck).toEqual([]);
   });
 
   it("writes exactly those paths and no others", async () => {

@@ -150,6 +150,64 @@ describe("the rows", () => {
   });
 });
 
+// ── THE ACTIONS ──────────────────────────────────────────────────────────────
+// The default tick is the load-bearing one: it is what tells "this shop should
+// not carry this line" apart from "both shops should".
+describe("the actions on a row", () => {
+  async function openRow(name) {
+    const tree = await renderTab();
+    await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: "navy" } }); });
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    // Trophy is the first row and it holds 4 units.
+    await act(async () => { buttonSaying(tree, "Change").props.onClick(); });
+    return tree;
+  }
+
+  it("offers Switch off and Move and switch off, and no bulk button", async () => {
+    const tree = await openRow();
+    const s = text(tree);
+    expect(s).toContain("Switch off");
+    expect(s).toContain("Move and switch off");
+    for (const bulk of ["All locations", "Switch off all", "Apply to all", "Select all"]) {
+      expect(s).not.toContain(bulk);
+    }
+  });
+
+  it("refuses to switch off a row holding units, and says how many", async () => {
+    const tree = await openRow();
+    expect(text(tree)).toContain("4 units here");
+    const off = buttonSaying(tree, "Switch off");
+    expect(off.props.disabled).toBe(true);
+  });
+
+  it("SWITCH OFF THE SOURCE IS TICKED BY DEFAULT", async () => {
+    const tree = await openRow();
+    await act(async () => { buttonSaying(tree, "Move and switch off").props.onClick(); });
+    const tick = tree.root.findAll((n) => n.type === "input" && n.props.type === "checkbox")[0];
+    expect(tick).toBeTruthy();
+    expect(tick.props.checked).toBe(true);
+  });
+
+  it("and it can be un-ticked — two shops may genuinely carry one line", async () => {
+    const tree = await openRow();
+    await act(async () => { buttonSaying(tree, "Move and switch off").props.onClick(); });
+    const tick = () => tree.root.findAll((n) => n.type === "input" && n.props.type === "checkbox")[0];
+    await act(async () => { tick().props.onChange({ target: { checked: false } }); });
+    expect(tick().props.checked).toBe(false);
+    expect(text(tree)).toContain("Move only");
+  });
+
+  it("shows every size line before the confirm", async () => {
+    const tree = await openRow();
+    await act(async () => { buttonSaying(tree, "Move and switch off").props.onClick(); });
+    // One cell holds units at Trophy (M: 4), so exactly one line is offered.
+    expect(text(tree)).toContain("size");
+    expect(text(tree)).toContain("out of");
+    expect(text(tree)).toContain("Trophy");
+  });
+});
+
 // ── NO WHOLE-NODE READS ──────────────────────────────────────────────────────
 // The rule is structural, so the check is too: every read this file makes must
 // name a location AND a product.
