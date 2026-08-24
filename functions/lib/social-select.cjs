@@ -240,6 +240,79 @@ const PAIRING_SHAPES = [
 // one in four". ONE constant, changed in one place.
 const PAIRING_EVERY_N_POSTS = 3;
 
+// ── WHAT GOES WITH WHAT ──────────────────────────────────────────────────────
+// Filling one item per slot is not styling. The shoe slot treated all footwear
+// as interchangeable, so a studded soccer boot — 25 of them live, against 398
+// sneakers — was a valid partner for jeans, and roughly one outfit in
+// seventeen came out that way. Same failure class as the missing bottom slot:
+// the distinction exists in the catalogue and the selector ignored it.
+//
+// Every piece declares the CONTEXTS it belongs to. A set of pieces may only be
+// posted together if they share at least one — an intersection, not a vote.
+// A soccer boot belongs to "sport" and nothing else, so it can only ever appear
+// beside something else sporty, and never with jeans.
+//
+// Accessories are WILDCARD. A cap, a bag or a fragrance goes with anything and
+// must not be the reason a good outfit is refused.
+//
+// This is a floor, not a stylist. It catches the categorical mistakes — studs
+// with denim, a slide with a winter coat — and it cannot judge whether two
+// greens clash. That judgement is the stylist pass, and it belongs on top of
+// this rather than instead of it.
+const WARDROBE_CONTEXT = {
+  // footwear — the distinction that started this
+  "soccer-boots":   ["sport"],
+  sneakers:         ["casual", "sport", "smart"],
+  slides:           ["casual", "summer"],
+  boots:            ["casual", "winter", "smart"],
+  "designer-shoes": ["smart", "casual"],
+  // tops
+  "soccer-jerseys": ["sport", "casual"],
+  tracksuits:       ["sport", "casual"],
+  "golf-t-shirts":  ["sport", "casual", "smart"],
+  "t-shirts":       ["casual", "summer", "sport"],
+  hoodies:          ["casual", "winter", "sport"],
+  jackets:          ["casual", "winter", "smart"],
+  // bottoms
+  pants:            ["casual", "smart", "winter"],
+  jeans:            ["casual", "smart"],
+  shorts:           ["casual", "summer", "sport"],
+  dresses:          ["smart", "summer", "casual"],
+};
+// Slots whose pieces never constrain a look.
+const WILDCARD_SLOTS = new Set(["cap", "bag", "fragrance"]);
+
+/** The contexts a candidate belongs to; null means "goes with anything". */
+function contextsOf(candidate) {
+  if (WILDCARD_SLOTS.has(candidate?.slot)) return null;
+  const key = String(candidate?.product?.categoryKey || "").toLowerCase();
+  const ctx = WARDROBE_CONTEXT[key];
+  // An unknown category is treated as casual rather than as a wildcard: being
+  // wrong towards "ordinary streetwear" is recoverable, being wrong towards
+  // "goes with everything" is how studs end up with denim.
+  return ctx && ctx.length ? ctx : ["casual"];
+}
+
+/**
+ * Do these pieces belong together? True when every non-accessory piece shares
+ * at least one context with all the others.
+ */
+function sharedContext(candidates) {
+  let acc = null;
+  for (const c of candidates || []) {
+    const ctx = contextsOf(c);
+    if (!ctx) continue;                       // wildcard: constrains nothing
+    acc = acc === null ? new Set(ctx) : new Set(ctx.filter((x) => acc.has(x)));
+    if (acc.size === 0) return false;
+  }
+  return true;
+}
+
+/** True when adding `candidate` to `chosen` would still be a coherent look. */
+function fitsWith(chosen, candidate) {
+  return sharedContext([...chosen, candidate]);
+}
+
 // ── WHAT MAKES A LOOK, RATHER THAN A PILE ────────────────────────────────────
 // An outfit needs something on top, something on the legs and something on the
 // feet. cap, bag and fragrance are finishing pieces: welcome, never sufficient.
@@ -417,7 +490,7 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
       const picks = [];
       const local = new Set(taken);
       for (const slot of shape) {
-        const best = pool.find((c) => c.slot === slot && !local.has(c.pid));
+        const best = pool.find((c) => c.slot === slot && !local.has(c.pid) && fitsWith(picks, c));
         if (!best) break;
         picks.push(best); local.add(best.pid);
       }
@@ -439,8 +512,11 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
     // itself, so no trousers are added beside one.
     const picks = [];
     const taken = new Set(used);
+    // Best-scoring candidate for the slot THAT STILL COHERES with what is
+    // already chosen. Without the fitsWith test this took the top-ranked shoe
+    // regardless, which is how a studded soccer boot ended up beside jeans.
     const take = (slot) => {
-      const best = pool.find((c) => c.slot === slot && !taken.has(c.pid));
+      const best = pool.find((c) => c.slot === slot && !taken.has(c.pid) && fitsWith(picks, c));
       if (best) { picks.push(best); taken.add(best.pid); }
       return best || null;
     };
@@ -465,6 +541,12 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
     if (missingCore.length) {
       return { picks: [], reason: `not enough of an outfit in live stock — nothing available for: ${missingCore.join(", ")}` };
 
+    }
+    // A last check on the finished set. The greedy pass above cannot produce an
+    // incoherent look, but this is the property that actually matters and it
+    // costs nothing to assert it at the exit rather than trust the walk.
+    if (!sharedContext(picks)) {
+      return { picks: [], reason: "the best-scoring pieces do not belong together — no coherent look in live stock" };
     }
     return { picks, reason: null };
   }
@@ -496,6 +578,7 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
 
 module.exports = {
   OUTFIT_CORE, isFullBody, PAIRING_SHAPES, PAIRING_EVERY_N_POSTS,
+  WARDROBE_CONTEXT, contextsOf, sharedContext, fitsWith,
   POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS,
   REPOST_COOLDOWN_DAYS, W_SALES, W_NEW, NEW_FULL_DAYS, NEW_ZERO_DAYS,
   availableUnits, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,
