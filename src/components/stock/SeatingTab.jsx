@@ -165,6 +165,13 @@ export default function SeatingTab({ products, viewer, flash }) {
   const choose = useCallback((nextPid) => {
     setOpen("");
     if (nextPid && nextPid === pid) { load(nextPid); return; }
+    // INVALIDATE ANY READ STILL IN FLIGHT FOR THE PREVIOUS PRODUCT. load()
+    // bumps this itself, but the effect that calls it runs AFTER this commit —
+    // and the old product's response can land in that gap, where it still
+    // matches the sequence number and writes itself into state under the new
+    // product's name. Bumping here closes the window at its start.
+    // (CodeRabbit, PR #429.)
+    loadSeq.current += 1;
     setPid(nextPid); setCtx(null);
   }, [pid, load]);
 

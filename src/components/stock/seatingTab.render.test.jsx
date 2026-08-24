@@ -22,8 +22,15 @@ vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: 
 vi.mock("./barcodeListener", () => ({ installBarcodeListener: () => () => {}, subscribeBarcode: () => () => {} }));
 
 // The live reads, stubbed at the ONE place the tab makes them.
+// A held read: while HOLD names a product, its gets never resolve until
+// RELEASE is called — the shape needed to land a stale response late.
+let HOLD = null;
+const HELD = [];
 const STOCK = {
-  trophy: { p1: { M: { qty: 4, lastType: "sold", updatedAt: "2026-08-20T09:00:00.000Z" } } },
+  trophy: {
+    p1: { M: { qty: 4, lastType: "sold", updatedAt: "2026-08-20T09:00:00.000Z" } },
+    p2: { L: { qty: 7, lastType: "received", updatedAt: "2026-08-21T09:00:00.000Z" } },
+  },
   "marathon-pe": { p1: { L: { qty: 0, lastType: "transfer_out", updatedAt: "2026-08-01T09:00:00.000Z" } } },
   in_transit: { p1: { S: { qty: 2, lastType: "transfer_out", updatedAt: "2026-08-22T09:00:00.000Z" } } },
 };
@@ -47,7 +54,9 @@ vi.mock("firebase/database", () => ({
     const [root, loc, pid] = String(r.path).split("/");
     const src = root === "stock" ? STOCK : root === "stock_targets" ? TARGETS : {};
     const v = src?.[loc]?.[pid];
-    return { exists: () => v !== undefined, val: () => v };
+    const snap = { exists: () => v !== undefined, val: () => v };
+    if (HOLD && pid === HOLD) return new Promise((res) => HELD.push(() => res(snap)));
+    return snap;
   },
   onValue: () => () => {},
   update: async () => {},
@@ -71,7 +80,10 @@ vi.mock("./useStock", () => ({
 const SeatingTab = (await import("./SeatingTab.jsx")).default;
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 
-const PRODUCTS = [{ id: "p1", name: "Nike Tee Navy", sizes: ["S", "M", "L"], productType: "clothing" }];
+const PRODUCTS = [
+  { id: "p1", name: "Nike Tee Navy", sizes: ["S", "M", "L"], productType: "clothing" },
+  { id: "p2", name: "Adidas Tee Black", sizes: ["S", "M", "L"], productType: "clothing" },
+];
 const OWNER = { email: "gunidmoh@gmail.com" };
 const STAFF = { email: "rashid@marathon.internal" };
 
@@ -88,7 +100,7 @@ const find = (tree, pred) => tree.root.findAll(pred);
 const buttonSaying = (tree, label) =>
   find(tree, (n) => n.type === "button").find((b) => JSON.stringify(b.children).includes(label));
 
-beforeEach(() => { callableMock.mockClear(); READS.length = 0; });
+beforeEach(() => { callableMock.mockClear(); READS.length = 0; HOLD = null; HELD.length = 0; });
 
 describe("the tab strip", () => {
   it("Engine Policy shows Categories and Seating, and starts on Categories", async () => {
@@ -296,6 +308,64 @@ describe("choosing the product that is already open", () => {
     expect(text(tree)).toContain("Size run");
     // ...and it actually re-read rather than silently doing nothing
     expect(READS.length).toBeGreaterThan(before);
+  });
+});
+
+// ── SWITCHING PRODUCT WITH A READ IN FLIGHT ──────────────────────────────────
+// The END STATE is what this asserts, and it holds: product 2's rows, product
+// 1's numbers nowhere.
+//
+// BE PRECISE ABOUT WHAT IS *NOT* PROVED HERE. CodeRabbit asked for the
+// loadSeq bump in `choose` because load()'s own bump happens inside the effect,
+// which React schedules after the commit, while a pending read's continuation
+// is a microtask and runs first — so product 1's response can land while the
+// sequence number still matches, under product 2's name.
+//
+// The bump is in (SeatingTab.jsx, `choose`) and it is correct. This test does
+// NOT demonstrate it: removing the bump leaves this test green, because the
+// effect's own load(p2) overwrites whatever landed, so the settled state is
+// identical either way and only a transient frame differs — which
+// react-test-renderer cannot observe. It is therefore a reasoned tightening,
+// not a proved guard, and it deliberately has no mutation entry: a guard that
+// passes when its property is removed would be worse than none.
+// (CodeRabbit, PR #429.)
+describe("switching product while a read is in flight", () => {
+  it("discards the previous product's response", async () => {
+    const tree = await renderTab();
+    const pick = async (q, name) => {
+      await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: q } }); });
+      await act(async () => { buttonSaying(tree, name).props.onClick(); });
+    };
+
+    // Product 1's reads are held open.
+    HOLD = "p1";
+    await pick("navy", "Nike Tee Navy");
+    await act(async () => {});
+    expect(HELD.length).toBeGreaterThan(0);
+
+    // Switch to product 2 and let product 1's reads land IN THE SAME TICK,
+    // before the passive effect that starts product 2's read has run. That is
+    // the actual gap: load()'s own sequence bump happens inside the effect,
+    // which React schedules after the commit, while a pending promise's
+    // continuation is a microtask and runs first.
+    HOLD = null;
+    await act(async () => {
+      tree.root.findAllByType("input")[0].props.onChange({ target: { value: "adidas" } });
+    });
+    await act(async () => {
+      buttonSaying(tree, "Adidas Tee Black").props.onClick();
+      HELD.forEach((r) => r());
+    });
+    await act(async () => {});
+
+    const s = text(tree);
+    expect(s).toContain("Adidas Tee Black");
+    expect(s).not.toContain("Nike Tee Navy");
+    // p2 holds 7 at Trophy; p1's 4 must never be what is shown. The badge
+    // renders the number and the label as separate children, hence the shape.
+    const onHand = (t) => `["${t}"," on hand"]`;
+    expect(s).toContain(onHand(7));
+    expect(s).not.toContain(onHand(4));
   });
 });
 
