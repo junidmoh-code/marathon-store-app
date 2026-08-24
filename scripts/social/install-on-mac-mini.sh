@@ -107,6 +107,27 @@ fi
 echo "     running as: $SA_EMAIL"
 echo "     (this account needs roles/secretmanager.secretAccessor — granted from the laptop)"
 
+# ── THE HOST CLOCK IS THE SCHEDULE ──────────────────────────────────────────
+# launchd has no timezone field. StartCalendarInterval is evaluated against
+# whatever this machine's clock says, so "11:00" in the plist means 11:00 SAST
+# only because this machine is set to SAST. Change the timezone and every fire
+# moves with it — silently: no error, no log line, posts simply going out at the
+# wrong hour, which is the kind of failure nobody notices until a week of them
+# has gone out.
+#
+# So it is CHECKED rather than assumed. A warning would not do: the whole point
+# is that the drift is invisible, and an operator who is installing a scheduler
+# on a machine in the wrong timezone wants to be stopped, not informed.
+TZ_OFFSET="$(date +%z)"
+if [ "$TZ_OFFSET" != "+0200" ]; then
+  bad "this machine's clock is $TZ_OFFSET ($(date +%Z)), not SAST (+0200)."
+  bad "The plist's times are the HOST's local time — launchd has no timezone field —"
+  bad "so installing here would fire the daily post at the wrong hour, silently."
+  bad "Fix the machine's timezone, or convert the hours in the plist by hand."
+  exit 2
+fi
+ok "clock is SAST ($(date '+%Z %z, %a %H:%M'))"
+
 say "5/7  Writing the launchd agent"
 mkdir -p "$HOME/Library/LaunchAgents" "$CLONE/logs"
 

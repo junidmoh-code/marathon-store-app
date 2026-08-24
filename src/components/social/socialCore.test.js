@@ -14,6 +14,7 @@ import {
   nextSlots, assignSlots, formatSlot, toLocalInput, fromLocalInput,
   productLink, describePost, resultLine, SLOT_DAYS, SLOT_HOUR_SAST,
   needsVerification, QUEUE_FILTERS, STALE_CLAIM_MS,
+  MAX_HORIZON_DAYS,
 } from "./socialCore";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -278,7 +279,7 @@ describe("captions", () => {
   });
 });
 
-describe("the three-a-week schedule", () => {
+describe("the daily schedule", () => {
   const SAST = 2 * 3600000;
   const dowOf = (ms) => new Date(ms + SAST).getUTCDay();
   const hourOf = (ms) => new Date(ms + SAST).getUTCHours();
@@ -299,25 +300,35 @@ describe("the three-a-week schedule", () => {
     for (let i = 1; i < slots.length; i++) expect(slots[i]).toBeGreaterThan(slots[i - 1]);
   });
 
-  it("gives exactly three slots per week", () => {
+  it("gives one slot per day", () => {
+    // Cadence changed from three a week to one a day (owner spec 2026-08-24),
+    // so consecutive slots are exactly a day apart rather than the old
+    // Mon/Wed/Sat gaps. Derived from SLOT_DAYS rather than hard-coded, so this
+    // keeps meaning something if the cadence changes again.
     const slots = nextSlots(Date.UTC(2026, 7, 22, 6, 0), 12);
     const week = 7 * 86400000;
-    // The 4th slot is one week after the 1st, the 5th after the 2nd, and so on.
-    for (let i = 0; i + 3 < slots.length; i++) {
-      expect(slots[i + 3] - slots[i]).toBe(week);
+    const perWeek = SLOT_DAYS.length;
+    for (let i = 0; i + perWeek < slots.length; i++) {
+      expect(slots[i + perWeek] - slots[i]).toBe(week);
+    }
+    if (perWeek === 7) {
+      for (let i = 1; i < slots.length; i++) {
+        expect(slots[i] - slots[i - 1]).toBe(86400000);
+      }
     }
   });
 
   it("skips today's slot once its hour has passed", () => {
-    // Monday 2026-08-24, 19:00 SAST = 17:00 UTC. Monday is a slot day, but
-    // 18:00 has gone, so the next slot must be Wednesday.
-    const monday19 = Date.UTC(2026, 7, 24, 17, 0);
-    const [first] = nextSlots(monday19, 1);
-    expect(dowOf(first)).toBe(3);
+    // Monday 2026-08-24, 13:00 SAST = 11:00 UTC. Every day is a slot day now,
+    // but 11:00 has gone, so the next slot is TOMORROW rather than later today.
+    const mondayAfter = Date.UTC(2026, 7, 24, 11, 0);
+    const [first] = nextSlots(mondayAfter, 1);
+    expect(dowOf(first)).toBe(2);                 // Tuesday
+    expect(hourOf(first)).toBe(SLOT_HOUR_SAST);
   });
 
   it("includes today's slot when the hour has not passed", () => {
-    const monday9 = Date.UTC(2026, 7, 24, 7, 0);
+    const monday9 = Date.UTC(2026, 7, 24, 6, 0);   // 08:00 SAST, before 11:00
     const [first] = nextSlots(monday9, 1);
     expect(dowOf(first)).toBe(1);
     expect(hourOf(first)).toBe(SLOT_HOUR_SAST);
@@ -371,8 +382,14 @@ describe("the three-a-week schedule", () => {
     it("nextSlots stays sane at the degenerate ends", () => {
       expect(nextSlots(from, 0)).toEqual([]);
       expect(nextSlots(from, -1)).toEqual([]);
-      // Bounded: a silly request is capped rather than spinning.
-      expect(nextSlots(from, 100000).length).toBeLessThan(200);
+      // Bounded: a silly request is capped rather than spinning. The cap is a
+      // HORIZON IN DAYS, so the slot count it yields depends on the cadence —
+      // ~157 at three a week, 366 at one a day. Asserting a magic 200 quietly
+      // encoded the old cadence and broke when it changed, so this derives the
+      // ceiling instead: never more than one slot per day of horizon.
+      const capped = nextSlots(from, 100000).length;
+      expect(capped).toBeLessThanOrEqual(MAX_HORIZON_DAYS);
+      expect(capped).toBeGreaterThan(0);
     });
 
     it("survives an empty and a malformed existing list", () => {

@@ -92,6 +92,73 @@ const KIND_SCENE = {
  *                    IMAGES are attached separately by the caller and are what
  *                    actually carries the look.
  */
+// ── THE MARATHON CLUB GRAPHIC DESIGN RULE ────────────────────────────────────
+// Owner's standing art direction, 2026-08-24, quoted as given. It governs the
+// LOOK of every image this engine makes.
+//
+// It replaces a single sentence that used to close the scene prompt:
+//
+//     "No text, no graphics, no watermark, no logo overlay added to the image."
+//
+// That sentence forbade the exact thing the reference templates are made of,
+// which is why they never produced anything like them: the references were
+// being read as mood boards for lighting while the prompt banned the design.
+const DESIGN_RULE = [
+  "MARATHON CLUB GRAPHIC DESIGN RULE:",
+  "Treat every image as a premium editorial photograph first and a branded graphic second.",
+  "Preserve the original photography, realism, composition, lighting and atmosphere.",
+  "Do not force the same layout, typography placement or graphic elements onto every image.",
+  "Instead, intelligently adapt the Marathon Club identity to the natural composition of each",
+  "photograph. Use minimal, sophisticated typography, strong spacing, subtle alignment, thin rules",
+  "and restrained branding only where they naturally fit. Graphics should feel intentionally placed",
+  "within the photograph's negative space or architecture rather than layered on top as an",
+  "advertisement. Sometimes use product names and prices, sometimes a small logo, sometimes a short",
+  "statement, sometimes no graphic information at all. The design should always feel effortless,",
+  "premium, urban and editorial. Avoid clutter, excessive text, decorative effects, gradients,",
+  "badges, boxes, oversized promotional elements or generic e-commerce graphics. The photograph",
+  "always comes first; the Marathon identity should be recognizable through restraint, consistency",
+  "and art direction rather than repetition.",
+  "MARATHON CLUB = minimal, confident, contemporary, athletic, street, premium, understated.",
+  "Do not add graphics simply because the image needs branding. First analyze the image and",
+  "determine what graphic treatment, if any, would make the photograph look more like a high-end",
+  "Marathon Club campaign. If the image is already strong, use almost no graphics.",
+].join(" ");
+
+// ── WHAT THE PHOTOGRAPHER IS STILL NOT ALLOWED TO DO ─────────────────────────
+// The design rule decides WHERE and WHETHER type appears. It does not change
+// where the words come from, and the owner was explicit about that in the same
+// instruction: "Prices and product names still come from the real records and
+// are composited as real text — never drawn by the model."
+//
+// Those two requirements pull against each other at exactly one point. If the
+// image model is left free to render letterforms, it renders them badly — this
+// is the defect that produced garbled lettering and would invent a price, and a
+// wrong price on a public post is a promise the shop has to honour. So the ban
+// is not lifted wholesale; it is narrowed to its real target:
+//
+//   · FORBIDDEN, still: the model drawing letters, words, numbers or a logo.
+//   · REQUIRED, new: the model composing FOR type — leaving the calm negative
+//     space, the wall, the architecture that typography can later sit inside.
+//
+// The photograph is art-directed to receive the design; the design layer sets
+// the type from /products. Neither half draws the other's part.
+const TYPE_IS_COMPOSITED = [
+  "COMPOSITION FOR TYPOGRAPHY, NOT TYPOGRAPHY ITSELF.",
+  "Every word, number, price and logo on the finished post is composited afterwards as real text",
+  "from our product records. You therefore must NOT ADD any lettering, words, numbers, prices,",
+  "captions, labels, watermarks or brand marks OF YOUR OWN into the image — invented lettering is",
+  "always wrong, and an invented price is a promise we would have to honour.",
+  "This is about what you ADD, not about what is already there: branding that is PART OF A PRODUCT",
+  "— the logo on a shoe, the wordmark woven into a jacket, the label printed on a bottle — is part",
+  "of the item and must be rendered faithfully, exactly as it appears in the attached photograph.",
+  "Where the design rule above speaks of a logo or a short statement, it is describing what the",
+  "design layer may later composite; it is not an instruction for you to draw one.",
+  "What you must do instead is COMPOSE FOR IT: follow the design rule above and leave the calm,",
+  "uncluttered negative space — wall, sky, road, shadow, floor — where that typography will sit,",
+  "in the place the composition naturally wants it rather than the same corner every time.",
+  "A photograph that leaves nowhere for type to live has not followed this instruction.",
+].join(" ");
+
 function buildScenePrompt({ kind, productNames = [], style = "house", styleNotes = [] } = {}) {
   const scene = KIND_SCENE[kind];
   if (!scene) throw new Error(`buildScenePrompt: no scene for kind "${kind}"`);
@@ -114,9 +181,11 @@ function buildScenePrompt({ kind, productNames = [], style = "house", styleNotes
     parts.push(`Styling notes from our reference library (guidance only): ${notes.slice(0, 6).join(" · ")}`);
   }
   parts.push(CONDITION_CLAUSE);
+  parts.push(DESIGN_RULE);
+  parts.push(TYPE_IS_COMPOSITED);
   parts.push(
     "Photorealistic, tack-sharp, correctly exposed — indistinguishable from a real photograph " +
-    "of THESE items. No text, no graphics, no watermark, no logo overlay added to the image."
+    "of THESE items."
   );
   return parts.join("\n\n");
 }
@@ -230,15 +299,29 @@ function readCaption(raw) {
  * generated one, and the record marks it (captionSource: "fallback").
  */
 function fallbackCaption({ kind, products = [] }) {
-  const names = products.map((p) => p.name).filter(Boolean);
-  if (kind === "new_arrivals") return `Just landed in store and online.\n\n${names.slice(0, 5).join("\n")}`;
+  // ── TWO THINGS THIS MUST NOT DO ────────────────────────────────────────────
+  // 1. It must not name products by their brand-stripped storefront title. This
+  //    is the caption a person actually reads when the AI call fails, and
+  //    "Fragrance 100ML" is not a thing anyone can shop for. displayName is the
+  //    real name; `name` remains the fallback's fallback.
+  //
+  // 2. It must not mention the shops. Three of these lines used to read "in
+  //    store and online" — written before that became a hard rule, and never
+  //    re-read when it did. postReadiness() refuses a shop mention, so those
+  //    lines produced a post that could NEVER be approved, on the one path
+  //    that runs after the image has already been paid for. A fallback whose
+  //    whole job is to rescue a paid generation must not be the thing that
+  //    strands it.
+  const names = products.map((p) => p.displayName || p.name).filter(Boolean);
+  if (kind === "new_arrivals") return `Just landed online.\n\n${names.slice(0, 5).join("\n")}`;
   if (kind === "outfit") return `One fit, head to toe.\n\n${names.join("\n")}`;
   if (kind === "flatlay") return `A few of our favourites right now.\n\n${names.join("\n")}`;
-  return names[0] ? `${names[0]} — in store and online now.` : "In store and online now.";
+  return names[0] ? `${names[0]} — online now.` : "Online now.";
 }
 
 module.exports = {
   CAPTION_MIN, CAPTION_MAX, MAX_HASHTAGS,
   SCENE_HOUSE, SCENE_WHITE, CONDITION_CLAUSE, KIND_SCENE,
   buildScenePrompt, buildCaptionPrompt, readCaption, fallbackCaption,
+  DESIGN_RULE, TYPE_IS_COMPOSITED,
 };
