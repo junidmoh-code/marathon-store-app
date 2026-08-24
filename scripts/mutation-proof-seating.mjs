@@ -41,6 +41,12 @@
 //   M-CONTEXT      feed the mirror only the seatable locations  (SeatingTab)
 //   M-STABLE-LISTS key the location lists on the registry object (SeatingTab)
 //   M-RESELECT     blank the screen when the same product is re-picked
+//
+// ── PHOTOS IN THE RESULTS (#430) ────────────────────────────────────────────
+//   M-THUMB-STOP   let a nested photo tap fall through to its parent
+//   M-THUMB-GONE   drop the thumbnail from the results list
+//   M-LIGHTBOX     never render the opened photo
+//   M-CARD-PHOTO   make the open product's own photo untappable
 //   M-STATE-FALLBACK  hash a v-less cell to one constant for ever
 //   M-RESEAT-REREAD   let Re-seat trust the render-time snapshot
 //
@@ -58,11 +64,13 @@ const CORE = "src/components/stock/seatingCore.js";
 const STORE = "src/components/stock/seatingStore.js";
 const ACTIONS = "src/components/stock/SeatingActions.jsx";
 const TAB = "src/components/stock/SeatingTab.jsx";
+const WIDGETS = "src/components/stock/healthWidgets.jsx";
 
 const CORE_TESTS = ["src/components/stock/seatingCore.test.js"];
 const STORE_TESTS = ["src/components/stock/seatingStore.test.js"];
 const MOVE_TESTS = ["src/components/stock/seatingMove.test.js"];
 const TAB_TESTS = ["src/components/stock/seatingTab.render.test.jsx"];
+const WIDGET_TESTS = ["src/components/stock/photoWidgets.render.test.jsx"];
 const ALL_TESTS = [...CORE_TESTS, ...STORE_TESTS, ...MOVE_TESTS, ...TAB_TESTS];
 
 const MUTATIONS = [
@@ -412,6 +420,47 @@ const MUTATIONS = [
     guard: "re-selecting the product already on screen does not blank it",
     file: TAB,
     from: `    if (nextPid && nextPid === pid) { load(nextPid); return; }`,
+    to: ``,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-THUMB-STOP",
+    // Pointed at the WIDGET tests, not the Seating tab's. In the tab the thumb
+    // is a SIBLING of the row's button, so a click could never have reached it
+    // and stopPropagation is inert there — a guard aimed at that screen would
+    // prove only that the code calls a method. The contract is tested where it
+    // bites: inside a clickable parent.
+    guard: "looking at a photo is not choosing — a nested thumb does not fire its parent",
+    file: WIDGETS,
+    from: `onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}`,
+    to: `onClick={onOpen ? (e) => { onOpen(url); } : undefined}`,
+    tests: WIDGET_TESTS,
+  },
+  {
+    id: "M-THUMB-GONE",
+    guard: "every search result carries its picture, before anything is opened",
+    file: TAB,
+    from: `              <PhotoThumb
+                url={p.photoUrl}
+                alt={p.name}
+                onOpen={p.photoUrl ? (u) => setPhoto(u) : undefined}
+              />`,
+    to: ``,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-LIGHTBOX",
+    guard: "the photo actually opens full screen",
+    file: TAB,
+    from: `      <PhotoLightbox url={photo} onClose={() => setPhoto("")} />`,
+    to: `      <PhotoLightbox url="" onClose={() => setPhoto("")} />`,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-CARD-PHOTO",
+    guard: "the opened product's own photo opens too",
+    file: TAB,
+    from: `            onPhotoTap={product.photoUrl ? () => setPhoto(product.photoUrl) : undefined}`,
     to: ``,
     tests: TAB_TESTS,
   },

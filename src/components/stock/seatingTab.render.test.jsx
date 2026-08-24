@@ -81,8 +81,10 @@ const SeatingTab = (await import("./SeatingTab.jsx")).default;
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 
 const PRODUCTS = [
-  { id: "p1", name: "Nike Tee Navy", sizes: ["S", "M", "L"], productType: "clothing" },
-  { id: "p2", name: "Adidas Tee Black", sizes: ["S", "M", "L"], productType: "clothing" },
+  { id: "p1", name: "Nike Tee Navy", sizes: ["S", "M", "L"], productType: "clothing", photoUrl: "https://x/p1.jpg" },
+  { id: "p2", name: "Adidas Tee Black", sizes: ["S", "M", "L"], productType: "clothing", photoUrl: "https://x/p2.jpg" },
+  // No photo at all — the row must still be usable.
+  { id: "p3", name: "Puma Tee Grey", sizes: ["S", "M", "L"], productType: "clothing" },
 ];
 const OWNER = { email: "gunidmoh@gmail.com" };
 const STAFF = { email: "rashid@marathon.internal" };
@@ -308,6 +310,83 @@ describe("choosing the product that is already open", () => {
     expect(text(tree)).toContain("Size run");
     // ...and it actually re-read rather than silently doing nothing
     expect(READS.length).toBeGreaterThan(before);
+  });
+});
+
+// ── PHOTOS IN THE SEARCH RESULTS ─────────────────────────────────────────────
+// Owner request: see the picture BEFORE opening the product, and be able to
+// open the picture. The catalogue makes this load-bearing — colourway siblings
+// share a style code and twins share a name — so a text-only list asks the
+// operator to pick blind.
+describe("the search results carry photos", () => {
+  const searchFor = async (tree, q) => {
+    await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: q } }); });
+  };
+  const imgs = (tree) => tree.root.findAllByType("img");
+
+  it("shows a thumbnail next to each match, before anything is opened", async () => {
+    const tree = await renderTab();
+    await searchFor(tree, "tee");
+    const srcs = imgs(tree).map((i) => i.props.src);
+    expect(srcs).toContain("https://x/p1.jpg");
+    expect(srcs).toContain("https://x/p2.jpg");
+    // and nothing has been selected yet
+    expect(text(tree)).not.toContain("on hand");
+    expect(READS).toHaveLength(0);
+  });
+
+  it("a product with no photo still lists and still selects", async () => {
+    const tree = await renderTab();
+    await searchFor(tree, "puma");
+    expect(text(tree)).toContain("Puma Tee Grey");
+    await act(async () => { buttonSaying(tree, "Puma Tee Grey").props.onClick(); });
+    await act(async () => {});
+    expect(READS.length).toBeGreaterThan(0);
+  });
+
+  it("TAPPING THE PHOTO OPENS IT AND SELECTS NOTHING", async () => {
+    const tree = await renderTab();
+    await searchFor(tree, "navy");
+    const thumb = imgs(tree).find((i) => i.props.src === "https://x/p1.jpg");
+    await act(async () => { thumb.props.onClick({ stopPropagation: () => {} }); });
+    // NOTE ON WHAT THIS PROVES. Here the protection is STRUCTURAL — the thumb
+    // is a sibling of the row's button, so the click has no path to it.
+    // Asserting that stopPropagation was called would prove only that a method
+    // was invoked on an object this test handed over; the contract it actually
+    // serves is for nested callers and is tested in
+    // photoWidgets.render.test.jsx. What matters here is the outcome:
+    expect(READS).toHaveLength(0);
+    expect(text(tree)).not.toContain("on hand");
+    // ...and the picture is open, full size
+    const big = imgs(tree).find((i) => i.props.style?.maxHeight === "100%");
+    expect(big).toBeTruthy();
+    expect(big.props.src).toBe("https://x/p1.jpg");
+  });
+
+  it("the opened photo closes again", async () => {
+    const tree = await renderTab();
+    await searchFor(tree, "navy");
+    const thumb = imgs(tree).find((i) => i.props.src === "https://x/p1.jpg");
+    await act(async () => { thumb.props.onClick({ stopPropagation: () => {} }); });
+    const dialog = tree.root.findAll((n) => n.props?.role === "dialog")[0];
+    expect(dialog).toBeTruthy();
+    await act(async () => { dialog.props.onClick(); });
+    expect(tree.root.findAll((n) => n.props?.role === "dialog")).toHaveLength(0);
+  });
+
+  it("the OPEN product's own photo opens too", async () => {
+    const tree = await renderTab();
+    await searchFor(tree, "navy");
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    const card = imgs(tree).find((i) => i.props.src === "https://x/p1.jpg");
+    expect(card).toBeTruthy();
+    // ProductCard puts the handler on the wrapper, not the img
+    const tap = tree.root.findAll((n) => typeof n.props?.onClick === "function"
+      && n.props?.style?.cursor === "zoom-in")[0];
+    expect(tap).toBeTruthy();
+    await act(async () => { tap.props.onClick(); });
+    expect(tree.root.findAll((n) => n.props?.role === "dialog")).toHaveLength(1);
   });
 });
 
