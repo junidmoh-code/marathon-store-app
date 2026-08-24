@@ -139,6 +139,25 @@ export const postKind = (key) => KIND_BY_KEY.get(key) || null;
 //              LOUDLY rather than dropped.
 // discarded  — thrown away. Kept as a record so the generator does not
 //              re-propose the same product the next day.
+// ── FORMAT: WHERE A POST GOES, NOT WHAT IS IN IT ─────────────────────────────
+// `kind` says what the post is ABOUT — an outfit, a pairing, a single product.
+// `format` says WHERE it lands, which decides its canvas, its media type and
+// whether it needs a video at all:
+//
+//   feed   1080x1350, a still, media_type from the media
+//   story  1080x1920, a still, media_type=STORIES, no caption, 24h
+//   reel   1080x1920, a VIDEO, media_type=REELS
+//
+// Only the reel needs a video. A feed post and a story both accept a still, and
+// encoding one for them would spend CPU and bandwidth on a slideshow of a
+// single frame. An absent format means "feed" so every post written before this
+// existed still reads correctly.
+export const FORMATS = ["feed", "story", "reel"];
+export const DEFAULT_FORMAT = "feed";
+export const formatOf = (post) => (FORMATS.includes(post?.format) ? post.format : DEFAULT_FORMAT);
+/** Only a reel needs a video; the others are stills. */
+export const needsVideo = (post) => formatOf(post) === "reel";
+
 export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "discarded"];
 
 // What the QUEUE shows, in tab order. "All" is deliberately absent — a list

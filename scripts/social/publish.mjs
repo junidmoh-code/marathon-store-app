@@ -42,10 +42,12 @@
 import { createRequire } from "module";
 import {
   postBlocker, outstandingPlatforms, attemptsExhausted, captionFor, needsVerification,
+  formatOf, needsVideo,
   MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot, nextSlots,
 } from "../../src/components/social/socialCore.js";
 import { readSecret, credentialStatus } from "./secrets.mjs";
 import { publishInstagram, publishFacebook, metaPreflight } from "./meta.mjs";
+import { ensureReelVideo } from "./reel-media.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -224,7 +226,13 @@ async function sendInstagram(post, creds) {
     throw e;
   }
   const { caption } = captionFor(post, "instagram");
-  return publishInstagram({ igUserId: creds.igUserId, token: creds.token, media: post.media, caption });
+  // A story carries no caption — Meta ignores the field, and everything a story
+  // says is composited onto the artwork. igContainerPayload drops it, and it is
+  // passed anyway so that one place decides, not two.
+  return publishInstagram({
+    igUserId: creds.igUserId, token: creds.token, media: post.media, caption,
+    format: post.format || "feed",
+  });
 }
 
 async function sendFacebook(post, creds) {
@@ -381,9 +389,40 @@ async function main() {
       // caption edited in that window is not the caption that should go out.
       const claimed = (await db.ref(`${POSTS}/${post.id}`).once("value")).val();
       if (!claimed) { log(`SKIP ${post.id} — the post was deleted mid-run`); skipped++; continue; }
-      const item = { ...claimed, id: post.id };
+      let item = { ...claimed, id: post.id };
 
       if (DRY_RUN) { log(`WOULD POST ${post.id}`); continue; }
+
+      // ── A REEL NEEDS A VIDEO, AND ONLY A REEL DOES ─────────────────────────
+      // Encoded HERE rather than at generation because ffmpeg lives on this
+      // machine and not in Cloud Functions — and because a draft that is
+      // edited, discarded or never approved should cost nothing.
+      //
+      // It happens INSIDE the claim, so two ticks cannot encode the same post
+      // at once, and it is idempotent: a post that already carries a video
+      // reuses it rather than paying the encode again and leaving an orphan in
+      // Storage every time a publish fails.
+      if (formatOf(item) === "reel" && needsVideo(item)) {
+        const r = await ensureReelVideo(item, {
+          admin,
+          fetchImage: async (url) => {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`could not fetch the still (HTTP ${res.status})`);
+            return Buffer.from(await res.arrayBuffer());
+          },
+          log,
+        });
+        if (!r.ok) {
+          // Deliberately a FAILURE, not a fallback to the still. Publishing a
+          // 9:16 card to the feed because a reel would not encode puts the
+          // wrong thing in the wrong place, and quietly.
+          log(`✗ ${post.id} — reel video: ${r.reason}`);
+          await db.ref(`${POSTS}/${post.id}`).update({ status: "failed", failedReason: `reel: ${r.reason}` });
+          failed++; continue;
+        }
+        if (r.encoded) await db.ref(`${POSTS}/${post.id}/media`).set(r.media);
+        item = { ...item, media: r.media };
+      }
 
       const outstanding = outstandingPlatforms(item);
       let anyOk = false, anyRetryable = false, anySkipped = false, anyUnverified = false;
