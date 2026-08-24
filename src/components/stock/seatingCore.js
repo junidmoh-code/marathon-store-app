@@ -384,7 +384,6 @@ export function seatingAt(ctx, loc, pid) {
       // every such cell to one constant for ever.
       v: typeof cell?.v === "number" ? cell.v : null,
       mv: cell?.mv ?? null,
-      updatedAt: cell?.updatedAt ?? null,
       hasCell: cell !== undefined,
       target: t ? t.target : null,
       source: t ? t.source : null,

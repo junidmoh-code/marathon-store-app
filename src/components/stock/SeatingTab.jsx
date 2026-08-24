@@ -106,7 +106,11 @@ export default function SeatingTab({ products, viewer, flash }) {
   // only when the locations actually do.
   const locSig = JSON.stringify(
     Object.entries(registry || {})
-      .map(([id, l]) => [id, l?.active !== false, l?.kind])
+      // BOTH ids. transferTargets reads `l.id` off the VALUE, while
+      // allLocationIds reads the KEY, and nothing guarantees the two agree —
+      // an entry whose id changed under an unchanged key would leave the digest
+      // identical and the lists stale. (CodeRabbit, PR #429.)
+      .map(([key, l]) => [key, l?.id, l?.active !== false, l?.kind])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   );
   const { rowLocations, contextLocations } = useMemo(() => {
@@ -152,9 +156,17 @@ export default function SeatingTab({ products, viewer, flash }) {
   // deactivated mid-session re-reads instead of leaving a stale — possibly
   // NARROWER — snapshot behind, which is the bug class fixed above.
   // (CodeRabbit full review, PR #429.)
+  // RE-SELECTING THE SAME PRODUCT MUST NOT BLANK IT. setPid is a no-op when the
+  // value is unchanged, so the effect never refired — but setCtx(null) had
+  // already thrown the rows away, and the screen sat empty until the product
+  // was changed and changed back. A scan of the product already on screen is
+  // the obvious way to hit it. Same id keeps its context and re-reads
+  // explicitly. (CodeRabbit, PR #429.)
   const choose = useCallback((nextPid) => {
-    setPid(nextPid); setOpen(""); setCtx(null);
-  }, []);
+    setOpen("");
+    if (nextPid && nextPid === pid) { load(nextPid); return; }
+    setPid(nextPid); setCtx(null);
+  }, [pid, load]);
 
   useEffect(() => { if (pid) load(pid); }, [pid, load]);
 

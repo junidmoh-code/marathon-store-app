@@ -40,6 +40,7 @@
 //   M-MOVE-CATCH   let a post-move throw swallow the fact stock moved
 //   M-CONTEXT      feed the mirror only the seatable locations  (SeatingTab)
 //   M-STABLE-LISTS key the location lists on the registry object (SeatingTab)
+//   M-RESELECT     blank the screen when the same product is re-picked
 //   M-STATE-FALLBACK  hash a v-less cell to one constant for ever
 //   M-RESEAT-REREAD   let Re-seat trust the render-time snapshot
 //
@@ -405,6 +406,14 @@ const MUTATIONS = [
   }`,
     to: ``,
     tests: MOVE_TESTS,
+  },
+  {
+    id: "M-RESELECT",
+    guard: "re-selecting the product already on screen does not blank it",
+    file: TAB,
+    from: `    if (nextPid && nextPid === pid) { load(nextPid); return; }`,
+    to: ``,
+    tests: TAB_TESTS,
   },
 ];
 

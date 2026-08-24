@@ -272,6 +272,33 @@ describe("the location lists are stable across renders", () => {
   });
 });
 
+// ── RE-SELECTING THE SAME PRODUCT ────────────────────────────────────────────
+// setPid is a no-op when the value is unchanged, so the effect never refired —
+// but setCtx(null) had already thrown the rows away, and the screen sat empty
+// until the product was changed and changed back. (CodeRabbit, PR #429.)
+describe("choosing the product that is already open", () => {
+  it("keeps its rows on screen and re-reads", async () => {
+    const tree = await renderTab();
+    const search = async (q) => {
+      await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: q } }); });
+    };
+    await search("navy");
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    expect(text(tree)).toContain("Trophy");
+
+    const before = READS.length;
+    await search("navy");
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    // the rows are still there...
+    expect(text(tree)).toContain("Trophy");
+    expect(text(tree)).toContain("Size run");
+    // ...and it actually re-read rather than silently doing nothing
+    expect(READS.length).toBeGreaterThan(before);
+  });
+});
+
 // ── THE CONTEXT IS WIDER THAN THE ROWS ───────────────────────────────────────
 // Rows are the places a product can be SEATED. The carriage CONTEXT is every
 // location that can hold a cell, because the engine's dead-size rule counts
