@@ -29,7 +29,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen, bRed } from "../stock/ui";
 import {
   PLATFORMS, PLATFORM_KEYS, QUEUE_FILTERS, CAPTION_MAX,
-  postKind, platform, enabledPlatforms, postReadiness, describePost, resultLine,
+  postKind, platform, enabledPlatforms, postReadiness, isSendingSoon, describePost, resultLine,
   formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
 } from "./socialCore";
 import {
@@ -53,6 +53,20 @@ const STATUS_BADGE = {
   failed: { label: "failed", color: RED, border: "rgba(248,113,113,.6)" },
   discarded: { label: "discarded", color: GRAY, border: "rgba(255,255,255,.18)" },
 };
+
+// The gap between pressing Post now and the post appearing. Up to one tick.
+// Shown as its own chip rather than by changing the status, because the status
+// is still genuinely "approved" — the publisher has not claimed it yet, and
+// writing "posting" here would be the queue guessing at something the claim
+// transaction owns.
+function SendingChip() {
+  return (
+    <span style={{ fontSize: 9.5, fontWeight: 800, color: AMBER, border: `1px solid ${AMBER}55`,
+                   borderRadius: 8, padding: "3px 7px", whiteSpace: "nowrap", flexShrink: 0 }}>
+      GOING OUT…
+    </span>
+  );
+}
 
 function StatusChip({ status }) {
   const b = STATUS_BADGE[status] || STATUS_BADGE.draft;
@@ -125,6 +139,7 @@ function PostRow({ post, onChanged, onNotice }) {
           <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13.5, fontWeight: 700 }}>{kind ? kind.label : post.kind}</span>
             <StatusChip status={post.status} />
+            {isSendingSoon(post) && <SendingChip />}
           </div>
           <div style={{ fontSize: 11.5, color: GRAY, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {(post.caption || "").replace(/\s+/g, " ").slice(0, 90) || "no caption"}
@@ -311,6 +326,11 @@ function PostRow({ post, onChanged, onNotice }) {
               </button>
             )}
           </div>
+          {isSendingSoon(post) && (
+            <div style={{ fontSize: 11.5, color: AMBER, marginTop: 8 }}>
+              Due now — the publisher picks it up on its next tick, within about two minutes.
+            </div>
+          )}
           {notReady && post.status === "draft" && (
             <div style={{ fontSize: 11.5, color: AMBER, marginTop: 8 }}>Can't approve yet — {notReady}</div>
           )}
@@ -364,6 +384,22 @@ function Queue({ notice, onNotice }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadCounts(); }, [loadCounts]);
+
+  // ── WHILE SOMETHING IS ON ITS WAY OUT, WATCH FOR IT LANDING ────────────────
+  // The queue is otherwise loaded once. That is right for a list somebody is
+  // reading, and wrong for the two minutes after Post now: the row would go on
+  // saying "GOING OUT…" long after the post had actually landed, which is a
+  // worse lie than the silence it replaced.
+  //
+  // So it polls ONLY while at least one post is genuinely due and unclaimed,
+  // and stops the moment none is. No websocket, no listener left running on a
+  // screen nobody is looking at, and no polling at all in the normal case.
+  const anySending = posts.some((p) => isSendingSoon(p));
+  useEffect(() => {
+    if (!anySending) return undefined;
+    const t = setInterval(() => { load(); loadCounts(); }, 20000);
+    return () => clearInterval(t);
+  }, [anySending, load, loadCounts]);
 
   const onChanged = useCallback(async () => { await load(); await loadCounts(); }, [load, loadCounts]);
 
