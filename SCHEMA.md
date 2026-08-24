@@ -921,6 +921,39 @@ visibility is dropped** — goods in motion show as already at the destination.
 the schema but are **unused by the reworked one-step flow**. A transfer that
 carries a `refillId` still closes its `/refill_requests/{id}` on success.
 
+## `/settings/carriageLog/{entryId}` — the unseat/relocate audit
+
+**SEATING (carriage) is node PRESENCE, not quantity.** A location carries a
+product when `/stock/{loc}/{pid}/{size}` EXISTS at all — that is exactly what
+`storeCarries()` (`functions/lib/refill-engine.cjs`) tests, and it is what admits
+the product to `managedPids(dest)` and therefore to refills. A `qty:0` cell with
+no history is a standing "this shop stocks this, keep it filled".
+
+Cells were create-only until 2026-08-24: a Solve seed, a counted zero, a receive,
+or any movement that later drained left a permanent claim, and no screen showed
+it (Counted hid all-zero groups, Locator drops all-zero locations). The **Counted
+tab's "Seated, no stock" view** now lists them, **Unseat** deletes the empty cells
+at one location, and **Move** relocates the claim with the stock. See
+`src/components/stock/carriageCore.js` and `SEATING-DISCREPANCY-INVESTIGATION.md`.
+
+A cell delete is the one stock-shaped action `/stock_movements` structurally
+cannot record (there is no movement, and a seed cell has no ledger row behind
+it), so each gesture writes one entry here instead.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `action` | `"unseat" \| "move"` | unknown values normalise to `unseat` |
+| `loc` / `pid` | locationId / productId | the claim that was removed |
+| `to` | locationId | move only — where the seating went |
+| `sizes` | string[] | RAW sizes whose cells were deleted |
+| `name` / `note` | string | optional; omitted, never written as `undefined` |
+| `at` / `by` | epoch ms / uid | |
+
+**No rules deploy was needed for any of this.** `/stock/$loc/$pid/$size` `.write`
+is already `stockRole`-gated and RTDB does not evaluate `.validate` on a delete
+(`newData` is null) — the same door `solveUndo` deletes through. `/settings`
+already grants non-anonymous write.
+
 ## `/transfers`, `/refill_requests`, `/stock_alerts`
 Per `design/INVENTORY-DESIGN.md`. `/transfers` (dispatch/receive docs) is now
 optional — the one-step flow doesn't write it. `/refill_requests/{id}` (Source

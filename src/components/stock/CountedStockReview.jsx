@@ -22,6 +22,8 @@ import { GLASS, CARD, GRAY, GREEN, RED, BLUE_L, AMBER, BORDER, bGreen, bGhost, i
 import { productMatchesQuery } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
+import { isCarriedOnly, unseatPlan } from "./carriageCore";
+import { unseatCarriage, moveCarriage, openLocksFor } from "./carriageStore";
 
 const DEFAULT_LOCATION = "marathon-pe";   // counts happen at Marathon PE by default
 
@@ -54,6 +56,19 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   const [confirmClear, setConfirmClear] = useState(null);   // group awaiting clear confirmation
   const [moveGroup, setMoveGroup] = useState(null);  // group being relocated to another location
   const [moveLoc, setMoveLoc] = useState("");        // chosen destination for the move
+  // ── CARRIAGE (the seating) ─────────────────────────────────────────────────
+  // `showCarried` flips the list to the product×location claims that hold NO
+  // stock — the ones this tab could never show. Persisted like the other
+  // filters, and OFF by default so nothing about the counting view changes.
+  const [showCarried, setShowCarriedRaw] = useState(() => localStorage.getItem("countedCarried") === "1");
+  const setShowCarried = (v) => { try { localStorage.setItem("countedCarried", v ? "1" : "0"); } catch { /* ignore */ } setShowCarriedRaw(v); };
+  const [unseatGroup, setUnseatGroup] = useState(null);   // group awaiting unseat confirmation
+  const [unseatPre, setUnseatPre] = useState(null);       // { paths, blockers } previewed for it
+  // Move options: carry the seating across, and per-size manual amounts. Seating
+  // moves by DEFAULT — a move that leaves the claim behind is the bug, not the
+  // feature (see carriageCore.movePlan).
+  const [moveSeating, setMoveSeating] = useState(true);
+  const [moveAmounts, setMoveAmounts] = useState({});     // raw size → typed units ("" = all)
   const [undo, setUndo] = useState(null);          // { label, items:[{loc,pid,size,qty}] } — 30s window
   const [lightbox, setLightbox] = useState(null);  // full-screen photo url
   const [toast, setToast] = useState(null);
@@ -76,9 +91,19 @@ export default function CountedStockReview({ products = [], registry, actorRole 
     return b[barcodeSizeKey(size)] ?? b[size] ?? null;
   };
 
-  // Group by product × location: ONE card per product that has at least one counted
-  // size at a location. The card lists the product's FULL size set — sizes that were
-  // never counted show as 0 so they can be added/adjusted right there.
+  // Group by product × location: ONE card per product that has a cell at a
+  // location. The card lists the product's FULL size set — sizes that were never
+  // counted show as 0 so they can be added/adjusted right there.
+  //
+  // CARRIED-ONLY GROUPS (a product×location whose every cell reads 0) used to be
+  // dropped here — `if (!countedSizes.length) continue`. That one line is why a
+  // product seeded at the wrong shop was unfixable from any screen: the location
+  // still CARRIED it (the engine reads node presence, not quantity —
+  // refill-engine.cjs storeCarries) and still got refilled for it, while the only
+  // tab that could have shown the claim filtered it out for having no stock. They
+  // are built now and tagged `carriedOnly`; the `carried` toggle below decides
+  // whether they render, and it is OFF by default so the counting view is
+  // unchanged. See carriageCore.js.
   const groups = useMemo(() => {
     const arr = [];
     for (const loc of Object.keys(cells || {})) {
@@ -86,44 +111,63 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       for (const pid of Object.keys(byPid)) {
         const bySize = byPid[pid] || {};
         const qtyOf = (s) => { const c = bySize[s]; return c && typeof c.qty === "number" ? c.qty : 0; };
-        // Only products with at least one COUNTED size at this location.
-        const countedSizes = Object.keys(bySize).filter(s => qtyOf(s) !== 0);
-        if (!countedSizes.length) continue;
+        if (!Object.keys(bySize).length) continue;
         const p = prodById[pid];
         // Full size set = the product's configured sizes ∪ any sizes that have a cell,
         // so nothing is hidden and missing sizes appear (as 0) to be added.
         const productSizes = (p && Array.isArray(p.sizes)) ? p.sizes.map(String) : [];
         const allSizes = [...new Set([...productSizes, ...Object.keys(bySize)])];
-        const sizes = allSizes.map(size => ({ size, qty: qtyOf(size), barcode: barcodeFor(p, size) }))
-          .sort((a, b) => String(a.size).localeCompare(String(b.size), undefined, { numeric: true }));
+        // `hasCell` separates a REAL cell at 0 (a carriage claim, unseatable) from
+        // the catalogue-size pad the grid adds so a never-counted size stays
+        // tappable. They look identical on screen and must never be confused by a
+        // delete — carriageCore.cellSizes keys off exactly this flag.
+        const sizes = allSizes.map(size => ({
+          size, qty: qtyOf(size), barcode: barcodeFor(p, size),
+          hasCell: bySize[size] !== undefined,
+          v: bySize[size]?.v ?? 0, mv: bySize[size]?.mv ?? null,
+        })).sort((a, b) => String(a.size).localeCompare(String(b.size), undefined, { numeric: true }));
         arr.push({ loc, pid, name: p?.name || pid, photoUrl: p?.photoUrl || null, product: p,
                    // `type` feeds the append-only movement audit — left untouched.
                    // `displayCat` is DISPLAY ONLY (the chip filter below).
                    type: (p?.productType === "clothing" ? "clothing" : "sneaker"),
-                   displayCat: topCategory(p), sizes });
+                   displayCat: topCategory(p), sizes, carriedOnly: isCarriedOnly(sizes) });
       }
     }
     return arr.sort((a, b) => a.loc.localeCompare(b.loc) || a.name.localeCompare(b.name));
   }, [cells, prodById]);
 
-  // Counts reflect COUNTED sizes only (qty !== 0), not the 0-placeholders.
-  const countByLoc = (loc) => groups.filter(g => g.loc === loc).reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);
+  // THE VIEW SPLIT. `stocked` is what this tab has always shown — a product×
+  // location holding a quantity. `carried` is the claim with nothing behind it.
+  // Every count, chip and empty-state below reads from `visible`, so switching
+  // the toggle switches the whole screen coherently instead of leaving a chip
+  // counting rows the list is no longer showing.
+  const stocked = useMemo(() => groups.filter(g => !g.carriedOnly), [groups]);
+  const visible = showCarried ? groups.filter(g => g.carriedOnly) : stocked;
+
+  // Counts reflect COUNTED sizes only (qty !== 0), not the 0-placeholders — so in
+  // the carried view, where every size is 0 by definition, the chips count CLAIMS
+  // (cells) instead. Two different questions, one number each.
+  const unitCells = (g) => g.sizes.filter(s => s.qty !== 0).length;
+  const claimCells = (g) => g.sizes.filter(s => s.hasCell).length;
+  const cellsOf = showCarried ? claimCells : unitCells;
+  const countByLoc = (loc) => visible.filter(g => g.loc === loc).reduce((n, g) => n + cellsOf(g), 0);
   // Locations that actually hold counts — the quick-switch chips at the top.
-  const locsWithCounts = useMemo(() => [...new Set(groups.map(g => g.loc))]
-    .sort((a, b) => labelFor(a, registry).localeCompare(labelFor(b, registry))), [groups, registry]);
+  const locsWithCounts = useMemo(() => [...new Set(visible.map(g => g.loc))]
+    .sort((a, b) => labelFor(a, registry).localeCompare(labelFor(b, registry))), [visible, registry]);
 
   // Forgiving search on the grouped rows: fuzzy name + per-size barcodes (productSearch.js).
   const filtered = useMemo(() => {
     const term = q.trim();
-    return groups.filter(g =>
+    return visible.filter(g =>
       (locFilter === "all" || g.loc === locFilter) &&
       (typeFilter === "all" || g.displayCat === typeFilter) &&
       (!term || productMatchesQuery({ name: g.name, barcodes: g.sizes.map(s => s.barcode).filter(Boolean) }, term)));
-  }, [groups, locFilter, typeFilter, q]);
+  }, [visible, locFilter, typeFilter, q]);
 
-  const shownCells = filtered.reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);
+  const shownCells = filtered.reduce((n, g) => n + cellsOf(g), 0);
   const shownUnits = filtered.reduce((n, g) => n + g.sizes.reduce((s, x) => s + x.qty, 0), 0);
-  const totalCells = groups.reduce((n, g) => n + g.sizes.filter(s => s.qty !== 0).length, 0);
+  const totalCells = visible.reduce((n, g) => n + cellsOf(g), 0);
+  const carriedTotal = groups.reduce((n, g) => n + (g.carriedOnly ? 1 : 0), 0);
   const keyOf = (loc, pid, size) => `${loc}|${pid}|${size}`;
 
   // Inline qty correction — SET a size to the typed value (reconcile to the real count)
@@ -168,33 +212,75 @@ export default function CountedStockReview({ products = [], registry, actorRole 
     flash(fail ? "err" : "ok", `${g.name}: cleared ${cleared.length}${fail ? `, ${fail} failed` : ""} → uncounted.`);
   };
 
-  // Relocate a product's counted stock to another location (e.g. counted at Marathon PE
-  // but it belongs at Hub 1). Each size moves via a transfer (from → to). cellState
-  // "live" marks BOTH touched cells counted — the source as a confirmed 0 and the
-  // destination with the moved qty. (Intentional: a move means the source is genuinely
-  // empty now, NOT awaiting re-count — unlike Clear, which marks "untracked".) Counts
-  // and barcodes are preserved.
+  // Relocate a product to another location (e.g. counted at Marathon PE but it
+  // belongs at Trophy). Each size with stock moves via a transfer (from → to);
+  // cellState "live" marks BOTH touched cells counted — the source as a confirmed
+  // 0 and the destination with the moved qty. (Intentional: a move means the
+  // source is genuinely empty now, NOT awaiting re-count — unlike Clear, which
+  // marks "untracked".) Counts and barcodes are preserved.
+  //
+  // WITH THE SEATING (the default) it also carries the CLAIM across: sizes with
+  // nothing to send are seeded at the destination, and every source cell that
+  // ends at 0 is deleted, so the source stops carrying the product outright. That
+  // last step is the difference between a relocation and a copy — without it the
+  // units sit at Trophy while Marathon PE goes on being refilled for a product it
+  // no longer stocks, which is precisely the state this tool exists to undo.
+  // Sequencing, guards and the partial-move refusal live in carriageStore.
   const moveProduct = async () => {
     const g = moveGroup, to = moveLoc;
     if (!g || !to || to === g.loc || busyKey) return;
     setBusyKey(`move:${g.loc}|${g.pid}`);
-    let ok = 0, fail = 0;
-    for (const s of g.sizes) {
-      if (!(s.qty > 0)) continue;   // only positive counted stock can be moved
-      try {
-        const res = await applyMovement({
-          type: "transfer_out", productId: g.pid, size: s.size, qty: s.qty,
-          from: g.loc, to, cellState: "live", actorRole, link: { reason: "recount: relocated" },
-        });
-        res.ok ? ok++ : fail++;
-      } catch { fail++; }
-    }
-    setBusyKey(null); setMoveGroup(null); setMoveLoc("");
-    if (ok === 0) { flash("err", fail ? `Move failed (${fail}).` : `Nothing to move — ${g.name} has no positive counted stock.`); return; }
+    let res;
+    try {
+      res = await moveCarriage({
+        loc: g.loc, pid: g.pid, name: g.name, sizes: g.sizes, to,
+        amounts: moveAmounts, moveSeating, actorRole, apply: applyMovement,
+      });
+    } catch (e) { res = { ok: false, blockers: [String(e?.message || e)], moved: 0 }; }
+    setBusyKey(null);
+
+    if (res.blockers?.length) { flash("err", res.blockers[0]); return; }
+    setMoveGroup(null); setMoveLoc(""); setMoveAmounts({});
     // Jump the view to the destination so the moved product is visible where it landed
     // (it left the previous location's filtered list — it isn't lost).
     setLocFilter(to);
-    flash(fail ? "err" : "ok", `Moved ${ok} size(s) of ${g.name} → ${labelFor(to, registry)}${fail ? ` · ${fail} failed` : ""}. Now showing ${labelFor(to, registry)}.`);
+    const parts = [];
+    if (res.moved) parts.push(`${res.moved} unit(s)`);
+    if (res.seeded?.length) parts.push(`${res.seeded.length} size(s) seated`);
+    if (res.gone?.length) parts.push(`${res.gone.length} size(s) unseated at ${labelFor(g.loc, registry)}`);
+    // Every partial outcome is named. A move that half-worked and reported only
+    // its successful half is how a discrepancy gets created rather than fixed.
+    const failed = res.failed?.length ? ` · ${res.failed.length} size(s) failed to move` : "";
+    const kept = res.kept?.length ? ` · ${res.kept.length} size(s) stayed seated (changed while moving)` : "";
+    flash(res.ok ? "ok" : "err",
+      `${g.name} → ${labelFor(to, registry)}: ${parts.join(", ") || "nothing to move"}${failed}${kept}. Now showing ${labelFor(to, registry)}.`);
+  };
+
+  // ── UNSEAT ────────────────────────────────────────────────────────────────
+  // Open the confirmation with a LIVE preview: the engine's open locks and the
+  // group's own cells decide whether this can go ahead, and the panel prints the
+  // refusal rather than offering a button that would fail. The write re-plans
+  // against a fresh read anyway (carriageStore.unseatCarriage) — this is the
+  // honest picture, not the guard.
+  const askUnseat = async (g) => {
+    if (busyKey) return;
+    setUnseatGroup(g); setUnseatPre(null);
+    const openLocks = await openLocksFor(g.loc, g.pid);
+    setUnseatPre(unseatPlan({ loc: g.loc, pid: g.pid, name: g.name, sizes: g.sizes, openLocks }));
+  };
+
+  const doUnseat = async () => {
+    const g = unseatGroup;
+    if (!g || busyKey) return;
+    setBusyKey(`unseat:${g.loc}|${g.pid}`);
+    let res;
+    try { res = await unseatCarriage({ loc: g.loc, pid: g.pid, name: g.name }); }
+    catch (e) { res = { ok: false, blockers: [String(e?.message || e)] }; }
+    setBusyKey(null); setUnseatGroup(null); setUnseatPre(null);
+    if (res.blockers?.length) { flash("err", res.blockers[0]); return; }
+    const kept = res.kept?.length ? ` · ${res.kept.length} kept (changed while you were looking)` : "";
+    flash(res.ok ? "ok" : "err",
+      `${g.name} no longer carried at ${labelFor(g.loc, registry)} — ${res.gone?.length || 0} size(s) unseated${kept}.`);
   };
 
   // Undo a clear within the 30s window — restore each size's prior quantity (live).
@@ -230,12 +316,43 @@ export default function CountedStockReview({ products = [], registry, actorRole 
   return (
     <div>
       <div style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>Counted Stock review</div>
-        <div style={{ fontSize: 11, color: GRAY, marginTop: 4, lineHeight: 1.45 }}>
-          Every cell that currently holds a quantity. <b>Clear</b> zeroes a cell (a reversible
-          adjustment) and marks it <b>uncounted</b> so it's clearly waiting to be re-counted.
-          Touches quantities only — never the product or its barcode.
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>
+          {showCarried ? "Seated with no stock" : "Counted Stock review"}
         </div>
+        <div style={{ fontSize: 11, color: GRAY, marginTop: 4, lineHeight: 1.45 }}>
+          {showCarried ? (
+            <>
+              Products a location is <b>seated</b> for but holds <b>no stock</b> of. The refill engine
+              treats a seating as "this shop carries it" and keeps refilling it, so a seating in the
+              wrong place is why stock turns up at a shop that never asked for it. <b>Unseat</b>
+              {" "}removes the seating here; <b>Move</b> carries it to the location that really has the stock.
+            </>
+          ) : (
+            <>
+              Every cell that currently holds a quantity. <b>Clear</b> zeroes a cell (a reversible
+              adjustment) and marks it <b>uncounted</b> so it's clearly waiting to be re-counted.
+              Touches quantities only — never the product or its barcode.
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* The view switch. Two different questions about the same node — "what is
+          counted here" and "what is this location on the hook for" — so they are
+          two views, not one list with a badge. */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+        {[[false, `Has stock (${stocked.length})`], [true, `Seated, no stock (${carriedTotal})`]].map(([val, lbl]) => {
+          const on = showCarried === val;
+          return (
+            <button key={String(val)} onClick={() => { setShowCarried(val); cancelEdit(); setLocFilter("all"); }}
+              style={{ padding: "6px 13px", borderRadius: 9, cursor: "pointer", fontSize: 12, fontWeight: 700,
+                       background: on ? (val ? "rgba(251,191,36,.2)" : "rgba(60,110,255,.25)") : "rgba(255,255,255,.04)",
+                       border: on ? `1px solid ${val ? "rgba(251,191,36,.6)" : "rgba(60,110,255,.6)"}` : BORDER,
+                       color: on ? (val ? AMBER : "#fff") : GRAY }}>
+              {lbl}
+            </button>
+          );
+        })}
       </div>
 
       {/* Location quick-switch — tap "All" to see everything, or a location to focus it. */}
@@ -286,10 +403,18 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       )}
 
       {filtered.length === 0 ? (
-        <Empty>{groups.length === 0 ? "No counted stock — nothing has a quantity yet." : "No products match the filter."}</Empty>
+        <Empty>{
+          visible.length === 0
+            ? (showCarried
+                ? "Nothing seated without stock — every seating in the network has stock behind it."
+                : "No counted stock — nothing has a quantity yet.")
+            : "No products match the filter."
+        }</Empty>
       ) : (
         <>
-          <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>{filtered.length} product(s) · {shownCells} size(s) · {shownUnits} unit(s)</div>
+          <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>
+            {filtered.length} product(s) · {shownCells} size(s){showCarried ? " seated" : ` · ${shownUnits} unit(s)`}
+          </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {filtered.map(g => {
               const gk = `${g.loc}|${g.pid}`;
@@ -303,19 +428,35 @@ export default function CountedStockReview({ products = [], registry, actorRole 
                     <div onClick={() => toggleExpand(gk)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
                       <div style={{ fontSize: 13.5, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.name}</div>
                       <div style={{ fontSize: 11, color: GRAY }}>
-                        <span style={{ color: BLUE_L }}>{labelFor(g.loc, registry)}</span> · {g.sizes.filter(s => s.qty !== 0).length} counted · {g.sizes.reduce((s, x) => s + x.qty, 0)} units
+                        <span style={{ color: BLUE_L }}>{labelFor(g.loc, registry)}</span>
+                        {g.carriedOnly
+                          ? <> · <span style={{ color: AMBER }}>seated, no stock</span> · {claimCells(g)} size(s)</>
+                          : <> · {unitCells(g)} counted · {g.sizes.reduce((s, x) => s + x.qty, 0)} units</>}
                       </div>
                     </div>
-                    {/* Move — relocate this product's counted stock to another location. */}
-                    <button onClick={() => { setMoveGroup(g); setMoveLoc(""); }} disabled={!!busyKey} title="Move counted stock to another location"
+                    {/* Move — relocate this product (and, by default, its seating). */}
+                    <button onClick={() => { setMoveGroup(g); setMoveLoc(""); setMoveSeating(true); setMoveAmounts({}); }} disabled={!!busyKey}
+                      title="Move this product's stock and seating to another location"
                       style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: BLUE_L, borderColor: "rgba(60,110,255,.45)", opacity: (busyKey === `move:${gk}`) ? 0.6 : 1 }}>
                       {busyKey === `move:${gk}` ? "Moving…" : "Move"}
                     </button>
+                    {/* Unseat — only offered where it can actually apply: a claim
+                        with no stock behind it. On a row holding units the honest
+                        answer is Move or Clear, so the button is simply absent
+                        rather than present-and-refusing. */}
+                    {g.carriedOnly && (
+                      <button onClick={() => askUnseat(g)} disabled={!!busyKey} title="Remove this location's seating for the product"
+                        style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: AMBER, borderColor: "rgba(251,191,36,.45)", opacity: (busyKey === `unseat:${gk}`) ? 0.6 : 1 }}>
+                        {busyKey === `unseat:${gk}` ? "Unseating…" : "Unseat"}
+                      </button>
+                    )}
                     {/* Clear — opens a red confirmation popup before wiping anything. */}
+                    {!g.carriedOnly && (
                     <button onClick={() => setConfirmClear(g)} disabled={!!busyKey} title="Zero all sizes → uncounted (re-count this product)"
                       style={{ ...bGhost, padding: "6px 11px", fontSize: 11.5, color: RED, borderColor: "rgba(248,113,113,.45)", opacity: prodBusy ? 0.6 : 1 }}>
                       {prodBusy ? "Clearing…" : "Clear"}
                     </button>
+                    )}
                     <button onClick={() => toggleExpand(gk)} aria-label={open ? "Collapse" : "Expand"}
                       style={{ background: "transparent", border: "none", color: BLUE_L, cursor: "pointer", fontSize: 15, padding: "4px 2px", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }}>▸</button>
                   </div>
@@ -358,26 +499,135 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         </>
       )}
 
-      {/* Move counted stock to another location (e.g. Marathon PE → Hub 1). */}
+      {/* Move stock AND seating to another location (e.g. Marathon PE → Trophy). */}
       {moveGroup && (
         <div onClick={() => !busyKey && setMoveGroup(null)}
           style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div onClick={e => e.stopPropagation()}
-            style={{ width: "100%", maxWidth: 380, background: "#0d1426", border: "1px solid rgba(60,110,255,.5)", borderRadius: 14, padding: 20, boxShadow: "0 0 40px rgba(60,110,255,.35)" }}>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", textAlign: "center" }}>Move counted stock</div>
+            style={{ width: "100%", maxWidth: 400, maxHeight: "88vh", overflowY: "auto", background: "#0d1426", border: "1px solid rgba(60,110,255,.5)", borderRadius: 14, padding: 20, boxShadow: "0 0 40px rgba(60,110,255,.35)" }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", textAlign: "center" }}>
+              {moveGroup.carriedOnly ? "Move the seating" : "Move stock & seating"}
+            </div>
             <div style={{ fontSize: 13, color: "#fff", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
-              Move all counted quantities of<br /><b>{moveGroup.name}</b><br />
+              <b>{moveGroup.name}</b><br />
               from <b style={{ color: BLUE_L }}>{labelFor(moveGroup.loc, registry)}</b> to:
             </div>
             <div style={{ marginTop: 12 }}>
               <LocationPicker registry={registry} value={moveLoc} onChange={setMoveLoc} filter={transferTargets} exclude={moveGroup.loc} />
             </div>
-            <div style={{ fontSize: 11, color: "#86efac", textAlign: "center", marginTop: 10 }}>✓ Counts &amp; barcodes are kept — just relocated.</div>
+
+            {/* Per-size units. Blank = move ALL of that size (the common case, so it
+                is the default and needs no typing); a number moves exactly that many
+                and leaves the rest — which also keeps the source seated, because it
+                genuinely still stocks the product. */}
+            {moveGroup.sizes.some(s => s.qty > 0) && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ fontSize: 11, color: GRAY, marginBottom: 6 }}>
+                  Units to move — leave blank to move all of a size.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(78px, 1fr))", gap: 6 }}>
+                  {moveGroup.sizes.filter(s => s.qty > 0).map(s => (
+                    <div key={s.size} style={{ background: "rgba(255,255,255,.03)", border: BORDER, borderRadius: 9, padding: "6px 6px" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: BLUE_L, textAlign: "center" }}><SizeTag size={s.size} /></div>
+                      <input type="number" inputMode="numeric" min="0" max={s.qty}
+                        value={moveAmounts[String(s.size)] ?? ""}
+                        placeholder={String(s.qty)}
+                        onChange={e => setMoveAmounts(m => ({ ...m, [String(s.size)]: e.target.value }))}
+                        style={{ ...input, width: "100%", boxSizing: "border-box", textAlign: "center", padding: "5px 2px", fontSize: 13, marginTop: 3 }} />
+                      <div style={{ fontSize: 9, color: GRAY, textAlign: "center", marginTop: 2 }}>of {s.qty}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* The seating switch. ON means the destination starts carrying the
+                product and the source stops — the actual relocation. OFF is the old
+                behaviour, kept for the real case it serves: splitting stock across
+                two shops that should BOTH carry it. */}
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 9, marginTop: 14, cursor: "pointer" }}>
+              <input type="checkbox" checked={moveSeating} onChange={e => setMoveSeating(e.target.checked)}
+                style={{ marginTop: 2, width: 16, height: 16, accentColor: "#4A7FFF", flexShrink: 0 }} />
+              <span style={{ fontSize: 12, color: "#fff", lineHeight: 1.45 }}>
+                Move the seating too
+                <span style={{ display: "block", fontSize: 10.5, color: GRAY, marginTop: 2 }}>
+                  {labelFor(moveGroup.loc, registry)} stops carrying it (and stops being refilled for it);
+                  {" "}{moveLoc ? labelFor(moveLoc, registry) : "the destination"} starts. Untick to leave both seated.
+                </span>
+              </span>
+            </label>
+
+            <div style={{ fontSize: 11, color: "#86efac", textAlign: "center", marginTop: 12 }}>✓ Counts &amp; barcodes are kept — just relocated.</div>
+            {moveSeating && (
+              <div style={{ fontSize: 10.5, color: GRAY, textAlign: "center", marginTop: 5, lineHeight: 1.4 }}>
+                Any size you only move part of stays seated here — the stock is still here too.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
               <button onClick={() => setMoveGroup(null)} disabled={!!busyKey} style={{ ...bGhost, flex: 1, padding: "11px 0", fontSize: 13 }}>Cancel</button>
               <button onClick={moveProduct} disabled={!moveLoc || !!busyKey}
                 style={{ ...bGreen, flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 800, opacity: (!moveLoc || busyKey) ? 0.5 : 1 }}>
                 {busyKey ? "Moving…" : "Move"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unseat — the amber confirmation. Prints the LIVE plan: exactly which size
+          cells go, or exactly why none can. */}
+      {unseatGroup && (
+        <div onClick={() => !busyKey && (setUnseatGroup(null), setUnseatPre(null))}
+          style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={e => e.stopPropagation()} role="alertdialog"
+            style={{ width: "100%", maxWidth: 400, background: "#1a1405", border: "2px solid " + AMBER, borderRadius: 14, padding: 20, boxShadow: "0 0 40px rgba(251,191,36,.35)" }}>
+            <div style={{ fontSize: 17, fontWeight: 800, color: AMBER, textAlign: "center", textTransform: "uppercase", letterSpacing: ".03em" }}>
+              Unseat this product?
+            </div>
+            <div style={{ fontSize: 13, color: "#fff", textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
+              <b>{unseatGroup.name}</b><br />
+              stops being carried at <b style={{ color: AMBER }}>{labelFor(unseatGroup.loc, registry)}</b>.
+            </div>
+
+            {!unseatPre ? (
+              <div style={{ fontSize: 12, color: GRAY, textAlign: "center", marginTop: 14 }}>Checking the refill queue…</div>
+            ) : unseatPre.blockers.length ? (
+              <div style={{ marginTop: 14, background: "rgba(248,113,113,.1)", border: "1px solid rgba(248,113,113,.4)", borderRadius: 10, padding: "10px 12px" }}>
+                {unseatPre.blockers.map((b, i) => (
+                  <div key={i} style={{ fontSize: 12, color: "#fca5a5", lineHeight: 1.5, marginTop: i ? 7 : 0 }}>{b}</div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 11.5, color: GRAY, textAlign: "center", marginTop: 14 }}>
+                  {unseatPre.paths.length} empty size cell(s) removed:
+                </div>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center", marginTop: 7 }}>
+                  {unseatPre.paths.map(p => (
+                    <span key={p.size} style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 6, color: AMBER,
+                                                background: "rgba(251,191,36,.1)", border: "1px solid rgba(251,191,36,.35)" }}>
+                      {formatSize(p.size)}
+                    </span>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11, color: "#86efac", textAlign: "center", marginTop: 12, lineHeight: 1.45 }}>
+                  ✓ No stock moves — every one of these is already 0.<br />
+                  ✓ Barcodes, the product and its history are untouched.
+                </div>
+                <div style={{ fontSize: 10.5, color: GRAY, textAlign: "center", marginTop: 7, lineHeight: 1.4 }}>
+                  Recorded in the carriage log. To put it back, count or receive the product here again.
+                </div>
+              </>
+            )}
+
+            <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
+              <button onClick={() => { setUnseatGroup(null); setUnseatPre(null); }} disabled={!!busyKey}
+                style={{ ...bGhost, flex: 1, padding: "11px 0", fontSize: 13 }}>Cancel</button>
+              <button onClick={doUnseat} disabled={!!busyKey || !unseatPre || !unseatPre.ok}
+                style={{ flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 800, borderRadius: 10, cursor: "pointer",
+                         background: AMBER, color: "#1a1405", border: "none",
+                         opacity: (busyKey || !unseatPre?.ok) ? 0.45 : 1 }}>
+                {busyKey ? "Unseating…" : "Unseat"}
               </button>
             </div>
           </div>
