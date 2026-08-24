@@ -348,11 +348,13 @@ describe("the search results carry photos", () => {
     const tree = await renderTab();
     await searchFor(tree, "navy");
     const thumb = imgs(tree).find((i) => i.props.src === "https://x/p1.jpg");
-    const stopped = [];
-    await act(async () => { thumb.props.onClick({ stopPropagation: () => stopped.push(1) }); });
-    // the click never reaches the row...
-    expect(stopped).toHaveLength(1);
-    // ...so no product was chosen and no stock was read
+    await act(async () => { thumb.props.onClick({ stopPropagation: () => {} }); });
+    // NOTE ON WHAT THIS PROVES. Here the protection is STRUCTURAL — the thumb
+    // is a sibling of the row's button, so the click has no path to it.
+    // Asserting that stopPropagation was called would prove only that a method
+    // was invoked on an object this test handed over; the contract it actually
+    // serves is for nested callers and is tested in
+    // photoWidgets.render.test.jsx. What matters here is the outcome:
     expect(READS).toHaveLength(0);
     expect(text(tree)).not.toContain("on hand");
     // ...and the picture is open, full size

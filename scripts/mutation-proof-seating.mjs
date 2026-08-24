@@ -43,7 +43,7 @@
 //   M-RESELECT     blank the screen when the same product is re-picked
 //
 // ── PHOTOS IN THE RESULTS (#430) ────────────────────────────────────────────
-//   M-THUMB-STOP   let a photo tap fall through and SELECT the product
+//   M-THUMB-STOP   let a nested photo tap fall through to its parent
 //   M-THUMB-GONE   drop the thumbnail from the results list
 //   M-LIGHTBOX     never render the opened photo
 //   M-CARD-PHOTO   make the open product's own photo untappable
@@ -70,6 +70,7 @@ const CORE_TESTS = ["src/components/stock/seatingCore.test.js"];
 const STORE_TESTS = ["src/components/stock/seatingStore.test.js"];
 const MOVE_TESTS = ["src/components/stock/seatingMove.test.js"];
 const TAB_TESTS = ["src/components/stock/seatingTab.render.test.jsx"];
+const WIDGET_TESTS = ["src/components/stock/photoWidgets.render.test.jsx"];
 const ALL_TESTS = [...CORE_TESTS, ...STORE_TESTS, ...MOVE_TESTS, ...TAB_TESTS];
 
 const MUTATIONS = [
@@ -424,11 +425,16 @@ const MUTATIONS = [
   },
   {
     id: "M-THUMB-STOP",
-    guard: "looking at a photo is not choosing the product — the tap never reaches the row",
+    // Pointed at the WIDGET tests, not the Seating tab's. In the tab the thumb
+    // is a SIBLING of the row's button, so a click could never have reached it
+    // and stopPropagation is inert there — a guard aimed at that screen would
+    // prove only that the code calls a method. The contract is tested where it
+    // bites: inside a clickable parent.
+    guard: "looking at a photo is not choosing — a nested thumb does not fire its parent",
     file: WIDGETS,
     from: `onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}`,
     to: `onClick={onOpen ? (e) => { onOpen(url); } : undefined}`,
-    tests: TAB_TESTS,
+    tests: WIDGET_TESTS,
   },
   {
     id: "M-THUMB-GONE",
