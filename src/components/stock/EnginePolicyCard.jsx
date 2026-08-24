@@ -59,7 +59,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
-import { FONT, BG, BORDER, GLASS, RADIUS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, bRed, input } from "./ui";
+import { FONT, BG, BORDER, GLASS, RADIUS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, bRed, input, tabOn, tabOff } from "./ui";
 import {
   COLUMN_LABELS, FIELD_ORDER, editorRows, draftFromEntry, seedLocation,
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
@@ -68,6 +68,7 @@ import {
   mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
+import SeatingTab from "./SeatingTab";
 import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
@@ -180,9 +181,9 @@ const CSS = `
 // checks the same condition independently. Deleting either one must fail
 // tests — see scripts/mutation-proof-engine-policy.mjs (M-TILE, M-ROUTE,
 // M-COMPONENT).
-export default function EnginePolicyCard({ viewer, onExit }) {
+export default function EnginePolicyCard({ viewer, products, onExit }) {
   if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;
-  return <EnginePolicyAuthed viewer={viewer} onExit={onExit} />;
+  return <EnginePolicyAuthed viewer={viewer} products={products} onExit={onExit} />;
 }
 
 function Refused({ onExit }) {
@@ -199,7 +200,7 @@ function Refused({ onExit }) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Everything below runs ONLY for a verified super-admin.
 // ═════════════════════════════════════════════════════════════════════════════
-function EnginePolicyAuthed({ viewer, onExit }) {
+function EnginePolicyAuthed({ viewer, products, onExit }) {
   const [census, setCensus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -210,6 +211,14 @@ function EnginePolicyAuthed({ viewer, onExit }) {
   const [busy, setBusy] = useState("");
   const [note, setNote] = useState(null);         // { kind, text }
   const [panel, setPanel] = useState("");         // "" | "rows" | "history"
+  // ── THE TABS ───────────────────────────────────────────────────────────────
+  // "categories" is what this card has always been. "seating" is the same
+  // policy question asked per PRODUCT instead of per category — which shop
+  // carries this line — so it belongs here rather than on a surface of its own.
+  // The tab renders inside EnginePolicyAuthed, which only ever mounts for a
+  // verified super-admin, and it re-checks that condition for itself below:
+  // three independent gates, exactly as the card's other contents have.
+  const [tab, setTab] = useState("categories");
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
   const [rowsMeta, setRowsMeta] = useState(null); // { total, truncated, limit, loc, locations, byLocation }
   const [rowDraft, setRowDraft] = useState({});
@@ -571,7 +580,36 @@ function EnginePolicyAuthed({ viewer, onExit }) {
             color: note.kind === "ok" ? GREEN : RED, fontSize: ".9rem", lineHeight: 1.5 }}>{note.text}</div>
         )}
 
-        {open ? (
+        {/* ── TABS ────────────────────────────────────────────────────────
+            Hidden while a category detail is open: the detail IS the
+            categories tab, and a tab strip over it would offer to leave an
+            unsaved draft with no warning. */}
+        {!open && (
+          <div style={{ display: "flex", gap: 8, marginBottom: "1rem" }}>
+            <button onClick={() => setTab("categories")} style={tab === "categories" ? tabOn : tabOff}>Categories</button>
+            <button onClick={() => setTab("seating")} style={tab === "seating" ? tabOn : tabOff}>Seating</button>
+          </div>
+        )}
+
+        {tab === "seating" && !open ? (
+          // GATE 2c. EnginePolicyAuthed already only mounts for a verified
+          // super-admin, and App.jsx gates the tile and the route. This is a
+          // fourth, independent check on the tab itself, so that deleting any
+          // one of them leaves the others working — mutation-proved, not
+          // asserted.
+          enginePolicyVisibleForViewer(viewer) ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Seating</h1>
+                  <div style={{ marginTop: 6, color: "#6b7280", fontSize: ".8rem" }}>Where a product sits</div>
+                </div>
+                <button onClick={onExit} style={bGhost}>Back</button>
+              </div>
+              <SeatingTab products={products} viewer={viewer} flash={flash} />
+            </>
+          ) : <Refused onExit={onExit} />
+        ) : open ? (
           <CategoryDetail
             category={open} parent={parent} destinations={destinations} draft={draft} errors={errors}
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
