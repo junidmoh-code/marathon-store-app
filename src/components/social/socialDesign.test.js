@@ -204,3 +204,48 @@ describe("region measurement is real, not the whole image", () => {
     expect(D.chooseLayout({ left: await mk(400), right: await mk(0) }).ink).toBe("#F4F1EA");
   });
 });
+
+// ── THE OVERLAY MUST FIT THE PHOTOGRAPH IT GOES ON ───────────────────────────
+// normalizeSocialImage resizes with fit:"inside" and withoutEnlargement, so the
+// finished photograph is routinely SMALLER than 1080x1350 — 1080x1341 is
+// typical. sharp refuses to composite an overlay larger than its base, so a
+// fixed-size overlay failed on EVERY real generation ("Image to composite must
+// have same dimensions or smaller") while passing every test here, because the
+// tests rendered at exactly 1080x1350.
+//
+// The failure was invisible in the worst way: compositeSocialDesign catches it
+// and keeps the bare photograph, so posts came out looking finished and simply
+// had no design on them.
+describe("the overlay is sized to the photograph, not to a constant", () => {
+  const sharp = require("sharp");
+  const products = [P("Air Force 1 Black", 750), P("Lacoste Sweatshirt Beige", 600)];
+
+  const flat = async (w, h) =>
+    sharp({ create: { width: w, height: h, channels: 3, background: { r: 90, g: 90, b: 90 } } }).jpeg().toBuffer();
+
+  // The real shapes seen in production, plus the exact authored size.
+  for (const [w, h] of [[1080, 1341], [1080, 1350], [1024, 1280], [900, 1125]]) {
+    it(`composites onto a ${w}x${h} photograph`, async () => {
+      const base = await flat(w, h);
+      const svg = D.buildOverlay({ products, kind: "outfit", width: w, height: h });
+      const out = await sharp(base).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).jpeg().toBuffer();
+      const meta = await sharp(out).metadata();
+      expect(meta.width).toBe(w);
+      expect(meta.height).toBe(h);
+    });
+  }
+
+  it("declares the given size on the svg while keeping the authored viewBox", () => {
+    const svg = D.buildOverlay({ products, kind: "outfit", width: 1080, height: 1341 });
+    expect(svg).toContain('width="1080"');
+    expect(svg).toContain('height="1341"');
+    expect(svg).toContain(`viewBox="0 0 ${D.W} ${D.H}"`);
+  });
+
+  it("still renders the real prices after scaling", async () => {
+    const svg = D.buildOverlay({ products, kind: "outfit", width: 1080, height: 1341 });
+    expect(svg).toContain("R750");
+    expect(svg).toContain("R600");
+    expect(svg).toContain("R1,350");   // summed in code, not drawn
+  });
+});

@@ -162,13 +162,23 @@ function chooseLayout(edges = {}) {
  * @param edges    measured luminance, from measureEdges() in index.js
  * @param kind     post kind; only "outfit" gets a WHOLE OUTFIT total
  */
-function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA" } = {}) {
+function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA", width = W, height = H } = {}) {
   const rows = sellableRows(products);
   const { side, anchor, ink, scrim } = chooseLayout(edges);
   const DISPLAY = "Helvetica Neue, Helvetica, Arial, sans-serif";
   const TEXT = "Helvetica Neue, Helvetica, Arial, sans-serif";
   const o = [];
-  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+  // ── THE OVERLAY IS THE SIZE OF THE PHOTOGRAPH, NOT A CONSTANT ─────────────
+  // normalizeSocialImage resizes with fit:"inside" and withoutEnlargement, so
+  // the finished photograph is frequently SMALLER than 1080x1350 — 1080x1341 is
+  // typical, nine pixels short. sharp refuses to composite an overlay larger
+  // than its base ("Image to composite must have same dimensions or smaller"),
+  // so a fixed-size overlay failed on every real generation while passing every
+  // local test, which rendered at exactly 1080x1350.
+  //
+  // The design is still AUTHORED at 1080x1350 — every coordinate below assumes
+  // it — and the viewBox scales it to whatever the photograph turned out to be.
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(height)}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice">`);
 
   // A scrim only under the rail and the foot, at low opacity — enough to hold
   // type, never enough to read as a panel. "Avoid ... unnecessary borders."
