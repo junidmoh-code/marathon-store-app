@@ -3815,7 +3815,12 @@ async function loadSocialStyleRefs(db) {
 async function writeSocialCaption({ kind, picks, link, styleNotes }) {
   const prompt = socialCaption.buildCaptionPrompt({
     kind,
-    products: picks.map((p) => ({ name: p.name, retailPrice: p.retailPrice, slot: p.slot })),
+    // displayName is the TRUE product name ("Lacoste L12 100ML"); `name` is the
+    // brand-stripped storefront title ("Fragrance 100ML") that exists for the
+    // payment gateway scanning Shopify. Captions are read by people and must be
+    // able to say Lacoste — owner ruling 2026-08-23. Falls back to `name` for
+    // any row that predates displayName.
+    products: picks.map((p) => ({ name: p.displayName || p.name, retailPrice: p.retailPrice, slot: p.slot })),
     link,
     styleNotes,
   });
@@ -4037,7 +4042,7 @@ exports.generateSocialPosts = onCall(
           const images = [];
           for (const p of picks) {
             const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
-            images.push({ buffer, contentType, name: p.name });
+            images.push({ buffer, contentType, name: p.displayName || p.name });
           }
           // House style REFUSES to run ungrounded, exactly as the product
           // pipeline does: a Nano Banana Pro generation with no reference
@@ -4051,7 +4056,10 @@ exports.generateSocialPosts = onCall(
           }
           const prompt = socialCaption.buildScenePrompt({
             kind,
-            productNames: picks.map((p) => p.name),
+            // The scene labels name the real product too, so the model is told it
+            // is rendering a Nike Air Force 1 rather than a "Sneaker Cream Black
+            // Grey" — which is a materially better instruction to a photographer.
+            productNames: picks.map((p) => p.displayName || p.name),
             style,
             styleNotes: library.notes,
           });
@@ -4086,7 +4094,10 @@ exports.generateSocialPosts = onCall(
           // reported as such below. It still cannot go out without approval.
           scheduledAt: slots[index] || null,
           ...(slots[index] ? {} : { unscheduledReason: "no free posting slot was available" }),
-          products: picks.map((p) => ({ pid: p.pid, name: p.name, handle: p.handle, slot: p.slot || null })),
+          // BOTH names are stored on the post: `name` is what the storefront and
+          // its link use, displayName is what the caption and the on-image
+          // labels say. The design layer needs the real one.
+          products: picks.map((p) => ({ pid: p.pid, name: p.name, displayName: p.displayName || p.name, handle: p.handle, slot: p.slot || null })),
           style,
           engine: spec.generates ? "nbpro" : "none",
           costUSD: +costUSD.toFixed(6),
