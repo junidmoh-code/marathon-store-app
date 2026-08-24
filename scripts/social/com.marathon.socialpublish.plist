@@ -10,8 +10,14 @@
     · StartCalendarInterval instead of StartInterval. The reconciler is a
       2-minute poll because Publish is a thing Junid presses and then waits
       for. This is a CADENCE — one post and one story a day — and the times below ARE
-      that cadence: a feed post every day at 11:00, and a story every day at
-      16:30 — deliberately apart, so the two never fire on the same minute.
+      that cadence: a feed post every day at 11:00.
+
+      There is deliberately NO second daily fire. A 16:30 story slot was added
+      and then removed the same day: nothing publishes a story — the publisher
+      has no story path at all — and the 16:30 fire therefore ran the ordinary
+      publisher, which would have posted any approved-and-overdue item to the
+      FEED at a time meant for stories. A slot that does the wrong thing
+      quietly is worse than no slot. It comes back when stories are built.
 
       These entries must match SLOT_DAYS / SLOT_HOUR_SAST / STORY_HOUR_SAST in
       src/components/social/socialCore.js, which is what the queue shows Junid
@@ -85,16 +91,6 @@
     <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <!-- The story: every day at 16:30 SAST, deliberately apart from the
-         post. Reserved — the publisher has no story endpoint yet, so this
-         fire finds nothing due and exits. -->
-    <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
   </array>
   <key>RunAtLoad</key><false/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could

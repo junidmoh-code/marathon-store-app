@@ -3683,6 +3683,90 @@ async function normalizeSocialImage(buffer, fallbackMime) {
   }
 }
 
+// ── MEASURE THE PHOTOGRAPH SO THE LAYOUT CAN ANSWER TO IT ────────────────────
+// The master direction forbids a fixed layout: "Do not automatically place the
+// logo in the top-left, the product list on the right... Study the composition
+// first. If the left side has beautiful negative space, information can live
+// there." We cannot look at the picture the way an art director does, but we
+// can MEASURE it, which is enough to choose a side honestly.
+//
+// Mean luminance says whether type must be light or dark. Standard deviation
+// says whether a region is EMPTY: flat tone is negative space, high variance is
+// product. Those two numbers per edge are all social-design.cjs needs.
+async function measureEdges(buffer) {
+  try {
+    const sharp = require("sharp");
+    const meta = await sharp(buffer).metadata();
+    const w = meta.width || SOCIAL_W, h = meta.height || SOCIAL_H;
+    const third = Math.max(1, Math.floor(w / 3));
+    const band = Math.max(1, Math.floor(h / 4));
+    // ── extract() IS NOT HONOURED BY stats() ───────────────────────────────
+    // sharp's stats() reads the SOURCE image and ignores pipeline operations
+    // before it, so `sharp(buf).extract(region).stats()` returns the stats of
+    // the WHOLE image. Verified against sharp 0.33/0.34 with a half-black,
+    // half-white test image: both halves reported mean 127.5.
+    //
+    // Left unfixed this is invisible and total — every region returns the same
+    // numbers, chooseLayout() therefore sees no difference between the sides
+    // and always picks the same one, and the layout is fixed for every image
+    // while looking measured. The region must be MATERIALISED first.
+    const region = async (left, top, width, height) => {
+      const cut = await sharp(buffer).extract({ left, top, width, height }).toBuffer();
+      const st = await sharp(cut).greyscale().stats();
+      const ch = st.channels[0];
+      return { mean: ch.mean, stdev: ch.stdev };
+    };
+    const half = Math.max(1, Math.floor(h / 2));
+    const [left, right, lTop, lBot, rTop, rBot] = await Promise.all([
+      region(0, 0, third, h),
+      region(w - third, 0, third, h),
+      // Each column also measured in halves: a column can average flat while a
+      // product sits low in it, which is how the first render put the total
+      // block over a perfume box.
+      region(0, 0, third, half),
+      region(0, h - half, third, half),
+      region(w - third, 0, third, half),
+      region(w - third, h - half, third, half),
+    ]);
+    return {
+      left: { ...left, top: lTop, bottom: lBot },
+      right: { ...right, top: rTop, bottom: rBot },
+    };
+  } catch (e) {
+    // A measurement failure must not lose a paid image. social-design falls
+    // back to a sensible default side and light ink when the numbers are absent.
+    console.warn("measureEdges failed, layout will use defaults:", e && e.message);
+    return {};
+  }
+}
+
+// ── COMPOSITE THE TYPE ───────────────────────────────────────────────────────
+// The model produced a photograph with negative space and NO lettering. Every
+// name, every price and the outfit total are placed here, as real text, from
+// the product records — summed in code, never by a model.
+//
+// Best-effort in the same way normalizeSocialImage is: a failure here keeps the
+// photograph rather than losing a generation that has already been paid for. An
+// undesigned post is a post Junid can still look at; a lost one is not.
+async function compositeSocialDesign(buffer, { products, kind }) {
+  try {
+    const socialDesign = require("./lib/social-design.cjs");
+    const rows = socialDesign.sellableRows(products || []);
+    if (!rows.length) return { buffer, designed: false, reason: "no product carried a usable price" };
+    const sharp = require("sharp");
+    const edges = await measureEdges(buffer);
+    const svg = socialDesign.buildOverlay({ products, edges, kind });
+    const out = await sharp(buffer)
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
+      .toBuffer();
+    return { buffer: out, designed: true, named: rows.length };
+  } catch (e) {
+    console.warn("compositeSocialDesign failed, keeping the bare photograph:", e && e.message);
+    return { buffer, designed: false, reason: String(e && e.message) };
+  }
+}
+
 // Generated post media goes to its OWN Storage path, under the aiStudio prefix
 // the Style Kit already owns (public read, super-admin write — the access these
 // files need, with no Storage rule change). Never under products/{id}/: a
@@ -4066,7 +4150,15 @@ exports.generateSocialPosts = onCall(
           const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs);
           costUSD = gen.costUSD;
           estCostUSD += gen.costUSD;
-          const { buffer: outBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime);
+          const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime);
+          // The type goes on AFTER the normalise, so the design is laid out
+          // against the exact pixels that ship rather than a larger original.
+          const designed = await compositeSocialDesign(normBuf, {
+            products: picks.map((p) => ({ displayName: p.displayName || p.name, retailPrice: p.retailPrice })),
+            kind,
+          });
+          const outBuf = designed.buffer;
+          if (!designed.designed) console.warn(`social: ${kind} post went out undesigned — ${designed.reason}`);
           uploadedPath = `aiStudio/social/posts/${postId}/0`;   // for the cleanup below
           media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
         }
