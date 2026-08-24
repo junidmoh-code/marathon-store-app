@@ -72,6 +72,11 @@ const KIND_SCENE = {
     "Arrange ALL of the supplied products as a flat-lay, shot straight down from above: " +
     "evenly spaced, none overlapping another's branding, all at the same scale relative to " +
     "each other, with generous even margins.",
+  pairing:
+    "Photograph the supplied pieces as a deliberate PAIRING — two or three things that go "
+    + "together, arranged with space between them so each reads on its own. This is NOT a "
+    + "complete outfit and must not be styled as one: do not add or imply the missing pieces, "
+    + "and do not lay it out as though someone is about to get dressed.",
   outfit:
     "Arrange ALL of the supplied products as ONE complete outfit laid out together — the " +
     "way a person would set out what they are wearing tomorrow. Shot straight down from " +
@@ -251,6 +256,12 @@ function buildCaptionPrompt({ kind, products = [], link = "", styleNotes = [] } 
     flatlay: "This post is a flat-lay of several products photographed together.",
     new_arrivals: "This post is a carousel of products that JUST went live on the online store.",
     outfit: "This post is one complete outfit — the pieces listed below, put together.",
+    // A pairing is deliberately smaller than a look, and the caption must not
+    // borrow an outfit's language. "The whole fit" on two items reads as a lie
+    // to anyone who counts them.
+    pairing: "This post is a PAIRING — just these two or three pieces, shown because they go "
+      + "well together. It is NOT a full outfit: never call it a fit, a look, a whole outfit "
+      + "or head-to-toe, and never imply the pieces that are not shown.",
   }[kind] || "This post shows the products listed below.";
 
   const notes = styleNotes.map((n) => String(n || "").trim()).filter(Boolean).slice(0, 6);
