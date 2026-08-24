@@ -86,24 +86,37 @@ export default function SeatingTab({ products, viewer, flash }) {
   // ── TWO LISTS, AND THE DIFFERENCE IS LOAD-BEARING ──────────────────────────
   //
   // ROWS are the places a product can be SEATED: active, not in_transit.
+  // DESTINATIONS are the same list — you may only send stock somewhere it can
+  // be seated.
   //
-  // The CONTEXT is every location that can hold a cell — in_transit and the
-  // deactivated ones included — because the engine's dead-size rule counts
-  // units ANYWHERE (`sizeUnitsAnywhere` walks Object.keys(stock), refill-engine
-  // .cjs:409). Feeding the mirror a partial snapshot makes a size whose only
-  // units are in transit read as dead, so a per-size category policy resolves 0
-  // and the row says "not carried" for a line the engine is actively seating.
-  // That is live today: six category policies are armed and /stock/in_transit
-  // holds real units. The mirror was right; the data under it was not.
-  const rowLocations = useMemo(
-    () => transferTargets(registry).filter((l) => l.id !== IN_TRANSIT).map((l) => l.id),
-    [registry],
+  // The CONTEXT is every location that can hold a cell, in_transit and the
+  // deactivated ones included, because the engine's dead-size rule counts units
+  // ANYWHERE (`sizeUnitsAnywhere` walks Object.keys(stock), refill-engine.cjs
+  // :409). Feeding the mirror a partial snapshot makes a size whose only units
+  // are in transit read as dead, so a per-size category policy resolves 0 and
+  // the row says "not carried" for a line the engine is actively seating. Six
+  // category policies are armed live and /stock/in_transit holds real units.
+  //
+  // ── BOTH ARE MEMOISED ON A SIGNATURE, NOT ON THE REGISTRY OBJECT ──────────
+  // `load` depends on contextLocations and an effect depends on `load`, so a
+  // registry whose IDENTITY changes on every render would re-read /stock on
+  // every render — a request loop against a shop's network. usePath hands back
+  // a fresh object whenever anything under /locations changes, and a test
+  // double can hand one back every time. The signature makes the lists change
+  // only when the locations actually do.
+  const locSig = JSON.stringify(
+    Object.entries(registry || {})
+      .map(([id, l]) => [id, l?.active !== false, l?.kind])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   );
-  const contextLocations = useMemo(() => {
-    const ids = new Set(rowLocations);
-    for (const l of allLocationIds(registry)) ids.add(l);
-    return [...ids];
-  }, [registry, rowLocations]);
+  const { rowLocations, contextLocations } = useMemo(() => {
+    const rows = transferTargets(registry).filter((l) => l.id !== IN_TRANSIT).map((l) => l.id);
+    const ctxIds = new Set(rows);
+    for (const l of allLocationIds(registry)) ctxIds.add(l);
+    return { rowLocations: rows, contextLocations: [...ctxIds] };
+    // registry is deliberately not a dependency — locSig is its stable digest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locSig]);
 
   const byId = useMemo(() => Object.fromEntries((products || []).map((p) => [p.id, p])), [products]);
   const product = pid ? byId[pid] : null;
@@ -134,9 +147,16 @@ export default function SeatingTab({ products, viewer, flash }) {
     }
   }, [contextLocations]);
 
+  // Selecting a product SETS it; an effect does the reading. `load`'s identity
+  // changes whenever contextLocations does, so a location activated or
+  // deactivated mid-session re-reads instead of leaving a stale — possibly
+  // NARROWER — snapshot behind, which is the bug class fixed above.
+  // (CodeRabbit full review, PR #429.)
   const choose = useCallback((nextPid) => {
-    setPid(nextPid); setOpen(""); setCtx(null); load(nextPid);
-  }, [load]);
+    setPid(nextPid); setOpen(""); setCtx(null);
+  }, []);
+
+  useEffect(() => { if (pid) load(pid); }, [pid, load]);
 
   const refresh = useCallback(() => load(pid), [load, pid]);
 

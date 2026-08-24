@@ -39,6 +39,7 @@
 //   M-MOVE-ID      derive the movement id from the clock again
 //   M-MOVE-CATCH   let a post-move throw swallow the fact stock moved
 //   M-CONTEXT      feed the mirror only the seatable locations  (SeatingTab)
+//   M-STABLE-LISTS key the location lists on the registry object (SeatingTab)
 //
 // The three gate mutations each delete ONE gate with the others left intact,
 // which is the only way "independent gates" means anything.
@@ -376,6 +377,14 @@ const MUTATIONS = [
     from: `    if (!writableRow(r.prevRow)) { stuck.push(sizeKey); continue; }`,
     to: ``,
     tests: STORE_TESTS,
+  },
+  {
+    id: "M-STABLE-LISTS",
+    guard: "the location lists are keyed on a signature — a re-render is not a re-read",
+    file: TAB,
+    from: `  }, [locSig]);`,
+    to: `  }, [registry]);`,
+    tests: TAB_TESTS,
   },
 ];
 

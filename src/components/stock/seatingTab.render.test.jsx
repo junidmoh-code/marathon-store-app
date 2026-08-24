@@ -46,6 +46,9 @@ vi.mock("firebase/database", () => ({
   child: () => ({}),
 }));
 
+// useLocations hands back a FRESH OBJECT on every render here, exactly as
+// usePath can — that is the shape that turns an identity-keyed useMemo into a
+// read loop, so the fixture keeps it that way deliberately.
 vi.mock("./useStock", () => ({
   useLocations: () => ({
     trophy: { id: "trophy", label: "Trophy", kind: "store", sellable: true, active: true },
@@ -210,6 +213,34 @@ describe("the actions on a row", () => {
     expect(text(tree)).toContain("size");
     expect(text(tree)).toContain("out of");
     expect(text(tree)).toContain("Trophy");
+  });
+});
+
+// ── A RE-RENDER MUST NOT MEAN A RE-READ ──────────────────────────────────────
+// `load` depends on contextLocations and an effect depends on `load`. Keyed on
+// the registry OBJECT, a hook that returns a fresh object render would re-read
+// /stock on every render — a request loop against a shop's network. The lists
+// are keyed on a signature instead. (CodeRabbit full review, PR #429.)
+describe("the location lists are stable across renders", () => {
+  it("selecting a product reads each path once, not once per render", async () => {
+    const tree = await renderTab();
+    await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: "navy" } }); });
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    const trophyReads = READS.filter((p) => p === "stock/trophy/p1").length;
+    expect(trophyReads).toBe(1);
+  });
+
+  it("and further renders add no reads at all", async () => {
+    const tree = await renderTab();
+    await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: "navy" } }); });
+    await act(async () => { buttonSaying(tree, "Nike Tee Navy").props.onClick(); });
+    await act(async () => {});
+    const after = READS.length;
+    // a pure re-render: open a row, close it again
+    await act(async () => { buttonSaying(tree, "Change").props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Close").props.onClick(); });
+    expect(READS.length).toBe(after);
   });
 });
 

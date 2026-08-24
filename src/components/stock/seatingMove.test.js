@@ -258,9 +258,18 @@ describe("a one-size product can actually be moved", () => {
     expect(!!moves[0].size).toBe(true);
   });
 
-  it("labels a failure on that line 'One size', not '_'", () => {
+  it("labels a failure on that line 'One size', not '_'", async () => {
     const ctx = pctx({ trophy: { p9: { _: { qty: 6 } } } });
     expect(movePlan(ctx, "trophy", "p9")[0].size).toBe("_");
+    // The name promised the LABEL, so assert the label — the branch
+    // `line.size === "_" ? "One size" : line.size` was uncovered.
+    // (CodeRabbit full review, PR #429.)
+    const spy = vi.spyOn(await import("./applyMovement"), "applyMovement")
+      .mockResolvedValue({ ok: false, reason: "nope" });
+    const seat = seatingAt(ctx, "trophy", "p9");
+    const res = await moveAndSwitchOff({ seat, ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(res.failed).toEqual(["One size: nope"]);
+    spy.mockRestore();
   });
 });
 
