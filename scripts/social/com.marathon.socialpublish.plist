@@ -81,17 +81,30 @@
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
-  <key>StartCalendarInterval</key>
-  <array>
-    <!-- The feed post: every day at 11:00 SAST. -->
-    <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
-  </array>
+  <!-- ── A TICK, NOT A DAILY FIRE ─────────────────────────────────────────
+       Every two minutes, the same shape as com.marathon.shopifyreconcile.
+
+       The CADENCE has not moved: the generator still assigns 11:00 slots and
+       the queue still shows them. What changed is where "when" lives. It is
+       now entirely in each post's scheduledAt, and this agent simply asks the
+       publisher what is DUE. A tick with nothing due exits in under a second
+       having made zero platform calls.
+
+       Two things this buys that a single daily fire could not:
+
+         · POST NOW. The queue's button moves an approved post's scheduledAt to
+           now; it goes out on the next tick instead of tomorrow. Nothing about
+           publishing moved into the browser — the Meta credentials stay on
+           this machine and this remains the only thing that has ever posted.
+
+         · A missed fire stops mattering. Asleep at 11:00, or a post approved
+           at 14:00 whose slot has passed, is picked up minutes later rather
+           than waiting a day.
+
+       Single-flight is the runner's lockfile, and double-posting is prevented
+       by the claim transaction in publish.mjs — both already relied on by the
+       daily fire, neither weakened by ticking more often. -->
+  <key>StartInterval</key><integer>120</integer>
   <key>RunAtLoad</key><false/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
        not handle itself (node failing to start, a syntax error) lands here.

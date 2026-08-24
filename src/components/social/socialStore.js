@@ -149,6 +149,29 @@ export async function approvePost(postId) {
  * that says "approved at 4pm" while sitting in draft is a lie a later reader
  * will trip over.
  */
+/**
+ * Publish an approved item at the next tick instead of waiting for its slot.
+ *
+ * ── WHY THIS ONLY MOVES A DATE ───────────────────────────────────────────────
+ * It would be wrong for the browser to publish. The Meta credentials live in
+ * Secret Manager and are read by the Mac mini; a browser path to them is a
+ * browser path to the shop's Instagram. And a second publisher would be a
+ * second copy of the send logic, the claim transaction and the retry rules —
+ * two implementations that must agree forever about what has already gone out.
+ *
+ * So "post now" says the one thing that actually matters: this is due NOW. The
+ * publisher on the mini, which is the only thing that has ever posted, picks it
+ * up on its next tick and applies every existing gate — postBlocker, the claim
+ * transaction, the per-platform attempt limits. Nothing is bypassed and nothing
+ * is duplicated.
+ *
+ * The status is deliberately NOT touched. It is already "approved"; changing it
+ * would lose the record of when Junid approved it.
+ */
+export async function postNow(postId) {
+  return writePost(postId, { scheduledAt: serverNowMs(), postNowAt: serverNowMs() });
+}
+
 export async function unapprovePost(postId) {
   return writePost(postId, { status: "draft", approvedAt: null, approvedBy: null });
 }

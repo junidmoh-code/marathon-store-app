@@ -244,3 +244,89 @@ describe("product names are cleaned once, in one place", () => {
     expect(isDirtyProductName("Nike Air Force 1")).toBe(false);
   });
 });
+
+// ── PIECES HAVE TO BELONG TOGETHER ───────────────────────────────────────────
+// Owner: "The shoe slot treats all footwear as interchangeable. It isn't — a
+// soccer boot is a studded sports boot and belongs with nothing but sportswear."
+//
+// 25 soccer boots were live against 398 sneakers, all in one slot, so roughly
+// one outfit in seventeen came out with studs and denim. Same failure class as
+// the missing bottom slot: the distinction exists in the catalogue and the
+// selector ignored it.
+describe("footwear is not interchangeable", () => {
+  const ctx = (categoryKey) => ({ slot: S.outfitSlot({ categoryKey }), product: { categoryKey } });
+
+  describe("the rule itself, in both directions", () => {
+    it("REFUSES soccer boots with jeans", () => {
+      expect(S.sharedContext([ctx("soccer-boots"), ctx("jeans")])).toBe(false);
+    });
+    it("REFUSES soccer boots with chinos or pants", () => {
+      expect(S.sharedContext([ctx("soccer-boots"), ctx("pants")])).toBe(false);
+    });
+    it("ALLOWS soccer boots with a jersey and shorts", () => {
+      expect(S.sharedContext([ctx("soccer-boots"), ctx("soccer-jerseys"), ctx("shorts")])).toBe(true);
+    });
+    it("ALLOWS sneakers with jeans — the ordinary case must not regress", () => {
+      expect(S.sharedContext([ctx("sneakers"), ctx("jeans"), ctx("t-shirts")])).toBe(true);
+    });
+    it("a wildcard accessory cannot rescue an incoherent look", () => {
+      // A cap goes with anything and must never be the reason studs pass.
+      expect(S.sharedContext([ctx("soccer-boots"), ctx("jeans"), ctx("caps-beanies")])).toBe(false);
+    });
+    it("a wildcard accessory is never the reason a good look is refused", () => {
+      expect(S.sharedContext([ctx("sneakers"), ctx("jeans"), ctx("perfumes"), ctx("bags")])).toBe(true);
+    });
+  });
+
+  describe("and the selector obeys it", () => {
+    it("refuses an outfit when the only shoe is a soccer boot", () => {
+      const r = pick([cand("soccer-boots"), cand("t-shirts"), cand("jeans")]);
+      expect(r.picks).toEqual([]);
+    });
+
+    it("reaches past the boot to a sneaker rather than refusing", () => {
+      // The boot may outrank the sneaker; coherence wins.
+      const r = pick([cand("soccer-boots"), cand("sneakers"), cand("t-shirts"), cand("jeans")]);
+      expect(r.reason).toBeNull();
+      const keys = r.picks.map((p) => p.product.categoryKey);
+      expect(keys).toContain("sneakers");
+      expect(keys).not.toContain("soccer-boots");
+    });
+
+    it("still builds the sporty look boots DO belong in", () => {
+      const r = pick([cand("soccer-boots"), cand("soccer-jerseys"), cand("shorts")]);
+      expect(r.reason).toBeNull();
+      expect(r.picks.map((p) => p.product.categoryKey)).toContain("soccer-boots");
+    });
+
+    it("refuses a boots-and-jeans PAIRING too", () => {
+      const r = S.pickForKind("pairing", [cand("soccer-boots"), cand("jeans")]);
+      expect(r.picks).toEqual([]);
+    });
+
+    it("allows a boots-and-jersey pairing", () => {
+      const r = S.pickForKind("pairing", [cand("soccer-jerseys"), cand("soccer-boots")]);
+      expect(r.reason).toBeNull();
+      expect(r.picks.length).toBe(2);
+    });
+  });
+
+  describe("the other footwear each carry their own rules", () => {
+    it("slides are casual and summer, not smart", () => {
+      expect(S.contextsOf(ctx("slides")).sort()).toEqual(["casual", "summer"]);
+    });
+    it("boots are winter, not summer — no slides-and-parka equivalents", () => {
+      expect(S.contextsOf(ctx("boots"))).toContain("winter");
+      expect(S.contextsOf(ctx("boots"))).not.toContain("summer");
+    });
+    it("a soccer boot belongs to sport and nothing else", () => {
+      expect(S.contextsOf(ctx("soccer-boots"))).toEqual(["sport"]);
+    });
+    it("an unknown category is treated as casual, never as a wildcard", () => {
+      // Being wrong towards ordinary streetwear is recoverable; being wrong
+      // towards "goes with everything" is how studs reach denim.
+      expect(S.contextsOf(ctx("something-new"))).toEqual(["casual"]);
+      expect(S.contextsOf(ctx("something-new"))).not.toBeNull();
+    });
+  });
+});
