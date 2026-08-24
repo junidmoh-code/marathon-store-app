@@ -116,7 +116,7 @@ export default function SeatingTab({ products, viewer, flash }) {
     return { rowLocations: rows, contextLocations: [...ctxIds] };
     // registry is deliberately not a dependency — locSig is its stable digest.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locSig]);
+  }, [registry]);
 
   const byId = useMemo(() => Object.fromEntries((products || []).map((p) => [p.id, p])), [products]);
   const product = pid ? byId[pid] : null;

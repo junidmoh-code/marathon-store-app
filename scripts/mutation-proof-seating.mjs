@@ -310,10 +310,9 @@ const MUTATIONS = [
     id: "M-CONTEXT",
     guard: "the carriage context covers every location that can hold a cell, not only the seatable ones",
     file: TAB,
-    from: `    const ids = new Set(rowLocations);
-    for (const l of allLocationIds(registry)) ids.add(l);
-    return [...ids];`,
-    to: `    return [...rowLocations];`,
+    from: `    const ctxIds = new Set(rows);
+    for (const l of allLocationIds(registry)) ctxIds.add(l);`,
+    to: `    const ctxIds = new Set(rows);`,
     tests: TAB_TESTS,
   },
   // ── ADVERSARIAL REVIEW FIXES, PR #429 ─────────────────────────────────────
