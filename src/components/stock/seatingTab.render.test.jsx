@@ -154,12 +154,25 @@ describe("the rows", () => {
 // The rule is structural, so the check is too: every read this file makes must
 // name a location AND a product.
 describe("reads are scoped", () => {
-  it("never asks for /stock or /stock_targets whole", () => {
-    const src = readFileSync(new URL("./SeatingTab.jsx", import.meta.url), "utf8");
-    for (const bad of ['ref(database, "stock")', 'ref(database, "stock_targets")', "`stock`", "`stock_targets`"]) {
-      expect(src).not.toContain(bad);
+  // The reader lives in seatingStore.js — the move path re-reads through the
+  // SAME function the tab renders from, so the two cannot drift.
+  const SRC = {
+    "SeatingTab.jsx": readFileSync(new URL("./SeatingTab.jsx", import.meta.url), "utf8"),
+    "seatingStore.js": readFileSync(new URL("./seatingStore.js", import.meta.url), "utf8"),
+  };
+
+  it("no file in this feature asks for /stock or /stock_targets whole", () => {
+    for (const [name, src] of Object.entries(SRC)) {
+      for (const bad of ['ref(database, "stock")', 'ref(database, "stock_targets")', "`stock`", "`stock_targets`"]) {
+        expect(src, `${name} must not contain ${bad}`).not.toContain(bad);
+      }
     }
-    expect(src).toContain("stock/${loc}/${pid}");
-    expect(src).toContain("stock_targets/${loc}/${pid}");
+  });
+
+  it("every read names a location AND a product", () => {
+    expect(SRC["seatingStore.js"]).toContain("stock/${loc}/${pid}");
+    expect(SRC["seatingStore.js"]).toContain("stock_targets/${loc}/${pid}");
+    // and the tab makes none of its own
+    expect(SRC["SeatingTab.jsx"]).toContain("readSeatingContext");
   });
 });

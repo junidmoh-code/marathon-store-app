@@ -1,6 +1,11 @@
 // ─── SEATING — THE ACTIONS ON ONE LOCATION ROW ───────────────────────────────
 //
 //   SWITCH OFF            this shop does not carry this line. No stock moves.
+//   MOVE AND SWITCH OFF   the units go somewhere else and the source goes off,
+//                         in one action. "Switch off the source" is TICKED BY
+//                         DEFAULT and can be un-ticked — two shops genuinely
+//                         carrying the same line is a real case, and the tick
+//                         is what tells the two apart.
 //   RE-SEAT               removes that fact and nothing else.
 //
 // ONE LOCATION AT A TIME. There is deliberately no bulk button: some empty
@@ -8,20 +13,37 @@
 // sweep cannot tell that apart from a mistake.
 
 import React, { useMemo, useState } from "react";
-import { switchOffBlockers, switchOffPlan, reseatPlan, switchOff, reseat } from "./seatingStore";
-import { SEAT_REASON } from "./seatingCore";
+import {
+  switchOffBlockers, switchOffPlan, reseatPlan, switchOff, reseat,
+  movePlan, moveBlockers, moveAndSwitchOff,
+} from "./seatingStore";
+import { seatingAt, SEAT_REASON } from "./seatingCore";
 import { nextScanAt } from "./enginePolicyCore";
+import { labelFor } from "./locations";
 import { serverNowMs } from "../../utils/serverTime";
-import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGray, bRed, bGhost } from "./ui";
+import { SizeFactChip, CHIP_GRID } from "./healthWidgets";
+import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGray, bRed, bGreen, bGhost } from "./ui";
 
 export default function SeatingActions({ seat, product, label, registry, locations, ctx, viewer, onDone, onFail }) {
   const [busy, setBusy] = useState("");
-  const [confirm, setConfirm] = useState("");   // "" | "off" | "reseat"
+  const [confirm, setConfirm] = useState("");   // "" | "off" | "move"
+  const [dest, setDest] = useState("");
+  // TICKED BY DEFAULT. Moving the stock out and leaving the seat on is the
+  // deliberate minority case, so it costs a tap; the common case costs none.
+  const [alsoOff, setAlsoOff] = useState(true);
 
   const blockers = useMemo(() => switchOffBlockers(seat), [seat]);
   const plan = useMemo(() => switchOffPlan(ctx, seat.loc, seat.pid), [ctx, seat.loc, seat.pid]);
   const undo = useMemo(() => reseatPlan(ctx, seat.loc, seat.pid), [ctx, seat.loc, seat.pid]);
   const scan = useMemo(() => nextScanAt(serverNowMs()), []);
+  const lines = useMemo(() => movePlan(ctx, seat.loc, seat.pid), [ctx, seat.loc, seat.pid]);
+  const destBlocked = useMemo(() => moveBlockers(seat.loc, dest), [seat.loc, dest]);
+  // A destination that is itself switched off would hold the stock with nothing
+  // arming it. Said, not blocked — sending stock to a shelf is still a real act.
+  const destOff = useMemo(() => {
+    if (!dest || !ctx) return false;
+    return seatingAt(ctx, dest, seat.pid).reason === SEAT_REASON.SWITCHED_OFF;
+  }, [ctx, dest, seat.pid]);
 
   const run = async (what, fn, done) => {
     if (busy) return;
@@ -51,6 +73,76 @@ export default function SeatingActions({ seat, product, label, registry, locatio
         </div>
       )}
 
+      {/* ── move and switch off ── */}
+      {confirm === "move" && (
+        <div style={{ marginBottom: ".7rem" }}>
+          <div style={{ fontSize: ".82rem", color: "#dfe7ff", marginBottom: 6 }}>
+            {lines.length} {lines.length === 1 ? "size" : "sizes"} out of {label}
+          </div>
+
+          {/* EVERY LINE IS SHOWN. One confirm, but never a blind one. */}
+          <div style={CHIP_GRID}>
+            {lines.map((l) => (
+              <SizeFactChip
+                key={l.sizeKey}
+                size={l.size === "" ? "One size" : l.size}
+                value={l.qty}
+                tone={l.qty < 0 ? RED : BLUE_L}
+              />
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: ".7rem" }}>
+            {locations.filter((l) => l !== seat.loc).map((l) => (
+              <button
+                key={l}
+                onClick={() => setDest(l)}
+                disabled={!!busy}
+                style={{ ...(dest === l ? bGreen : bGhost), padding: "7px 12px", fontSize: ".78rem" }}
+              >{labelFor(l, registry)}</button>
+            ))}
+          </div>
+
+          {destBlocked && (
+            <div style={{ fontSize: ".75rem", color: AMBER, marginTop: ".6rem" }}>{destBlocked}</div>
+          )}
+          {!destBlocked && destOff && (
+            <div style={{ fontSize: ".75rem", color: AMBER, marginTop: ".6rem" }}>
+              {labelFor(dest, registry)} is switched off — re-seat it, or it holds stock the engine ignores.
+            </div>
+          )}
+          {lines.some((l) => l.qty < 0) && (
+            <div style={{ fontSize: ".75rem", color: AMBER, marginTop: ".6rem" }}>
+              A negative travels with the line — its sign is kept.
+            </div>
+          )}
+
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: ".7rem",
+            fontSize: ".8rem", color: "#dfe7ff", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={alsoOff}
+              onChange={(e) => setAlsoOff(e.target.checked)}
+              aria-label="Switch off the source"
+            />
+            Switch off {label}
+          </label>
+
+          <div style={{ display: "flex", gap: 8, marginTop: ".7rem", flexWrap: "wrap" }}>
+            <button
+              onClick={() => run("move",
+                () => moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff: alsoOff, locations }),
+                (r) => `${r.moved} moved to ${labelFor(dest, registry)}`
+                  + (r.failed.length ? ` · ${r.failed.length} failed: ${r.failed.join(" · ")}` : "")
+                  + (alsoOff ? (r.switchedOff ? ` · ${label} switched off.` : ` · ${label} left ON (${FAILURES[r.offReason] || r.offReason || "see the row"}).`) : "."))}
+              disabled={!!busy || !!destBlocked}
+              style={{ ...bGreen, opacity: (busy || destBlocked) ? .5 : 1 }}
+            >{busy === "move" ? "…" : alsoOff ? "Move and switch off" : "Move only"}</button>
+            <button onClick={() => { setConfirm(""); setDest(""); }} disabled={!!busy} style={bGhost}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* ── switch off ── */}
       {confirm === "off" ? (
         <div style={{ marginBottom: ".7rem" }}>
@@ -72,7 +164,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             <button onClick={() => setConfirm("")} disabled={!!busy} style={bGhost}>Cancel</button>
           </div>
         </div>
-      ) : (
+      ) : confirm === "move" ? null : (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={() => setConfirm("off")}
@@ -80,6 +172,13 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             title={blockers ? "Move the stock out first" : "This shop does not carry this line"}
             style={{ ...bGray, opacity: (busy || blockers || seat.reason === SEAT_REASON.SWITCHED_OFF) ? .45 : 1 }}
           >Switch off</button>
+
+          <button
+            onClick={() => setConfirm("move")}
+            disabled={!!busy || !lines.length}
+            title={lines.length ? "Move the stock, and switch this shop off" : "Nothing here to move"}
+            style={{ ...bGray, opacity: (busy || !lines.length) ? .45 : 1 }}
+          >Move and switch off</button>
 
           {canUndo && (
             <button
@@ -102,7 +201,9 @@ export default function SeatingActions({ seat, product, label, registry, locatio
 }
 
 const FAILURES = {
-  holds_units: "There is stock here — move it first.",
+  holds_units: "there is stock here — move it first",
+  destination: "that destination cannot be used",
+  nothing_to_move: "nothing here to move",
   no_sizes: "This product declares no sizes and holds no cells here.",
   unsafe_key: "A size key could not be written safely.",
   nothing_to_undo: "Nothing here was switched off from this screen.",

@@ -44,7 +44,9 @@
 import { ref, get, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { seatingSizes, SEATING_OFF_SOURCE } from "./seatingCore";
+import { seatingSizes, seatingAt, SEATING_OFF_SOURCE } from "./seatingCore";
+import { applyMovement } from "./applyMovement";
+import { isTransitLane } from "./transitLanes";
 
 // RTDB path segments: a junk size key must fail loudly here rather than write
 // somewhere else. (Same guard as utils/sizeKey assertSafeSegment.)
@@ -170,4 +172,118 @@ export async function reseat({ seat, ctx }) {
 export async function readTargets(loc, pid) {
   const snap = await get(ref(database, `stock_targets/${loc}/${pid}`));
   return snap.exists() ? snap.val() : {};
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MOVE AND SWITCH OFF
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Every size of one product out of one location, into another, and the source
+// switched off in the same action. EVERY stock write goes through
+// applyMovement — the single writer to /stock — so the cells and the ledger
+// movement land in one atomic update, the version guard holds, and a repeat is
+// idempotent on the movement id.
+//
+// ── NEGATIVES ARE CARRIED, WITH THEIR SIGN ───────────────────────────────────
+// A -2 cell holds no units; it is an accuracy signal, and only a `sold` can
+// create one (applyMovement's negative floor). Leaving it behind at a shop that
+// no longer carries the line hides a count error for good, and "moving" it as
+// if it were +2 would invent two units out of nothing.
+//
+// So a negative line is sent THE OTHER WAY: a transfer_out of 2 from the
+// DESTINATION to the SOURCE. The source cell rises -2 → 0 and the destination
+// falls by 2, which is the same debt in the same network, now sitting where the
+// line does. That leg needs allowNegative because it is the one case where
+// driving a cell below zero is the correct outcome; the live rule permits it
+// (a transfer_out may be negative — /stock's .validate, checked 2026-08-24).
+//
+// ── THE DESTINATION IS NOT WRITTEN A SEATING FACT ────────────────────────────
+// It establishes carriage naturally: applyMovement creates its cell, and cell
+// existence is what the deployed engine's storeCarries answers. Writing it a row
+// as well would put a second, weaker answer next to the real one.
+
+// Lines are per SIZE, in size-key order, and only cells that hold something.
+export function movePlan(ctx, loc, pid) {
+  const seat = seatingAt(ctx, loc, pid);
+  return seat.sizes
+    .filter((s) => s.qty !== 0)
+    .map((s) => ({ sizeKey: s.sizeKey, size: s.size, qty: s.qty }));
+}
+
+// Why a destination cannot be chosen — null when it can.
+export function moveBlockers(from, to) {
+  if (!to) return "Pick where it goes.";
+  if (to === from) return "That is the same location.";
+  // Cross-building sends out of Central are a TWO-STEP transit lane (T1): stock
+  // parks in in_transit and reaches the destination only when somebody scans it
+  // in. This screen does one confirm and one hop, so it declines the lane rather
+  // than quietly bypassing the receive step. Transfer already does it properly.
+  if (isTransitLane(from, to)) return "That lane goes through Transit — use the Transfer screen.";
+  return null;
+}
+
+// ── the action ───────────────────────────────────────────────────────────────
+// Lines first, THEN the switch-off — and the switch-off re-reads before it
+// decides. A sale landing mid-move must not be switched off out of existence:
+// the re-read sees the non-zero cell, the refusal fires, the stock is already
+// safely moved, and the screen says the seat is still on.
+export async function moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff = true, locations }) {
+  const blocked = moveBlockers(seat.loc, dest);
+  if (blocked) return { ok: false, reason: "destination", message: blocked };
+
+  const lines = movePlan(ctx, seat.loc, seat.pid);
+  if (!lines.length) return { ok: false, reason: "nothing_to_move" };
+
+  const actor = actorOf(viewer);
+  const at = serverNowMs();
+  const batchId = `seatmove_${at.toString(36)}`;
+  let moved = 0;
+  const failed = [];
+
+  for (const line of lines) {
+    const negative = line.qty < 0;
+    const qty = Math.abs(line.qty);
+    let res;
+    try {
+      res = await applyMovement({
+        type: "transfer_out",
+        productId: seat.pid,
+        size: line.size,
+        qty,
+        from: negative ? dest : seat.loc,
+        to: negative ? seat.loc : dest,
+        actorRole: "admin",
+        reason: "seating_move",
+        movementId: `${batchId}_${seat.pid}_${line.sizeKey}`,
+        link: { transferId: batchId },
+        ...(negative ? { allowNegative: true } : null),
+      });
+    } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
+    if (res.ok) moved += qty;
+    else failed.push(`${line.size === "" ? "One size" : line.size}: ${res.reason}`);
+  }
+
+  if (!alsoSwitchOff) return { ok: true, moved, failed, batchId, switchedOff: false };
+  if (failed.length) return { ok: true, moved, failed, batchId, switchedOff: false, offSkipped: "lines_failed" };
+
+  // RE-READ, do not trust the plan. The cells this screen was rendering are
+  // several round trips old by now, and the switch-off's whole guarantee is
+  // that it never fires over stock.
+  const fresh = await readSeatingContext(locations, seat.pid);
+  const freshCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  const freshSeat = seatingAt(freshCtx, seat.loc, seat.pid);
+  const off = await switchOff({ seat: freshSeat, ctx: freshCtx, viewer });
+  return { ok: true, moved, failed, batchId, switchedOff: off.ok, offReason: off.ok ? null : off.reason };
+}
+
+// The same scoped read the tab makes, so the re-read above cannot drift from it.
+export async function readSeatingContext(locs, pid) {
+  const stock = {};
+  const targets = {};
+  await Promise.all((locs || []).flatMap((loc) => [
+    get(ref(database, `stock/${loc}/${pid}`)).then((s) => { if (s.exists()) stock[loc] = { [pid]: s.val() }; }),
+    get(ref(database, `stock_targets/${loc}/${pid}`)).then((s) => { if (s.exists()) targets[loc] = { [pid]: s.val() }; }),
+  ]));
+  return { stock, targets };
 }

@@ -40,6 +40,7 @@ import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import CameraScanner from "./CameraScanner";
 import { FONT, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
 import SeatingActions from "./SeatingActions";
+import { readSeatingContext } from "./seatingStore";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found",
 // not a mis-pathed read. (Mirrors Transfer.jsx's lookupBarcode.)
@@ -57,18 +58,9 @@ const TONE = {
 };
 
 // ── the read ─────────────────────────────────────────────────────────────────
-// Per (location, product), never per node. The size keys come back ENCODED,
-// which is the space seatingCore reasons in — useStockCells decodes, and a
-// decoded map would miss every half size ("5_5" vs "5.5").
-export async function readSeatingContext(locs, pid) {
-  const stock = {};
-  const targets = {};
-  await Promise.all(locs.flatMap((loc) => [
-    get(ref(database, `stock/${loc}/${pid}`)).then((s) => { if (s.exists()) stock[loc] = { [pid]: s.val() }; }),
-    get(ref(database, `stock_targets/${loc}/${pid}`)).then((s) => { if (s.exists()) targets[loc] = { [pid]: s.val() }; }),
-  ]));
-  return { stock, targets };
-}
+// Per (location, product), never per node — readSeatingContext lives in
+// seatingStore.js because the move path must re-read through the SAME function
+// it renders from, or the two could drift.
 
 export default function SeatingTab({ products, viewer, flash }) {
   const registry = useLocations();
