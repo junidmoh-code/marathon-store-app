@@ -17624,7 +17624,7 @@ function AppInner() {
   // hooks so a refused viewer opens nothing) are both real and independent.
   // Deleting any one of the three must fail tests.
   else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email }} onExit={() => setRole(null)} />
+    ? <EnginePolicyCard viewer={{ email: authUser?.email }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
