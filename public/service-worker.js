@@ -7,7 +7,7 @@
 // installed PWAs went on serving the cached v2 shell and the button stayed
 // grey on a machine running correct code. Bumping invalidates both caches on
 // activate, which is the whole point of this constant.
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 const STATIC_CACHE  = `mc-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `mc-runtime-${CACHE_VERSION}`;
 

@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  postBlocker, postReadiness, findShopMentions, shopMentionBlocker,
+  postBlocker, postReadiness, findShopMentions, shopMentionBlocker, isSendingSoon,
 } from "./socialCore.js";
 
 const ok = (over = {}) => ({
@@ -200,8 +200,14 @@ describe("the Post now button is wired to the schedule, not to a publisher", () 
   it("the button is offered only on an APPROVED post", () => {
     // Otherwise it becomes a way to publish something that never passed the
     // approval gate.
-    const i = view.indexOf("Post now");
-    const before = view.slice(Math.max(0, i - 700), i);
+    //
+    // Anchored on the CALL, not on the label. Searching for the words "Post
+    // now" found a comment that happened to mention the button and failed on a
+    // correct file — an assertion that breaks when a comment is added is
+    // measuring the wrong thing.
+    const i = view.indexOf("postNow(post.id)");
+    expect(i, "no postNow call in the view").toBeGreaterThan(-1);
+    const before = view.slice(Math.max(0, i - 400), i);
     expect(before).toMatch(/post\.status === "approved"/);
   });
 
@@ -210,5 +216,52 @@ describe("the Post now button is wired to the schedule, not to a publisher", () 
     // keep, and a person watching Instagram for a post that is 90 seconds away
     // will refresh and then press the button again.
     expect(view).toMatch(/next tick|two minutes/i);
+  });
+});
+
+// ── THE TWO MINUTES AFTER POST NOW ARE VISIBLE ───────────────────────────────
+// The publisher ticks every 120s, so there is a gap between pressing the button
+// and the post appearing. It used to be silent: the row showed "APPROVED"
+// exactly as before, so the only feedback was a toast that vanished, and a
+// person watching an unchanged row concludes the click missed and presses again.
+describe("a post on its way out says so", () => {
+  const base = {
+    status: "approved",
+    media: [{ url: "u", type: "image" }],
+    caption: "a caption long enough to pass",
+    platforms: { instagram: true },
+  };
+  const NOW = 1_800_000_000_000;
+
+  it("is sending once it is approved and due", () => {
+    expect(isSendingSoon({ ...base, scheduledAt: NOW - 1000 }, NOW)).toBe(true);
+  });
+
+  it("is not sending while its slot is still in the future", () => {
+    expect(isSendingSoon({ ...base, scheduledAt: NOW + 3600_000 }, NOW)).toBe(false);
+  });
+
+  it("is not sending when it was never approved", () => {
+    expect(isSendingSoon({ ...base, status: "draft", scheduledAt: NOW - 1000 }, NOW)).toBe(false);
+  });
+
+  it("stops saying it once the publisher has claimed or finished", () => {
+    // "posting" and "posted" have their own status; the chip must not double up.
+    for (const status of ["posting", "posted", "failed", "discarded"]) {
+      expect(isSendingSoon({ ...base, status, scheduledAt: NOW - 1000 }, NOW), status).toBe(false);
+    }
+  });
+
+  it("survives a missing or malformed post", () => {
+    for (const v of [null, undefined, {}]) expect(isSendingSoon(v, NOW)).toBe(false);
+  });
+
+  it("the queue shows a chip and polls only while something is sending", () => {
+    const view = readFileSync(fileURLToPath(new URL("./SocialView.jsx", import.meta.url)), "utf8");
+    expect(view).toMatch(/GOING OUT/);
+    expect(view).toMatch(/isSendingSoon\(post\)\s*&&\s*<SendingChip/);
+    // The poll must be conditional. An unconditional interval would keep a
+    // screen nobody is looking at hitting the database for ever.
+    expect(view).toMatch(/if \(!anySending\) return undefined;/);
   });
 });

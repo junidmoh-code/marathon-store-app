@@ -369,6 +369,20 @@ export function isDue(post, now = Date.now()) {
 // fields. The link is appended if it is not already somewhere in the text —
 // re-appending on every edit is how a caption ends up with the same URL three
 // times.
+// ── IS THIS ON ITS WAY OUT? ──────────────────────────────────────────────────
+// Approved AND due, but the publisher has not claimed it yet. That gap is up to
+// one tick — about two minutes — and it used to be silent: the queue showed
+// "APPROVED" exactly as before the button was pressed, so the only feedback
+// that Post now had done anything was a toast that vanished. A person watching
+// an unchanged row concludes the click missed and presses it again.
+//
+// It is derived, never stored. A stored "sending" flag would be a second
+// opinion about state that the publisher's claim transaction already owns, and
+// the two would disagree the first time a tick was missed.
+export function isSendingSoon(post, now = Date.now()) {
+  return !!post && post.status === "approved" && isDue(post, now);
+}
+
 export function captionWithLink(caption, link) {
   const body = String(caption || "").trim();
   const url = String(link || "").trim();
