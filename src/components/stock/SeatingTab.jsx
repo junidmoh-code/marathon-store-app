@@ -39,6 +39,7 @@ import { ProductCard, Badge, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import CameraScanner from "./CameraScanner";
 import { FONT, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
+import SeatingActions from "./SeatingActions";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found",
 // not a mis-pathed read. (Mirrors Transfer.jsx's lookupBarcode.)
@@ -281,9 +282,17 @@ function SeatRow({ seat, product, label, registry, locations, ctx, viewer, expan
       )}
 
       {expanded && (
-        // COMMIT 3/4 fill this in. Read-only until then, deliberately: the tab
-        // is worth having before it can write, and a half-wired write is not.
-        <div style={{ marginTop: 10, color: GRAY, fontSize: 12 }}>Actions arrive next.</div>
+        <SeatingActions
+          seat={seat}
+          product={product}
+          label={label}
+          registry={registry}
+          locations={locations}
+          ctx={ctx}
+          viewer={viewer}
+          onDone={onDone}
+          onFail={onFail}
+        />
       )}
     </div>
   );
