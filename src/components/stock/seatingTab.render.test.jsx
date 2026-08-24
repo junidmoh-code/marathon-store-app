@@ -35,6 +35,15 @@ vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   get: async (r) => {
     READS.push(String(r.path));
+    // ── THE LOOP BREAKER ──────────────────────────────────────────────────
+    // If the location lists stop being stable, `load` changes identity every
+    // render and the effect re-reads /stock for ever. Throwing here does NOT
+    // stop it — load() catches and calls setError, which re-renders and feeds
+    // the loop again. Never RESOLVING does stop it: no setCtx, no setError, no
+    // further render, so the run ends in a clean assertion failure instead of
+    // a killed worker. Without this the mutation harness's own M-STABLE-LISTS
+    // hangs for ever on the mutation it exists to prove.
+    if (READS.length > 100) return new Promise(() => {});
     const [root, loc, pid] = String(r.path).split("/");
     const src = root === "stock" ? STOCK : root === "stock_targets" ? TARGETS : {};
     const v = src?.[loc]?.[pid];
