@@ -249,3 +249,95 @@ describe("the overlay is sized to the photograph, not to a constant", () => {
     expect(svg).toContain("R1,350");   // summed in code, not drawn
   });
 });
+
+// ── THE VERTICAL CANVAS: STORIES AND REELS ───────────────────────────────────
+// A feed post is 4:5 and a story or reel is 9:16. They are not the same design
+// at different sizes. A story is held in one hand, read in about two seconds,
+// and has its top and bottom eighth covered by Instagram's own chrome — the
+// avatar and progress bars above, the reply box below. Type placed there is
+// type nobody sees, so the vertical layout is authored separately.
+describe("stories and reels get their own canvas", () => {
+  const P = (name, price) => ({ displayName: name, retailPrice: price });
+  const OUT = [P("Nike Air Force 1 Cream", 750), P("Diesel Jean Blue", 900), P("Lacoste L12 100ML", 300)];
+
+  it("is 1080x1920, exactly 9:16", () => {
+    for (const f of ["story", "reel"]) {
+      const c = D.canvasFor(f);
+      expect(c.w).toBe(1080);
+      expect(c.h).toBe(1920);
+      expect(c.w / c.h).toBeCloseTo(9 / 16, 5);
+    }
+  });
+
+  it("the feed card is unchanged at 4:5", () => {
+    const c = D.canvasFor("feed");
+    expect(c.w / c.h).toBeCloseTo(4 / 5, 5);
+  });
+
+  it("an unknown format falls back to the feed card rather than throwing", () => {
+    expect(D.canvasFor("nonsense")).toEqual(D.canvasFor("feed"));
+  });
+
+  it("declares the right size on the svg", () => {
+    const svg = D.buildOverlay({ products: OUT, kind: "outfit", format: "story" });
+    expect(svg).toContain('width="1080"');
+    expect(svg).toContain('height="1920"');
+  });
+
+  describe("everything stays inside Instagram's chrome", () => {
+    const svg = D.buildOverlay({ products: OUT, kind: "outfit", format: "story" });
+    const ys = [...svg.matchAll(/<text[^>]*\by="([\d.]+)"/g)].map((m) => Number(m[1]));
+    const { h, safeTop, safeBottom } = D.canvasFor("story");
+
+    it("draws no text under the top chrome", () => {
+      expect(Math.min(...ys)).toBeGreaterThanOrEqual(safeTop);
+    });
+    it("draws no text under the reply box", () => {
+      expect(Math.max(...ys)).toBeLessThanOrEqual(h - safeBottom + 100);
+    });
+    it("reserves more room than a feed card does", () => {
+      expect(D.canvasFor("story").safeTop).toBeGreaterThan(D.canvasFor("feed").safeTop);
+    });
+  });
+
+  describe("the same numbers, from the same records", () => {
+    it("prices and the total are identical across formats", () => {
+      for (const f of ["feed", "story", "reel"]) {
+        const svg = D.buildOverlay({ products: OUT, kind: "outfit", format: f });
+        expect(svg, f).toContain("R750");
+        expect(svg, f).toContain("R1,950");   // 750 + 900 + 300, summed in code
+      }
+    });
+    it("an unpriced product is omitted on the vertical canvas too", () => {
+      const svg = D.buildOverlay({ products: [P("No price", null), P("Real", 500)], kind: "outfit", format: "story" });
+      expect(svg).not.toMatch(/R0\b|RNaN|Rnull/);
+      expect(svg).not.toContain("NO PRICE");
+    });
+  });
+
+  describe("the website is on the artwork, because a link sticker is impossible", () => {
+    it("composites the address", () => {
+      // Meta's Content Publishing API cannot attach a link sticker — publishing
+      // stickers is explicitly unsupported. Without the URL on the artwork a
+      // story has no route to the shop at all.
+      expect(D.buildOverlay({ products: OUT, kind: "outfit", format: "story" }))
+        .toContain("MARATHONCLUB.CO.ZA");
+    });
+  });
+
+  describe("ink is chosen where the words actually are", () => {
+    // chooseLayout answers a FEED question — which side has the space. In the
+    // vertical layout the callouts are always low and left, so the brightness
+    // that matters is the lower left. The first render put near-black type on
+    // black denim because the whole-column average was bright enough.
+    const dark = { left: { mean: 200, stdev: 20, bottom: { mean: 30, stdev: 10 } } };
+    const light = { left: { mean: 40, stdev: 20, bottom: { mean: 220, stdev: 10 } } };
+
+    it("goes light when the lower left is dark", () => {
+      expect(D.buildOverlay({ products: OUT, kind: "outfit", format: "story", edges: dark })).toContain("#F4F1EA");
+    });
+    it("goes dark when the lower left is bright", () => {
+      expect(D.buildOverlay({ products: OUT, kind: "outfit", format: "story", edges: light })).toContain("#141414");
+    });
+  });
+});

@@ -7,7 +7,7 @@
 import { describe, it, expect } from "vitest";
 import {
   GRAPH_VERSION, CONTAINER_MAX_WAIT_MS, REQUEST_TIMEOUT_MS,
-  isVideo, igContainerPayload, igCarouselPayload, metaError, isRetryable, waitForContainer,
+  isVideo, igContainerPayload, fbStoryEndpoint, igCarouselPayload, metaError, isRetryable, waitForContainer,
 } from "./meta.mjs";
 
 describe("isRetryable — Meta's throttling is an HTTP 400", () => {
@@ -118,5 +118,57 @@ describe("waitForContainer", () => {
 describe("the API version is pinned", () => {
   it("never 'latest' — Meta deprecates on a schedule", () => {
     expect(GRAPH_VERSION).toMatch(/^v\d+\.\d+$/);
+  });
+});
+
+// ── STORIES ARE A DIFFERENT MEDIA TYPE, NOT A DIFFERENT SHAPE ────────────────
+// A story is media_type=STORIES whether it carries a photo or a video. It is
+// not "a feed post that happens to be 9:16", and getting that wrong publishes
+// a 1080x1920 image to the feed where Instagram crops it.
+describe("story containers", () => {
+  const img = { type: "image", url: "https://example.test/i.jpg" };
+  const vid = { type: "video", url: "https://example.test/v.mp4" };
+
+  it("a photo story is STORIES with an image_url", () => {
+    expect(igContainerPayload(img, { format: "story" }))
+      .toEqual({ media_type: "STORIES", image_url: img.url });
+  });
+
+  it("a video story is STORIES with a video_url — not REELS", () => {
+    const p = igContainerPayload(vid, { format: "story" });
+    expect(p.media_type).toBe("STORIES");
+    expect(p.video_url).toBe(vid.url);
+  });
+
+  it("carries NO caption, and drops one that was passed", () => {
+    // Meta ignores the field on a story. Left to be "ignored", a caption that
+    // was written, reviewed and approved vanishes silently — so it is dropped
+    // here, visibly, where a test can hold it.
+    for (const item of [img, vid]) {
+      expect(igContainerPayload(item, { format: "story", caption: "a real caption" }).caption)
+        .toBeUndefined();
+    }
+  });
+
+  it("leaves the feed and reel payloads exactly as they were", () => {
+    expect(igContainerPayload(img, { caption: "hi" })).toEqual({ image_url: img.url, caption: "hi" });
+    const reel = igContainerPayload(vid, { caption: "hi" });
+    expect(reel.media_type).toBe("REELS");
+    expect(reel.video_url).toBe(vid.url);
+    expect(reel.caption).toBe("hi");
+  });
+
+  it("a story is never a carousel child", () => {
+    const p = igContainerPayload(img, { format: "story", carouselChild: true });
+    expect(p.is_carousel_item).toBeUndefined();
+  });
+});
+
+describe("Facebook stories use their own endpoints, not the Page feed", () => {
+  it("a photo story goes to photo_stories", () => {
+    expect(fbStoryEndpoint({ type: "image", url: "x" })).toBe("photo_stories");
+  });
+  it("a video story goes to video_stories", () => {
+    expect(fbStoryEndpoint({ type: "video", url: "x" })).toBe("video_stories");
   });
 });

@@ -56,6 +56,26 @@ const FONT = "Archivo, Helvetica Neue, Helvetica, Arial, sans-serif";
 
 const W = 1080, H = 1350;
 
+// ── THE TWO CANVASES ─────────────────────────────────────────────────────────
+// A feed post is 4:5 and a story or a reel is 9:16. They are not the same
+// design at different sizes: a story is held in one hand, read in about two
+// seconds and has the top and bottom eighth covered by Instagram's own chrome —
+// the avatar and progress bars above, the reply box below. Type placed there is
+// type nobody sees.
+//
+// So the vertical layout is authored separately rather than scaled from the
+// feed one. Everything ELSE is shared: the same prices from the same records,
+// the same total summed the same way, the same typeface, the same refusal to
+// print a price that is not in the catalogue.
+const CANVAS = {
+  feed:  { w: 1080, h: 1350, safeTop: 60,  safeBottom: 90 },
+  story: { w: 1080, h: 1920, safeTop: 250, safeBottom: 260 },
+  reel:  { w: 1080, h: 1920, safeTop: 250, safeBottom: 320 },
+};
+const FORMATS = Object.keys(CANVAS);
+const canvasFor = (format) => CANVAS[format] || CANVAS.feed;
+const isVertical = (format) => canvasFor(format).h > canvasFor(format).w * 1.5;
+
 // Brands worth splitting onto their own line, longest first so "New Era" wins
 // before "New". Presentational only — it changes line breaks, never the words.
 const BRANDS = [
@@ -185,7 +205,88 @@ function chooseLayout(edges = {}) {
  * @param edges    measured luminance, from measureEdges() in index.js
  * @param kind     post kind; only "outfit" gets a WHOLE OUTFIT total
  */
-function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA", width = W, height = H } = {}) {
+/**
+ * The vertical layout, for a story or a reel.
+ *
+ * Different from the feed card by intent, not by scale:
+ *   · everything lives INSIDE the safe area, because Instagram's chrome covers
+ *     the top and bottom of a story and anything under it is invisible
+ *   · the callouts sit low, where a thumb is, and are bigger — a story is read
+ *     in about two seconds at arm's length
+ *   · the website is composited ON THE ARTWORK. The Content Publishing API
+ *     cannot attach a link sticker (Meta's docs are explicit that publishing
+ *     stickers is unsupported), so the URL has to be readable or the story has
+ *     no route to the shop at all.
+ */
+function buildVerticalOverlay({ products, edges, kind, storefront, format }) {
+  const { w, h, safeTop, safeBottom } = canvasFor(format);
+  const rows = sellableRows(products);
+
+  // ── MEASURE WHERE THE TYPE ACTUALLY GOES ───────────────────────────────────
+  // chooseLayout() answers a question about the FEED card: which SIDE has the
+  // negative space. In the vertical layout the answer is already decided — the
+  // callouts sit low and left, over the bottom of the photograph — so the side
+  // it picks is irrelevant and the brightness it reports is measured somewhere
+  // the type will never be.
+  //
+  // That is not academic. The first vertical render put near-black callouts on
+  // black denim and dark shoes, because the whole-column average was bright
+  // enough to choose dark ink while the lower left was not. Ink follows the
+  // region the words are in.
+  const lower = (edges.left && edges.left.bottom) || edges.left || {};
+  const darkThere = Number.isFinite(lower.mean) ? lower.mean < 140 : true;
+  const ink = darkThere ? "#F4F1EA" : "#141414";
+  const scrim = darkThere ? "#000000" : "#FFFFFF";
+  const o = [];
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w)}" height="${Math.round(h)}" viewBox="0 0 ${w} ${h}">`);
+  o.push(`<defs>
+    <linearGradient id="vfoot" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="${scrim}" stop-opacity="0.86"/>
+      <stop offset="0.55" stop-color="${scrim}" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="${scrim}" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="vtop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${scrim}" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="${scrim}" stop-opacity="0"/>
+    </linearGradient>
+  </defs>`);
+  const x = 72;
+  const stackH = rows.length * 104 + (rows.length > 1 ? 150 : 60);
+  const footTop = Math.max(safeTop + 200, h - safeBottom - stackH);
+  o.push(`<rect x="0" y="0" width="${w}" height="${safeTop + 160}" fill="url(#vtop)"/>`);
+  o.push(`<rect x="0" y="${footTop - 120}" width="${w}" height="${h - footTop + 120}" fill="url(#vfoot)"/>`);
+
+  // The wordmark, once, inside the safe area.
+  o.push(`<text x="${x}" y="${safeTop + 46}" font-family="${FONT}" font-weight="700" font-size="40" fill="${ink}" letter-spacing="9">MARATHON</text>`);
+  o.push(`<text x="${x}" y="${safeTop + 82}" font-family="${FONT}" font-weight="400" font-size="21" fill="${ink}" letter-spacing="14" opacity="0.9">CLUB</text>`);
+
+  let y = footTop;
+  for (const r of rows) {
+    const { brand, rest } = splitName(r.name);
+    o.push(`<text x="${x}" y="${y}" font-family="${FONT}" font-weight="700" font-size="21" fill="${ink}" letter-spacing="3">${esc(wrap(brand, 24, 1)[0] || "")}</text>`);
+    const d = wrap(rest, 26, 1);
+    if (d[0]) o.push(`<text x="${x}" y="${y + 27}" font-family="${FONT}" font-weight="400" font-size="19" fill="${ink}" letter-spacing="2" opacity="0.88">${esc(d[0])}</text>`);
+    o.push(`<text x="${x}" y="${y + 66}" font-family="${FONT}" font-weight="600" font-size="27" fill="${ink}">${esc(rand(r.price))}</text>`);
+    y += 104;
+  }
+  if (kind === "outfit" && rows.length > 1) {
+    o.push(`<line x1="${x}" y1="${y - 24}" x2="${x + 300}" y2="${y - 24}" stroke="${ink}" stroke-width="1" opacity="0.4"/>`);
+    o.push(`<text x="${x}" y="${y + 12}" font-family="${FONT}" font-weight="700" font-size="18" fill="${ink}" letter-spacing="5">WHOLE OUTFIT</text>`);
+    o.push(`<text x="${x}" y="${y + 74}" font-family="${FONT}" font-weight="700" font-size="60" fill="${ink}" letter-spacing="-0.5">${esc(rand(outfitTotal(rows)))}</text>`);
+    y += 108;
+  }
+  // No link sticker is possible, so the address is the route. It has to be
+  // legible rather than tasteful-and-unreadable.
+  o.push(`<text x="${x}" y="${h - safeBottom + 42}" font-family="${FONT}" font-weight="700" font-size="21" fill="${ink}" letter-spacing="4">SHOP IT ONLINE</text>`);
+  o.push(`<text x="${x}" y="${h - safeBottom + 78}" font-family="${FONT}" font-weight="400" font-size="19" fill="${ink}" letter-spacing="3" opacity="0.92">${esc(storefront)}</text>`);
+  o.push(`</svg>`);
+  return o.join("\n");
+}
+
+function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA", width = W, height = H, format = "feed" } = {}) {
+  if (isVertical(format)) {
+    return buildVerticalOverlay({ products, edges, kind, storefront, format });
+  }
   const rows = sellableRows(products);
   const { side, anchor, ink, scrim } = chooseLayout(edges);
   const DISPLAY = FONT;
@@ -266,4 +367,4 @@ function buildOverlay({ products = [], edges = {}, kind = "single", storefront =
   return o.join("\n");
 }
 
-module.exports = { buildOverlay, FONT, FONT_DIR, chooseLayout, sellableRows, outfitTotal, splitName, rand, wrap, W, H };
+module.exports = { buildOverlay, buildVerticalOverlay, CANVAS, FORMATS, canvasFor, isVertical, FONT, FONT_DIR, chooseLayout, sellableRows, outfitTotal, splitName, rand, wrap, W, H };

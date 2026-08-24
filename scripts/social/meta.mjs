@@ -69,8 +69,24 @@ export const isVideo = (m) => m && m.type === "video";
  * `carouselChild` suppresses the caption: Meta rejects a caption on a child,
  * and the parent carries it.
  */
-export function igContainerPayload(item, { caption = null, carouselChild = false } = {}) {
+export function igContainerPayload(item, { caption = null, carouselChild = false, format = "feed" } = {}) {
   const payload = {};
+  // ── STORIES ARE THEIR OWN media_type, FOR EITHER MEDIUM ────────────────────
+  // A story can be a photo or a video and is media_type=STORIES either way —
+  // it is NOT "a feed post that happens to be 9:16". Verified against the live
+  // account: a STORIES container with an image_url was accepted.
+  //
+  // A story also takes NO CAPTION. Meta ignores the field, and passing it makes
+  // a caption that was written, reviewed and approved silently vanish — which
+  // is why the caption is dropped here explicitly rather than left to be
+  // ignored. Everything a story has to say is composited onto the artwork,
+  // including the address, because the API cannot attach a link sticker.
+  if (format === "story") {
+    payload.media_type = "STORIES";
+    if (isVideo(item)) payload.video_url = item.url;
+    else payload.image_url = item.url;
+    return payload;
+  }
   if (isVideo(item)) {
     payload.media_type = "REELS";
     payload.video_url = item.url;
@@ -80,6 +96,17 @@ export function igContainerPayload(item, { caption = null, carouselChild = false
   if (carouselChild) payload.is_carousel_item = "true";
   else if (caption != null) payload.caption = caption;
   return payload;
+}
+
+/**
+ * Facebook's story endpoints, which are NOT the Page feed.
+ *
+ * A photo story is two calls: upload the photo UNPUBLISHED to /photos to get an
+ * id, then POST that id to /photo_stories. A video story goes to /video_stories.
+ * Neither takes a message — same as Instagram, everything is on the artwork.
+ */
+export function fbStoryEndpoint(item) {
+  return isVideo(item) ? "video_stories" : "photo_stories";
 }
 
 /** The parent payload for a carousel of already-created children. */
