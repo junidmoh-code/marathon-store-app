@@ -41,6 +41,12 @@
 //   M-CONTEXT      feed the mirror only the seatable locations  (SeatingTab)
 //   M-STABLE-LISTS key the location lists on the registry object (SeatingTab)
 //   M-RESELECT     blank the screen when the same product is re-picked
+//
+// ── PHOTOS IN THE RESULTS (#430) ────────────────────────────────────────────
+//   M-THUMB-STOP   let a photo tap fall through and SELECT the product
+//   M-THUMB-GONE   drop the thumbnail from the results list
+//   M-LIGHTBOX     never render the opened photo
+//   M-CARD-PHOTO   make the open product's own photo untappable
 //   M-STATE-FALLBACK  hash a v-less cell to one constant for ever
 //   M-RESEAT-REREAD   let Re-seat trust the render-time snapshot
 //
@@ -58,6 +64,7 @@ const CORE = "src/components/stock/seatingCore.js";
 const STORE = "src/components/stock/seatingStore.js";
 const ACTIONS = "src/components/stock/SeatingActions.jsx";
 const TAB = "src/components/stock/SeatingTab.jsx";
+const WIDGETS = "src/components/stock/healthWidgets.jsx";
 
 const CORE_TESTS = ["src/components/stock/seatingCore.test.js"];
 const STORE_TESTS = ["src/components/stock/seatingStore.test.js"];
@@ -412,6 +419,42 @@ const MUTATIONS = [
     guard: "re-selecting the product already on screen does not blank it",
     file: TAB,
     from: `    if (nextPid && nextPid === pid) { load(nextPid); return; }`,
+    to: ``,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-THUMB-STOP",
+    guard: "looking at a photo is not choosing the product — the tap never reaches the row",
+    file: WIDGETS,
+    from: `onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}`,
+    to: `onClick={onOpen ? (e) => { onOpen(url); } : undefined}`,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-THUMB-GONE",
+    guard: "every search result carries its picture, before anything is opened",
+    file: TAB,
+    from: `              <PhotoThumb
+                url={p.photoUrl}
+                alt={p.name}
+                onOpen={p.photoUrl ? (u) => setPhoto(u) : undefined}
+              />`,
+    to: ``,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-LIGHTBOX",
+    guard: "the photo actually opens full screen",
+    file: TAB,
+    from: `      <PhotoLightbox url={photo} onClose={() => setPhoto("")} />`,
+    to: `      <PhotoLightbox url="" onClose={() => setPhoto("")} />`,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-CARD-PHOTO",
+    guard: "the opened product's own photo opens too",
+    file: TAB,
+    from: `            onPhotoTap={product.photoUrl ? () => setPhoto(product.photoUrl) : undefined}`,
     to: ``,
     tests: TAB_TESTS,
   },

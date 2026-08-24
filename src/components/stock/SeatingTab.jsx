@@ -35,7 +35,7 @@ import { searchProducts } from "../../utils/productSearch";
 import { transferTargets, labelFor, DEFAULT_LOCATIONS, IN_TRANSIT } from "./locations";
 import { useLocations, useEngineConfig } from "./useStock";
 import { seatingRows, seatingAt, lastTouch, SEAT_REASON } from "./seatingCore";
-import { ProductCard, Badge, SizeFactChip, CHIP_GRID } from "./healthWidgets";
+import { ProductCard, Badge, SizeFactChip, CHIP_GRID, PhotoThumb, PhotoLightbox } from "./healthWidgets";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import CameraScanner from "./CameraScanner";
 import { FONT, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGhost, bGray, input } from "./ui";
@@ -81,6 +81,8 @@ export default function SeatingTab({ products, viewer, flash }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [camera, setCamera] = useState(false);
+  // The photo being looked at, if any. Looking is not choosing — see PhotoThumb.
+  const [photo, setPhoto] = useState("");
   const [open, setOpen] = useState("");        // the location row with its actions expanded
 
   // ── TWO LISTS, AND THE DIFFERENCE IS LOAD-BEARING ──────────────────────────
@@ -229,6 +231,8 @@ export default function SeatingTab({ products, viewer, flash }) {
           border: "1px solid rgba(248,113,113,.45)", color: RED, fontSize: ".85rem" }}>{error}</div>
       )}
 
+      <PhotoLightbox url={photo} onClose={() => setPhoto("")} />
+
       {camera && (
         <CameraScanner
           title="Scan a product"
@@ -244,15 +248,30 @@ export default function SeatingTab({ products, viewer, flash }) {
       )}
       {query.trim() && matches.length > 0 && (
         <div style={{ marginBottom: "1rem" }}>
+          {/* A PICTURE BEFORE THE COMMITMENT. Names in this catalogue collide —
+              colourway siblings share a style code, and twins share a name
+              outright — so a text-only list asks the operator to pick blind and
+              find out afterwards. The thumb answers "is this the one?" in the
+              list, and opens full screen without selecting anything, because
+              looking and choosing are different acts. */}
           {matches.map((p) => (
-            <button
+            <div
               key={p.id}
-              onClick={() => { setQuery(""); choose(p.id); }}
-              style={{ ...bGray, display: "block", width: "100%", textAlign: "left", marginBottom: 6,
-                fontWeight: p.id === pid ? 800 : 600 }}
+              style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}
             >
-              {p.name}
-            </button>
+              <PhotoThumb
+                url={p.photoUrl}
+                alt={p.name}
+                onOpen={p.photoUrl ? (u) => setPhoto(u) : undefined}
+              />
+              <button
+                onClick={() => { setQuery(""); choose(p.id); }}
+                style={{ ...bGray, flex: 1, minWidth: 0, textAlign: "left",
+                  fontWeight: p.id === pid ? 800 : 600 }}
+              >
+                {p.name}
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -263,6 +282,7 @@ export default function SeatingTab({ products, viewer, flash }) {
           <ProductCard
             photo={product.photoUrl}
             photos={product.photos}
+            onPhotoTap={product.photoUrl ? () => setPhoto(product.photoUrl) : undefined}
             name={product.name}
             badges={<>
               <Badge tone={seatedCount ? GREEN : AMBER}>{seatedCount} seated</Badge>

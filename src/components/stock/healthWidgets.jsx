@@ -66,6 +66,57 @@ export function Badge({ children, tone = BLUE_L }) {
   );
 }
 
+// ─── PHOTO THUMB + LIGHTBOX ───────────────────────────────────────────────────
+// A product picture, and a way to actually look at it.
+//
+// WHY THESE LIVE HERE. Three screens had already grown their own copy of this
+// pair — CountedStockReview, HubSneakerCount and AssignCategoriesTab — each with
+// its own sizes, its own fallback and its own z-index. This is the fourth
+// caller, and a fourth copy is where the drift becomes permanent, so the pair
+// is exported from the shared widget module the stock screens already import.
+// The three existing copies are deliberately NOT rewritten here: they are
+// working surfaces and this is not their change. They are the follow-up.
+//
+// The thumb stops its own click from reaching whatever it sits inside. Looking
+// at a picture is not the same act as choosing the thing in it — a shopper's
+// question ("is this the one?") must not commit the operator to a screen.
+export function PhotoThumb({ url, onOpen, size = 44, alt = "", fallback = "📦" }) {
+  if (url) {
+    return (
+      <img
+        src={url} alt={alt} loading="lazy" decoding="async"
+        onClick={onOpen ? (e) => { e.stopPropagation(); onOpen(url); } : undefined}
+        // A dead URL must leave the row's shape alone, so the element is hidden
+        // rather than collapsed and the layout does not jump.
+        onError={(e) => { e.currentTarget.style.visibility = "hidden"; }}
+        style={{ width: size, height: size, objectFit: "cover", borderRadius: 10, flexShrink: 0,
+                 cursor: onOpen ? "zoom-in" : "default", border: "1px solid rgba(255,255,255,.08)",
+                 background: "rgba(60,110,255,.1)" }}
+      />
+    );
+  }
+  return (
+    <div aria-hidden="true"
+      style={{ width: size, height: size, borderRadius: 10, flexShrink: 0, background: "rgba(120,150,255,.08)",
+               display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.round(size / 2.4) }}>
+      {fallback}
+    </div>
+  );
+}
+
+// Full screen, tap anywhere to close. One thumb, no hunt for an ✕ — the person
+// looking at this is usually holding the product in the other hand.
+export function PhotoLightbox({ url, onClose }) {
+  if (!url) return null;
+  return (
+    <div onClick={onClose} role="dialog" aria-modal="true" aria-label="Product photo"
+      style={{ position: "fixed", inset: 0, zIndex: 90, background: "rgba(0,0,0,.9)",
+               display: "flex", alignItems: "center", justifyContent: "center", padding: 18, cursor: "zoom-out" }}>
+      <img src={url} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 14 }} />
+    </div>
+  );
+}
+
 export function ProductCard({ photo, photos, onPhotoTap, name, badges, sub, right, children }) {
   const src = photo || (photos && photos[0]) || null;
   return (
