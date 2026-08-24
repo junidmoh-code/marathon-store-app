@@ -26,7 +26,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import { SLOT_DAYS, SLOT_HOUR_SAST, STORY_HOUR_SAST, STORY_MINUTE_SAST } from "../../src/components/social/socialCore.js";
+import { SLOT_DAYS, SLOT_HOUR_SAST } from "../../src/components/social/socialCore.js";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const PLIST_RAW = read("./com.marathon.socialpublish.plist");
@@ -78,46 +78,32 @@ function calendarEntries(xml) {
 
 describe("the launchd schedule matches the slots the app promises", () => {
   const entries = calendarEntries(PLIST);
-  const postEntries  = entries.filter((e) => e.Hour === SLOT_HOUR_SAST);
-  const storyEntries = entries.filter((e) => e.Hour === STORY_HOUR_SAST);
 
-  it("declares a feed-post entry on every slot day", () => {
-    expect(postEntries.length).toBe(SLOT_DAYS.length);
-  });
-
-  it("declares a story entry on every slot day", () => {
-    expect(storyEntries.length).toBe(SLOT_DAYS.length);
-  });
-
-  it("has no calendar entry that is neither the post nor the story hour", () => {
-    // Guards against a stray leftover from an older cadence surviving an edit.
-    expect(entries.length).toBe(postEntries.length + storyEntries.length);
+  it("declares exactly one fire per slot day, and nothing else", () => {
+    // ONE daily fire. A second (16:30, for stories) was added and removed the
+    // same day: nothing publishes a story, so that fire ran the ordinary
+    // publisher and would have posted an approved, overdue item to the FEED at
+    // a time meant for stories. This assertion is what stops it coming back by
+    // accident, ahead of the code that would make it mean something.
+    expect(entries.length).toBe(SLOT_DAYS.length);
   });
 
   it("fires on exactly SLOT_DAYS — no extra day, no missing day", () => {
-    for (const [label, set] of [["post", postEntries], ["story", storyEntries]]) {
-      const weekdays = set.map((e) => e.Weekday).sort((a, b) => a - b);
-      expect(weekdays, label).toEqual([...SLOT_DAYS].sort((a, b) => a - b));
-    }
+    const weekdays = entries.map((e) => e.Weekday).sort((a, b) => a - b);
+    expect(weekdays).toEqual([...SLOT_DAYS].sort((a, b) => a - b));
   });
 
-  it("puts the post and the story at DIFFERENT times, so they never fire together", () => {
-    // Owner spec: keep them apart. Same hour would spend two placements on one
-    // moment, which is the whole reason there are two of them.
-    expect(STORY_HOUR_SAST).not.toBe(SLOT_HOUR_SAST);
-  });
-
-  it("fires at the declared hour and minute, every day it fires", () => {
-    for (const e of postEntries) {
-      expect(e.Hour, `post Weekday ${e.Weekday}`).toBe(SLOT_HOUR_SAST);
+  it("fires at SLOT_HOUR_SAST on the hour, every day it fires", () => {
+    for (const e of entries) {
+      expect(e.Hour, `Weekday ${e.Weekday}`).toBe(SLOT_HOUR_SAST);
       // Minute must be EXPLICIT. launchd treats an omitted field as a wildcard,
       // so a dict with Hour but no Minute fires all sixty minutes of that hour.
-      expect(e.Minute, `post Weekday ${e.Weekday} has no explicit Minute`).toBe(0);
+      expect(e.Minute, `Weekday ${e.Weekday} has no explicit Minute`).toBe(0);
     }
-    for (const e of storyEntries) {
-      expect(e.Hour, `story Weekday ${e.Weekday}`).toBe(STORY_HOUR_SAST);
-      expect(e.Minute, `story Weekday ${e.Weekday}`).toBe(STORY_MINUTE_SAST);
-    }
+  });
+
+  it("declares no fire at any other hour", () => {
+    expect([...new Set(entries.map((e) => e.Hour))]).toEqual([SLOT_HOUR_SAST]);
   });
 });
 

@@ -402,26 +402,15 @@ export function truncateWords(text, max) {
 // Mon/Wed/Sat 18:00 cadence. Fixed slots rather than a computed interval, so
 // the queue can SHOW them and they can be reasoned about.
 //
-// A story is a second daily piece and gets its OWN hour, deliberately apart
-// from the post: firing both at once spends two placements on one moment, and
-// stories and feed posts are consumed at different times of day. 11:00 catches
-// late-morning browsing; 16:30 catches the end of the working day, when stories
-// are checked and a feed post has already had five hours to run.
+// There is ONE daily fire. A 16:30 story slot existed briefly and was removed:
+// nothing publishes a story (the publisher has no story path), so that fire ran
+// the ordinary publisher and would have posted an approved, overdue item to the
+// FEED at a time meant for stories. STORY_HOUR_SAST is gone rather than left
+// declared, because a constant describing behaviour that does not exist is a
+// claim the code cannot keep. It returns with the story work.
 //
-// SAST is UTC+2 with no daylight saving (the same fact functions/lib/sa-time.cjs
-// is built on), so the conversion is a constant offset and needs no timezone
-// library in either the bundle or the runner.
-//
-// STORY_HOUR_SAST is declared here and carried into the launchd agent so the
-// two halves cannot drift, but NOTHING PUBLISHES A STORY YET — the publisher
-// has no story endpoint (Instagram needs media_type=STORIES; see the probe in
-// the 2026-08-24 report). Until that is built the 16:30 fire finds nothing due
-// and exits, which is the honest behaviour: a reserved slot that does nothing,
-// not a silent failure.
 export const SLOT_DAYS = [0, 1, 2, 3, 4, 5, 6];   // every day — JS getUTCDay numbering
 export const SLOT_HOUR_SAST = 11;                 // the feed post
-export const STORY_HOUR_SAST = 16;                // the story
-export const STORY_MINUTE_SAST = 30;
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
 
 // The furthest ahead this will ever schedule. A bound is needed so a caller
