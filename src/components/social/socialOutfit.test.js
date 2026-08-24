@@ -133,3 +133,114 @@ describe("the outfit kind's own contract", () => {
     expect(outfit.maxProducts).toBeGreaterThanOrEqual(5);
   });
 });
+
+// ── A PAIRING IS CHOSEN AS A PAIRING, NOT SALVAGED FROM A FAILED OUTFIT ──────
+// Owner spec: "A pairing is chosen as a pairing at the START of generation — it
+// is never an outfit that failed to fill its slots. If the outfit builder
+// cannot fill top/bottom/shoe it still refuses; it does not silently downgrade."
+//
+// The completeness rule for OUTFITS is unchanged and must stay unchanged: it is
+// what stopped "a jacket and one shoe" being posted as a look.
+describe("pairings exist alongside outfits, never instead of them", () => {
+  const pairing = (candidates) => S.pickForKind("pairing", candidates);
+
+  it("the outfit rule is untouched — a missing bottom still refuses", () => {
+    // The assertion the owner asked for by name.
+    const r = pick([cand("t-shirts"), cand("sneakers"), cand("perfumes")]);
+    expect(r.picks).toEqual([]);
+    expect(r.reason).toMatch(/bottom/);
+  });
+
+  it("an outfit never downgrades itself to a pairing", () => {
+    // Same candidates, asked as an outfit: still nothing, not a consolation
+    // two-piece.
+    const r = pick([cand("hoodies"), cand("sneakers")]);
+    expect(r.picks).toEqual([]);
+  });
+
+  it("but the same stock makes a legitimate pairing when ASKED for one", () => {
+    const r = pairing([cand("hoodies"), cand("sneakers")]);
+    expect(r.reason).toBeNull();
+    expect(r.picks.map((p) => p.slot)).toEqual(["top", "shoe"]);
+  });
+
+  it("no pairing shape is secretly a complete outfit", () => {
+    // A top+bottom+shoe set IS an outfit; posting it as a pairing would waste a
+    // whole look on weaker framing.
+    for (const shape of S.PAIRING_SHAPES) {
+      const covers = S.OUTFIT_CORE.every((slot) => shape.includes(slot));
+      expect(covers, `shape ${shape.join("+")} is a full outfit`).toBe(false);
+    }
+  });
+
+  it("a produced pairing never contains top+bottom+shoe together", () => {
+    const r = pairing([cand("hoodies"), cand("pants"), cand("sneakers"), cand("caps-beanies")]);
+    expect(r.reason).toBeNull();
+    const slots = new Set(r.picks.map((p) => p.slot));
+    const isOutfit = S.OUTFIT_CORE.every((s) => slots.has(s));
+    expect(isOutfit).toBe(false);
+  });
+
+  it("holds to two or three pieces", () => {
+    const r = pairing([cand("hoodies"), cand("sneakers"), cand("perfumes"), cand("bags"), cand("caps-beanies")]);
+    expect(r.picks.length).toBeGreaterThanOrEqual(2);
+    expect(r.picks.length).toBeLessThanOrEqual(3);
+  });
+
+  it("refuses rather than pairing two unrelated things", () => {
+    // Two bottoms is not a pairing anybody would post.
+    const r = pairing([cand("pants"), cand("shorts")]);
+    expect(r.picks).toEqual([]);
+  });
+
+  it("the mix is one named constant, in the range the owner asked for", () => {
+    expect(S.PAIRING_EVERY_N_POSTS).toBeGreaterThanOrEqual(3);
+    expect(S.PAIRING_EVERY_N_POSTS).toBeLessThanOrEqual(4);
+  });
+});
+
+// ── NAMES REACH THE CUSTOMER CLEAN ───────────────────────────────────────────
+describe("product names are cleaned once, in one place", () => {
+  const { cleanProductName, isDirtyProductName } = require("../../../functions/lib/product-name.cjs");
+
+  // Every case here is a REAL live product name, sampled 2026-08-24.
+  for (const [raw, want] of [
+    ["Diesel Jeans-4", "Diesel Jeans"],
+    ["Adidas Tracksuit Grey #2506", "Adidas Tracksuit Grey"],
+    ["DIESEL JEAN BLUE  #Y8161-1", "DIESEL JEAN BLUE"],
+    ["Nike Tech Fleece Tracksuit Brown 2", "Nike Tech Fleece Tracksuit Brown"],
+    [" New Era 59FIFTY Seattle Mariners cap navy", "New Era 59FIFTY Seattle Mariners cap navy"],
+    ["Timberland dark brown ", "Timberland dark brown"],
+    ["Nike Air Force 1 shell  Cream Brown", "Nike Air Force 1 shell Cream Brown"],
+  ]) {
+    it(`cleans ${JSON.stringify(raw)}`, () => expect(cleanProductName(raw)).toBe(want));
+  }
+
+  // The other half, and the more dangerous one: a real style code IS the
+  // product. Stripping it would name a different item.
+  for (const keep of [
+    "G-Star Raw Cargo Jean GS-5211",
+    "Replay jeans dark green B1113-3",
+    "Lacoste L12 100ML",
+    "Nike Air Force 1",
+    "Jordan 1 black with brown",
+  ]) {
+    it(`leaves ${JSON.stringify(keep)} alone`, () => expect(cleanProductName(keep)).toBe(keep));
+  }
+
+  it("survives rubbish input without throwing", () => {
+    for (const v of [null, undefined, 42, {}, ""]) expect(cleanProductName(v)).toBe("");
+  });
+
+  it("is idempotent — cleaning a clean name changes nothing", () => {
+    for (const raw of ["Diesel Jeans-4", "Adidas Tracksuit Grey #2506", " Timberland "]) {
+      const once = cleanProductName(raw);
+      expect(cleanProductName(once)).toBe(once);
+    }
+  });
+
+  it("reports which stored names would change", () => {
+    expect(isDirtyProductName("Diesel Jeans-4")).toBe(true);
+    expect(isDirtyProductName("Nike Air Force 1")).toBe(false);
+  });
+});

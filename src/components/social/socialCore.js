@@ -97,6 +97,15 @@ export const POST_KINDS = [
     costUSD: 0.134,
   },
   {
+    key: "pairing",
+    label: "Pairing",
+    hint: "Two or three pieces that go together — never framed as a full look",
+    minProducts: 2,
+    maxProducts: 3,
+    generates: true,
+    costUSD: 0.134,
+  },
+  {
     key: "new_arrivals",
     label: "New arrivals",
     hint: "A carousel of what just went live — existing photos, nothing generated",

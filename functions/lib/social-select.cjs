@@ -43,6 +43,8 @@
 // seller nobody has seen on Instagram, and a box that landed on Tuesday.
 "use strict";
 
+const { cleanProductName } = require("./product-name.cjs");
+
 // KEEP IN SYNC with src/components/social/socialCore.js POST_KINDS — the
 // browser prices the Generate buttons from its copy and this file decides what
 // they produce. social-select.test.cjs pins the two equal, field by field.
@@ -51,6 +53,13 @@ const POST_KINDS = [
   { key: "flatlay", label: "Flat-lay", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
   { key: "new_arrivals", label: "New arrivals", minProducts: 2, maxProducts: 10, generates: false, costUSD: 0.0004 },
   { key: "outfit", label: "Full outfit", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
+  // ── A PAIRING IS NOT A FAILED OUTFIT ──────────────────────────────────────
+  // Two or three pieces that go together, presented as a pairing and never
+  // framed as a complete look. Chosen as a pairing at the START of generation:
+  // the outfit builder still REFUSES when it cannot fill top/bottom/shoe, and
+  // never silently downgrades. That refusal is what stopped "a jacket and one
+  // shoe" going out as a look, and it stays exactly as built.
+  { key: "pairing", label: "Pairing", minProducts: 2, maxProducts: 3, generates: true, costUSD: 0.134 },
 ];
 const KIND_KEYS = POST_KINDS.map((k) => k.key);
 
@@ -209,6 +218,28 @@ const SLOT_MATCHERS = [
   },
 ];
 
+// ── WHAT READS AS A DELIBERATE PAIRING ───────────────────────────────────────
+// Owner's list, in preference order. Each is a combination a person would
+// actually put together and talk about; none of them is a whole look, and none
+// of them pretends to be.
+//
+// A pairing must NEVER be a top+bottom+shoe set — that IS an outfit, and
+// posting one as a pairing would waste a complete look on weaker framing.
+// PAIRING_SHAPES contains no such combination and a test pins that.
+const PAIRING_SHAPES = [
+  ["top", "shoe"],
+  ["top", "shoe", "fragrance"],
+  ["shoe", "cap"],
+  ["bag", "fragrance"],
+  ["top", "cap"],
+  ["bottom", "shoe"],
+];
+
+// How often a pairing is chosen instead of another kind — one in this many
+// posts. Owner spec: "regularly but not dominating — roughly one in three or
+// one in four". ONE constant, changed in one place.
+const PAIRING_EVERY_N_POSTS = 3;
+
 // ── WHAT MAKES A LOOK, RATHER THAN A PILE ────────────────────────────────────
 // An outfit needs something on top, something on the legs and something on the
 // feet. cap, bag and fragrance are finishing pieces: welcome, never sufficient.
@@ -284,7 +315,11 @@ function buildCandidates({ liveNodes, products, stockByPid, salesByPid = {}, pos
     const name = typeof node.cleanName === "string" && node.cleanName.trim() ? node.cleanName.trim() : null;
     if (!name) continue;
     const trueName = typeof product.name === "string" && product.name.trim() ? product.name.trim() : null;
-    const displayName = trueName || name;
+    // The stored name carries internal artefacts — style-code hashes,
+    // duplicate markers, stray whitespace — that must never reach a caption or
+    // an advert. cleanProductName is the ONE implementation; see
+    // functions/lib/product-name.cjs.
+    const displayName = cleanProductName(trueName || name) || (trueName || name);
 
     // ── REFUSAL 2: out of stock ────────────────────────────────────────────
     const available = availableUnits((stockByPid || {})[pid], product.sizes);
@@ -373,6 +408,24 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
     return { picks: fresh.slice(0, want), reason: null };
   }
 
+  if (kind === "pairing") {
+    // Try each shape in order and take the first the live catalogue can fill.
+    // No fallback to "any two products": a pairing is a RELATIONSHIP between
+    // pieces, and two unrelated items is the pile this exists to avoid.
+    const taken = new Set(used);
+    for (const shape of PAIRING_SHAPES) {
+      const picks = [];
+      const local = new Set(taken);
+      for (const slot of shape) {
+        const best = pool.find((c) => c.slot === slot && !local.has(c.pid));
+        if (!best) break;
+        picks.push(best); local.add(best.pid);
+      }
+      if (picks.length === shape.length) return { picks, reason: null, shape };
+    }
+    return { picks: [], reason: "no pairing available — none of the shapes could be filled from live stock" };
+  }
+
   if (kind === "outfit") {
     // ── BUILD A LOOK, NOT A SHORTLIST ──────────────────────────────────────
     // Previously: one product per slot, best-scoring first, accepted down to
@@ -442,7 +495,7 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
 }
 
 module.exports = {
-  OUTFIT_CORE, isFullBody,
+  OUTFIT_CORE, isFullBody, PAIRING_SHAPES, PAIRING_EVERY_N_POSTS,
   POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS,
   REPOST_COOLDOWN_DAYS, W_SALES, W_NEW, NEW_FULL_DAYS, NEW_ZERO_DAYS,
   availableUnits, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,
