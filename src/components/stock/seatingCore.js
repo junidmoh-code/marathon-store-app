@@ -377,9 +377,14 @@ export function seatingAt(ctx, loc, pid) {
     if (t && t.target > 0 && !best) best = t.source;
     sizes.push({
       sizeKey, size, qty,
-      // The cell's optimistic-concurrency version. Carried so the move can key
-      // its idempotency on the STATE it acted upon — see moveBatchId.
+      // The cell's optimistic-concurrency version, and its last movement id as
+      // a fallback. Carried so the move can key its idempotency on the STATE it
+      // acted upon — see moveBatchId. Admin-SDK scripts write /stock cells
+      // wholesale and can leave `v` off entirely, so a v-only key would hash
+      // every such cell to one constant for ever.
       v: typeof cell?.v === "number" ? cell.v : null,
+      mv: cell?.mv ?? null,
+      updatedAt: cell?.updatedAt ?? null,
       hasCell: cell !== undefined,
       target: t ? t.target : null,
       source: t ? t.source : null,

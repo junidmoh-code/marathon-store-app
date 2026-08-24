@@ -43,7 +43,15 @@ export default function SeatingActions({ seat, product, label, registry, locatio
   const undo = useMemo(() => reseatPlan(ctx, seat.loc, seat.pid), [ctx, seat.loc, seat.pid]);
   const scan = useMemo(() => nextScanAt(serverNowMs()), []);
   const lines = useMemo(() => movePlan(ctx, seat.loc, seat.pid), [ctx, seat.loc, seat.pid]);
-  const destBlocked = useMemo(() => moveBlockers(seat.loc, dest), [seat.loc, dest]);
+  // THE LINES AND THE DESTINATION'S OWN SEAT ARE PART OF THE QUESTION. Called
+  // with two arguments this skipped both negative-line checks, so the button
+  // stayed enabled with no warning and the carefully worded refusal only
+  // appeared — flattened into a generic string — after the confirm press.
+  // (Adversarial re-review, PR #429.)
+  const destBlocked = useMemo(
+    () => moveBlockers(seat.loc, dest, lines, dest && ctx ? seatingAt(ctx, dest, seat.pid) : null),
+    [seat.loc, seat.pid, dest, lines, ctx],
+  );
   // A destination that is itself switched off would hold the stock with nothing
   // arming it. Said, not blocked — sending stock to a shelf is still a real act.
   const destOff = useMemo(() => {
@@ -57,7 +65,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
     try {
       const res = await fn();
       if (res.ok) onDone(done(res));
-      else onFail(FAILURES[res.reason] || res.reason);
+      else onFail(res.message || FAILURES[res.reason] || res.reason);
     } catch (e) {
       onFail(e?.message || String(e));
     } finally { setBusy(""); setConfirm(""); }
@@ -91,7 +99,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             {lines.map((l) => (
               <SizeFactChip
                 key={l.sizeKey}
-                size={l.size === "" ? "One size" : l.size}
+                size={l.size === "_" || l.size === "" ? "One size" : l.size}
                 value={l.qty}
                 tone={l.qty < 0 ? RED : BLUE_L}
               />
@@ -138,7 +146,9 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             <button
               onClick={() => run("move",
                 () => moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff: alsoOff, locations }),
-                (r) => `${r.moved} moved to ${labelFor(dest, registry)}`
+                // "moved to" is only true of the positive legs; a negative
+                // travels the other way, so the wording says "moved with".
+                (r) => `${r.moved} ${lines.some((l) => l.qty < 0) ? "moved with" : "moved to"} ${labelFor(dest, registry)}`
                   + (r.replayed ? ` · ${r.replayed} already sent` : "")
                   + (r.failed.length ? ` · ${r.failed.length} failed: ${r.failed.join(" · ")}` : "")
                   + (alsoOff ? (r.switchedOff ? ` · ${label} switched off.` : ` · ${label} left ON (${FAILURES[r.offReason] || r.offReason || "see the row"}).`) : "."))}
@@ -189,7 +199,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
 
           {canUndo && (
             <button
-              onClick={() => run("reseat", () => reseat({ seat, ctx }),
+              onClick={() => run("reseat", () => reseat({ seat, ctx, locations }),
                 (r) => `${label} re-seated — ${r.rowCount} ${r.rowCount === 1 ? "row" : "rows"} restored.`)}
               disabled={!!busy}
               style={{ ...bGhost, opacity: busy ? .5 : 1 }}

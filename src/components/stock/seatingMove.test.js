@@ -209,8 +209,8 @@ describe("movePlan", () => {
   it("lists only cells that hold something, in size-key order", () => {
     const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 }, L: { qty: 0 }, S: { qty: -1 } } } });
     expect(movePlan(ctx, "trophy", "p1")).toEqual([
-      { sizeKey: "M", size: "M", qty: 4, v: null },
-      { sizeKey: "S", size: "S", qty: -1, v: null },
+      { sizeKey: "M", size: "M", qty: 4, v: null, mv: null, updatedAt: null },
+      { sizeKey: "S", size: "S", qty: -1, v: null, mv: null, updatedAt: null },
     ]);
   });
 });
@@ -338,5 +338,54 @@ describe("the same move against a RESTOCKED cell travels", () => {
     const idA = moves[0].movementId; moves.length = 0;
     await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
     expect(moves[0].movementId).toBe(idA);
+  });
+});
+
+// ── A CELL WITH NO VERSION MUST STILL GET A CHANGING KEY ─────────────────────
+// Admin-SDK scripts write /stock cells wholesale and can leave `v` off — the
+// headwear and bags collapses, hub cleanup and the perfume corrections all did.
+// A v-only key hashed every such cell to one constant for ever, so a second
+// legitimate move of the same quantity came back idempotent and moved nothing.
+// (Adversarial re-review, PR #429.)
+describe("cells written without a version", () => {
+  it("fall back to the last movement id, so two states differ", async () => {
+    const a = ctxOf({ trophy: { p1: { M: { qty: 4, mv: "mvA" } } } });
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    const idA = moves[0].movementId; moves.length = 0;
+    const b = ctxOf({ trophy: { p1: { M: { qty: 4, mv: "mvB" } } } });
+    await moveAndSwitchOff({ seat: seatOf(b), ctx: b, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).not.toBe(idA);
+  });
+
+  it("fall back to updatedAt when there is no mv either", async () => {
+    const a = ctxOf({ trophy: { p1: { M: { qty: 4, updatedAt: "2026-08-01T00:00:00.000Z" } } } });
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    const idA = moves[0].movementId; moves.length = 0;
+    const b = ctxOf({ trophy: { p1: { M: { qty: 4, updatedAt: "2026-08-20T00:00:00.000Z" } } } });
+    await moveAndSwitchOff({ seat: seatOf(b), ctx: b, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).not.toBe(idA);
+  });
+
+  it("and the same v-less state twice still collapses", async () => {
+    const a = ctxOf({ trophy: { p1: { M: { qty: 4, mv: "mvA" } } } });
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    const idA = moves[0].movementId; moves.length = 0;
+    await moveAndSwitchOff({ seat: seatOf(a), ctx: a, viewer: {}, dest: "hub2", locations: LOCS });
+    expect(moves[0].movementId).toBe(idA);
+  });
+});
+
+// ── RE-SEAT RE-READS TOO ─────────────────────────────────────────────────────
+describe("re-seat decides from live data", () => {
+  it("restores the row that is there NOW, not the one the screen rendered", async () => {
+    const { reseat } = await import("./seatingStore.js");
+    const stale = { target: 9, minQty: 5, source: "hand" };
+    const current = { target: 3, minQty: 1, source: "hand" };
+    const offRowFor = (prev) => ({ target: 0, minQty: 0, source: "seating_off", prevRow: prev });
+    const ctx = ctxOf({}, { trophy: { p1: { M: offRowFor(stale) } } });
+    LIVE = { stock: {}, targets: { trophy: { p1: { M: offRowFor(current) } } } };
+    writes.length = 0;
+    await reseat({ seat: seatingAt(ctx, "trophy", "p1"), ctx, locations: LOCS });
+    expect(writes[0]["stock_targets/trophy/p1/M"]).toEqual(current);
   });
 });

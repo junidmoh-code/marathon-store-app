@@ -204,7 +204,15 @@ export function reseatPlan(ctx, loc, pid) {
   return { restore, stuck };
 }
 
-export async function reseat({ seat, ctx }) {
+export async function reseat({ seat, ctx, locations }) {
+  // RE-READ, like switchOff does. This was the only write left on this screen
+  // deciding from the render-time snapshot: a row edited elsewhere since the
+  // screen loaded was blind-overwritten with the prevRow captured back then.
+  // (Adversarial re-review, PR #429.)
+  if (Array.isArray(locations) && locations.includes(seat.loc)) {
+    const fresh = await readSeatingContext(locations, seat.pid);
+    ctx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  }
   const { restore, stuck } = reseatPlan(ctx, seat.loc, seat.pid);
   if (!restore.length) return { ok: false, reason: "nothing_to_undo", stuck };
   const upd = {};
@@ -267,7 +275,15 @@ export async function readTargets(loc, pid) {
 // collapse to one movement; the same move against a restocked cell is a
 // different state and travels. (Adversarial review, PR #429.)
 function moveBatchId(pid, from, to, lines) {
-  const s = [pid, from, to, ...lines.map((l) => `${l.sizeKey}:${l.qty}:${l.v ?? "x"}`)].join("|");
+  // The state token, in order of preference: the version, else the last
+  // movement id, else the cell's updatedAt. A cell an Admin-SDK script rewrote
+  // wholesale can carry no `v` at all — the headwear and bags collapses, hub
+  // cleanup and the perfume corrections all wrote cells that way — and a
+  // v-only key hashed every one of them to the same constant for ever, so a
+  // second legitimate move of the same quantity came back `idempotent` and
+  // moved nothing. (Adversarial re-review, PR #429.)
+  const state = (l) => (l.v ?? l.mv ?? l.updatedAt ?? "x");
+  const s = [pid, from, to, ...lines.map((l) => `${l.sizeKey}:${l.qty}:${state(l)}`)].join("|");
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -290,7 +306,8 @@ export function movePlan(ctx, loc, pid) {
     // happily; the guard fires first. So the no-size cell travels as "_", which
     // is exactly what Transfer.jsx has always sent (its ONE_SIZE constant).
     // (Adversarial review, PR #429.)
-    .map((s) => ({ sizeKey: s.sizeKey, size: s.size === "" ? "_" : s.size, qty: s.qty, v: s.v }));
+    .map((s) => ({ sizeKey: s.sizeKey, size: s.size === "" ? "_" : s.size, qty: s.qty,
+                   v: s.v, mv: s.mv, updatedAt: s.updatedAt }));
 }
 
 // Why a destination cannot be chosen — null when it can.

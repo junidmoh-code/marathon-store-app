@@ -40,6 +40,8 @@
 //   M-MOVE-CATCH   let a post-move throw swallow the fact stock moved
 //   M-CONTEXT      feed the mirror only the seatable locations  (SeatingTab)
 //   M-STABLE-LISTS key the location lists on the registry object (SeatingTab)
+//   M-STATE-FALLBACK  hash a v-less cell to one constant for ever
+//   M-RESEAT-REREAD   let Re-seat trust the render-time snapshot
 //
 // The three gate mutations each delete ONE gate with the others left intact,
 // which is the only way "independent gates" means anything.
@@ -384,6 +386,25 @@ const MUTATIONS = [
     from: `  }, [locSig]);`,
     to: `  }, [registry]);`,
     tests: TAB_TESTS,
+  },
+  {
+    id: "M-STATE-FALLBACK",
+    guard: "a cell with no version falls back to mv/updatedAt, not to one constant",
+    file: STORE,
+    from: `  const state = (l) => (l.v ?? l.mv ?? l.updatedAt ?? "x");`,
+    to: `  const state = (l) => (l.v ?? "x");`,
+    tests: MOVE_TESTS,
+  },
+  {
+    id: "M-RESEAT-REREAD",
+    guard: "Re-seat restores the row that is live now, not the one the screen rendered",
+    file: STORE,
+    from: `  if (Array.isArray(locations) && locations.includes(seat.loc)) {
+    const fresh = await readSeatingContext(locations, seat.pid);
+    ctx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  }`,
+    to: ``,
+    tests: MOVE_TESTS,
   },
 ];
 
