@@ -33,7 +33,7 @@ import {
   formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
 } from "./socialCore";
 import {
-  loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, discardPost, retryPost,
+  loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, postNow, discardPost, retryPost,
   editCaption, reschedulePost, setPlatforms, resolveSending,
 } from "./socialStore";
 import StyleLibraryCard from "./StyleLibraryCard";
@@ -285,6 +285,18 @@ function PostRow({ post, onChanged, onNotice }) {
               <button disabled={busy} onClick={() => run(() => unapprovePost(post.id), "Back in the queue — it will not be posted.")}
                       style={bGray}>
                 Un-approve
+              </button>
+            )}
+            {/* ── POST NOW ────────────────────────────────────────────────
+                Only ever on an APPROVED item, so it cannot become a way to
+                publish something that never passed the approval gate. It moves
+                the schedule to now; the publisher on the mini does the posting
+                on its next tick, with every existing check still applied. ── */}
+            {post.status === "approved" && (
+              <button disabled={busy}
+                      onClick={() => run(() => postNow(post.id), "Going out on the next tick — within about two minutes.")}
+                      style={bGreen}>
+                Post now
               </button>
             )}
             {post.status === "failed" && (

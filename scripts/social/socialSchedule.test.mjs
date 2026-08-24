@@ -76,34 +76,37 @@ function calendarEntries(xml) {
   });
 }
 
-describe("the launchd schedule matches the slots the app promises", () => {
-  const entries = calendarEntries(PLIST);
+describe("the agent ticks; the schedule lives in the data", () => {
+  // ── WHERE "WHEN" LIVES ─────────────────────────────────────────────────────
+  // The agent used to carry the cadence as calendar entries, which meant the
+  // plist and SLOT_DAYS/SLOT_HOUR_SAST had to agree or approved posts sat due
+  // until the next fire. It now ticks every two minutes and asks the publisher
+  // what is DUE, so the cadence lives in one place — each post's scheduledAt,
+  // written from the constants below — and cannot drift from a second copy.
+  //
+  // This is also what makes "Post now" possible without a second publisher:
+  // the button moves scheduledAt to now and the next tick takes it.
+  const interval = PLIST.match(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/);
 
-  it("declares exactly one fire per slot day, and nothing else", () => {
-    // ONE daily fire. A second (16:30, for stories) was added and removed the
-    // same day: nothing publishes a story, so that fire ran the ordinary
-    // publisher and would have posted an approved, overdue item to the FEED at
-    // a time meant for stories. This assertion is what stops it coming back by
-    // accident, ahead of the code that would make it mean something.
-    expect(entries.length).toBe(SLOT_DAYS.length);
+  it("declares a StartInterval", () => {
+    expect(interval, "no StartInterval in the plist").toBeTruthy();
   });
 
-  it("fires on exactly SLOT_DAYS — no extra day, no missing day", () => {
-    const weekdays = entries.map((e) => e.Weekday).sort((a, b) => a - b);
-    expect(weekdays).toEqual([...SLOT_DAYS].sort((a, b) => a - b));
+  it("ticks often enough that Post now means minutes, not hours", () => {
+    expect(Number(interval[1])).toBeLessThanOrEqual(300);
+    expect(Number(interval[1])).toBeGreaterThanOrEqual(60);   // and not a hot loop
   });
 
-  it("fires at SLOT_HOUR_SAST on the hour, every day it fires", () => {
-    for (const e of entries) {
-      expect(e.Hour, `Weekday ${e.Weekday}`).toBe(SLOT_HOUR_SAST);
-      // Minute must be EXPLICIT. launchd treats an omitted field as a wildcard,
-      // so a dict with Hour but no Minute fires all sixty minutes of that hour.
-      expect(e.Minute, `Weekday ${e.Weekday} has no explicit Minute`).toBe(0);
-    }
+  it("carries no calendar entries — two sources of cadence is the bug this removed", () => {
+    expect(PLIST).not.toMatch(/<key>StartCalendarInterval<\/key>/);
   });
 
-  it("declares no fire at any other hour", () => {
-    expect([...new Set(entries.map((e) => e.Hour))]).toEqual([SLOT_HOUR_SAST]);
+  it("still knows the cadence it assigns slots on", () => {
+    // The constants remain the single source of the schedule; nextSlots() and
+    // the queue read them, and the publisher only ever asks "is this due".
+    expect(SLOT_DAYS.length).toBeGreaterThan(0);
+    expect(SLOT_HOUR_SAST).toBeGreaterThanOrEqual(0);
+    expect(SLOT_HOUR_SAST).toBeLessThan(24);
   });
 });
 

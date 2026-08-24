@@ -166,3 +166,49 @@ describe("the Approve button is wired to readiness, not to approval", () => {
     expect(src).not.toMatch(/const\s+blocker\s*=/);
   });
 });
+
+// ── POST NOW MOVES A DATE, IT DOES NOT PUBLISH ───────────────────────────────
+// The browser must never publish. The Meta credentials live in Secret Manager
+// and are read by the Mac mini; a browser path to them is a browser path to the
+// shop's Instagram. A second publisher would also be a second copy of the send
+// logic, the claim transaction and the retry rules — two implementations that
+// have to agree forever about what has already gone out.
+//
+// So the button writes scheduledAt = now and stops. The publisher on the mini
+// is still the only thing that has ever posted, and every gate still applies.
+describe("the Post now button is wired to the schedule, not to a publisher", () => {
+  const store = readFileSync(
+    fileURLToPath(new URL("./socialStore.js", import.meta.url)), "utf8");
+  const view = readFileSync(
+    fileURLToPath(new URL("./SocialView.jsx", import.meta.url)), "utf8");
+
+  it("postNow writes a schedule and nothing else about status", () => {
+    const fn = store.slice(store.indexOf("export async function postNow"));
+    const body = fn.slice(0, fn.indexOf("\n}"));
+    expect(body).toMatch(/scheduledAt:\s*serverNowMs\(\)/);
+    // Must not silently approve something, and must not mark it posted.
+    expect(body).not.toMatch(/status:/);
+  });
+
+  it("the browser holds no platform token and no send code", () => {
+    for (const src of [store, view]) {
+      expect(src).not.toMatch(/graph\.facebook\.com/);
+      expect(src).not.toMatch(/media_publish|access_token/);
+    }
+  });
+
+  it("the button is offered only on an APPROVED post", () => {
+    // Otherwise it becomes a way to publish something that never passed the
+    // approval gate.
+    const i = view.indexOf("Post now");
+    const before = view.slice(Math.max(0, i - 700), i);
+    expect(before).toMatch(/post\.status === "approved"/);
+  });
+
+  it("tells the truth about when it will go out", () => {
+    // The publisher ticks; "immediately" would be a promise the agent cannot
+    // keep, and a person watching Instagram for a post that is 90 seconds away
+    // will refresh and then press the button again.
+    expect(view).toMatch(/next tick|two minutes/i);
+  });
+});
