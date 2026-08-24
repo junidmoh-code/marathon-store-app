@@ -31,6 +31,29 @@
 // goes and renders it.
 "use strict";
 
+// ── THE TYPEFACE IS BUNDLED, NOT BORROWED ────────────────────────────────────
+// The overlay is rendered by librsvg inside sharp, which resolves font families
+// through fontconfig. Cloud Functions runs a minimal Linux image with no
+// Helvetica and no Arial, and a family that is not present does not fail — it
+// falls back silently to whatever survives in the base image. Every post would
+// then come out in a typeface nobody chose, changing the moment the base image
+// changes, with nothing to notice it by.
+//
+// So Archivo ships with the function (SIL OFL 1.1, in assets/fonts) and
+// FONTCONFIG_PATH is pointed at it here, at module load, before sharp renders
+// anything. Archivo is a grotesque drawn for editorial and print rather than
+// for screens — closer to the Helvetica-family look of the reference layouts
+// than a UI face like Inter, and it carries the wide letter-spaced caps the
+// wordmark needs without going thin.
+const path = require("path");
+const FONT_DIR = path.join(__dirname, "..", "assets", "fonts");
+if (!process.env.FONTCONFIG_PATH) process.env.FONTCONFIG_PATH = FONT_DIR;
+
+// One family, named explicitly. The fallbacks stay for a local machine that has
+// them, but fonts.conf aliases them to Archivo anyway so the rendered result is
+// the same everywhere.
+const FONT = "Archivo, Helvetica Neue, Helvetica, Arial, sans-serif";
+
 const W = 1080, H = 1350;
 
 // Brands worth splitting onto their own line, longest first so "New Era" wins
@@ -165,8 +188,8 @@ function chooseLayout(edges = {}) {
 function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA", width = W, height = H } = {}) {
   const rows = sellableRows(products);
   const { side, anchor, ink, scrim } = chooseLayout(edges);
-  const DISPLAY = "Helvetica Neue, Helvetica, Arial, sans-serif";
-  const TEXT = "Helvetica Neue, Helvetica, Arial, sans-serif";
+  const DISPLAY = FONT;
+  const TEXT = FONT;
   const o = [];
   // ── THE OVERLAY IS THE SIZE OF THE PHOTOGRAPH, NOT A CONSTANT ─────────────
   // normalizeSocialImage resizes with fit:"inside" and withoutEnlargement, so
@@ -243,4 +266,4 @@ function buildOverlay({ products = [], edges = {}, kind = "single", storefront =
   return o.join("\n");
 }
 
-module.exports = { buildOverlay, chooseLayout, sellableRows, outfitTotal, splitName, rand, wrap, W, H };
+module.exports = { buildOverlay, FONT, FONT_DIR, chooseLayout, sellableRows, outfitTotal, splitName, rand, wrap, W, H };

@@ -50,7 +50,7 @@ const POST_KINDS = [
   { key: "single", label: "Single product", minProducts: 1, maxProducts: 1, generates: true, costUSD: 0.134 },
   { key: "flatlay", label: "Flat-lay", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
   { key: "new_arrivals", label: "New arrivals", minProducts: 2, maxProducts: 10, generates: false, costUSD: 0.0004 },
-  { key: "outfit", label: "Full outfit", minProducts: 2, maxProducts: 4, generates: true, costUSD: 0.134 },
+  { key: "outfit", label: "Full outfit", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
 ];
 const KIND_KEYS = POST_KINDS.map((k) => k.key);
 
@@ -171,7 +171,8 @@ function productHandle(cleanName) {
 const SLOT_MATCHERS = [
   {
     slot: "shoe",
-    keys: new Set(["sneakers", "slides", "soccer-boots", "boots"]),
+    // designer-shoes was missing and is a real live key.
+    keys: new Set(["sneakers", "slides", "soccer-boots", "boots", "designer-shoes"]),
     categories: new Set(["Footwear"]),
   },
   {
@@ -182,8 +183,23 @@ const SLOT_MATCHERS = [
     categories: new Set(),
   },
   {
+    // ── THE SLOT THAT DID NOT EXIST ────────────────────────────────────────
+    // There was no bottom slot at all, so no outfit this engine has ever built
+    // could contain trousers. 38 pants and 4 shorts were live and structurally
+    // unreachable, which is the main reason the "outfits" did not read as
+    // looks: a top and a shoe is not something a person wears.
+    slot: "bottom",
+    keys: new Set(["pants", "shorts", "jeans"]),
+    categories: new Set(),
+  },
+  {
     slot: "cap",
     keys: new Set(["caps-beanies", "fitted-caps", "visors"]),
+    categories: new Set(),
+  },
+  {
+    slot: "bag",
+    keys: new Set(["bags"]),
     categories: new Set(),
   },
   {
@@ -192,6 +208,19 @@ const SLOT_MATCHERS = [
     categories: new Set(["Perfume"]),
   },
 ];
+
+// ── WHAT MAKES A LOOK, RATHER THAN A PILE ────────────────────────────────────
+// An outfit needs something on top, something on the legs and something on the
+// feet. cap, bag and fragrance are finishing pieces: welcome, never sufficient.
+const OUTFIT_CORE = ["top", "bottom", "shoe"];
+
+// A tracksuit IS the top and the bottom. Requiring a separate pair of trousers
+// beside one would be a styling error, not a completeness check — so it
+// satisfies both, and no bottom is added next to it.
+const FULL_BODY_KEYS = new Set(["tracksuits", "dresses"]);
+const isFullBody = (product) =>
+  FULL_BODY_KEYS.has(String(product?.categoryKey || "").toLowerCase());
+
 const OUTFIT_SLOTS = SLOT_MATCHERS.map((m) => m.slot);
 
 /** Which outfit slot a product fills, or null when it fills none. */
@@ -345,21 +374,44 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
   }
 
   if (kind === "outfit") {
-    // One product per slot, best-scoring first, in a fixed slot order so the
-    // scene prompt can describe the pieces consistently. A missing slot is
-    // ACCEPTED down to minProducts — the shop does not always have a fragrance
-    // in stock, and refusing the whole post over that would mean no outfit
-    // posts for weeks. Which slots were filled is returned so the caption
-    // never claims a piece that is not in the picture.
+    // ── BUILD A LOOK, NOT A SHORTLIST ──────────────────────────────────────
+    // Previously: one product per slot, best-scoring first, accepted down to
+    // minProducts (2). With only four slots and no bottom among them, that
+    // produced "outfits" of a t-shirt and a pair of shoes — which is not a
+    // thing anyone wears, and is what the owner meant by the styling being
+    // wrong.
+    //
+    // Now an outfit must cover the CORE: something on top, something on the
+    // legs, something on the feet. A tracksuit satisfies top and bottom by
+    // itself, so no trousers are added beside one.
     const picks = [];
     const taken = new Set(used);
-    for (const slot of OUTFIT_SLOTS) {
+    const take = (slot) => {
       const best = pool.find((c) => c.slot === slot && !taken.has(c.pid));
       if (best) { picks.push(best); taken.add(best.pid); }
+      return best || null;
+    };
+
+    const top = take("top");
+    const fullBody = top && isFullBody(top.product);
+    if (!fullBody) take("bottom");
+    take("shoe");
+
+    // Finishing pieces, in the order a stylist would reach for them, up to the
+    // kind's ceiling. Never the reason a post exists.
+    for (const slot of ["cap", "bag", "fragrance"]) {
+      if (picks.length >= spec.maxProducts) break;
+      take(slot);
     }
-    if (picks.length < spec.minProducts) {
-      const missing = OUTFIT_SLOTS.filter((s) => !picks.some((p) => p.slot === s));
-      return { picks: [], reason: `not enough of an outfit in live stock — nothing available for: ${missing.join(", ")}` };
+
+    const covered = new Set(picks.map((p) => p.slot));
+    const missingCore = OUTFIT_CORE.filter((s) => {
+      if (s === "bottom" && fullBody) return false;   // the tracksuit is the bottom
+      return !covered.has(s);
+    });
+    if (missingCore.length) {
+      return { picks: [], reason: `not enough of an outfit in live stock — nothing available for: ${missingCore.join(", ")}` };
+
     }
     return { picks, reason: null };
   }
@@ -390,6 +442,7 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
 }
 
 module.exports = {
+  OUTFIT_CORE, isFullBody,
   POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS,
   REPOST_COOLDOWN_DAYS, W_SALES, W_NEW, NEW_FULL_DAYS, NEW_ZERO_DAYS,
   availableUnits, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,

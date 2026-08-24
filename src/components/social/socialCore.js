@@ -108,9 +108,11 @@ export const POST_KINDS = [
   {
     key: "outfit",
     label: "Full outfit",
-    hint: "Shoe, top, cap and fragrance from live stock, in one scene",
-    minProducts: 2,
-    maxProducts: 4,
+    hint: "A complete look — top, bottom and shoes, plus finishing pieces",
+    // A look needs top, bottom and shoes. The old minimum of 2 accepted a
+    // t-shirt and a pair of trainers, which is not something a person wears.
+    minProducts: 3,
+    maxProducts: 5,
     generates: true,
     costUSD: 0.134,
   },
