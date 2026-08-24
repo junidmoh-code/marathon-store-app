@@ -222,6 +222,25 @@ describe("the actions on a row", () => {
 // /stock on every render — a request loop against a shop's network. The lists
 // are keyed on a signature instead. (CodeRabbit full review, PR #429.)
 describe("the location lists are stable across renders", () => {
+  // ── THE SOURCE-LEVEL PIN COMES FIRST, AND IT IS THE LOAD-BEARING ONE ───────
+  //
+  // When this property breaks, `load` changes identity on every render and the
+  // effect re-reads /stock in a loop. That does not FAIL the behavioural tests
+  // below — it kills the vitest worker, and a dead worker is indistinguishable
+  // from a slow CI run. A thrown error inside the mocked `get` does not help
+  // either: load() catches it and calls setError, so the loop simply carries on
+  // reporting errors to nobody.
+  //
+  // Twice on this branch a killed mutation harness left `[registry]` in the
+  // file and `git add -A` committed it, and both times the only symptom was a
+  // suite that stopped producing output. This assertion needs no render, runs
+  // in microseconds, and names the exact line. (Adversarial re-review, #429.)
+  it("the memo depends on the signature, never on the registry object", () => {
+    const src = readFileSync(new URL("./SeatingTab.jsx", import.meta.url), "utf8");
+    expect(src).toContain("}, [locSig]);");
+    expect(src).not.toContain("}, [registry]);");
+  });
+
   it("selecting a product reads each path once, not once per render", async () => {
     const tree = await renderTab();
     await act(async () => { tree.root.findAllByType("input")[0].props.onChange({ target: { value: "navy" } }); });
