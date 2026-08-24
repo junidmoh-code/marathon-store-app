@@ -397,23 +397,38 @@ export function truncateWords(text, max) {
   return `${(soft.length > max * 0.5 ? soft : hard).trimEnd()}…`;
 }
 
-// ── THE SCHEDULE — THREE A WEEK ──────────────────────────────────────────────
-// Owner spec: three posts a week. The slots are fixed rather than computed
-// from "every 2.33 days" so the queue can SHOW them and Junid can reason about
-// them: Monday, Wednesday and Saturday at 18:00 SAST.
+// ── THE SCHEDULE — ONE A DAY ─────────────────────────────────────────────────
+// Owner spec, 2026-08-24: a feed post EVERY day at 11:00 SAST, replacing the
+// Mon/Wed/Sat 18:00 cadence. Fixed slots rather than a computed interval, so
+// the queue can SHOW them and they can be reasoned about.
+//
+// A story is a second daily piece and gets its OWN hour, deliberately apart
+// from the post: firing both at once spends two placements on one moment, and
+// stories and feed posts are consumed at different times of day. 11:00 catches
+// late-morning browsing; 16:30 catches the end of the working day, when stories
+// are checked and a feed post has already had five hours to run.
 //
 // SAST is UTC+2 with no daylight saving (the same fact functions/lib/sa-time.cjs
 // is built on), so the conversion is a constant offset and needs no timezone
 // library in either the bundle or the runner.
-export const SLOT_DAYS = [1, 3, 6];     // Mon, Wed, Sat — JS getUTCDay numbering
-export const SLOT_HOUR_SAST = 18;
+//
+// STORY_HOUR_SAST is declared here and carried into the launchd agent so the
+// two halves cannot drift, but NOTHING PUBLISHES A STORY YET — the publisher
+// has no story endpoint (Instagram needs media_type=STORIES; see the probe in
+// the 2026-08-24 report). Until that is built the 16:30 fire finds nothing due
+// and exits, which is the honest behaviour: a reserved slot that does nothing,
+// not a silent failure.
+export const SLOT_DAYS = [0, 1, 2, 3, 4, 5, 6];   // every day — JS getUTCDay numbering
+export const SLOT_HOUR_SAST = 11;                 // the feed post
+export const STORY_HOUR_SAST = 16;                // the story
+export const STORY_MINUTE_SAST = 30;
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
 
 // The furthest ahead this will ever schedule. A bound is needed so a caller
 // asking for a silly number cannot spin; a year is far past anything a
 // three-a-week queue can consume, and a post scheduled beyond it is a bug in
 // the caller rather than a slot worth returning.
-const MAX_HORIZON_DAYS = 366;
+export const MAX_HORIZON_DAYS = 366;
 
 /**
  * The next `count` posting slots at or after `fromMs`, as epoch ms.

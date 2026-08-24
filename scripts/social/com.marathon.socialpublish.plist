@@ -9,10 +9,10 @@
 
     · StartCalendarInterval instead of StartInterval. The reconciler is a
       2-minute poll because Publish is a thing Junid presses and then waits
-      for. This is a CADENCE — three posts a week — and the times below ARE
+      for. This is a CADENCE — one post and one story a day — and the times below ARE
       that cadence: Monday, Wednesday and Saturday at 18:00.
 
-      These three entries must match SLOT_DAYS / SLOT_HOUR_SAST in
+      These entries must match SLOT_DAYS / SLOT_HOUR_SAST / STORY_HOUR_SAST in
       src/components/social/socialCore.js, which is what the queue shows Junid
       and what the generator writes into scheduledAt. If they drift, approved
       posts sit "due" until the next agent fire — late, never lost, but late.
@@ -66,12 +66,26 @@
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
-  <!-- Mon / Wed / Sat at 18:00. KEEP IN SYNC with SLOT_DAYS + SLOT_HOUR_SAST. -->
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+    <!-- The feed post: every day at 11:00 SAST. -->
+    <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <!-- The story: every day at 16:30 SAST, deliberately apart from the
+         post. Reserved — the publisher has no story endpoint yet, so this
+         fire finds nothing due and exits. -->
+    <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
   </array>
   <key>RunAtLoad</key><false/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
