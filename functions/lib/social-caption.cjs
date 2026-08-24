@@ -92,9 +92,14 @@ const KIND_SCENE = {
  *                    IMAGES are attached separately by the caller and are what
  *                    actually carries the look.
  */
-// ── THE MARATHON CLUB GRAPHIC DESIGN RULE ────────────────────────────────────
-// Owner's standing art direction, 2026-08-24, quoted as given. It governs the
-// LOOK of every image this engine makes.
+// ── THE MARATHON CLUB GRAPHIC DESIGN RULE — FOR THE COMPOSITOR ───────────────
+// Owner's standing art direction, quoted as given. It governs how the TYPE is
+// laid out, and it is consumed by functions/lib/social-design.cjs.
+//
+// IT IS DELIBERATELY NOT SENT TO THE IMAGE MODEL. It tells a designer to
+// "sometimes use product names and prices, sometimes a small logo" — read by a
+// photographer that is an instruction to DRAW them, which is exactly what
+// happened: two wordmarks on one post and an invented laurel monogram.
 //
 // It replaces a single sentence that used to close the scene prompt:
 //
@@ -142,21 +147,55 @@ const DESIGN_RULE = [
 //
 // The photograph is art-directed to receive the design; the design layer sets
 // the type from /products. Neither half draws the other's part.
-const TYPE_IS_COMPOSITED = [
-  "COMPOSITION FOR TYPOGRAPHY, NOT TYPOGRAPHY ITSELF.",
-  "Every word, number, price and logo on the finished post is composited afterwards as real text",
-  "from our product records. You therefore must NOT ADD any lettering, words, numbers, prices,",
-  "captions, labels, watermarks or brand marks OF YOUR OWN into the image — invented lettering is",
-  "always wrong, and an invented price is a promise we would have to honour.",
-  "This is about what you ADD, not about what is already there: branding that is PART OF A PRODUCT",
-  "— the logo on a shoe, the wordmark woven into a jacket, the label printed on a bottle — is part",
-  "of the item and must be rendered faithfully, exactly as it appears in the attached photograph.",
-  "Where the design rule above speaks of a logo or a short statement, it is describing what the",
-  "design layer may later composite; it is not an instruction for you to draw one.",
-  "What you must do instead is COMPOSE FOR IT: follow the design rule above and leave the calm,",
-  "uncluttered negative space — wall, sky, road, shadow, floor — where that typography will sit,",
-  "in the place the composition naturally wants it rather than the same corner every time.",
-  "A photograph that leaves nowhere for type to live has not followed this instruction.",
+// ── WHAT THE MODEL IS ASKED FOR: THE PHOTOGRAPH ONLY ─────────────────────────
+// This is the PHOTOGRAPHIC half of the owner's master direction. The graphic
+// half — where callouts sit, what the wordmark does, whether a price appears —
+// is DESIGN_RULE below, and it is NOT sent to the image model.
+//
+// That distinction is the whole fix for a real defect. DESIGN_RULE was written
+// for a designer and says "sometimes use product names and prices, sometimes a
+// small logo". Handing it to the photographer made the model dutifully DRAW a
+// wordmark and a price, which the compositor then drew again: two MARATHON CLUB
+// lockups on one post, two WHOLE OUTFIT blocks with different totals, and an
+// invented laurel-wreath monogram that is not the brand's mark at all.
+//
+// ONE SOURCE OF TYPE. The compositor owns every word and number. The model owns
+// the photograph and the empty space the words will sit in.
+const PHOTO_DIRECTION = [
+  "ART DIRECTION — PHOTOGRAPH ONLY.",
+  "Make a premium, contemporary, minimal, urban and athletic fashion-campaign photograph. Never a",
+  "generic product catalogue shot and never a conventional sales advertisement.",
+  "Use realistic professional lighting, believable shadows, accurate materials and textures, natural",
+  "fabric folds, correct proportions, subtle depth and sophisticated colour grading.",
+  "The photography is the hero. Do NOT reuse the same background, camera angle, arrangement or",
+  "composition every time — choose the surface and the presentation to suit these particular pieces.",
+  "A flat-lay might use concrete, stone, plaster, wood or another appropriate surface; another set",
+  "might suit a different environment entirely. It should look like a real campaign photograph, not",
+  "an AI catalogue template.",
+  "Leave generous, calm NEGATIVE SPACE — a wall, a floor, a shadow — with no product in it, down one",
+  "side and along the bottom, because typography is placed there afterwards. Where that space falls",
+  "is your decision; that there IS some is not.",
+].join(" ");
+
+// ── AND ABSOLUTELY NO TYPE ───────────────────────────────────────────────────
+// Stated as a flat prohibition with no exceptions, because the softer wording
+// ("must not ADD lettering of your own") sat next to a design rule inviting a
+// logo, and the invitation won. There is no case in which the model should
+// render a character.
+const NO_TYPE_AT_ALL = [
+  "RENDER NO TEXT AND NO BRAND MARK. This is absolute and has no exceptions.",
+  "Do not draw any letter, word, number, price, caption, label, heading, watermark, signature,",
+  "logo, wordmark, monogram, crest, wreath, badge, emblem or graphic device anywhere in the image.",
+  "Do not write MARATHON, CLUB or MARATHON CLUB. Do not invent a Marathon Club logo or symbol —",
+  "there is no crest, no laurel wreath and no monogram; the brand mark is set type and it is placed",
+  "later, by us, once.",
+  "Do not write a product name, a price, a rand amount, a total or a website address.",
+  "Every word and every number on the finished post is composited afterwards from our product",
+  "records. Anything you draw is a duplicate at best and an invented price at worst, and an invented",
+  "price is a promise the shop has to honour.",
+  "This is about what you ADD. Branding that is PART OF A PRODUCT — the logo on a shoe, the wordmark",
+  "woven into a jacket, the label printed on a bottle or its box — is part of the item and must be",
+  "rendered faithfully, exactly as it appears in the attached photograph.",
 ].join(" ");
 
 function buildScenePrompt({ kind, productNames = [], style = "house", styleNotes = [] } = {}) {
@@ -181,8 +220,8 @@ function buildScenePrompt({ kind, productNames = [], style = "house", styleNotes
     parts.push(`Styling notes from our reference library (guidance only): ${notes.slice(0, 6).join(" · ")}`);
   }
   parts.push(CONDITION_CLAUSE);
-  parts.push(DESIGN_RULE);
-  parts.push(TYPE_IS_COMPOSITED);
+  parts.push(PHOTO_DIRECTION);
+  parts.push(NO_TYPE_AT_ALL);
   parts.push(
     "Photorealistic, tack-sharp, correctly exposed — indistinguishable from a real photograph " +
     "of THESE items."
@@ -323,5 +362,5 @@ module.exports = {
   CAPTION_MIN, CAPTION_MAX, MAX_HASHTAGS,
   SCENE_HOUSE, SCENE_WHITE, CONDITION_CLAUSE, KIND_SCENE,
   buildScenePrompt, buildCaptionPrompt, readCaption, fallbackCaption,
-  DESIGN_RULE, TYPE_IS_COMPOSITED,
+  DESIGN_RULE, PHOTO_DIRECTION, NO_TYPE_AT_ALL,
 };
