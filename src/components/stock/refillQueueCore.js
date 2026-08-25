@@ -88,17 +88,22 @@ export function pendingSaleRows({ counts, responses, progress, date, tsBySize = 
  * Everything the old chrome said — release times, waiting backlog, covered
  * requests — compresses into this sentence.
  */
-export function queueStatusLine({ pickCount, waitingCount, coveredCount, windowsDisabled, nextLabel }) {
+// UNITS travel with the line counts (owner ask 2026-08-25): "what's coming"
+// must say the total QUANTITY across individual sizes, not just how many
+// lines — "12 waiting · 29 units" is 29 pairs to shelve, whatever the split.
+export function queueStatusLine({ pickCount, pickUnits = null, waitingCount, waitingUnits = null, coveredCount, windowsDisabled, nextLabel }) {
+  const withUnits = (count, noun, units) =>
+    typeof units === "number" ? `${count} ${noun} (${units} unit${units === 1 ? "" : "s"})` : `${count} ${noun}`;
   const bits = [];
   if (pickCount > 0) {
-    bits.push(`${pickCount} to pick`);
+    bits.push(withUnits(pickCount, "to pick", pickUnits));
     if (!windowsDisabled) bits.push(`next batch ${nextLabel}`);
   } else if (!windowsDisabled) {
     bits.push(`Nothing to pick — next batch lands ${nextLabel}`);
   } else {
     bits.push("Nothing to pick");
   }
-  if (!windowsDisabled && waitingCount > 0) bits.push(`${waitingCount} waiting`);
+  if (!windowsDisabled && waitingCount > 0) bits.push(withUnits(waitingCount, "waiting", waitingUnits));
   if (coveredCount > 0) bits.push(`${coveredCount} already covered by stock`);
   return bits.join(" · ");
 }
