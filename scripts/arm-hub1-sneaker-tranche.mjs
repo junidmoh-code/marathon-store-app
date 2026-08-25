@@ -44,28 +44,20 @@ admin.initializeApp({
 const db = admin.database();
 
 (async () => {
-  // ── THE DEPLOY SENTINEL ────────────────────────────────────────────────────
-  // The deployed engine must understand carriedOnly BEFORE any tranche is
-  // written: the pre-carriedOnly scanner ignores the flag and would arm every
-  // sneaker in the catalogue (~1,242 products) at Hub 1 for a full scan cycle.
-  // The sentinel is written by hand, once, after the functions deploy has been
-  // VERIFIED — this script only ever refuses without it. An unattended
-  // scheduler must never be the thing that discovers a deploy didn't happen.
-  const sentinel = (await db.ref("config/refillEngine/carriedOnlyEngineDeployedAt").once("value")).val();
-  if (!sentinel) {
-    console.error("REFUSED: /config/refillEngine/carriedOnlyEngineDeployedAt is absent — the deployed");
-    console.error("engine has not been verified to honour carriedOnly. Deploy functions:refillHealthScan,");
-    console.error("verify a scan ran clean, then write the sentinel (ISO timestamp) and re-run.");
-    process.exit(3);
-  }
-
+  // (The carriedOnly deploy sentinel is GONE with the scope gate, 2026-08-25
+  // scope change: the policy arms every sneaker by design, and an unscoped
+  // entry means the same thing to every engine version — there is no deploy
+  // ordering left to guard.)
   const live = (await db.ref("config/refillEngine/categoryPolicy/sneakers").once("value")).val();
 
   // Refuse anything that is not OUR shape: a sneakers policy someone else
   // wrote must never be silently overwritten by a scheduler.
   if (live !== null) {
     const hub1 = live?.hub1;
-    const ok = live?.perSize === true && hub1 && hub1.carriedOnly === true
+    // A stale carriedOnly:true from the scope-gate window is tolerated on the
+    // LIVE entry (the engine ignores it); the entry this script WRITES never
+    // carries it, so the first tranche write scrubs it.
+    const ok = live?.perSize === true && hub1
       && hub1.sizes && Object.keys(hub1).every((k) => k === "sizes" || k === "carriedOnly")
       && Object.keys(live).every((k) => k === "perSize" || k === "hub1")
       && Object.keys(hub1.sizes).every((k) => RUN[k] !== undefined);
@@ -86,7 +78,7 @@ const db = admin.database();
 
   const sizes = {};
   for (const k of [...armed, ...next]) sizes[k] = row(k);
-  const policy = { perSize: true, hub1: { sizes, carriedOnly: true } };
+  const policy = { perSize: true, hub1: { sizes } };   // unscoped — every sneaker, owner order 2026-08-25
   console.log(`tranche to arm: sizes ${next.join(", ")} (already armed: ${[...armed].join(", ") || "none"})`);
   console.log(JSON.stringify(policy, null, 2));
 

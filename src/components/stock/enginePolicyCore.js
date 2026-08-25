@@ -178,10 +178,6 @@ export function editorRows({ entry, carriage, destinations }) {
       // visible and editable so it can be corrected — refusing to let the owner
       // fix a mistake is not a safety feature.
       editable: c.carries === true || armed.has(loc),
-      // Carriage scope (2026-08-25): true = this leg speaks only for products
-      // the location already holds a stock cell for. Rendered as a chip and a
-      // toggle; the ENGINE is what enforces it (categoryPolicyEntry).
-      carriedOnly: e?.carriedOnly === true,
       target: e?.target ?? null,
       minQty: e?.minQty ?? null,
       reorderPoint: e?.reorderPoint ?? null,
@@ -206,10 +202,10 @@ export function draftFromEntry({ entry, carriage, destinations }) {
       // separate mode flag to get out of step with it.
       const sizes = {};
       for (const k of Object.keys(r.sizes).sort(bySizeRank)) sizes[k] = strRow(r.sizes[k]);
-      out[r.loc] = r.carriedOnly ? { sizes, carriedOnly: true } : { sizes };
+      out[r.loc] = { sizes };
       continue;
     }
-    out[r.loc] = r.carriedOnly ? { ...strRow(r), carriedOnly: true } : strRow(r);
+    out[r.loc] = strRow(r);
   }
   return out;
 }
@@ -273,11 +269,11 @@ export function policyFromDraft(draft, { perSize = false } = {}) {
       }
       // A location whose every size was cleared is DROPPED — the same way a
       // uniform row with no target is. That is how a leg is un-armed.
-      if (Object.keys(sizes).length) out[loc] = row.carriedOnly === true ? { sizes, carriedOnly: true } : { sizes };
+      if (Object.keys(sizes).length) out[loc] = { sizes };
       continue;
     }
     const entry = entryFromStrings(row);
-    if (entry) out[loc] = row.carriedOnly === true ? { ...entry, carriedOnly: true } : entry;
+    if (entry) out[loc] = entry;
   }
   if (!Object.keys(out).length) return null;
   if (perSize) out.perSize = true;
