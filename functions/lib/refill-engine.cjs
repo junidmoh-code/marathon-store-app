@@ -199,6 +199,20 @@ function isFootwear(product) {
   return product?.category === "Footwear";
 }
 
+// ── Is this product DEACTIVATED? ─────────────────────────────────────────────
+// A finished line, retired reversibly from the Leftovers tab (owner spec
+// 2026-08-25). One truthy check on the record the snapshot already carries —
+// lockstep twin of src/utils/deactivation.js isDeactivated. The guard lives at
+// the TOP of resolveTarget, above the explicit-row branch, so neither a stale
+// /stock_targets row, a category policy, nor a kill switch can re-arm a
+// deactivated product; a null target also flips needGone in the reconcile
+// pass, withdrawing any in-flight request as no_longer_needed. Receiving stock
+// clears the flag (applyMovement auto-reactivates), so the engine resumes
+// without a scan ever having to know why.
+function isDeactivated(product) {
+  return !!(product && product.deactivated);
+}
+
 // Store carries a product if the stock node exists (regardless of qty).
 // Zero-qty cells persist indefinitely (applyMovement never deletes cells), so
 // node presence is a reliable assortment indicator even after sellouts.
@@ -465,6 +479,9 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
 }
 
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+  // Deactivated products resolve NOTHING — before the explicit row, so no
+  // stored policy of any kind can raise a request for a finished line.
+  if (isDeactivated(products?.[pid])) return null;
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -1861,6 +1878,7 @@ function computeRefillPlan(snapshot) {
   const circulates = (pid) => dests.some((d) => stock?.[d]?.[pid] && Object.keys(stock[d][pid]).length > 0);
   for (const [pid, bySize] of Object.entries(stock?.central || {})) {
     if (!isClothing(products?.[pid])) continue;
+    if (isDeactivated(products?.[pid])) continue;           // finished line — no decision owed
     if (dests.some((d) => managedHere(d, pid))) continue;   // managed somewhere (explicit OR rule)
     if (circulates(pid)) continue;                          // circulating → unintroduced, NOT new
     if (decisionActive("central", pid)) continue;
@@ -1871,6 +1889,7 @@ function computeRefillPlan(snapshot) {
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
+      if (isDeactivated(products?.[pid])) continue;    // finished line — no decision owed
       if (managedHere(loc, pid)) continue;             // target resolves here → managed
       if (!Object.keys(bySize || {}).length) continue;
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
@@ -1923,6 +1942,7 @@ function computeRefillPlan(snapshot) {
     const guardPids = new Set([...Object.keys(targets?.[loc] || {}), ...Object.keys(stock?.[loc] || {})]);
     for (const pid of guardPids) {
       if (!isClothing(products?.[pid])) continue;
+      if (isDeactivated(products?.[pid])) continue;   // finished line — no decision owed
       if (!managedHere(loc, pid)) continue;   // unmanaged → already handled by the queues above
       if (decisionActive(loc, pid)) continue;
       let units = 0;

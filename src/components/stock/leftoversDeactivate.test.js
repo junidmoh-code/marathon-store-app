@@ -1,0 +1,105 @@
+// ─── Leftovers tab × deactivation — the three lists' contracts ───────────────
+// Run: npx vitest run src/components/stock/leftoversDeactivate.test.js
+//
+//   • buildLeftovers SKIPS a deactivated product (that is the point of the
+//     card's Deactivate button) and is otherwise byte-identical.
+//   • buildFinishedLines finds the census gap: unregistered footwear with
+//     cells at this hub and zero total stock everywhere.
+//   • buildDeactivatedRows lists EVERY deactivated product, stock-holders
+//     first — the "never silently lost" visibility guarantee.
+
+import { describe, it, expect } from "vitest";
+import { buildLeftovers, buildFinishedLines, buildDeactivatedRows } from "./hubCleanupCore.js";
+
+const shoe = (id, over = {}) => ({ id, name: `Shoe ${id}`, category: "Footwear", sizes: ["8", "9"], ...over });
+const DEACT = { at: 1756100000000, by: "u1", byName: "junid" };
+
+const products = [
+  shoe("keep"),                                   // leftover with stock
+  shoe("dead", { deactivated: DEACT }),           // deactivated, holds stock
+  shoe("ghost"),                                  // cells here, zero everywhere
+  shoe("deadGhost", { deactivated: DEACT }),      // deactivated, zero stock
+  shoe("coded", { styleCodeNormalised: "AB1" }),  // registered — never a leftover
+];
+const hubStock = {
+  keep: { "8": { qty: 2 } },
+  dead: { "8": { qty: 3 } },
+  ghost: { "8": { qty: 0 }, "9": { qty: 0 } },
+  deadGhost: { "8": { qty: 0 } },
+  coded: { "8": { qty: 1 } },
+};
+const allStock = {
+  hub1: hubStock,
+  central: { keep: { "9": { qty: 1 } } },
+};
+const args = { hub: "hub1", products, hubStock, registered: {}, allStock, identityMap: {} };
+
+describe("buildLeftovers", () => {
+  it("skips a deactivated product; everything else exactly as before", () => {
+    const rows = buildLeftovers(args);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].product.id).toBe("keep");
+    expect(rows[0].hubQty).toBe(2);
+  });
+});
+
+describe("buildFinishedLines", () => {
+  it("lists unregistered footwear with cells here and zero stock everywhere — not deactivated, not registered, not stock-holding", () => {
+    const rows = buildFinishedLines(args);
+    expect(rows.map((r) => r.product.id)).toEqual(["ghost"]);
+  });
+  it("returns nothing without the network view — 'zero everywhere' is never guessed", () => {
+    expect(buildFinishedLines({ ...args, allStock: null })).toEqual([]);
+  });
+  it("negative cells elsewhere do not disqualify (total <= 0 is still finished)", () => {
+    const rows = buildFinishedLines({
+      ...args,
+      allStock: { ...allStock, central: { ...allStock.central, ghost: { "9": { qty: -2 } } } },
+    });
+    expect(rows.map((r) => r.product.id)).toEqual(["ghost"]);
+  });
+});
+
+describe("buildDeactivatedRows", () => {
+  it("lists EVERY deactivated product, stock-holders first with their locations", () => {
+    const rows = buildDeactivatedRows({ products, allStock });
+    expect(rows.map((r) => r.product.id)).toEqual(["dead", "deadGhost"]);
+    expect(rows[0].units).toBe(3);
+    expect(rows[0].locations.map((l) => l.loc)).toEqual(["hub1"]);
+    expect(rows[1].units).toBe(0);
+  });
+  it("is empty when nothing is deactivated", () => {
+    expect(buildDeactivatedRows({ products: [shoe("a")], allStock })).toEqual([]);
+  });
+});
+
+// ── The two "still findable, clearly marked" surfaces ────────────────────────
+import { mergeTargetPool, rowLabel } from "./mergeSearch.js";
+import { computeMissingFootwear } from "./missingFootwearCore.js";
+
+describe("merge picker keeps deactivated products, marked", () => {
+  it("mergeTargetPool does NOT filter a deactivated product", () => {
+    const loser = shoe("loser");
+    const pool = mergeTargetPool([shoe("a"), shoe("b", { deactivated: DEACT }), loser], loser);
+    expect(pool.map((p) => p.id).sort()).toEqual(["a", "b"]);
+  });
+  it("rowLabel marks a deactivated product and leaves active ones untouched", () => {
+    expect(rowLabel(shoe("b", { deactivated: DEACT }))).toBe("Shoe b · deactivated");
+    expect(rowLabel(shoe("a"))).toBe("Shoe a");
+  });
+});
+
+describe("Missing Sneakers never offers a deactivated product", () => {
+  const stranded = {
+    central: { dead: { "8": { qty: 4 } }, live: { "8": { qty: 4 } } },
+    hub1: {}, hub2: {},
+  };
+  it("a deactivated product with stranded Central stock raises no card; active twin unchanged", () => {
+    const cards = computeMissingFootwear({
+      allStock: stranded,
+      products: [shoe("dead", { deactivated: DEACT }), shoe("live")],
+      hubs: ["hub1", "hub2"],
+    });
+    expect(cards.map((c) => c.pid)).toEqual(["live"]);
+  });
+});

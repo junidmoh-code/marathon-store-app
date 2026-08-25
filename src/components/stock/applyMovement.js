@@ -34,9 +34,26 @@
 import { ref, child, get, update, push } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { stockCellPath } from "../../utils/sizeKey";
-import { serverNowIso } from "../../utils/serverTime";
+import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { reactivateUpdates, REACTIVATED_EVENT } from "../../utils/deactivation";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
+
+// ── AUTO-REACTIVATION ON ARRIVAL (owner spec 2026-08-25) ─────────────────────
+// A DEACTIVATED product (products/{id}/deactivated — a reversibly retired
+// finished line, src/utils/deactivation.js) that receives stock would be
+// invisible: the engine ignores it, nobody refills it, the units sit
+// unnoticed. So any movement that lands stock AT A REAL LOCATION reactivates
+// the product in the SAME atomic update as the stock write. Arrivals are:
+// received, opening, return, transfer_in (from in_transit to a real shelf) and
+// a positive adjustment. NOT `sold` (a deduction) and NOT transfer_out (its
+// +leg lands in in_transit; reactivation waits for the transfer_in that puts
+// units on an actual shelf). The UI is told via REACTIVATED_EVENT so every
+// receive surface announces it without each caller opting in.
+function isArrival(m) {
+  if (m.type === "received" || m.type === "opening" || m.type === "return" || m.type === "transfer_in") return true;
+  return m.type === "adjustment" && !!m.to;
+}
 
 function emptyLink(link) {
   return { orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) };
@@ -107,6 +124,26 @@ export async function applyMovement(movement, opts = {}) {
 
   const mvId = movement.movementId || push(child(ref(database), "stock_movements")).key;
 
+  // One small read decides auto-reactivation for the whole call. Read ONCE
+  // (not per attempt): the worst a stale read costs is re-clearing an
+  // already-cleared flag, which lands on the same final state.
+  let reactivation = null;
+  if (isArrival(movement)) {
+    try {
+      const dSnap = await get(child(ref(database), `products/${movement.productId}/deactivated`));
+      if (dSnap.exists()) {
+        const byName = (user.email || "").split("@")[0] || null;
+        reactivation = reactivateUpdates(movement.productId, {
+          uid: user.uid, byName, nowMs: serverNowMs(), reason: "stock_received",
+        });
+      }
+    } catch {
+      // A failed flag read must never block a stock write — the next arrival
+      // (or a manual tap) reactivates instead.
+      reactivation = null;
+    }
+  }
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     // Idempotency: if this movement already landed, treat as success (re-sync safe).
     const existing = await get(child(ref(database), `stock_movements/${mvId}`));
@@ -172,6 +209,7 @@ export async function applyMovement(movement, opts = {}) {
     };
 
     const updates = {};
+    if (reactivation) Object.assign(updates, reactivation);   // same atomic write as the stock
     updates[`stock_movements/${mvId}`] = mv;
     for (const c of cells) {
       const newV = c.cell && typeof c.cell.v === "number" ? c.cell.v + 1 : 0;
@@ -186,7 +224,15 @@ export async function applyMovement(movement, opts = {}) {
 
     try {
       await update(ref(database), updates);
-      return { ok: true, movementId: mvId };
+      if (reactivation && typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+        // Every receive surface announces the reactivation without opting in.
+        window.dispatchEvent(new CustomEvent(REACTIVATED_EVENT, {
+          detail: { productId: movement.productId, movementType: movement.type },
+        }));
+      }
+      return reactivation
+        ? { ok: true, movementId: mvId, reactivated: true }
+        : { ok: true, movementId: mvId };
     } catch (err) {
       if (attempt === maxRetries) {
         return { ok: false, reason: "write_failed", error: String(err?.message || err) };

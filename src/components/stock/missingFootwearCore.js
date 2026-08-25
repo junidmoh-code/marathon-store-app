@@ -25,6 +25,7 @@
 // Live counts under this rule (2026-07-30): 635 footwear products have Central
 // stock; 121 are missing from both hubs — 95 never introduced, 26 sold out.
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
@@ -124,6 +125,10 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
     if (pid === "_meta") continue;
     const p = byId.get(pid);
     if (!isFootwearProduct(p)) continue;
+    // A deactivated product is a finished line: it must not be requestable
+    // here (this screen writes /refill_requests directly, outside the engine).
+    // Its stock stays visible on the Deactivated list, not as a "missing" row.
+    if (isDeactivated(p)) continue;
     const centralUnits = unitsAt(allStock, "central", pid);
     if (centralUnits <= 0) continue;
     // Missing = no UNITS at any hub that holds buffer — parked-box units count.
