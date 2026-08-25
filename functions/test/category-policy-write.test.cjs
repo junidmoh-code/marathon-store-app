@@ -747,8 +747,12 @@ test("the carriedOnly scrub WRITES (byte-same is the only no-change), with a syn
     nowMs: NOW,
   });
   assert.equal(res.ok, true);
-  assert.ok(!res.noChange, "a shape-only change must not be eaten as no-change");
-  assert.ok(res.changes.some((l) => l.field === "shape"), "the synthetic leg names the scrub for the audit trail");
+  assert.ok(!res.noChange, "a flag-only change must not be eaten as no-change");
+  // With the gate RESTORED (2026-08-25 evening) the scrub diffs as a NAMED
+  // carriedOnly leg again; the synthetic "shape" leg remains the backstop for
+  // shape changes no leg names.
+  assert.ok(res.changes.some((l) => l.field === "carriedOnly" && l.from === true && l.to === false),
+    `expected a carriedOnly leg, got ${JSON.stringify(res.changes)}`);
   const live = readAt(db.state.root, "config/refillEngine/categoryPolicy/sneakers");
   assert.deepEqual(live, scrubbed, "the stale flag is gone from the live entry");
 });

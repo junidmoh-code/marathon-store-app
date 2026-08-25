@@ -44,19 +44,31 @@ admin.initializeApp({
 const db = admin.database();
 
 (async () => {
-  // (The carriedOnly deploy sentinel is GONE with the scope gate, 2026-08-25
-  // scope change: the policy arms every sneaker by design, and an unscoped
-  // entry means the same thing to every engine version — there is no deploy
-  // ordering left to guard.)
+  // ── THE DEPLOY SENTINEL ────────────────────────────────────────────────────
+  // The deployed engine must understand carriedOnly BEFORE any tranche is
+  // written: the pre-carriedOnly scanner ignores the flag and would arm every
+  // sneaker in the catalogue (~1,242 products) at Hub 1 for a full scan cycle.
+  // The sentinel is written by hand, once, after the functions deploy has been
+  // VERIFIED — this script only ever refuses without it. An unattended
+  // scheduler must never be the thing that discovers a deploy didn't happen.
+  const sentinel = (await db.ref("config/refillEngine/carriedOnlyEngineDeployedAt").once("value")).val();
+  if (!sentinel) {
+    console.error("REFUSED: /config/refillEngine/carriedOnlyEngineDeployedAt is absent — the deployed");
+    console.error("engine has not been verified to honour carriedOnly. Deploy functions:refillHealthScan,");
+    console.error("verify a scan ran clean, then write the sentinel (ISO timestamp) and re-run.");
+    process.exit(3);
+  }
+
   const live = (await db.ref("config/refillEngine/categoryPolicy/sneakers").once("value")).val();
 
   // Refuse anything that is not OUR shape: a sneakers policy someone else
   // wrote must never be silently overwritten by a scheduler.
   if (live !== null) {
     const hub1 = live?.hub1;
-    // A stale carriedOnly:true from the scope-gate window is tolerated on the
-    // LIVE entry (the engine ignores it); the entry this script WRITES never
-    // carries it, so the first tranche write scrubs it.
+    // The flag itself may be ABSENT on the live entry (the 2026-08-25 window
+    // when the gate was removed and restored the same day) — tolerated on
+    // READ; every write below re-scopes with carriedOnly: true, which is the
+    // correction itself.
     const ok = live?.perSize === true && hub1
       && hub1.sizes && Object.keys(hub1).every((k) => k === "sizes" || k === "carriedOnly")
       && Object.keys(live).every((k) => k === "perSize" || k === "hub1")
@@ -69,36 +81,6 @@ const db = admin.database();
   }
 
   const armed = new Set(live ? Object.keys(live.hub1.sizes) : []);
-
-  // ── THE WIDENING DAY (2026-08-25 scope change) ─────────────────────────────
-  // A live entry still carrying the retired carriedOnly flag is scrubbed IN
-  // PLACE — same sizes, unscoped — and no new size joins on the same day.
-  // TO BE PRECISE ABOUT TIMING (PR #448 review): the DEMAND widens the moment
-  // the gate-less engine deploys, not at this write — the deployed engine
-  // ignores the flag outright. What paces the widening is the
-  // maxFootwearIntentsPerRun rollout throttle, set BEFORE that deploy; this
-  // scrub is the bookkeeping that makes the stored entry say what the engine
-  // does, and it holds back the day's NEW size while the widening lands.
-  if (live?.hub1?.carriedOnly !== undefined) {
-    // Preserve the LIVE rows verbatim — an owner-tuned number on an armed size
-    // must survive the scrub (PR #448 review); only the flag is dropped.
-    const sizes = {};
-    for (const k of [...armed]) sizes[k] = live.hub1.sizes[k];
-    const policy = { perSize: true, hub1: { sizes } };
-    console.log(`widening day: scrubbing carriedOnly — sizes ${[...armed].join(", ")} now cover EVERY sneaker`);
-    const rollback = `${process.env.HOME}/hub1-sneaker-tranche-rollback-${new Date().toISOString().slice(0, 10)}.json`;
-    writeFileSync(rollback, JSON.stringify({ at: new Date().toISOString(), before: live }, null, 2));
-    console.log(`rollback (previous entry) written: ${rollback}`);
-    const res = await applyCategoryPolicy({
-      db, callerEmail: ADMIN_EMAIL, adminEmail: ADMIN_EMAIL, callerUid: "hub1-tranche-runner",
-      data: { categoryKey: "sneakers", policy, expectedBefore: live, dryRun: !EXECUTE },
-      nowMs: Date.now(),
-    });
-    console.log(EXECUTE ? "WRITTEN (widened):" : "DRY RUN (pass --execute to write):");
-    console.log(JSON.stringify({ ok: res?.ok, dryRun: res?.dryRun, changes: res?.changes }, null, 2));
-    process.exit(res?.ok ? 0 : 1);
-  }
-
   const next = TRANCHES.find((t) => t.some((k) => !armed.has(k)));
   if (!next) {
     console.log("All ten sizes are armed — nothing to do. Remove the schedule:");
@@ -107,11 +89,8 @@ const db = admin.database();
   }
 
   const sizes = {};
-  // Already-armed sizes keep their LIVE rows (owner tuning survives a tranche);
-  // only the NEW tranche's sizes are written from the run module.
-  for (const k of [...armed]) sizes[k] = live.hub1.sizes[k];
-  for (const k of next) if (!sizes[k]) sizes[k] = row(k);
-  const policy = { perSize: true, hub1: { sizes } };   // unscoped — every sneaker, owner order 2026-08-25
+  for (const k of [...armed, ...next]) sizes[k] = row(k);
+  const policy = { perSize: true, hub1: { sizes, carriedOnly: true } };
   console.log(`tranche to arm: sizes ${next.join(", ")} (already armed: ${[...armed].join(", ") || "none"})`);
   console.log(JSON.stringify(policy, null, 2));
 
