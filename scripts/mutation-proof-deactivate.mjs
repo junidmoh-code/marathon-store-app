@@ -194,8 +194,8 @@ const MUTATIONS = [
     id: "M-PIN-CHIPS",
     guard: "the phone sheet's size chips actually consult orderSizeOut",
     file: APP,
-    from: `                const out = orderSizeOut(selected, { clothingOrder: (selected.productType || "sneaker") === "clothing", hubQty: hubQty(selected.id, s) });`,
-    to: `                const out = (selected.productType || "sneaker") === "clothing" && hubQty(selected.id, s) <= 0;`,
+    from: `                const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s) }) || snkOut;`,
+    to: `                const out = (clothing && hubQty(selected.id, s) <= 0) || snkOut;`,
     tests: LIST_TESTS,
   },
   {
