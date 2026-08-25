@@ -15,6 +15,22 @@
 // direction — it is a sweep, not a type checker, and a false positive costs a
 // glance while a false negative costs the whole screen.
 //
+// ── WHAT IT IS NOT ───────────────────────────────────────────────────────────
+// A regex, not a parser, and two known limits follow from that. Both are in
+// the FALSE-POSITIVE direction — a glance wasted, never a defect hidden:
+//
+//   · `if (a) { b(); } [1, 2].forEach(...)` on ONE line. A block's closing `}`
+//     is indistinguishable from an object literal's without parsing, and an
+//     object literal's `}` has to count (`{...}[key].map()` is a real index
+//     access). Telling them apart needs a JS parser; the shape is not one
+//     anybody writes, and the cost of being wrong about it is a line to look at.
+//   · `proven` is judged per FILE, not per scope. One function using a name as
+//     a real array marks that name proven everywhere in the file, so a
+//     different function's nullable value of the same name can slip through.
+//     This one CAN hide something. It is the price of not writing a parser,
+//     and it is why this sweep is a net, not a proof — the tests and the
+//     mutation proof are what actually hold the guards.
+//
 // Usage:  node scripts/sweep-unguarded-array-ops.mjs [paths...]
 // Exit 1 if anything is reported, so CI or a pre-merge check can use it.
 import { readFileSync, readdirSync, statSync } from "node:fs";
