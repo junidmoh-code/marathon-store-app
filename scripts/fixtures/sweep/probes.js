@@ -18,3 +18,15 @@ export function coerced(post, asList) {
 export function bare(post) {
   return post.media.some(Boolean);              // MUST be reported
 }
+export function optionalCallResult() {
+  return getPosts()?.map((p) => p.id);          // safe — the call hop is optional
+}
+export function arrayLiteral() {
+  return [1, 2].map((x) => x);                  // safe — a literal, not an index
+}
+export function indexedElement(rows, i) {
+  // `rows[i]` is as able to be undefined as anything else. The sweep read the
+  // closing bracket as an array literal and called this safe, which is a false
+  // NEGATIVE — the direction that actually costs something. MUST be reported.
+  return rows[i].some(Boolean);
+}

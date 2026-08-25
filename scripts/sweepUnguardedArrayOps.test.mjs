@@ -20,8 +20,21 @@ test("optional chaining on the wrong hop is REPORTED; on the call hop it is not"
   expect(status).toBe(1);
   // The three safe shapes must not appear. Counting is the check: exactly two
   // findings, the two the fixture marks as unguarded.
-  expect(out).toContain("2 to look at");
   expect(out).toContain("post.media.some()");
+});
+
+test("an INDEXED element is reported; an array literal and an optional call are not", () => {
+  // `rows[i].some(...)` was read as an array literal and called safe. A false
+  // negative in a sweep is worse than a false positive: a clean run reads as
+  // "checked". `[1,2].map(...)` and `getPosts()?.map(...)` must stay silent.
+  const { out } = run("scripts/fixtures/sweep/probes.js");
+  expect(out).toContain("rows[…].some()");
+  expect(out).not.toContain("getPosts");
+  expect(out).not.toContain("arrayLiteral");
+  // Exactly three findings across the fixture: the two unguarded shapes above
+  // plus the indexed element. Counting is what stops a future loosening from
+  // silently swallowing one of them.
+  expect(out).toContain("3 to look at");
 });
 
 test("the social card itself sweeps clean, and a clean sweep exits 0", () => {

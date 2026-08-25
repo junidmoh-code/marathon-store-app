@@ -53,13 +53,46 @@ function collectFiles(target) {
   return out;
 }
 
+/** Index of the `[` matching the `]` that ends `text`, or -1. */
+function matchingOpenBracket(text) {
+  let depth = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i] === "]") depth++;
+    else if (text[i] === "[") { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+
 /** The expression immediately left of the dot, and whether it is guarded. */
 function receiverAt(line, dotIndex) {
   const before = line.slice(0, dotIndex);
   // Chained call or a call returning something: `foo(...)`, `x.map(...)`
   if (/\)\s*$/.test(before)) return { text: before.trim().slice(-60), guarded: true };
-  // Array literal
-  if (/\]\s*$/.test(before)) return { text: "[...]", guarded: true };
+  // A closing bracket is TWO different things and only one of them is a guard.
+  // `[a, b].map(...)` is a literal and safe. `rows[i].some(...)` is an INDEX
+  // access, and `rows[i]` is exactly as able to be undefined as any other
+  // expression — treating it as a literal was a false negative, which is the
+  // direction that matters in a sweep. They are told apart by what sits
+  // immediately before the matching `[`: an identifier, a `)` or a `]` means
+  // index access.
+  if (/\]\s*$/.test(before)) {
+    const openIdx = matchingOpenBracket(before);
+    const lead = openIdx > 0 ? before.slice(0, openIdx).trimEnd() : "";
+    const prev = lead.slice(-1);
+    // A KEYWORD before the bracket still means a literal: `return [a].map()`,
+    // `typeof [x]`, `await [p]`. Only a value — an identifier, a call result,
+    // another index — makes it an index access.
+    const word = (lead.match(/[A-Za-z_$][\w$]*$/) || [""])[0];
+    const KEYWORD_BEFORE_LITERAL = new Set([
+      "return", "typeof", "of", "in", "case", "do", "else", "yield", "await",
+      "new", "delete", "void", "instanceof",
+    ]);
+    if (!/[\w$)\]]/.test(prev) || KEYWORD_BEFORE_LITERAL.has(word)) return { text: "[...]", guarded: true };
+    // Label it by the thing being indexed, not by 24 characters of whatever
+    // happened to precede it.
+    const base = (lead.match(/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/) || ["?"])[0];
+    return { text: `${base}[…]`, guarded: false, root: null };
+  }
   // Template / string literal receiver
   if (/["'`]\s*$/.test(before)) return { text: "<string>", guarded: true };
   const m = before.match(/([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*)\s*$/);
