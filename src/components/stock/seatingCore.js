@@ -144,25 +144,32 @@ function locationPolicyFor(config, categoryKey, dest) {
     const usable = Object.keys(loc.sizes).some((k) => positiveTarget(loc.sizes[k]?.target));
     if (!usable) return null;
     return { perSize: true, mode, target: null, minQty: null, reorderPoint: null,
-      sizes: loc.sizes, source: eff.source, groupKey: eff.groupKey };
+      sizes: loc.sizes, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
   }
   if (!positiveTarget(loc.target)) return null;
   return { perSize, mode, target: loc.target, minQty: loc.minQty, reorderPoint: loc.reorderPoint,
-    sizes: null, source: eff.source, groupKey: eff.groupKey };
+    sizes: null, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
 }
 
-// refill-engine.cjs categoryPolicyEntry, mirrored. (The 2026-08-25 carriedOnly
-// carriage-scope gate was removed by the owner the same day it shipped — a
-// category policy speaks for EVERY product of the category at the location;
-// a stray carriedOnly key on a live entry is ignored. `stock` stays in the
-// signature for the call sites but is no longer consulted.)
+// policy-resolve.cjs carriedOnlyOf — present-and-not-false gates; absent or
+// explicit false is unscoped (garbled leans toward the fewer-products side).
+function carriedOnlyOf(locEntry) {
+  return isObj(locEntry)
+    && locEntry.carriedOnly !== undefined && locEntry.carriedOnly !== false;
+}
+
+// refill-engine.cjs:405 — including the carriedOnly carriage-scope gate: an
+// entry flagged carriedOnly speaks only for products this location already
+// holds a stock cell for (storeCarries). Gated HERE, the one choke point, so
+// seatingSizes / resolveTarget / every seating consumer agree with the engine.
 export function categoryPolicyEntry(config, products, stock, pid, dest) {
   const key = products?.[pid]?.categoryKey;
   if (typeof key !== "string" || !key) return null;
   const r = locationPolicyFor(config, key, dest);
   if (!r) return null;
+  if (r.carriedOnly && !storeCarries(stock, dest, pid)) return null;
   return { target: r.target, reorderPoint: r.reorderPoint, minQty: r.minQty,
-    perSize: r.perSize, sizes: r.sizes,
+    perSize: r.perSize, sizes: r.sizes, carriedOnly: r.carriedOnly === true,
     policySource: r.source, groupKey: r.groupKey };
 }
 
