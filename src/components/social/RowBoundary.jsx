@@ -13,6 +13,19 @@
 // thirty-five render normally, and the thing that needs fixing is the thing
 // that is pointing at itself.
 //
+// ── AND WHY IT RESETS ITSELF ─────────────────────────────────────────────────
+// A React error boundary latches. Once it has caught, it renders the fallback
+// forever — and because these are keyed by the record's stable id, the boundary
+// instance SURVIVES a refetch. So a row that was malformed for one moment (a
+// generator mid-write, caught by the twenty-second poll) would go on saying
+// "couldn't be shown" long after the record was whole again, with only a
+// hand-clicked "Try again" to clear it.
+//
+// `resetKey` fixes that: the caller passes something that changes when the
+// record's data changes — `updatedAt` is exactly that field — and a new value
+// clears the error and lets the row render itself again. If it renders fine,
+// the row is back. If it throws again, it is caught again, and nothing is lost.
+//
 // ── WHY THE AFFORDANCE IS PASSED IN ──────────────────────────────────────────
 // "Delete" means discardPost on a queue row and deleteStyleRef on a library
 // tile, and neither is this component's business. It takes a label and a
@@ -34,10 +47,17 @@ const WRAP = {
 export default class RowBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { error: null };
+    this.state = { error: null, seenKey: props.resetKey };
   }
   static getDerivedStateFromError(error) {
     return { error };
+  }
+  static getDerivedStateFromProps(props, state) {
+    // Compared in getDerivedStateFromProps rather than componentDidUpdate so
+    // the recovered row renders on THIS pass — a componentDidUpdate reset
+    // paints the error once more before clearing, which reads as a flicker.
+    if (props.resetKey !== state.seenKey) return { error: null, seenKey: props.resetKey };
+    return null;
   }
   componentDidCatch(error, info) {
     // Named so a console filter can pull just these out of a noisy tab.

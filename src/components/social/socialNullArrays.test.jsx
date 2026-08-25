@@ -86,6 +86,7 @@ vi.mock("firebase/database", () => ({
 
 import {
   loadPostsByStatus, loadRefPage, addStyleRef, editStyleRef, createManualPost, mergeRefPage,
+  retryPost,
 } from "./socialStore";
 
 const POST = (over = {}) => ({
@@ -285,5 +286,94 @@ test("one malformed post is one broken row — the rest of the queue still rende
   // Whatever happens to the bad row, the good one is on screen and the card is
   // not the error boundary.
   expect(text).toContain("the good one");
+  tree.unmount();
+});
+
+// ── 6. RETRY MUST NOT RESURRECT A STALE RESULT ───────────────────────────────
+// update() REPLACES the child it is given, so writing the whole `results`
+// object back swaps the live subtree for whatever the browser last loaded. The
+// queue polls only while something is due and unclaimed, so the tab's copy goes
+// stale the moment the Mac mini writes a result — and a stale "sending" written
+// over a live "ok" is a duplicate public Instagram post on the next run.
+test("retry reads results from the DATABASE, not from the screen's stale copy", async () => {
+  // What the screen loaded: both platforms still in flight.
+  const stale = POST({
+    status: "failed",
+    results: { instagram: { state: "sending" }, facebook: { state: "sending" } },
+  });
+  store.social_posts = { a: { ...stale } };
+  // What the publisher has since confirmed, straight into the database.
+  writePath("social_posts/a/results/instagram", { state: "ok", id: "IG123" });
+  writePath("social_posts/a/results/facebook", { state: "ok", id: "FB456" });
+
+  // Junid taps Retry while still looking at the old screen.
+  const res = await retryPost("a", stale);
+  expect(res.ok).toBe(true);
+
+  // Both confirmed sends survive. Before the fix these came back as "sending"
+  // and the next run would have posted to both accounts a second time.
+  expect(readPath("social_posts/a/results/instagram")).toEqual({ state: "ok", id: "IG123" });
+  expect(readPath("social_posts/a/results/facebook")).toEqual({ state: "ok", id: "FB456" });
+  expect(readPath("social_posts/a/status")).toBe("draft");
+});
+
+test("retry clears ONLY the errored platform, by its own path", async () => {
+  store.social_posts = {
+    a: POST({
+      status: "failed",
+      results: {
+        instagram: { state: "ok", id: "IG1" },
+        facebook: { state: "error", error: "rate limited", attempts: 2 },
+        tiktok: { state: "sending" },
+      },
+    }),
+  };
+  await retryPost("a", null);
+  expect(readPath("social_posts/a/results/instagram")).toEqual({ state: "ok", id: "IG1" });
+  expect(readPath("social_posts/a/results/tiktok")).toEqual({ state: "sending" });
+  expect(readPath("social_posts/a/results/facebook")).toBeUndefined();
+  // The parent is written per-path, never wholesale.
+  const paths = updates.flatMap((u) => Object.keys(u.fields));
+  expect(paths).toContain("results/facebook");
+  expect(paths).not.toContain("results");
+});
+
+test("retry called with no in-memory post still protects the live results", async () => {
+  // The exported signature allows retryPost(id) with no post. The old code then
+  // saw {} and wrote results: null, deleting every "ok" it could not see.
+  store.social_posts = { a: POST({ status: "failed", results: { instagram: { state: "ok" } } }) };
+  await retryPost("a");
+  expect(readPath("social_posts/a/results/instagram")).toEqual({ state: "ok" });
+});
+
+// ── 7. A ROW THAT RECOVERS STOPS SAYING IT IS BROKEN ─────────────────────────
+test("RowBoundary clears its error when the record's data changes", () => {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  let boom = true;
+  const Child = () => { if (boom) throw new Error("half-written record"); return <div>recovered row</div>; };
+  let tree;
+  act(() => { tree = create(<RowBoundary recordId="p1" label="post" resetKey={1}><Child /></RowBoundary>); });
+  expect(JSON.stringify(tree.toJSON())).toContain("couldn't be shown");
+
+  // The record is refetched and is now whole. Same id, so the SAME boundary
+  // instance — nothing remounts — but updatedAt moved.
+  boom = false;
+  act(() => { tree.update(<RowBoundary recordId="p1" label="post" resetKey={2}><Child /></RowBoundary>); });
+  const after = JSON.stringify(tree.toJSON());
+  expect(after).toContain("recovered row");
+  expect(after).not.toContain("couldn't be shown");
+
+  spy.mockRestore();
+  tree.unmount();
+});
+
+test("RowBoundary keeps showing the error while the record has NOT changed", () => {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  const Child = () => { throw new Error("still broken"); };
+  let tree;
+  act(() => { tree = create(<RowBoundary recordId="p1" label="post" resetKey={1}><Child /></RowBoundary>); });
+  act(() => { tree.update(<RowBoundary recordId="p1" label="post" resetKey={1}><Child /></RowBoundary>); });
+  expect(JSON.stringify(tree.toJSON())).toContain("still broken");
+  spy.mockRestore();
   tree.unmount();
 });

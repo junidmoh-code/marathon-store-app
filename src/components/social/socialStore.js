@@ -48,7 +48,7 @@ import {
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { asList, storedList, storedMap } from "../../utils/rtdbList";
+import { asList, storedList } from "../../utils/rtdbList";
 import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./socialCore";
 
 // ── THE BOUNDARY ─────────────────────────────────────────────────────────────
@@ -224,19 +224,47 @@ export async function discardPost(postId) {
  * attempt counters. An "ok" result is a fact about the world and is kept
  * forever. A "sending" result is an open question and is kept until a person
  * answers it — see resolveSending.
+ *
+ * ── AND IT NO LONGER TRUSTS THE SCREEN'S COPY OF `results` ──────────────────
+ * The version that took `post` and rebuilt the whole `results` object from it
+ * did not actually hold the guarantee two paragraphs up. update() REPLACES the
+ * child it is given: writing `results: {...}` swaps the entire subtree for
+ * whatever the browser last loaded. The queue is not polled continuously — it
+ * polls only while something is due and unclaimed — so the tab's copy of a post
+ * goes stale the moment the Mac mini writes a result.
+ *
+ * That is a duplicate public post, by this exact route: Junid loads the queue
+ * with instagram and facebook both "sending"; the publisher confirms both in
+ * the database; Junid, still looking at the old screen, taps Retry. The stale
+ * copy said "sending", so "sending" is what gets written back over two "ok"s,
+ * and the next run sees two platforms that were never sent and sends them
+ * again — to live accounts, permanently.
+ *
+ * So two things changed. It re-reads `results` from the DATABASE rather than
+ * taking the caller's word for it, and it writes ONE PATH PER PLATFORM
+ * (`results/instagram`) instead of the parent. A per-platform write cannot
+ * replace a sibling it never named, so even a result that lands between the
+ * read and the write survives. `post` is still accepted and ignored, so no
+ * caller breaks.
  */
-export async function retryPost(postId, post = null) {
-  const results = (post && post.results) || {};
-  const next = {};
+export async function retryPost(postId, post = null) {   // eslint-disable-line no-unused-vars
+  const id = safeSeg(postId);
+  let results = {};
+  try {
+    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));
+    results = snap.val() || {};
+  } catch (err) {
+    // A refused or failed read must NOT fall back to the caller's copy or to
+    // {} — either would clear results this function cannot see. Refuse instead.
+    return writeError(err);
+  }
+  const fields = { status: "draft", needsCheck: null };
   for (const [key, r] of Object.entries(results)) {
     if (!r || typeof r !== "object") continue;
-    if (r.state === "ok" || r.state === "sending") { next[key] = r; continue; }
-    next[key] = null;   // errored or skipped: forget it and let it try again
+    if (r.state === "ok" || r.state === "sending") continue;   // a fact, or an open question
+    fields[`results/${safeSeg(key)}`] = null;                  // errored: forget just this one
   }
-  // storedMap: an EMPTY `next` means every recorded result was errored and is
-  // being forgotten, which is a deliberate delete of the subtree — not the
-  // accidental one an `{}` slipped into update() would perform unannounced.
-  return writePost(postId, { status: "draft", results: storedMap(next), needsCheck: null });
+  return writePost(id, fields);
 }
 
 /**

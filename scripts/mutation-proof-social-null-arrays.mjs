@@ -26,6 +26,7 @@ const HELPER = "src/utils/rtdbList.js";
 const STORE = "src/components/social/socialStore.js";
 const VIEW = "src/components/social/SocialView.jsx";
 const LIB = "src/components/social/StyleLibraryCard.jsx";
+const BOUNDARY = "src/components/social/RowBoundary.jsx";
 
 const MUTATIONS = [
   {
@@ -89,6 +90,24 @@ const MUTATIONS = [
     to: "  const anySending = posts.some((p) => isSendingSoon(p));",
   },
   {
+    name: "retryPost: trust the caller's in-memory results again (the double-post path)",
+    file: STORE,
+    from: "    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));\n    results = snap.val() || {};",
+    to: "    results = (post && post.results) || {};",
+  },
+  {
+    name: "retryPost: write the whole results parent instead of one path per platform",
+    file: STORE,
+    from: "    fields[`results/${safeSeg(key)}`] = null;                  // errored: forget just this one",
+    to: "    fields.results = { ...results, [key]: null };",
+  },
+  {
+    name: "RowBoundary: stop resetting when the record's data changes",
+    file: BOUNDARY,
+    from: "    if (props.resetKey !== state.seenKey) return { error: null, seenKey: props.resetKey };",
+    to: "    if (false && props.resetKey !== state.seenKey) return { error: null, seenKey: props.resetKey };",
+  },
+  {
     name: "the queue: drop the per-row boundary",
     file: VIEW,
     from: '        <RowBoundary key={p.id} recordId={p.id} label="post"',
@@ -117,7 +136,7 @@ const MUTATIONS = [
 // files and is killed by anything from a Ctrl-C to an OOM; the safe version of
 // "we restore it afterwards" is not needing to. Commit first — which is the
 // habit anyway, since a mutation run is only meaningful against a snapshot.
-const TARGETS = [HELPER, STORE, VIEW, LIB];
+const TARGETS = [HELPER, STORE, VIEW, LIB, BOUNDARY];
 const dirty = execSync(`git status --porcelain -- ${TARGETS.join(" ")}`, { encoding: "utf8" }).trim();
 if (dirty && !process.argv.includes("--allow-dirty")) {
   console.error("Refusing to run: these files have uncommitted changes.\n");
