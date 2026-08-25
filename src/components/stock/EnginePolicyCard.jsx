@@ -366,21 +366,6 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     setDraft((d) => { const n = { ...d }; delete n[loc]; return n; });
   };
 
-  // Toggle a leg's carriage scope. `carriedOnly: true` rides on the draft row
-  // (either shape) and policyFromDraft writes it into the location entry;
-  // clearing it DELETES the key rather than writing false, so an unscoped
-  // entry keeps yesterday's byte shape exactly.
-  const setCarriedOnly = (loc, v) => {
-    setPreview(null);
-    setDraft((d) => {
-      const row = d[loc];
-      if (!row) return d;
-      const next = { ...row };
-      if (v) next.carriedOnly = true; else delete next.carriedOnly;
-      return { ...d, [loc]: next };
-    });
-  };
-
   // Switch one leg between "one number for the whole shop" and "a number per
   // size". Only offered where the category is per-size AND has a derived run —
   // a run that cannot be derived is a STOP, not a guessed list.
@@ -630,7 +615,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
             scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
             onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
-            onSwitchShape={switchShape} onScope={setCarriedOnly} onPreview={runPreview} onSave={save} onBack={closeCategory}
+            onSwitchShape={switchShape} onPreview={runPreview} onSave={save} onBack={closeCategory}
             onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
             onSaveRows={saveRows} onRevert={revert}
@@ -774,7 +759,7 @@ function CategoryRow({ category: c, onOpen }) {
 function CategoryDetail({
   category: c, parent, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
   saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
-  onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
+  onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
   const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
@@ -832,7 +817,7 @@ function CategoryDetail({
           <LocationBoxes
             category={c} rows={locRows} draft={draft} errors={errors}
             onField={onField} onArm={onArm} onDrop={onDrop}
-            onQuickFill={onQuickFill} onSwitchShape={onSwitchShape} onScope={onScope}
+            onQuickFill={onQuickFill} onSwitchShape={onSwitchShape}
           />
 
           {banner.length > 0 && (
@@ -949,7 +934,7 @@ function NumInputs({ row, err, onChange, ariaPrefix, small = false }) {
   );
 }
 
-function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSwitchShape, onScope }) {
+function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSwitchShape }) {
   const sizeRun = c.sizeRun || [];
   const canPerSize = c.perSize && sizeRun.length > 0;
   const smallBtn = { padding: "5px 10px", fontSize: ".73rem" };
@@ -967,20 +952,6 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                 <span style={{ fontWeight: 600, fontSize: ".93rem" }}>{locLabel(r.loc)}</span>
               </div>
               <div className="ep-box-actions">
-                {/* Carriage scope (2026-08-25). "Carried only" = this leg speaks
-                    ONLY for products the location already holds a stock cell
-                    for; "All products" = the map's standing promise (the whole
-                    category is armed here, carriage or not). The engine is what
-                    enforces it — categoryPolicyEntry's carriedOnly gate. */}
-                {inDraft && (
-                  <button onClick={() => onScope(r.loc, !row.carriedOnly)}
-                    title={row.carriedOnly
-                      ? "Only products this location already stocks get these numbers. Tap for every product in the category."
-                      : "Every product in the category gets these numbers here. Tap to limit it to products this location already stocks."}
-                    style={{ ...(row.carriedOnly ? bGray : bGhost), ...smallBtn }}>
-                    {row.carriedOnly ? "Carried only" : "All products"}
-                  </button>
-                )}
                 {inDraft && canPerSize && (
                   <button onClick={() => onSwitchShape(r.loc, !perSize, sizeRun)} style={{ ...bGhost, ...smallBtn }}>
                     {perSize ? "One number" : "Size by size"}

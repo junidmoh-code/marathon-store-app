@@ -1074,9 +1074,15 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   if (dryRun) {
     return { ok: true, dryRun: true, categoryKey, before, after: policyAfter, changes, preview, live: before };
   }
-  if (!changes.length) {
+  // No-change means BYTE-SAME, not diff-empty (PR #448 review): the diff is a
+  // human-facing change list, and any blind spot in it must never eat a write.
+  // A shape-only change the legs don't name — scrubbing the retired
+  // carriedOnly key is the live case — still writes, with a synthetic leg so
+  // the history entry and the card banner have something truthful to show.
+  if (!changes.length && sameValue(before ?? null, policyAfter)) {
     return { ok: true, noChange: true, categoryKey, before, after: policyAfter, changes: [], preview };
   }
+  if (!changes.length) changes.push({ loc: null, field: "shape", from: "legacy", to: "cleaned" });
 
   // ── HISTORY FIRST ─────────────────────────────────────────────────────────
   const historyRef = db.ref(HISTORY_PATH).push();

@@ -405,17 +405,12 @@ function subcategoryRun(config, products, pid, dest) {
 // truthiness (managedPids, the class filter, the decision gate) is unaffected;
 // sizesFor and categoryPolicyTarget read it.
 //
-// ═══ carriedOnly — THE CARRIAGE SCOPE GATE (2026-08-25) ══════════════════════
-// A location entry may carry `carriedOnly: true`, scoping the policy at that
-// location to products it ALREADY HOLDS A STOCK CELL FOR (storeCarries — the
-// same cell-presence test the footwear and clothing rules use). This is the
-// one choke point: managedPids, sizesFor, the class filter, the decision gate
-// and categoryPolicyTarget all resolve through here, so gating here gates them
-// all identically — a consumer that bypassed it would re-open the exact flood
-// the flag exists to close (a per-size sneaker policy at Hub 1 without it arms
-// ~1,245 products; scoped, ~260). `stock` joins the signature for that reason.
-// Absent flag = the map's standing promise, unchanged: the category is the
-// arming act, carriage or not (the perfume case above).
+// (2026-08-25, superseded same day) A `carriedOnly` carriage scope gate lived
+// here briefly; the owner removed it — a category policy arms EVERY product of
+// the category at the location, carriage or not, and the actionable-only
+// source gate below is the only thing that decides whether a request line is
+// actually raised. `stock` stays in the signature (call sites thread it) but
+// is no longer consulted here.
 function categoryPolicyEntry(config, products, stock, pid, dest) {
   const key = products?.[pid]?.categoryKey;
   if (typeof key !== "string" || !key) return null;
@@ -426,9 +421,8 @@ function categoryPolicyEntry(config, products, stock, pid, dest) {
   // passes it arms nothing either.
   const r = locationPolicyFor(config, key, dest);
   if (!r) return null;
-  if (r.carriedOnly && !storeCarries(stock, dest, pid)) return null;
   return { target: r.target, reorderPoint: r.reorderPoint, minQty: r.minQty,
-    perSize: r.perSize, sizes: r.sizes, carriedOnly: r.carriedOnly === true,
+    perSize: r.perSize, sizes: r.sizes,
     policySource: r.source, groupKey: r.groupKey };
 }
 

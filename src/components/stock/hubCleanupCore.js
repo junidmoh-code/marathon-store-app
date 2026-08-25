@@ -477,10 +477,13 @@ export function buildLeftovers({ hub, products = [], hubStock = {}, registered =
 // The census gap (2026-08-25): an unregistered footwear product whose cells
 // have ALL sold to zero appears in NO list — buildLeftovers requires stock at
 // the hub, yet the empty cells still arm the refill engine (storeCarries is
-// cell PRESENCE). These are the finished lines the deactivate action exists
-// for, so the Leftovers tab shows them in their own section: cells AT THIS
-// HUB, zero (or negative) total quantity at EVERY location, not registered,
-// not deactivated yet. Same identity rule, same fail-soft direction as
+// cell PRESENCE, and under the per-size category policy a stray unit anywhere
+// wakes the size). These are the finished lines the deactivate action exists
+// for. NETWORK-WIDE by owner order (2026-08-25, Hub 1 arming): cells at ANY
+// location — not just this hub — zero (or negative) total quantity at EVERY
+// location, not registered, not deactivated yet. `cellLocs` names where the
+// empty cells sit, since locationsHolding (nonzero-only) is empty for these
+// by definition. Same identity rule, same fail-soft direction as
 // buildLeftovers — absence of evidence keeps a product listed, never hides it.
 export function buildFinishedLines({ hub, products = [], hubStock = {}, registered = {}, allStock = null, identityMap = null }) {
   if (!allStock) return [];   // needs the network view to prove "zero everywhere"
@@ -489,13 +492,18 @@ export function buildFinishedLines({ hub, products = [], hubStock = {}, register
   for (const p of products) {
     if (!p || !p.id || isMergedAway(p) || !productIsFootwear(p)) continue;
     if (isDeactivated(p)) continue;
-    if (!hubStock[p.id]) continue;             // no cells here — not this hub's card
     if (registeredPids.has(p.id)) continue;
     if (isRegistered(p, identityMap)) continue;
     let everywhere = 0;
-    for (const prods of Object.values(allStock)) everywhere += totalQty(prods?.[p.id]);
+    const cellLocs = [];
+    for (const [loc, prods] of Object.entries(allStock)) {
+      if (!prods?.[p.id]) continue;
+      cellLocs.push(loc);
+      everywhere += totalQty(prods[p.id]);
+    }
+    if (!cellLocs.length) continue;            // no cells anywhere — nothing arms it
     if (everywhere > 0) continue;              // holds stock — that is a leftover, not a finished line
-    out.push({ product: p, locations: locationsHolding(p.id, allStock) });
+    out.push({ product: p, cellLocs });
   }
   out.sort((a, b) => String(a.product.name || "").localeCompare(String(b.product.name || "")));
   return out;

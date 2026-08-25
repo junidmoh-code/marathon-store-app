@@ -1506,27 +1506,30 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               </div>
             ))}
 
-            {/* ── FINISHED LINES — zero stock everywhere, cells at this hub ──
+            {/* ── FINISHED LINES — zero stock everywhere, cells ANYWHERE ─────
                 The census gap: sold-to-zero unregistered footwear appears in no
-                list, yet its empty cells still arm the engine. This is what the
-                deactivate action is FOR. */}
+                list, yet its empty cells still arm the engine (and under the
+                Hub 1 sneaker policy a stray unit would wake it). NETWORK-WIDE
+                by owner order — PE/Pine/hub3-only lines show here too. */}
             {allStock && !leftoversUnknown && finishedLines.length > 0 && (
               <>
                 <div style={{ marginTop: 18, fontSize: 14, fontWeight: 800, color: AMBER }}>
                   Finished lines · {finishedLines.length}
                 </div>
                 <div style={{ fontSize: 12.5, color: GRAY, marginTop: -6 }}>
-                  No stock at any location, never registered — the refill engine still watches their empty
-                  cells. Deactivate the ones that are done.
+                  No stock at any location, never registered — network-wide, wherever their empty cells sit.
+                  The engine still watches those cells. Deactivate the ones that are done.
                 </div>
-                {finishedLines.map(({ product }) => (
+                {finishedLines.map(({ product, cellLocs }) => (
                   <div key={product.id}
                        style={{ background: "rgba(12,16,30,.75)", border: "1px dashed rgba(255,196,107,.4)", borderRadius: 18, padding: 16 }}>
                     <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
                       <Photo url={product.photoUrl} size={64} radius={12} />
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
-                        <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>Zero stock everywhere</div>
+                        <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>
+                          Zero stock everywhere · cells at {(cellLocs || []).map((l) => labelFor(l, registry)).join(", ")}
+                        </div>
                       </div>
                     </div>
                     <div style={{ marginTop: 10 }}>

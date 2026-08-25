@@ -13,7 +13,13 @@ export const HUB1_RUN = { 3: 2, 4: 2, 5: 2, "5_5": 2, 6: 3, 7: 3, 8: 3, 9: 2, 10
 
 export const runRow = (k) => ({ target: HUB1_RUN[k], minQty: Math.ceil(HUB1_RUN[k] / 2), reorderPoint: 1 });
 
-// Daily tranches, sized from the measured first-scan lines per size
-// (3:19 4:17 5:19 5.5:25 │ 6:69 │ 7:82 │ 8:80 │ 9:82 │ 10:83 │ 11:62) so each
-// day lands ≈62-83 lines ≈ a normal window's workload across two windows.
-export const TRANCHES = [["3", "4", "5", "5_5"], ["6"], ["7"], ["8"], ["9"], ["10"], ["11"]];
+// Daily tranches, re-sized 2026-08-25 for the UNSCOPED policy (owner order:
+// every sneaker, no carriage gate). Surviving-the-source-gate lines per size,
+// measured through the real engine on the live snapshot:
+//   3:66 4:82 5:69 5.5:76 │ 11:80 │ 10:131 │ 9:150 │ 6:157 │ 7:185 │ 8:194
+// Day 1 (sizes 3-5.5) was armed scoped on 2026-08-25 and is WIDENED in place
+// (the armer's scrub step); the remaining six sizes land one per day,
+// smallest demand first. Daily creation is additionally held by the
+// maxFootwearIntentsPerRun rollout throttle (see the feature doc) — the
+// tranche order spreads the shortage surface, the throttle bounds the queue.
+export const TRANCHES = [["3", "4", "5", "5_5"], ["11"], ["10"], ["9"], ["6"], ["7"], ["8"]];
