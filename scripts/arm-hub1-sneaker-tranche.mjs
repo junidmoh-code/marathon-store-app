@@ -69,6 +69,31 @@ const db = admin.database();
   }
 
   const armed = new Set(live ? Object.keys(live.hub1.sizes) : []);
+
+  // ── THE WIDENING DAY (2026-08-25 scope change) ─────────────────────────────
+  // A live entry still carrying the retired carriedOnly flag is scrubbed IN
+  // PLACE — same sizes, unscoped — and that rewrite IS the day's tranche:
+  // widening the already-armed sizes from ~608 carried products to the whole
+  // catalogue is itself a tranche-sized demand step, so no new size joins on
+  // the same day.
+  if (live?.hub1?.carriedOnly !== undefined) {
+    const sizes = {};
+    for (const k of [...armed]) sizes[k] = row(k);
+    const policy = { perSize: true, hub1: { sizes } };
+    console.log(`widening day: scrubbing carriedOnly — sizes ${[...armed].join(", ")} now cover EVERY sneaker`);
+    const rollback = `${process.env.HOME}/hub1-sneaker-tranche-rollback-${new Date().toISOString().slice(0, 10)}.json`;
+    writeFileSync(rollback, JSON.stringify({ at: new Date().toISOString(), before: live }, null, 2));
+    console.log(`rollback (previous entry) written: ${rollback}`);
+    const res = await applyCategoryPolicy({
+      db, callerEmail: ADMIN_EMAIL, adminEmail: ADMIN_EMAIL, callerUid: "hub1-tranche-runner",
+      data: { categoryKey: "sneakers", policy, expectedBefore: live, dryRun: !EXECUTE },
+      nowMs: Date.now(),
+    });
+    console.log(EXECUTE ? "WRITTEN (widened):" : "DRY RUN (pass --execute to write):");
+    console.log(JSON.stringify({ ok: res?.ok, dryRun: res?.dryRun, changes: res?.changes }, null, 2));
+    process.exit(res?.ok ? 0 : 1);
+  }
+
   const next = TRANCHES.find((t) => t.some((k) => !armed.has(k)));
   if (!next) {
     console.log("All ten sizes are armed — nothing to do. Remove the schedule:");

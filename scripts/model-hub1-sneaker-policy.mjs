@@ -183,7 +183,10 @@ const ODD_SIZES = ["6_5", "7_5", "8_5", "9_5", "10_5", "12", "13"];
   });
   const needLines = ignoringCentral.intents.filter((i) => i.dest === "hub1");
   const needUnits = needLines.reduce((n, i) => n + (Number(i.qty) || 0), 0);
+  const needBySize = {};
+  for (const i of needLines) needBySize[i.sizeKey] = (needBySize[i.sizeKey] || 0) + 1;
   console.log(`\ndemand IGNORING Central: ${needLines.length} lines / ${needUnits} units`);
+  console.log(`need lines by size (ignoring Central): ${JSON.stringify(needBySize)}`);
   console.log(`surviving the real source gate: ${full.length} lines / ${units} units (vs a normal window's 12-45 lines / 24-82 units)`);
   const supplier = (uncapped.exceptions?.awaitingSupplier?.items || []).filter((x) => x.loc === "hub1");
   const upstream = (uncapped.exceptions?.awaitingUpstream?.items || []).filter((x) => x.loc === "hub1");
@@ -215,7 +218,7 @@ const ODD_SIZES = ["6_5", "7_5", "8_5", "9_5", "10_5", "12", "13"];
     ghostsUnflagged: ghostCount, ghostWakeTargets,
     needLines: needLines.length, needUnits,
     fullLines: full.length, fullUnits: units, bySize, linesBySize, cappedFirstRun: h1(capped).length,
-    awaitingSupplierHub1: supplier.length, awaitingUpstreamHub1: upstream.length,
+    awaitingSupplierHub1: supplier.length, awaitingUpstreamHub1: upstream.length, needBySize,
     othersUnchanged: same, intents: full, supplier,
   }, null, 2));
   console.log(`\nsaved: ~/hub1-sneaker-policy-dryrun.json`);
