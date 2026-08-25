@@ -67,11 +67,14 @@ function receiverAt(line, dotIndex) {
   const text = m[1];
   const root = text.split(/[?.]/)[0];
   if (SAFE_RECEIVERS.has(root)) return { text, guarded: true };
-  // Optional chaining still throws for `.some` on null? No — `x?.some()` is
-  // safe, but `x.some()` where x is null is not. Treat `?.` as guarded ONLY
-  // when the optional mark is on the final hop.
-  const optionalOnLastHop = /\?\.[A-Za-z_$][\w$]*$/.test(before.trim()) || before.trim().endsWith("?");
-  return { text, guarded: optionalOnLastHop, root };
+  // Optional chaining is a guard ONLY on the hop that reaches the method.
+  // `post?.media?.map(...)` is safe. `post?.media.map(...)` is NOT — the `?.`
+  // there protects against a null `post`, and says nothing about `media`,
+  // which is precisely the field that comes back null. METHOD_RE matches the
+  // `.map(` inside `?.map(`, so the optional call leaves `before` ending in a
+  // bare `?`; anything else, including a `?.` earlier in the path, is not a
+  // guard on this call.
+  return { text, guarded: before.trimEnd().endsWith("?"), root };
 }
 
 function isWrapped(line, dotIndex, receiverText) {

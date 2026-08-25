@@ -107,10 +107,26 @@ const MUTATIONS = [
   },
 ];
 
-function blob(file) {
-  return execSync(`git show HEAD:${file}`, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+// ── THE FILES ARE RESTORED FROM THE WORKTREE, NOT FROM HEAD ──────────────────
+// Restoring from `git show HEAD:` would quietly overwrite any uncommitted edit
+// in these four files — with the baseline run, and again from the exit handler,
+// so there would be no window to notice. The worktree copy read here IS the
+// thing that must come back, whatever state it is in.
+//
+// A dirty worktree is still refused outright. This script writes to source
+// files and is killed by anything from a Ctrl-C to an OOM; the safe version of
+// "we restore it afterwards" is not needing to. Commit first — which is the
+// habit anyway, since a mutation run is only meaningful against a snapshot.
+const TARGETS = [HELPER, STORE, VIEW, LIB];
+const dirty = execSync(`git status --porcelain -- ${TARGETS.join(" ")}`, { encoding: "utf8" }).trim();
+if (dirty && !process.argv.includes("--allow-dirty")) {
+  console.error("Refusing to run: these files have uncommitted changes.\n");
+  console.error(dirty);
+  console.error("\nCommit them first (a mutation run is only meaningful against a snapshot),");
+  console.error("or pass --allow-dirty to run anyway — the worktree copies are what get restored.");
+  process.exit(2);
 }
-const ORIGINALS = new Map([HELPER, STORE, VIEW, LIB].map((f) => [f, blob(f)]));
+const ORIGINALS = new Map(TARGETS.map((f) => [f, readFileSync(f, "utf8")]));
 function restoreAll() {
   for (const [f, src] of ORIGINALS) writeFileSync(f, src);
 }
