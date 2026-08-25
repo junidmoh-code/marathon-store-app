@@ -60,6 +60,12 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
     const snap = await get(ref(database, path));
     const cell = snap.val();
     const avail = availableUnits(cell && typeof cell.qty === "number" ? cell.qty : 0);
+    // Evict dead entries before growing — a warehouse tab lives all day and
+    // the map would otherwise only ever gain keys.
+    if (cache.size > 200) {
+      const cutoff = Date.now() - CACHE_TTL_MS;
+      for (const [k, v] of cache) if (v.at < cutoff) cache.delete(k);
+    }
     cache.set(key, { at: Date.now(), avail });
     return avail;
   } catch {

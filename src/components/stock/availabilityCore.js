@@ -46,8 +46,9 @@
 // No missed-demand logging: a blocked size is just an X (owner decision).
 // Pure module — no firebase imports; callers feed it data they already hold.
 
-import { stockSizeKey } from "../../utils/sizeKey";
+import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { isFootwearProduct } from "./missingFootwearCore";
+export { isFootwearProduct };
 
 // One key per cell in the promised map. Encoded size key space ("5.5" → "5_5"),
 // because that is the space /stock cells live in and the one space every
@@ -65,8 +66,14 @@ export function readyPromisedByCell(orders, loc, productsById) {
   if (!loc) return out;
   for (const o of orders || []) {
     if (!o || o.status !== "ready") continue;
-    const hub = o.placedAtHub || o.hub || "hub1";
-    if (hub !== loc) continue;
+    // EXACTLY the app's orderInHub rule (App.jsx): hub3/hubC read placedAtHub
+    // ONLY; every other hub reads `hub` (defaulted hub1). A looser
+    // `placedAtHub || hub` here booked a {placedAtHub:"hub1", hub:"hub2"}
+    // record against Hub 1 that the warehouse lists under Hub 2 — a false ✕.
+    const inHub = (loc === "hub3" || loc === "hubC")
+      ? o.placedAtHub === loc
+      : (o.hub || "hub1") === loc;
+    if (!inHub) continue;
     if (!o.productId) continue;
     const p = productsById ? productsById[o.productId] : null;
     if (!p || !isFootwearProduct(p)) continue;
@@ -86,10 +93,14 @@ export function availableUnits(cellQty, promised = 0) {
   return Math.max(booked - spoken, 0);
 }
 
-// Convenience over a decoded cells map ({ pid: { rawSize: cell } }, the
+// Convenience over a DECODED cells map ({ pid: { decodedKey: cell } }, the
 // useStockCells shape) plus a promised map from readyPromisedByCell.
+// decodedCellKey, NOT the raw size: a decoded map is keyed by
+// decodeSizeKey(storedKey), so "Free Size" lives under "_" and a
+// space-padded " 8" under "_8" — indexing by the raw catalogue size read
+// both as qty 0 and produced a false ✕ (adversarial review, PR #446).
 export function cellAvailability({ cells, promised, productId, size }) {
-  const cell = cells?.[productId]?.[String(size)];
+  const cell = cells?.[productId]?.[decodedCellKey(String(size))];
   const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
   return availableUnits(qty, promised?.[promisedKey(productId, size)] || 0);
 }

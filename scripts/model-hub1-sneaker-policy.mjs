@@ -26,13 +26,10 @@ admin.initializeApp({
 const db = admin.database();
 const small = async (p) => (await db.ref(p).once("value")).val() || {};
 
-// The owner's run. minQty = ceil(target/2) (the engine's own default ratio);
-// reorderPoint 1 = ask when a cell drops to 1.
-const RUN = {
-  3: 2, 4: 2, 5: 2, "5_5": 2, 6: 3, 7: 3, 8: 3, 9: 2, 10: 2, 11: 2,
-};
-export const HUB1_SIZES = Object.fromEntries(Object.entries(RUN).map(([k, t]) =>
-  [k, { target: t, minQty: Math.ceil(t / 2), reorderPoint: 1 }]));
+// The owner's run — the SAME module the daily armer writes from, so the
+// modelled numbers and the written numbers cannot drift.
+import { HUB1_RUN as RUN, runRow } from "./lib/hub1SneakerRun.mjs";
+const HUB1_SIZES = Object.fromEntries(Object.keys(RUN).map((k) => [k, runRow(k)]));
 const SNEAKER_POLICY = { perSize: true, hub1: { sizes: HUB1_SIZES, carriedOnly: true } };
 
 const ODD_SIZES = ["6_5", "7_5", "8_5", "9_5", "10_5", "12", "13"];

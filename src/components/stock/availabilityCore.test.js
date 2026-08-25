@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { availableUnits, readyPromisedByCell, cellAvailability, promisedKey } from "./availabilityCore";
 import { tomorrowTapOutcome } from "./tomorrowGate";
+import { decodeSizeKey } from "../../utils/sizeKey";
 
 const SNEAKER = { id: "p1", category: "Footwear", productType: "sneaker" };
 const CLOTHING = { id: "c1", category: "Clothing", productType: "clothing" };
@@ -35,7 +36,11 @@ describe("readyPromisedByCell — ready-but-uncollected promises", () => {
     { status: "ready", productId: "p1", sentSize: "8", size: "7", hub: "hub1" },    // sentSize wins
     { status: "ready", productId: "p1", size: "5.5", hub: "hub1" },                 // half size → 5_5
     { status: "incoming", productId: "p1", size: "9", hub: "hub1" },                // not ready
-    { status: "ready", productId: "p1", size: "7", placedAtHub: "hub3" },           // other hub
+    // placedAtHub:"hub3" with NO hub field: the app's orderInHub lists this
+    // under Hub 1 too ((o.hub || "hub1") === "hub1") — legacy pre-14B shape.
+    // The resolver mirrors the app exactly, so it IS counted at hub1.
+    { status: "ready", productId: "p1", size: "7", placedAtHub: "hub3" },
+    { status: "ready", productId: "p1", size: "9", placedAtHub: "hub3", hub: "hub3" }, // real hub3 order — excluded
     { status: "ready", productId: "c1", size: "M", hub: "hub1" },                   // clothing deducts at dispatch
     { status: "ready", productId: "p1", hub: "hub1" },                              // sizeless — unattributable
     { status: "ready", size: "7", hub: "hub1" },                                    // no productId
@@ -43,14 +48,27 @@ describe("readyPromisedByCell — ready-but-uncollected promises", () => {
   ];
   it("counts footwear ready orders per cell in encoded-key space", () => {
     const m = readyPromisedByCell(orders, "hub1", PRODUCTS);
-    expect(m["p1::7"]).toBe(2);
+    expect(m["p1::7"]).toBe(3);   // 2 plain + the legacy hub-less placedAtHub:"hub3" row
     expect(m["p1::8"]).toBe(1);
     expect(m["p1::5_5"]).toBe(1);
+    expect(m["p1::9"]).toBeUndefined();   // a real hub3 order (hub:"hub3") never books hub1
     expect(Object.keys(m).sort()).toEqual(["p1::5_5", "p1::7", "p1::8"]);
   });
   it("defaults a hub-less order to hub1 (the app's orderInHub convention)", () => {
     const m = readyPromisedByCell([{ status: "ready", productId: "p1", size: "6" }], "hub1", PRODUCTS);
     expect(m["p1::6"]).toBe(1);
+  });
+  it("matches the app's orderInHub EXACTLY: hub1 reads `hub`, hub3/hubC read placedAtHub only", () => {
+    // {placedAtHub:"hub1", hub:"hub2"} lists under Hub 2 in the app — booking
+    // it at hub1 here was a false ✕ (adversarial review, PR #446).
+    const rows = [
+      { status: "ready", productId: "p1", size: "6", placedAtHub: "hub1", hub: "hub2" },
+      { status: "ready", productId: "p1", size: "7", placedAtHub: "hubC", hub: "hub1" },
+    ];
+    const h1 = readyPromisedByCell(rows, "hub1", PRODUCTS);
+    expect(h1["p1::6"]).toBeUndefined();   // the app calls this a Hub 2 order
+    expect(h1["p1::7"]).toBe(1);           // hub reads "hub1" — the app lists it under Hub 1
+    expect(readyPromisedByCell(rows, "hubC", PRODUCTS)["p1::7"]).toBe(1);   // and hubC ALSO sees it — both surfaces net it
   });
   it("books NOTHING at central — orders are hub-placed, so central needs no promise netting", () => {
     expect(readyPromisedByCell(orders, "central", PRODUCTS)).toEqual({});
@@ -61,11 +79,38 @@ describe("readyPromisedByCell — ready-but-uncollected promises", () => {
 });
 
 describe("cellAvailability — the two joined", () => {
-  const cells = { p1: { 7: { qty: 3 }, "5.5": { qty: 1 }, 6: { qty: -2 } } };
+  // The fixture is built the way production builds it: STORED keys decoded by
+  // decodeSizeKey, exactly what useStockCells hands the caller. A hand-typed
+  // raw-size fixture let the classic encoded-vs-decoded indexing bug pass all
+  // fourteen tests (adversarial review, PR #446), because raw sizes happen to
+  // equal their own decoded keys for plain numerics.
+  const decodeByProduct = (byProduct) => {
+    const out = {};
+    for (const pid of Object.keys(byProduct)) {
+      const dec = {};
+      for (const k of Object.keys(byProduct[pid])) dec[decodeSizeKey(k)] = byProduct[pid][k];
+      out[pid] = dec;
+    }
+    return out;
+  };
+  const cells = decodeByProduct({
+    p1: { 7: { qty: 3 }, "5_5": { qty: 1 }, 6: { qty: -2 } },
+    fs: { _: { qty: 12 } },          // one-size product — "Free Size" in the grid
+    sp: { _8: { qty: 4 } },          // space-padded declared size " 8"
+  });
   const promised = { [promisedKey("p1", "7")]: 2, [promisedKey("p1", "5.5")]: 1 };
   it("nets the promise out of the clamped cell", () => {
     expect(cellAvailability({ cells, promised, productId: "p1", size: "7" })).toBe(1);
     expect(cellAvailability({ cells, promised, productId: "p1", size: "5.5" })).toBe(0);
+  });
+  it("half sizes resolve through the stored 5_5 → decoded 5.5 key", () => {
+    expect(cellAvailability({ cells, promised: {}, productId: "p1", size: "5.5" })).toBe(1);
+  });
+  it('a one-size product asked by its "Free Size" grid label finds the "_" cell', () => {
+    expect(cellAvailability({ cells, promised: {}, productId: "fs", size: "Free Size" })).toBe(12);
+  });
+  it('a space-padded declared size (" 8") finds its "_8" cell', () => {
+    expect(cellAvailability({ cells, promised: {}, productId: "sp", size: " 8" })).toBe(4);
   });
   it("a negative cell is unavailable", () => {
     expect(cellAvailability({ cells, promised, productId: "p1", size: "6" })).toBe(0);

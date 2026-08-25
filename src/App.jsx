@@ -83,7 +83,7 @@ import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from ".
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability } from "./components/stock/availabilityCore";
+import { readyPromisedByCell, cellAvailability, isFootwearProduct } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -8275,7 +8275,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       {sizesOf(qv).map(sz => {
                         // Clothing keeps its note-raising tap; a Hub 1 sneaker
                         // size with none available is simply not tappable (✕).
-                        const snkOut = !clothingOrder && !!sneakerOut?.(qv, sz);
+                        // The Display Partner toggle lifts it — a partner
+                        // request exists to ask for what Hub 1 lacks.
+                        const snkOut = !clothingOrder && !qvDP && !!sneakerOut?.(qv, sz);
                         const out = clothingOrder ? hubQty(qv.id, sz) <= 0 : snkOut;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
@@ -8541,7 +8543,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   // still-loading subtree can never blank a grid; store-scoped devices see
   // only their own shop's /orders (rule-enforced), so the promised map is
   // partial there — that errs toward showing availability, never a false ✕.
-  const hub1CellsState = useStockCellsState("hub1");
+  // Pine devices never source from Hub 1 (computeHubForItem returns hub3
+  // there), so they skip the subscription entirely — no ~474 KB stream that
+  // can never gate anything. A null location leaves settled=false, which the
+  // gate already reads as "no ✕".
+  const hub1CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub1");
   const productsById = useMemo(() => {
     const m = {};
     for (const p of products || []) if (p?.id) m[p.id] = p;
@@ -8744,13 +8750,24 @@ function AssistantView({ products, onExit, orders = [] }) {
   // order line, no note. HUB 1 ONLY: hub2-routed sneakers (and everything at
   // Pine/hub3) keep exactly yesterday's behaviour, pinned by test. The gate
   // opens only once the subtree has settled, and never on a read error.
+  // isFootwearProduct, not merely "not clothing": the sneaker browse grid also
+  // carries perfumes, bags and one-size accessories (no productType), whose
+  // availability promises this gate does not model — they keep yesterday's
+  // behaviour. (Adversarial review, PR #446.)
   const sneakerServedByHub1 = (p) =>
-    (p?.productType || "sneaker") !== "clothing" && computeHubForItem({ product: p }) === "hub1";
+    isFootwearProduct(p) && (p?.productType || "sneaker") !== "clothing"
+    && computeHubForItem({ product: p }) === "hub1";
   const sneakerAvail = (pid, size) =>
     cellAvailability({ cells: hub1CellsState.cells, promised: hub1Promised, productId: pid, size });
+  // Units of this product+size already in the cart (partner rows excluded —
+  // they become requests, not pulls). Mirrors clothingInCart so stacked adds
+  // can't order past what Hub 1 can actually give out.
+  const sneakerInCart = (pid, size) =>
+    cart.filter(l => (l.productType || "sneaker") !== "clothing"
+      && l.product?.id === pid && l.size === size && !l.requestDisplayPartner).length;
   const sneakerOut = (p, s) =>
     sneakerServedByHub1(p) && hub1CellsState.settled && !hub1CellsState.error
-    && !!s && sneakerAvail(p.id, s) <= 0;
+    && !!s && sneakerAvail(p.id, s) <= sneakerInCart(p.id, s);
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -8798,14 +8815,22 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (!pendingSize && !pendingDisplayPartner) return;
     // Hub 1 availability belt: the grid already renders an unavailable size as
     // a disabled ✕, but a size selected BEFORE the stock moved (sheet left
-    // open) must not order into nothing either.
+    // open) must not order into nothing either — and a quantity larger than
+    // Hub 1 can still give out (net of cart lines) is clamped down, the same
+    // promise the clothing path makes.
     if (pendingSize && !pendingDisplayPartner && sneakerOut(selected, pendingSize)) { setPendingSize(""); return; }
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
     // line). Display Partner rows ignore qty (one-off by nature).
-    const reps = (pendingSize && !pendingDisplayPartner)
+    let reps = (pendingSize && !pendingDisplayPartner)
       ? Math.max(1, Math.min(10, pendingQty))
       : 1;
+    // The quantity clamp half of the belt above: with 2 available a 10-pair
+    // add lands 2 lines, never 10. Only where the gate has real data.
+    if (pendingSize && !pendingDisplayPartner && sneakerServedByHub1(selected)
+        && hub1CellsState.settled && !hub1CellsState.error) {
+      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize) - sneakerInCart(selected.id, pendingSize)));
+    }
     const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
@@ -9595,7 +9620,11 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // treatment from the shared availability resolver (✕, truly
                 // not tappable); hub2/hub3 sneakers stay untouched.
                 const clothing = (selected.productType || "sneaker") === "clothing";
-                const out = clothing ? hubQty(selected.id, s) <= 0 : sneakerOut(selected, s);
+                // A Display Partner request EXISTS to ask for what Hub 1 lacks
+                // (it becomes a request, not a pull), so the partner toggle
+                // lifts the ✕ — the addToCart belt has the same exemption.
+                const out = clothing ? hubQty(selected.id, s) <= 0
+                  : (!pendingDisplayPartner && sneakerOut(selected, s));
                 return (
                   <button key={s} disabled={out && !clothing}
                     onClick={() => { if (out) { if (clothing) setNaNote({ size: s, left: 0 }); return; } setNaNote(null); setPendingSize(s); }}
@@ -9863,22 +9892,41 @@ function TomorrowActionButton({ order, onOutcome }) {
   // sentSize is what physically left when a substitute was sent; the promise
   // (and the refill request updateStatus raises) draws on the same cell.
   const gateSize = order.sentSize ?? order.size ?? null;
+  // HUB 1 ROWS ONLY. The warehouse queue is hub-switched and this card is
+  // shared; hub3/hubC replenish from hub stock Central may never carry, so a
+  // missing Central cell there would read as a false "Out of stock". Hub rule
+  // matches the app's orderInHub: hub3/hubC live in placedAtHub, hub1 in `hub`.
+  const hub1Row = (order.hub || "hub1") === "hub1"
+    && order.placedAtHub !== "hub3" && order.placedAtHub !== "hubC";
   const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
   const [busy, setBusy]   = useState(false);
+  const busyRef = useRef(false);                   // state lags a frame; the ref doesn't
   useEffect(() => {
+    if (!hub1Row) return undefined;
     let on = true;
-    fetchCentralAvailability(order.productId, gateSize).then((a) => { if (on) setAvail(a); });
+    setAvail(undefined);   // a reused instance must not wear its neighbour's label
+    fetchCentralAvailability(order.productId, gateSize).then((a) => {
+      // Never let the mount probe overwrite a fresher tap-time answer.
+      if (on && !busyRef.current) setAvail(a);
+    });
     return () => { on = false; };
-  }, [order.productId, gateSize]);
-  const offersOOS = avail !== undefined && avail !== null && avail <= 0;
+  }, [order.productId, gateSize, hub1Row]);
+  const offersOOS = hub1Row && avail !== undefined && avail !== null && avail <= 0;
   const tap = async () => {
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     try {
+      if (!hub1Row) { await onOutcome("tomorrow"); return; }   // yesterday's behaviour, verbatim
       const fresh = await fetchCentralAvailability(order.productId, gateSize, { fresh: true });
       setAvail(fresh);
-      onOutcome(tomorrowTapOutcome(fresh));
-    } finally { setBusy(false); }
+      await onOutcome(tomorrowTapOutcome(fresh));
+    } catch (err) {
+      console.warn(`Tomorrow action failed for #${order.id}:`, err?.message || err);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
   return (
     <button onClick={tap} disabled={busy}
@@ -10932,6 +10980,10 @@ function WarehouseView({ products = [], orders, onExit }) {
               items={filtered}
               dateOf={queueDateOf}
               columns={isWide ? 2 : 1}
+              // Cards here are STATEFUL now (TomorrowActionButton holds a
+              // Central probe); the date-index fallback key would hand one
+              // row's probe state to its neighbour when the list shifts.
+              keyOf={(o) => `${queueDateOf(o) || ""}:${o.id}`}
               emptyMessage="No orders in the last 3 days."
               renderItem={(order) => {
             // Layby pull request — render the real PullCard inline (same L-xxxxx

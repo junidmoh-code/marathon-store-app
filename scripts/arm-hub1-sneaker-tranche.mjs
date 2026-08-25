@@ -32,13 +32,10 @@ const require = createRequire(new URL("../functions/package.json", import.meta.u
 const admin = require("firebase-admin");
 const { applyCategoryPolicy } = require("../functions/lib/category-policy-write.cjs");
 
-const EXECUTE = process.argv.includes("--execute");
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
+import { HUB1_RUN as RUN, runRow as row, TRANCHES } from "./lib/hub1SneakerRun.mjs";
 
-// target / minQty(=ceil(t/2)) / reorderPoint 1 — the owner's run.
-const RUN = { 3: 2, 4: 2, 5: 2, "5_5": 2, 6: 3, 7: 3, 8: 3, 9: 2, 10: 2, 11: 2 };
-const TRANCHES = [["3", "4", "5", "5_5"], ["6"], ["7"], ["8"], ["9"], ["10"], ["11"]];
-const row = (k) => ({ target: RUN[k], minQty: Math.ceil(RUN[k] / 2), reorderPoint: 1 });
+const EXECUTE = process.argv.includes("--execute");
+const ADMIN_EMAIL = "gunidmoh@gmail.com";   // the project's super-admin constant (PermissionsContext)
 
 admin.initializeApp({
   credential: admin.credential.applicationDefault(),
@@ -47,6 +44,21 @@ admin.initializeApp({
 const db = admin.database();
 
 (async () => {
+  // ── THE DEPLOY SENTINEL ────────────────────────────────────────────────────
+  // The deployed engine must understand carriedOnly BEFORE any tranche is
+  // written: the pre-carriedOnly scanner ignores the flag and would arm every
+  // sneaker in the catalogue (~1,242 products) at Hub 1 for a full scan cycle.
+  // The sentinel is written by hand, once, after the functions deploy has been
+  // VERIFIED — this script only ever refuses without it. An unattended
+  // scheduler must never be the thing that discovers a deploy didn't happen.
+  const sentinel = (await db.ref("config/refillEngine/carriedOnlyEngineDeployedAt").once("value")).val();
+  if (!sentinel) {
+    console.error("REFUSED: /config/refillEngine/carriedOnlyEngineDeployedAt is absent — the deployed");
+    console.error("engine has not been verified to honour carriedOnly. Deploy functions:refillHealthScan,");
+    console.error("verify a scan ran clean, then write the sentinel (ISO timestamp) and re-run.");
+    process.exit(3);
+  }
+
   const live = (await db.ref("config/refillEngine/categoryPolicy/sneakers").once("value")).val();
 
   // Refuse anything that is not OUR shape: a sneakers policy someone else

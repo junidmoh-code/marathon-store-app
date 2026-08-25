@@ -68,7 +68,7 @@ const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
 // "which policy speaks here" is answered once. A copy on this side would drift
 // the first time the precedence changed, and the model's whole value is that it
 // does not.
-const { effectivePolicyFor, locationEntryMode } = require("./policy-resolve.cjs");
+const { effectivePolicyFor, locationEntryMode, carriedOnlyOf } = require("./policy-resolve.cjs");
 
 // The map's own vocabulary. Kept here rather than inline so the callable, the
 // card and the script cannot disagree about what a field is called.
@@ -456,8 +456,14 @@ function modelCategoryPolicy({
       // an override from a legacy row below.
       // At a leg the map does not arm it speaks for NOTHING, so every explicit
       // row there is a legacy row rather than an override — there is nothing to
-      // override.
-      const mapSpeaksFor = new Set(!armedLocs.includes(loc) ? []
+      // override. A carriedOnly leg likewise speaks for NOTHING about a product
+      // the location holds no cell for (the engine's own gate), so an uncarried
+      // product's leftover explicit row is a legacy row, not an override —
+      // reporting it as an override would say "this product ignores your
+      // numbers" about numbers that never applied to it.
+      const uncarriedHere = carriedOnlyOf(cat?.[loc])
+        && !(stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0);
+      const mapSpeaksFor = new Set(!armedLocs.includes(loc) || uncarriedHere ? []
         : locSizes
           ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_")
               .map(encodeSizeKey).filter((k) => locSizes[k])
@@ -541,8 +547,11 @@ function modelCategoryPolicy({
       // (NOT `mode` — that name is already the DESTINATION's live/shadow/off.)
       shape: mappedMode,
       // Scope flag, surfaced so the card can say "carried products only" next
-      // to the leg. The arithmetic above already honours it via resolveTarget.
-      carriedOnly: mapped ? mapped.carriedOnly === true : false,
+      // to the leg. carriedOnlyOf, the ENGINE's own reading (present-and-not-
+      // false), so a hand-edited garbled value never renders "All products"
+      // while the engine gates. The arithmetic above already honours it via
+      // resolveTarget.
+      carriedOnly: mapped ? carriedOnlyOf(mapped) : false,
       target: mappedMode === "uniform" ? (mapped.target ?? null) : null,
       minQty: mappedMode === "uniform" ? (mapped.minQty ?? null) : null,
       reorderPoint: mappedMode === "uniform" ? (mapped.reorderPoint ?? null) : null,

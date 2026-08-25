@@ -12,7 +12,12 @@ admin.initializeApp({
 });
 const db = admin.database();
 
-const LOCATIONS = ["in_transit", "hub3", "marathon-pe", "trophy", "studio", "central", "marathon-pine", "base", "hub2", "hub1"];
+// in_transit is EXCLUDED on purpose: a negative transit cell is an unmatched
+// relocation leg (a transfer_in whose transfer_out never landed), not a count
+// artifact — zeroing it would fabricate units into the transit pool and erase
+// the reconciliation signal. (2026-08-25 scan: in_transit held no negatives
+// anyway.) Locations listed explicitly so a review reads the scope at a glance.
+const LOCATIONS = ["hub3", "marathon-pe", "trophy", "studio", "central", "marathon-pine", "base", "hub2", "hub1"];
 
 const rows = [];
 for (const loc of LOCATIONS) {

@@ -31,7 +31,12 @@ import { stockCellPath, decodeSizeKey, assertSafeSegment } from "../src/utils/si
 
 const ACTOR = "script:zero-negative-cells";
 const REASON = "negative_cell_zeroed: owner-authorised network-wide clamp to 0 (Hub 1 availability work, 2026-08-25). Negative balances are count artifacts and read as phantom stock.";
-const STAMP = "20260825";
+// The RUN date, not a frozen literal: a hard-coded stamp made every later run
+// a silent no-op ("idempotent" against last month's movement id) that exited
+// 0 having zeroed nothing. Idempotent within a day, retryable across days —
+// and always safe, because the delta is computed from the LIVE qty (a cell
+// already at 0 is skipped before any id is minted).
+const STAMP = new Date().toISOString().slice(0, 10).replace(/-/g, "");
 const CONFLICT_RETRIES = 5;
 
 const scanPath = process.argv[2];
@@ -84,7 +89,10 @@ console.log(`plan backup: /reports/stock_corrections/${backupRef.key}`);
 const nowIso = new Date().toISOString();
 const results = [];
 for (const p of plan) {
-  const mvId = assertSafeSegment(`negzero_${STAMP}_${p.location}_${p.productId}_${p.sizeKey}`, "movementId");
+  // Double-underscore separators: loc/pid/sizeKey may themselves contain "_",
+  // and a single-underscore join could collide two different cells into one
+  // "idempotent" skip.
+  const mvId = assertSafeSegment(`negzero_${STAMP}__${p.location}__${p.productId}__${p.sizeKey}`, "movementId");
   const rawSize = decodeSizeKey(p.sizeKey);
   const path = stockCellPath(p.location, p.productId, rawSize);
   let outcome = null;
@@ -134,7 +142,12 @@ for (const r of results) {
   else failed++;
   const tag = oc.credited ? `zeroed (+${oc.credited})` : oc.idempotent ? "idempotent" : oc.alreadyHealed ? "healed meanwhile" : `FAILED ${oc.reason}`;
   console.log(`${r.location.padEnd(14)} ${r.productId.padEnd(16)} ${decodeSizeKey(r.sizeKey).padEnd(6)} ${String(liveQty).padStart(4)}  ${tag}`);
-  if (liveQty < 0 && oc.ok && oc.credited) console.log(`  ^^ WARNING: still negative after apply (concurrent sale?)`);
+  if (liveQty < 0) {
+    // Still negative counts as a FAILURE, whatever the apply claimed — the
+    // exit code is the only thing an unattended caller reads.
+    failed++;
+    console.log(`  ^^ STILL NEGATIVE after apply (concurrent sale?) — counted as failed`);
+  }
 }
 console.log(`\nDONE: ${applied} cells zeroed, ${creditedUnits} units credited, ${healedMeanwhile} healed/idempotent, ${failed} failed.`);
 process.exit(failed ? 1 : 0);
