@@ -28,6 +28,7 @@ import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { getDeviceId } from "../../device/deviceId";
 import { HUB_COUNT_ROOT } from "../../config/hubSneakerCount";
 import { forgivingBarcodeCandidates } from "./scanResolve";
+import { deactivateUpdates, reactivateUpdates } from "../../utils/deactivation.js";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "../../utils/styleCode";
 import { enqueueStyleCodeCapture } from "../../utils/styleCodeCapture";
 import {
@@ -526,5 +527,34 @@ export async function loadDuplicateCandidates() {
     return (await one("duplicate_candidates")) || {};
   } catch {
     return {};
+  }
+}
+
+// ── DEACTIVATE / REACTIVATE (owner spec 2026-08-25) ──────────────────────────
+// One atomic multi-path update each way, payload shape owned by
+// src/utils/deactivation.js so the tests, the store and applyMovement's
+// auto-reactivation can never drift. Nothing is deleted either way — the flag
+// node swaps, the record, stock, barcodes and history are untouched.
+export async function deactivateProduct(productId) {
+  const user = auth.currentUser;
+  if (!user) return { ok: false, reason: "not_authenticated" };
+  const byName = (user.email || "").split("@")[0] || null;
+  try {
+    await update(ref(database), deactivateUpdates(productId, { uid: user.uid, byName, nowMs: serverNowMs() }));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "write_failed", error: String(err?.message || err) };
+  }
+}
+
+export async function reactivateProduct(productId) {
+  const user = auth.currentUser;
+  if (!user) return { ok: false, reason: "not_authenticated" };
+  const byName = (user.email || "").split("@")[0] || null;
+  try {
+    await update(ref(database), reactivateUpdates(productId, { uid: user.uid, byName, nowMs: serverNowMs(), reason: "manual" }));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: "write_failed", error: String(err?.message || err) };
   }
 }

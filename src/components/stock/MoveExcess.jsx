@@ -23,6 +23,7 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { openPickList } from "../../print/pickList";
 import { serverNowMs } from "../../utils/serverTime";
+import { isDeactivated } from "../../utils/deactivation";
 import { sizeRank } from "./hubSizeRank";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -119,6 +120,11 @@ export default function MoveExcess({ products = [], actorRole }) {
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
+        // Lockstep with the engine's excess pass, where resolveTarget nulls a
+        // deactivated product: a finished line is not "excess to move" (moving
+        // it would reactivate it on arrival) — its stock shows on the
+        // Deactivated list instead.
+        if (isDeactivated(p)) continue;
         const sizes = [];
         for (const [size, cell] of Object.entries(bySize || {})) {
           const qty = typeof cell?.qty === "number" ? cell.qty : 0;

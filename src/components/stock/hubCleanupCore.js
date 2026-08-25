@@ -16,6 +16,7 @@ import { buildLinkSuggestions } from "../../utils/linkSuggestions.js";
 import { isMergedAway } from "../../utils/mergedProducts.js";
 import { productIsFootwear } from "../../utils/footwearLine.js";
 import { isRegistered } from "../../utils/labelIdentity.js";
+import { isDeactivated } from "../../utils/deactivation.js";
 import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSiblings.js";
 
 // The ONLY hubs this feature touches. A closed list, deliberately NOT derived
@@ -459,6 +460,7 @@ export function buildLeftovers({ hub, products = [], hubStock = {}, registered =
     if (!cells) continue;
     const hubQty = totalQty(cells);
     if (hubQty <= 0) continue;                 // nothing actually held here
+    if (isDeactivated(p)) continue;            // retired — the Deactivated list shows it
     if (registeredPids.has(p.id)) continue;    // seen on the floor — not a leftover
     if (isRegistered(p, identityMap)) continue; // carries a code, a claim or an alias
     out.push({
@@ -468,6 +470,53 @@ export function buildLeftovers({ hub, products = [], hubStock = {}, registered =
     });
   }
   out.sort((a, b) => b.hubQty - a.hubQty || String(a.product.name || "").localeCompare(String(b.product.name || "")));
+  return out;
+}
+
+// ── FINISHED LINES ───────────────────────────────────────────────────────────
+// The census gap (2026-08-25): an unregistered footwear product whose cells
+// have ALL sold to zero appears in NO list — buildLeftovers requires stock at
+// the hub, yet the empty cells still arm the refill engine (storeCarries is
+// cell PRESENCE). These are the finished lines the deactivate action exists
+// for, so the Leftovers tab shows them in their own section: cells AT THIS
+// HUB, zero (or negative) total quantity at EVERY location, not registered,
+// not deactivated yet. Same identity rule, same fail-soft direction as
+// buildLeftovers — absence of evidence keeps a product listed, never hides it.
+export function buildFinishedLines({ hub, products = [], hubStock = {}, registered = {}, allStock = null, identityMap = null }) {
+  if (!allStock) return [];   // needs the network view to prove "zero everywhere"
+  const registeredPids = new Set(Object.values(registered || {}).map((r) => r && r.productId).filter(Boolean));
+  const out = [];
+  for (const p of products) {
+    if (!p || !p.id || isMergedAway(p) || !productIsFootwear(p)) continue;
+    if (isDeactivated(p)) continue;
+    if (!hubStock[p.id]) continue;             // no cells here — not this hub's card
+    if (registeredPids.has(p.id)) continue;
+    if (isRegistered(p, identityMap)) continue;
+    let everywhere = 0;
+    for (const prods of Object.values(allStock)) everywhere += totalQty(prods?.[p.id]);
+    if (everywhere > 0) continue;              // holds stock — that is a leftover, not a finished line
+    out.push({ product: p, locations: locationsHolding(p.id, allStock) });
+  }
+  out.sort((a, b) => String(a.product.name || "").localeCompare(String(b.product.name || "")));
+  return out;
+}
+
+// ── DEACTIVATED ──────────────────────────────────────────────────────────────
+// EVERY deactivated product, stock-holders first — the visibility guarantee:
+// a deactivated product holding stock anywhere must never be silently lost.
+// Deliberately NOT footwear-gated and NOT identity-gated: whatever carries the
+// flag shows here, with a one-tap Reactivate.
+export function buildDeactivatedRows({ products = [], allStock = null }) {
+  const out = [];
+  for (const p of products) {
+    if (!p || !p.id || isMergedAway(p) || !isDeactivated(p)) continue;
+    let units = 0;
+    if (allStock) for (const prods of Object.values(allStock)) units += totalQty(prods?.[p.id]);
+    out.push({ product: p, units, locations: allStock ? locationsHolding(p.id, allStock) : [] });
+  }
+  out.sort((a, b) => (b.units - a.units)
+    || (Number(b.product.deactivated?.at) || 0) - (Number(a.product.deactivated?.at) || 0)
+    || String(a.product.name || "").localeCompare(String(b.product.name || "")));
   return out;
 }
 

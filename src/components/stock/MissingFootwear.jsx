@@ -49,6 +49,7 @@ import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./
 import { serverNowIso } from "../../utils/serverTime";
 import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, footwearRequestSubmitReason } from "./actionReasons";
 import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
+import { isDeactivated } from "../../utils/deactivation";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];
@@ -119,6 +120,11 @@ export default function MissingFootwear({ products = [] }) {
     if (busyPid || !canAct || !dest) return;
     const picks = card.sizes.map((s) => ({ size: s.size, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
     if (!picks.length) return;
+    // Same stale-screen guard as solve(): a finished line takes no requests.
+    if (isDeactivated(byId.get(card.pid))) {
+      setDone((d) => ({ ...d, [card.pid]: { ok: false, dest, msg: "This product was deactivated — no refills are raised for it." } }));
+      return;
+    }
     setBusyPid(card.pid);
     const now = serverNowIso();
     try {
@@ -210,6 +216,12 @@ export default function MissingFootwear({ products = [] }) {
     const hub = hubFor(card);
     const lines = planFor(card, hub);
     if (solveBusy || !canAct || !lines.length) return;   // guarded by the disabled button
+    // A stale screen can hold a card deactivated since render — never raise a
+    // request for a finished line (the row itself is filtered in the core).
+    if (isDeactivated(byId.get(card.pid))) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, msg: "This product was deactivated — no refills are raised for it." } }));
+      return;
+    }
     setSolveBusy(card.pid);
     const now = serverNowIso();
     try {

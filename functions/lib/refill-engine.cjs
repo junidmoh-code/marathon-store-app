@@ -199,6 +199,20 @@ function isFootwear(product) {
   return product?.category === "Footwear";
 }
 
+// ── Is this product DEACTIVATED? ─────────────────────────────────────────────
+// A finished line, retired reversibly from the Leftovers tab (owner spec
+// 2026-08-25). One truthy check on the record the snapshot already carries —
+// lockstep twin of src/utils/deactivation.js isDeactivated. The guard lives at
+// the TOP of resolveTarget, above the explicit-row branch, so neither a stale
+// /stock_targets row, a category policy, nor a kill switch can re-arm a
+// deactivated product; a null target also flips needGone in the reconcile
+// pass, withdrawing any in-flight request as no_longer_needed. Receiving stock
+// clears the flag (applyMovement auto-reactivates), so the engine resumes
+// without a scan ever having to know why.
+function isDeactivated(product) {
+  return !!(product && product.deactivated);
+}
+
 // Store carries a product if the stock node exists (regardless of qty).
 // Zero-qty cells persist indefinitely (applyMovement never deletes cells), so
 // node presence is a reliable assortment indicator even after sellouts.
@@ -465,6 +479,9 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
 }
 
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+  // Deactivated products resolve NOTHING — before the explicit row, so no
+  // stored policy of any kind can raise a request for a finished line.
+  if (isDeactivated(products?.[pid])) return null;
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -976,6 +993,21 @@ function computeRefillPlan(snapshot) {
     for (const [id, r] of openRows) {
       const dest = r.requestingLocation;
       const sizeKey = encodeSizeKey(r.size);
+      // A DEACTIVATED product's lock-less request is withdrawn REGARDLESS of
+      // stock (CodeRabbit, PR #445): these rows (Missing Footwear, the on-hold
+      // "coming tomorrow" writer) carry no engine lock, so the reconcile
+      // loop's needGone can never reach them, and the satisfied path below
+      // demands covering stock a finished line will never receive. Stock proof
+      // is waived — `deactivated: true` tells the apply pass to skip its
+      // live-cell re-check (there is no cell condition to verify).
+      if (isDeactivated(products?.[r.productId])) {
+        satisfiedClosures.push({
+          refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
+          qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed",
+          deactivated: true,
+        });
+        continue;
+      }
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so
       // a future route change can never turn "not loaded" into "not needed".
@@ -1861,6 +1893,7 @@ function computeRefillPlan(snapshot) {
   const circulates = (pid) => dests.some((d) => stock?.[d]?.[pid] && Object.keys(stock[d][pid]).length > 0);
   for (const [pid, bySize] of Object.entries(stock?.central || {})) {
     if (!isClothing(products?.[pid])) continue;
+    if (isDeactivated(products?.[pid])) continue;           // finished line — no decision owed
     if (dests.some((d) => managedHere(d, pid))) continue;   // managed somewhere (explicit OR rule)
     if (circulates(pid)) continue;                          // circulating → unintroduced, NOT new
     if (decisionActive("central", pid)) continue;
@@ -1871,6 +1904,7 @@ function computeRefillPlan(snapshot) {
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
+      if (isDeactivated(products?.[pid])) continue;    // finished line — no decision owed
       if (managedHere(loc, pid)) continue;             // target resolves here → managed
       if (!Object.keys(bySize || {}).length) continue;
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
@@ -1923,6 +1957,7 @@ function computeRefillPlan(snapshot) {
     const guardPids = new Set([...Object.keys(targets?.[loc] || {}), ...Object.keys(stock?.[loc] || {})]);
     for (const pid of guardPids) {
       if (!isClothing(products?.[pid])) continue;
+      if (isDeactivated(products?.[pid])) continue;   // finished line — no decision owed
       if (!managedHere(loc, pid)) continue;   // unmanaged → already handled by the queues above
       if (decisionActive(loc, pid)) continue;
       let units = 0;
