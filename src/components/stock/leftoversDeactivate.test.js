@@ -103,3 +103,33 @@ describe("Missing Sneakers never offers a deactivated product", () => {
     expect(cards.map((c) => c.pid)).toEqual(["live"]);
   });
 });
+
+// ── SOURCE PINS (the refill-hidden-invariance idiom) ─────────────────────────
+// The pure predicates above are behaviour-proven; these pin that the JSX
+// surfaces actually CALL them, so deleting a call site cannot pass silently.
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const src = (p) => readFileSync(join(HERE, p), "utf8");
+
+describe("source pins — the call sites exist", () => {
+  it("all three assistant ordering chip surfaces use orderSizeOut", () => {
+    const app = src("../../App.jsx");
+    expect(app.split("orderSizeOut(").length - 1).toBeGreaterThanOrEqual(3);
+  });
+  it("the global ReactivationNotice is mounted", () => {
+    const app = src("../../App.jsx");
+    expect(app).toContain("<ReactivationNotice />");
+  });
+  it("MissingFootwear write paths carry the stale-screen guard, twice (solve and request)", () => {
+    const mf = src("./MissingFootwear.jsx");
+    expect(mf.split("isDeactivated(byId.get(card.pid))").length - 1).toBe(2);
+  });
+  it("HubCleanup renders Deactivate on leftover AND finished-line cards, and Reactivate", () => {
+    const hc = src("./HubCleanup.jsx");
+    expect(hc.split("doDeactivate(product)").length - 1).toBe(2);
+    expect(hc).toContain("doReactivate(product)");
+  });
+});
