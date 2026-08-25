@@ -1,10 +1,12 @@
 // ─── SOCIAL — THE FULL-PAGE TAB ──────────────────────────────────────────────
 // One place where every piece of generated content waits for Junid. A home-row
-// entry opens THIS page; three tabs sit under one sticky header:
+// entry opens THIS page; four tabs sit under one sticky header:
 //
 //   Queue          the approval queue (Part 1) — the point of the whole thing
 //   Style library  photos and videos he likes, feeding the generator (Part 2)
 //   Generate       pick a post type, produce the post (Part 3)
+//   Policy         how many reels/photos/stories a day and at what times, for
+//                  the unattended 06:00 SAST run (socialDailyAutopilot)
 //
 // Chrome is copied from ShopifyPublishView, not invented: the same top bar,
 // the same sticky filter row, the same stock/ui.js tokens, the same
@@ -34,21 +36,23 @@ import {
 } from "./socialCore";
 import { asList } from "../../utils/rtdbList";
 import {
-  loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, postNow, discardPost, retryPost,
+  loadPostsByStatuses, approvePost, unapprovePost, postNow, discardPost, retryPost,
   editCaption, reschedulePost, setPlatforms, resolveSending,
 } from "./socialStore";
 import RowBoundary from "./RowBoundary";
 import StyleLibraryCard from "./StyleLibraryCard";
 import GenerateCard from "./GenerateCard";
+import PolicyCard from "./PolicyCard";
 
 const TABS = [
   { key: "queue", label: "Queue" },
   { key: "library", label: "Style library" },
   { key: "generate", label: "Generate" },
+  { key: "policy", label: "Policy" },
 ];
 
 const STATUS_BADGE = {
-  draft: { label: "waiting for you", color: AMBER, border: "rgba(251,191,36,.55)" },
+  draft: { label: "draft", color: AMBER, border: "rgba(251,191,36,.55)" },
   approved: { label: "approved", color: GREEN, border: "rgba(74,222,128,.7)" },
   posting: { label: "posting…", color: BLUE_L, border: "rgba(74,127,255,.5)" },
   posted: { label: "posted", color: GREEN, border: "rgba(74,222,128,.8)" },
@@ -362,30 +366,25 @@ function Queue({ notice, onNotice }) {
   const [posts, setPosts] = useState(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState(null);
-  // ONE count is fetched: how many are waiting for Junid. Every other chip
-  // shows a number only while it is selected, from the posts the page has
-  // already loaded — see loadDraftCount in the store for why counting all five
-  // meant downloading a thousand post bodies to render five small numbers.
-  const [draftCount, setDraftCount] = useState(null);
+
+  const statuses = QUEUE_FILTERS.find((f) => f.key === filter)?.statuses || [filter];
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const { posts: p, truncated: t } = await loadPostsByStatus(filter);
+      const { posts: p, truncated: t } = await loadPostsByStatuses(statuses);
       setPosts(p);
       setTruncated(t);
     } catch (err) {
       setPosts([]);
       setError(String(err?.message || err));
     }
-  }, [filter]);
-
-  const loadCounts = useCallback(async () => {
-    try { setDraftCount((await loadDraftCount()).count); } catch { setDraftCount(null); }
-  }, []);
+    // statuses is a fresh array every render (QUEUE_FILTERS.find), so it is
+    // compared by its own content, not identity — join() gives a stable key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statuses.join(",")]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { loadCounts(); }, [loadCounts]);
 
   // ── WHILE SOMETHING IS ON ITS WAY OUT, WATCH FOR IT LANDING ────────────────
   // The queue is otherwise loaded once. That is right for a list somebody is
@@ -404,18 +403,11 @@ function Queue({ notice, onNotice }) {
   const anySending = asList(posts).some((p) => isSendingSoon(p));
   useEffect(() => {
     if (!anySending) return undefined;
-    const t = setInterval(() => { load(); loadCounts(); }, 20000);
+    const t = setInterval(() => { load(); }, 20000);
     return () => clearInterval(t);
-  }, [anySending, load, loadCounts]);
+  }, [anySending, load]);
 
-  const onChanged = useCallback(async () => { await load(); await loadCounts(); }, [load, loadCounts]);
-
-  // The number on a chip: the fetched draft count, or — for whichever filter is
-  // selected — the length of what is already on screen. Never a fetch.
-  const countFor = (key) => {
-    if (key === "draft") return draftCount;
-    return key === filter && posts ? posts.length : null;
-  };
+  const onChanged = useCallback(async () => { await load(); }, [load]);
 
   return (
     <div style={{ padding: "6px 14px 0" }}>
@@ -423,7 +415,7 @@ function Queue({ notice, onNotice }) {
         {QUEUE_FILTERS.map(({ key, label }) => (
           <button key={key} onClick={() => setFilter(key)}
                   style={{ ...(filter === key ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.74rem" }}>
-            {label}{countFor(key) ? ` ${countFor(key)}` : ""}
+            {label}
           </button>
         ))}
       </div>
@@ -505,6 +497,7 @@ export default function SocialView({ products = [], onExit }) {
       {tab === "queue" && <Queue notice={notice} onNotice={onNotice} />}
       {tab === "library" && <StyleLibraryCard onNotice={onNotice} notice={notice} />}
       {tab === "generate" && <GenerateCard products={products} onNotice={onNotice} notice={notice} onGenerated={() => setTab("queue")} />}
+      {tab === "policy" && <PolicyCard onNotice={onNotice} notice={notice} />}
     </div>
   );
 }
