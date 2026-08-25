@@ -1,0 +1,289 @@
+// ─── THE SOCIAL CARD AND THE LISTS RTDB CANNOT STORE ─────────────────────────
+// The card blanked out to the screen error boundary in production with
+// "null is not an object (evaluating 's.some')". Two separate defects sit
+// behind that class of failure and both are pinned here:
+//
+//   1. A list read back as null / absent / an object-keyed map, and used
+//      directly. RTDB cannot store an empty array — writing [] deletes the
+//      key, and so does removing a list's last child.
+//   2. `posts.some(...)` running on the FIRST render, when `posts` is still
+//      the useState(null) that means "not loaded yet". That is the one that
+//      actually took the card down, and it needed no bad record at all.
+//
+// THE FAKE DATABASE REPRODUCES RTDB, NOT A CONVENIENT VERSION OF IT.
+// update({tags: []}) DELETES the key here, exactly as the real thing does,
+// and removing a list's last child leaves the parent ABSENT. A fake that
+// politely handed back [] would pass every one of these tests while the
+// product went on crashing.
+import { test, expect, vi, beforeEach } from "vitest";
+import { create, act } from "react-test-renderer";
+import RowBoundary from "./RowBoundary";
+
+// ── THE FAKE ─────────────────────────────────────────────────────────────────
+let store = {};
+let updates = [];
+
+const at = (path) => path.split("/").filter(Boolean);
+function readPath(p) {
+  let cur = store;
+  for (const seg of at(p)) { if (cur == null || typeof cur !== "object") return undefined; cur = cur[seg]; }
+  return cur;
+}
+/** RTDB's actual write semantics: empty array / empty object / null DELETES. */
+function isDeletion(v) {
+  if (v === null || v === undefined) return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return Object.keys(v).length === 0;
+  return false;
+}
+function writePath(p, value) {
+  const segs = at(p);
+  const last = segs.pop();
+  let cur = store;
+  for (const seg of segs) { if (typeof cur[seg] !== "object" || cur[seg] === null) cur[seg] = {}; cur = cur[seg]; }
+  if (isDeletion(value)) {
+    delete cur[last];
+    // …and a parent left with no children disappears too, which is how a list
+    // becomes ABSENT rather than empty.
+    if (segs.length && Object.keys(cur).length === 0) writePath(segs.join("/"), null);
+    return;
+  }
+  cur[last] = value;
+}
+
+vi.mock("../../firebase", () => ({
+  database: {}, storage: {}, functions: {},
+  auth: { currentUser: { uid: "u1", email: "j@x" } },
+}));
+vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: {} }) }));
+vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => 1_700_000_000_000 }));
+vi.mock("firebase/storage", () => ({
+  ref: (_s, path) => ({ path }),
+  uploadBytes: async () => ({}),
+  getDownloadURL: async (r) => `https://example/${r.path}`,
+  deleteObject: async () => {},
+}));
+vi.mock("firebase/database", () => ({
+  ref: (_db, path) => ({ path }),
+  query: (r) => r,
+  orderByChild: () => ({}),
+  equalTo: (v) => ({ v }),
+  startAt: () => ({}),
+  endAt: () => ({}),
+  limitToLast: () => ({}),
+  push: (r) => ({ path: `${r.path}/newid`, key: "newid" }),
+  get: async (r) => ({ val: () => readPath(r.path) ?? null }),
+  update: async (r, fields) => {
+    // Every payload is recorded. The RESULT of an empty-array write and an
+    // explicit-null write is identical in the database — both delete the key —
+    // so asserting on the store cannot tell the two apart. The contract this
+    // branch added is about the PAYLOAD: nothing bare goes into update().
+    updates.push({ path: r.path, fields });
+    for (const [k, v] of Object.entries(fields)) writePath(`${r.path}/${k}`, v);
+  },
+  remove: async (r) => writePath(r.path, null),
+}));
+
+import {
+  loadPostsByStatus, loadRefPage, addStyleRef, editStyleRef, createManualPost, mergeRefPage,
+} from "./socialStore";
+
+const POST = (over = {}) => ({
+  status: "draft", kind: "single", caption: "a caption long enough to pass", createdAt: 1,
+  platforms: { instagram: true }, media: [{ url: "u", type: "image" }], products: ["p1"], ...over,
+});
+
+beforeEach(() => { store = {}; updates = []; });
+
+/** The value a given field was actually handed to update(). */
+const sentField = (name) => {
+  const hit = [...updates].reverse().find((u) => Object.prototype.hasOwnProperty.call(u.fields, name));
+  return hit ? hit.fields[name] : undefined;
+};
+
+// ── 1. A RECORD WHOSE LIST KEY IS ABSENT ─────────────────────────────────────
+test("a post whose products key was never written reads back as an array", async () => {
+  const p = POST();
+  delete p.products;
+  store.social_posts = { a: p };
+  const { posts } = await loadPostsByStatus("draft");
+  expect(posts[0].products).toEqual([]);
+  expect(() => posts[0].products.some(Boolean)).not.toThrow();
+});
+
+test("a style reference whose tags key is absent reads back as an array", async () => {
+  // This is the LIVE shape: all six references in /social_style_refs have no
+  // tags key, because parseTags("") returned [] and the write dropped it.
+  store.social_style_refs = { r1: { url: "u", addedAt: 5, type: "image" } };
+  const { refs } = await loadRefPage({});
+  expect(refs[0].tags).toEqual([]);
+});
+
+// ── 2. A LIST EMPTIED BY DELETING ITS LAST CHILD ─────────────────────────────
+test("removing a list's last child leaves the key ABSENT, and the read still gives an array", async () => {
+  store.social_posts = { a: POST({ media: [{ url: "u1", type: "image" }] }) };
+  // The real deletion path: the last child goes, and RTDB drops the parent.
+  writePath("social_posts/a/media/0", null);
+  expect(readPath("social_posts/a/media")).toBeUndefined();   // the fake behaves like RTDB
+  const { posts } = await loadPostsByStatus("draft");
+  expect(posts[0].media).toEqual([]);
+  expect(() => posts[0].media.map((m) => m.url)).not.toThrow();
+});
+
+test("clearing every tag stores an explicit null instead of a silently dropped []", async () => {
+  store.social_style_refs = { r1: { url: "u", addedAt: 5, tags: ["moody"] } };
+  await editStyleRef("r1", { tags: "" });
+  expect(readPath("social_style_refs/r1/tags")).toBeUndefined();
+  expect(readPath("social_style_refs/r1/url")).toBe("u");      // nothing else disturbed
+  const { refs } = await loadRefPage({});
+  expect(refs[0].tags).toEqual([]);
+});
+
+test("a new reference with no tags does not lose its other fields to the empty list", async () => {
+  const res = await addStyleRef({ name: "a.jpg", type: "image/jpeg", size: 10 }, { note: "n", tags: "" });
+  expect(res.ok).toBe(true);
+  const body = readPath(`social_style_refs/${res.refId}`);
+  expect(body.note).toBe("n");
+  expect(body.tags).toBeUndefined();
+});
+
+test("an empty tag list goes into update() as an EXPLICIT null, never a bare []", async () => {
+  // The database deletes the key either way, so this is the only assertion
+  // that can tell a deliberate deletion from an accident. Mutation-proved:
+  // reverting addStyleRef to a bare parseTags() kills this test and nothing
+  // else, which is why it exists.
+  const res = await addStyleRef({ name: "a.jpg", type: "image/jpeg", size: 10 }, { note: "n", tags: "" });
+  expect(res.ok).toBe(true);
+  expect(sentField("tags")).toBe(null);
+  expect(Array.isArray(sentField("tags"))).toBe(false);
+});
+
+test("clearing tags on an existing reference sends null, not []", async () => {
+  store.social_style_refs = { r1: { url: "u", addedAt: 5, tags: ["moody"] } };
+  await editStyleRef("r1", { tags: "" });
+  expect(sentField("tags")).toBe(null);
+});
+
+test("a tag list that still has tags is sent as a real array", async () => {
+  store.social_style_refs = { r1: { url: "u", addedAt: 5 } };
+  await editStyleRef("r1", { tags: "moody, flat lay" });
+  expect(sentField("tags")).toEqual(["moody", "flat lay"]);
+});
+
+test("a hand-made post sends products as null and media as a real array", async () => {
+  await createManualPost({
+    media: [{ url: "u", type: "image" }], caption: "a caption long enough", platforms: { instagram: true },
+  });
+  expect(sentField("products")).toBe(null);
+  expect(sentField("media")).toEqual([{ url: "u", type: "image" }]);
+});
+
+test("a hand-made post has no products, and that costs it nothing else", async () => {
+  const res = await createManualPost({
+    media: [{ url: "u", type: "image" }], caption: "a caption long enough", platforms: { instagram: true },
+  });
+  expect(res.ok).toBe(true);
+  expect(readPath("social_posts/newid/products")).toBeUndefined();
+  expect(readPath("social_posts/newid/status")).toBe("draft");
+});
+
+// ── 3. AN OBJECT-MAP-SHAPED VALUE ────────────────────────────────────────────
+test("a media list stored as a sparse object map reads back as a list, in NUMERIC order", async () => {
+  store.social_posts = {
+    a: POST({ media: { 10: { url: "eleventh" }, 2: { url: "third" }, 0: { url: "first" } } }),
+  };
+  const { posts } = await loadPostsByStatus("draft");
+  // Not ["eleventh", "first", "third"] — RTDB sorts keys as strings, and taking
+  // that order would silently reorder the pictures on a live Instagram post.
+  expect(posts[0].media.map((m) => m.url)).toEqual(["first", "third", "eleventh"]);
+});
+
+test("object-map tags survive the trip through the library merge", async () => {
+  store.social_style_refs = { r1: { url: "u", addedAt: 5, tags: { 0: "flat lay", 1: "moody" } } };
+  const { refs } = await loadRefPage({});
+  expect(refs[0].tags).toEqual(["flat lay", "moody"]);
+  expect(mergeRefPage(null, refs)[0].tags).toEqual(["flat lay", "moody"]);
+});
+
+test("mergeRefPage survives a null held list and a null page", () => {
+  expect(mergeRefPage(null, null)).toEqual([]);
+  expect(mergeRefPage(undefined, [{ id: "a", addedAt: 1 }])).toHaveLength(1);
+});
+
+// ── 4. THE CRASH ITSELF: .some ON THE FIRST RENDER ───────────────────────────
+// No malformed record is involved. `posts` is useState(null) and the line ran
+// before any fetch resolved, so the card died on every single open.
+test("the queue renders before any post has loaded, without throwing", async () => {
+  const SocialView = (await import("./SocialView.jsx")).default;
+  store.social_posts = {};
+  let tree;
+  // A SYNCHRONOUS act, deliberately: it renders and stops, without flushing the
+  // pending fetch, so what is asserted is the very render in which `posts` is
+  // still the useState(null). That is the render that threw in production, and
+  // an `await act(async () => ...)` here would have resolved the load first and
+  // sailed straight past the bug.
+  act(() => { tree = create(<SocialView products={[]} onExit={() => {}} />); });
+  expect(JSON.stringify(tree.toJSON())).toContain("Loading");
+  await act(async () => {});     // now let it settle, and confirm it survives that too
+  expect(JSON.stringify(tree.toJSON())).toContain("Nothing here");
+  tree.unmount();
+});
+
+// ── 5. THE BLAST RADIUS ──────────────────────────────────────────────────────
+// Proved on RowBoundary directly with a child that throws, rather than on a
+// record the queue happens to survive today. The question this answers is not
+// "does this record crash" — it is "when SOMETHING crashes, how much of the
+// screen goes with it", and the answer must be: that row.
+test("a row that throws is contained — its siblings render, and it offers a way out", () => {
+  const Boom = () => { throw new Error("null is not an object (evaluating 's.some')"); };
+  const Fine = ({ label }) => <div>{label}</div>;
+  let cleared = null;
+  let tree;
+  // React logs the caught error; silence it so the run stays readable.
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  act(() => {
+    tree = create(
+      <div>
+        <RowBoundary recordId="post-a" label="post"><Fine label="row before" /></RowBoundary>
+        <RowBoundary recordId="post-bad" label="post" actionLabel="Discard it" onAction={() => { cleared = "post-bad"; }}>
+          <Boom />
+        </RowBoundary>
+        <RowBoundary recordId="post-c" label="post"><Fine label="row after" /></RowBoundary>
+      </div>
+    );
+  });
+  const text = JSON.stringify(tree.toJSON());
+  expect(text).toContain("row before");
+  expect(text).toContain("row after");                       // one bad row, not the list
+  // The heading is JSX with the label interpolated, so it arrives as three
+  // adjacent children rather than one string.
+  expect(text).toContain('"This ","post"," couldn\'t be shown"');
+  expect(text).toContain("post-bad");                        // it names itself
+  expect(text).toContain("evaluating 's.some'");             // and says what threw
+  expect(text).toContain("Discard it");
+
+  // The affordance actually runs the caller's action.
+  const btn = tree.root.findAll((n) => n.type === "button" && n.children[0] === "Discard it")[0];
+  act(() => { btn.props.onClick(); });
+  expect(cleared).toBe("post-bad");
+  spy.mockRestore();
+  tree.unmount();
+});
+
+test("one malformed post is one broken row — the rest of the queue still renders", async () => {
+  const SocialView = (await import("./SocialView.jsx")).default;
+  store.social_posts = {
+    good: POST({ createdAt: 2, caption: "the good one, long enough" }),
+    // `kind` is read via postKind(); a media entry that is not an object is
+    // what a half-written record looks like, and Cover reaches into it.
+    bad: POST({ createdAt: 1, media: [null], caption: "the bad one, long enough" }),
+  };
+  let tree;
+  await act(async () => { tree = create(<SocialView products={[]} onExit={() => {}} />); });
+  await act(async () => {});
+  const text = JSON.stringify(tree.toJSON());
+  // Whatever happens to the bad row, the good one is on screen and the card is
+  // not the error boundary.
+  expect(text).toContain("the good one");
+  tree.unmount();
+});
