@@ -697,3 +697,75 @@ test("a legacy row does not count as resolving the map", async () => {
   const leg = m.legs.reduce((n, l) => n + l.legacyRows, 0);
   assert.equal(cells - ovr - leg, cb.resolvesMapCells);
 });
+
+// ── PER-SIZE DIFFS AND THE NO-CHANGE BACKSTOP (PR #448 review) ───────────────
+// The diff was blind to `sizes` maps: adding a tranche size, or editing one
+// size's target through the card, diffed to [] and the no-change short-circuit
+// silently DISCARDED the write. And a shape-only change the legs don't name —
+// scrubbing the retired carriedOnly key — must still write, on the byte-same
+// test, with a synthetic leg for the audit trail.
+const { diffCategoryPolicy } = require("../lib/category-policy.cjs");
+
+function perSizeWorld() {
+  return {
+    config: {
+      refillEngine: {
+        maxIntentsPerRun: 75, maxUnitsPerIntent: 20,
+        mode: { hub1: "live" }, routes: { hub1: "central" },
+        ruleBasedTargets: false,
+        categoryPolicy: {
+          sneakers: { perSize: true, hub1: { sizes: { 3: { target: 2, minQty: 1, reorderPoint: 1 } }, carriedOnly: true } },
+        },
+      },
+    },
+    products: {
+      s1: { id: "s1", name: "Runner", category: "Footwear", categoryKey: "sneakers", sizes: ["3", "11"] },
+    },
+    stock: { hub1: { s1: { 3: { qty: 1 } } }, central: { s1: { 3: { qty: 5 } } } },
+    stock_targets: {},
+  };
+}
+
+test("a per-size edit produces a named diff leg (the card can never again discard it as no-change)", () => {
+  const before = { perSize: true, hub1: { sizes: { 3: { target: 2, minQty: 1, reorderPoint: 1 } } } };
+  const edited = { perSize: true, hub1: { sizes: { 3: { target: 5, minQty: 1, reorderPoint: 1 } } } };
+  const legs = diffCategoryPolicy(before, edited);
+  assert.ok(legs.some((l) => l.loc === "hub1" && l.field === "sizes.3.target" && l.from === 2 && l.to === 5),
+    `expected a sizes.3.target leg, got ${JSON.stringify(legs)}`);
+  const grown = { perSize: true, hub1: { sizes: { 3: { target: 2, minQty: 1, reorderPoint: 1 }, 11: { target: 2, minQty: 1, reorderPoint: 1 } } } };
+  const trancheLegs = diffCategoryPolicy(before, grown);
+  assert.ok(trancheLegs.some((l) => l.field === "sizes.11" && l.to === "armed"),
+    `a tranche adding size 11 must diff, got ${JSON.stringify(trancheLegs)}`);
+});
+
+test("the carriedOnly scrub WRITES (byte-same is the only no-change), with a synthetic shape leg", async () => {
+  const db = makeFakeDb(perSizeWorld());
+  const scrubbed = { perSize: true, hub1: { sizes: { 3: { target: 2, minQty: 1, reorderPoint: 1 } } } };
+  const res = await applyCategoryPolicy({
+    db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u1",
+    data: { categoryKey: "sneakers", policy: scrubbed },
+    nowMs: NOW,
+  });
+  assert.equal(res.ok, true);
+  assert.ok(!res.noChange, "a shape-only change must not be eaten as no-change");
+  assert.ok(res.changes.some((l) => l.field === "shape"), "the synthetic leg names the scrub for the audit trail");
+  const live = readAt(db.state.root, "config/refillEngine/categoryPolicy/sneakers");
+  assert.deepEqual(live, scrubbed, "the stale flag is gone from the live entry");
+});
+
+test("a genuinely identical per-size save is still a clean no-change (no phantom history)", async () => {
+  // The live entry here has no stale flag (post-scrub state) — an identical
+  // save must short-circuit; the validator refuses the flag itself, so the
+  // pre-scrub identical case can no longer even be submitted.
+  const w = perSizeWorld();
+  w.config.refillEngine.categoryPolicy.sneakers = { perSize: true, hub1: { sizes: { 3: { target: 2, minQty: 1, reorderPoint: 1 } } } };
+  const db = makeFakeDb(w);
+  const same = { perSize: true, hub1: { sizes: { 3: { target: 2, minQty: 1, reorderPoint: 1 } } } };
+  const res = await applyCategoryPolicy({
+    db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u1",
+    data: { categoryKey: "sneakers", policy: same },
+    nowMs: NOW,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.noChange, true, "byte-same in, byte-same out");
+});

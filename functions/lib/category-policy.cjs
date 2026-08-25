@@ -68,7 +68,7 @@ const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
 // "which policy speaks here" is answered once. A copy on this side would drift
 // the first time the precedence changed, and the model's whole value is that it
 // does not.
-const { effectivePolicyFor, locationEntryMode, carriedOnlyOf } = require("./policy-resolve.cjs");
+const { effectivePolicyFor, locationEntryMode } = require("./policy-resolve.cjs");
 
 // The map's own vocabulary. Kept here rather than inline so the callable, the
 // card and the script cannot disagree about what a field is called.
@@ -158,16 +158,11 @@ function validateLocationEntry(locEntry, { where, perSize, allowedSizes }) {
     }
     return `${where}: must be an object with a target, or a "sizes" map`;
   }
-  // carriedOnly is a LOCATION-level flag (either shape): scope this location's
-  // policy to products it already holds a stock cell for. Boolean only at
-  // write time — the engine's read side treats a garbled present value as
-  // gated (the fewer-products direction), but nothing garbled gets written.
-  if (locEntry.carriedOnly !== undefined && typeof locEntry.carriedOnly !== "boolean") {
-    return `${where}: carriedOnly must be true or false`;
-  }
+  // (carriedOnly, 2026-08-25: briefly a location-level carriage-scope flag,
+  // removed the same day by the owner — it is now an unknown field and every
+  // shape refuses it, so a card save can never resurrect the scope gate.)
   if (mode === "uniform") {
-    const { carriedOnly: _c, ...rest } = locEntry;
-    return validatePolicyEntry(rest, { where });
+    return validatePolicyEntry(locEntry, { where });
   }
 
   // per-size
@@ -176,7 +171,7 @@ function validateLocationEntry(locEntry, { where, perSize, allowedSizes }) {
   if (!keys.length) return `${where}: the size map is empty — give at least one size a number, or remove the location`;
   if (keys.length > MAX_SIZES_PER_LOCATION) return `${where}: more than ${MAX_SIZES_PER_LOCATION} sizes at one location`;
   for (const k of Object.keys(locEntry)) {
-    if (k !== "sizes" && k !== "carriedOnly") return `${where}: unknown field "${k}" next to a size map`;
+    if (k !== "sizes") return `${where}: unknown field "${k}" next to a size map`;
   }
   for (const k of keys) {
     // The key must already BE the encoded form. Accepting "5.5" and encoding it
@@ -255,15 +250,31 @@ function diffCategoryPolicy(before, after) {
     const al = isPlainObject(a[loc]) ? a[loc] : null;
     if (bl && !al) { out.push({ loc, field: "location", from: "armed", to: "removed" }); continue; }
     if (!bl && al) { out.push({ loc, field: "location", from: "not armed", to: "armed" }); }
-    // carriedOnly is diffed like the numeric fields so the audit entry and the
-    // card's changed-fields banner both say when a location's scope changed.
-    if ((bl?.carriedOnly === true) !== (al?.carriedOnly === true)) {
-      out.push({ loc, field: "carriedOnly", from: bl?.carriedOnly === true, to: al?.carriedOnly === true });
-    }
     for (const f of POLICY_FIELDS) {
       const from = bl && bl[f] !== undefined ? bl[f] : null;
       const to = al && al[f] !== undefined ? al[f] : null;
       if (from !== to) out.push({ loc, field: f, from, to });
+    }
+    // ── PER-SIZE LEGS (2026-08-25, PR #448 review) ────────────────────────────
+    // The diff was blind to `sizes` maps, so a per-size edit — a tranche adding
+    // a size, the card changing one size's target — diffed to [] and the write
+    // path's no-change short-circuit silently DISCARDED it. Walk every size key
+    // on either side, the same way the uniform fields are walked above.
+    const bs = isPlainObject(bl?.sizes) ? bl.sizes : null;
+    const as_ = isPlainObject(al?.sizes) ? al.sizes : null;
+    if (bs || as_) {
+      const sizeKeys = [...new Set([...Object.keys(bs || {}), ...Object.keys(as_ || {})])].sort();
+      for (const k of sizeKeys) {
+        const brow = isPlainObject(bs?.[k]) ? bs[k] : null;
+        const arow = isPlainObject(as_?.[k]) ? as_[k] : null;
+        if (brow && !arow) { out.push({ loc, field: `sizes.${k}`, from: "armed", to: "removed" }); continue; }
+        if (!brow && arow) { out.push({ loc, field: `sizes.${k}`, from: "not armed", to: "armed" }); }
+        for (const f of POLICY_FIELDS) {
+          const from = brow && brow[f] !== undefined ? brow[f] : null;
+          const to = arow && arow[f] !== undefined ? arow[f] : null;
+          if (from !== to) out.push({ loc, field: `sizes.${k}.${f}`, from, to });
+        }
+      }
     }
   }
   return out;
@@ -456,14 +467,8 @@ function modelCategoryPolicy({
       // an override from a legacy row below.
       // At a leg the map does not arm it speaks for NOTHING, so every explicit
       // row there is a legacy row rather than an override — there is nothing to
-      // override. A carriedOnly leg likewise speaks for NOTHING about a product
-      // the location holds no cell for (the engine's own gate), so an uncarried
-      // product's leftover explicit row is a legacy row, not an override —
-      // reporting it as an override would say "this product ignores your
-      // numbers" about numbers that never applied to it.
-      const uncarriedHere = carriedOnlyOf(cat?.[loc])
-        && !(stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0);
-      const mapSpeaksFor = new Set(!armedLocs.includes(loc) || uncarriedHere ? []
+      // override.
+      const mapSpeaksFor = new Set(!armedLocs.includes(loc) ? []
         : locSizes
           ? (products[pid]?.sizes || []).map(String).filter((sz) => sz !== "_")
               .map(encodeSizeKey).filter((k) => locSizes[k])
@@ -546,12 +551,6 @@ function modelCategoryPolicy({
       // reporting target:null next to a fully-armed leg would read as "not set".
       // (NOT `mode` — that name is already the DESTINATION's live/shadow/off.)
       shape: mappedMode,
-      // Scope flag, surfaced so the card can say "carried products only" next
-      // to the leg. carriedOnlyOf, the ENGINE's own reading (present-and-not-
-      // false), so a hand-edited garbled value never renders "All products"
-      // while the engine gates. The arithmetic above already honours it via
-      // resolveTarget.
-      carriedOnly: mapped ? carriedOnlyOf(mapped) : false,
       target: mappedMode === "uniform" ? (mapped.target ?? null) : null,
       minQty: mappedMode === "uniform" ? (mapped.minQty ?? null) : null,
       reorderPoint: mappedMode === "uniform" ? (mapped.reorderPoint ?? null) : null,

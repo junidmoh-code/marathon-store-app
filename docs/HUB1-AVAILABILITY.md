@@ -65,7 +65,45 @@ stock reappeared → the Tomorrow promise stands. Unresolvable rows and read
 failures keep today's Tomorrow (a false OOS messages a customer wrongly; a
 false Tomorrow merely keeps the human's promise).
 
-## Piece 5 — Hub 1 sneaker policy and the carriage scope gate
+## Piece 5 — Hub 1 sneaker policy (SCOPE CHANGE 2026-08-25: the carriage gate is GONE)
+
+**Owner order, same day this shipped:** arm EVERY sneaker product at Hub 1 —
+1,242, not the 608 the carriedOnly gate admitted. The gate was removed from the
+engine, the resolver, the seatingCore mirror, the validator (now refused as an
+unknown field), the card, and the tests; `scripts/mutation-proof-hub1-scope-gate.mjs`
+went with the gate it proved. A stray `carriedOnly` key on the live entry is
+ignored by the new engine and scrubbed by the armer's widening step.
+
+**The filter lives at the REQUEST step, and it always did:** the engine's
+actionable-only source gate (refill-engine.cjs, owner v9 2026-07-13) refuses
+any request line Central cannot physically fill right now, caps every line at
+Central's free units, and parks the unfilled need in awaitingSupplier /
+awaitingUpstream — surfaced in Health → "Waiting for Supplier" / "Awaiting
+Transfer". Nothing new was built for Hub 1; sneakers ride the same gate as
+every clothing leg. The dead-size rule (per-size policy resolves target 0 for
+a size with zero units anywhere) keeps the ~208 zero-stock lines dormant.
+
+**Dry run, unscoped (live snapshot, real engine, 2026-08-25):** 1,242 armed;
+demand ignoring Central 2,942 lines / 6,237 units; surviving the source gate
+**1,190 lines / 2,034 units**; unfillable day one ≈ 1,752 lines / 2,156 units
+short at Central (awaitingSupplier — already over its 900-item render cap
+network-wide before this policy; the count is exact, the item list truncates).
+Baseline hub1 lines with the policy absent: 293 (explicit rows, live since the
+mode flip). Per-size surviving lines:
+3:66 4:82 5:69 5.5:76 6:157 7:185 8:194 9:150 10:131 11:80.
+
+**Stagger (Refinement B, re-decided for the new numbers):** 1,190 > the
+500-line stop condition → staggered. Day 1 (sizes 3/4/5/5.5, armed scoped) is
+WIDENED in place; the remaining six sizes land one per day, smallest first
+(11, 10, 9, 6, 7, 8). Creation is additionally throttled during rollout by
+`maxFootwearIntentsPerRun: 1` (≈28 lines released per window — inside the
+12-45 band; restore toward 25 as the warehouse clears the backlog).
+
+---
+
+### The original Piece 5 write-up (historical — the gate described below was removed the same day)
+
+### Piece 5 — Hub 1 sneaker policy and the carriage scope gate
 
 Run: 3→2, 4→2, 5→2, 5.5→2 (stored `5_5`), 6→3, 7→3, 8→3, 9→2, 10→2, 11→2;
 `reorderPoint: 1` on every size (ask when a cell drops to 1, top up to target).

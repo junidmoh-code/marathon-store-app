@@ -51,6 +51,16 @@ describe("buildFinishedLines", () => {
   it("returns nothing without the network view — 'zero everywhere' is never guessed", () => {
     expect(buildFinishedLines({ ...args, allStock: null })).toEqual([]);
   });
+  it("NETWORK-WIDE: a ghost with cells ONLY at another location still lists here (owner order 2026-08-25)", () => {
+    const remote = shoe("peGhost");
+    const rows = buildFinishedLines({
+      ...args,
+      products: [...products, remote],
+      allStock: { ...allStock, "marathon-pe": { peGhost: { "8": { qty: 0 } } } },
+    });
+    expect(rows.map((r) => r.product.id).sort()).toEqual(["ghost", "peGhost"]);
+    expect(rows.find((r) => r.product.id === "peGhost").cellLocs).toEqual(["marathon-pe"]);
+  });
   it("negative cells elsewhere do not disqualify (total <= 0 is still finished)", () => {
     const rows = buildFinishedLines({
       ...args,
