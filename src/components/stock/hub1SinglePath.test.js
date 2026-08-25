@@ -5,16 +5,15 @@
 //   hold, not from Missing Sneakers, not from sale-driven rows. Hub 2 keeps
 //   every lane byte-for-byte. reactiveRefillHubs.js is the one list.
 //
-//   CHANGE 2: needs the source gate parks (no line Central can fill) render
-//   in the SAME refill queue as a read-only state — every leg alike — via
-//   parkedNeedRows over /stock_exceptions/latest.
+//   (A CHANGE 2 briefly rendered parked source-gate needs inside the queue;
+//   the owner removed it the same evening — the queue's waiting detail means
+//   "what the next release hands you", and parked needs live on Health.)
 //
 // Mutation-proofed by scripts/mutation-proof-hub1-single-path.mjs.
 
 import { describe, it, expect } from "vitest";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./reactiveRefillHubs.js";
 import { onHoldRefillPlan } from "./onHoldRefill.js";
-import { parkedNeedRows, parkedOverflow } from "./refillQueueCore.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,54 +55,5 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     expect(app).toContain("activeHub && isReactiveRefillHub(activeHub) ? completedSaleFor(activeHub, activeCellFilter) : []");
     // The open-request badge still counts hub1 — those rows render in the tab.
     expect(app).toContain('(r.requestingLocation === "hub1" || r.requestingLocation === "hub2")');
-  });
-});
-
-describe("CHANGE 2 — parked needs ride the same queue, every leg", () => {
-  const EXC = {
-    awaitingSupplier: {
-      count: 3,
-      items: [
-        { loc: "hub1", pid: "p1", size: "8", deficit: 3, source: "central", note: "upstream chain empty — supplier reorder or excess return needed" },
-        { loc: "hub2", pid: "p2", size: "M", deficit: 2, source: "central", note: "upstream chain empty" },
-        { loc: "marathon-pe", pid: "p3", size: "L", deficit: 1, source: "hub2", note: "x" },
-      ],
-    },
-    awaitingUpstream: {
-      count: 1,
-      items: [{ loc: "hub1", pid: "p4", size: "9", deficit: 2, source: "central", note: "waiting for central to receive stock" }],
-    },
-  };
-  const byId = new Map([["p1", { id: "p1", name: "Alpha Runner", photoUrl: "u1" }], ["p4", { id: "p4", name: "Zed Boot" }]]);
-
-  it("builds read-only rows for THIS destination only, both park states, sorted", () => {
-    const rows = parkedNeedRows({ exceptions: EXC, dest: "hub1", byId });
-    expect(rows.map((r) => [r.productId, r.state, r.qty])).toEqual([
-      ["p1", "supplier", 3],
-      ["p4", "upstream", 2],
-    ]);
-    expect(rows[0].productName).toBe("Alpha Runner");
-    expect(rows[0].photoUrl).toBe("u1");
-    expect(rows[0].note).toMatch(/supplier reorder/);
-  });
-  it("hub2 clothing gets the identical treatment — the fix is once for every leg", () => {
-    const rows = parkedNeedRows({ exceptions: EXC, dest: "hub2", byId });
-    expect(rows.map((r) => r.productId)).toEqual(["p2"]);
-  });
-  it("respects the hub2 line filter, degrades to empty without the node", () => {
-    const rows = parkedNeedRows({ exceptions: EXC, dest: "hub2", byId, lineFilter: () => false });
-    expect(rows).toEqual([]);
-    expect(parkedNeedRows({ exceptions: null, dest: "hub1", byId })).toEqual([]);
-  });
-  it("the 900-cap overflow is carried honestly", () => {
-    expect(parkedOverflow(EXC)).toBe(0);
-    expect(parkedOverflow({ awaitingSupplier: { count: 950, items: EXC.awaitingSupplier.items } })).toBe(947);
-  });
-  it("RefillQueue renders the parked state in its detail (source pins)", () => {
-    const rq = src("./RefillQueue.jsx");
-    expect(rq).toContain("parkedNeedRows({ exceptions, dest: DEST_LOC, byId, lineFilter })");
-    expect(rq).toContain("WAITING FOR SUPPLIER");
-    expect(rq).toContain("AWAITING TRANSFER");
-    expect(rq).toContain("waiting for stock upstream");
   });
 });

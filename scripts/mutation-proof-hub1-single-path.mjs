@@ -54,23 +54,6 @@ const MUTATIONS = [
     tests: SP_TESTS,
   },
   {
-    id: "M-PARKED-EMPTY",
-    guard: "parked needs reach the queue rows",
-    file: CORE,
-    from: `  for (const item of exceptions?.awaitingSupplier?.items || []) push(item, "supplier");
-  for (const item of exceptions?.awaitingUpstream?.items || []) push(item, "upstream");`,
-    to: ``,
-    tests: SP_TESTS,
-  },
-  {
-    id: "M-PARKED-DEST",
-    guard: "a queue shows ITS OWN parked needs, never another hub's",
-    file: CORE,
-    from: `    if (!item || item.loc !== dest) return;`,
-    to: `    if (!item) return;`,
-    tests: SP_TESTS,
-  },
-  {
     id: "M-SHADOW-PREDICATE",
     guard: "any non-store dest shadows as a refill row in its own queue",
     file: SCAN,
