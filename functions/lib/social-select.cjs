@@ -51,8 +51,6 @@ const { cleanProductName } = require("./product-name.cjs");
 const POST_KINDS = [
   { key: "single", label: "Single product", minProducts: 1, maxProducts: 1, generates: true, costUSD: 0.134 },
   { key: "flatlay", label: "Flat-lay", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
-  { key: "new_arrivals", label: "New arrivals", minProducts: 2, maxProducts: 10, generates: false, costUSD: 0.0004 },
-  { key: "outfit", label: "Full outfit", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
   // ── A PAIRING IS NOT A FAILED OUTFIT ──────────────────────────────────────
   // Two or three pieces that go together, presented as a pairing and never
   // framed as a complete look. Chosen as a pairing at the START of generation:
@@ -60,6 +58,8 @@ const POST_KINDS = [
   // never silently downgrades. That refusal is what stopped "a jacket and one
   // shoe" going out as a look, and it stays exactly as built.
   { key: "pairing", label: "Pairing", minProducts: 2, maxProducts: 3, generates: true, costUSD: 0.134 },
+  { key: "new_arrivals", label: "New arrivals", minProducts: 2, maxProducts: 10, generates: false, costUSD: 0.0004 },
+  { key: "outfit", label: "Full outfit", minProducts: 3, maxProducts: 5, generates: true, costUSD: 0.134 },
 ];
 const KIND_KEYS = POST_KINDS.map((k) => k.key);
 

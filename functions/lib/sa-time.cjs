@@ -13,8 +13,14 @@
 
 "use strict";
 
+// SAST is UTC+2 with no DST, so this is a constant. Exported so anything else
+// computing SAST wall-clock boundaries (the social engine's daily slots, for
+// instance) imports the same number rather than copying it — exactly the
+// drift trap this file's header describes.
+const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
+
 function saDateStringFromMs(ms) {
-  return new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return new Date(ms + SAST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-module.exports = { saDateStringFromMs };
+module.exports = { saDateStringFromMs, SAST_OFFSET_MS };

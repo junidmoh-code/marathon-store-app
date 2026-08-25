@@ -242,6 +242,22 @@ async function sendFacebook(post, creds) {
     e.notConnected = true;
     throw e;
   }
+  // ── A STORY IS NOT A FEED POST WITH A TALL PICTURE ─────────────────────────
+  // publishFacebook only knows the Page feed (/photos, /videos, /feed). Meta's
+  // Facebook story endpoints (photo_stories / video_stories — see
+  // fbStoryEndpoint in meta.mjs) are not wired up here yet: nobody has run one
+  // against the live Page to confirm the two-call upload shape actually works
+  // the way the docs describe. Sending a story-format image to the ordinary
+  // feed path would silently post 9:16 artwork — with its caption stripped
+  // for nothing, since the feed still shows one — as a regular Page post,
+  // which is the wrong thing in the wrong place. Skipped instead, the same
+  // honest way TikTok is: visible, not counted as a failure, and it costs the
+  // post no retries.
+  if (formatOf(post) === "story") {
+    const e = new Error("Facebook stories are not wired up yet — this post is going out on Instagram only. See fbStoryEndpoint in scripts/social/meta.mjs.");
+    e.notConnected = true;
+    throw e;
+  }
   const { caption } = captionFor(post, "facebook");
   return publishFacebook({ pageId: creds.pageId, token: creds.token, media: post.media, caption });
 }

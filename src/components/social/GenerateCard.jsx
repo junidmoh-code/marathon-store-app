@@ -23,7 +23,16 @@ import React, { useMemo, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, bBlue, bGray } from "../stock/ui";
-import { POST_KINDS, PLATFORMS, MAX_MEDIA } from "./socialCore";
+import { POST_KINDS, PLATFORMS, FORMATS } from "./socialCore";
+
+// The Generate tab's own labels for FORMATS ["feed","story","reel"] — kept
+// here rather than in socialCore.js because the wording ("Reel — video, made
+// from a still") is a UI decision, not shared vocabulary.
+const FORMAT_INFO = {
+  feed:  { label: "Feed post", hint: "The square-ish 4:5 card, in the main grid." },
+  story: { label: "Story", hint: "Vertical, one item, gone in 24 hours — no caption, everything is on the artwork." },
+  reel:  { label: "Reel", hint: "Vertical video. Made from a still here; the video is encoded when it's actually sent." },
+};
 
 const generateCall = httpsCallable(functions, "generateSocialPosts");
 
@@ -46,9 +55,20 @@ const SECTION = {
 export default function GenerateCard({ products = [], onNotice, notice, onGenerated }) {
   const [picked, setPicked] = useState(["single"]);
   const [style, setStyle] = useState("house");
+  const [format, setFormat] = useState("feed");
   const [platforms, setPlatformSel] = useState({ instagram: true, facebook: true, tiktok: false });
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState(null);
+
+  // "New arrivals" is a carousel of existing photographs — the one kind that
+  // is not one composed image, so it cannot be a story (one item, no
+  // carousel on the API) or a reel (one video). Offered only for feed.
+  const kindChoices = format === "feed" ? POST_KINDS : POST_KINDS.filter((k) => k.key !== "new_arrivals");
+
+  const setFormatChecked = (next) => {
+    setFormat(next);
+    if (next !== "feed") setPicked((cur) => cur.filter((k) => k !== "new_arrivals"));
+  };
 
   const cost = useMemo(
     () => picked.reduce((s, k) => s + (POST_KINDS.find((p) => p.key === k)?.costUSD || 0), 0),
@@ -69,7 +89,7 @@ export default function GenerateCard({ products = [], onNotice, notice, onGenera
     setBusy(true);
     setReport(null);
     try {
-      const res = await generateCall({ kinds: picked, style, platforms });
+      const res = await generateCall({ kinds: picked, style, platforms, format });
       const d = res.data || {};
       setReport(d);
       const made = (d.created || []).length;
@@ -92,9 +112,22 @@ export default function GenerateCard({ products = [], onNotice, notice, onGenera
         Everything made here lands in the queue as a draft. Nothing is posted until you approve it.
       </div>
 
+      <div style={SECTION}>Format</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {FORMATS.map((f) => (
+          <button key={f} disabled={busy} onClick={() => setFormatChecked(f)}
+                  style={{ ...(format === f ? tabOn : tabOff), padding: "7px 13px", fontSize: "0.76rem" }}>
+            {FORMAT_INFO[f].label}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: GRAY, marginTop: 6, lineHeight: 1.5 }}>
+        {FORMAT_INFO[format].hint}
+      </div>
+
       <div style={SECTION}>What to make</div>
       <div style={{ display: "grid", gap: 8 }}>
-        {POST_KINDS.map((k) => {
+        {kindChoices.map((k) => {
           const on = picked.includes(k.key);
           return (
             <div key={k.key} onClick={() => !busy && toggleKind(k.key)}
@@ -179,6 +212,7 @@ export default function GenerateCard({ products = [], onNotice, notice, onGenera
             <div key={c.postId} style={{ fontSize: 11.5, color: GREEN, marginBottom: 3 }}>
               ✓ {c.kind} — {c.products} product{c.products === 1 ? "" : "s"}, ${Number(c.costUSD).toFixed(3)}
               {c.captionSource === "fallback" ? " · plain caption (the caption model was unavailable)" : ""}
+              {c.captionSource === "not-needed" ? " · plain caption (a story has nowhere to show one)" : ""}
             </div>
           ))}
           {(report.skipped || []).map((s, i) => (

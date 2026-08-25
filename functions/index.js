@@ -51,6 +51,13 @@ const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10
 // functions:outboxInstantSend. No .env file exists today, so the default is
 // genuinely ON. (The other env flags above share this property.)
 const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
+// Kill switch for socialDailyAutopilot (default ON — see its own header for
+// why this is trusted to write "approved" unattended). Same convention as
+// the two switches above: a BUILD-TIME flag, not a live one — set
+// SOCIAL_AUTOPILOT_ENABLED=false in functions/.env and redeploy
+// functions:socialDailyAutopilot. The FASTEST stop, with no redeploy at all,
+// is pausing the Cloud Scheduler job itself from the GCP console.
+const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED !== "false";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -3641,15 +3648,22 @@ const SOCIAL_MAX_POSTS = 4;
 // one size that all three platforms accept, so the queue never holds an asset
 // one platform will reject after Junid approved it.
 const SOCIAL_W = 1080, SOCIAL_H = 1350;
+// A story or a reel is 9:16, not 4:5 — Instagram's own vertical canvas, and
+// the same 1080-wide geometry social-design.cjs's CANVAS.story/CANVAS.reel
+// already author overlays for. feedOnly() below is what actually decides
+// which one a given post gets.
+const SOCIAL_VERTICAL_W = 1080, SOCIAL_VERTICAL_H = 1920;
 // The public storefront. Same host scripts/shopify/print-menu-plan.mjs prints.
 const SOCIAL_STOREFRONT = "https://marathonclub.co.za";
 
 // Multi-product scene on Nano Banana Pro. The sibling of generateHouseStyleImage:
 // same model, same reference-conditioning, but N products instead of one, each
 // attached as its own text-labelled image so the model cannot confuse which
-// item is which. 4:5 because that is what the platforms want; the product
-// pipeline's 1:1 is a catalogue-grid decision that does not apply here.
-async function generateSocialScene(apiKey, prompt, productImages, refs) {
+// item is which. The aspect ratio follows the post's FORMAT: 4:5 for a feed
+// card, 9:16 for a story or a reel — a reel is a still here too (see the
+// header of scripts/social/reel-media.mjs for why the video is encoded later,
+// at publish time, on the mini).
+async function generateSocialScene(apiKey, prompt, productImages, refs, format = "feed") {
   const parts = [{ text: prompt }];
   productImages.forEach((p, i) => {
     parts.push({ text: `PRODUCT ${i + 1} — ${p.name}. Render THIS item:` });
@@ -3661,7 +3675,7 @@ async function generateSocialScene(apiKey, prompt, productImages, refs) {
   }
   return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
     outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
-    imageConfig: { aspectRatio: "4:5", imageSize: "2K" },
+    imageConfig: { aspectRatio: format === "feed" ? "4:5" : "9:16", imageSize: "2K" },
   });
 }
 
@@ -3669,11 +3683,12 @@ async function generateSocialScene(apiKey, prompt, productImages, refs) {
 // crops: "inside" preserves the whole composition, which matters when the
 // model has spaced four products across the frame. Best-effort — on a sharp
 // failure the raw output is kept rather than the post being lost.
-async function normalizeSocialImage(buffer, fallbackMime) {
+async function normalizeSocialImage(buffer, fallbackMime, format = "feed") {
   try {
     const sharp = require("sharp");
+    const [w, h] = format === "feed" ? [SOCIAL_W, SOCIAL_H] : [SOCIAL_VERTICAL_W, SOCIAL_VERTICAL_H];
     const out = await sharp(buffer)
-      .resize(SOCIAL_W, SOCIAL_H, { fit: "inside", withoutEnlargement: true })
+      .resize(w, h, { fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 90, chromaSubsampling: "4:4:4" })
       .toBuffer();
     return { buffer: out, mime: "image/jpeg" };
@@ -3748,7 +3763,7 @@ async function measureEdges(buffer) {
 // Best-effort in the same way normalizeSocialImage is: a failure here keeps the
 // photograph rather than losing a generation that has already been paid for. An
 // undesigned post is a post Junid can still look at; a lost one is not.
-async function compositeSocialDesign(buffer, { products, kind }) {
+async function compositeSocialDesign(buffer, { products, kind, format = "feed" }) {
   try {
     const socialDesign = require("./lib/social-design.cjs");
     const rows = socialDesign.sellableRows(products || []);
@@ -3757,12 +3772,13 @@ async function compositeSocialDesign(buffer, { products, kind }) {
     const edges = await measureEdges(buffer);
     // The overlay must match the photograph's ACTUAL size: normalizeSocialImage
     // fits "inside" without enlarging, so it is often a few pixels short of
-    // 1080x1350 and sharp refuses an overlay bigger than its base.
+    // its target and sharp refuses an overlay bigger than its base.
     const meta = await sharp(buffer).metadata();
+    const canvas = socialDesign.canvasFor(format);
     const svg = socialDesign.buildOverlay({
-      products, edges, kind,
-      width: meta.width || socialDesign.W,
-      height: meta.height || socialDesign.H,
+      products, edges, kind, format,
+      width: meta.width || canvas.w,
+      height: meta.height || canvas.h,
     });
     const out = await sharp(buffer)
       .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
@@ -3938,6 +3954,287 @@ async function writeSocialCaption({ kind, picks, link, styleNotes }) {
   }
 }
 
+/**
+ * Everything a generation run needs to know about the catalogue: the scored,
+ * filtered candidate list plus the signal/style-kit/library context that fed
+ * it. Shared between the Generate tab's onCall handler and the daily
+ * autopilot's onSchedule job — both read the SAME shortlist once per run, so
+ * (for the autopilot, which makes several posts in one run) a product picked
+ * for the day's reel is scored identically when the day's story asks again.
+ */
+async function loadSocialGenerationContext(db, { nowMs, style }) {
+  // ── 1. The storefront's live set — one indexed query ─────────────────────
+  const liveSnap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value");
+  const liveNodes = liveSnap.val() || {};
+
+  // ── 2. Signals ───────────────────────────────────────────────────────────
+  const [signal, postedAtByPid, styleKit, library] = await Promise.all([
+    loadSellThroughSignal(db, nowMs),
+    loadPostedAtByPid(db),
+    style === "house" ? loadStyleKit(db) : Promise.resolve(null),
+    loadSocialStyleRefs(db),
+  ]);
+
+  // ── 3. The shortlist, then its records ───────────────────────────────────
+  // A PRELIMINARY rank on node-only fields (sales + liveAt) decides which
+  // products are worth reading in full. Ranking on the node first is what
+  // keeps step 4 at ~80 products instead of ~700.
+  const prelim = Object.entries(liveNodes)
+    .filter(([, n]) => n && n.state === "live" && n.liveState === "on" && n.cleanName)
+    .map(([pid, n]) => ({
+      pid,
+      units: Number(signal.unitsByPid?.[pid]) || 0,
+      liveAt: Number(n.liveAt) || 0,
+      cooled: Number(postedAtByPid[pid]) || 0,
+    }))
+    .filter((r) => !(r.cooled && nowMs - r.cooled < socialSelect.REPOST_COOLDOWN_DAYS * 86400000))
+    .sort((a, b) => (b.units - a.units) || (b.liveAt - a.liveAt) || (a.pid < b.pid ? -1 : 1));
+
+  // Take the best sellers AND the newest, not just the head of one list — a
+  // pure sales sort would starve "new arrivals" of anything to show, because
+  // a product that went live on Tuesday has sold nothing yet.
+  const byNew = [...prelim].sort((a, b) => b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
+  // ── EACH LIST GETS ITS OWN BUDGET ────────────────────────────────────────
+  // Draining `prelim` first and then topping up from `byNew` looked like a
+  // merge and was dead code: `prelim` is the whole live+on set (~580 rows),
+  // so it filled all 80 places every time and `byNew` contributed nothing.
+  // The effect was exactly what the merge existed to prevent — the shortlist
+  // became the top-80 sellers, and since a product that went live on Tuesday
+  // has sold nothing, "new arrivals" found no fresh candidate and reported
+  // "0 products went live recently" forever.
+  //
+  // So the two lists are interleaved against separate budgets. Newness gets
+  // a smaller share because it is the thinner signal, but a guaranteed one.
+  const NEW_BUDGET = Math.floor(SOCIAL_CANDIDATE_DEPTH * 0.3);
+  const shortlist = [];
+  const seen = new Set();
+  const take = (list, budget) => {
+    let taken = 0;
+    for (const r of list) {
+      if (taken >= budget || shortlist.length >= SOCIAL_CANDIDATE_DEPTH) break;
+      if (seen.has(r.pid)) continue;
+      seen.add(r.pid);
+      shortlist.push(r.pid);
+      taken++;
+    }
+  };
+  take(byNew, NEW_BUDGET);
+  take(prelim, SOCIAL_CANDIDATE_DEPTH);   // the rest, best sellers first
+  take(byNew, SOCIAL_CANDIDATE_DEPTH);    // and top up if sales ran short
+
+  // /locations is a ~10-row config node, so this is a whole-node read of a
+  // node that is a constant in practice. It is the one read in this function
+  // that does not fit the partial-read rule, and it is called out rather than
+  // hidden.
+  //
+  // ONLY the unsellable locations are dropped, and that list is
+  // UNSELLABLE_LOCATIONS — the same one the Shopify inventory push uses.
+  //
+  // An earlier version also dropped `active: false` locations to save reads.
+  // That quietly re-opened the very divergence the stock-parity test exists
+  // to close, one level ABOVE where that test can see it: the retired
+  // `studio` and `base` buckets still hold real /stock counts, networkTotals
+  // counts them, and so social would have seen LESS stock than Shopify
+  // sells. Safe in direction (a missed post, not a sold-out link) and wrong
+  // in principle — the two must answer identically, and a saving of a few
+  // hundred point reads is not worth a second source of truth.
+  const locationsSnap = await db.ref("locations").once("value");
+  const locations = Object.keys(locationsSnap.val() || {})
+    .filter((id) => !socialSelect.UNSELLABLE_LOCATIONS.has(id));
+  const products = {}, stockByPid = {};
+  const READ_BATCH = 20;
+  for (let i = 0; i < shortlist.length; i += READ_BATCH) {
+    const slice = shortlist.slice(i, i + READ_BATCH);
+    await Promise.all(slice.map(async (pid) => {
+      const [rec, ...cells] = await Promise.all([
+        db.ref(`products/${pid}`).once("value"),
+        ...locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")),
+      ]);
+      const v = rec.val();
+      if (!v) return;
+      products[pid] = v;
+      const tree = {};
+      locations.forEach((loc, j) => { const c = cells[j].val(); if (c) tree[loc] = c; });
+      stockByPid[pid] = tree;
+    }));
+  }
+
+  const shortNodes = {};
+  for (const pid of shortlist) if (liveNodes[pid]) shortNodes[pid] = liveNodes[pid];
+  const candidates = socialSelect.buildCandidates({
+    liveNodes: shortNodes, products, stockByPid,
+    salesByPid: signal.unitsByPid || {}, postedAtByPid, nowMs,
+  });
+
+  return { candidates, styleKit, library, signal };
+}
+
+/**
+ * Generate and write ONE post — the shared body between the Generate tab's
+ * onCall handler and the daily autopilot's onSchedule job. Everything about
+ * picking the products, paying for the scene, compositing the design and
+ * writing the record lives here exactly once; the two callers differ only in
+ * what STATUS they write (draft vs. approved) and how they pick `scheduledAt`.
+ *
+ * `used` and `candidates` are shared ACROSS every call in one run — passed in
+ * and mutated by the caller's loop — so two items in the same batch (say, the
+ * day's reel and its story) do not pick the same product.
+ *
+ * @returns { ok: true, created } or { ok: false, skipped }
+ */
+async function generateOnePost(db, {
+  kind, format, style, platforms, styleKit, library, candidates, used,
+  signal, geminiApiKey, status, scheduledAt, updatedBy,
+}) {
+  const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
+  if (!picks.length) return { ok: false, skipped: { kind, format, reason } };
+
+  const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
+  const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
+  let media = [];
+  let costUSD = 0;
+  // Set once the paid image is in Storage. If the record write then fails,
+  // the object is referenced by nothing and nothing would ever clean it up
+  // — so the catch deletes it. The COST is still counted either way by the
+  // caller: it reads costUSD off the skipped/created result either way, so
+  // the ledger stays honest about money spent even when the picture is lost.
+  let uploadedPath = null;
+  // What was ACTUALLY sent to the model — library references plus Style Kit
+  // references. Recording only the library share meant a post grounded on
+  // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
+  // trail said it ran ungrounded when it had not.
+  let refsSent = 0;
+  try {
+    if (!spec.generates) {
+      // New arrivals: a carousel of the products' EXISTING photographs.
+      // Nothing is generated and nothing is paid for — the photographs the
+      // storefront already leads with are the right pictures for a post
+      // saying "this just went live".
+      media = picks.map((p) => ({ url: p.photoUrl, type: "image", pid: p.pid }));
+    } else {
+      const images = [];
+      for (const p of picks) {
+        const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
+        images.push({ buffer, contentType, name: p.displayName || p.name });
+      }
+      // House style REFUSES to run ungrounded, exactly as the product
+      // pipeline does: a Nano Banana Pro generation with no reference
+      // photographs is an invented backdrop, not our backdrop, and burning
+      // $0.134 on one is worse than saying so.
+      const kitRefs = styleKit ? (styleKit[picks[0].productType === "clothing" ? "clothing" : "sneaker"] || {}).refs || [] : [];
+      const refs = [...library.refs, ...kitRefs].slice(0, SOCIAL_MAX_REFS);
+      refsSent = refs.length;
+      if (style === "house" && !refs.length) {
+        throw new Error("house style: no usable style references — add photos to the Style library or the AI Studio Style Kit");
+      }
+      const prompt = socialCaption.buildScenePrompt({
+        kind,
+        // The scene labels name the real product too, so the model is told it
+        // is rendering a Nike Air Force 1 rather than a "Sneaker Cream Black
+        // Grey" — which is a materially better instruction to a photographer.
+        productNames: picks.map((p) => p.displayName || p.name),
+        style,
+        styleNotes: library.notes,
+      });
+      const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
+      costUSD = gen.costUSD;
+      const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
+      // The type goes on AFTER the normalise, so the design is laid out
+      // against the exact pixels that ship rather than a larger original.
+      const designed = await compositeSocialDesign(normBuf, {
+        products: picks.map((p) => ({ displayName: p.displayName || p.name, retailPrice: p.retailPrice })),
+        kind, format,
+      });
+      const outBuf = designed.buffer;
+      if (!designed.designed) console.warn(`social: ${kind} post went out undesigned — ${designed.reason}`);
+      uploadedPath = `aiStudio/social/posts/${postId}/0`;   // for the cleanup below
+      media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
+    }
+
+    // ── THE LINK ─────────────────────────────────────────────────────
+    // One product → that product's page. Several → the storefront's front
+    // door, NOT the first product's page: a flat-lay caption that links to
+    // one of five items sends four out of five interested customers to the
+    // wrong thing. There is no "these five products" URL to link to, and
+    // inventing one that 404s would be worse than the front door.
+    const link = picks.length === 1 ? picks[0].link : SOCIAL_STOREFRONT;
+    // ── A STORY HAS NOWHERE TO PUT A CAPTION ────────────────────────────────
+    // Meta drops it (igContainerPayload strips the field for media_type
+    // STORIES) and Facebook stories are refused entirely today (see
+    // sendFacebook in publish.mjs). Paying for an Anthropic call whose output
+    // is discarded on every platform that would receive it is money and a
+    // failure point spent on nothing — so a story skips straight to the same
+    // plain line the fallback would have produced, without ever calling the
+    // model. Not written as `captionSource: "fallback"`: that value means
+    // "the model failed", and a story's caption was never asked for one.
+    const { caption, source: captionSource, reason: captionReason } =
+      format === "story"
+        ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
+        : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
+
+    const nowMs = Date.now();
+    await db.ref(`${SOCIAL_POSTS_PATH}/${postId}`).set({
+      status,
+      kind,
+      format,
+      media,
+      caption,
+      captionSource,
+      ...(captionReason ? { captionNote: captionReason } : {}),
+      link,
+      platforms,
+      // No slot ⇒ the post is created UNSCHEDULED and, crucially, is
+      // reported as such below. It still cannot go out without approval.
+      scheduledAt: scheduledAt || null,
+      ...(scheduledAt ? {} : { unscheduledReason: "no free posting slot was available" }),
+      // BOTH names are stored on the post: `name` is what the storefront and
+      // its link use, displayName is what the caption and the on-image
+      // labels say. The design layer needs the real one.
+      products: picks.map((p) => ({ pid: p.pid, name: p.name, displayName: p.displayName || p.name, handle: p.handle, slot: p.slot || null })),
+      style,
+      engine: spec.generates ? "nbpro" : "none",
+      costUSD: +costUSD.toFixed(6),
+      refsUsed: spec.generates ? refsSent : 0,
+      generatedBy: "generator",
+      signalSource: signal.source,
+      signalCoverage: signal.coverage ?? null,
+      // Recorded per post: a ranking built on a truncated window is a
+      // floor, and the record must say so rather than looking authoritative.
+      signalTruncated: signal.pagesTruncated === true,
+      createdAt: nowMs,
+      updatedAt: nowMs,
+      updatedBy,
+    });
+    for (const p of picks) used.add(p.pid);
+    return {
+      ok: true,
+      created: {
+        postId, kind, format, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
+        scheduledAt: scheduledAt || null,
+      },
+    };
+  } catch (err) {
+    console.warn(`social: ${kind} failed:`, err && err.message);
+    // Best-effort cleanup of an image that was paid for, uploaded, and then
+    // orphaned by a failed record write. A failure here is logged and
+    // ignored — an orphan costs pennies of storage; throwing would lose the
+    // reason the post failed in the first place.
+    if (uploadedPath && media.length) {
+      try {
+        const objectPath = decodeURIComponent(new URL(media[0].url).pathname.split("/o/")[1] || "");
+        if (objectPath) await admin.storage().bucket(STORAGE_BUCKET).file(objectPath).delete();
+      } catch (cleanupErr) {
+        console.warn(`social: could not clean up the orphaned image for ${postId}:`, cleanupErr && cleanupErr.message);
+      }
+    }
+    // costUSD travels with a skip too: a generation that spent $0.134 on the
+    // scene and then failed writing the caption or the record still spent
+    // that money, and a skip that dropped it would under-report the day's
+    // real cost in both the Generate tab's report and the autopilot's ledger.
+    return { ok: false, skipped: { kind, format, reason: classifyPhotoError(err && err.message, "nbpro"), costUSD: +costUSD.toFixed(6) } };
+  }
+}
+
 exports.generateSocialPosts = onCall(
   {
     region: "europe-west1",
@@ -3959,6 +4256,22 @@ exports.generateSocialPosts = onCall(
     if (unknown.length) throw new HttpsError("invalid-argument", `unknown post type(s): ${unknown.join(", ")}`);
     const kinds = wanted.slice(0, SOCIAL_MAX_POSTS);
 
+    // Where the run lands: feed (4:5, still), story (9:16, still, no caption
+    // on IG) or reel (9:16, a still here — the video is encoded from it at
+    // publish time on the mini, see scripts/social/reel-media.mjs). An absent
+    // or unrecognised value is "feed", same as formatOf() in socialCore.js.
+    const FORMATS = ["feed", "story", "reel"];
+    const format = FORMATS.includes(data.format) ? data.format : "feed";
+
+    // "New arrivals" is a carousel of several EXISTING photographs — that is
+    // the one kind this generator does not compose into a single image. A
+    // story is one item (Meta has no story carousel) and a reel is one video,
+    // so neither can carry it. Refused by name, same as an unknown kind: a
+    // request that silently produced nothing is a support call.
+    if (format !== "feed" && kinds.includes("new_arrivals")) {
+      throw new HttpsError("invalid-argument", `"new arrivals" is a carousel and only makes sense as a feed post — pick feed, or drop it from this run`);
+    }
+
     // Photo policy: house (the painted backdrop) unless white is explicitly
     // asked for. The DEFAULT is in this expression, not in the caller.
     const style = data.style === "white" ? "white" : "house";
@@ -3975,108 +4288,7 @@ exports.generateSocialPosts = onCall(
       ? { instagram: asked.instagram === true, facebook: asked.facebook === true, tiktok: asked.tiktok === true }
       : { instagram: true, facebook: true, tiktok: false };
 
-    // ── 1. The storefront's live set — one indexed query ─────────────────────
-    const liveSnap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").once("value");
-    const liveNodes = liveSnap.val() || {};
-
-    // ── 2. Signals ───────────────────────────────────────────────────────────
-    const [signal, postedAtByPid, styleKit, library] = await Promise.all([
-      loadSellThroughSignal(db, nowMs),
-      loadPostedAtByPid(db),
-      style === "house" ? loadStyleKit(db) : Promise.resolve(null),
-      loadSocialStyleRefs(db),
-    ]);
-
-    // ── 3. The shortlist, then its records ───────────────────────────────────
-    // A PRELIMINARY rank on node-only fields (sales + liveAt) decides which
-    // products are worth reading in full. Ranking on the node first is what
-    // keeps step 4 at ~80 products instead of ~700.
-    const prelim = Object.entries(liveNodes)
-      .filter(([, n]) => n && n.state === "live" && n.liveState === "on" && n.cleanName)
-      .map(([pid, n]) => ({
-        pid,
-        units: Number(signal.unitsByPid?.[pid]) || 0,
-        liveAt: Number(n.liveAt) || 0,
-        cooled: Number(postedAtByPid[pid]) || 0,
-      }))
-      .filter((r) => !(r.cooled && nowMs - r.cooled < socialSelect.REPOST_COOLDOWN_DAYS * 86400000))
-      .sort((a, b) => (b.units - a.units) || (b.liveAt - a.liveAt) || (a.pid < b.pid ? -1 : 1));
-
-    // Take the best sellers AND the newest, not just the head of one list — a
-    // pure sales sort would starve "new arrivals" of anything to show, because
-    // a product that went live on Tuesday has sold nothing yet.
-    const byNew = [...prelim].sort((a, b) => b.liveAt - a.liveAt || (a.pid < b.pid ? -1 : 1));
-    // ── EACH LIST GETS ITS OWN BUDGET ────────────────────────────────────────
-    // Draining `prelim` first and then topping up from `byNew` looked like a
-    // merge and was dead code: `prelim` is the whole live+on set (~580 rows),
-    // so it filled all 80 places every time and `byNew` contributed nothing.
-    // The effect was exactly what the merge existed to prevent — the shortlist
-    // became the top-80 sellers, and since a product that went live on Tuesday
-    // has sold nothing, "new arrivals" found no fresh candidate and reported
-    // "0 products went live recently" forever.
-    //
-    // So the two lists are interleaved against separate budgets. Newness gets
-    // a smaller share because it is the thinner signal, but a guaranteed one.
-    const NEW_BUDGET = Math.floor(SOCIAL_CANDIDATE_DEPTH * 0.3);
-    const shortlist = [];
-    const seen = new Set();
-    const take = (list, budget) => {
-      let taken = 0;
-      for (const r of list) {
-        if (taken >= budget || shortlist.length >= SOCIAL_CANDIDATE_DEPTH) break;
-        if (seen.has(r.pid)) continue;
-        seen.add(r.pid);
-        shortlist.push(r.pid);
-        taken++;
-      }
-    };
-    take(byNew, NEW_BUDGET);
-    take(prelim, SOCIAL_CANDIDATE_DEPTH);   // the rest, best sellers first
-    take(byNew, SOCIAL_CANDIDATE_DEPTH);    // and top up if sales ran short
-
-    // /locations is a ~10-row config node, so this is a whole-node read of a
-    // node that is a constant in practice. It is the one read in this function
-    // that does not fit the partial-read rule, and it is called out rather than
-    // hidden.
-    //
-    // ONLY the unsellable locations are dropped, and that list is
-    // UNSELLABLE_LOCATIONS — the same one the Shopify inventory push uses.
-    //
-    // An earlier version also dropped `active: false` locations to save reads.
-    // That quietly re-opened the very divergence the stock-parity test exists
-    // to close, one level ABOVE where that test can see it: the retired
-    // `studio` and `base` buckets still hold real /stock counts, networkTotals
-    // counts them, and so social would have seen LESS stock than Shopify
-    // sells. Safe in direction (a missed post, not a sold-out link) and wrong
-    // in principle — the two must answer identically, and a saving of a few
-    // hundred point reads is not worth a second source of truth.
-    const locationsSnap = await db.ref("locations").once("value");
-    const locations = Object.keys(locationsSnap.val() || {})
-      .filter((id) => !socialSelect.UNSELLABLE_LOCATIONS.has(id));
-    const products = {}, stockByPid = {};
-    const READ_BATCH = 20;
-    for (let i = 0; i < shortlist.length; i += READ_BATCH) {
-      const slice = shortlist.slice(i, i + READ_BATCH);
-      await Promise.all(slice.map(async (pid) => {
-        const [rec, ...cells] = await Promise.all([
-          db.ref(`products/${pid}`).once("value"),
-          ...locations.map((loc) => db.ref(`stock/${loc}/${pid}`).once("value")),
-        ]);
-        const v = rec.val();
-        if (!v) return;
-        products[pid] = v;
-        const tree = {};
-        locations.forEach((loc, j) => { const c = cells[j].val(); if (c) tree[loc] = c; });
-        stockByPid[pid] = tree;
-      }));
-    }
-
-    const shortNodes = {};
-    for (const pid of shortlist) if (liveNodes[pid]) shortNodes[pid] = liveNodes[pid];
-    const candidates = socialSelect.buildCandidates({
-      liveNodes: shortNodes, products, stockByPid,
-      salesByPid: signal.unitsByPid || {}, postedAtByPid, nowMs,
-    });
+    const { candidates, styleKit, library, signal } = await loadSocialGenerationContext(db, { nowMs, style });
 
     // ── 4. Make each post ────────────────────────────────────────────────────
     const used = new Set();
@@ -4105,134 +4317,14 @@ exports.generateSocialPosts = onCall(
     }
 
     for (const [index, kind] of kinds.entries()) {
-      const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
-      if (!picks.length) { skipped.push({ kind, reason }); continue; }
-
-      const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
-      const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
-      let media = [];
-      let costUSD = 0;
-      // Set once the paid image is in Storage. If the record write then fails,
-      // the object is referenced by nothing and nothing would ever clean it up
-      // — so the catch deletes it. The COST is still counted either way:
-      // estCostUSD is incremented at generation, so the ledger stays honest
-      // about money spent even when the picture is lost.
-      let uploadedPath = null;
-      // What was ACTUALLY sent to the model — library references plus Style Kit
-      // references. Recording only the library share meant a post grounded on
-      // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
-      // trail said it ran ungrounded when it had not.
-      let refsSent = 0;
-      try {
-        if (!spec.generates) {
-          // New arrivals: a carousel of the products' EXISTING photographs.
-          // Nothing is generated and nothing is paid for — the photographs the
-          // storefront already leads with are the right pictures for a post
-          // saying "this just went live".
-          media = picks.map((p) => ({ url: p.photoUrl, type: "image", pid: p.pid }));
-        } else {
-          const images = [];
-          for (const p of picks) {
-            const { buffer, contentType } = await fetchImageBuffer(p.photoUrl);
-            images.push({ buffer, contentType, name: p.displayName || p.name });
-          }
-          // House style REFUSES to run ungrounded, exactly as the product
-          // pipeline does: a Nano Banana Pro generation with no reference
-          // photographs is an invented backdrop, not our backdrop, and burning
-          // $0.134 on one is worse than saying so.
-          const kitRefs = styleKit ? (styleKit[picks[0].productType === "clothing" ? "clothing" : "sneaker"] || {}).refs || [] : [];
-          const refs = [...library.refs, ...kitRefs].slice(0, SOCIAL_MAX_REFS);
-          refsSent = refs.length;
-          if (style === "house" && !refs.length) {
-            throw new Error("house style: no usable style references — add photos to the Style library or the AI Studio Style Kit");
-          }
-          const prompt = socialCaption.buildScenePrompt({
-            kind,
-            // The scene labels name the real product too, so the model is told it
-            // is rendering a Nike Air Force 1 rather than a "Sneaker Cream Black
-            // Grey" — which is a materially better instruction to a photographer.
-            productNames: picks.map((p) => p.displayName || p.name),
-            style,
-            styleNotes: library.notes,
-          });
-          const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs);
-          costUSD = gen.costUSD;
-          estCostUSD += gen.costUSD;
-          const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime);
-          // The type goes on AFTER the normalise, so the design is laid out
-          // against the exact pixels that ship rather than a larger original.
-          const designed = await compositeSocialDesign(normBuf, {
-            products: picks.map((p) => ({ displayName: p.displayName || p.name, retailPrice: p.retailPrice })),
-            kind,
-          });
-          const outBuf = designed.buffer;
-          if (!designed.designed) console.warn(`social: ${kind} post went out undesigned — ${designed.reason}`);
-          uploadedPath = `aiStudio/social/posts/${postId}/0`;   // for the cleanup below
-          media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
-        }
-
-        // ── THE LINK ─────────────────────────────────────────────────────
-        // One product → that product's page. Several → the storefront's front
-        // door, NOT the first product's page: a flat-lay caption that links to
-        // one of five items sends four out of five interested customers to the
-        // wrong thing. There is no "these five products" URL to link to, and
-        // inventing one that 404s would be worse than the front door.
-        const link = picks.length === 1 ? picks[0].link : SOCIAL_STOREFRONT;
-        const { caption, source: captionSource, reason: captionReason } =
-          await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
-
-        await db.ref(`${SOCIAL_POSTS_PATH}/${postId}`).set({
-          status: "draft",                       // the ONLY status this function writes
-          kind,
-          media,
-          caption,
-          captionSource,
-          ...(captionReason ? { captionNote: captionReason } : {}),
-          link,
-          platforms,
-          // No slot ⇒ the post is created UNSCHEDULED and, crucially, is
-          // reported as such below. It still cannot go out without approval.
-          scheduledAt: slots[index] || null,
-          ...(slots[index] ? {} : { unscheduledReason: "no free posting slot was available" }),
-          // BOTH names are stored on the post: `name` is what the storefront and
-          // its link use, displayName is what the caption and the on-image
-          // labels say. The design layer needs the real one.
-          products: picks.map((p) => ({ pid: p.pid, name: p.name, displayName: p.displayName || p.name, handle: p.handle, slot: p.slot || null })),
-          style,
-          engine: spec.generates ? "nbpro" : "none",
-          costUSD: +costUSD.toFixed(6),
-          refsUsed: spec.generates ? refsSent : 0,
-          generatedBy: "generator",
-          signalSource: signal.source,
-          signalCoverage: signal.coverage ?? null,
-          // Recorded per post: a ranking built on a truncated window is a
-          // floor, and the record must say so rather than looking authoritative.
-          signalTruncated: signal.pagesTruncated === true,
-          createdAt: nowMs,
-          updatedAt: nowMs,
-          updatedBy: request.auth.uid,
-        });
-        for (const p of picks) used.add(p.pid);
-        created.push({
-          postId, kind, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
-          scheduledAt: slots[index] || null,
-        });
-      } catch (err) {
-        console.warn(`social: ${kind} failed:`, err && err.message);
-        // Best-effort cleanup of an image that was paid for, uploaded, and then
-        // orphaned by a failed record write. A failure here is logged and
-        // ignored — an orphan costs pennies of storage; throwing would lose the
-        // reason the post failed in the first place.
-        if (uploadedPath && media.length) {
-          try {
-            const objectPath = decodeURIComponent(new URL(media[0].url).pathname.split("/o/")[1] || "");
-            if (objectPath) await admin.storage().bucket(STORAGE_BUCKET).file(objectPath).delete();
-          } catch (cleanupErr) {
-            console.warn(`social: could not clean up the orphaned image for ${postId}:`, cleanupErr && cleanupErr.message);
-          }
-        }
-        skipped.push({ kind, reason: classifyPhotoError(err && err.message, "nbpro") });
-      }
+      const result = await generateOnePost(db, {
+        kind, format, style, platforms, styleKit, library, candidates, used,
+        signal, geminiApiKey, status: "draft",
+        scheduledAt: slots[index] || null,
+        updatedBy: request.auth.uid,
+      });
+      if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
+      else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
     }
 
     await logReorderUsage(db, saDateForUsage(nowMs), {
@@ -4256,13 +4348,214 @@ exports.generateSocialPosts = onCall(
   }
 );
 
-// The three-a-week slots, as the queue and the publisher understand them:
-// Monday, Wednesday and Saturday at 18:00 SAST. A deliberate twin of nextSlots
-// / assignSlots in src/components/social/socialCore.js — the browser shows the
-// dates and this writes them, and social-select.test.cjs pins the two to the
-// same answers. SAST is UTC+2 with no DST, so the conversion is a constant.
+// ── THE DAILY RHYTHM, AUTOMATIC ──────────────────────────────────────────────
+// Two feed posts a day — a reel and a photo — and three stories, generated
+// with NO human in the loop: "automated or not at all" (owner brief,
+// 2026-08-25). This is the ONE place in the social engine that writes
+// status "approved" directly rather than "draft" — everywhere else, nothing
+// reaches "approved" without Junid tapping it in the queue.
+//
+// Nothing else about safety is relaxed for that. What still gates every post
+// this writes, unchanged:
+//   · the shop-mention refusal and the no-invented-price rule baked into the
+//     scene and caption prompts (social-caption.cjs)
+//   · house style's refusal to generate ungrounded (no style references)
+//   · every stock/liveness/cooldown gate in social-select.cjs buildCandidates
+//   · postBlocker() on the Mac mini, immediately before the platform call —
+//     the same gate a human-approved post has to pass
+// Approval is the one gate this function is trusted to clear itself, because
+// everything upstream and downstream of it is exactly as strict as it is for
+// a post Junid approved with his thumb.
+//
+// Runs once, early, at 06:00 SAST — well before the first content slot (the
+// reel at 08:00) — so a slow generation still finishes before anything is due.
+const REEL_HOUR_SAST = 8;
+const PHOTO_HOUR_SAST = 11;             // the same hour the manual Generate tab uses
+const STORY_HOURS_SAST = [9, 13, 17];
+// Kinds worth an unattended run. NOT "new_arrivals" — some days have nothing
+// genuinely new, and that would burn one of five slots on a skip every time.
+// Rotated by day (see kindFor below) so the week does not read as five copies
+// of the same shape; "single" is used directly for two of the three stories
+// because a story is glanced at for two seconds and one hero product reads
+// fastest there.
+const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
+
+// SAST is UTC+2 with no DST, so this conversion is a constant everywhere the
+// social engine computes a slot from a wall-clock SAST hour. Imported from
+// sa-time.cjs — the ONE functions-side source for this number, per its own
+// header — rather than copied again, which is exactly the kind of
+// duplication that let the Mon/Wed/Sat vs daily-11:00 drift happen (see the
+// comment on socialScheduleSlots). socialScheduleSlots below shares
+// sastMidnightUtc rather than re-deriving the day-boundary arithmetic too.
+const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
+const DAY_MS = 86400000;
+
+/** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */
+function sastMidnightUtc(fromMs, dayOffset) {
+  const startDay = Math.floor((fromMs + SAST_OFFSET_MS) / DAY_MS);
+  return (startDay + dayOffset) * DAY_MS - SAST_OFFSET_MS;
+}
+
+/**
+ * The next occurrence of `hour` SAST at or after `fromMs`, skipping any
+ * timestamp already in `taken`.
+ *
+ * `taken` exists because this is the ONE place scheduledAt is assigned
+ * without going through assignSlots' own taken-set: a manual Generate-tab
+ * run earlier the same day (Junid can generate a story before 06:00) could
+ * otherwise claim the exact same 09:00/11:00/etc timestamp this function
+ * independently computes, and the publisher's next tick would send both.
+ */
+function nextHourSlot(fromMs, hour, taken = new Set()) {
+  for (let d = 0; d < 14; d++) {
+    const slot = sastMidnightUtc(fromMs, d) + hour * 3600000;
+    if (slot >= fromMs && !taken.has(slot)) return slot;
+  }
+  return null;   // exhausted two weeks of the same hour — a bug, not real load
+}
+
+exports.socialDailyAutopilot = onSchedule(
+  {
+    schedule: "0 6 * * *",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    secrets: [geminiApiKey, anthropicApiKey],
+    memory: "1GiB",
+    // Five sequential generations, each able to spend up to
+    // GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before the rest
+    // of its own work — worst case that is 900s+ before a single caption or
+    // upload has happened. 540s (the onCall generator's own ceiling, fine for
+    // a human-triggered run of at most 4) is not enough headroom for five
+    // run unattended, back to back. 1800s is the v2 onSchedule maximum.
+    timeoutSeconds: 1800,
+  },
+  async () => {
+    if (!SOCIAL_AUTOPILOT_ENABLED) {
+      console.log("socialDailyAutopilot: disabled (SOCIAL_AUTOPILOT_ENABLED=false)");
+      return;
+    }
+
+    const db = admin.database();
+    const nowMs = Date.now();
+    const saDate = saDateForUsage(nowMs);
+
+    // ── ONE RUN PER DAY, CLAIMED — WITH A STALENESS ESCAPE ────────────────────
+    // A Cloud Scheduler retry or a manual re-invoke from the console must not
+    // generate the day's content twice — that would double the cost AND
+    // double the day's posting volume. The claim IS the write: whichever
+    // invocation's transaction sees `cur === null` first proceeds; a retry
+    // that lands after it sees the started run and exits.
+    //
+    // But a claim that never reaches its `catch` — the instance is OOM-killed,
+    // or hits a hard platform timeout the try/catch cannot intercept — leaves
+    // `startedAt` set with no `finishedAt` forever, and that date's batch is
+    // silently lost with nothing to retry it. So a claim with no finishedAt
+    // AND older than the function's own timeout (with margin) is treated as
+    // abandoned rather than in-progress — the same shape as the WhatsApp
+    // outbox's and publish.mjs's own stale-claim reclaims.
+    const CLAIM_STALE_MS = 40 * 60 * 1000;   // the 1800s (30 min) timeout above, plus margin
+    const claimRef = db.ref(`social_autopilot_log/${saDate}`);
+    const claim = await claimRef.transaction((cur) => {
+      if (cur === null) return { startedAt: nowMs };
+      if (!cur.finishedAt && nowMs - Number(cur.startedAt || 0) > CLAIM_STALE_MS) {
+        return { startedAt: nowMs, reclaimedFrom: cur.startedAt };
+      }
+      return undefined;
+    });
+    if (!claim.committed) {
+      console.log(`socialDailyAutopilot: ${saDate} already ran or is running — skipping`);
+      return;
+    }
+    if (claim.snapshot.val()?.reclaimedFrom) {
+      console.warn(`socialDailyAutopilot: reclaimed an abandoned ${saDate} run started at ${new Date(claim.snapshot.val().reclaimedFrom).toISOString()}`);
+    }
+
+    try {
+      const style = "house";
+      const platforms = { instagram: true, facebook: true, tiktok: false };
+      const { candidates, styleKit, library, signal } = await loadSocialGenerationContext(db, { nowMs, style });
+      // Shared across all five so the day's reel and its story never pick the
+      // exact same product — see generateOnePost's header.
+      const used = new Set();
+      const dayIndex = Math.floor(nowMs / 86400000);
+      const kindFor = (offset) => AUTOPILOT_KINDS[(dayIndex + offset) % AUTOPILOT_KINDS.length];
+
+      // ── DO NOT DOUBLE-BOOK A SLOT A MANUAL RUN ALREADY TOOK ─────────────────
+      // A manual Generate-tab run earlier the same morning (or a previous,
+      // reclaimed autopilot attempt on this same date) could already have
+      // claimed one of today's five hours. nextHourSlot walks forward to the
+      // next FREE occurrence of that hour instead of colliding with it — the
+      // same principle assignSlots uses for the daily feed post, applied here
+      // because this is the one path that assigns scheduledAt without going
+      // through assignSlots itself.
+      const existingForSlots = [];
+      for (const s of ["draft", "approved", "posting"]) {
+        const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(s).limitToLast(100).once("value");
+        for (const p of Object.values(snap.val() || {})) existingForSlots.push(p);
+      }
+      const taken = new Set(existingForSlots.map((p) => Number(p && p.scheduledAt)).filter((n) => Number.isFinite(n)));
+      const claimSlot = (hour) => {
+        const slot = nextHourSlot(nowMs, hour, taken);
+        if (slot) taken.add(slot);   // this run's own five must not collide with each other either
+        return slot;
+      };
+
+      const requests = [
+        { kind: kindFor(0), format: "reel", scheduledAt: claimSlot(REEL_HOUR_SAST) },
+        { kind: kindFor(1), format: "feed", scheduledAt: claimSlot(PHOTO_HOUR_SAST) },
+        { kind: "single", format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[0]) },
+        { kind: kindFor(2), format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[1]) },
+        { kind: "single", format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[2]) },
+      ];
+
+      const created = [], skipped = [];
+      let estCostUSD = 0;
+      for (const req of requests) {
+        const result = await generateOnePost(db, {
+          kind: req.kind, format: req.format, style, platforms, styleKit, library, candidates, used,
+          signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
+          updatedBy: "cron:socialDailyAutopilot",
+        });
+        if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
+        else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
+      }
+
+      await claimRef.update({
+        finishedAt: Date.now(), created: created.length, skipped: skipped.length,
+        estCostUSD: +estCostUSD.toFixed(4),
+      });
+      await logReorderUsage(db, saDate, {
+        at: nowMs, kind: "socialDailyAutopilot", by: "cron",
+        postsCreated: created.length, skipped: skipped.length,
+        estimatedCostUSD: +estCostUSD.toFixed(4), style,
+      });
+      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ~$${estCostUSD.toFixed(3)}`,
+        { created: created.map((c) => `${c.kind}/${c.format}`), skipped });
+    } catch (err) {
+      // The claim must not lie about a run that blew up partway through — a
+      // half-finished day (the reel made, the crash before the stories) is
+      // still worth recording as failed rather than silently looking done.
+      console.error("socialDailyAutopilot failed:", err && err.message);
+      await claimRef.update({ finishedAt: Date.now(), error: String(err && err.message).slice(0, 500) });
+      throw err;
+    }
+  }
+);
+
+// The daily feed slot, as the queue and the publisher understand it: every
+// day at 11:00 SAST. A deliberate twin of nextSlots / assignSlots in
+// src/components/social/socialCore.js — the browser shows the dates and this
+// writes them, and social-select.test.cjs pins the two to the same answers.
+// SAST is UTC+2 with no DST, so the conversion is a constant.
+//
+// This used to be Monday/Wednesday/Saturday at 18:00 and was left behind when
+// socialCore.js moved to a daily 11:00 cadence (2026-08-24) — the two copies
+// drifted silently until the pinning test below caught it. A generated draft
+// was landing on the OLD three-a-week days while the queue and the publisher
+// had already moved to "every day", so new drafts sat unscheduled for up to
+// four days past what the queue showed as due.
 function socialScheduleSlots(existingPosts, count, fromMs) {
-  const SAST = 2 * 60 * 60 * 1000, DAY = 86400000, DAYS = [1, 3, 6], HOUR = 18;
+  const HOUR = 11;
   const taken = new Set((existingPosts || [])
     .map((p) => Number(p && p.scheduledAt)).filter((n) => Number.isFinite(n)));
   const out = [];
@@ -4270,12 +4563,9 @@ function socialScheduleSlots(existingPosts, count, fromMs) {
   // nextSlots in socialCore.js for why a flat 28-day walk silently capped at
   // twelve and turned the overflow into "post immediately".
   const wanted = count + taken.size + 4;
-  const horizon = Math.min(366, Math.ceil(wanted / DAYS.length) * 7 + 14);
-  const startDay = Math.floor((fromMs + SAST) / DAY);
+  const horizon = Math.min(366, wanted + 14);
   for (let d = 0; d < horizon && out.length < count; d++) {
-    const midnightUtc = (startDay + d) * DAY - SAST;
-    if (!DAYS.includes(new Date(midnightUtc + SAST).getUTCDay())) continue;
-    const slot = midnightUtc + HOUR * 3600000;
+    const slot = sastMidnightUtc(fromMs, d) + HOUR * 3600000;
     if (slot < fromMs || taken.has(slot)) continue;
     out.push(slot);
   }

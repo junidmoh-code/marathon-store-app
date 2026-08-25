@@ -462,37 +462,37 @@ describe("POST_KINDS matches the browser's copy", () => {
 
 describe("the schedule slots match the browser's", () => {
   // socialScheduleSlots in functions/index.js is a deliberate twin of nextSlots
-  // in socialCore.js. Re-implemented here from the same constants and checked
-  // against a hand-computed answer, so a change to either side that is not
-  // mirrored fails.
-  const SAST = 2 * 3600000, DAYMS = 86400000, DAYS = [1, 3, 6], HOUR = 18;
+  // in socialCore.js — daily 11:00 SAST since 2026-08-24. Re-implemented here
+  // from the same constants and checked against a hand-computed answer, so a
+  // change to either side that is not mirrored fails.
+  const SAST = 2 * 3600000, DAYMS = 86400000, HOUR = 11;
   function slots(fromMs, count) {
     const out = [];
     const startDay = Math.floor((fromMs + SAST) / DAYMS);
-    for (let d = 0; d < 28 && out.length < count; d++) {
+    for (let d = 0; d < count + 2 && out.length < count; d++) {
       const midnightUtc = (startDay + d) * DAYMS - SAST;
-      if (!DAYS.includes(new Date(midnightUtc + SAST).getUTCDay())) continue;
       const slot = midnightUtc + HOUR * 3600000;
       if (slot >= fromMs) out.push(slot);
     }
     return out;
   }
-  test("Saturday noon SAST yields Sat 18:00, then Mon, then Wed", () => {
-    // 2026-08-22 is a Saturday. 10:00 UTC = 12:00 SAST.
+  test("Saturday noon SAST yields Sunday, Monday, Tuesday 11:00 — every day, not three a week", () => {
+    // 2026-08-22 is a Saturday. 10:00 UTC = 12:00 SAST, past that day's 11:00.
     const got = slots(Date.UTC(2026, 7, 22, 10, 0), 3);
     assert.deepEqual(got, [
-      Date.UTC(2026, 7, 22, 16, 0),   // Sat 18:00 SAST
-      Date.UTC(2026, 7, 24, 16, 0),   // Mon
-      Date.UTC(2026, 7, 26, 16, 0),   // Wed
+      Date.UTC(2026, 7, 23, 9, 0),   // Sun 11:00 SAST
+      Date.UTC(2026, 7, 24, 9, 0),   // Mon
+      Date.UTC(2026, 7, 25, 9, 0),   // Tue
     ]);
   });
-  test("the plist's weekday entries are the same three days", () => {
+  test("launchd ticks rather than firing on a calendar — no Weekday/Hour keys to drift", () => {
+    // com.marathon.socialpublish polls every 120s and asks the publisher what
+    // is DUE by scheduledAt; the cadence lives entirely in socialCore.js /
+    // socialScheduleSlots, not in the plist. There is nothing here to pin.
     const { readFileSync } = require("node:fs");
     const { join } = require("node:path");
     const plist = readFileSync(join(__dirname, "../../scripts/social/com.marathon.socialpublish.plist"), "utf8");
-    const weekdays = [...plist.matchAll(/<key>Weekday<\/key><integer>(\d)<\/integer>/g)].map((m) => +m[1]);
-    const hours = [...plist.matchAll(/<key>Hour<\/key><integer>(\d+)<\/integer>/g)].map((m) => +m[1]);
-    assert.deepEqual(weekdays, DAYS, "launchd fires on different days than the queue schedules");
-    assert.deepEqual(hours, [HOUR, HOUR, HOUR], "launchd fires at a different hour than the queue schedules");
+    assert.doesNotMatch(plist, /<key>StartCalendarInterval<\/key>/, "the plist should tick, not fire on a calendar");
+    assert.match(plist, /<key>StartInterval<\/key><integer>\d+<\/integer>/, "the plist should declare a tick interval");
   });
 });

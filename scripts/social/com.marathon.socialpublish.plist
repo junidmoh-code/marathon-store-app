@@ -7,22 +7,13 @@
 
   Differences from the reconciler, and why:
 
-    · StartCalendarInterval instead of StartInterval. The reconciler is a
-      2-minute poll because Publish is a thing Junid presses and then waits
-      for. This is a CADENCE — one post and one story a day — and the times below ARE
-      that cadence: a feed post every day at 11:00.
-
-      There is deliberately NO second daily fire. A 16:30 story slot was added
-      and then removed the same day: nothing publishes a story — the publisher
-      has no story path at all — and the 16:30 fire therefore ran the ordinary
-      publisher, which would have posted any approved-and-overdue item to the
-      FEED at a time meant for stories. A slot that does the wrong thing
-      quietly is worse than no slot. It comes back when stories are built.
-
-      These entries must match SLOT_DAYS / SLOT_HOUR_SAST / STORY_HOUR_SAST in
-      src/components/social/socialCore.js, which is what the queue shows Junid
-      and what the generator writes into scheduledAt. If they drift, approved
-      posts sit "due" until the next agent fire — late, never lost, but late.
+    · This is a TICK, not a calendar fire — see further down for why that
+      changed. The cadence itself — a reel and a photo every day, three
+      stories spread through it — lives entirely in each post's own
+      scheduledAt (assigned by socialCore.js's SLOT_HOUR_SAST for a manual
+      Generate-tab run, or by exports.socialDailyAutopilot in
+      functions/index.js for the unattended daily batch), not in this file.
+      This agent's only job is to ask the publisher what is due.
       launchd Weekday numbering matches JS getUTCDay: 0/7 Sunday, 1 Monday.
 
     · THESE TIMES ARE THE HOST'S LOCAL TIME, NOT SAST. launchd has no timezone
