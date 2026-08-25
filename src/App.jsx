@@ -8,6 +8,7 @@ import { database, storage, auth, googleProvider, functions, functionsUS } from 
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { isDeactivated, orderSizeOut, REACTIVATED_EVENT } from "./utils/deactivation";
+import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
@@ -13846,7 +13847,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // (the shared Hub 1/Hub 2 selector died with the standalone Today tab).
   const rawCountsByHub = useMemo(() => {
     const out = {};
-    ["hub1", "hub2"].forEach((h) => {
+    // REACTIVE hubs only (owner order 2026-08-25): hub1 is engine-only, so its
+    // sale events never become queue rows or badge counts. Unlabelled legacy
+    // entries used to default INTO hub1 (`|| "hub1"`) — they now surface
+    // nowhere, which is the ordered behaviour: nothing reactive at hub1.
+    REACTIVE_REFILL_HUBS.forEach((h) => {
       out[h] = computeRestockCounts((restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h));
     });
     return out;
@@ -13949,7 +13954,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const counts = { hub1: 0, hub2: 0 };
     const todayResponses = allResponses[todayDate] || {};
 
-    ["hub1", "hub2"].forEach(h => {
+    REACTIVE_REFILL_HUBS.forEach(h => {
       const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
       const counts2 = computeRestockCounts(hubEntries);
       Object.entries(counts2).forEach(([key, product]) => {
@@ -13967,7 +13972,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       const dateStr  = getSAPastDateString(daysAgo);
       const returned = returnedOrderIdsOnSADate(returnsLog, dateStr);
       const dayResponses = allResponses[dateStr] || {};
-      ["hub1", "hub2"].forEach(h => {
+      REACTIVE_REFILL_HUBS.forEach(h => {
         const counts2 = restockCountsFromLog({ log: insightsLog, dateStr, hub: h, returnedIds: returned });
         Object.entries(counts2).forEach(([key, product]) => {
           const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
@@ -14053,11 +14058,13 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   const activeCellFilter = useMemo(
     () => activeMode ? (key, product, size) => lineMatches(productForKey(key, product), size, activeMode) : null,
     [activeMode, lineMatches, productForKey]);
+  // hub1 is engine-only: no sale-driven rows, no completed-sale list — the
+  // Hub 1 tab shows /refill_requests rows (engine + in-flight legacy) alone.
   const activeSaleRows = useMemo(
-    () => activeHub ? saleRowsFor(activeHub, activeCellFilter) : [],
+    () => activeHub && isReactiveRefillHub(activeHub) ? saleRowsFor(activeHub, activeCellFilter) : [],
     [activeHub, activeCellFilter, saleRowsFor]);
   const activeCompletedSale = useMemo(
-    () => activeHub ? completedSaleFor(activeHub, activeCellFilter) : [],
+    () => activeHub && isReactiveRefillHub(activeHub) ? completedSaleFor(activeHub, activeCellFilter) : [],
     [activeHub, activeCellFilter, completedSaleFor]);
   const hubTabContent = (h) => {
     const mode = h === "hub2" ? hub2Line : null;

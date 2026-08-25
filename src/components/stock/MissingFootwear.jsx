@@ -50,9 +50,14 @@ import { serverNowIso } from "../../utils/serverTime";
 import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, footwearRequestSubmitReason } from "./actionReasons";
 import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
 import { isDeactivated } from "../../utils/deactivation";
+import { REACTIVE_REFILL_HUBS } from "./reactiveRefillHubs.js";
 import { useRefillRequests } from "./useStock";
 
-const HUBS = ["hub1", "hub2"];
+const HUBS = ["hub1", "hub2"];   // DETECTION scope: "missing" = zero units at BOTH hubs
+// Where a human may RAISE a line (owner order 2026-08-25): hub1 is engine-only,
+// so Request/Solve offer hub2 alone. Reservation math below still spans BOTH
+// hubs — open hub1 rows (engine-raised) genuinely consume Central.
+const REQUESTABLE_HUBS = REACTIVE_REFILL_HUBS.filter((h) => HUBS.includes(h));
 // Solve raises work into a hub's refill queue. Both hubs have one: the queue
 // component is now destination-parameterised (it was hub2-only because CLOTHING
 // is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the
@@ -116,7 +121,7 @@ export default function MissingFootwear({ products = [] }) {
   // refill lane. Same write shape and same queue as Solve; only the number
   // differs. Stock does NOT move here — Central picks it from the queue.
   const request = async (card) => {
-    const dest = dests[card.pid] || HUBS[0];
+    const dest = dests[card.pid] || REQUESTABLE_HUBS[0];
     if (busyPid || !canAct || !dest) return;
     const picks = card.sizes.map((s) => ({ size: s.size, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
     if (!picks.length) return;
@@ -181,7 +186,7 @@ export default function MissingFootwear({ products = [] }) {
   // Sizes already queued for this product at Hub 2 — the queue groups open
   // requests per product, so a duplicate would show one size twice on a card and
   // could be picked twice.
-  const hubFor = (card) => solveHub[card.pid] || HUBS[0];
+  const hubFor = (card) => solveHub[card.pid] || REQUESTABLE_HUBS[0];
   // Units already promised to ANY hub for this product. Central's shelf count is
   // not free stock: two hubs solving the same shoe would otherwise each claim it.
   const reservedFor = (pid, requests) => (requests || [])
@@ -288,13 +293,13 @@ export default function MissingFootwear({ products = [] }) {
       {cards.map((card) => {
         const open = openPid === card.pid;
         const result = done[card.pid];
-        const dest = dests[card.pid] || HUBS[0];
+        const dest = dests[card.pid] || REQUESTABLE_HUBS[0];
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
         const sHub = hubFor(card);
         const solveLines = planFor(card, sHub);
-        const solvable = HUBS.some((h) => planFor(card, h).length > 0);
+        const solvable = REQUESTABLE_HUBS.some((h) => planFor(card, h).length > 0);
         // Same contract as the clothing list (actionReasons.js): a string means
         // disabled AND is the text shown on the row. These were `title=` only —
         // a hover tooltip, invisible on the warehouse tablets this runs on.
@@ -351,7 +356,7 @@ export default function MissingFootwear({ products = [] }) {
             {sOpen && (
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                  {HUBS.map((h) => (
+                  {REQUESTABLE_HUBS.map((h) => (
                     <button key={h} onClick={() => setSolveHub((d) => ({ ...d, [card.pid]: h }))} style={destChip(sHub === h)}>
                       {LOC_LABEL[h]}{planFor(card, h).length ? "" : " · nothing to raise"}
                     </button>
@@ -399,7 +404,7 @@ export default function MissingFootwear({ products = [] }) {
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "10px 0 8px" }}>
-                  {HUBS.map((h) => (
+                  {REQUESTABLE_HUBS.map((h) => (
                     <button key={h} onClick={() => setDests((d) => ({ ...d, [card.pid]: h }))} style={destChip(dest === h)}>
                       {LOC_LABEL[h]}
                     </button>

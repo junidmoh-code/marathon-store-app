@@ -336,6 +336,68 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
   return { satisfied, stale, deferred, errors };
 }
 
+function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt }) {
+      const upd = {};
+      const wantOrders = new Set();
+      const wantRrs = new Set();
+      for (const [dest, byPid] of Object.entries(shadowNode)) {
+        for (const [pid, bySize] of Object.entries(byPid)) {
+          for (const [sizeKey, s] of Object.entries(bySize)) {
+            const p = products[pid] || {};
+            if (!UNIVERSE_BY_SHOP[dest]) {
+              // HUB legs (hub1 AND hub2) shadow as refill_requests rows in
+              // their own queue tab — never as clothing-shaped store orders.
+              // The pre-2026-08-25 predicate was `dest === "hub2"`, which sent
+              // a hub1 shadow plan into the store Clothing queue as a bogus
+              // order. hub2 keeps its historic key byte-for-byte; other hubs
+              // get the dest in the key so two hubs can't collide on one
+              // pid/size. The sweep's SHDWrr- prefix covers both formats.
+              const key = dest === "hub2" ? `SHDWrr-${pid}-${sizeKey}` : `SHDWrr-${dest}-${pid}-${sizeKey}`;
+              wantRrs.add(key);
+              const existing = refillRequests[key];
+              upd[`refill_requests/${key}`] = {
+                // `size` is a raw-size FIELD, not a key — decode the half-size
+                // ("5_5"→"5.5") so queue availability lookups and the UI match.
+                productId: pid, size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), qty: s.qty,
+                requestingLocation: dest, status: "open", shadow: true,
+                createdFrom: { engine: true, shadow: true, runId, source: s.source },
+                createdAt: existing?.createdAt || startedAt,
+              };
+            } else {
+              const key = `SHDW-${dest}-${pid}-${sizeKey}`;
+              wantOrders.add(key);
+              const existing = orders[key];
+              const createdAt = existing?.createdAt || startedAt;
+              upd[`orders/${key}`] = {
+                id: key, productId: pid, productName: p.name || "Unknown",
+                productPhoto: p.photo || null, productPhotoUrl: p.photoUrl ?? null,
+                size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), sentSize: null, qty: s.qty,
+                customerName: "Shop Refill", customerPhone: null,
+                hub: s.source, placedAtHub: s.source,
+                placedStore: UNIVERSE_BY_SHOP[dest] || "central", destShop: dest,
+                productType: "clothing", requestDisplay: false, requestDisplayPartner: false,
+                status: "incoming", createdAt, updatedAt: startedAt,
+                readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
+                displayRefillScheduledAt: null, displayRefillHub: null, displayRefillStatus: null,
+                displayRefilledAt: null, displayRefillStockDepletedAt: null, displayRefilledBy: null,
+                clothingRefillStatus: null, clothingRefilledAt: null, clothingOutOfStockAt: null,
+                clothingRefilledBy: null,
+                autoRefill: true, autoShadow: true, autoRefillPriority: s.priority, autoRefillRunId: runId,
+              };
+            }
+          }
+        }
+      }
+      // Delete stale shadow artifacts (fulfilled plans, live-flipped legs).
+      for (const key of Object.keys(orders)) {
+        if (key.startsWith("SHDW-") && !wantOrders.has(key)) upd[`orders/${key}`] = null;
+      }
+      for (const key of Object.keys(refillRequests)) {
+        if (key.startsWith("SHDWrr-") && !wantRrs.has(key)) upd[`refill_requests/${key}`] = null;
+      }
+      return upd;
+}
+
 async function runScan() {
   const db = admin.database();
   const nowMs = Date.now();
@@ -638,57 +700,7 @@ async function runScan() {
     // (autoRefill orders are excluded there). UI renders them read-only;
     // fulfillCRBatch refuses them outright as a second line of defence.
     {
-      const upd = {};
-      const wantOrders = new Set();
-      const wantRrs = new Set();
-      for (const [dest, byPid] of Object.entries(shadowNode)) {
-        for (const [pid, bySize] of Object.entries(byPid)) {
-          for (const [sizeKey, s] of Object.entries(bySize)) {
-            const p = products[pid] || {};
-            if (dest === "hub2") {
-              const key = `SHDWrr-${pid}-${sizeKey}`;
-              wantRrs.add(key);
-              const existing = refillRequests[key];
-              upd[`refill_requests/${key}`] = {
-                // `size` is a raw-size FIELD, not a key — decode the half-size
-                // ("5_5"→"5.5") so queue availability lookups and the UI match.
-                productId: pid, size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), qty: s.qty,
-                requestingLocation: "hub2", status: "open", shadow: true,
-                createdFrom: { engine: true, shadow: true, runId, source: s.source },
-                createdAt: existing?.createdAt || startedAt,
-              };
-            } else {
-              const key = `SHDW-${dest}-${pid}-${sizeKey}`;
-              wantOrders.add(key);
-              const existing = orders[key];
-              const createdAt = existing?.createdAt || startedAt;
-              upd[`orders/${key}`] = {
-                id: key, productId: pid, productName: p.name || "Unknown",
-                productPhoto: p.photo || null, productPhotoUrl: p.photoUrl ?? null,
-                size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), sentSize: null, qty: s.qty,
-                customerName: "Shop Refill", customerPhone: null,
-                hub: s.source, placedAtHub: s.source,
-                placedStore: UNIVERSE_BY_SHOP[dest] || "central", destShop: dest,
-                productType: "clothing", requestDisplay: false, requestDisplayPartner: false,
-                status: "incoming", createdAt, updatedAt: startedAt,
-                readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
-                displayRefillScheduledAt: null, displayRefillHub: null, displayRefillStatus: null,
-                displayRefilledAt: null, displayRefillStockDepletedAt: null, displayRefilledBy: null,
-                clothingRefillStatus: null, clothingRefilledAt: null, clothingOutOfStockAt: null,
-                clothingRefilledBy: null,
-                autoRefill: true, autoShadow: true, autoRefillPriority: s.priority, autoRefillRunId: runId,
-              };
-            }
-          }
-        }
-      }
-      // Delete stale shadow artifacts (fulfilled plans, live-flipped legs).
-      for (const key of Object.keys(orders)) {
-        if (key.startsWith("SHDW-") && !wantOrders.has(key)) upd[`orders/${key}`] = null;
-      }
-      for (const key of Object.keys(refillRequests)) {
-        if (key.startsWith("SHDWrr-") && !wantRrs.has(key)) upd[`refill_requests/${key}`] = null;
-      }
+      const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt });
       if (Object.keys(upd).length) await safeUpdate(db, upd, "shadow sweep");
     }
 
@@ -863,4 +875,5 @@ exports.refillHealthScan = onSchedule(
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
-exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
+exports._applySatisfied = applySatisfied;
+exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin

@@ -111,3 +111,45 @@ export function sortQueueRows(rows) {
     return am - bm;
   });
 }
+
+/**
+ * PARKED NEEDS — the source gate's withdrawals, in the SAME queue (owner order
+ * 2026-08-25). When the engine's actionable-only gate refuses to raise a line
+ * the source cannot fill (refill-engine.cjs srcAvail <= 0), the need parks in
+ * /stock_exceptions/latest awaitingSupplier / awaitingUpstream — which until
+ * now only the Health screen rendered, for EVERY leg (hub2 clothing included).
+ * These rows put the parked needs at the bottom of each destination's own
+ * refill queue: same list, same card, a read-only state — no action, because
+ * BY DESIGN no line exists until the source can fill it. The engine re-decides
+ * every scan; when stock lands upstream the row becomes an ordinary request on
+ * its own.
+ *
+ * The exceptions item lists cap at 900/leg-class network-wide; `parkedOverflow`
+ * carries the honest remainder ("… and N more") so truncation is never silent.
+ */
+export function parkedNeedRows({ exceptions, dest, byId = null, lineFilter = null }) {
+  const rows = [];
+  const push = (item, state) => {
+    if (!item || item.loc !== dest) return;
+    const p = byId ? byId.get(item.pid) : null;
+    if (lineFilter && !lineFilter(p, item.size)) return;
+    rows.push({
+      origin: "parked", state,   // "supplier" | "upstream"
+      rowKey: `parked:${state}:${item.pid}:${encodeSizeKey(item.size ?? "_")}`,
+      productId: item.pid, productName: p?.name || item.pid,
+      photoUrl: p?.photoUrl || null,
+      size: item.size, qty: Math.max(Number(item.deficit) || 0, 0),
+      source: item.source || null, note: item.note || null,
+    });
+  };
+  for (const item of exceptions?.awaitingSupplier?.items || []) push(item, "supplier");
+  for (const item of exceptions?.awaitingUpstream?.items || []) push(item, "upstream");
+  rows.sort((a, b) => String(a.productName).localeCompare(String(b.productName)) || String(a.size).localeCompare(String(b.size)));
+  return rows;
+}
+
+/** Items the 900-cap hid, network-wide (count is exact even when items truncate). */
+export function parkedOverflow(exceptions) {
+  const over = (x) => Math.max((Number(x?.count) || 0) - (x?.items || []).length, 0);
+  return over(exceptions?.awaitingSupplier) + over(exceptions?.awaitingUpstream);
+}
