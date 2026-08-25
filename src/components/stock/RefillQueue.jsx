@@ -49,7 +49,7 @@ import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
 import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
 import { parseReleaseTimes, partitionReleased, nextReleaseMs, saTimeLabel, releaseEarlyPatch } from "./releaseWindows";
-import { queueStatusLine, sortQueueRows } from "./refillQueueCore";
+import { queueStatusLine, sortQueueRows, groupRowsByProduct } from "./refillQueueCore";
 import { warehouseLocations, labelFor, IN_TRANSIT } from "./locations";
 import { stockCellPath, stockSizeKey } from "../../utils/sizeKey";
 import { checkSourceMovementDuplicate } from "./sourceMovementDedupe";
@@ -617,27 +617,34 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
 
   const detail = detailOpen && hasDetail && (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, margin: "0 0 12px" }}>
-      {waiting.map((row) => {
-        const raised = Number.isFinite(row.createdMs) ? row.createdMs : parseMs(row.createdAt);
-        return (
-          <div key={row.rowKey} style={{ ...CARD, display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", opacity: 0.85 }}>
-            <Photo url={row.photoUrl} photo={row.photo} />
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.productName}</span>
-              <span style={{ display: "block", fontSize: 11, color: GRAY }}>size {row.size} ×{row.qty || 1} · raised {fmtSaDateTime(row.createdAt)}</span>
-            </span>
-            {Number.isFinite(raised) && <AgePill elapsedMs={now - raised} raisedIso={row.createdAt} />}
-            {actorRole === "admin" && row.origin === "request" && (
-              <button onClick={() => releaseNow(row)} disabled={releasingId !== null}
-                      style={{ border: "1px solid rgba(74,127,255,.5)", background: "rgba(74,127,255,.12)", color: "#cfe0ff",
-                               borderRadius: 9, minHeight: 40, padding: "7px 11px", fontSize: 11.5, fontWeight: 700, cursor: "pointer",
-                               opacity: releasingId !== null ? 0.5 : 1, flexShrink: 0, fontFamily: FONT }}>
-                {releasingId === row.id ? "Releasing…" : "Release now"}
-              </button>
-            )}
+      {/* One card per PRODUCT, its sizes as lines (owner ask 2026-08-25) —
+          the same shape the pick list renders, so "Air Jordan 4 · 4 ×1 · 5 ×2"
+          is one card, not three. Release now stays PER LINE: early release is
+          a per-request act and must never release a sibling size silently. */}
+      {groupRowsByProduct(waiting).map((g) => (
+        <div key={`wait-${g.key}`} style={{ ...CARD, padding: "9px 12px", opacity: 0.85 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Photo url={g.photoUrl} photo={g.photo} />
+            <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.productName}</span>
+            {Number.isFinite(g.oldestMs) && g.oldestMs !== Infinity && <AgePill elapsedMs={now - g.oldestMs} raisedIso={g.oldestIso} />}
           </div>
-        );
-      })}
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+            {g.rows.map((row) => (
+              <div key={row.rowKey} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ flex: 1, fontSize: 12, color: GRAY }}>size {String(row.size)} ×{row.qty || 1} · raised {fmtSaDateTime(row.createdAt)}</span>
+                {actorRole === "admin" && row.origin === "request" && (
+                  <button onClick={() => releaseNow(row)} disabled={releasingId !== null}
+                          style={{ border: "1px solid rgba(74,127,255,.5)", background: "rgba(74,127,255,.12)", color: "#cfe0ff",
+                                   borderRadius: 9, minHeight: 34, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                                   opacity: releasingId !== null ? 0.5 : 1, flexShrink: 0, fontFamily: FONT }}>
+                    {releasingId === row.id ? "Releasing…" : "Release now"}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
       {covered.map((r) => (
         <div key={`cov-${r.id}`} style={{ ...CARD, padding: "9px 12px", opacity: 0.85 }}>
           <span style={{ fontSize: 12, color: GRAY }}>
