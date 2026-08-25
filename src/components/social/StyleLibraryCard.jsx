@@ -27,6 +27,7 @@
 // fetched only when Junid taps a tile to actually watch it, and only that one.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, input as inputStyle, bBlue, bGray, bRed } from "../stock/ui";
+import RowBoundary from "./RowBoundary";
 import {
   loadRefPage, mergeRefPage, addStyleRef, editStyleRef, deleteStyleRef,
   parseTags, resolveRefExt, REF_NOTE_MAX, REF_PAGE_SIZE,
@@ -332,10 +333,18 @@ export default function StyleLibraryCard({ onNotice, notice }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(196px, 42vw), 1fr))", gap: 10 }}>
+        {/* One tile per boundary, same reasoning as the queue rows: a
+            reference with a shape the tile cannot render is one broken tile
+            with a Delete button, not a dead library tab. Delete is the right
+            action here — unlike a post, a style reference carries nothing
+            worth keeping once it cannot be shown. */}
         {shown.map((entry) => (
-          <Tile key={entry.id} entry={entry} busy={busy}
-                onOpen={() => window.open(entry.url, "_blank", "noopener")}
-                onEdit={onEdit} onDelete={onDelete} />
+          <RowBoundary key={entry.id} recordId={entry.id} label="reference" busy={busy}
+                       actionLabel="Delete it" onAction={() => onDelete(entry)}>
+            <Tile entry={entry} busy={busy}
+                  onOpen={() => window.open(entry.url, "_blank", "noopener")}
+                  onEdit={onEdit} onDelete={onDelete} />
+          </RowBoundary>
         ))}
       </div>
 

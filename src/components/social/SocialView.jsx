@@ -37,6 +37,7 @@ import {
   loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, postNow, discardPost, retryPost,
   editCaption, reschedulePost, setPlatforms, resolveSending,
 } from "./socialStore";
+import RowBoundary from "./RowBoundary";
 import StyleLibraryCard from "./StyleLibraryCard";
 import GenerateCard from "./GenerateCard";
 
@@ -447,12 +448,21 @@ function Queue({ notice, onNotice }) {
           Nothing here.{filter === "draft" ? " Generate some posts and they'll queue up for you." : ""}
         </div>
       )}
-      {posts && posts.map((p) => (
-        <PostRow key={p.id} post={p} onChanged={onChanged} onNotice={onNotice} />
+      {/* Each row inside its OWN boundary. One post that cannot render is one
+          red row with its id and a Discard button — not the whole card gone.
+          Discard is the right escape hatch here because it is reversible: the
+          record keeps every field and moves to the "discarded" filter, where
+          it can be looked at rather than being lost. */}
+      {asList(posts).map((p) => (
+        <RowBoundary key={p.id} recordId={p.id} label="post"
+                     actionLabel="Discard it"
+                     onAction={async () => { await discardPost(p.id); await onChanged(); }}>
+          <PostRow post={p} onChanged={onChanged} onNotice={onNotice} />
+        </RowBoundary>
       ))}
       {truncated && (
         <div style={{ fontSize: 11, color: AMBER, padding: "12px 2px" }}>
-          Showing the most recent {posts.length} — there are more in this state.
+          Showing the most recent {asList(posts).length} — there are more in this state.
         </div>
       )}
     </div>
