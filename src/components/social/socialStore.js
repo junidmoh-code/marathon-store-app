@@ -248,23 +248,30 @@ export async function discardPost(postId) {
  * caller breaks.
  */
 export async function retryPost(postId, post = null) {   // eslint-disable-line no-unused-vars
-  const id = safeSeg(postId);
-  let results = {};
+  // The WHOLE body is inside the try, not just the read. safeSeg throws on a
+  // key it will not touch, and the old shape had it inside writePost's try —
+  // hoisting it out would have turned a refusal sentence into an unhandled
+  // rejection escaping the row's click handler.
   try {
-    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));
-    results = snap.val() || {};
-  } catch (err) {
+    const id = safeSeg(postId);
     // A refused or failed read must NOT fall back to the caller's copy or to
-    // {} — either would clear results this function cannot see. Refuse instead.
+    // {} — either would clear results this function cannot see. The catch
+    // below refuses the whole operation instead.
+    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));
+    const results = snap.val() || {};
+    const fields = { status: "draft", needsCheck: null };
+    for (const [key, r] of Object.entries(results)) {
+      if (!r || typeof r !== "object") continue;
+      if (r.state === "ok" || r.state === "sending") continue;   // a fact, or an open question
+      // Deleting the platform's whole record takes its `attempts` counter with
+      // it, which is what lets an exhausted platform try again — the same
+      // clearing the previous version did, by the same means.
+      fields[`results/${safeSeg(key)}`] = null;
+    }
+    return writePost(id, fields);
+  } catch (err) {
     return writeError(err);
   }
-  const fields = { status: "draft", needsCheck: null };
-  for (const [key, r] of Object.entries(results)) {
-    if (!r || typeof r !== "object") continue;
-    if (r.state === "ok" || r.state === "sending") continue;   // a fact, or an open question
-    fields[`results/${safeSeg(key)}`] = null;                  // errored: forget just this one
-  }
-  return writePost(id, fields);
 }
 
 /**

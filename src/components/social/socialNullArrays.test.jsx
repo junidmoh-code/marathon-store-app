@@ -22,6 +22,8 @@ import RowBoundary from "./RowBoundary";
 // ── THE FAKE ─────────────────────────────────────────────────────────────────
 let store = {};
 let updates = [];
+// Lets one test make a read fail the way a missing rule does.
+let readShouldThrow = null;
 
 const at = (path) => path.split("/").filter(Boolean);
 function readPath(p) {
@@ -72,7 +74,10 @@ vi.mock("firebase/database", () => ({
   endAt: () => ({}),
   limitToLast: () => ({}),
   push: (r) => ({ path: `${r.path}/newid`, key: "newid" }),
-  get: async (r) => ({ val: () => readPath(r.path) ?? null }),
+  get: async (r) => {
+    if (readShouldThrow) throw readShouldThrow;
+    return { val: () => readPath(r.path) ?? null };
+  },
   update: async (r, fields) => {
     // Every payload is recorded. The RESULT of an empty-array write and an
     // explicit-null write is identical in the database — both delete the key —
@@ -94,7 +99,7 @@ const POST = (over = {}) => ({
   platforms: { instagram: true }, media: [{ url: "u", type: "image" }], products: ["p1"], ...over,
 });
 
-beforeEach(() => { store = {}; updates = []; });
+beforeEach(() => { store = {}; updates = []; readShouldThrow = null; });
 
 /** The value a given field was actually handed to update(). */
 const sentField = (name) => {
@@ -376,4 +381,25 @@ test("RowBoundary keeps showing the error while the record has NOT changed", () 
   expect(JSON.stringify(tree.toJSON())).toContain("still broken");
   spy.mockRestore();
   tree.unmount();
+});
+
+test("a retry whose read is refused changes NOTHING and says so", async () => {
+  store.social_posts = { a: POST({ status: "failed", results: { instagram: { state: "error" } } }) };
+  readShouldThrow = new Error("PERMISSION_DENIED: Permission denied");
+  const res = await retryPost("a", null);
+  readShouldThrow = null;
+  expect(res.ok).toBe(false);
+  expect(res.message).toMatch(/refused this write/i);
+  // Untouched: it must not clear a result it could not read.
+  expect(readPath("social_posts/a/results/instagram")).toEqual({ state: "error" });
+  // Still "failed": a refused read must not half-apply the transition either.
+  expect(readPath("social_posts/a/status")).toBe("failed");
+});
+
+test("an illegal post id comes back as a sentence, not an unhandled rejection", async () => {
+  // safeSeg throws. Hoisted out of the try it would escape the row's click
+  // handler as an unhandled rejection instead of a message on screen.
+  const res = await retryPost("bad/id", null);
+  expect(res.ok).toBe(false);
+  expect(res.message).toMatch(/illegal key/i);
 });

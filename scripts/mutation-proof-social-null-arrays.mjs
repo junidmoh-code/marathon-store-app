@@ -92,14 +92,29 @@ const MUTATIONS = [
   {
     name: "retryPost: trust the caller's in-memory results again (the double-post path)",
     file: STORE,
-    from: "    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));\n    results = snap.val() || {};",
-    to: "    results = (post && post.results) || {};",
+    from: "    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));\n    const results = snap.val() || {};",
+    to: "    const results = (post && post.results) || {};",
   },
   {
     name: "retryPost: write the whole results parent instead of one path per platform",
     file: STORE,
-    from: "    fields[`results/${safeSeg(key)}`] = null;                  // errored: forget just this one",
-    to: "    fields.results = { ...results, [key]: null };",
+    from: "      fields[`results/${safeSeg(key)}`] = null;",
+    to: "      fields.results = { ...results, [key]: null };",
+  },
+  {
+    name: "retryPost: hoist safeSeg out of the try (unhandled rejection, not a sentence)",
+    file: STORE,
+    from: "  try {\n    const id = safeSeg(postId);",
+    to: "  const id = safeSeg(postId);\n  try {",
+  },
+  {
+    // Swallowing the read failure and proceeding with {} is the tempting
+    // version: it "works" and clears nothing. It also writes status: "draft"
+    // on a post whose results it could not see.
+    name: "retryPost: swallow a refused read and carry on with {}",
+    file: STORE,
+    from: "    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));\n    const results = snap.val() || {};",
+    to: "    let results = {};\n    try { results = (await get(ref(database, `${POSTS_PATH}/${id}/results`))).val() || {}; } catch { results = {}; }",
   },
   {
     name: "RowBoundary: stop resetting when the record's data changes",
