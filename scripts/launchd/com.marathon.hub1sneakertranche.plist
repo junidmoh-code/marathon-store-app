@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily Hub 1 sneaker tranche armer (2026-08-25). Runs on the Mac mini at
+     04:30 SAST — before the 06:00 release window — arming the next size
+     tranche of the Hub 1 sneaker policy via applyCategoryPolicy (the Engine
+     Policy card's own write path). Exits 0 doing nothing once all ten sizes
+     are armed; then remove with:
+       launchctl bootout gui/501/com.marathon.hub1sneakertranche
+       rm ~/Library/LaunchAgents/com.marathon.hub1sneakertranche.plist
+     Install (as marathonclub on the mini):
+       cp marathon-store-app/scripts/launchd/com.marathon.hub1sneakertranche.plist ~/Library/LaunchAgents/
+       launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.marathon.hub1sneakertranche.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.hub1sneakertranche</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/arm-hub1-sneaker-tranche.mjs</string>
+    <string>--execute</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/marathonclub/Library/Logs/hub1sneakertranche.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/Library/Logs/hub1sneakertranche.log</string>
+</dict>
+</plist>
