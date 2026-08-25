@@ -428,7 +428,8 @@ describe("3 · release windows gate EVERYTHING — no category, no origin exempt
 describe("4 · the quiet page — one status line, none of the old chrome", () => {
   it("exactly one status line; the old banners and toggles are gone", () => {
     const out = renderText();
-    expect(out).toContain("3 to pick · next batch 14:00 · 2 waiting");
+    // Units ride with the counts since 2026-08-25 — the owner reads quantity.
+    expect(out).toContain("3 to pick (4 units) · next batch 14:00 · 2 waiting");
     for (const chrome of ["Release windows", "Accumulating", "ready to fulfil", "Refill Pending",
                           "Open queue", "Fulfilled history", "waiting behind it", "In the background"]) {
       expect(out).not.toContain(chrome);

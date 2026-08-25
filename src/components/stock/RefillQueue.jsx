@@ -597,9 +597,12 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   };
 
   // ── THE ONE STATUS LINE — tap for the waiting/covered detail ───────────────
+  const unitsOf = (rows) => rows.reduce((n, r) => n + (Number(r.qty) || 1), 0);
   const statusText = queueStatusLine({
     pickCount: pick.length,
+    pickUnits: unitsOf(pick),
     waitingCount: waiting.length,
+    waitingUnits: unitsOf(waiting),
     coveredCount: covered.length,
     windowsDisabled: windows.disabled,
     nextLabel: windows.disabled ? "" : saTimeLabel(nextReleaseMs(now, windows)),

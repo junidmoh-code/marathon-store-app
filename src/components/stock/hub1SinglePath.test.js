@@ -79,3 +79,18 @@ describe("the 06:00 waiting preview groups one product's sizes into one card", (
     expect(rq).toContain("Release now stays PER LINE");
   });
 });
+
+describe("the status line says total units, counting individual sizes", () => {
+  it("lines and units both appear; unit sums come from qty", async () => {
+    const { queueStatusLine } = await import("./refillQueueCore.js");
+    const s = queueStatusLine({ pickCount: 3, pickUnits: 7, waitingCount: 2, waitingUnits: 5, coveredCount: 0, windowsDisabled: false, nextLabel: "06:00" });
+    expect(s).toBe("3 to pick (7 units) · next batch 06:00 · 2 waiting (5 units)");
+    const legacy = queueStatusLine({ pickCount: 3, waitingCount: 2, coveredCount: 0, windowsDisabled: false, nextLabel: "06:00" });
+    expect(legacy).toBe("3 to pick · next batch 06:00 · 2 waiting");
+  });
+  it("RefillQueue passes real unit sums (source pin)", () => {
+    const rq = src("./RefillQueue.jsx");
+    expect(rq).toContain("pickUnits: unitsOf(pick)");
+    expect(rq).toContain("waitingUnits: unitsOf(waiting)");
+  });
+});
