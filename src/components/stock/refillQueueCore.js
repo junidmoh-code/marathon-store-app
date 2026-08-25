@@ -111,3 +111,27 @@ export function sortQueueRows(rows) {
     return am - bm;
   });
 }
+
+/**
+ * Group queue rows by PRODUCT for a compact card — "one product, its sizes as
+ * lines" (owner ask 2026-08-25: the 06:00 waiting preview reads "6 ×2 · 7 ×2"
+ * under one photo, the same shape the pick list already renders). Pure and
+ * order-preserving: groups keep the order rows arrived in; each group carries
+ * the OLDEST raise for the age pill, exactly like the pick-card grouping.
+ */
+export function groupRowsByProduct(rows) {
+  const byKey = new Map();
+  for (const row of rows || []) {
+    const k = row.productId || `name:${row.productName}`;
+    if (!byKey.has(k)) {
+      byKey.set(k, { key: k, productName: row.productName, photoUrl: row.photoUrl || null, photo: row.photo || "",
+                     rows: [], oldestMs: Infinity, oldestIso: null });
+    }
+    const g = byKey.get(k);
+    g.rows.push(row);
+    if (!g.photoUrl && row.photoUrl) g.photoUrl = row.photoUrl;
+    const m = Number.isFinite(row.createdMs) ? row.createdMs : Date.parse(row.createdAt || "");
+    if (Number.isFinite(m) && m < g.oldestMs) { g.oldestMs = m; g.oldestIso = row.createdAt; }
+  }
+  return [...byKey.values()];
+}

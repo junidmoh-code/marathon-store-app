@@ -57,3 +57,25 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     expect(app).toContain('(r.requestingLocation === "hub1" || r.requestingLocation === "hub2")');
   });
 });
+
+describe("the 06:00 waiting preview groups one product's sizes into one card", () => {
+  it("groupRowsByProduct: same product folds, oldest raise wins the age pill, order preserved", async () => {
+    const { groupRowsByProduct } = await import("./refillQueueCore.js");
+    const rows = [
+      { rowKey: "a", productId: "p1", productName: "AJ4", size: "4", qty: 1, createdMs: 200, createdAt: "B", photoUrl: "u" },
+      { rowKey: "b", productId: "p2", productName: "Hoka", size: "3", qty: 2, createdMs: 150, createdAt: "C" },
+      { rowKey: "c", productId: "p1", productName: "AJ4", size: "5", qty: 2, createdMs: 100, createdAt: "A" },
+    ];
+    const g = groupRowsByProduct(rows);
+    expect(g.map((x) => x.key)).toEqual(["p1", "p2"]);
+    expect(g[0].rows.map((r) => r.rowKey)).toEqual(["a", "c"]);
+    expect(g[0].oldestMs).toBe(100);
+    expect(g[0].oldestIso).toBe("A");
+    expect(g[0].photoUrl).toBe("u");
+  });
+  it("RefillQueue renders the grouped waiting cards (source pin)", () => {
+    const rq = src("./RefillQueue.jsx");
+    expect(rq).toContain("groupRowsByProduct(waiting).map((g) => (");
+    expect(rq).toContain("Release now stays PER LINE");
+  });
+});
