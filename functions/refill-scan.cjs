@@ -875,5 +875,5 @@ exports.refillHealthScan = onSchedule(
 exports._runScan = runScan; // exported for one-off manual invocation in tests/smoke
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
-exports._applySatisfied = applySatisfied;
-exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
+exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
+exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
