@@ -47,7 +47,7 @@ import NoTargetQueue from "./NoTargetQueue";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
 
-const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
+const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pine": "Pine", central: "Central" };
 const locLabel = (l) => LOC_LABEL[l] || l || "—";
 const MODE_COLOR = { off: GRAY, shadow: AMBER, live: GREEN };
 // Numeric-aware ordering via hubSizeRank (imported at top): letters keep their

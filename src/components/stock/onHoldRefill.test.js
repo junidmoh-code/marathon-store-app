@@ -6,14 +6,14 @@ import { describe, it, expect } from "vitest";
 import { onHoldRefillPlan, holdCustomerLink } from "./onHoldRefill.js";
 
 const CTX = { nowIso: "2026-08-08T10:00:00.000Z", saDate: "2026-08-08" };
-const ORDER = { id: "042", productId: "p1778841820730", size: "9", qty: 1, placedAtHub: "hub1", hub: "hub1" };
+const ORDER = { id: "042", productId: "p1778841820730", size: "9", qty: 1, placedAtHub: "hub2", hub: "hub2" };
 
 describe("onHoldRefillPlan — routes by the order's own hub", () => {
   it("raises against placedAtHub (the dispatch routing field)", () => {
     const plan = onHoldRefillPlan(ORDER, CTX);
     expect(plan.ok).toBe(true);
-    expect(plan.hub).toBe("hub1");
-    expect(plan.record.requestingLocation).toBe("hub1");
+    expect(plan.hub).toBe("hub2");
+    expect(plan.record.requestingLocation).toBe("hub2");
     expect(plan.record.status).toBe("open");
     expect(plan.record.createdFrom).toMatchObject({ manual: true, via: "on_hold", orderId: "042", orderDate: "2026-08-08" });
   });
@@ -24,9 +24,15 @@ describe("onHoldRefillPlan — routes by the order's own hub", () => {
   });
 
   it("falls back to the legacy hub field when placedAtHub is absent", () => {
-    const plan = onHoldRefillPlan({ ...ORDER, placedAtHub: null }, CTX);
+    const plan = onHoldRefillPlan({ ...ORDER, placedAtHub: null, hub: "hub2" }, CTX);
     expect(plan.ok).toBe(true);
-    expect(plan.hub).toBe("hub1");
+    expect(plan.hub).toBe("hub2");
+  });
+
+  it("HUB1 IS ENGINE-ONLY (owner order 2026-08-25): a hub1 order raises NO line, same refusal as an unroutable hub", () => {
+    const plan = onHoldRefillPlan({ ...ORDER, placedAtHub: "hub1", hub: "hub1" }, CTX);
+    expect(plan.ok).toBe(false);
+    expect(plan.reason).toBe("unroutable_hub_hub1");
   });
 
   it("the id is deterministic per (day, order) — a re-tap cannot mint a second ask", () => {
@@ -122,7 +128,7 @@ describe("holdReleaseUpdate — leaving on-hold withdraws the still-open ask", (
 // customer is never told — so the shape of holdLink IS the promise.
 describe("holdCustomerLink — the invisible re-link stored on the request", () => {
   const HELD_ORDER = {
-    id: "042", productId: "p1", size: "9", qty: 1, placedAtHub: "hub1",
+    id: "042", productId: "p1", size: "9", qty: 1, placedAtHub: "hub2",
     customerId: "c0821234567", customerName: "Thandi", customerPhone: "0821234567",
   };
 

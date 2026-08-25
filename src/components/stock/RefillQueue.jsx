@@ -41,7 +41,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ref, update, get } from "firebase/database";
 import { database, auth } from "../../firebase";
-import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig, useStockHoldConfig } from "./useStock";
+import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig, useStockHoldConfig, useStockExceptions } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
 import { GRAY, GREEN, RED, AMBER, BLUE, FONT, bGreen } from "./ui";
@@ -49,7 +49,7 @@ import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { formatDuration, refillAgeTone } from "../../utils/duration";
 import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
 import { parseReleaseTimes, partitionReleased, nextReleaseMs, saTimeLabel, releaseEarlyPatch } from "./releaseWindows";
-import { queueStatusLine, sortQueueRows } from "./refillQueueCore";
+import { queueStatusLine, sortQueueRows, parkedNeedRows, parkedOverflow } from "./refillQueueCore";
 import { warehouseLocations, labelFor, IN_TRANSIT } from "./locations";
 import { stockCellPath, stockSizeKey } from "../../utils/sizeKey";
 import { checkSourceMovementDuplicate } from "./sourceMovementDedupe";
@@ -322,6 +322,18 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   const [releaseErr, setReleaseErr] = useState(null);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
+
+  // ── PARKED NEEDS — the source gate's refusals, in the SAME list ────────────
+  // (Owner order 2026-08-25.) A need Central cannot fill right now raises NO
+  // request; until today it was visible only on Health. It now renders in this
+  // queue's waiting/covered detail as a read-only state — every leg alike,
+  // hub2 clothing included. The engine re-decides each scan; when stock lands
+  // upstream the row turns into an ordinary request on its own.
+  const exceptions = useStockExceptions();
+  const parked = useMemo(
+    () => parkedNeedRows({ exceptions, dest: DEST_LOC, byId, lineFilter }),
+    [exceptions, DEST_LOC, byId, lineFilter]);
+  const parkedHidden = useMemo(() => parkedOverflow(exceptions), [exceptions]);
 
   // Request rows for this destination, one row per request (per size already).
   const requestRows = useMemo(() => {
@@ -599,13 +611,13 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     windowsDisabled: windows.disabled,
     nextLabel: windows.disabled ? "" : saTimeLabel(nextReleaseMs(now, windows)),
   });
-  const hasDetail = waiting.length > 0 || covered.length > 0;
+  const hasDetail = waiting.length > 0 || covered.length > 0 || parked.length > 0;
   const statusLine = (
     <button type="button" onClick={() => hasDetail && setDetailOpen((v) => !v)}
             style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "transparent",
                      color: GRAY, fontSize: 12.5, fontFamily: FONT, padding: "4px 2px", margin: "0 0 10px",
                      cursor: hasDetail ? "pointer" : "default", lineHeight: 1.5 }}>
-      {statusText}{hasDetail ? (detailOpen ? " ▴" : " ▾") : ""}
+      {statusText}{parked.length > 0 ? ` · ${parked.length} waiting for stock upstream` : ""}{hasDetail ? (detailOpen ? " ▴" : " ▾") : ""}
       {releaseErr && <span style={{ color: RED, fontWeight: 600 }}> · {releaseErr}</span>}
     </button>
   );
@@ -642,6 +654,30 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
           </span>
         </div>
       ))}
+      {/* Parked needs — read-only BY DESIGN: no line exists until the source
+          can fill it (the engine's actionable-only gate), so there is nothing
+          to pick and no action to offer. The chip says why, the engine says
+          when (every scan). */}
+      {parked.map((r) => (
+        <div key={r.rowKey} style={{ ...CARD, display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", opacity: 0.85 }}>
+          <Photo url={r.photoUrl} photo="" />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.productName}</span>
+            <span style={{ display: "block", fontSize: 11, color: GRAY }}>size {String(r.size)} · needs {r.qty}{r.note ? ` · ${r.note}` : ""}</span>
+          </span>
+          <span style={{ flexShrink: 0, fontSize: 10.5, fontWeight: 800, letterSpacing: ".04em", padding: "4px 8px", borderRadius: 8,
+                         background: r.state === "supplier" ? "rgba(255,196,107,.12)" : "rgba(74,127,255,.12)",
+                         border: r.state === "supplier" ? "1px solid rgba(255,196,107,.4)" : "1px solid rgba(74,127,255,.4)",
+                         color: r.state === "supplier" ? "#FFD9A0" : "#CFE0FF" }}>
+            {r.state === "supplier" ? "WAITING FOR SUPPLIER" : "AWAITING TRANSFER"}
+          </span>
+        </div>
+      ))}
+      {parked.length > 0 && parkedHidden > 0 && (
+        <div style={{ fontSize: 11.5, color: GRAY, padding: "2px 4px" }}>
+          …and {parkedHidden} more parked network-wide beyond the report cap — Health carries the exact counts.
+        </div>
+      )}
     </div>
   );
 

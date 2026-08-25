@@ -63,7 +63,13 @@
 // caller's create-if-absent guard) cannot resurrect one the source already
 // rejected. saDate is in the id because order numbers reset daily.
 
-const VALID_HUBS = new Set(["hub1", "hub2"]);
+// Only REACTIVE hubs may take an on-hold line (owner order 2026-08-25): hub1
+// is engine-only — a "Coming Tomorrow" on a hub1 order holds and notifies as
+// ever, but the refill line comes from the engine's own scan seeing the cell
+// at its reorder point, never from here. reactiveRefillHubs.js is the one
+// list; a hub1 order now fails closed exactly like an unroutable hub.
+import { REACTIVE_REFILL_HUBS } from "./reactiveRefillHubs.js";
+const VALID_HUBS = new Set(REACTIVE_REFILL_HUBS);
 
 // ── THE LIFECYCLE (owner spec 2026-08-08 — On Hold is ABOLISHED from the
 // refill surface, not relocated; notification reinstated at FULFIL 2026-08-19)
