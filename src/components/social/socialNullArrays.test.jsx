@@ -301,16 +301,26 @@ test("one malformed post is one broken row — the rest of the queue still rende
 // stale the moment the Mac mini writes a result — and a stale "sending" written
 // over a live "ok" is a duplicate public Instagram post on the next run.
 test("retry reads results from the DATABASE, not from the screen's stale copy", async () => {
-  // What the screen loaded: both platforms still in flight.
+  // What the screen loaded: a failed post, both platforms ERRORED.
+  //
+  // "errored" and not "sending", and that is the whole test. retryPost skips a
+  // "sending" entry either way, so a stale-vs-live difference between two
+  // "sending"s changes nothing and the test proved nothing — it passed against
+  // the very mutation it was named for. Caught by review, and worth writing
+  // down: the mutation proof still reported that guard KILLED, truthfully,
+  // because two OTHER tests caught it. A guard covered by accident reads
+  // exactly like a guard covered on purpose unless you check which test failed.
+  //
+  // Errored is also the more faithful story: the screen says the post failed,
+  // which is precisely when a person reaches for Retry.
   const stale = POST({
     status: "failed",
-    results: { instagram: { state: "sending" }, facebook: { state: "sending" } },
+    results: { instagram: { state: "error", attempts: 2 }, facebook: { state: "error", attempts: 2 } },
   });
-  // A DEEP copy. `{ ...stale }` shares the `results` object by reference, and
-  // writePath mutates it in place — so the "stale" caller copy would silently
-  // agree with the database and the test would prove nothing. Caught by review;
-  // the mutation that reverts retryPost to trusting the caller now fails HERE,
-  // which is the whole point of this test existing.
+  // A DEEP copy, and it is load-bearing: `{ ...stale }` shares the `results`
+  // object by reference, and writePath mutates it in place — so the "stale"
+  // caller copy would quietly agree with the database and there would be no
+  // staleness left to test.
   store.social_posts = { a: JSON.parse(JSON.stringify(stale)) };
   // What the publisher has since confirmed, straight into the database.
   writePath("social_posts/a/results/instagram", { state: "ok", id: "IG123" });
@@ -320,8 +330,9 @@ test("retry reads results from the DATABASE, not from the screen's stale copy", 
   const res = await retryPost("a", stale);
   expect(res.ok).toBe(true);
 
-  // Both confirmed sends survive. Before the fix these came back as "sending"
-  // and the next run would have posted to both accounts a second time.
+  // Both confirmed sends survive. Trusting the screen's copy would have DELETED
+  // both — they read "error" there — and the next run, seeing two platforms
+  // with no result, would have posted to both live accounts a second time.
   expect(readPath("social_posts/a/results/instagram")).toEqual({ state: "ok", id: "IG123" });
   expect(readPath("social_posts/a/results/facebook")).toEqual({ state: "ok", id: "FB456" });
   expect(readPath("social_posts/a/status")).toBe("draft");

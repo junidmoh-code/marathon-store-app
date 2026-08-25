@@ -87,18 +87,21 @@ const MUTATIONS = [
   },
   {
     name: "THE OUTAGE: call .some directly on the posts state again",
+    expect: "the queue renders before any post has loaded",
     file: VIEW,
     from: "  const anySending = asList(posts).some((p) => isSendingSoon(p));",
     to: "  const anySending = posts.some((p) => isSendingSoon(p));",
   },
   {
     name: "retryPost: trust the caller's in-memory results again (the double-post path)",
+    expect: "retry reads results from the DATABASE",
     file: STORE,
     from: "    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));\n    const results = snap.val() || {};",
     to: "    const results = (post && post.results) || {};",
   },
   {
     name: "retryPost: write the whole results parent instead of one path per platform",
+    expect: "retry clears ONLY the errored platform",
     file: STORE,
     from: "      fields[`results/${safeSeg(key)}`] = null;",
     to: "      fields.results = { ...results, [key]: null };",
@@ -114,12 +117,14 @@ const MUTATIONS = [
     // version: it "works" and clears nothing. It also writes status: "draft"
     // on a post whose results it could not see.
     name: "retryPost: swallow a refused read and carry on with {}",
+    expect: "a retry whose read is refused",
     file: STORE,
     from: "    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));\n    const results = snap.val() || {};",
     to: "    let results = {};\n    try { results = (await get(ref(database, `${POSTS_PATH}/${id}/results`))).val() || {}; } catch { results = {}; }",
   },
   {
     name: "RowBoundary: stop resetting when the record's data changes",
+    expect: "RowBoundary clears its error when the record's data changes",
     file: BOUNDARY,
     from: "    if (props.resetKey !== state.seenKey) return { error: null, seenKey: props.resetKey };",
     to: "    if (false && props.resetKey !== state.seenKey) return { error: null, seenKey: props.resetKey };",
@@ -187,18 +192,30 @@ function restoreAll() {
 process.on("exit", restoreAll);
 process.on("SIGINT", () => { restoreAll(); process.exit(130); });
 
-/** Run the suites; return {failed, total} parsed from vitest's summary. */
+/**
+ * Run the suites; return {failed, passed, names} — `names` being the tests that
+ * actually failed.
+ *
+ * ── WHY THE NAMES, AND NOT JUST THE COUNT ────────────────────────────────────
+ * A count is the wrong number to trust. The regression test written for the
+ * duplicate-post path did not catch its own mutation; two OTHER tests did, so
+ * the rollup said KILLED and it was true. A guard covered by accident reads
+ * exactly like a guard covered on purpose until you ask WHICH test failed.
+ * So the killers are printed, and a mutation carrying `expect` is checked
+ * against it — the named test must be among them or the mutation is a MISS.
+ */
 function runSuites() {
   const r = spawnSync("npx", ["vitest", "run", ...SUITES, "--reporter=basic"], { encoding: "utf8" });
   const out = `${r.stdout || ""}${r.stderr || ""}`;
+  const names = [...out.matchAll(/^\s*[×✗]\s+(.+?)\s*(?:\d+ms)?$/gm)].map((m) => m[1].trim());
   const m = out.match(/Tests\s+(?:(\d+)\s+failed\s*\|\s*)?(\d+)\s+passed(?:\s*\((\d+)\))?/);
-  if (m) return { failed: Number(m[1] || 0), passed: Number(m[2] || 0) };
+  if (m) return { failed: Number(m[1] || 0), passed: Number(m[2] || 0), names };
   // A mutation can break the module so badly nothing collects. That is still a
   // kill — the suite did not pass — and must not be read as zero failures.
   if (/No test files found|Failed to load|SyntaxError|Error:/.test(out) && r.status !== 0) {
-    return { failed: -1, passed: 0 };
+    return { failed: -1, passed: 0, names };
   }
-  return { failed: r.status === 0 ? 0 : -1, passed: 0 };
+  return { failed: r.status === 0 ? 0 : -1, passed: 0, names };
 }
 
 console.log("Baseline (unmutated):");
@@ -223,8 +240,15 @@ for (const mut of MUTATIONS) {
   const r = runSuites();
   const killed = r.failed !== 0;
   const label = r.failed === -1 ? "suite would not even load" : `${r.failed} test${r.failed === 1 ? "" : "s"} failed`;
-  console.log(`${killed ? "KILLED " : "HOLE   "} ${mut.name}\n         ${label}`);
-  results.push({ ...mut, killed, failed: r.failed });
+  // A mutation may name the test that MUST be among the killers. Without this,
+  // a guard whose own test does not catch it still reports KILLED because some
+  // other test happened to.
+  const missedIts = mut.expect && !r.names.some((n) => n.includes(mut.expect));
+  const verdict = !killed ? "HOLE   " : missedIts ? "MISS   " : "KILLED ";
+  console.log(`${verdict} ${mut.name}\n         ${label}`);
+  for (const n of r.names.slice(0, 4)) console.log(`           · ${n}`);
+  if (missedIts) console.log(`         ^ but NOT by the test named for it: "${mut.expect}"`);
+  results.push({ ...mut, killed: killed && !missedIts, failed: r.failed });
 }
 restoreAll();
 
