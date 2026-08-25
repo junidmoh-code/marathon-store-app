@@ -5,12 +5,15 @@
 // single-flight enforced by a pid-carrying lockfile — so the machine has one
 // way of running scheduled work, not two.
 //
-// THE CADENCE IS THE SCHEDULE, NOT THIS FILE. Three posts a week means the
-// plist fires on Monday, Wednesday and Saturday at 18:00 SAST, matching the
-// slots the queue shows and the generator assigns
-// (src/components/social/socialCore.js SLOT_DAYS / SLOT_HOUR_SAST). This
-// runner does not decide when anything goes out; it asks the publisher what is
-// DUE, and the publisher asks each post.
+// THE CADENCE IS THE SCHEDULE, NOT THIS FILE. The plist ticks every two
+// minutes; the cadence itself — a reel and a photo every day, three stories
+// spread through it — lives in each post's own scheduledAt, assigned either
+// by Junid generating from the queue (src/components/social/socialCore.js
+// SLOT_DAYS / SLOT_HOUR_SAST) or by the unattended
+// exports.socialDailyAutopilot Cloud Function (functions/index.js), which
+// writes a reel/photo/story×3 batch, pre-approved, every morning. This runner
+// does not decide when anything goes out; it asks the publisher what is DUE,
+// and the publisher asks each post.
 //
 // A tick with nothing approved and due exits in under a second having made
 // zero platform calls, and logs one line so a quiet log still proves the

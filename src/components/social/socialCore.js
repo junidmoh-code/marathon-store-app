@@ -568,7 +568,12 @@ export function describePost(post) {
   const kind = postKind(post && post.kind);
   const n = Array.isArray(post && post.media) ? post.media.length : 0;
   const on = enabledPlatforms(post).map((k) => platform(k).label).join(" · ") || "no platform";
-  return `${kind ? kind.label : post?.kind || "post"} · ${n} item${n === 1 ? "" : "s"} · ${on}`;
+  const fmt = formatOf(post);
+  // Feed is the common case and stays implicit, same as it always has —
+  // only STORY / REEL are called out, since those are the ones a queue
+  // reader could otherwise mistake for a feed card.
+  const tag = fmt === "feed" ? "" : ` [${fmt.toUpperCase()}]`;
+  return `${kind ? kind.label : post?.kind || "post"}${tag} · ${n} item${n === 1 ? "" : "s"} · ${on}`;
 }
 
 /** Human summary of what a platform's last attempt did. */

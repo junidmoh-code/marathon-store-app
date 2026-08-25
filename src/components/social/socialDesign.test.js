@@ -341,3 +341,50 @@ describe("stories and reels get their own canvas", () => {
     });
   });
 });
+
+// ── THE VERTICAL OVERLAY MUST FIT THE PHOTOGRAPH TOO ─────────────────────────
+// The exact bug proven above for the feed card (an overlay fixed at the
+// nominal size fails to composite onto a photograph a few pixels short of
+// it) existed independently in buildVerticalOverlay: it never received the
+// caller's width/height at all, so it was ALWAYS declared at the nominal
+// 1080x1920 regardless of what normalizeSocialImage actually produced.
+// compositeSocialDesign's try/catch swallowed the resulting sharp error, so
+// every story and reel post shipped with `designed:false` — no price, no
+// branding, no storefront URL — the moment a real generation landed even one
+// pixel off 1080x1920, which is the ordinary case for a generative model.
+describe("the vertical overlay is sized to the photograph, not to a constant", () => {
+  const sharp = require("sharp");
+  const products = [P("Air Force 1 Black", 750), P("Lacoste Sweatshirt Beige", 600)];
+
+  const flat = async (w, h) =>
+    sharp({ create: { width: w, height: h, channels: 3, background: { r: 90, g: 90, b: 90 } } }).jpeg().toBuffer();
+
+  // The nominal size, plus the shapes fit:"inside" without enlargement
+  // actually produces from a 1080-wide 9:16 request.
+  for (const format of ["story", "reel"]) {
+    for (const [w, h] of [[1080, 1920], [1080, 1898], [1024, 1820], [960, 1706]]) {
+      it(`composites a ${format} onto a ${w}x${h} photograph`, async () => {
+        const base = await flat(w, h);
+        const svg = D.buildOverlay({ products, kind: "outfit", format, width: w, height: h });
+        const out = await sharp(base).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).jpeg().toBuffer();
+        const meta = await sharp(out).metadata();
+        expect(meta.width).toBe(w);
+        expect(meta.height).toBe(h);
+      });
+    }
+  }
+
+  it("declares the given size on the svg while keeping the authored viewBox", () => {
+    const svg = D.buildOverlay({ products, kind: "outfit", format: "story", width: 1080, height: 1898 });
+    expect(svg).toContain('width="1080"');
+    expect(svg).toContain('height="1898"');
+    expect(svg).toContain(`viewBox="0 0 ${D.canvasFor("story").w} ${D.canvasFor("story").h}"`);
+  });
+
+  it("still renders the real prices after scaling", async () => {
+    const svg = D.buildOverlay({ products, kind: "outfit", format: "reel", width: 1024, height: 1820 });
+    expect(svg).toContain("R750");
+    expect(svg).toContain("R600");
+    expect(svg).toContain("R1,350");   // summed in code, not drawn
+  });
+});

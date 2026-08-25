@@ -218,7 +218,7 @@ function chooseLayout(edges = {}) {
  *     stickers is unsupported), so the URL has to be readable or the story has
  *     no route to the shop at all.
  */
-function buildVerticalOverlay({ products, edges, kind, storefront, format }) {
+function buildVerticalOverlay({ products, edges, kind, storefront, format, width, height }) {
   const { w, h, safeTop, safeBottom } = canvasFor(format);
   const rows = sellableRows(products);
 
@@ -238,7 +238,15 @@ function buildVerticalOverlay({ products, edges, kind, storefront, format }) {
   const ink = darkThere ? "#F4F1EA" : "#141414";
   const scrim = darkThere ? "#000000" : "#FFFFFF";
   const o = [];
-  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(w)}" height="${Math.round(h)}" viewBox="0 0 ${w} ${h}">`);
+  // ── THE OVERLAY IS THE SIZE OF THE PHOTOGRAPH, NOT A CONSTANT ─────────────
+  // Same fix as the feed path below: normalizeSocialImage resizes with
+  // fit:"inside" and withoutEnlargement, so the finished photograph is
+  // frequently a few pixels short of the nominal 1080x1920 and sharp refuses
+  // to composite an overlay larger than its base. The design stays AUTHORED
+  // at the nominal canvas — every coordinate above and below assumes it — and
+  // the viewBox scales it to whatever the photograph turned out to be.
+  const outW = width || w, outH = height || h;
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(outW)}" height="${Math.round(outH)}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid slice">`);
   o.push(`<defs>
     <linearGradient id="vfoot" x1="0" y1="1" x2="0" y2="0">
       <stop offset="0" stop-color="${scrim}" stop-opacity="0.86"/>
@@ -283,10 +291,12 @@ function buildVerticalOverlay({ products, edges, kind, storefront, format }) {
   return o.join("\n");
 }
 
-function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA", width = W, height = H, format = "feed" } = {}) {
+function buildOverlay({ products = [], edges = {}, kind = "single", storefront = "MARATHONCLUB.CO.ZA", width, height, format = "feed" } = {}) {
   if (isVertical(format)) {
-    return buildVerticalOverlay({ products, edges, kind, storefront, format });
+    return buildVerticalOverlay({ products, edges, kind, storefront, format, width, height });
   }
+  width = width || W;
+  height = height || H;
   const rows = sellableRows(products);
   const { side, anchor, ink, scrim } = chooseLayout(edges);
   const DISPLAY = FONT;

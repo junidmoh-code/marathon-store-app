@@ -20,8 +20,10 @@
 #   ~/Library/LaunchAgents/com.marathon.socialpublish.plist
 #   ~/marathon-social/logs/social-publish.log          rotated, readable
 #
-# The schedule is Mon/Wed/Sat 18:00 SAST — the same three slots the queue shows
-# and the generator assigns, pinned equal by test.
+# This agent ticks every two minutes and posts whatever is due — the cadence
+# (a reel and a photo every day, three stories a day) lives in each post's
+# own scheduledAt, written either from the queue's Generate tab or by the
+# unattended exports.socialDailyAutopilot Cloud Function.
 #
 # ── IT CANNOT POST ANYTHING BY BEING INSTALLED ───────────────────────────────
 # RunAtLoad is false, and the publisher refuses anything that is not approved
