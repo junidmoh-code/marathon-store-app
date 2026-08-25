@@ -198,7 +198,15 @@ export const DEFAULT_POLICY_TIMES = {
   stories: ["09:00", "13:00", "17:00"],
 };
 
-/** Read the policy, or the defaults above if nothing has been saved yet. */
+/**
+ * Read the policy. `saved` says whether /social_policy has ever been WRITTEN
+ * — not whether any of the three lists is non-empty, which is a different
+ * question. An intentional "0 reels, 0 photos, 0 stories" is a real saved
+ * policy (all-off), and it looks identical to a policy that was never saved
+ * at all UNLESS the caller can tell the two apart: both come back as three
+ * empty arrays otherwise. `updatedAt` exists on the record the moment it is
+ * saved for the first time, all-off included, so its presence is the signal.
+ */
 export async function loadSocialPolicy() {
   const snap = await get(ref(database, POLICY_PATH));
   const v = snap.val();
@@ -206,6 +214,7 @@ export async function loadSocialPolicy() {
     reels: asList(v?.reels?.times),
     photos: asList(v?.photos?.times),
     stories: asList(v?.stories?.times),
+    saved: !!v?.updatedAt,
   };
 }
 

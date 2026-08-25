@@ -4420,6 +4420,11 @@ async function loadSocialPolicy(db) {
       }
     : DEFAULT_POLICY_TIMES;
 
+  // The count BEFORE any clamping — the number a trim actually has to be
+  // measured against, not the post-trim total, which is always equal to
+  // itself and would make the warning below dead code.
+  const rawTotal = raw.reels.length + raw.photos.length + raw.stories.length;
+
   const clamped = {};
   for (const key of ["reels", "photos", "stories"]) {
     clamped[key] = raw[key].slice(0, MAX_ITEMS_PER_FORMAT);
@@ -4433,8 +4438,8 @@ async function loadSocialPolicy(db) {
     clamped[biggest].pop();
     total--;
   }
-  if (total < clamped.reels.length + clamped.photos.length + clamped.stories.length) {
-    console.warn(`socialDailyAutopilot: saved policy exceeded MAX_ITEMS_PER_DAY (${MAX_ITEMS_PER_DAY}) — trimmed`);
+  if (total < rawTotal) {
+    console.warn(`socialDailyAutopilot: saved policy asked for ${rawTotal}/day, over MAX_ITEMS_PER_DAY (${MAX_ITEMS_PER_DAY}) and/or MAX_ITEMS_PER_FORMAT (${MAX_ITEMS_PER_FORMAT}) — trimmed to ${total}`);
   }
   return clamped;
 }

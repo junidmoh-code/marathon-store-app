@@ -31,10 +31,13 @@ import { asList } from "../../utils/rtdbList";
 const MAX_PER_FORMAT = 6;
 const MAX_TOTAL_PER_DAY = 8;
 
+// `singular` is spelled out rather than derived (e.g. stripping a trailing
+// "s") because "Stories" does not end in a plain "s" — a regex strip turned
+// it into "Storie" on every row of the timeline below.
 const SECTIONS = [
-  { key: "reels", label: "Reels", hint: "A vertical video, made from a still and encoded when it actually sends." },
-  { key: "photos", label: "Photos", hint: "The ordinary feed post — the square-ish 4:5 card." },
-  { key: "stories", label: "Stories", hint: "Vertical, one item, gone in 24 hours." },
+  { key: "reels", label: "Reels", singular: "Reel", hint: "A vertical video, made from a still and encoded when it actually sends." },
+  { key: "photos", label: "Photos", singular: "Photo", hint: "The ordinary feed post — the square-ish 4:5 card." },
+  { key: "stories", label: "Stories", singular: "Story", hint: "Vertical, one item, gone in 24 hours." },
 ];
 
 const SECTION_TITLE = {
@@ -80,10 +83,13 @@ export default function PolicyCard({ onNotice, notice }) {
       try {
         const p = await loadSocialPolicy();
         if (cancelled) return;
-        // Nothing saved yet anywhere: pre-fill with what the function already
-        // runs by default, so the screen never opens looking empty and wrong.
-        const nothingSaved = !p.reels.length && !p.photos.length && !p.stories.length;
-        const start = nothingSaved ? DEFAULT_POLICY_TIMES : p;
+        // Nothing has EVER been saved: pre-fill with what the function
+        // already runs by default, so the screen never opens looking empty
+        // and wrong. This is NOT "all three lists are empty" — a deliberate
+        // save of "0 reels, 0 photos, 0 stories" (everything off) is a real
+        // saved policy and must come back exactly as saved, not bounce back
+        // to the non-zero defaults the moment the tab is reopened.
+        const start = p.saved ? p : DEFAULT_POLICY_TIMES;
         setReels(start.reels);
         setPhotos(start.photos);
         setStories(start.stories);
@@ -105,7 +111,7 @@ export default function PolicyCard({ onNotice, notice }) {
   const timeline = useMemo(() => {
     const rows = [];
     for (const s of SECTIONS) {
-      for (const t of values[s.key]) rows.push({ time: t, label: s.label.replace(/s$/, "") });
+      for (const t of values[s.key]) rows.push({ time: t, label: s.singular });
     }
     return rows.sort((a, b) => a.time.localeCompare(b.time));
   }, [reels, photos, stories]);
