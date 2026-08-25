@@ -158,7 +158,17 @@ function validateLocationEntry(locEntry, { where, perSize, allowedSizes }) {
     }
     return `${where}: must be an object with a target, or a "sizes" map`;
   }
-  if (mode === "uniform") return validatePolicyEntry(locEntry, { where });
+  // carriedOnly is a LOCATION-level flag (either shape): scope this location's
+  // policy to products it already holds a stock cell for. Boolean only at
+  // write time — the engine's read side treats a garbled present value as
+  // gated (the fewer-products direction), but nothing garbled gets written.
+  if (locEntry.carriedOnly !== undefined && typeof locEntry.carriedOnly !== "boolean") {
+    return `${where}: carriedOnly must be true or false`;
+  }
+  if (mode === "uniform") {
+    const { carriedOnly: _c, ...rest } = locEntry;
+    return validatePolicyEntry(rest, { where });
+  }
 
   // per-size
   if (!perSize) return `${where}: size-by-size numbers need the category to be in per-size mode`;
@@ -166,7 +176,7 @@ function validateLocationEntry(locEntry, { where, perSize, allowedSizes }) {
   if (!keys.length) return `${where}: the size map is empty — give at least one size a number, or remove the location`;
   if (keys.length > MAX_SIZES_PER_LOCATION) return `${where}: more than ${MAX_SIZES_PER_LOCATION} sizes at one location`;
   for (const k of Object.keys(locEntry)) {
-    if (k !== "sizes") return `${where}: unknown field "${k}" next to a size map`;
+    if (k !== "sizes" && k !== "carriedOnly") return `${where}: unknown field "${k}" next to a size map`;
   }
   for (const k of keys) {
     // The key must already BE the encoded form. Accepting "5.5" and encoding it
@@ -245,6 +255,11 @@ function diffCategoryPolicy(before, after) {
     const al = isPlainObject(a[loc]) ? a[loc] : null;
     if (bl && !al) { out.push({ loc, field: "location", from: "armed", to: "removed" }); continue; }
     if (!bl && al) { out.push({ loc, field: "location", from: "not armed", to: "armed" }); }
+    // carriedOnly is diffed like the numeric fields so the audit entry and the
+    // card's changed-fields banner both say when a location's scope changed.
+    if ((bl?.carriedOnly === true) !== (al?.carriedOnly === true)) {
+      out.push({ loc, field: "carriedOnly", from: bl?.carriedOnly === true, to: al?.carriedOnly === true });
+    }
     for (const f of POLICY_FIELDS) {
       const from = bl && bl[f] !== undefined ? bl[f] : null;
       const to = al && al[f] !== undefined ? al[f] : null;
@@ -525,6 +540,9 @@ function modelCategoryPolicy({
       // reporting target:null next to a fully-armed leg would read as "not set".
       // (NOT `mode` — that name is already the DESTINATION's live/shadow/off.)
       shape: mappedMode,
+      // Scope flag, surfaced so the card can say "carried products only" next
+      // to the leg. The arithmetic above already honours it via resolveTarget.
+      carriedOnly: mapped ? mapped.carriedOnly === true : false,
       target: mappedMode === "uniform" ? (mapped.target ?? null) : null,
       minQty: mappedMode === "uniform" ? (mapped.minQty ?? null) : null,
       reorderPoint: mappedMode === "uniform" ? (mapped.reorderPoint ?? null) : null,

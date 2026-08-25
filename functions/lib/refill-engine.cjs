@@ -390,7 +390,19 @@ function subcategoryRun(config, products, pid, dest) {
 // The return shape gains `sizes`. Everything that only tests this function for
 // truthiness (managedPids, the class filter, the decision gate) is unaffected;
 // sizesFor and categoryPolicyTarget read it.
-function categoryPolicyEntry(config, products, pid, dest) {
+//
+// ═══ carriedOnly — THE CARRIAGE SCOPE GATE (2026-08-25) ══════════════════════
+// A location entry may carry `carriedOnly: true`, scoping the policy at that
+// location to products it ALREADY HOLDS A STOCK CELL FOR (storeCarries — the
+// same cell-presence test the footwear and clothing rules use). This is the
+// one choke point: managedPids, sizesFor, the class filter, the decision gate
+// and categoryPolicyTarget all resolve through here, so gating here gates them
+// all identically — a consumer that bypassed it would re-open the exact flood
+// the flag exists to close (a per-size sneaker policy at Hub 1 without it arms
+// ~1,245 products; scoped, ~260). `stock` joins the signature for that reason.
+// Absent flag = the map's standing promise, unchanged: the category is the
+// arming act, carriage or not (the perfume case above).
+function categoryPolicyEntry(config, products, stock, pid, dest) {
   const key = products?.[pid]?.categoryKey;
   if (typeof key !== "string" || !key) return null;
   // target must be a positive finite number — the entry arms; the computed
@@ -400,8 +412,10 @@ function categoryPolicyEntry(config, products, pid, dest) {
   // passes it arms nothing either.
   const r = locationPolicyFor(config, key, dest);
   if (!r) return null;
+  if (r.carriedOnly && !storeCarries(stock, dest, pid)) return null;
   return { target: r.target, reorderPoint: r.reorderPoint, minQty: r.minQty,
-    perSize: r.perSize, sizes: r.sizes, policySource: r.source, groupKey: r.groupKey };
+    perSize: r.perSize, sizes: r.sizes, carriedOnly: r.carriedOnly === true,
+    policySource: r.source, groupKey: r.groupKey };
 }
 
 // Units of one size across EVERY location — the per-size dead-size test.
@@ -414,7 +428,7 @@ function sizeUnitsAnywhere(stock, pid, size) {
 }
 
 function categoryPolicyTarget(config, products, stock, dest, pid, size) {
-  const entry = categoryPolicyEntry(config, products, pid, dest);
+  const entry = categoryPolicyEntry(config, products, stock, pid, dest);
   if (!entry) return null;
   const rp = entry.reorderPoint;
   const shape = (target, minQty, reorderPoint) => ({
@@ -1050,7 +1064,7 @@ function computeRefillPlan(snapshot) {
     const catOn = config?.categoryPolicy && typeof config.categoryPolicy === "object";
     if (!ruleOn && !footOn && !catOn) return out;
     for (const [pid, p] of Object.entries(products || {})) {
-      if (catOn && categoryPolicyEntry(config, products, pid, dest)) { out.add(pid); continue; }
+      if (catOn && categoryPolicyEntry(config, products, stock, pid, dest)) { out.add(pid); continue; }
       if (!storeCarries(stock, dest, pid)) continue;
       if (ruleOn && isClothing(p)) out.add(pid);
       else if (footOn && isFootwear(p)) out.add(pid);
@@ -1067,7 +1081,7 @@ function computeRefillPlan(snapshot) {
     // manage this product); per-size mode walks every declared size —
     // resolveTarget then answers 0 for the dead ones, and the deficit loop's
     // `target <= 0` guard skips them at nearly zero cost.
-    const cat = categoryPolicyEntry(config, products, pid, dest);
+    const cat = categoryPolicyEntry(config, products, stock, pid, dest);
     if (cat) {
       // A per-size MAP walks exactly the sizes it names, intersected with what
       // the product declares — categoryPolicyTarget refuses an undeclared size
@@ -1353,7 +1367,7 @@ function computeRefillPlan(snapshot) {
       // passes for the same reason explicit-target pids do: the class filter
       // must not drop what managedPids deliberately admitted.
       if (!isClothing(products?.[pid]) && !isFootwear(products?.[pid]) && !targets?.[dest]?.[pid]
-          && !categoryPolicyEntry(config, products, pid, dest)) continue;
+          && !categoryPolicyEntry(config, products, stock, pid, dest)) continue;
       for (const sizeKey of sizesFor(dest, pid)) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
@@ -1821,7 +1835,7 @@ function computeRefillPlan(snapshot) {
     // Entry presence is the test, not a positive resolution: an entry whose
     // sizes all resolve dead-0 is "deliberately excluded", the same reading
     // an explicit 0 row gets one branch up. (CodeRabbit + Sonnet, PR #352.)
-    if (categoryPolicyEntry(config, products, pid, loc)) return true;
+    if (categoryPolicyEntry(config, products, stock, pid, loc)) return true;
     if (!ruleTargetsEnabled(config, loc)) return false;
     for (const s of productSizes(products, pid)) if (targetResolves(loc, pid, s)) return true;
     return false;

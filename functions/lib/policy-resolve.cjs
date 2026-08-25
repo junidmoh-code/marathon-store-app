@@ -34,9 +34,25 @@ const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const positiveTarget = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 
 // ── THE SHAPE OF ONE LOCATION ENTRY ──────────────────────────────────────────
-//   "uniform"   { target, minQty, reorderPoint? }  — one number for the location
-//   "per-size"  { sizes: { "<encodedSize>": { target, minQty, reorderPoint? } } }
+//   "uniform"   { target, minQty, reorderPoint?, carriedOnly? }
+//   "per-size"  { sizes: { "<encodedSize>": { target, minQty, reorderPoint? } },
+//                 carriedOnly? }
 //   "invalid"   anything else, INCLUDING both at once
+//
+// carriedOnly (2026-08-25, Hub 1 sneaker policy): `carriedOnly: true` scopes
+// the entry to products the location ALREADY HOLDS A STOCK CELL FOR
+// (storeCarries — cell presence, not units). The default (absent/false) keeps
+// the map's standing promise: the category itself is the arming act, carriage
+// or not. The flag exists because a per-size sneaker policy at a hub without
+// it would arm every product in the category (~1,245 at Hub 1) against a
+// source that could never fill it. The gate itself lives in the engine's
+// categoryPolicyEntry — the one choke point every consumer resolves through —
+// because this leaf module never sees stock. Here it is only carried through.
+// A PRESENT key gates unless it is literally `false`: a garbled value ("yes",
+// 1) means somebody tried to scope the entry, and honouring the scope arms
+// FEWER products — the engine's standing conservative side. Only absence or
+// an explicit false means "unscoped". (The write path additionally refuses
+// non-boolean values outright; this rule is for a hand-edited live node.)
 function locationEntryMode(locEntry) {
   if (!isPlainObject(locEntry)) return "invalid";
   const hasSizes = isPlainObject(locEntry.sizes);
@@ -45,6 +61,13 @@ function locationEntryMode(locEntry) {
   if (hasSizes) return "per-size";
   if (hasTarget) return "uniform";
   return "invalid";
+}
+
+// The carriage-scope flag of one location entry — see the shape note above.
+// Present-and-not-false gates; absent or explicit false is unscoped.
+function carriedOnlyOf(locEntry) {
+  return isPlainObject(locEntry)
+    && locEntry.carriedOnly !== undefined && locEntry.carriedOnly !== false;
 }
 
 // The armed group that speaks for a category, or null.
@@ -120,11 +143,11 @@ function locationPolicyFor(config, categoryKey, dest) {
     const usable = Object.keys(loc.sizes).some((k) => positiveTarget(loc.sizes[k]?.target));
     if (!usable) return null;
     return { perSize: true, mode, target: null, minQty: null, reorderPoint: null,
-      sizes: loc.sizes, source: eff.source, groupKey: eff.groupKey };
+      sizes: loc.sizes, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
   }
   if (!positiveTarget(loc.target)) return null;
   return { perSize, mode, target: loc.target, minQty: loc.minQty, reorderPoint: loc.reorderPoint,
-    sizes: null, source: eff.source, groupKey: eff.groupKey };
+    sizes: null, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
 }
 
-module.exports = { locationEntryMode, armedGroupForCategory, effectivePolicyFor, locationPolicyFor };
+module.exports = { locationEntryMode, carriedOnlyOf, armedGroupForCategory, effectivePolicyFor, locationPolicyFor };
