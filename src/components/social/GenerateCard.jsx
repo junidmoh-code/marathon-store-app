@@ -212,6 +212,7 @@ export default function GenerateCard({ products = [], onNotice, notice, onGenera
             <div key={c.postId} style={{ fontSize: 11.5, color: GREEN, marginBottom: 3 }}>
               ✓ {c.kind} — {c.products} product{c.products === 1 ? "" : "s"}, ${Number(c.costUSD).toFixed(3)}
               {c.captionSource === "fallback" ? " · plain caption (the caption model was unavailable)" : ""}
+              {c.captionSource === "not-needed" ? " · plain caption (a story has nowhere to show one)" : ""}
             </div>
           ))}
           {(report.skipped || []).map((s, i) => (

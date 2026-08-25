@@ -51,6 +51,13 @@ const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10
 // functions:outboxInstantSend. No .env file exists today, so the default is
 // genuinely ON. (The other env flags above share this property.)
 const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
+// Kill switch for socialDailyAutopilot (default ON — see its own header for
+// why this is trusted to write "approved" unattended). Same convention as
+// the two switches above: a BUILD-TIME flag, not a live one — set
+// SOCIAL_AUTOPILOT_ENABLED=false in functions/.env and redeploy
+// functions:socialDailyAutopilot. The FASTEST stop, with no redeploy at all,
+// is pausing the Cloud Scheduler job itself from the GCP console.
+const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED !== "false";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -4151,8 +4158,19 @@ async function generateOnePost(db, {
     // wrong thing. There is no "these five products" URL to link to, and
     // inventing one that 404s would be worse than the front door.
     const link = picks.length === 1 ? picks[0].link : SOCIAL_STOREFRONT;
+    // ── A STORY HAS NOWHERE TO PUT A CAPTION ────────────────────────────────
+    // Meta drops it (igContainerPayload strips the field for media_type
+    // STORIES) and Facebook stories are refused entirely today (see
+    // sendFacebook in publish.mjs). Paying for an Anthropic call whose output
+    // is discarded on every platform that would receive it is money and a
+    // failure point spent on nothing — so a story skips straight to the same
+    // plain line the fallback would have produced, without ever calling the
+    // model. Not written as `captionSource: "fallback"`: that value means
+    // "the model failed", and a story's caption was never asked for one.
     const { caption, source: captionSource, reason: captionReason } =
-      await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
+      format === "story"
+        ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
+        : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
 
     const nowMs = Date.now();
     await db.ref(`${SOCIAL_POSTS_PATH}/${postId}`).set({
@@ -4363,12 +4381,13 @@ const STORY_HOURS_SAST = [9, 13, 17];
 const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 
 // SAST is UTC+2 with no DST, so this conversion is a constant everywhere the
-// social engine computes a slot from a wall-clock SAST hour. ONE copy of it —
-// socialScheduleSlots below shares sastMidnightUtc rather than re-deriving
-// the same day-boundary arithmetic a second time, which is exactly the kind
-// of duplication that let the Mon/Wed/Sat vs daily-11:00 drift happen (see
-// the comment on socialScheduleSlots).
-const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
+// social engine computes a slot from a wall-clock SAST hour. Imported from
+// sa-time.cjs — the ONE functions-side source for this number, per its own
+// header — rather than copied again, which is exactly the kind of
+// duplication that let the Mon/Wed/Sat vs daily-11:00 drift happen (see the
+// comment on socialScheduleSlots). socialScheduleSlots below shares
+// sastMidnightUtc rather than re-deriving the day-boundary arithmetic too.
+const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
 const DAY_MS = 86400000;
 
 /** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */
@@ -4377,13 +4396,22 @@ function sastMidnightUtc(fromMs, dayOffset) {
   return (startDay + dayOffset) * DAY_MS - SAST_OFFSET_MS;
 }
 
-/** The next occurrence of `hour` SAST at or after `fromMs`, as epoch ms. */
-function nextHourSlot(fromMs, hour) {
-  for (let d = 0; d < 3; d++) {
+/**
+ * The next occurrence of `hour` SAST at or after `fromMs`, skipping any
+ * timestamp already in `taken`.
+ *
+ * `taken` exists because this is the ONE place scheduledAt is assigned
+ * without going through assignSlots' own taken-set: a manual Generate-tab
+ * run earlier the same day (Junid can generate a story before 06:00) could
+ * otherwise claim the exact same 09:00/11:00/etc timestamp this function
+ * independently computes, and the publisher's next tick would send both.
+ */
+function nextHourSlot(fromMs, hour, taken = new Set()) {
+  for (let d = 0; d < 14; d++) {
     const slot = sastMidnightUtc(fromMs, d) + hour * 3600000;
-    if (slot >= fromMs) return slot;
+    if (slot >= fromMs && !taken.has(slot)) return slot;
   }
-  return null;   // unreachable — hour is always < 24
+  return null;   // exhausted two weeks of the same hour — a bug, not real load
 }
 
 exports.socialDailyAutopilot = onSchedule(
@@ -4396,21 +4424,44 @@ exports.socialDailyAutopilot = onSchedule(
     timeoutSeconds: 540,
   },
   async () => {
+    if (!SOCIAL_AUTOPILOT_ENABLED) {
+      console.log("socialDailyAutopilot: disabled (SOCIAL_AUTOPILOT_ENABLED=false)");
+      return;
+    }
+
     const db = admin.database();
     const nowMs = Date.now();
     const saDate = saDateForUsage(nowMs);
 
-    // ── ONE RUN PER DAY, CLAIMED ─────────────────────────────────────────────
+    // ── ONE RUN PER DAY, CLAIMED — WITH A STALENESS ESCAPE ────────────────────
     // A Cloud Scheduler retry or a manual re-invoke from the console must not
     // generate the day's content twice — that would double the cost AND
     // double the day's posting volume. The claim IS the write: whichever
     // invocation's transaction sees `cur === null` first proceeds; a retry
     // that lands after it sees the started run and exits.
+    //
+    // But a claim that never reaches its `catch` — the instance is OOM-killed,
+    // or hits a hard platform timeout the try/catch cannot intercept — leaves
+    // `startedAt` set with no `finishedAt` forever, and that date's batch is
+    // silently lost with nothing to retry it. So a claim with no finishedAt
+    // AND older than the function's own timeout (with margin) is treated as
+    // abandoned rather than in-progress — the same shape as the WhatsApp
+    // outbox's and publish.mjs's own stale-claim reclaims.
+    const CLAIM_STALE_MS = 20 * 60 * 1000;   // 540s timeout + generous margin
     const claimRef = db.ref(`social_autopilot_log/${saDate}`);
-    const claim = await claimRef.transaction((cur) => (cur === null ? { startedAt: nowMs } : undefined));
+    const claim = await claimRef.transaction((cur) => {
+      if (cur === null) return { startedAt: nowMs };
+      if (!cur.finishedAt && nowMs - Number(cur.startedAt || 0) > CLAIM_STALE_MS) {
+        return { startedAt: nowMs, reclaimedFrom: cur.startedAt };
+      }
+      return undefined;
+    });
     if (!claim.committed) {
       console.log(`socialDailyAutopilot: ${saDate} already ran or is running — skipping`);
       return;
+    }
+    if (claim.snapshot.val()?.reclaimedFrom) {
+      console.warn(`socialDailyAutopilot: reclaimed an abandoned ${saDate} run started at ${new Date(claim.snapshot.val().reclaimedFrom).toISOString()}`);
     }
 
     try {
@@ -4423,12 +4474,32 @@ exports.socialDailyAutopilot = onSchedule(
       const dayIndex = Math.floor(nowMs / 86400000);
       const kindFor = (offset) => AUTOPILOT_KINDS[(dayIndex + offset) % AUTOPILOT_KINDS.length];
 
+      // ── DO NOT DOUBLE-BOOK A SLOT A MANUAL RUN ALREADY TOOK ─────────────────
+      // A manual Generate-tab run earlier the same morning (or a previous,
+      // reclaimed autopilot attempt on this same date) could already have
+      // claimed one of today's five hours. nextHourSlot walks forward to the
+      // next FREE occurrence of that hour instead of colliding with it — the
+      // same principle assignSlots uses for the daily feed post, applied here
+      // because this is the one path that assigns scheduledAt without going
+      // through assignSlots itself.
+      const existingForSlots = [];
+      for (const s of ["draft", "approved", "posting"]) {
+        const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(s).limitToLast(100).once("value");
+        for (const p of Object.values(snap.val() || {})) existingForSlots.push(p);
+      }
+      const taken = new Set(existingForSlots.map((p) => Number(p && p.scheduledAt)).filter((n) => Number.isFinite(n)));
+      const claimSlot = (hour) => {
+        const slot = nextHourSlot(nowMs, hour, taken);
+        if (slot) taken.add(slot);   // this run's own five must not collide with each other either
+        return slot;
+      };
+
       const requests = [
-        { kind: kindFor(0), format: "reel", scheduledAt: nextHourSlot(nowMs, REEL_HOUR_SAST) },
-        { kind: kindFor(1), format: "feed", scheduledAt: nextHourSlot(nowMs, PHOTO_HOUR_SAST) },
-        { kind: "single", format: "story", scheduledAt: nextHourSlot(nowMs, STORY_HOURS_SAST[0]) },
-        { kind: kindFor(2), format: "story", scheduledAt: nextHourSlot(nowMs, STORY_HOURS_SAST[1]) },
-        { kind: "single", format: "story", scheduledAt: nextHourSlot(nowMs, STORY_HOURS_SAST[2]) },
+        { kind: kindFor(0), format: "reel", scheduledAt: claimSlot(REEL_HOUR_SAST) },
+        { kind: kindFor(1), format: "feed", scheduledAt: claimSlot(PHOTO_HOUR_SAST) },
+        { kind: "single", format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[0]) },
+        { kind: kindFor(2), format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[1]) },
+        { kind: "single", format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[2]) },
       ];
 
       const created = [], skipped = [];
