@@ -340,7 +340,7 @@ export default function StyleLibraryCard({ onNotice, notice }) {
             worth keeping once it cannot be shown. */}
         {shown.map((entry) => (
           <RowBoundary key={entry.id} recordId={entry.id} label="reference" busy={busy}
-                       resetKey={entry.addedAt}
+                       resetKey={entry.rowKey}
                        actionLabel="Delete it" onAction={() => onDelete(entry)}>
             <Tile entry={entry} busy={busy}
                   onOpen={() => window.open(entry.url, "_blank", "noopener")}

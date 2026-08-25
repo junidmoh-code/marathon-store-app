@@ -30,3 +30,10 @@ export function indexedElement(rows, i) {
   // NEGATIVE — the direction that actually costs something. MUST be reported.
   return rows[i].some(Boolean);
 }
+export function objectLiteralLookup(status) {
+  // `{...}[status]` is an INDEX into an object literal — an unmatched `status`
+  // gives undefined and `.map` throws. The trailing `}` before the bracket was
+  // missing from the "this is a value" class, so this read as a plain array
+  // literal and went unreported. MUST be reported.
+  return { queued: [1, 2], sent: [3, 4] }[status].map((x) => x + 1);
+}

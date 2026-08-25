@@ -403,3 +403,39 @@ test("an illegal post id comes back as a sentence, not an unhandled rejection", 
   expect(res.ok).toBe(false);
   expect(res.message).toMatch(/illegal key/i);
 });
+
+// ── 8. THE RESET KEY HAS TO MOVE WHEN THE RECORD DOES ────────────────────────
+// A boundary that clears on `updatedAt` looks right and is not. The Mac mini
+// publisher writes results through `${POSTS}/${id}/results/${platform}` and
+// never touches updatedAt — so the field most likely to have been malformed is
+// exactly the one updatedAt is blind to. Style refs are worse: addedAt is
+// written once, so editing a bad `tags` could never have cleared the row.
+test("rowKey moves when a platform result changes, though updatedAt does not", async () => {
+  store.social_posts = { a: POST({ updatedAt: 100, results: { instagram: { state: "sending", attempts: 1 } } }) };
+  const before = (await loadPostsByStatus("draft")).posts[0];
+
+  // Exactly what recordResult does: one platform path, updatedAt untouched.
+  writePath("social_posts/a/results/instagram", { state: "ok", attempts: 1 });
+  const after = (await loadPostsByStatus("draft")).posts[0];
+
+  expect(after.updatedAt).toBe(before.updatedAt);   // the publisher did not move it
+  expect(after.rowKey).not.toBe(before.rowKey);     // but the row knows it changed
+});
+
+test("rowKey moves when a style reference's tags are edited, though addedAt does not", async () => {
+  store.social_style_refs = { r1: { url: "u", addedAt: 5, tags: ["bad"], enabled: true } };
+  const before = (await loadRefPage({})).refs[0];
+  await editStyleRef("r1", { tags: "fixed" });
+  const after = (await loadRefPage({})).refs[0];
+  expect(after.addedAt).toBe(before.addedAt);
+  expect(after.rowKey).not.toBe(before.rowKey);
+});
+
+test("rowKey is STABLE when nothing about the record changed", async () => {
+  store.social_posts = { a: POST({ updatedAt: 100 }) };
+  const first = (await loadPostsByStatus("draft")).posts[0];
+  const second = (await loadPostsByStatus("draft")).posts[0];
+  // Otherwise every poll would clear a genuinely-broken row's error and the
+  // boundary would churn instead of settling.
+  expect(second.rowKey).toBe(first.rowKey);
+});

@@ -61,14 +61,45 @@ import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./
 const POST_LISTS = ["media", "products", "refsUsed"];
 const REF_LISTS = ["tags"];
 
-function normaliseRecord(id, body, listFields) {
+// ── rowKey: DID THIS RECORD ACTUALLY CHANGE? ─────────────────────────────────
+// A row's error boundary clears itself when this value moves, so it has to move
+// whenever the record does. `updatedAt` alone does NOT: the Mac mini publisher
+// writes results through `${POSTS}/${id}/results/${platform}` (markSending and
+// recordResult in publish.mjs) and never touches updatedAt — only setStatus
+// does. So the field most likely to have been the malformed one is precisely
+// the field updatedAt is blind to, and a row broken by a bad `results` entry
+// would have stayed latched after the publisher fixed it.
+//
+// Style references are worse: `addedAt` is written once at creation and never
+// again, so editStyleRef — the very thing used to repair a bad `tags` — could
+// never have cleared the row.
+//
+// So the key is built from what each record's row actually reads. Cheap:
+// a short string over fields already in memory, no hashing, no serialising of
+// media bodies.
+const postRowKey = (b) => [
+  b.updatedAt || 0, b.status || "", b.kind || "", b.scheduledAt || 0,
+  asList(b.media).length, (b.caption || "").length,
+  Object.entries(b.results && typeof b.results === "object" ? b.results : {})
+    .sort(([x], [y]) => (x < y ? -1 : 1))
+    .map(([k, r]) => `${k}:${(r && r.state) || "?"}:${(r && r.attempts) || 0}`)
+    .join(","),
+].join("|");
+
+const refRowKey = (b) => [
+  b.addedAt || 0, b.enabled === true ? 1 : 0, (b.note || "").length,
+  asList(b.tags).join(","), b.thumbUrl || b.url || "",
+].join("|");
+
+function normaliseRecord(id, body, listFields, rowKeyOf) {
   const rec = { ...(body && typeof body === "object" ? body : {}), id };
   for (const f of listFields) rec[f] = asList(rec[f]);
+  rec.rowKey = rowKeyOf(rec);
   return rec;
 }
 
-export const normalisePost = (id, body) => normaliseRecord(id, body, POST_LISTS);
-export const normaliseRef = (id, body) => normaliseRecord(id, body, REF_LISTS);
+export const normalisePost = (id, body) => normaliseRecord(id, body, POST_LISTS, postRowKey);
+export const normaliseRef = (id, body) => normaliseRecord(id, body, REF_LISTS, refRowKey);
 
 export const POSTS_PATH = "social_posts";
 export const REFS_PATH = "social_style_refs";

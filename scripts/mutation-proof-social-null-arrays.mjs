@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const SUITES = [
   "src/utils/rtdbList.test.js",
   "src/components/social/socialNullArrays.test.jsx",
+  "scripts/sweepUnguardedArrayOps.test.mjs",
 ];
 
 const HELPER = "src/utils/rtdbList.js";
@@ -27,6 +28,7 @@ const STORE = "src/components/social/socialStore.js";
 const VIEW = "src/components/social/SocialView.jsx";
 const LIB = "src/components/social/StyleLibraryCard.jsx";
 const BOUNDARY = "src/components/social/RowBoundary.jsx";
+const SWEEP = "scripts/sweep-unguarded-array-ops.mjs";
 
 const MUTATIONS = [
   {
@@ -123,6 +125,24 @@ const MUTATIONS = [
     to: "    if (false && props.resetKey !== state.seenKey) return { error: null, seenKey: props.resetKey };",
   },
   {
+    name: "rowKey: fingerprint a post on updatedAt alone (blind to the publisher)",
+    file: STORE,
+    from: "const postRowKey = (b) => [\n  b.updatedAt || 0, b.status || \"\", b.kind || \"\", b.scheduledAt || 0,",
+    to: "const postRowKey = (b) => [\n  b.updatedAt || 0,\n].join(\"|\");\nconst unusedPostRowKey = (b) => [\n  b.updatedAt || 0, b.status || \"\", b.kind || \"\", b.scheduledAt || 0,",
+  },
+  {
+    name: "rowKey: fingerprint a style reference on addedAt alone (never moves)",
+    file: STORE,
+    from: "const refRowKey = (b) => [\n  b.addedAt || 0, b.enabled === true ? 1 : 0, (b.note || \"\").length,",
+    to: "const refRowKey = (b) => [\n  b.addedAt || 0,\n].join(\"|\");\nconst unusedRefRowKey = (b) => [\n  b.addedAt || 0, b.enabled === true ? 1 : 0, (b.note || \"\").length,",
+  },
+  {
+    name: "the sweep: drop `}` from the is-a-value class (object-literal index)",
+    file: SWEEP,
+    from: "    if (!/[\\w$)\\]}]/.test(prev) || KEYWORD_BEFORE_LITERAL.has(word))",
+    to: "    if (!/[\\w$)\\]]/.test(prev) || KEYWORD_BEFORE_LITERAL.has(word))",
+  },
+  {
     name: "the queue: drop the per-row boundary",
     file: VIEW,
     from: '        <RowBoundary key={p.id} recordId={p.id} label="post"',
@@ -151,7 +171,7 @@ const MUTATIONS = [
 // files and is killed by anything from a Ctrl-C to an OOM; the safe version of
 // "we restore it afterwards" is not needing to. Commit first — which is the
 // habit anyway, since a mutation run is only meaningful against a snapshot.
-const TARGETS = [HELPER, STORE, VIEW, LIB, BOUNDARY];
+const TARGETS = [HELPER, STORE, VIEW, LIB, BOUNDARY, SWEEP];
 const dirty = execSync(`git status --porcelain -- ${TARGETS.join(" ")}`, { encoding: "utf8" }).trim();
 if (dirty && !process.argv.includes("--allow-dirty")) {
   console.error("Refusing to run: these files have uncommitted changes.\n");

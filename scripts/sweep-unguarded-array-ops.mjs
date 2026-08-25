@@ -87,7 +87,10 @@ function receiverAt(line, dotIndex) {
       "return", "typeof", "of", "in", "case", "do", "else", "yield", "await",
       "new", "delete", "void", "instanceof",
     ]);
-    if (!/[\w$)\]]/.test(prev) || KEYWORD_BEFORE_LITERAL.has(word)) return { text: "[...]", guarded: true };
+    // `}` belongs in this class too: `{ queued: [1], sent: [2] }[status].map()`
+    // is an index into an object literal, and an unmatched `status` gives
+    // undefined. Leaving it out made that shape read as a plain array literal.
+    if (!/[\w$)\]}]/.test(prev) || KEYWORD_BEFORE_LITERAL.has(word)) return { text: "[...]", guarded: true };
     // Label it by the thing being indexed, not by 24 characters of whatever
     // happened to precede it.
     const base = (lead.match(/[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/) || ["?"])[0];

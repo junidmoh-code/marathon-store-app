@@ -454,7 +454,7 @@ function Queue({ notice, onNotice }) {
           record keeps every field and moves to the "discarded" filter, where
           it can be looked at rather than being lost. */}
       {asList(posts).map((p) => (
-        <RowBoundary key={p.id} recordId={p.id} label="post" resetKey={p.updatedAt || p.createdAt}
+        <RowBoundary key={p.id} recordId={p.id} label="post" resetKey={p.rowKey}
                      actionLabel="Discard it"
                      onAction={async () => { await discardPost(p.id); await onChanged(); }}>
           <PostRow post={p} onChanged={onChanged} onNotice={onNotice} />

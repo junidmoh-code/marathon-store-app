@@ -31,10 +31,18 @@ test("an INDEXED element is reported; an array literal and an optional call are 
   expect(out).toContain("rows[…].some()");
   expect(out).not.toContain("getPosts");
   expect(out).not.toContain("arrayLiteral");
-  // Exactly three findings across the fixture: the two unguarded shapes above
-  // plus the indexed element. Counting is what stops a future loosening from
-  // silently swallowing one of them.
-  expect(out).toContain("3 to look at");
+  // The fixture's finding COUNT is asserted in the object-literal test below,
+  // which is the one that owns the total. Counting is what stops a future
+  // loosening from silently swallowing one of them.
+});
+
+test("an index into an OBJECT literal is reported, not read as an array literal", () => {
+  // `{ queued: [1], sent: [2] }[status].map(...)` — the `}` before the bracket
+  // was missing from the class that says "a value is being indexed", so this
+  // whole shape read as a plain literal and the sweep stayed silent on it.
+  const { out } = run("scripts/fixtures/sweep/probes.js");
+  expect(out).toContain("[…].map()");
+  expect(out).toContain("4 to look at");
 });
 
 test("the social card itself sweeps clean, and a clean sweep exits 0", () => {
