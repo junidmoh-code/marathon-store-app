@@ -4421,7 +4421,13 @@ exports.socialDailyAutopilot = onSchedule(
     region: "europe-west1",
     secrets: [geminiApiKey, anthropicApiKey],
     memory: "1GiB",
-    timeoutSeconds: 540,
+    // Five sequential generations, each able to spend up to
+    // GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before the rest
+    // of its own work — worst case that is 900s+ before a single caption or
+    // upload has happened. 540s (the onCall generator's own ceiling, fine for
+    // a human-triggered run of at most 4) is not enough headroom for five
+    // run unattended, back to back. 1800s is the v2 onSchedule maximum.
+    timeoutSeconds: 1800,
   },
   async () => {
     if (!SOCIAL_AUTOPILOT_ENABLED) {
@@ -4447,7 +4453,7 @@ exports.socialDailyAutopilot = onSchedule(
     // AND older than the function's own timeout (with margin) is treated as
     // abandoned rather than in-progress — the same shape as the WhatsApp
     // outbox's and publish.mjs's own stale-claim reclaims.
-    const CLAIM_STALE_MS = 20 * 60 * 1000;   // 540s timeout + generous margin
+    const CLAIM_STALE_MS = 40 * 60 * 1000;   // the 1800s (30 min) timeout above, plus margin
     const claimRef = db.ref(`social_autopilot_log/${saDate}`);
     const claim = await claimRef.transaction((cur) => {
       if (cur === null) return { startedAt: nowMs };
