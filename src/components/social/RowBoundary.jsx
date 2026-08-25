@@ -22,9 +22,12 @@
 // hand-clicked "Try again" to clear it.
 //
 // `resetKey` fixes that: the caller passes something that changes when the
-// record's data changes — `updatedAt` is exactly that field — and a new value
-// clears the error and lets the row render itself again. If it renders fine,
-// the row is back. If it throws again, it is caught again, and nothing is lost.
+// record's data changes — the store's derived `rowKey`, NOT `updatedAt`, which
+// is blind to the per-platform `results/<platform>` writes the Mac mini
+// publisher makes and to editStyleRef, which never moves `addedAt`. See the
+// rowKey block in socialStore.js. A new value clears the error and lets the row
+// render itself again. If it renders fine, the row is back. If it throws again,
+// it is caught again, and nothing is lost.
 //
 // ── WHY THE AFFORDANCE IS PASSED IN ──────────────────────────────────────────
 // "Delete" means discardPost on a queue row and deleteStyleRef on a library

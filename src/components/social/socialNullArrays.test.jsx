@@ -306,7 +306,12 @@ test("retry reads results from the DATABASE, not from the screen's stale copy", 
     status: "failed",
     results: { instagram: { state: "sending" }, facebook: { state: "sending" } },
   });
-  store.social_posts = { a: { ...stale } };
+  // A DEEP copy. `{ ...stale }` shares the `results` object by reference, and
+  // writePath mutates it in place — so the "stale" caller copy would silently
+  // agree with the database and the test would prove nothing. Caught by review;
+  // the mutation that reverts retryPost to trusting the caller now fails HERE,
+  // which is the whole point of this test existing.
+  store.social_posts = { a: JSON.parse(JSON.stringify(stale)) };
   // What the publisher has since confirmed, straight into the database.
   writePath("social_posts/a/results/instagram", { state: "ok", id: "IG123" });
   writePath("social_posts/a/results/facebook", { state: "ok", id: "FB456" });
