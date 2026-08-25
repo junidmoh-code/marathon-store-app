@@ -96,8 +96,19 @@ mode flip). Per-size surviving lines:
 500-line stop condition → staggered. Day 1 (sizes 3/4/5/5.5, armed scoped) is
 WIDENED in place; the remaining six sizes land one per day, smallest first
 (11, 10, 9, 6, 7, 8). Creation is additionally throttled during rollout by
-`maxFootwearIntentsPerRun: 1` (≈28 lines released per window — inside the
-12-45 band; restore toward 25 as the warehouse clears the backlog).
+`maxFootwearIntentsPerRun: 2` (≈96 lines/day — the warehouse's clearing
+top-end; measured hub1 steady demand is ~38 sold cells/day). Restore to 25
+once the backlog drains (open hub1 queue under ~100): at 25 every new deficit
+raises on the next scan and replenishment latency equals the release-window
+cadence the reactive path always had. At 1 the backlog starves new sales for
+weeks and endangers Tomorrow promises — do not leave it there.
+
+**Single path (owner order, same day):** hub1 raises NO reactive lines — the
+on-hold writer, Missing Sneakers and the sale-driven rows are hub2-only now
+(`src/components/stock/reactiveRefillHubs.js`); the engine scan is the one
+requester for hub1. Parked needs (the source gate's refusals) render in every
+destination's own refill-queue detail as a read-only state — the same fix for
+hub2 clothing, which had the same invisibility.
 
 ---
 
