@@ -72,7 +72,7 @@ const intentsFor = (p, pid) => p.intents.filter((i) => i.productId === pid);
 test("A DISARMED GROUP RESOLVES NOTHING AND PRODUCES ZERO INTENTS", () => {
   const c = cfg({ armed: false });
   assert.equal(resolveTarget(ctx(c), "hub2", "sn1", "7"), null);
-  assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null);
+  assert.equal(categoryPolicyEntry(c, PRODUCTS, {}, "sn1", "hub2"), null);
   const p = plan(c);
   assert.equal(p.intents.length, 0, "a disarmed group must not produce a single intent");
 });
@@ -221,7 +221,7 @@ test("a HALF SIZE resolves — the map is keyed by the stored form, not the decl
 
 test("a per-size map is refused outside per-size mode and arms nothing", () => {
   const c = cfg({ armed: false, categoryPolicy: { sneakers: { hub2: { sizes: { 7: { target: 4, minQty: 2 } } } } } });
-  assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null);
+  assert.equal(categoryPolicyEntry(c, PRODUCTS, {}, "sn1", "hub2"), null);
   assert.equal(plan(c).intents.length, 0);
 });
 
@@ -229,14 +229,14 @@ test("both shapes at one location arm nothing — the conservative side", () => 
   const c = cfg({ armed: false, categoryPolicy: { sneakers: { perSize: true, hub2: {
     target: 5, minQty: 2, sizes: { 7: { target: 4, minQty: 2 } },
   } } } });
-  assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null);
+  assert.equal(categoryPolicyEntry(c, PRODUCTS, {}, "sn1", "hub2"), null);
 });
 
 test("a per-size map with no usable row arms nothing", () => {
   const c = cfg({ armed: false, categoryPolicy: { sneakers: { perSize: true, hub2: {
     sizes: { 7: { target: 0, minQty: 0 }, 8: { target: "5", minQty: 2 } },
   } } } });
-  assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null);
+  assert.equal(categoryPolicyEntry(c, PRODUCTS, {}, "sn1", "hub2"), null);
 });
 
 test('the "_" cell is never answered by a per-size map', () => {
@@ -268,13 +268,13 @@ test("a uniform per-size entry behaves exactly as it did", () => {
 test("a garbled group node arms nothing", () => {
   for (const groups of [null, "nope", 7, [], { "footwear-all": null }, { "footwear-all": { armed: true } }]) {
     const c = { ...cfg({ armed: true }), policyGroups: groups };
-    assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null, JSON.stringify(groups));
+    assert.equal(categoryPolicyEntry(c, PRODUCTS, {}, "sn1", "hub2"), null, JSON.stringify(groups));
   }
 });
 
 test("armed:'true' as a string does not arm — the flag is a boolean", () => {
   const c = cfg({ armed: true });
   c.policyGroups["footwear-all"].armed = "true";
-  assert.equal(categoryPolicyEntry(c, PRODUCTS, "sn1", "hub2"), null);
+  assert.equal(categoryPolicyEntry(c, PRODUCTS, {}, "sn1", "hub2"), null);
   assert.equal(plan(c).intents.length, 0);
 });

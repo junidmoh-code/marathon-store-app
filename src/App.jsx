@@ -82,9 +82,11 @@ import { displaySendNeedsSize } from "./utils/displaySend";
 import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
+import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock/tomorrowGate";
+import { readyPromisedByCell, cellAvailability } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -7765,7 +7767,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel }) {
+                            hubQty, servingHubLabel, sneakerOut }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
   // clothing catalog with live per-size availability at the serving CR hub
@@ -8119,7 +8121,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // Clothing: a size the serving hub has zero of is
                               // greyed/disabled here (hover quick-add has no room
                               // for the inline note — the quick-view carries it).
-                              const out = clothingOrder && hubQty(p.id, sz) <= 0;
+                              // Hub 1 sneakers: same disable from the shared
+                              // availability resolver (sneakerOut).
+                              const out = clothingOrder ? hubQty(p.id, sz) <= 0 : !!sneakerOut?.(p, sz);
                               return (
                                 <button key={sz} className="ad-sz" disabled={out}
                                   title={out ? `Not available at ${servingHubLabel}` : undefined}
@@ -8269,12 +8273,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     })()}
                     <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {sizesOf(qv).map(sz => {
-                        const out = clothingOrder && hubQty(qv.id, sz) <= 0;
+                        // Clothing keeps its note-raising tap; a Hub 1 sneaker
+                        // size with none available is simply not tappable (✕).
+                        const snkOut = !clothingOrder && !!sneakerOut?.(qv, sz);
+                        const out = clothingOrder ? hubQty(qv.id, sz) <= 0 : snkOut;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
                             style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" } : undefined}
-                            onClick={() => { if (out) { setQvNa({ size: sz, left: 0 }); return; } setQvNa(null); setQvSize(sz); }}>
-                            {sz === "Free Size" ? "One size" : formatSize(sz)}
+                            onClick={() => { if (out) { if (clothingOrder) setQvNa({ size: sz, left: 0 }); return; } setQvNa(null); setQvSize(sz); }}>
+                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
                           </button>
                         );
                       })}
@@ -8524,6 +8531,23 @@ function AssistantView({ products, onExit, orders = [] }) {
   const servingHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
   const servingHubCells = useStockCells(servingHub);   // { pid: { size: cell } }
   const hubQty = (pid, size) => Number(servingHubCells?.[pid]?.[size]?.qty) || 0;
+  // ── HUB 1 SNEAKER AVAILABILITY (2026-08-25) ───────────────────────────────
+  // The sneaker mirror of the clothing subscription above: sneaker orders
+  // sourcing from Hub 1 grey out (✕) sizes Hub 1 cannot supply, through the
+  // shared resolver (availabilityCore.js — clamped cell quantity minus the
+  // ready-order promises this device can see; displays count as stock). Same
+  // one-hub-subtree pattern and cost as servingHubCells (~474 KB at build
+  // time, noise against the ~3 TB/month total). `settled` gates the ✕ so a
+  // still-loading subtree can never blank a grid; store-scoped devices see
+  // only their own shop's /orders (rule-enforced), so the promised map is
+  // partial there — that errs toward showing availability, never a false ✕.
+  const hub1CellsState = useStockCellsState("hub1");
+  const productsById = useMemo(() => {
+    const m = {};
+    for (const p of products || []) if (p?.id) m[p.id] = p;
+    return m;
+  }, [products]);
+  const hub1Promised = useMemo(() => readyPromisedByCell(orders, "hub1", productsById), [orders, productsById]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that
   // store's warehouse→shop transfer (order.destShop). A single mis-tap here
@@ -8715,6 +8739,19 @@ function AssistantView({ products, onExit, orders = [] }) {
     return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
   };
 
+  // ── THE HUB 1 GRID GATE (2026-08-25) ──────────────────────────────────────
+  // A sneaker size Hub 1 has none available of renders as ✕ — not tappable, no
+  // order line, no note. HUB 1 ONLY: hub2-routed sneakers (and everything at
+  // Pine/hub3) keep exactly yesterday's behaviour, pinned by test. The gate
+  // opens only once the subtree has settled, and never on a read error.
+  const sneakerServedByHub1 = (p) =>
+    (p?.productType || "sneaker") !== "clothing" && computeHubForItem({ product: p }) === "hub1";
+  const sneakerAvail = (pid, size) =>
+    cellAvailability({ cells: hub1CellsState.cells, promised: hub1Promised, productId: pid, size });
+  const sneakerOut = (p, s) =>
+    sneakerServedByHub1(p) && hub1CellsState.settled && !hub1CellsState.error
+    && !!s && sneakerAvail(p.id, s) <= 0;
+
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
   // (name/phone/WhatsApp) when it's a sneaker OR a clothing line tagged
@@ -8759,6 +8796,10 @@ function AssistantView({ products, onExit, orders = [] }) {
     }
     // Sneakers: size is optional when a Display Partner request is set.
     if (!pendingSize && !pendingDisplayPartner) return;
+    // Hub 1 availability belt: the grid already renders an unavailable size as
+    // a disabled ✕, but a size selected BEFORE the stock moved (sheet left
+    // open) must not order into nothing either.
+    if (pendingSize && !pendingDisplayPartner && sneakerOut(selected, pendingSize)) { setPendingSize(""); return; }
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
     // line). Display Partner rows ignore qty (one-off by nature).
@@ -8790,6 +8831,10 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (isClothingCustomer) {
       reps = Math.min(reps, Math.max(0, hubQty(p.id, size) - clothingInCart(p.id, size)));
       if (reps <= 0) return 0;
+    } else if (size && sneakerOut(p, size)) {
+      // Hub 1 sneaker with none available — same refusal the grid's ✕ makes,
+      // enforced here too so a stale hover panel can't add past it.
+      return 0;
     }
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
@@ -9147,7 +9192,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -9546,15 +9591,18 @@ function AssistantView({ products, onExit, orders = [] }) {
               {selectedSizes.map(s => {
                 // Clothing sizes the serving hub has ZERO of are greyed out and
                 // not selectable — tapping one raises the note above instead of
-                // silently ordering into nothing. Sneakers are untouched (their
-                // availability lives with the warehouse, not a single CR hub).
-                const out = (selected.productType || "sneaker") === "clothing" && hubQty(selected.id, s) <= 0;
+                // silently ordering into nothing. Hub 1 sneakers get the same
+                // treatment from the shared availability resolver (✕, truly
+                // not tappable); hub2/hub3 sneakers stay untouched.
+                const clothing = (selected.productType || "sneaker") === "clothing";
+                const out = clothing ? hubQty(selected.id, s) <= 0 : sneakerOut(selected, s);
                 return (
-                  <button key={s} onClick={() => { if (out) { setNaNote({ size: s, left: 0 }); return; } setNaNote(null); setPendingSize(s); }}
+                  <button key={s} disabled={out && !clothing}
+                    onClick={() => { if (out) { if (clothing) setNaNote({ size: s, left: 0 }); return; } setNaNote(null); setPendingSize(s); }}
                     style={out
                       ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
                       : { padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
-                    <SizeTag size={s} />
+                    <SizeTag size={s} />{out && !clothing ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
                   </button>
                 );
               })}
@@ -9795,6 +9843,59 @@ const WH_TAB_ICON = {
 };
 
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
+// ─── THE TOMORROW ACTION, DATA-DRIVEN (2026-08-25) ───────────────────────────
+// One button per warehouse row where "Schedule for Tomorrow" used to be. The
+// label comes from a one-time single-cell read of Central's availability for
+// this order's product+size (via tomorrowGate.js — never a subtree read, cost
+// note there): Central holds some → the Tomorrow promise is offered; Central
+// holds none → the row offers "Out of stock" instead, and taking it sends the
+// out-of-stock outcome automatically (the existing updateStatus path — OOS
+// WhatsApp, insight row, hold-release — nothing new).
+//
+// THE TAP RE-CHECKS the same cell FRESH, so a screen left open cannot send a
+// promise that has expired: an expired Tomorrow converts SILENTLY to
+// out-of-stock, and a stale "Out of stock" whose stock reappeared converts to
+// the Tomorrow promise — one action, outcome decided by the data at the tap.
+// An unresolvable row (no productId/size, unreadable cell) keeps today's
+// Tomorrow behaviour — fail-open, because a false OOS wrongly messages the
+// customer while a false Tomorrow merely keeps the human's own promise.
+function TomorrowActionButton({ order, onOutcome }) {
+  // sentSize is what physically left when a substitute was sent; the promise
+  // (and the refill request updateStatus raises) draws on the same cell.
+  const gateSize = order.sentSize ?? order.size ?? null;
+  const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
+  const [busy, setBusy]   = useState(false);
+  useEffect(() => {
+    let on = true;
+    fetchCentralAvailability(order.productId, gateSize).then((a) => { if (on) setAvail(a); });
+    return () => { on = false; };
+  }, [order.productId, gateSize]);
+  const offersOOS = avail !== undefined && avail !== null && avail <= 0;
+  const tap = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const fresh = await fetchCentralAvailability(order.productId, gateSize, { fresh: true });
+      setAvail(fresh);
+      onOutcome(tomorrowTapOutcome(fresh));
+    } finally { setBusy(false); }
+  };
+  return (
+    <button onClick={tap} disabled={busy}
+            title={offersOOS ? "Central has none of this size — this will mark the order out of stock" : undefined}
+            style={offersOOS
+              ? { padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor: busy ? "wait" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(150,20,20,.15)", border:"1px solid rgba(180,40,40,.25)", color:"#FF6B6B", opacity: busy ? .6 : 1 }
+              : { padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor: busy ? "wait" : "pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.2)", color:"#4A7FFF", opacity: busy ? .6 : 1 }}>
+      {offersOOS ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      )}
+      {offersOOS ? "Out of stock" : "Schedule for Tomorrow"}
+    </button>
+  );
+}
+
 function WarehouseView({ products = [], orders, onExit }) {
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
   const [filter, setFilter] = useState("incoming");
@@ -11049,11 +11150,8 @@ function WarehouseView({ products = [], orders, onExit }) {
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             Mark as Out of Stock
                           </button>
-                          <button onClick={() => updateStatus(order, STATUS.COMING_TOMORROW)}
-                                  style={{ padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:5, background:"rgba(60,110,255,.08)", border:"1px solid rgba(60,110,255,.2)", color:"#4A7FFF" }}>
-                            <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            Schedule for Tomorrow
-                          </button>
+                          <TomorrowActionButton order={order}
+                            onOutcome={(kind) => updateStatus(order, kind === "out_of_stock" ? STATUS.OUT_OF_STOCK : STATUS.COMING_TOMORROW)} />
                           <button onClick={() => subAvailable && setPickerOpenId(order.id)}
                                   disabled={!subAvailable}
                                   title={subAvailable ? "" : "No valid substitute size in range"}

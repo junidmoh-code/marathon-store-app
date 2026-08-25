@@ -275,7 +275,7 @@ describe("armedLocations agrees with the ENGINE, shape for shape", () => {
     for (const entry of SHAPES) {
       const mine = armedLocations(entry);
       const theirs = ["hub2", "trophy"].filter((loc) =>
-        categoryPolicyEntry({ categoryPolicy: { cat: entry } }, products, "p1", loc) !== null);
+        categoryPolicyEntry({ categoryPolicy: { cat: entry } }, products, {}, "p1", loc) !== null);
       if (JSON.stringify(mine) !== JSON.stringify(theirs)) {
         disagreed.push({ entry, card: mine, engine: theirs });
       }
