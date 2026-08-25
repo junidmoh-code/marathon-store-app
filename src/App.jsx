@@ -7,6 +7,7 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
+import { isDeactivated, orderSizeOut, REACTIVATED_EVENT } from "./utils/deactivation";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
@@ -8106,7 +8107,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       <Photo p={p} />
                     </div>
                     <div className="ad-body">
-                      <div className="ad-name">{p.name}</div>
+                      <div className="ad-name">{p.name}
+                        {isDeactivated(p) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, letterSpacing: ".06em", padding: "2px 6px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
+                      </div>
                       <div className="ad-crow">
                         {priced ? <span className="ad-price">{fmtR(p.retailPrice)}</span> : <span className="ad-price no">No price set</span>}
                         <span className="ad-szn">{szs.length} size{szs.length !== 1 ? "s" : ""}</span>
@@ -8122,11 +8125,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // greyed/disabled here (hover quick-add has no room
                               // for the inline note — the quick-view carries it).
                               // Hub 1 sneakers: same disable from the shared
-                              // availability resolver (sneakerOut).
-                              const out = clothingOrder ? hubQty(p.id, sz) <= 0 : !!sneakerOut?.(p, sz);
+                              // availability resolver (sneakerOut), composed
+                              // with the deactivation/clothing rule (#445).
+                              const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz) })
+                                || (!clothingOrder && !!sneakerOut?.(p, sz));
                               return (
                                 <button key={sz} className="ad-sz" disabled={out}
-                                  title={out ? `Not available at ${servingHubLabel}` : undefined}
+                                  title={out ? (isDeactivated(p) ? "Deactivated — finished line" : `Not available at ${servingHubLabel}`) : undefined}
                                   style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" } : undefined}
                                   onClick={e => {
                                     e.stopPropagation(); if (out) return;
@@ -8242,7 +8247,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
             </div>
             <div className="ad-svbody">
               <div>
-                <div className="ad-svname">{qv.name}</div>
+                <div className="ad-svname">{qv.name}
+                  {isDeactivated(qv) && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, letterSpacing: ".06em", padding: "2px 7px", borderRadius: 6, background: "rgba(150,160,190,.18)", border: "1px solid rgba(150,160,190,.4)", color: "#B9C0D4", verticalAlign: "middle" }}>DEACTIVATED</span>}
+                </div>
                 {typeof qv.retailPrice === "number" && qv.retailPrice > 0
                   ? <div className="ad-svprice" style={{ marginTop: 6 }}>{fmtR(qv.retailPrice)}</div>
                   : <div style={{ marginTop: 6, color: "rgba(233,238,255,.35)", fontWeight: 700 }}>No price set</div>}
@@ -8256,11 +8263,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         more than the hub can still cover. Live: recomputes
                         remaining (hub minus cart) every render and hides once
                         more is addable than when it was raised. */}
-                    {clothingOrder && qvNa && (() => {
+                    {(clothingOrder || isDeactivated(qv)) && qvNa && (() => {
                       const have = hubQty(qv.id, qvNa.size);
                       const rem = have - clothingInCart(qv.id, qvNa.size);
-                      if (rem > qvNa.left) return null;
-                      const text = have <= 0
+                      // Deactivation is not a stock condition — its note never
+                      // self-hides on availability.
+                      if (!isDeactivated(qv) && rem > qvNa.left) return null;
+                      const text = isDeactivated(qv)
+                        ? `${qv.name} is deactivated — a finished line. Its sizes can't be ordered.`
+                        : have <= 0
                         ? `Size ${formatSize(qvNa.size)} isn't available at ${servingHubLabel} right now — it can't be ordered.`
                         : rem <= 0
                           ? `Your cart already has all ${have} of size ${formatSize(qvNa.size)} that ${servingHubLabel} holds.`
@@ -8273,16 +8284,17 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     })()}
                     <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {sizesOf(qv).map(sz => {
-                        // Clothing keeps its note-raising tap; a Hub 1 sneaker
-                        // size with none available is simply not tappable (✕).
-                        // The Display Partner toggle lifts it — a partner
-                        // request exists to ask for what Hub 1 lacks.
-                        const snkOut = !clothingOrder && !qvDP && !!sneakerOut?.(qv, sz);
-                        const out = clothingOrder ? hubQty(qv.id, sz) <= 0 : snkOut;
+                        // Clothing (and a deactivated line, #445) keeps its
+                        // note-raising tap; a Hub 1 sneaker size with none
+                        // available is simply not tappable (✕). The Display
+                        // Partner toggle lifts the ✕ — a partner request
+                        // exists to ask for what Hub 1 lacks.
+                        const snkOut = !clothingOrder && !qvDP && !isDeactivated(qv) && !!sneakerOut?.(qv, sz);
+                        const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz) }) || snkOut;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
                             style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" } : undefined}
-                            onClick={() => { if (out) { if (clothingOrder) setQvNa({ size: sz, left: 0 }); return; } setQvNa(null); setQvSize(sz); }}>
+                            onClick={() => { if (out) { if (clothingOrder || isDeactivated(qv)) setQvNa({ size: sz, left: 0 }); return; } setQvNa(null); setQvSize(sz); }}>
                             {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
                           </button>
                         );
@@ -8892,6 +8904,18 @@ function AssistantView({ products, onExit, orders = [] }) {
     // Affirm the destination shop once per shop-session (see PLACEMENT
     // DESTINATION GUARD). The modal's confirm re-invokes with bypass=true.
     if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeOrders(true) }); return; }
+    // Submit-time deactivation guard — the stale-cart window: the size chips
+    // grey out live, but a line added BEFORE someone tapped Deactivate would
+    // otherwise place. The freshest record wins (the live /products
+    // subscription), falling back to the cart's own copy.
+    {
+      const dead = cart.filter(isCustomerLine)
+        .find((item) => isDeactivated(resolveProductById(item.product.id) || item.product));
+      if (dead) {
+        alert(`${dead.product.name} was deactivated — a finished line. Remove it from the cart to place the rest.`);
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
@@ -9582,7 +9606,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                     </div>
                   : <div style={{ fontSize:"2.8rem" }}>{selected.photo}</div>}
                 <div>
-                  <div style={{ fontWeight:"700", fontSize:"1.05rem" }}>{selected.name}</div>
+                  <div style={{ fontWeight:"700", fontSize:"1.05rem" }}>{selected.name}
+                    {isDeactivated(selected) && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, letterSpacing: ".06em", padding: "2px 6px", borderRadius: 6, background: "rgba(150,160,190,.2)", border: "1px solid rgba(150,160,190,.45)", color: "#7A8194", verticalAlign: "middle" }}>DEACTIVATED</span>}
+                  </div>
                   <div style={{ color:"#555", fontSize:"0.8rem" }}>{selected.category}</div>
                 </div>
               </div>
@@ -9596,12 +9622,16 @@ function AssistantView({ products, onExit, orders = [] }) {
                 than the hub can still cover. Live: it recomputes remaining
                 (hub qty minus cart) every render and hides the moment more
                 stock is actually addable than when it was raised. */}
-            {(selected.productType || "sneaker") === "clothing" && naNote && (() => {
+            {((selected.productType || "sneaker") === "clothing" || isDeactivated(selected)) && naNote && (() => {
               const have = hubQty(selected.id, naNote.size);
               const rem = have - clothingInCart(selected.id, naNote.size);
-              if (rem > naNote.left) return null;
+              // A deactivated product's note never self-hides on stock — stock
+              // is not the reason its sizes are blocked.
+              if (!isDeactivated(selected) && rem > naNote.left) return null;
               const label = HUB_LABELS[servingHub] || servingHub;
-              const text = have <= 0
+              const text = isDeactivated(selected)
+                ? `${selected.name} is deactivated — a finished line. Its sizes can't be ordered.`
+                : have <= 0
                 ? `Size ${formatSize(naNote.size)} isn't available at ${label} right now — it can't be ordered.`
                 : rem <= 0
                   ? `Your cart already has all ${have} of size ${formatSize(naNote.size)} that ${label} holds.`
@@ -9618,20 +9648,21 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // not selectable — tapping one raises the note above instead of
                 // silently ordering into nothing. Hub 1 sneakers get the same
                 // treatment from the shared availability resolver (✕, truly
-                // not tappable); hub2/hub3 sneakers stay untouched.
+                // not tappable); hub2/hub3 sneakers stay untouched, and the
+                // deactivation rule (#445) disables everywhere. A Display
+                // Partner request EXISTS to ask for what Hub 1 lacks (it
+                // becomes a request, not a pull), so the partner toggle lifts
+                // the ✕ — the addToCart belt has the same exemption.
                 const clothing = (selected.productType || "sneaker") === "clothing";
-                // A Display Partner request EXISTS to ask for what Hub 1 lacks
-                // (it becomes a request, not a pull), so the partner toggle
-                // lifts the ✕ — the addToCart belt has the same exemption.
-                const out = clothing ? hubQty(selected.id, s) <= 0
-                  : (!pendingDisplayPartner && sneakerOut(selected, s));
+                const snkOut = !clothing && !pendingDisplayPartner && !isDeactivated(selected) && sneakerOut(selected, s);
+                const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s) }) || snkOut;
                 return (
-                  <button key={s} disabled={out && !clothing}
-                    onClick={() => { if (out) { if (clothing) setNaNote({ size: s, left: 0 }); return; } setNaNote(null); setPendingSize(s); }}
+                  <button key={s} disabled={snkOut}
+                    onClick={() => { if (out) { if (clothing || isDeactivated(selected)) setNaNote({ size: s, left: 0 }); return; } setNaNote(null); setPendingSize(s); }}
                     style={out
                       ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
                       : { padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
-                    <SizeTag size={s} />{out && !clothing ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                    <SizeTag size={s} />{snkOut ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
                   </button>
                 );
               })}
@@ -16737,6 +16768,38 @@ function PrivacyPage() {
 // ─── PWA: update banner + install prompts ────────────────────────────────────
 // Listens for the custom events main.jsx dispatches on SW updates and the
 // Android beforeinstallprompt capture. iOS prompt is detection-based.
+// ── REACTIVATION NOTICE — "receiving stock woke this product up" ─────────────
+// applyMovement auto-reactivates a deactivated product on any stock arrival
+// and fires REACTIVATED_EVENT (src/utils/deactivation.js). This one global
+// banner is how EVERY receive surface — restock, transfers in, returns,
+// positive adjustments, count reviews — says so plainly on screen without each
+// caller opting in. Auto-dismisses; tapping dismisses sooner.
+function ReactivationNotice() {
+  const [notice, setNotice] = useState(null);
+  useEffect(() => {
+    let timer = null;
+    const on = (e) => {
+      const pid = e?.detail?.productId;
+      const p = pid ? resolveProductById(pid) : null;
+      setNotice({ name: p?.name || "A deactivated product" });
+      clearTimeout(timer);
+      timer = setTimeout(() => setNotice(null), 8000);
+    };
+    window.addEventListener(REACTIVATED_EVENT, on);
+    return () => { window.removeEventListener(REACTIVATED_EVENT, on); clearTimeout(timer); };
+  }, []);
+  if (!notice) return null;
+  return (
+    <div onClick={() => setNotice(null)} role="status"
+         style={{ position:"fixed", bottom:18, left:"50%", transform:"translateX(-50%)", zIndex:10000,
+                  maxWidth:"min(92vw, 480px)", background:"#173B2A", border:"1px solid rgba(74,222,128,.55)",
+                  color:"#C9F3D8", borderRadius:14, padding:"12px 16px", fontSize:13.5, fontWeight:600,
+                  boxShadow:"0 4px 18px rgba(0,0,0,.45)", cursor:"pointer" }}>
+      ▶ {notice.name} was deactivated — receiving stock reactivated it automatically. Refills and ordering resume.
+    </div>
+  );
+}
+
 function PWAUpdateBanner() {
   const [show, setShow] = useState(false);
   useEffect(() => {
@@ -17794,6 +17857,7 @@ function AppInner() {
   return (
     <>
       <PWAUpdateBanner />
+      <ReactivationNotice />
       {showClockWarning && <ClockWarningBanner />}
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}

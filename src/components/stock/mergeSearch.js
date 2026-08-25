@@ -67,6 +67,7 @@ import { productIsFootwear } from "../../utils/footwearLine.js";
 import { isMergedAway } from "../../utils/mergedProducts.js";
 import { nameMatchesQuery, codeMatchesQuery } from "../../utils/productSearch.js";
 import { searchTermsFor } from "../../utils/labelIdentity.js";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 /** The products this picker may offer as the survivor. Uncapped. */
 export function mergeTargetPool(products, loser) {
@@ -152,6 +153,9 @@ export function displayName(product) {
 /** What the row shows when there is no usable name — never a blank card. */
 export function rowLabel(product) {
   const name = displayName(product);
-  if (name) return name;
-  return `(no name — id ${product && product.id ? String(product.id) : "unknown"})`;
+  // A deactivated product STAYS findable here — merging a finished line into
+  // its twin is exactly what the Leftovers flow needs — but it must say so.
+  const mark = isDeactivated(product) ? " · deactivated" : "";
+  if (name) return name + mark;
+  return `(no name — id ${product && product.id ? String(product.id) : "unknown"})${mark}`;
 }

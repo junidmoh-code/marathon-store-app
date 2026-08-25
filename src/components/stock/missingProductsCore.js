@@ -22,6 +22,7 @@
 // sizes sort numerically after them instead of tying at 99 and rendering in
 // arbitrary map order (12/13 would otherwise land anywhere).
 import { sizeRank } from "./hubSizeRank";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 const STORES = ["marathon-pe", "trophy"];
 
@@ -108,6 +109,11 @@ export function computeMissingProducts({ allStock, products } = {}) {
     // own list (missingFootwearCore); everything else stays out until the owner
     // asks for it (see the isPerfume note on why the gate is this narrow).
     if (!isClothing(p) && !isPerfume(p)) continue;
+    // Finished lines take no requests and no Solve — same guard as the
+    // footwear twin. Without it, Solve here would seed qty-0 cells that no
+    // arrival ever follows, so nothing would auto-reactivate: the exact
+    // "seed, vanish, never refill" divergence the mirror comments warn about.
+    if (isDeactivated(p)) continue;
     const ce = sumAt("central", pid), h2 = sumAt("hub2", pid);
     const carriedDownstream = carries("marathon-pe", pid) || carries("trophy", pid);
     let source = null, kind = null;

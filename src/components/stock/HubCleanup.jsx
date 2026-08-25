@@ -46,7 +46,7 @@ import { buildLinkSuggestions, codeSuggestions, TIER_SCORES } from "../../utils/
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
-  buildLeftovers, locationsHolding, registrationProgress, realSizes,
+  buildLeftovers, buildFinishedLines, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
   DISPLAY_STORES, DISPLAY_STORE_LABELS,
@@ -57,8 +57,9 @@ import {
   recordUnresolvedScan, lookupBarcode, loadAllStock, loadDuplicateCandidates,
   fetchProductFollowingMerge, lookupStyleClaim, matchLabelAlias, addLabelAlias,
   answerStyleCodeSibling, lookupCodeAlias, resolveAnyCodes, recordLabelCodes, unresolvedScanKey,
-  fetchColourwayAnswers, recordColourwayAnswer,
+  fetchColourwayAnswers, recordColourwayAnswer, deactivateProduct, reactivateProduct,
 } from "./hubCleanupStore";
+import { deactivationLine } from "../../utils/deactivation.js";
 import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
 import {
   extractDominantColours, orderByColourAffinity, selectByColourAffinity, matchColourwayAnswers,
@@ -968,6 +969,35 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   // refresh keeps the list on screen and says so beside it.
   const leftoversUnknown = !identity.ready;
 
+  // Finished lines (zero stock everywhere, cells at this hub) and the
+  // Deactivated list — same live inputs as `leftovers`, so a deactivation
+  // moves a card between sections the moment /products echoes the write.
+  const finishedLines = useMemo(() => {
+    if (!hubStock || !identity.ready || !allStock) return [];
+    return buildFinishedLines({ hub, products, hubStock, registered, allStock, identityMap: identity.map });
+  }, [hub, products, hubStock, registered, allStock, identity.map, identity.ready]);
+  const deactivatedRows = useMemo(
+    () => buildDeactivatedRows({ products, allStock }),
+    [products, allStock]);
+  // One tap each way. No confirm dialog by design — the action is reversible
+  // in one tap, and the flash says what happened and what it means.
+  const doDeactivate = useCallback(async (product) => {
+    setBusy(true);
+    try {
+      const res = await deactivateProduct(product.id);
+      if (res.ok) flash("ok", `${product.name} deactivated — no refills, not orderable. Reactivate below, or receive stock into it.`);
+      else flash("err", `Could not deactivate: ${res.reason || "unknown"}`);
+    } finally { setBusy(false); }
+  }, [flash]);
+  const doReactivate = useCallback(async (product) => {
+    setBusy(true);
+    try {
+      const res = await reactivateProduct(product.id);
+      if (res.ok) flash("ok", `${product.name} is active again — refills and ordering resume.`);
+      else flash("err", `Could not reactivate: ${res.reason || "unknown"}`);
+    } finally { setBusy(false); }
+  }, [flash]);
+
   const refreshAfterMerge = useCallback(async () => {
     setMerge(null);
     setPanel(null);
@@ -1463,8 +1493,103 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                   onClick={async () => { await ensureAllStock().catch(() => {}); setMerge({ loser: product, other: null }); }}>
                   ⇄ Merge into another product…
                 </BigButton>
+                {/* One tap, reversible, never a delete: the finished-line exit.
+                    The card leaves this list (buildLeftovers skips deactivated)
+                    and reappears in the Deactivated section below with its
+                    stock chips — a deactivated product holding stock is never
+                    invisible. */}
+                <div style={{ marginTop: 8 }}>
+                  <BigButton tone="ghost" disabled={busy} onClick={() => doDeactivate(product)}>
+                    ⏸ Deactivate — finished line, stop refills &amp; ordering
+                  </BigButton>
+                </div>
               </div>
             ))}
+
+            {/* ── FINISHED LINES — zero stock everywhere, cells at this hub ──
+                The census gap: sold-to-zero unregistered footwear appears in no
+                list, yet its empty cells still arm the engine. This is what the
+                deactivate action is FOR. */}
+            {allStock && !leftoversUnknown && finishedLines.length > 0 && (
+              <>
+                <div style={{ marginTop: 18, fontSize: 14, fontWeight: 800, color: AMBER }}>
+                  Finished lines · {finishedLines.length}
+                </div>
+                <div style={{ fontSize: 12.5, color: GRAY, marginTop: -6 }}>
+                  No stock at any location, never registered — the refill engine still watches their empty
+                  cells. Deactivate the ones that are done.
+                </div>
+                {finishedLines.map(({ product }) => (
+                  <div key={product.id}
+                       style={{ background: "rgba(12,16,30,.75)", border: "1px dashed rgba(255,196,107,.4)", borderRadius: 18, padding: 16 }}>
+                    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
+                        <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>Zero stock everywhere</div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                      <BigButton tone="ghost" disabled={busy} onClick={() => doDeactivate(product)}>
+                        ⏸ Deactivate — finished line, stop refills &amp; ordering
+                      </BigButton>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* ── DEACTIVATED — the visibility guarantee ──────────────────────
+                Every deactivated product, stock-holders first with location
+                chips: deactivated stock can never be silently lost. One tap
+                reactivates; receiving stock reactivates automatically too. */}
+            {/* Gated on allStock like Finished lines: rendered earlier, every
+                row would read units:0 / no chips — a stock-holder would LOOK
+                empty, the exact impression this section exists to prevent. */}
+            {allStock && deactivatedRows.length > 0 && (
+              <>
+                <div style={{ marginTop: 18, fontSize: 14, fontWeight: 800, color: GRAY }}>
+                  Deactivated · {deactivatedRows.length}
+                </div>
+                <div style={{ fontSize: 12.5, color: GRAY, marginTop: -6 }}>
+                  No refills, sizes not orderable. Receiving stock into one reactivates it automatically
+                  (a merge does not — tap Reactivate).
+                </div>
+                {deactivatedRows.map(({ product, units, locations }) => (
+                  <div key={product.id}
+                       style={{ background: "rgba(12,16,30,.55)", border: "1px solid rgba(150,160,190,.25)", borderRadius: 18, padding: 16, opacity: .92 }}>
+                    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 15.5, fontWeight: 800, color: "#D7DCEF", lineHeight: 1.25 }}>{product.name}</div>
+                        <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>{deactivationLine(product)}</div>
+                        {units > 0 && (
+                          <div style={{ fontSize: 12.5, fontWeight: 700, color: AMBER, marginTop: 3 }}>
+                            Still holds {units} unit{units !== 1 ? "s" : ""} — reactivate or move it
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {locations.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, margin: "10px 0 0" }}>
+                        {locations.map(({ loc, qty }) => (
+                          <span key={loc} style={{ fontSize: 12.5, fontWeight: 800, padding: "6px 10px", borderRadius: 10,
+                                                   fontVariantNumeric: "tabular-nums",
+                                                   background: "rgba(255,196,107,.1)", border: "1px solid rgba(255,196,107,.35)", color: "#FFD9A0" }}>
+                            {labelFor(loc, registry)} · {qty}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ marginTop: 10 }}>
+                      <BigButton tone="green" disabled={busy} onClick={() => doReactivate(product)}>
+                        ▶ Reactivate
+                      </BigButton>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
       </div>
