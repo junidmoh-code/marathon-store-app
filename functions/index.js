@@ -4367,18 +4367,99 @@ exports.generateSocialPosts = onCall(
 // everything upstream and downstream of it is exactly as strict as it is for
 // a post Junid approved with his thumb.
 //
-// Runs once, early, at 06:00 SAST — well before the first content slot (the
-// reel at 08:00) — so a slow generation still finishes before anything is due.
-const REEL_HOUR_SAST = 8;
-const PHOTO_HOUR_SAST = 11;             // the same hour the manual Generate tab uses
-const STORY_HOURS_SAST = [9, 13, 17];
+// Runs once, early, at 06:00 SAST — well before the earliest a policy could
+// reasonably schedule anything — so a slow generation still finishes before
+// anything is due.
+//
+// WHAT TO MAKE AND WHEN comes from /social_policy (Junid's Policy tab in the
+// Social screen), read fresh on every run — see loadSocialPolicy below. These
+// are its defaults, used only when nothing has ever been saved there, so the
+// autopilot was never depending on that screen existing to run at all.
+const DEFAULT_POLICY_TIMES = {
+  reels: ["08:00"],
+  photos: ["11:00"],
+  stories: ["09:00", "13:00", "17:00"],
+};
+// A safety ceiling on what a saved policy can ask for, independent of
+// whatever the UI itself enforces — the UI is a courtesy, this is the actual
+// gate. Five sequential generations already needed the 1800s timeout raised
+// from 540s (see below); MAX_ITEMS_PER_DAY keeps a fat-fingered "20 stories a
+// day" from turning into a function that can never finish in one run, or a
+// real bill nobody meant to authorise. Matches PolicyCard.jsx's own limits.
+const MAX_ITEMS_PER_FORMAT = 6;
+// 8, not a rounder number: at GEMINI_FETCH_TIMEOUT_MS (180s) worst case per
+// item, 8 in a row is 1440s inside the function's own 1800s ceiling, with
+// 360s left over for every caption, upload and DB write in the run. 12 would
+// have been able to reach 2160s worst case — past the timeout the function
+// itself cannot exceed.
+const MAX_ITEMS_PER_DAY = 8;
 // Kinds worth an unattended run. NOT "new_arrivals" — some days have nothing
-// genuinely new, and that would burn one of five slots on a skip every time.
-// Rotated by day (see kindFor below) so the week does not read as five copies
-// of the same shape; "single" is used directly for two of the three stories
-// because a story is glanced at for two seconds and one hero product reads
-// fastest there.
+// genuinely new, and that would burn a slot on a skip every time. Rotated by
+// day (see kindFor below) so the week does not read as identical copies of
+// the same shape. Reels and photos rotate through these; every story uses
+// "single" directly — a story is glanced at for two seconds, and one hero
+// product reads fastest there.
 const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
+
+/**
+ * The saved policy, or the built-in defaults if nothing has been saved.
+ * Every list is clamped to MAX_ITEMS_PER_FORMAT and the whole thing to
+ * MAX_ITEMS_PER_DAY (dropping from the END of whichever list is largest,
+ * logged rather than silently trimmed) — the UI enforces the same ceilings,
+ * but a record edited by hand or saved before a UI change tightened them
+ * must not be trusted past what this function can actually finish in one run.
+ */
+async function loadSocialPolicy(db) {
+  const snap = await db.ref("social_policy").once("value");
+  const v = snap.val();
+  const raw = v
+    ? {
+        reels: asRtdbList(v.reels?.times),
+        photos: asRtdbList(v.photos?.times),
+        stories: asRtdbList(v.stories?.times),
+      }
+    : DEFAULT_POLICY_TIMES;
+
+  const clamped = {};
+  for (const key of ["reels", "photos", "stories"]) {
+    clamped[key] = raw[key].slice(0, MAX_ITEMS_PER_FORMAT);
+  }
+  let total = clamped.reels.length + clamped.photos.length + clamped.stories.length;
+  // Trim the largest list first if the combined total is still over budget —
+  // fair, and it means one runaway format cannot starve the other two down
+  // to nothing while staying under its own per-format cap.
+  while (total > MAX_ITEMS_PER_DAY) {
+    const biggest = ["reels", "photos", "stories"].reduce((a, b) => (clamped[b].length > clamped[a].length ? b : a));
+    clamped[biggest].pop();
+    total--;
+  }
+  if (total < clamped.reels.length + clamped.photos.length + clamped.stories.length) {
+    console.warn(`socialDailyAutopilot: saved policy exceeded MAX_ITEMS_PER_DAY (${MAX_ITEMS_PER_DAY}) — trimmed`);
+  }
+  return clamped;
+}
+
+// RTDB cannot store an empty array — a format with zero posts a day is
+// written as an absent `times` key, which comes back as `undefined`/`null`
+// here, not `[]`. Treated as zero, not as "nothing was ever configured";
+// loadSocialPolicy is what decides whether to fall back to the defaults.
+function asRtdbList(v) {
+  if (Array.isArray(v)) return v;
+  if (v && typeof v === "object") return Object.values(v);
+  return [];
+}
+
+/** "08:00" -> { hour: 8, minute: 0 }. Malformed input falls back to noon
+ * rather than throwing — a bad saved value must still produce SOME slot,
+ * visibly wrong and fixable in the queue, not a crashed run that makes
+ * nothing at all. */
+function parseHHMM(s) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || "").trim());
+  if (!m) return { hour: 12, minute: 0 };
+  const hour = Math.min(23, Math.max(0, Number(m[1])));
+  const minute = Math.min(59, Math.max(0, Number(m[2])));
+  return { hour, minute };
+}
 
 // SAST is UTC+2 with no DST, so this conversion is a constant everywhere the
 // social engine computes a slot from a wall-clock SAST hour. Imported from
@@ -4397,18 +4478,18 @@ function sastMidnightUtc(fromMs, dayOffset) {
 }
 
 /**
- * The next occurrence of `hour` SAST at or after `fromMs`, skipping any
- * timestamp already in `taken`.
+ * The next occurrence of `hour:minute` SAST at or after `fromMs`, skipping
+ * any timestamp already in `taken`.
  *
  * `taken` exists because this is the ONE place scheduledAt is assigned
  * without going through assignSlots' own taken-set: a manual Generate-tab
  * run earlier the same day (Junid can generate a story before 06:00) could
- * otherwise claim the exact same 09:00/11:00/etc timestamp this function
- * independently computes, and the publisher's next tick would send both.
+ * otherwise claim the exact same policy timestamp this function independently
+ * computes, and the publisher's next tick would send both.
  */
-function nextHourSlot(fromMs, hour, taken = new Set()) {
+function nextHourSlot(fromMs, hour, minute = 0, taken = new Set()) {
   for (let d = 0; d < 14; d++) {
-    const slot = sastMidnightUtc(fromMs, d) + hour * 3600000;
+    const slot = sastMidnightUtc(fromMs, d) + hour * 3600000 + minute * 60000;
     if (slot >= fromMs && !taken.has(slot)) return slot;
   }
   return null;   // exhausted two weeks of the same hour — a bug, not real load
@@ -4421,12 +4502,14 @@ exports.socialDailyAutopilot = onSchedule(
     region: "europe-west1",
     secrets: [geminiApiKey, anthropicApiKey],
     memory: "1GiB",
-    // Five sequential generations, each able to spend up to
-    // GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before the rest
-    // of its own work — worst case that is 900s+ before a single caption or
-    // upload has happened. 540s (the onCall generator's own ceiling, fine for
-    // a human-triggered run of at most 4) is not enough headroom for five
-    // run unattended, back to back. 1800s is the v2 onSchedule maximum.
+    // Up to MAX_ITEMS_PER_DAY (8) sequential generations, each able to spend
+    // up to GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before
+    // the rest of its own work — worst case that is 1440s before the LAST
+    // caption or upload has even started. 540s (the onCall generator's own
+    // ceiling, fine for a human-triggered run of at most 4) was nowhere near
+    // enough for this run unattended, back to back. 1800s is the v2
+    // onSchedule maximum, and MAX_ITEMS_PER_DAY is sized to fit inside it
+    // with real margin — see that constant's own comment.
     timeoutSeconds: 1800,
   },
   async () => {
@@ -4473,9 +4556,12 @@ exports.socialDailyAutopilot = onSchedule(
     try {
       const style = "house";
       const platforms = { instagram: true, facebook: true, tiktok: false };
-      const { candidates, styleKit, library, signal } = await loadSocialGenerationContext(db, { nowMs, style });
-      // Shared across all five so the day's reel and its story never pick the
-      // exact same product — see generateOnePost's header.
+      const [{ candidates, styleKit, library, signal }, policy] = await Promise.all([
+        loadSocialGenerationContext(db, { nowMs, style }),
+        loadSocialPolicy(db),
+      ]);
+      // Shared across every request so the day's reel and its story never
+      // pick the exact same product — see generateOnePost's header.
       const used = new Set();
       const dayIndex = Math.floor(nowMs / 86400000);
       const kindFor = (offset) => AUTOPILOT_KINDS[(dayIndex + offset) % AUTOPILOT_KINDS.length];
@@ -4483,29 +4569,31 @@ exports.socialDailyAutopilot = onSchedule(
       // ── DO NOT DOUBLE-BOOK A SLOT A MANUAL RUN ALREADY TOOK ─────────────────
       // A manual Generate-tab run earlier the same morning (or a previous,
       // reclaimed autopilot attempt on this same date) could already have
-      // claimed one of today's five hours. nextHourSlot walks forward to the
-      // next FREE occurrence of that hour instead of colliding with it — the
-      // same principle assignSlots uses for the daily feed post, applied here
-      // because this is the one path that assigns scheduledAt without going
-      // through assignSlots itself.
+      // claimed one of today's policy hours. nextHourSlot walks forward to
+      // the next FREE occurrence of that time instead of colliding with it —
+      // the same principle assignSlots uses for the daily feed post, applied
+      // here because this is the one path that assigns scheduledAt without
+      // going through assignSlots itself.
       const existingForSlots = [];
       for (const s of ["draft", "approved", "posting"]) {
         const snap = await db.ref(SOCIAL_POSTS_PATH).orderByChild("status").equalTo(s).limitToLast(100).once("value");
         for (const p of Object.values(snap.val() || {})) existingForSlots.push(p);
       }
       const taken = new Set(existingForSlots.map((p) => Number(p && p.scheduledAt)).filter((n) => Number.isFinite(n)));
-      const claimSlot = (hour) => {
-        const slot = nextHourSlot(nowMs, hour, taken);
-        if (slot) taken.add(slot);   // this run's own five must not collide with each other either
+      const claimSlot = (hhmm) => {
+        const { hour, minute } = parseHHMM(hhmm);
+        const slot = nextHourSlot(nowMs, hour, minute, taken);
+        if (slot) taken.add(slot);   // this run's own requests must not collide with each other either
         return slot;
       };
 
+      // reels and photos rotate through AUTOPILOT_KINDS for variety; every
+      // story is "single" — see the constant's own comment for why.
+      let kindOffset = 0;
       const requests = [
-        { kind: kindFor(0), format: "reel", scheduledAt: claimSlot(REEL_HOUR_SAST) },
-        { kind: kindFor(1), format: "feed", scheduledAt: claimSlot(PHOTO_HOUR_SAST) },
-        { kind: "single", format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[0]) },
-        { kind: kindFor(2), format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[1]) },
-        { kind: "single", format: "story", scheduledAt: claimSlot(STORY_HOURS_SAST[2]) },
+        ...policy.reels.map((t) => ({ kind: kindFor(kindOffset++), format: "reel", scheduledAt: claimSlot(t) })),
+        ...policy.photos.map((t) => ({ kind: kindFor(kindOffset++), format: "feed", scheduledAt: claimSlot(t) })),
+        ...policy.stories.map((t) => ({ kind: "single", format: "story", scheduledAt: claimSlot(t) })),
       ];
 
       const created = [], skipped = [];

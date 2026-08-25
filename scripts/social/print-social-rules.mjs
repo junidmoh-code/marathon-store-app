@@ -66,7 +66,7 @@ const PERM = (key) =>
   `root.child('users').child(auth.uid).child('permFlags').child('${key}').val() === true`;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PART 1 — the two new social keys
+// PART 1 — the three new social keys
 // ─────────────────────────────────────────────────────────────────────────────
 const socialRules = {
   social_posts: {
@@ -109,6 +109,19 @@ const socialRules = {
       addedAt: { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000" },
       $other: { ".validate": true },
     },
+  },
+  // The daily-rhythm policy — read by the Policy tab and by
+  // socialDailyAutopilot (functions/index.js, Admin SDK, bypasses this rule
+  // entirely). No hasChildren requirement on purpose: "0 reels a day" is a
+  // legitimate policy, and RTDB cannot store an empty array — a format with
+  // no times that day means its `times` key, and therefore that whole format
+  // key, is simply ABSENT (see storedList()/asList() in socialStore.js), not
+  // present-but-empty. A structural requirement here would refuse the exact
+  // state "turn a format off" is supposed to produce.
+  social_policy: {
+    ".read": READ,
+    ".write": SOCIAL_WRITE,
+    $other: { ".validate": true },
   },
 };
 
@@ -203,7 +216,7 @@ if (rule) {
   the repo file does not, and either would delete them.
 
 ────────────────────────────────────────────────────────────────────────────
-  PART 1 — ADD these two NEW keys, alongside "shopify_publish"
+  PART 1 — ADD these three NEW keys, alongside "shopify_publish"
 ────────────────────────────────────────────────────────────────────────────
 ${body(socialRules)}
 

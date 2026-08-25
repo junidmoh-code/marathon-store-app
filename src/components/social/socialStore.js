@@ -103,6 +103,12 @@ export const normaliseRef = (id, body) => normaliseRecord(id, body, REF_LISTS, r
 
 export const POSTS_PATH = "social_posts";
 export const REFS_PATH = "social_style_refs";
+// The daily-rhythm policy: how many reels/photos/stories a day and at what
+// SAST times. Read by the browser's Policy tab and by socialDailyAutopilot
+// (functions/index.js) — the ONE thing that actually acts on it. A missing
+// node means the function's own built-in defaults, not a broken feature; see
+// DEFAULT_POLICY_TIMES below, which mirrors functions/index.js's own default.
+export const POLICY_PATH = "social_policy";
 // Style-reference media and generated post media both live under the Storage
 // prefix the AI Studio Style Kit already owns. That is deliberate and it is
 // the reason no Storage rule is owed for this feature: `aiStudio/{allPaths=**}`
@@ -166,28 +172,61 @@ export async function loadPostsByStatus(status) {
 }
 
 /**
- * How many posts are waiting for Junid — the one number the home tab and the
- * filter chips actually need.
- *
- * ── WHY THIS IS NOT "counts for every status" ───────────────────────────────
- * The obvious version asks loadPostsByStatus once per status and takes
- * `.length`. That downloads up to POSTS_PER_STATUS FULL BODIES per status —
- * captions, media URL lists, product arrays, per-platform results — for five
- * statuses, on every open of the queue AND after every single write, purely to
- * render five small numbers. Up to a thousand bodies to count to five. It is
- * exactly the read shape the rest of this file is built to avoid, and the
- * Firebase bandwidth bill is what notices.
- *
- * So only the DRAFT count is fetched, because "waiting for you" is the number
- * that changes a decision. Every other chip shows its count only while it is
- * the selected filter, where the page has already loaded those posts for free.
- *
- * Draft is also the smallest set by construction: a draft is either approved or
- * discarded within days, whereas "posted" grows forever.
+ * A queue TAB's worth of posts — one or more statuses folded into one list,
+ * newest first, bounded per status the same way loadPostsByStatus is. A tab
+ * like "Approved" (statuses: ["approved", "posting"]) runs one indexed query
+ * per status and merges, rather than one unindexed scan; RTDB has no "status
+ * in [...]" query, so this is the bounded shape that stays possible.
  */
-export async function loadDraftCount() {
-  const { posts, truncated } = await loadPostsByStatus("draft");
-  return { count: posts.length, truncated };
+export async function loadPostsByStatuses(statuses) {
+  const pages = await Promise.all(asList(statuses).map((s) => loadPostsByStatus(s)));
+  const posts = pages.flatMap((p) => p.posts).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return { posts, truncated: pages.some((p) => p.truncated) };
+}
+
+// ── THE DAILY-RHYTHM POLICY ──────────────────────────────────────────────────
+// One small node, one reader that matters: functions/index.js's
+// socialDailyAutopilot reads this every morning to decide how many reels,
+// photos and stories to make and at what SAST times. Mirrored here — NOT the
+// same values enforced by any test, unlike the schedule-slot constants — so a
+// drift between this pre-fill and the function's own fallback is cosmetic
+// (a slightly wrong suggestion on first load) rather than load-bearing. The
+// number that actually governs anything is whatever is SAVED in RTDB.
+export const DEFAULT_POLICY_TIMES = {
+  reels: ["08:00"],
+  photos: ["11:00"],
+  stories: ["09:00", "13:00", "17:00"],
+};
+
+/** Read the policy, or the defaults above if nothing has been saved yet. */
+export async function loadSocialPolicy() {
+  const snap = await get(ref(database, POLICY_PATH));
+  const v = snap.val();
+  return {
+    reels: asList(v?.reels?.times),
+    photos: asList(v?.photos?.times),
+    stories: asList(v?.stories?.times),
+  };
+}
+
+/**
+ * Save the whole policy in one write. `times` fields go through storedList()
+ * so a format with zero posts a day (an empty list) is written down as an
+ * explicit "none" rather than silently vanishing — see the file header's
+ * empty-list rule.
+ */
+export async function saveSocialPolicy({ reels, photos, stories }) {
+  try {
+    await update(ref(database, POLICY_PATH), {
+      reels: { times: storedList(reels) },
+      photos: { times: storedList(photos) },
+      stories: { times: storedList(stories) },
+      ...stamp(),
+    });
+    return { ok: true };
+  } catch (err) {
+    return writeError(err);
+  }
 }
 
 // ── POSTS: WRITE ─────────────────────────────────────────────────────────────

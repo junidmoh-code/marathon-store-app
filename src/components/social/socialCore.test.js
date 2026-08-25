@@ -176,13 +176,30 @@ describe("an unconfirmed send is never blind-retried", () => {
 describe("the Sending state is visible to a person", () => {
   // A post claimed by a run that then died sat in "posting" — a state with no
   // tab, so it appeared in NO list and nothing ever looked at it again.
-  it("posting is a queue filter", () => {
-    expect(QUEUE_FILTERS.map((f) => f.key)).toContain("posting");
+  // "posting" no longer has its OWN tab (it folds into Approved, see the
+  // comment on QUEUE_FILTERS), but it must still be reachable through one.
+  it("posting is reachable through a queue filter", () => {
+    const allStatuses = QUEUE_FILTERS.flatMap((f) => f.statuses);
+    expect(allStatuses).toContain("posting");
   });
 
   it("every status a post can hold has somewhere to be seen", () => {
-    const filters = new Set(QUEUE_FILTERS.map((f) => f.key));
-    for (const s of STATUSES) expect(filters.has(s), `status "${s}" has no queue tab`).toBe(true);
+    const covered = new Set(QUEUE_FILTERS.flatMap((f) => f.statuses));
+    for (const s of STATUSES) expect(covered.has(s), `status "${s}" has no queue tab`).toBe(true);
+  });
+
+  it("every filter key is unique and every status appears in exactly one filter", () => {
+    // Two tabs both claiming "failed" would double-count it in one and hide it
+    // in the other depending on load order — the mapping must be a partition.
+    const keys = QUEUE_FILTERS.map((f) => f.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    const seen = new Set();
+    for (const f of QUEUE_FILTERS) {
+      for (const s of f.statuses) {
+        expect(seen.has(s), `status "${s}" appears in more than one filter`).toBe(false);
+        seen.add(s);
+      }
+    }
   });
 
   it("a stale claim threshold exists and is longer than any real run", () => {

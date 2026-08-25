@@ -496,3 +496,61 @@ describe("the schedule slots match the browser's", () => {
     assert.match(plist, /<key>StartInterval<\/key><integer>\d+<\/integer>/, "the plist should declare a tick interval");
   });
 });
+
+describe("the autopilot's policy-driven time slots (nextHourSlot, parseHHMM)", () => {
+  // Re-implemented from the same constants as functions/index.js, the same
+  // way the schedule-slots block above does — a change to either side that
+  // is not mirrored fails one of these.
+  const SAST = 2 * 3600000, DAYMS = 86400000;
+  function sastMidnightUtc(fromMs, dayOffset) {
+    const startDay = Math.floor((fromMs + SAST) / DAYMS);
+    return (startDay + dayOffset) * DAYMS - SAST;
+  }
+  function nextHourSlot(fromMs, hour, minute = 0, taken = new Set()) {
+    for (let d = 0; d < 14; d++) {
+      const slot = sastMidnightUtc(fromMs, d) + hour * 3600000 + minute * 60000;
+      if (slot >= fromMs && !taken.has(slot)) return slot;
+    }
+    return null;
+  }
+  function parseHHMM(s) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || "").trim());
+    if (!m) return { hour: 12, minute: 0 };
+    const hour = Math.min(23, Math.max(0, Number(m[1])));
+    const minute = Math.min(59, Math.max(0, Number(m[2])));
+    return { hour, minute };
+  }
+
+  test("a saved '09:30' lands at 09:30 SAST, today if still ahead", () => {
+    // 2026-08-25 08:00 UTC = 10:00 SAST — 09:30 has already passed today.
+    const { hour, minute } = parseHHMM("09:30");
+    const slot = nextHourSlot(Date.UTC(2026, 7, 25, 8, 0), hour, minute);
+    assert.equal(new Date(slot).toISOString(), "2026-08-26T07:30:00.000Z", "should roll to tomorrow's 09:30 SAST");
+  });
+
+  test("a saved '09:30' lands today when the time has not passed yet", () => {
+    // 2026-08-25 05:00 UTC = 07:00 SAST — 09:30 is still ahead today.
+    const { hour, minute } = parseHHMM("09:30");
+    const slot = nextHourSlot(Date.UTC(2026, 7, 25, 5, 0), hour, minute);
+    assert.equal(new Date(slot).toISOString(), "2026-08-25T07:30:00.000Z");
+  });
+
+  test("a taken slot is skipped to the next day's occurrence of the same time", () => {
+    const fromMs = Date.UTC(2026, 7, 25, 5, 0);
+    const first = nextHourSlot(fromMs, 9, 30);
+    const second = nextHourSlot(fromMs, 9, 30, new Set([first]));
+    assert.notEqual(first, second);
+    assert.equal(second - first, DAYMS);
+  });
+
+  test("a malformed saved time falls back to noon rather than throwing", () => {
+    assert.deepEqual(parseHHMM("nonsense"), { hour: 12, minute: 0 });
+    assert.deepEqual(parseHHMM(""), { hour: 12, minute: 0 });
+    assert.deepEqual(parseHHMM(null), { hour: 12, minute: 0 });
+  });
+
+  test("an out-of-range saved time is clamped, not refused", () => {
+    assert.deepEqual(parseHHMM("23:75"), { hour: 23, minute: 59 });
+    assert.deepEqual(parseHHMM("30:10"), { hour: 23, minute: 10 });
+  });
+});

@@ -161,20 +161,28 @@ export const needsVideo = (post) => formatOf(post) === "reel";
 export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "discarded"];
 
 // What the QUEUE shows, in tab order. "All" is deliberately absent — a list
-// with no state is a list nobody reads.
+// with no state is a list nobody reads. Four tabs, not six: "posting" and
+// "failed" used to be their own pills, which is correct in principle (every
+// status a post can hold needs somewhere it can be SEEN — see the test this
+// file is pinned against) but read as clutter for two states that are both,
+// in practice, brief or rare. So each folds into the tab it belongs beside
+// instead of disappearing:
+//
+//   posting  → folds into Approved. It is an approved post the publisher has
+//              claimed for a few seconds; the row's own status chip still
+//              says "posting…" so nothing is hidden, and a claim the
+//              publisher never finishes reclaims itself back to "approved"
+//              (publish.mjs reclaimStaleClaims) — it was never a state that
+//              needed permanent parking, only visibility, and it still has
+//              that inside the tab it now shares.
+//   failed   → folds into Discarded, which is already "not currently active,
+//              needs a look" — exactly what a failed post is. "Put back in
+//              the queue" still works from inside that tab.
 export const QUEUE_FILTERS = [
-  { key: "draft", label: "Waiting for you" },
-  { key: "approved", label: "Approved" },
-  // "posting" is a tab, not an invisible internal state. A run killed mid-post
-  // (a reboot, launchctl unload, an RTDB blip) leaves its item claimed, and
-  // with no tab for it the item was in NO list — not approved, not posted, not
-  // failed — and nothing ever looked at it again. The publisher now reclaims
-  // stale claims itself, but a state the machine can be in must still be a
-  // state a person can SEE.
-  { key: "posting", label: "Sending" },
-  { key: "posted", label: "Posted" },
-  { key: "failed", label: "Failed" },
-  { key: "discarded", label: "Discarded" },
+  { key: "draft", label: "Drafts", statuses: ["draft"] },
+  { key: "approved", label: "Approved", statuses: ["approved", "posting"] },
+  { key: "posted", label: "Posted", statuses: ["posted"] },
+  { key: "discarded", label: "Discarded", statuses: ["discarded", "failed"] },
 ];
 
 // How long a claim may stand before the next run treats it as abandoned and
