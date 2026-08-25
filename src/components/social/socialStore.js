@@ -26,6 +26,15 @@
 // `scheduledAt` to; a set() here would erase a send result that had just
 // landed, and a set() there would erase an edit Junid had just made.
 //
+// ── THE EMPTY-LIST RULE ──────────────────────────────────────────────────────
+// RTDB cannot store an empty array: writing `[]` deletes the key, and so does
+// removing a list's last child. So every list field here goes IN through
+// storedList() — which turns empty into an explicit null, written down in the
+// source instead of silently dropped — and comes OUT through asList() in the
+// read functions below, so nothing this file returns ever has a null where the
+// screen expects an array. utils/rtdbList.js carries the full reasoning,
+// including why a sentinel row would be worse than an absent key.
+//
 // ── RULES ────────────────────────────────────────────────────────────────────
 // Both nodes are NEW top-level paths and the live database has no root rule,
 // so until the console rules are pasted every read and write here is refused.
@@ -39,6 +48,7 @@ import {
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
+import { asList, storedList, storedMap } from "../../utils/rtdbList";
 import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./socialCore";
 
 export const POSTS_PATH = "social_posts";
@@ -204,7 +214,10 @@ export async function retryPost(postId, post = null) {
     if (r.state === "ok" || r.state === "sending") { next[key] = r; continue; }
     next[key] = null;   // errored or skipped: forget it and let it try again
   }
-  return writePost(postId, { status: "draft", results: next, needsCheck: null });
+  // storedMap: an EMPTY `next` means every recorded result was errored and is
+  // being forgotten, which is a deliberate delete of the subtree — not the
+  // accidental one an `{}` slipped into update() would perform unannounced.
+  return writePost(postId, { status: "draft", results: storedMap(next), needsCheck: null });
 }
 
 /**
@@ -259,11 +272,11 @@ export async function setPlatforms(postId, platforms) {
 
 /** Drop one media item from a post (a generated frame Junid does not want). */
 export async function setMedia(postId, media) {
-  const clean = (Array.isArray(media) ? media : [])
+  const clean = asList(media)
     .filter((m) => m && typeof m.url === "string" && m.url.trim())
     .slice(0, MAX_MEDIA);
   if (!clean.length) return { ok: false, message: "A post needs at least one image or video." };
-  return writePost(postId, { media: clean });
+  return writePost(postId, { media: storedList(clean) });
 }
 
 async function writePost(postId, fields) {
@@ -424,7 +437,9 @@ export async function addStyleRef(file, { note = "", tags = [], thumbBlob = null
       thumbPath: thumbBlob ? thumbPath : null,
       type: isVideo ? "video" : "image",
       note: String(note || "").trim().slice(0, REF_NOTE_MAX),
-      tags: parseTags(Array.isArray(tags) ? tags.join(",") : tags),
+      // storedList, not the bare array: no tags is an EXPLICIT null here
+      // rather than an `[]` the database silently drops. See utils/rtdbList.js.
+      tags: storedList(parseTags(Array.isArray(tags) ? tags.join(",") : tags)),
       enabled: true,
       addedAt: serverNowMs(),
       by: auth.currentUser ? auth.currentUser.email || auth.currentUser.uid : null,
@@ -438,7 +453,7 @@ export async function addStyleRef(file, { note = "", tags = [], thumbBlob = null
 export async function editStyleRef(refId, { note, tags, enabled } = {}) {
   const fields = {};
   if (note !== undefined) fields.note = String(note || "").trim().slice(0, REF_NOTE_MAX);
-  if (tags !== undefined) fields.tags = parseTags(Array.isArray(tags) ? tags.join(",") : tags);
+  if (tags !== undefined) fields.tags = storedList(parseTags(Array.isArray(tags) ? tags.join(",") : tags));
   if (enabled !== undefined) fields.enabled = enabled === true;
   if (!Object.keys(fields).length) return { ok: true };
   try {
@@ -477,7 +492,7 @@ export async function deleteStyleRef(entry) {
 // lands as a DRAFT like everything else: this function cannot create an
 // approved post, and that is the point.
 export async function createManualPost({ media, caption, link = "", platforms, scheduledAt, kind = "single" }) {
-  const clean = (Array.isArray(media) ? media : []).filter((m) => m && m.url).slice(0, MAX_MEDIA);
+  const clean = asList(media).filter((m) => m && m.url).slice(0, MAX_MEDIA);
   if (!clean.length) return { ok: false, message: "Attach at least one image or video." };
   const sel = {};
   for (const k of PLATFORM_KEYS) sel[k] = platforms?.[k] === true;
@@ -489,12 +504,13 @@ export async function createManualPost({ media, caption, link = "", platforms, s
     await update(node, {
       status: "draft",
       kind,
-      media: clean,
+      media: storedList(clean),
       caption: text.slice(0, CAPTION_MAX),
       link: String(link || ""),
       platforms: sel,
       scheduledAt: Number(scheduledAt) || null,
-      products: [],
+      // A hand-made post has no products. That is an absent key, written down.
+      products: storedList([]),
       generatedBy: "manual",
       createdAt: serverNowMs(),
       ...stamp(),
