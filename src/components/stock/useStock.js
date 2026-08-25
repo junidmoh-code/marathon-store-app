@@ -102,6 +102,19 @@ export function useStockCells(locationId) {
   }, [val, locationId]);
 }
 
+// useStockCells with the settled/error states a GATING caller needs. The shop
+// ordering grid greys out sneaker sizes Hub 1 has none of — and MUST NOT grey
+// anything while the subtree is still loading (an unsettled {} would X every
+// size of every product for the first paint), so the gate keys on `settled`.
+export function useStockCellsState(locationId) {
+  const st = usePathState(locationId ? `stock/${locationId}` : null);
+  const cells = useMemo(() => {
+    if (!st.value || !locationId) return {};
+    return decodeByProduct(st.value);
+  }, [st.value, locationId]);
+  return { cells, settled: st.settled, error: st.error };
+}
+
 // /stock_movements -> array sorted newest-first. Optionally filter by productId.
 export function useMovements(productId) {
   const val = usePath("stock_movements");

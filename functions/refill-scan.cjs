@@ -289,17 +289,24 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
       errors.push(`satisfied pass hit its time budget — ${deferred} withdrawal(s) defer to the next scan`);
       break;
     }
-    const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
-    const already = consumed.get(cellKey) || 0;
-    try {
-      const live = (await db.ref(`stock/${s.dest}/${s.pid}/${s.sizeKey}/qty`).once("value")).val();
-      if (!(Math.max(Number(live) || 0, 0) >= already + s.qty)) { stale++; continue; }
-    } catch {
-      // Read failed — we cannot prove the units are still there, so we do not
-      // cancel. The next scan re-decides from truth.
-      stale++; continue;
+    // DEACTIVATED-PRODUCT withdrawals carry no stock condition — the request
+    // is cancelled because the product is a finished line, not because units
+    // arrived — so the live-cell proof below has nothing to verify and would
+    // wrongly mark every one of them stale (the cell is empty by definition).
+    // The status transaction still guards against a request resolved meanwhile.
+    if (!s.deactivated) {
+      const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
+      const already = consumed.get(cellKey) || 0;
+      try {
+        const live = (await db.ref(`stock/${s.dest}/${s.pid}/${s.sizeKey}/qty`).once("value")).val();
+        if (!(Math.max(Number(live) || 0, 0) >= already + s.qty)) { stale++; continue; }
+      } catch {
+        // Read failed — we cannot prove the units are still there, so we do not
+        // cancel. The next scan re-decides from truth.
+        stale++; continue;
+      }
+      consumed.set(cellKey, already + s.qty);
     }
-    consumed.set(cellKey, already + s.qty);
     try {
       const res = await db.ref(`refill_requests/${s.refillId}`).transaction((cur) => {
         // NULL-TOLERANT (the #199 lesson): the first pass runs against the cold
@@ -314,8 +321,11 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
           resolvedAt: startedAt,
           cancelReason: s.cancelReason,
           // The audit trail a human needs to believe the withdrawal: what the
-          // cell held at the moment the engine decided the ask was met.
-          satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty },
+          // cell held at the moment the engine decided the ask was met — or,
+          // for a finished line, the fact that deactivation is the reason.
+          ...(s.deactivated
+            ? { deactivatedProduct: true }
+            : { satisfiedBy: { location: s.dest, onHand: s.have, requested: s.qty } }),
         };
       });
       if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;

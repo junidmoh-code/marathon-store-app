@@ -199,6 +199,20 @@ function isFootwear(product) {
   return product?.category === "Footwear";
 }
 
+// ── Is this product DEACTIVATED? ─────────────────────────────────────────────
+// A finished line, retired reversibly from the Leftovers tab (owner spec
+// 2026-08-25). One truthy check on the record the snapshot already carries —
+// lockstep twin of src/utils/deactivation.js isDeactivated. The guard lives at
+// the TOP of resolveTarget, above the explicit-row branch, so neither a stale
+// /stock_targets row, a category policy, nor a kill switch can re-arm a
+// deactivated product; a null target also flips needGone in the reconcile
+// pass, withdrawing any in-flight request as no_longer_needed. Receiving stock
+// clears the flag (applyMovement auto-reactivates), so the engine resumes
+// without a scan ever having to know why.
+function isDeactivated(product) {
+  return !!(product && product.deactivated);
+}
+
 // Store carries a product if the stock node exists (regardless of qty).
 // Zero-qty cells persist indefinitely (applyMovement never deletes cells), so
 // node presence is a reliable assortment indicator even after sellouts.
@@ -390,7 +404,19 @@ function subcategoryRun(config, products, pid, dest) {
 // The return shape gains `sizes`. Everything that only tests this function for
 // truthiness (managedPids, the class filter, the decision gate) is unaffected;
 // sizesFor and categoryPolicyTarget read it.
-function categoryPolicyEntry(config, products, pid, dest) {
+//
+// ═══ carriedOnly — THE CARRIAGE SCOPE GATE (2026-08-25) ══════════════════════
+// A location entry may carry `carriedOnly: true`, scoping the policy at that
+// location to products it ALREADY HOLDS A STOCK CELL FOR (storeCarries — the
+// same cell-presence test the footwear and clothing rules use). This is the
+// one choke point: managedPids, sizesFor, the class filter, the decision gate
+// and categoryPolicyTarget all resolve through here, so gating here gates them
+// all identically — a consumer that bypassed it would re-open the exact flood
+// the flag exists to close (a per-size sneaker policy at Hub 1 without it arms
+// ~1,245 products; scoped, ~260). `stock` joins the signature for that reason.
+// Absent flag = the map's standing promise, unchanged: the category is the
+// arming act, carriage or not (the perfume case above).
+function categoryPolicyEntry(config, products, stock, pid, dest) {
   const key = products?.[pid]?.categoryKey;
   if (typeof key !== "string" || !key) return null;
   // target must be a positive finite number — the entry arms; the computed
@@ -400,8 +426,10 @@ function categoryPolicyEntry(config, products, pid, dest) {
   // passes it arms nothing either.
   const r = locationPolicyFor(config, key, dest);
   if (!r) return null;
+  if (r.carriedOnly && !storeCarries(stock, dest, pid)) return null;
   return { target: r.target, reorderPoint: r.reorderPoint, minQty: r.minQty,
-    perSize: r.perSize, sizes: r.sizes, policySource: r.source, groupKey: r.groupKey };
+    perSize: r.perSize, sizes: r.sizes, carriedOnly: r.carriedOnly === true,
+    policySource: r.source, groupKey: r.groupKey };
 }
 
 // Units of one size across EVERY location — the per-size dead-size test.
@@ -414,7 +442,7 @@ function sizeUnitsAnywhere(stock, pid, size) {
 }
 
 function categoryPolicyTarget(config, products, stock, dest, pid, size) {
-  const entry = categoryPolicyEntry(config, products, pid, dest);
+  const entry = categoryPolicyEntry(config, products, stock, pid, dest);
   if (!entry) return null;
   const rp = entry.reorderPoint;
   const shape = (target, minQty, reorderPoint) => ({
@@ -465,6 +493,9 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
 }
 
 function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+  // Deactivated products resolve NOTHING — before the explicit row, so no
+  // stored policy of any kind can raise a request for a finished line.
+  if (isDeactivated(products?.[pid])) return null;
   const explicit = targets?.[dest]?.[pid]?.[encodeSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -976,6 +1007,21 @@ function computeRefillPlan(snapshot) {
     for (const [id, r] of openRows) {
       const dest = r.requestingLocation;
       const sizeKey = encodeSizeKey(r.size);
+      // A DEACTIVATED product's lock-less request is withdrawn REGARDLESS of
+      // stock (CodeRabbit, PR #445): these rows (Missing Footwear, the on-hold
+      // "coming tomorrow" writer) carry no engine lock, so the reconcile
+      // loop's needGone can never reach them, and the satisfied path below
+      // demands covering stock a finished line will never receive. Stock proof
+      // is waived — `deactivated: true` tells the apply pass to skip its
+      // live-cell re-check (there is no cell condition to verify).
+      if (isDeactivated(products?.[r.productId])) {
+        satisfiedClosures.push({
+          refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
+          qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed",
+          deactivated: true,
+        });
+        continue;
+      }
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so
       // a future route change can never turn "not loaded" into "not needed".
@@ -1050,7 +1096,7 @@ function computeRefillPlan(snapshot) {
     const catOn = config?.categoryPolicy && typeof config.categoryPolicy === "object";
     if (!ruleOn && !footOn && !catOn) return out;
     for (const [pid, p] of Object.entries(products || {})) {
-      if (catOn && categoryPolicyEntry(config, products, pid, dest)) { out.add(pid); continue; }
+      if (catOn && categoryPolicyEntry(config, products, stock, pid, dest)) { out.add(pid); continue; }
       if (!storeCarries(stock, dest, pid)) continue;
       if (ruleOn && isClothing(p)) out.add(pid);
       else if (footOn && isFootwear(p)) out.add(pid);
@@ -1067,7 +1113,7 @@ function computeRefillPlan(snapshot) {
     // manage this product); per-size mode walks every declared size —
     // resolveTarget then answers 0 for the dead ones, and the deficit loop's
     // `target <= 0` guard skips them at nearly zero cost.
-    const cat = categoryPolicyEntry(config, products, pid, dest);
+    const cat = categoryPolicyEntry(config, products, stock, pid, dest);
     if (cat) {
       // A per-size MAP walks exactly the sizes it names, intersected with what
       // the product declares — categoryPolicyTarget refuses an undeclared size
@@ -1353,7 +1399,7 @@ function computeRefillPlan(snapshot) {
       // passes for the same reason explicit-target pids do: the class filter
       // must not drop what managedPids deliberately admitted.
       if (!isClothing(products?.[pid]) && !isFootwear(products?.[pid]) && !targets?.[dest]?.[pid]
-          && !categoryPolicyEntry(config, products, pid, dest)) continue;
+          && !categoryPolicyEntry(config, products, stock, pid, dest)) continue;
       for (const sizeKey of sizesFor(dest, pid)) {
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
@@ -1821,7 +1867,7 @@ function computeRefillPlan(snapshot) {
     // Entry presence is the test, not a positive resolution: an entry whose
     // sizes all resolve dead-0 is "deliberately excluded", the same reading
     // an explicit 0 row gets one branch up. (CodeRabbit + Sonnet, PR #352.)
-    if (categoryPolicyEntry(config, products, pid, loc)) return true;
+    if (categoryPolicyEntry(config, products, stock, pid, loc)) return true;
     if (!ruleTargetsEnabled(config, loc)) return false;
     for (const s of productSizes(products, pid)) if (targetResolves(loc, pid, s)) return true;
     return false;
@@ -1861,6 +1907,7 @@ function computeRefillPlan(snapshot) {
   const circulates = (pid) => dests.some((d) => stock?.[d]?.[pid] && Object.keys(stock[d][pid]).length > 0);
   for (const [pid, bySize] of Object.entries(stock?.central || {})) {
     if (!isClothing(products?.[pid])) continue;
+    if (isDeactivated(products?.[pid])) continue;           // finished line — no decision owed
     if (dests.some((d) => managedHere(d, pid))) continue;   // managed somewhere (explicit OR rule)
     if (circulates(pid)) continue;                          // circulating → unintroduced, NOT new
     if (decisionActive("central", pid)) continue;
@@ -1871,6 +1918,7 @@ function computeRefillPlan(snapshot) {
   for (const loc of dests) {
     for (const [pid, bySize] of Object.entries(stock?.[loc] || {})) {
       if (!isClothing(products?.[pid])) continue;
+      if (isDeactivated(products?.[pid])) continue;    // finished line — no decision owed
       if (managedHere(loc, pid)) continue;             // target resolves here → managed
       if (!Object.keys(bySize || {}).length) continue;
       const units = Object.values(bySize || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
@@ -1923,6 +1971,7 @@ function computeRefillPlan(snapshot) {
     const guardPids = new Set([...Object.keys(targets?.[loc] || {}), ...Object.keys(stock?.[loc] || {})]);
     for (const pid of guardPids) {
       if (!isClothing(products?.[pid])) continue;
+      if (isDeactivated(products?.[pid])) continue;   // finished line — no decision owed
       if (!managedHere(loc, pid)) continue;   // unmanaged → already handled by the queues above
       if (decisionActive(loc, pid)) continue;
       let units = 0;

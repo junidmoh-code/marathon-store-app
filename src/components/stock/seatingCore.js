@@ -144,21 +144,33 @@ function locationPolicyFor(config, categoryKey, dest) {
     const usable = Object.keys(loc.sizes).some((k) => positiveTarget(loc.sizes[k]?.target));
     if (!usable) return null;
     return { perSize: true, mode, target: null, minQty: null, reorderPoint: null,
-      sizes: loc.sizes, source: eff.source, groupKey: eff.groupKey };
+      sizes: loc.sizes, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
   }
   if (!positiveTarget(loc.target)) return null;
   return { perSize, mode, target: loc.target, minQty: loc.minQty, reorderPoint: loc.reorderPoint,
-    sizes: null, source: eff.source, groupKey: eff.groupKey };
+    sizes: null, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
 }
 
-// refill-engine.cjs:393
-export function categoryPolicyEntry(config, products, pid, dest) {
+// policy-resolve.cjs carriedOnlyOf — present-and-not-false gates; absent or
+// explicit false is unscoped (garbled leans toward the fewer-products side).
+function carriedOnlyOf(locEntry) {
+  return isObj(locEntry)
+    && locEntry.carriedOnly !== undefined && locEntry.carriedOnly !== false;
+}
+
+// refill-engine.cjs:405 — including the carriedOnly carriage-scope gate: an
+// entry flagged carriedOnly speaks only for products this location already
+// holds a stock cell for (storeCarries). Gated HERE, the one choke point, so
+// seatingSizes / resolveTarget / every seating consumer agree with the engine.
+export function categoryPolicyEntry(config, products, stock, pid, dest) {
   const key = products?.[pid]?.categoryKey;
   if (typeof key !== "string" || !key) return null;
   const r = locationPolicyFor(config, key, dest);
   if (!r) return null;
+  if (r.carriedOnly && !storeCarries(stock, dest, pid)) return null;
   return { target: r.target, reorderPoint: r.reorderPoint, minQty: r.minQty,
-    perSize: r.perSize, sizes: r.sizes, policySource: r.source, groupKey: r.groupKey };
+    perSize: r.perSize, sizes: r.sizes, carriedOnly: r.carriedOnly === true,
+    policySource: r.source, groupKey: r.groupKey };
 }
 
 // refill-engine.cjs:409 — negative counted cells clamp to 0: a count error must
@@ -174,7 +186,7 @@ const productSizes = (products, pid) => (products?.[pid]?.sizes || []).map(Strin
 
 // refill-engine.cjs:416
 function categoryPolicyTarget(config, products, stock, dest, pid, size) {
-  const entry = categoryPolicyEntry(config, products, pid, dest);
+  const entry = categoryPolicyEntry(config, products, stock, pid, dest);
   if (!entry) return null;
   const rp = entry.reorderPoint;
   const shape = (target, minQty, reorderPoint) => ({
@@ -329,7 +341,7 @@ export function seatingSizes({ products, stock, targets, config }, loc, pid) {
   // uncovered cases, every one of them "_" via category_policy. The existing
   // differential fuzz compares resolveTarget PER SIZE and so could never see
   // it — it is only ever asked about sizes this function already returned.
-  const cat = categoryPolicyEntry(config, products, pid, loc);
+  const cat = categoryPolicyEntry(config, products, stock, pid, loc);
   if (cat && !cat.sizes && !cat.perSize) out.add("_");
   return [...out];
 }
