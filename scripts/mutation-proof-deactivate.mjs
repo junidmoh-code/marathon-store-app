@@ -93,7 +93,7 @@ const MUTATIONS = [
     id: "M-ARRIVAL-SOLD",
     guard: "a SALE never reactivates — only arrivals do (widened predicate, not a deletion)",
     file: APPLY,
-    from: `  return m.type === "adjustment" && !!m.to;
+    from: `  return m.type === "adjustment" && !!m.to && m.to !== "in_transit";
 }`,
     to: `  return m.type !== "transfer_out";
 }`,

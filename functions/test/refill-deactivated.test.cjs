@@ -179,13 +179,16 @@ test("a LOCK-LESS open request (Missing Footwear / on-hold writer) is withdrawn 
 // ── the APPLY half: the live-cell proof is skipped for deactivation closures ──
 const { _applySatisfied: applySatisfied } = require("../refill-scan.cjs");
 
-function fakeDb({ stock = {}, requests = {} }) {
+function fakeDb({ stock = {}, requests = {}, failStockReads = false }) {
   const writes = {};
   return {
     writes,
     ref(path) {
       return {
-        once: async () => ({ val: () => (path in stock ? stock[path] : null) }),
+        once: async () => {
+          if (failStockReads && path.startsWith("stock/")) throw new Error("network");
+          return { val: () => (path in stock ? stock[path] : null) };
+        },
         transaction: async (fn) => {
           const id = path.split("/")[1];
           let out = fn(null);
@@ -216,6 +219,23 @@ test("apply: a deactivation closure cancels with the destination cell EMPTY", as
   assert.equal(w.cancelReason, "no_longer_needed");
   assert.equal(w.deactivatedProduct, true);
   assert.ok(!("satisfiedBy" in w), "no fake stock-proof audit on a deactivation withdrawal");
+});
+
+test("apply: a deactivation closure cancels even when the stock read FAILS — there is no stock condition to prove", async () => {
+  // The wrapper's real value: for a satisfied-by-stock closure a failed read
+  // means \"cannot prove it, do not cancel\"; for a deactivation closure the
+  // stock is irrelevant, so a network blip must not defer the withdrawal.
+  const db = fakeDb({
+    failStockReads: true,
+    requests: { rX: { status: "open", productId: "f1", size: "8", qty: 2, requestingLocation: "hub1" } },
+  });
+  const r = await applySatisfied({
+    db, startedAt: "2026-08-25T08:00:00.000Z",
+    closures: [{ refillId: "rX", dest: "hub1", pid: "f1", sizeKey: "8", size: "8", qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed", deactivated: true }],
+  });
+  assert.equal(r.satisfied, 1, "deactivation withdrawal survives a stock-read failure");
+  assert.equal(r.stale, 0);
+  assert.equal(db.writes["refill_requests/rX"].status, "cancelled");
 });
 
 test("apply: a request resolved meanwhile is left alone even for a deactivation closure", async () => {
