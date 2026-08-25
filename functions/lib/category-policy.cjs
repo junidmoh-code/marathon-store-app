@@ -255,6 +255,27 @@ function diffCategoryPolicy(before, after) {
       const to = al && al[f] !== undefined ? al[f] : null;
       if (from !== to) out.push({ loc, field: f, from, to });
     }
+    // ── PER-SIZE LEGS (2026-08-25, PR #448 review) ────────────────────────────
+    // The diff was blind to `sizes` maps, so a per-size edit — a tranche adding
+    // a size, the card changing one size's target — diffed to [] and the write
+    // path's no-change short-circuit silently DISCARDED it. Walk every size key
+    // on either side, the same way the uniform fields are walked above.
+    const bs = isPlainObject(bl?.sizes) ? bl.sizes : null;
+    const as_ = isPlainObject(al?.sizes) ? al.sizes : null;
+    if (bs || as_) {
+      const sizeKeys = [...new Set([...Object.keys(bs || {}), ...Object.keys(as_ || {})])].sort();
+      for (const k of sizeKeys) {
+        const brow = isPlainObject(bs?.[k]) ? bs[k] : null;
+        const arow = isPlainObject(as_?.[k]) ? as_[k] : null;
+        if (brow && !arow) { out.push({ loc, field: `sizes.${k}`, from: "armed", to: "removed" }); continue; }
+        if (!brow && arow) { out.push({ loc, field: `sizes.${k}`, from: "not armed", to: "armed" }); }
+        for (const f of POLICY_FIELDS) {
+          const from = brow && brow[f] !== undefined ? brow[f] : null;
+          const to = arow && arow[f] !== undefined ? arow[f] : null;
+          if (from !== to) out.push({ loc, field: `sizes.${k}.${f}`, from, to });
+        }
+      }
+    }
   }
   return out;
 }

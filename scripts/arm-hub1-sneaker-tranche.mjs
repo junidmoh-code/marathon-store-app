@@ -72,13 +72,18 @@ const db = admin.database();
 
   // ── THE WIDENING DAY (2026-08-25 scope change) ─────────────────────────────
   // A live entry still carrying the retired carriedOnly flag is scrubbed IN
-  // PLACE — same sizes, unscoped — and that rewrite IS the day's tranche:
-  // widening the already-armed sizes from ~608 carried products to the whole
-  // catalogue is itself a tranche-sized demand step, so no new size joins on
-  // the same day.
+  // PLACE — same sizes, unscoped — and no new size joins on the same day.
+  // TO BE PRECISE ABOUT TIMING (PR #448 review): the DEMAND widens the moment
+  // the gate-less engine deploys, not at this write — the deployed engine
+  // ignores the flag outright. What paces the widening is the
+  // maxFootwearIntentsPerRun rollout throttle, set BEFORE that deploy; this
+  // scrub is the bookkeeping that makes the stored entry say what the engine
+  // does, and it holds back the day's NEW size while the widening lands.
   if (live?.hub1?.carriedOnly !== undefined) {
+    // Preserve the LIVE rows verbatim — an owner-tuned number on an armed size
+    // must survive the scrub (PR #448 review); only the flag is dropped.
     const sizes = {};
-    for (const k of [...armed]) sizes[k] = row(k);
+    for (const k of [...armed]) sizes[k] = live.hub1.sizes[k];
     const policy = { perSize: true, hub1: { sizes } };
     console.log(`widening day: scrubbing carriedOnly — sizes ${[...armed].join(", ")} now cover EVERY sneaker`);
     const rollback = `${process.env.HOME}/hub1-sneaker-tranche-rollback-${new Date().toISOString().slice(0, 10)}.json`;
@@ -102,7 +107,10 @@ const db = admin.database();
   }
 
   const sizes = {};
-  for (const k of [...armed, ...next]) sizes[k] = row(k);
+  // Already-armed sizes keep their LIVE rows (owner tuning survives a tranche);
+  // only the NEW tranche's sizes are written from the run module.
+  for (const k of [...armed]) sizes[k] = live.hub1.sizes[k];
+  for (const k of next) if (!sizes[k]) sizes[k] = row(k);
   const policy = { perSize: true, hub1: { sizes } };   // unscoped — every sneaker, owner order 2026-08-25
   console.log(`tranche to arm: sizes ${next.join(", ")} (already armed: ${[...armed].join(", ") || "none"})`);
   console.log(JSON.stringify(policy, null, 2));
