@@ -108,6 +108,14 @@ describe("non-arrivals never reactivate", () => {
     expect(res.reactivated).toBeUndefined();
     expect(getPath(`products/${PID}/deactivated`)).toEqual(DEACT);
   });
+  it("adjustment INTO in_transit leaves the flag alone — in_transit is not a shelf", async () => {
+    seedCell("in_transit", 0);
+    const res = await mv({ type: "adjustment", to: "in_transit", reason: "transit correction" });
+    expect(res.ok).toBe(true);
+    expect(res.reactivated).toBeUndefined();
+    expect(getPath(`products/${PID}/deactivated`)).toEqual(DEACT);
+    expect(events).toEqual([]);
+  });
   it("negative adjustment (from, no to) leaves the flag alone", async () => {
     seedCell("hub1", 5);
     const res = await mv({ type: "adjustment", to: undefined, from: "hub1", reason: "damage" });

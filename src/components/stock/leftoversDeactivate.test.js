@@ -114,6 +114,22 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const src = (p) => readFileSync(join(HERE, p), "utf8");
 
+describe("clothing/perfume twin — computeMissingProducts skips deactivated too", () => {
+  it("a deactivated clothing product with stranded Central stock raises no card; active twin unchanged", async () => {
+    const { computeMissingProducts } = await import("./missingProductsCore.js");
+    const tee = (id, over = {}) => ({ id, name: `Tee ${id}`, productType: "clothing", sizes: ["M"], ...over });
+    const allStock = {
+      central: { dead: { M: { qty: 4 } }, live: { M: { qty: 4 } } },
+      hub2: {}, "marathon-pe": {}, trophy: {},
+    };
+    const cards = computeMissingProducts({
+      allStock,
+      products: [tee("dead", { deactivated: DEACT }), tee("live")],
+    });
+    expect(cards.map((c) => c.pid)).toEqual(["live"]);
+  });
+});
+
 describe("source pins — the call sites exist", () => {
   it("all three assistant ordering chip surfaces use orderSizeOut", () => {
     const app = src("../../App.jsx");
@@ -126,6 +142,18 @@ describe("source pins — the call sites exist", () => {
   it("MissingFootwear write paths carry the stale-screen guard, twice (solve and request)", () => {
     const mf = src("./MissingFootwear.jsx");
     expect(mf.split("isDeactivated(byId.get(card.pid))").length - 1).toBe(2);
+  });
+  it("placeOrders carries the submit-time stale-cart guard", () => {
+    const app = src("../../App.jsx");
+    expect(app).toContain("isDeactivated(resolveProductById(item.product.id) || item.product)");
+  });
+  it("MoveExcess skips deactivated products in lockstep with the engine's excess pass", () => {
+    const me = src("./MoveExcess.jsx");
+    expect(me).toContain("if (isDeactivated(p)) continue;");
+  });
+  it("the Deactivated section waits for allStock so a stock-holder never reads as empty", () => {
+    const hc = src("./HubCleanup.jsx");
+    expect(hc).toContain("{allStock && deactivatedRows.length > 0 && (");
   });
   it("HubCleanup renders Deactivate on leftover AND finished-line cards, and Reactivate", () => {
     const hc = src("./HubCleanup.jsx");

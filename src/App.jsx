@@ -8831,6 +8831,18 @@ function AssistantView({ products, onExit, orders = [] }) {
     // Affirm the destination shop once per shop-session (see PLACEMENT
     // DESTINATION GUARD). The modal's confirm re-invokes with bypass=true.
     if (!bypassDestConfirm && needsDestConfirm) { setDestConfirm({ run: () => placeOrders(true) }); return; }
+    // Submit-time deactivation guard — the stale-cart window: the size chips
+    // grey out live, but a line added BEFORE someone tapped Deactivate would
+    // otherwise place. The freshest record wins (the live /products
+    // subscription), falling back to the cart's own copy.
+    {
+      const dead = cart.filter(isCustomerLine)
+        .find((item) => isDeactivated(resolveProductById(item.product.id) || item.product));
+      if (dead) {
+        alert(`${dead.product.name} was deactivated — a finished line. Remove it from the cart to place the rest.`);
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);

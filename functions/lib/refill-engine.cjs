@@ -993,6 +993,21 @@ function computeRefillPlan(snapshot) {
     for (const [id, r] of openRows) {
       const dest = r.requestingLocation;
       const sizeKey = encodeSizeKey(r.size);
+      // A DEACTIVATED product's lock-less request is withdrawn REGARDLESS of
+      // stock (CodeRabbit, PR #445): these rows (Missing Footwear, the on-hold
+      // "coming tomorrow" writer) carry no engine lock, so the reconcile
+      // loop's needGone can never reach them, and the satisfied path below
+      // demands covering stock a finished line will never receive. Stock proof
+      // is waived — `deactivated: true` tells the apply pass to skip its
+      // live-cell re-check (there is no cell condition to verify).
+      if (isDeactivated(products?.[r.productId])) {
+        satisfiedClosures.push({
+          refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
+          qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed",
+          deactivated: true,
+        });
+        continue;
+      }
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so
       // a future route change can never turn "not loaded" into "not needed".

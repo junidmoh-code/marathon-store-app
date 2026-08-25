@@ -52,7 +52,9 @@ const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "tran
 // receive surface announces it without each caller opting in.
 function isArrival(m) {
   if (m.type === "received" || m.type === "opening" || m.type === "return" || m.type === "transfer_in") return true;
-  return m.type === "adjustment" && !!m.to;
+  // in_transit is not a shelf — an adjustment INTO it must not reactivate any
+  // more than a transfer_out's +leg does. (CodeRabbit, PR #445.)
+  return m.type === "adjustment" && !!m.to && m.to !== "in_transit";
 }
 
 function emptyLink(link) {

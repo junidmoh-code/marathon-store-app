@@ -232,6 +232,71 @@ const MUTATIONS = [
     to: `                    <div style={{ marginTop: 10 }} />`,
     tests: LIST_TESTS,
   },
+  // ── review-fix guards (CodeRabbit + substitute pair, PR #445) ─────────────
+  {
+    id: "M-LOCKLESS",
+    guard: "a LOCK-LESS open request is withdrawn on deactivation with no stock proof",
+    file: ENGINE,
+    from: `      if (isDeactivated(products?.[r.productId])) {
+        satisfiedClosures.push({
+          refillId: id, dest, pid: r.productId, sizeKey, size: r.size,
+          qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed",
+          deactivated: true,
+        });
+        continue;
+      }`,
+    to: ``,
+    nodeTests: ENGINE_TESTS,
+  },
+  {
+    id: "M-APPLY-STALE",
+    guard: "the apply pass skips its live-cell proof for deactivation closures",
+    file: "functions/refill-scan.cjs",
+    from: `    if (!s.deactivated) {`,
+    to: `    {`,
+    nodeTests: ENGINE_TESTS,
+  },
+  {
+    id: "M-INTRANSIT",
+    guard: "an adjustment INTO in_transit never reactivates",
+    file: APPLY,
+    from: `  return m.type === "adjustment" && !!m.to && m.to !== "in_transit";`,
+    to: `  return m.type === "adjustment" && !!m.to;`,
+    tests: APPLY_TESTS,
+  },
+  {
+    id: "M-MISSING-CLOTHING",
+    guard: "the clothing/perfume Missing Products twin skips deactivated too",
+    file: "src/components/stock/missingProductsCore.js",
+    from: `    if (isDeactivated(p)) continue;`,
+    to: ``,
+    tests: LIST_TESTS,
+  },
+  {
+    id: "M-PIN-SUBMIT",
+    guard: "placeOrders re-checks deactivation at submit time (the stale-cart window)",
+    file: APP,
+    from: `        .find((item) => isDeactivated(resolveProductById(item.product.id) || item.product));`,
+    to: `        .find(() => false);`,
+    tests: LIST_TESTS,
+  },
+  {
+    id: "M-PIN-MOVEEXCESS",
+    guard: "MoveExcess stays in lockstep with the engine's excess pass",
+    file: "src/components/stock/MoveExcess.jsx",
+    from: `        if (isDeactivated(p)) continue;
+        const sizes = [];`,
+    to: `        const sizes = [];`,
+    tests: LIST_TESTS,
+  },
+  {
+    id: "M-PIN-ALLSTOCK",
+    guard: "the Deactivated section waits for allStock",
+    file: HUBJSX,
+    from: `            {allStock && deactivatedRows.length > 0 && (`,
+    to: `            {deactivatedRows.length > 0 && (`,
+    tests: LIST_TESTS,
+  },
 ];
 
 function runVitest(files) {

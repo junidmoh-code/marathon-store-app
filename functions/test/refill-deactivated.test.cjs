@@ -155,3 +155,75 @@ test("reactivation restores the exact original plan byte-for-byte", () => {
   assert.equal(JSON.stringify(computeRefillPlan(reactivated)), JSON.stringify(bare),
     "a reactivated product plans identically to one never touched");
 });
+
+test("a LOCK-LESS open request (Missing Footwear / on-hold writer) is withdrawn with no stock proof needed", () => {
+  // No openIndex entry — the reconcile loop cannot reach it — and the
+  // destination cell is EMPTY, so the satisfied-by-stock path would never
+  // fire either. Deactivation alone must withdraw it.
+  const plan = computeRefillPlan(withDeactivated(["f1"], {
+    refillRequests: { rX: { status: "open", productId: "f1", size: "8", qty: 2, requestingLocation: "hub1", createdAt: iso(2) } },
+    stock: { ...snapshot().stock, hub1: { f1: { "8": { qty: 0 } } } },
+  }));
+  const c = (plan.satisfiedClosures || []).find((x) => x.refillId === "rX");
+  assert.ok(c, "lock-less request withdrawn on deactivation");
+  assert.equal(c.cancelReason, "no_longer_needed");
+  assert.equal(c.deactivated, true, "flag tells the apply pass to skip the live-cell proof");
+  // And the same row for an ACTIVE product survives untouched.
+  const active = computeRefillPlan(snapshot({
+    refillRequests: { rX: { status: "open", productId: "f1", size: "8", qty: 2, requestingLocation: "hub1", createdAt: iso(2) } },
+    stock: { ...snapshot().stock, hub1: { f1: { "8": { qty: 0 } } } },
+  }));
+  assert.ok(!(active.satisfiedClosures || []).some((x) => x.refillId === "rX"), "active → request stays open");
+});
+
+// ── the APPLY half: the live-cell proof is skipped for deactivation closures ──
+const { _applySatisfied: applySatisfied } = require("../refill-scan.cjs");
+
+function fakeDb({ stock = {}, requests = {} }) {
+  const writes = {};
+  return {
+    writes,
+    ref(path) {
+      return {
+        once: async () => ({ val: () => (path in stock ? stock[path] : null) }),
+        transaction: async (fn) => {
+          const id = path.split("/")[1];
+          let out = fn(null);
+          if (out === undefined) return { committed: false, snapshot: { val: () => requests[id] ?? null } };
+          const cur = requests[id] ?? null;
+          out = fn(cur);
+          if (out === undefined) return { committed: false, snapshot: { val: () => cur } };
+          if (out !== null) { requests[id] = out; writes[path] = out; }
+          return { committed: true, snapshot: { val: () => (out === null ? null : requests[id]) } };
+        },
+      };
+    },
+  };
+}
+
+test("apply: a deactivation closure cancels with the destination cell EMPTY", async () => {
+  const db = fakeDb({
+    stock: { "stock/hub1/f1/8/qty": 0 },
+    requests: { rX: { status: "open", productId: "f1", size: "8", qty: 2, requestingLocation: "hub1" } },
+  });
+  const r = await applySatisfied({
+    db, startedAt: "2026-08-25T08:00:00.000Z",
+    closures: [{ refillId: "rX", dest: "hub1", pid: "f1", sizeKey: "8", size: "8", qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed", deactivated: true }],
+  });
+  assert.equal(r.satisfied, 1, "not marked stale despite zero stock");
+  const w = db.writes["refill_requests/rX"];
+  assert.equal(w.status, "cancelled");
+  assert.equal(w.cancelReason, "no_longer_needed");
+  assert.equal(w.deactivatedProduct, true);
+  assert.ok(!("satisfiedBy" in w), "no fake stock-proof audit on a deactivation withdrawal");
+});
+
+test("apply: a request resolved meanwhile is left alone even for a deactivation closure", async () => {
+  const db = fakeDb({ requests: { rX: { status: "fulfilled", productId: "f1", size: "8" } } });
+  const r = await applySatisfied({
+    db, startedAt: "2026-08-25T08:00:00.000Z",
+    closures: [{ refillId: "rX", dest: "hub1", pid: "f1", sizeKey: "8", size: "8", qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "no_longer_needed", deactivated: true }],
+  });
+  assert.equal(r.satisfied, 0);
+  assert.ok(!db.writes["refill_requests/rX"], "fulfilled row untouched");
+});

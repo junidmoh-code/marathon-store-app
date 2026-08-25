@@ -1543,13 +1543,17 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                 Every deactivated product, stock-holders first with location
                 chips: deactivated stock can never be silently lost. One tap
                 reactivates; receiving stock reactivates automatically too. */}
-            {deactivatedRows.length > 0 && (
+            {/* Gated on allStock like Finished lines: rendered earlier, every
+                row would read units:0 / no chips — a stock-holder would LOOK
+                empty, the exact impression this section exists to prevent. */}
+            {allStock && deactivatedRows.length > 0 && (
               <>
                 <div style={{ marginTop: 18, fontSize: 14, fontWeight: 800, color: GRAY }}>
                   Deactivated · {deactivatedRows.length}
                 </div>
                 <div style={{ fontSize: 12.5, color: GRAY, marginTop: -6 }}>
-                  No refills, sizes not orderable. Receiving stock into one reactivates it automatically.
+                  No refills, sizes not orderable. Receiving stock into one reactivates it automatically
+                  (a merge does not — tap Reactivate).
                 </div>
                 {deactivatedRows.map(({ product, units, locations }) => (
                   <div key={product.id}
