@@ -51,6 +51,25 @@ import { serverNowMs } from "../../utils/serverTime";
 import { asList, storedList, storedMap } from "../../utils/rtdbList";
 import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./socialCore";
 
+// ── THE BOUNDARY ─────────────────────────────────────────────────────────────
+// Every post and every style reference leaves this file through one of these,
+// and nothing downstream ever sees a null where an array belongs. Normalising
+// HERE, once, is the whole point: guarding the fiftieth `.map` on the screen is
+// how the forty-ninth gets missed, and the forty-ninth is what took the card
+// down. `id` is stamped in the same pass so a row can always name itself in an
+// error, a delete affordance, or a React key.
+const POST_LISTS = ["media", "products", "refsUsed"];
+const REF_LISTS = ["tags"];
+
+function normaliseRecord(id, body, listFields) {
+  const rec = { ...(body && typeof body === "object" ? body : {}), id };
+  for (const f of listFields) rec[f] = asList(rec[f]);
+  return rec;
+}
+
+export const normalisePost = (id, body) => normaliseRecord(id, body, POST_LISTS);
+export const normaliseRef = (id, body) => normaliseRecord(id, body, REF_LISTS);
+
 export const POSTS_PATH = "social_posts";
 export const REFS_PATH = "social_style_refs";
 // Style-reference media and generated post media both live under the Storage
@@ -110,7 +129,7 @@ export async function loadPostsByStatus(status) {
   );
   const val = snap.val() || {};
   const posts = Object.entries(val)
-    .map(([id, body]) => ({ id, ...body }))
+    .map(([id, body]) => normalisePost(id, body))
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return { posts, truncated: posts.length >= POSTS_PER_STATUS };
 }
@@ -325,7 +344,7 @@ export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, hel
   const snap = await get(q);
   const val = snap.val() || {};
   const refs = Object.entries(val)
-    .map(([id, body]) => ({ id, ...body }))
+    .map(([id, body]) => normaliseRef(id, body))
     .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   const heldIds = held instanceof Set ? held : new Set((held || []).map((r) => r && r.id));
   const fresh = refs.filter((r) => !heldIds.has(r.id));
@@ -344,8 +363,8 @@ export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, hel
 
 /** Merge a fetched page into the held list, newest first, de-duplicated by id. */
 export function mergeRefPage(held, page) {
-  const byId = new Map((held || []).map((r) => [r.id, r]));
-  for (const r of page || []) byId.set(r.id, r);
+  const byId = new Map(asList(held).filter((r) => r && r.id).map((r) => [r.id, r]));
+  for (const r of asList(page)) if (r && r.id) byId.set(r.id, r);
   return [...byId.values()].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
 }
 
