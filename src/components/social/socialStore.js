@@ -26,6 +26,15 @@
 // `scheduledAt` to; a set() here would erase a send result that had just
 // landed, and a set() there would erase an edit Junid had just made.
 //
+// ── THE EMPTY-LIST RULE ──────────────────────────────────────────────────────
+// RTDB cannot store an empty array: writing `[]` deletes the key, and so does
+// removing a list's last child. So every list field here goes IN through
+// storedList() — which turns empty into an explicit null, written down in the
+// source instead of silently dropped — and comes OUT through asList() in the
+// read functions below, so nothing this file returns ever has a null where the
+// screen expects an array. utils/rtdbList.js carries the full reasoning,
+// including why a sentinel row would be worse than an absent key.
+//
 // ── RULES ────────────────────────────────────────────────────────────────────
 // Both nodes are NEW top-level paths and the live database has no root rule,
 // so until the console rules are pasted every read and write here is refused.
@@ -39,7 +48,58 @@ import {
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
+import { asList, storedList } from "../../utils/rtdbList";
 import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./socialCore";
+
+// ── THE BOUNDARY ─────────────────────────────────────────────────────────────
+// Every post and every style reference leaves this file through one of these,
+// and nothing downstream ever sees a null where an array belongs. Normalising
+// HERE, once, is the whole point: guarding the fiftieth `.map` on the screen is
+// how the forty-ninth gets missed, and the forty-ninth is what took the card
+// down. `id` is stamped in the same pass so a row can always name itself in an
+// error, a delete affordance, or a React key.
+const POST_LISTS = ["media", "products", "refsUsed"];
+const REF_LISTS = ["tags"];
+
+// ── rowKey: DID THIS RECORD ACTUALLY CHANGE? ─────────────────────────────────
+// A row's error boundary clears itself when this value moves, so it has to move
+// whenever the record does. `updatedAt` alone does NOT: the Mac mini publisher
+// writes results through `${POSTS}/${id}/results/${platform}` (markSending and
+// recordResult in publish.mjs) and never touches updatedAt — only setStatus
+// does. So the field most likely to have been the malformed one is precisely
+// the field updatedAt is blind to, and a row broken by a bad `results` entry
+// would have stayed latched after the publisher fixed it.
+//
+// Style references are worse: `addedAt` is written once at creation and never
+// again, so editStyleRef — the very thing used to repair a bad `tags` — could
+// never have cleared the row.
+//
+// So the key is built from what each record's row actually reads. Cheap:
+// a short string over fields already in memory, no hashing, no serialising of
+// media bodies.
+const postRowKey = (b) => [
+  b.updatedAt || 0, b.status || "", b.kind || "", b.scheduledAt || 0,
+  asList(b.media).length, (b.caption || "").length,
+  Object.entries(b.results && typeof b.results === "object" ? b.results : {})
+    .sort(([x], [y]) => (x < y ? -1 : 1))
+    .map(([k, r]) => `${k}:${(r && r.state) || "?"}:${(r && r.attempts) || 0}`)
+    .join(","),
+].join("|");
+
+const refRowKey = (b) => [
+  b.addedAt || 0, b.enabled === true ? 1 : 0, (b.note || "").length,
+  asList(b.tags).join(","), b.thumbUrl || b.url || "",
+].join("|");
+
+function normaliseRecord(id, body, listFields, rowKeyOf) {
+  const rec = { ...(body && typeof body === "object" ? body : {}), id };
+  for (const f of listFields) rec[f] = asList(rec[f]);
+  rec.rowKey = rowKeyOf(rec);
+  return rec;
+}
+
+export const normalisePost = (id, body) => normaliseRecord(id, body, POST_LISTS, postRowKey);
+export const normaliseRef = (id, body) => normaliseRecord(id, body, REF_LISTS, refRowKey);
 
 export const POSTS_PATH = "social_posts";
 export const REFS_PATH = "social_style_refs";
@@ -100,7 +160,7 @@ export async function loadPostsByStatus(status) {
   );
   const val = snap.val() || {};
   const posts = Object.entries(val)
-    .map(([id, body]) => ({ id, ...body }))
+    .map(([id, body]) => normalisePost(id, body))
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return { posts, truncated: posts.length >= POSTS_PER_STATUS };
 }
@@ -195,16 +255,54 @@ export async function discardPost(postId) {
  * attempt counters. An "ok" result is a fact about the world and is kept
  * forever. A "sending" result is an open question and is kept until a person
  * answers it — see resolveSending.
+ *
+ * ── AND IT NO LONGER TRUSTS THE SCREEN'S COPY OF `results` ──────────────────
+ * The version that took `post` and rebuilt the whole `results` object from it
+ * did not actually hold the guarantee two paragraphs up. update() REPLACES the
+ * child it is given: writing `results: {...}` swaps the entire subtree for
+ * whatever the browser last loaded. The queue is not polled continuously — it
+ * polls only while something is due and unclaimed — so the tab's copy of a post
+ * goes stale the moment the Mac mini writes a result.
+ *
+ * That is a duplicate public post, by this exact route: Junid loads the queue
+ * with instagram and facebook both "sending"; the publisher confirms both in
+ * the database; Junid, still looking at the old screen, taps Retry. The stale
+ * copy said "sending", so "sending" is what gets written back over two "ok"s,
+ * and the next run sees two platforms that were never sent and sends them
+ * again — to live accounts, permanently.
+ *
+ * So two things changed. It re-reads `results` from the DATABASE rather than
+ * taking the caller's word for it, and it writes ONE PATH PER PLATFORM
+ * (`results/instagram`) instead of the parent. A per-platform write cannot
+ * replace a sibling it never named, so even a result that lands between the
+ * read and the write survives. `post` is still accepted and ignored, so no
+ * caller breaks.
  */
-export async function retryPost(postId, post = null) {
-  const results = (post && post.results) || {};
-  const next = {};
-  for (const [key, r] of Object.entries(results)) {
-    if (!r || typeof r !== "object") continue;
-    if (r.state === "ok" || r.state === "sending") { next[key] = r; continue; }
-    next[key] = null;   // errored or skipped: forget it and let it try again
+export async function retryPost(postId, post = null) {   // eslint-disable-line no-unused-vars
+  // The WHOLE body is inside the try, not just the read. safeSeg throws on a
+  // key it will not touch, and the old shape had it inside writePost's try —
+  // hoisting it out would have turned a refusal sentence into an unhandled
+  // rejection escaping the row's click handler.
+  try {
+    const id = safeSeg(postId);
+    // A refused or failed read must NOT fall back to the caller's copy or to
+    // {} — either would clear results this function cannot see. The catch
+    // below refuses the whole operation instead.
+    const snap = await get(ref(database, `${POSTS_PATH}/${id}/results`));
+    const results = snap.val() || {};
+    const fields = { status: "draft", needsCheck: null };
+    for (const [key, r] of Object.entries(results)) {
+      if (!r || typeof r !== "object") continue;
+      if (r.state === "ok" || r.state === "sending") continue;   // a fact, or an open question
+      // Deleting the platform's whole record takes its `attempts` counter with
+      // it, which is what lets an exhausted platform try again — the same
+      // clearing the previous version did, by the same means.
+      fields[`results/${safeSeg(key)}`] = null;
+    }
+    return writePost(id, fields);
+  } catch (err) {
+    return writeError(err);
   }
-  return writePost(postId, { status: "draft", results: next, needsCheck: null });
 }
 
 /**
@@ -259,11 +357,11 @@ export async function setPlatforms(postId, platforms) {
 
 /** Drop one media item from a post (a generated frame Junid does not want). */
 export async function setMedia(postId, media) {
-  const clean = (Array.isArray(media) ? media : [])
+  const clean = asList(media)
     .filter((m) => m && typeof m.url === "string" && m.url.trim())
     .slice(0, MAX_MEDIA);
   if (!clean.length) return { ok: false, message: "A post needs at least one image or video." };
-  return writePost(postId, { media: clean });
+  return writePost(postId, { media: storedList(clean) });
 }
 
 async function writePost(postId, fields) {
@@ -312,7 +410,7 @@ export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, hel
   const snap = await get(q);
   const val = snap.val() || {};
   const refs = Object.entries(val)
-    .map(([id, body]) => ({ id, ...body }))
+    .map(([id, body]) => normaliseRef(id, body))
     .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
   const heldIds = held instanceof Set ? held : new Set((held || []).map((r) => r && r.id));
   const fresh = refs.filter((r) => !heldIds.has(r.id));
@@ -331,8 +429,8 @@ export async function loadRefPage({ before = null, pageSize = REF_PAGE_SIZE, hel
 
 /** Merge a fetched page into the held list, newest first, de-duplicated by id. */
 export function mergeRefPage(held, page) {
-  const byId = new Map((held || []).map((r) => [r.id, r]));
-  for (const r of page || []) byId.set(r.id, r);
+  const byId = new Map(asList(held).filter((r) => r && r.id).map((r) => [r.id, r]));
+  for (const r of asList(page)) if (r && r.id) byId.set(r.id, r);
   return [...byId.values()].sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
 }
 
@@ -424,7 +522,9 @@ export async function addStyleRef(file, { note = "", tags = [], thumbBlob = null
       thumbPath: thumbBlob ? thumbPath : null,
       type: isVideo ? "video" : "image",
       note: String(note || "").trim().slice(0, REF_NOTE_MAX),
-      tags: parseTags(Array.isArray(tags) ? tags.join(",") : tags),
+      // storedList, not the bare array: no tags is an EXPLICIT null here
+      // rather than an `[]` the database silently drops. See utils/rtdbList.js.
+      tags: storedList(parseTags(Array.isArray(tags) ? tags.join(",") : tags)),
       enabled: true,
       addedAt: serverNowMs(),
       by: auth.currentUser ? auth.currentUser.email || auth.currentUser.uid : null,
@@ -438,7 +538,7 @@ export async function addStyleRef(file, { note = "", tags = [], thumbBlob = null
 export async function editStyleRef(refId, { note, tags, enabled } = {}) {
   const fields = {};
   if (note !== undefined) fields.note = String(note || "").trim().slice(0, REF_NOTE_MAX);
-  if (tags !== undefined) fields.tags = parseTags(Array.isArray(tags) ? tags.join(",") : tags);
+  if (tags !== undefined) fields.tags = storedList(parseTags(Array.isArray(tags) ? tags.join(",") : tags));
   if (enabled !== undefined) fields.enabled = enabled === true;
   if (!Object.keys(fields).length) return { ok: true };
   try {
@@ -477,7 +577,7 @@ export async function deleteStyleRef(entry) {
 // lands as a DRAFT like everything else: this function cannot create an
 // approved post, and that is the point.
 export async function createManualPost({ media, caption, link = "", platforms, scheduledAt, kind = "single" }) {
-  const clean = (Array.isArray(media) ? media : []).filter((m) => m && m.url).slice(0, MAX_MEDIA);
+  const clean = asList(media).filter((m) => m && m.url).slice(0, MAX_MEDIA);
   if (!clean.length) return { ok: false, message: "Attach at least one image or video." };
   const sel = {};
   for (const k of PLATFORM_KEYS) sel[k] = platforms?.[k] === true;
@@ -489,12 +589,13 @@ export async function createManualPost({ media, caption, link = "", platforms, s
     await update(node, {
       status: "draft",
       kind,
-      media: clean,
+      media: storedList(clean),
       caption: text.slice(0, CAPTION_MAX),
       link: String(link || ""),
       platforms: sel,
       scheduledAt: Number(scheduledAt) || null,
-      products: [],
+      // A hand-made post has no products. That is an absent key, written down.
+      products: storedList([]),
       generatedBy: "manual",
       createdAt: serverNowMs(),
       ...stamp(),

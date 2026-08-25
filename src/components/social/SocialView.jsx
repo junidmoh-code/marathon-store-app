@@ -32,10 +32,12 @@ import {
   postKind, platform, enabledPlatforms, postReadiness, isSendingSoon, describePost, resultLine,
   formatSlot, toLocalInput, fromLocalInput, captionFor, needsVerification,
 } from "./socialCore";
+import { asList } from "../../utils/rtdbList";
 import {
   loadPostsByStatus, loadDraftCount, approvePost, unapprovePost, postNow, discardPost, retryPost,
   editCaption, reschedulePost, setPlatforms, resolveSending,
 } from "./socialStore";
+import RowBoundary from "./RowBoundary";
 import StyleLibraryCard from "./StyleLibraryCard";
 import GenerateCard from "./GenerateCard";
 
@@ -157,9 +159,9 @@ function PostRow({ post, onChanged, onNotice }) {
         <div style={{ paddingLeft: 67, paddingTop: 10 }}>
           {/* ── The media strip. Read-only here: a generated frame is discarded
               by discarding the post, not by quietly editing its contents. ── */}
-          {(post.media || []).length > 1 && (
+          {asList(post.media).length > 1 && (
             <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-              {post.media.map((m, i) => (
+              {asList(post.media).map((m, i) => (
                 <Cover key={i} media={[m]} />
               ))}
             </div>
@@ -394,7 +396,12 @@ function Queue({ notice, onNotice }) {
   // So it polls ONLY while at least one post is genuinely due and unclaimed,
   // and stops the moment none is. No websocket, no listener left running on a
   // screen nobody is looking at, and no polling at all in the normal case.
-  const anySending = posts.some((p) => isSendingSoon(p));
+  // asList, not `posts.some`. `posts` starts as null — that is deliberate, it
+  // is how the render below tells "still loading" from "genuinely nothing here"
+  // — and this line ran on the FIRST render, before any fetch. It threw
+  // "null is not an object (evaluating 's.some')" on every single open of the
+  // card, which is the outage this branch exists to fix (introduced #441).
+  const anySending = asList(posts).some((p) => isSendingSoon(p));
   useEffect(() => {
     if (!anySending) return undefined;
     const t = setInterval(() => { load(); loadCounts(); }, 20000);
@@ -441,12 +448,21 @@ function Queue({ notice, onNotice }) {
           Nothing here.{filter === "draft" ? " Generate some posts and they'll queue up for you." : ""}
         </div>
       )}
-      {posts && posts.map((p) => (
-        <PostRow key={p.id} post={p} onChanged={onChanged} onNotice={onNotice} />
+      {/* Each row inside its OWN boundary. One post that cannot render is one
+          red row with its id and a Discard button — not the whole card gone.
+          Discard is the right escape hatch here because it is reversible: the
+          record keeps every field and moves to the "discarded" filter, where
+          it can be looked at rather than being lost. */}
+      {asList(posts).map((p) => (
+        <RowBoundary key={p.id} recordId={p.id} label="post" resetKey={p.rowKey}
+                     actionLabel="Discard it"
+                     onAction={async () => { await discardPost(p.id); await onChanged(); }}>
+          <PostRow post={p} onChanged={onChanged} onNotice={onNotice} />
+        </RowBoundary>
       ))}
       {truncated && (
         <div style={{ fontSize: 11, color: AMBER, padding: "12px 2px" }}>
-          Showing the most recent {posts.length} — there are more in this state.
+          Showing the most recent {asList(posts).length} — there are more in this state.
         </div>
       )}
     </div>
