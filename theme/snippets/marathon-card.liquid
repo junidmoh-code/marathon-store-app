@@ -123,16 +123,30 @@
           alt: img_alt
       }}
     {%- endif -%}
-    {%- if sold_out -%}<span class="mc-card__sold">Sold out</span>{%- endif -%}
     {%- comment -%}
-      THE PRICE, ON THE TILE (owner order 2026-08-26, reversing the quiet-grid
-      decision below for price alone — the name stays off). Rendered with the
-      store's own money format (`| money`), the same filter the panel uses, so
-      "R 800.00" here and in the quick view can never disagree. It sits on a
-      bottom gradient band inside the frame so it reads on any photograph.
+      A BADGE ON THE PHOTO, NOT TEXT UNDER THE FRAME. Both this and
+      `mc-card__sold` are absolutely positioned inside the frame's own padding
+      box (see the `mc-card__sold` rule for why the offset has to match
+      `--mc-frame`) so a price chip reads as part of the SAME dark-mat design
+      language as the sold-out badge — never a separate line of loose text
+      floating in the gap below a tile, which is what shipped first and read
+      as an afterthought. Opposite corner from the sold-out badge because the
+      two are mutually exclusive per product but the grid still mixes both
+      kinds of tile, and giving each its own corner keeps a scanned row from
+      reading as randomly placed labels.
+
+      NO PRODUCT NAME. The price is the only text a tile carries; the name
+      still lives only in the panel and on the product page, which is what
+      search engines read. The <a> above still carries the product URL, so
+      the link a crawler follows is unchanged.
     {%- endcomment -%}
-    <span class="mc-card__price">{{ product.price | money }}</span>
+    {%- if sold_out -%}
+      <span class="mc-card__sold">Sold out</span>
+    {%- else -%}
+      <span class="mc-card__price">{{ product.price | money }}</span>
+    {%- endif -%}
   </a>
+
 
   {%- comment -%}
     THE LOVE BUTTON (owner order 2026-08-26): shoppers mark products to decide
@@ -155,17 +169,6 @@
       <path d="M12 21s-6.7-4.3-9.3-8.1C.6 9.9 1.5 6.4 4.3 5c2.2-1.1 4.6-.3 6 1.5L12 8l1.7-1.5c1.4-1.8 3.8-2.6 6-1.5 2.8 1.4 3.7 4.9 1.6 7.9C18.7 16.7 12 21 12 21z"/>
     </svg>
   </button>
-
-  {%- comment -%}
-    NO NAME UNDER THE PHOTO (the price is the one exception, above — owner
-    order). The grid is photographs; the text lives in the panel below and on
-    the product page, which is what search engines read and what a committed
-    shopper reads. The <a> above still carries the product URL, so the link a
-    crawler follows is unchanged — only the visible text is gone.
-
-    The alt attribute is NOT dropped with it: a screen reader has no photograph,
-    and stripping the alt would make the grid unusable rather than quiet.
-  {%- endcomment -%}
 
   {%- comment -%}
     The panel. `hidden` until JS opens it — and it stays hidden forever if JS
