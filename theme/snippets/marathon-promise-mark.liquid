@@ -1,0 +1,15 @@
+{%- comment -%}
+  The mark next to a promise. One shape, used by every slot, so the row cannot
+  drift into three different icons — and so a change of mind about the shape is
+  one edit rather than three.
+
+  It is inline SVG rather than an image because it is 120 bytes, needs no
+  request, takes its colour from the text beside it, and stays sharp on the
+  wall's texture at any density. `aria-hidden` because the words next to it
+  already say what it means; a screen reader announcing "circular arrow" ahead
+  of "14-day exchange" is noise.
+{%- endcomment -%}
+<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+  <path d="M20 12a8 8 0 1 1-2.34-5.66"/>
+  <path d="M20 4v4.5h-4.5"/>
+</svg>

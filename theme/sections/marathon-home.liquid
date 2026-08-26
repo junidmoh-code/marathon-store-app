@@ -44,12 +44,57 @@
   one.
 {%- endcomment -%}
 
-{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+{%- render 'marathon-identity' -%}
 
 {%- render 'marathon-nav' -%}
 
+{%- comment -%}
+  ─── THE HERO ──────────────────────────────────────────────────────────────
+  Full-bleed, so it sits OUTSIDE `.page-width` and carries its own inner one.
+  That is the only reason it is not inside the page container with everything
+  else: the wall has to run edge to edge or the hero is a banner pasted onto the
+  page rather than the page's own surface.
+
+  EVERY WORD IN IT IS A THEME SETTING with a default, and the whole band is one
+  checkbox away from gone. None of this copy is compiled in, because a claim
+  about used goods is the kind of thing that has to be changeable in the minute
+  someone notices it is wrong — without a deploy, and without going through me.
+{%- endcomment -%}
+{%- if section.settings.hero_show -%}
+  <section class="mc-hero">
+    <div class="page-width">
+      {%- if section.settings.hero_eyebrow != blank -%}
+        <p class="mc-hero__eyebrow">{{ section.settings.hero_eyebrow }}</p>
+      {%- endif -%}
+      {%- if section.settings.hero_heading != blank -%}
+        <h1 class="mc-hero__title">{{ section.settings.hero_heading }}</h1>
+      {%- endif -%}
+      {%- if section.settings.lede != blank -%}
+        <p class="mc-hero__lede">{{ section.settings.lede }}</p>
+      {%- endif -%}
+      <div class="mc-hero__actions">
+        {%- if section.settings.cta_one_label != blank -%}
+          <a class="mc-btn" href="{{ section.settings.cta_one_url | default: '/collections/all?sort_by=created-descending' }}">
+            {{ section.settings.cta_one_label }} &rarr;
+          </a>
+        {%- endif -%}
+        {%- if section.settings.cta_two_label != blank -%}
+          <a class="mc-btn" href="{{ section.settings.cta_two_url | default: '/collections/all?sort_by=created-descending' }}">
+            {{ section.settings.cta_two_label }}
+          </a>
+        {%- endif -%}
+      </div>
+    </div>
+  </section>
+{%- endif -%}
+
 <div class="page-width mc-page">
-  {%- if section.settings.lede != blank -%}
+  {%- comment -%}
+    With the hero on, the opening line is already the hero's own paragraph and
+    printing it twice is the kind of thing nobody notices until a shopper does.
+    With the hero off, it is still the page's opening line and belongs here.
+  {%- endcomment -%}
+  {%- if section.settings.lede != blank and section.settings.hero_show == false -%}
     <p class="mc-lede">{{ section.settings.lede }}</p>
   {%- endif -%}
 
@@ -205,6 +250,96 @@
   {%- endif -%}
 </div>
 
+{%- comment -%}
+  ─── WHAT WE ACTUALLY PROMISE ──────────────────────────────────────────────
+
+  Three slots, and only the first one is filled.
+
+  WHY IT IS NOT THREE ACROSS. The strip this replaces made three claims and the
+  shop can stand behind one of them. Marathon Club is an independent reseller of
+  clearance, surplus and pre-loved stock — it is not an authorised dealer for
+  anything, so it cannot vouch for provenance; delivery is a courier's promise,
+  not the shop's, so a stated window on the home page is a claim the shop does
+  not control; and what the shop does commit to is the 14-day exchange in
+  docs/RETURNS-AND-CONDITION.md, which is an exchange on a FAULT, not a change
+  of mind, and says so.
+
+  So the row shows the one promise that is real and links to the page that
+  states it in full. The other two slots exist, are blank, and are there for the
+  next thing that becomes true — not to be filled because a row of three looks
+  better than a row of one. Blank slots render nothing; all three blank renders
+  no strip at all.
+{%- endcomment -%}
+{%- liquid
+  assign promises = ''
+  if section.settings.promise_one_term != blank
+    assign promises = 'yes'
+  endif
+  if section.settings.promise_two_term != blank
+    assign promises = 'yes'
+  endif
+  if section.settings.promise_three_term != blank
+    assign promises = 'yes'
+  endif
+
+  # Shopify's `url` setting takes no default, and this one has a right answer,
+  # so the fallback lives here: with nothing picked in the theme editor the
+  # first promise still reaches the page that states it in full.
+  assign promise_one_url = section.settings.promise_one_url | default: '/pages/returns-and-condition'
+-%}
+{%- if promises == 'yes' -%}
+  {%- comment -%}
+    THE THREE SLOTS ARE WRITTEN OUT, NOT LOOPED, and only the first one is a
+    link. Both of those are deliberate.
+
+    Written out, because scripts/shopify/homeRails.test.mjs reads the hrefs in
+    THIS file and refuses any it cannot resolve. A loop that picks a URL out of
+    a setting hands it an expression with no path in it, and moving the anchor
+    into a snippet would hide the link from the check altogether — which is
+    exactly how a link went unchecked five times before that test existed. Three
+    plain blocks are duller, and they are the ones that stay honest.
+
+    A link on the first slot only, because the shop has one page that states a
+    promise in full. If a second promise ever earns a page of its own, give it
+    its own block here rather than a setting that could point anywhere.
+  {%- endcomment -%}
+  <div class="mc-promise">
+    {%- if section.settings.promise_one_term != blank -%}
+      <a class="mc-promise__item" href="{{ promise_one_url }}">
+        {%- render 'marathon-promise-mark' -%}
+        <span>
+          <span class="mc-promise__term">{{ section.settings.promise_one_term }}</span>
+          {%- if section.settings.promise_one_detail != blank -%}
+            <span class="mc-promise__detail">{{ section.settings.promise_one_detail }}</span>
+          {%- endif -%}
+        </span>
+      </a>
+    {%- endif -%}
+    {%- if section.settings.promise_two_term != blank -%}
+      <div class="mc-promise__item">
+        {%- render 'marathon-promise-mark' -%}
+        <span>
+          <span class="mc-promise__term">{{ section.settings.promise_two_term }}</span>
+          {%- if section.settings.promise_two_detail != blank -%}
+            <span class="mc-promise__detail">{{ section.settings.promise_two_detail }}</span>
+          {%- endif -%}
+        </span>
+      </div>
+    {%- endif -%}
+    {%- if section.settings.promise_three_term != blank -%}
+      <div class="mc-promise__item">
+        {%- render 'marathon-promise-mark' -%}
+        <span>
+          <span class="mc-promise__term">{{ section.settings.promise_three_term }}</span>
+          {%- if section.settings.promise_three_detail != blank -%}
+            <span class="mc-promise__detail">{{ section.settings.promise_three_detail }}</span>
+          {%- endif -%}
+        </span>
+      </div>
+    {%- endif -%}
+  </div>
+{%- endif -%}
+
 <script src="{{ 'marathon-storefront.js' | asset_url }}" defer="defer"></script>
 
 {% schema %}
@@ -251,8 +386,78 @@
       "type": "text",
       "id": "lede",
       "label": "Opening line",
-      "default": "Clearance, factory surplus and pre-loved stock. Checked by hand, graded, and listed only in the sizes we hold."
-    }
+      "default": "Clearance, factory surplus and pre-loved stock. Checked by hand, graded, and listed only in the sizes we hold.",
+      "info": "Shown inside the hero when the hero is on, and on its own above the rails when it is off."
+    },
+    { "type": "header", "content": "Hero" },
+    {
+      "type": "checkbox",
+      "id": "hero_show",
+      "default": true,
+      "label": "Show the hero",
+      "info": "Turn this off if the home page already has a banner section above the rails — two of them is one too many."
+    },
+    {
+      "type": "text",
+      "id": "hero_eyebrow",
+      "label": "Small line above the headline",
+      "default": "Independent reseller \u00b7 South Africa"
+    },
+    {
+      "type": "text",
+      "id": "hero_heading",
+      "label": "Headline",
+      "default": "Built different. Made to stand out."
+    },
+    {
+      "type": "text",
+      "id": "cta_one_label",
+      "label": "First button",
+      "default": "Shop all"
+    },
+    {
+      "type": "url",
+      "id": "cta_one_url",
+      "label": "First button goes to"
+    },
+    {
+      "type": "text",
+      "id": "cta_two_label",
+      "label": "Second button",
+      "default": "New arrivals"
+    },
+    {
+      "type": "url",
+      "id": "cta_two_url",
+      "label": "Second button goes to"
+    },
+    { "type": "header", "content": "What we promise" },
+    {
+      "type": "paragraph",
+      "content": "One row under the catalogue. Every line here is a promise about second-hand goods sold by an independent reseller, so it may only say what the returns page commits to. Leave a slot blank rather than filling it to make the row look even; blank the lot and no row is shown."
+    },
+    {
+      "type": "text",
+      "id": "promise_one_term",
+      "label": "First promise",
+      "default": "14-day exchange"
+    },
+    {
+      "type": "text",
+      "id": "promise_one_detail",
+      "label": "First promise \u2014 detail",
+      "default": "On anything faulty"
+    },
+    {
+      "type": "url",
+      "id": "promise_one_url",
+      "label": "First promise links to",
+      "info": "The returns and condition page. A promise a shopper cannot go and read is worth less than one they can."
+    },
+    { "type": "text", "id": "promise_two_term", "label": "Second promise" },
+    { "type": "text", "id": "promise_two_detail", "label": "Second promise \u2014 detail" },
+    { "type": "text", "id": "promise_three_term", "label": "Third promise" },
+    { "type": "text", "id": "promise_three_detail", "label": "Third promise \u2014 detail" }
   ],
   "presets": [{ "name": "Home rails" }]
 }

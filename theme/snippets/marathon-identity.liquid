@@ -1,0 +1,35 @@
+{%- comment -%}
+  ─── THE IDENTITY ────────────────────────────────────────────────────────────
+
+  One line of markup that makes every page of the shop stand in front of the
+  same wall the products were photographed against.
+
+  WHY A SNIPPET AND NOT JUST CSS. A Shopify asset served as `.css` is a static
+  file — Liquid does not run inside it — so the stylesheet cannot write the
+  URL of another asset. The texture's address therefore has to be handed to the
+  stylesheet from a Liquid context, once, as a custom property. That is all this
+  file does, plus pulling in the stylesheet itself so the two can never be
+  installed apart.
+
+  WHERE TO RENDER IT. Both marathon sections render it, so the home page and
+  every category page carry the identity on their own. Render it from
+  `layout/theme.liquid` as well — see theme/INSTALL.md — and the product page,
+  the cart, the search results and the policy pages carry it too, which is the
+  whole point: the environment does not stop at the pages this rebuild owns.
+
+  RENDERING IT TWICE IS SAFE. The stylesheet link is the same URL both times
+  and is fetched once; the custom property is declared with the same value both
+  times. There is no flag to set and nothing to keep in sync.
+
+  THE TEXTURE. `marathon-fence.jpg` is the owner's own photograph of the mesh,
+  levelled to remove the camera's lighting falloff and cut to a tile that
+  repeats without a seam (447x384, one whole number of cells in each direction,
+  53 KB, greyscale). It is LIGHT — mesh on near-white, exactly as photographed.
+  The stylesheet darkens it with a multiply blend rather than shipping a dark
+  copy, so the depth of the wall is one number in CSS that can be tuned in the
+  theme editor's own preview instead of a re-export.
+{%- endcomment -%}
+{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+<style>
+  :root { --mc-fence: url({{ 'marathon-fence.jpg' | asset_url }}); }
+</style>

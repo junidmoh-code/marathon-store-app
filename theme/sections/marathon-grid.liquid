@@ -17,7 +17,7 @@
   catalogue by tag (see snippets/marathon-nav.liquid for why it must).
 {%- endcomment -%}
 
-{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+{%- render 'marathon-identity' -%}
 
 {%- render 'marathon-nav' -%}
 
