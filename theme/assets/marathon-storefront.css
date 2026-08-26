@@ -175,6 +175,16 @@
   border-radius: var(--mc-frame-radius, 6px);
   box-shadow: 0 3px 14px rgb(0 0 0 / 0.55);
 }
+/* When a price footer follows (every available product), square off the
+   photo's bottom corners and drop its bottom border — `.mc-card__price`
+   picks up right where the photo's mat ends, same fill, same side borders,
+   rounded only at its own bottom corners, so the two read as one continuous
+   frame rather than two stacked boxes. A sold-out tile has no price footer,
+   so its frame stays fully rounded on its own. */
+.mc-card__media:has(+ .mc-card__price) {
+  border-radius: var(--mc-frame-radius, 6px) var(--mc-frame-radius, 6px) 0 0;
+  border-block-end: none;
+}
 .mc-card__media img {
   width: 100%;
   height: 100%;
@@ -290,47 +300,36 @@
 
 /* ─── PRICE BADGE ──────────────────────────────────────────────────────────── */
 /* The one piece of text every card carries, so the grid reads as a shop and
-   not a photo album — a badge ON the photo, in the SAME frame as the sold-out
-   badge and built the same way, not a separate line of text floating under
-   the tile. Opposite corner from `.mc-card__sold` (bottom-END here vs.
-   bottom-START there): the two never appear on the same card, but pinning
-   each to its own corner keeps a scanned row legible instead of every badge
-   landing in the same spot regardless of which one it is.
+   not a photo album.
 
-   A SOLID CHIP, NOT BARE TEXT — needs to hold up against a light studio-sweep
-   photo AND a dark warehouse-shot one without disappearing into either, which
-   plain text sitting on the image cannot do. rgb(255 255 255 / 0.95) on a
-   near-opaque dark fill is the shop's own high-contrast pairing already used
-   for `.mc-size[aria-pressed=true]` — reusing it here instead of inventing a
-   third treatment. */
-/* RESTYLED 2026-08-26 (owner's reference screenshot): bottom-LEFT, white
-   bold figures on a dark gradient band spanning the photo's lower edge — not
-   the white chip that shipped first. The band holds up against light and dark
-   photographs alike, and the strip-with-price-left reading is the exact
-   design in the owner's picture. Positioning still offsets by the frame mat,
-   for the `.mc-card__sold` reasons above. */
+   RESTYLED AGAIN 2026-08-26 (owner: "black box white font blended right below
+   the photo but still in the box, very clean"). Two prior versions did not
+   match this: a white chip floating on the photo, then a dark gradient band
+   still overlaid ON the image. This version is neither — it is a solid black
+   strip that is PART OF THE CARD'S OWN FRAME, flush against the photo's
+   bottom edge, inside the same dark mat as the rest of the frame (see
+   `.mc-card__media`'s `--mc-frame-fill`), not floating over the artwork and
+   not a corner chip. It sits in normal document flow right after the photo,
+   so it never overlaps the image and never needs a gradient to stay legible —
+   it IS the frame, at the bottom, holding text. */
 .mc-card__price {
-  position: absolute;
-  inset-inline-start: var(--mc-frame, 10px);
-  inset-inline-end: var(--mc-frame, 10px);
-  inset-block-end: var(--mc-frame, 10px);
-  padding: 26px 10px 8px;
-  background: linear-gradient(to bottom, rgb(0 0 0 / 0), rgb(0 0 0 / 0.72));
-  border-radius: 0 0 calc(var(--mc-frame-radius, 6px) - 3px) calc(var(--mc-frame-radius, 6px) - 3px);
+  display: block;
+  margin: 0;
+  padding: 0.6rem var(--mc-frame, 10px) 0.7rem;
+  background: var(--mc-frame-fill, rgb(10 9 8));
+  border-inline: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  border-block-end: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  border-radius: 0 0 var(--mc-frame-radius, 6px) var(--mc-frame-radius, 6px);
   color: #fff;
-  font-size: 1.1rem;
+  font-size: 1.15rem;
   font-weight: 700;
   letter-spacing: 0.01em;
   line-height: 1;
-  text-align: start;
-  text-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
-  pointer-events: none;
+  text-align: center;
 }
 @media screen and (min-width: 750px) {
   .mc-card__price {
-    inset-inline-start: var(--mc-frame-lg, 13px);
-    inset-inline-end: var(--mc-frame-lg, 13px);
-    inset-block-end: var(--mc-frame-lg, 13px);
+    padding: 0.7rem var(--mc-frame-lg, 13px) 0.8rem;
   }
 }
 
