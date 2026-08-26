@@ -59,6 +59,8 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 // route render nothing once STOCK_HOLD_ENABLED is off.
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
+import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard";
+import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
 import SocialView from "./components/social/SocialView";
 import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
@@ -325,7 +327,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2866,6 +2868,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
     ? <StockHoldCard viewer={{ email: homeUser?.email, uid: homeUser?.uid }}
                      onOpen={() => onSelect(ROLES.STOCK_HOLD)} />
     : null;
+  // Display Registration (2026-08-26): the daily display-wall lane — register
+  // what went on display when new stock arrives, fix a wrong size after a
+  // recheck. Stock-capable staff only; records facts, never movements.
+  const displayRegCard = (canAccessStock || isSuperAdmin)
+    ? <DisplayRegistrationCard onOpen={() => onSelect(ROLES.DISPLAY_REGISTRATION)} />
+    : null;
   // Shopify Publishing — the online-store push pipeline (clean names,
   // condition grades, nominations). An ordinary row in the Administration
   // group now (owner spec 2026-08-14 — the oversized home card is gone),
@@ -3080,6 +3088,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               for an admin with no other tiles. */}
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
           {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
+          {displayRegCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{displayRegCard}</div>}
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
@@ -3142,6 +3151,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
         {/* TEMPORARY — hub sneaker stock-take (see the desktop branch above). */}
         {hubCountCard}
         {stockHoldCard}
+        {displayRegCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -17893,6 +17903,9 @@ function AppInner() {
   // owner/delegate gate against the live config (it needs the config loaded
   // anyway) and shows a plain refusal to anyone else.
   const stockHoldRouteOpen = STOCK_HOLD_ENABLED && !!authUser;
+  // Display Registration: any stock-capable staff — the display-wall lane is
+  // a fact recorder (register rows + slots, never movements).
+  const displayRegRouteOpen = !!authUser && canAccessStock;
   // Shopify Publishing route — same identities the /shopify_publish console
   // write rule accepts (Junid via super-admin, or a stockRole admin).
   const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin" || hasPermission("shopify_publish");
@@ -17959,6 +17972,7 @@ function AppInner() {
     if (role === ROLES.HUB_SNEAKER_COUNT && !hubCountRouteOpen) { setRole(null); return; }
     // The temporary Shipment Release surface obeys the same rule.
     if (role === ROLES.STOCK_HOLD && !stockHoldRouteOpen) { setRole(null); return; }
+    if (role === ROLES.DISPLAY_REGISTRATION && !displayRegRouteOpen) { setRole(null); return; }
     // Shopify Publishing mirrors the console write rule on /shopify_publish
     // (super-admin or stockRole admin) — a stale persisted role drops home.
     if (role === ROLES.SHOPIFY_PUBLISH && !shopifyRouteOpen) { setRole(null); return; }
@@ -17967,7 +17981,7 @@ function AppInner() {
     if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, shopifyRouteOpen, socialRouteOpen, aiStudioRouteOpen, permRecord]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, shopifyRouteOpen, socialRouteOpen, aiStudioRouteOpen, permRecord]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -18225,6 +18239,9 @@ function AppInner() {
   else if (role === ROLES.STOCK_HOLD) view = stockHoldRouteOpen
     ? <StockHoldRelease viewer={{ email: authUser?.email, uid: authUser?.uid }}
         actorRole={stockRole} onExit={() => setRole(null)} />
+    : null;
+  else if (role === ROLES.DISPLAY_REGISTRATION) view = displayRegRouteOpen
+    ? <DisplayRegistrationView products={products} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
