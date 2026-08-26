@@ -461,6 +461,9 @@
         // is preserved, so nothing downloads until it is nearly in view.
         while (incoming.firstElementChild) grid.appendChild(incoming.firstElementChild);
         pagesLoaded++;
+        // Newly-appended cards need their hearts marked (the click handler is
+        // delegated and needs nothing, but the FILLED state is per-card).
+        applyLoved(grid);
 
         // Swap in the next sentinel, or the end marker.
         var nextMore = doc.querySelector("[data-mc-more]");
@@ -582,4 +585,66 @@
     if (panel) panel.hidden = !nowOpen;
     toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
   });
+
+  // ─── LOVED (owner order 2026-08-26) ─────────────────────────────────────────
+  // Tap the heart to keep a product in mind; decide later. Loved products
+  // SURFACE AT THE TOP of the grid on the next page view — deliberately not
+  // the instant of the tap, because a card that jumps out from under a thumb
+  // mid-browse reads as a glitch, not a feature.
+  //
+  // Per-browser localStorage, same discipline as the density preference: every
+  // read and write guarded, because a private window can THROW on the accessor
+  // rather than return null. No account, no endpoint — a cleared browser
+  // forgets, and that is the honest cost of zero-friction loving.
+  var LOVE_KEY = "mc-loved";
+  function readLoved() {
+    try {
+      var v = JSON.parse(localStorage.getItem(LOVE_KEY) || "[]");
+      return Array.isArray(v) ? v.map(String) : [];
+    } catch (e) { return []; }
+  }
+  function writeLoved(ids) {
+    try { localStorage.setItem(LOVE_KEY, JSON.stringify(ids)); } catch (e) { /* private window */ }
+  }
+  // Mark every heart in `scope` from the stored set. Called at load and after
+  // each infinite-scroll append (the click handler below is delegated and
+  // needs no re-wiring; only the FILLED state is per-card).
+  function applyLoved(scope) {
+    var loved = readLoved();
+    $$("[data-mc-love]", scope || document).forEach(function (b) {
+      var on = loved.indexOf(String(b.getAttribute("data-product-id"))) !== -1;
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+  // Loved cards move to the FRONT of the collection grid, keeping their
+  // relative order. First page only — cards arriving by infinite scroll keep
+  // their place until the next visit (reordering under an active scroll is
+  // the jump-glitch again).
+  function surgeLoved() {
+    var grid = $("[data-mc-grid]");
+    if (!grid) return;
+    var loved = readLoved();
+    if (!loved.length) return;
+    var lovedCards = $$("[data-mc-card]", grid).filter(function (c) {
+      var b = $("[data-mc-love]", c);
+      return b && loved.indexOf(String(b.getAttribute("data-product-id"))) !== -1;
+    });
+    for (var i = lovedCards.length - 1; i >= 0; i--) {
+      grid.insertBefore(lovedCards[i], grid.firstElementChild);
+    }
+  }
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest("[data-mc-love]");
+    if (!b) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    var id = String(b.getAttribute("data-product-id"));
+    var loved = readLoved();
+    var i = loved.indexOf(id);
+    if (i === -1) loved.push(id); else loved.splice(i, 1);
+    writeLoved(loved);
+    b.setAttribute("aria-pressed", i === -1 ? "true" : "false");
+  });
+  applyLoved(document);
+  surgeLoved();
 })();

@@ -147,6 +147,29 @@
     {%- endif -%}
   </a>
 
+
+  {%- comment -%}
+    THE LOVE BUTTON (owner order 2026-08-26): shoppers mark products to decide
+    on later; loved products surface at the top of the grid on their next
+    visit. State is per-browser localStorage (marathon-storefront.js,
+    "mc-loved") — no account, no endpoint, nothing server-side. A SIBLING of
+    the media link, never inside it, so a heart tap can never navigate or open
+    the panel; without JavaScript it renders and does nothing, the same
+    graceful degradation as everything else on this card.
+  {%- endcomment -%}
+  <button
+    type="button"
+    class="mc-love"
+    data-mc-love
+    data-product-id="{{ product.id }}"
+    aria-pressed="false"
+    aria-label="Love {{ product.title | escape }}"
+  >
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+      <path d="M12 21s-6.7-4.3-9.3-8.1C.6 9.9 1.5 6.4 4.3 5c2.2-1.1 4.6-.3 6 1.5L12 8l1.7-1.5c1.4-1.8 3.8-2.6 6-1.5 2.8 1.4 3.7 4.9 1.6 7.9C18.7 16.7 12 21 12 21z"/>
+    </svg>
+  </button>
+
   {%- comment -%}
     The panel. `hidden` until JS opens it — and it stays hidden forever if JS
     never runs, which is the graceful degradation described above.
