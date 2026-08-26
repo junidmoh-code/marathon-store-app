@@ -1,5 +1,20 @@
 # Marathon Club storefront — install, preview, publish, revert
 
+> **Update 2026-08-26 — tile price + love hearts (owner order).** Three files
+> changed; re-paste them over the copies in the draft theme ("Marathon — fence
+> preview") and the change is live on the preview:
+>
+> | Admin location | File |
+> |---|---|
+> | Snippets → `marathon-card` | `theme/snippets/marathon-card.liquid` |
+> | Assets → `marathon-storefront.css` | `theme/assets/marathon-storefront.css` |
+> | Assets → `marathon-storefront.js` | `theme/assets/marathon-storefront.js` |
+>
+> What it does: every tile shows its price ("R 800.00", the store's own money
+> format) on a bottom gradient band, and carries a heart — shoppers love
+> products per-browser (localStorage, no account) and loved products surface
+> at the top of the grid on their next page view. No other file changed.
+
 Two things live in this folder:
 
 1. **The photo-first storefront** — the grid, the quick view, the category

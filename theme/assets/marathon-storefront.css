@@ -193,6 +193,64 @@
   .mc-card__media { padding: var(--mc-frame-lg, 13px); }
 }
 
+/* ─── PRICE ON THE TILE (owner order 2026-08-26) ──────────────────────────── */
+/* A gradient band pinned to the photo's bottom edge, INSIDE the frame mat, so
+   the number reads on any photograph without a hard box. Same money string as
+   the panel — the CSS only places it. */
+.mc-card__price {
+  position: absolute;
+  left: var(--mc-frame, 10px);
+  right: var(--mc-frame, 10px);
+  bottom: var(--mc-frame, 10px);
+  padding: 26px 10px 8px;
+  background: linear-gradient(to bottom, rgb(0 0 0 / 0), rgb(0 0 0 / 0.72));
+  border-radius: 0 0 calc(var(--mc-frame-radius, 6px) - 3px) calc(var(--mc-frame-radius, 6px) - 3px);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.02rem;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  pointer-events: none;      /* the tile stays one big tap target */
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.6);
+}
+@media screen and (min-width: 750px) {
+  .mc-card__price { left: var(--mc-frame-lg, 13px); right: var(--mc-frame-lg, 13px); bottom: var(--mc-frame-lg, 13px); }
+}
+
+/* ─── THE LOVE BUTTON (owner order 2026-08-26) ─────────────────────────────── */
+/* White outline heart over the photo's top-right, filling red when loved.
+   44px hit area on a 22px glyph — thumbs, not cursors. */
+.mc-love {
+  position: absolute;
+  top: calc(var(--mc-frame, 10px) + 4px);
+  right: calc(var(--mc-frame, 10px) + 4px);
+  z-index: 2;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.mc-love svg path {
+  fill: rgb(0 0 0 / 0.25);
+  stroke: #fff;
+  stroke-width: 1.8;
+  transition: fill 0.15s ease, stroke 0.15s ease, transform 0.15s ease;
+}
+.mc-love[aria-pressed="true"] svg path {
+  fill: #ff4d5e;
+  stroke: #ff4d5e;
+}
+.mc-love svg { transition: transform 0.15s ease; }
+.mc-love:active svg { transform: scale(1.18); }
+@media screen and (min-width: 750px) {
+  .mc-love { top: calc(var(--mc-frame-lg, 13px) + 4px); right: calc(var(--mc-frame-lg, 13px) + 4px); }
+}
+
 /* ─── DENSITY ──────────────────────────────────────────────────────────────── */
 /* Two, three or four across, the way pinching works in a photo library. Three
    is the default and the one the shop is designed around; the others are there
