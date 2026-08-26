@@ -10,6 +10,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STOCK_HOLD_ROOT } from "../../config/stockHold";
+import { DISPLAY_SLOTS_ROOT } from "./displaySlots";
 import { HIDDEN_ROOT } from "./hiddenProductsCore";
 
 function useAuthReady() {
@@ -113,6 +114,18 @@ export function useStockCellsState(locationId) {
     return decodeByProduct(st.value);
   }, [st.value, locationId]);
   return { cells, settled: st.settled, error: st.error };
+}
+
+// /settings/displaySlots → { store: { productId: slot } } — the live display
+// register (one slot per product per store; displaySlots.js is the writer).
+// Measured 2026-08-26: the whole node is ~60 KB, against the ~474 KB
+// stock/hub1 subtree the same screen already streams — the display-pair
+// marker cannot be derived from the stock cells (they carry no display fact,
+// and writing one in would mean a second bookkeeping path over a
+// rules-validated node), so this one extra listener is the cost, stated and
+// accepted. `enabled=false` skips the subscription entirely (Pine devices).
+export function useDisplaySlots(enabled = true) {
+  return usePath(DISPLAY_SLOTS_ROOT, enabled);
 }
 
 // /stock_movements -> array sorted newest-first. Optionally filter by productId.
