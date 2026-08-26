@@ -7770,7 +7770,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel, sneakerOut, sneakerDisplayOnly }) {
+                            hubQty, servingHubLabel, sneakerOut, sneakerDisplayOnly, sneakerDisplayInfo }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
   // clothing catalog with live per-size availability at the serving CR hub
@@ -8143,12 +8143,17 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // quick-view with the prompt already up.
                               const dOnly = !out && !clothingOrder && !isDeactivated(p)
                                 ? sneakerDisplayOnly?.(p, sz) : null;
+                              // Quiet tier — glyph on ANY size that is on a
+                              // display; amber only when it is the last one.
+                              const dInfo = !clothingOrder ? sneakerDisplayInfo?.(p, sz) : null;
                               return (
                                 <button key={sz} className="ad-sz" disabled={out}
                                   title={out ? (isDeactivated(p) ? "Deactivated — finished line" : `Not available at ${servingHubLabel}`)
-                                    : dOnly ? "Only the display pair remains at Hub 1 — tap to request it" : undefined}
-                                  style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
-                                    : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" } : undefined}
+                                    : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
+                                    : dInfo ? "This size is on a display" : undefined}
+                                  style={out ? { position:"relative", opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
+                                    : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
+                                    : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
                                     e.stopPropagation(); if (out) return;
                                     if (dOnly) { openQv(p); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
@@ -8156,9 +8161,18 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                     // holds everything the hub has — no ✓ flash
                                     // for an add that didn't happen.
                                     if (!onQuickAdd(p, sz, 1)) return;
-                                    const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
-                                    setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
-                                  }}>{sz === "Free Size" ? "OS" : sz}{dOnly ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
+                                    const b = e.currentTarget;
+                                    b.classList.add("flash");
+                                    // The textContent swap would destroy the
+                                    // display glyph span (React never repaints
+                                    // a manually-mutated node) — glyph tiles
+                                    // flash by class alone.
+                                    if (dInfo) { setTimeout(() => b.classList.remove("flash"), 430); }
+                                    else {
+                                      const t = b.textContent; b.textContent = "✓";
+                                      setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
+                                    }
+                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
                               );
                             })}
                           </div>
@@ -8321,6 +8335,10 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" } : undefined}
                             onClick={() => {
                               if (out) { if (clothingOrder || isDeactivated(qv)) setQvNa({ size: sz, left: 0 }); return; }
+                              // Tapping the selected size again DESELECTS it
+                              // (owner bug report 2026-08-26) — and drops any
+                              // display-pair claim with it.
+                              if (qvSize === sz) { setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(null); return; }
                               if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                               // A plain size selection drops any display-pair
                               // claim — it belongs to the prompted size only.
@@ -8886,6 +8904,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     const avail = sneakerAvail(p.id, s) - sneakerInCart(p.id, s);
     return displayOnly(avail, d.units) ? { stores: d.stores } : null;
   };
+  // THE QUIET TIER (owner ask, 2026-08-26): a size that is on a display shows
+  // the small glyph ALWAYS — informational, no tint, no prompt — so staff can
+  // see at a glance which size is out on a floor. It only escalates to the
+  // amber marker + "Request display pair" prompt when the display pair is the
+  // last availability (sneakerDisplayOnly above). Same slots data the screen
+  // already streams; needs no availability read, so no settled gate.
+  const sneakerDisplayInfo = (p, s) =>
+    (s && sneakerServedByHub1(p) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -9375,7 +9401,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerDisplayOnly={sneakerDisplayOnly} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -9833,24 +9859,33 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // (that flow already exists to ask for what hub1 lacks).
                 const dispOnly = !out && !clothing && !pendingDisplayPartner && !isDeactivated(selected)
                   ? sneakerDisplayOnly(selected, s) : null;
+                // The quiet tier: any size on a display carries the glyph,
+                // always — amber only when the display pair is the last one.
+                const dispInfo = !clothing ? sneakerDisplayInfo(selected, s) : null;
                 return (
                   <button key={s} disabled={snkOut}
                     onClick={() => {
                       if (out) { if (clothing || isDeactivated(selected)) setNaNote({ size: s, left: 0 }); return; }
+                      // Tapping the ALREADY-SELECTED size deselects it — a
+                      // mis-tapped size was otherwise stuck (owner bug report
+                      // 2026-08-26; it matters most on a size-optional Display
+                      // Partner request). Deselection also drops any
+                      // display-pair claim, which belonged to that size.
+                      if (pendingSize === s) { setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(""); return; }
                       if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
                       // A plain size selection drops any display-pair claim —
                       // the claim belongs to the size the prompt was about.
                       setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
                     }}
                     style={out
-                      ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
+                      ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
                       : dispOnly
                         ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?"#FBBF24":"rgba(251,191,36,.45)", background: pendingSize===s?"rgba(251,191,36,.18)":"rgba(251,191,36,.08)", color:"#FBBF24", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }
-                        : { padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
+                        : { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
                     <SizeTag size={s} />{snkOut ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
-                    {dispOnly ? (
-                      <span aria-label="only the display pair remains" style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                    {dispInfo ? (
+                      <span aria-label={dispOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={dispOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                       </span>
                     ) : null}
                   </button>
