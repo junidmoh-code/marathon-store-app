@@ -27,6 +27,7 @@ import { slotIsLive } from "./displaySlots";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { decodeSizeKey } from "../../utils/sizeKey";
+import { isFootwearProduct } from "./availabilityCore";
 import { recordDisplayFact, editDisplaySize, removeDisplayFact } from "./displayRegistrationStore";
 
 const HUBS = ["hub1", "hub2"];
@@ -54,7 +55,12 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
   const slots = useDisplaySlots(true);
   const register = useDisplayRegister(hub, true);
 
-  const results = useMemo(() => (query.trim() ? searchProducts(products, query, { limit: 12 }) : []), [products, query]);
+  // SNEAKERS ONLY (owner ask, 2026-08-26): the display walls hold footwear —
+  // clothing, perfume and accessories never appear here, by search or by scan.
+  const results = useMemo(
+    () => (query.trim() ? searchProducts(products, query, { limit: 12, predicate: isFootwearProduct }) : []),
+    [products, query]
+  );
 
   // The scan resolver, shared by the burst listener and the typed-digits
   // fallback: /barcodes first (many-to-one; codes never mirrored onto the
@@ -66,6 +72,10 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
       const hit = await lookupBarcode(String(value));
       const pid = hit?.productId;
       const p = pid ? productsRef.current.find((x) => x.id === pid) : null;
+      if (p && !isFootwearProduct(p)) {
+        setNote({ tone: "err", text: `${p.name} is not a sneaker — this lane registers shoe displays only.` });
+        return false;
+      }
       if (p) { pick(p); setNote(null); return true; }
       setNote({ tone: "err", text: `Scan ${value} matched no product — search by name instead.` });
     } catch {

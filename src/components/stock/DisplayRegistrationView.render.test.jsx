@@ -26,6 +26,8 @@ const { default: DisplayRegistrationView } = await import("./DisplayRegistration
 const PRODUCTS = [
   { id: "p1", name: "Nike Dunk Low Panda", category: "Footwear", sizes: ["6", "7", "8"] },
   { id: "p2", name: "Air Max 95", category: "Footwear", sizes: ["7", "8"] },
+  // NOT footwear — must never surface in this lane (owner: sneakers only).
+  { id: "p3", name: "Dunk Hill Perfume", categoryKey: "perfumes", sizes: [] },
 ];
 
 const text = (tree) => JSON.stringify(tree.toJSON());
@@ -48,6 +50,7 @@ describe("DisplayRegistrationView renders and walks the lane", () => {
 
     await act(async () => { findInput(tree).props.onChange({ target: { value: "dunk" } }); });
     expect(text(tree)).toContain("Nike Dunk Low Panda");
+    expect(text(tree)).not.toContain("Dunk Hill Perfume");   // sneakers only — non-footwear never surfaces
 
     const resultBtn = buttonWith(tree, "Nike Dunk Low Panda");
     await act(async () => { resultBtn.props.onClick(); });
