@@ -53,15 +53,57 @@
  * Everything else — fonts, foreground, background, button colour, media radius,
  * focus ring — is the theme's.
  *
+ * THE FENCE. Every Marathon Club product is photographed against the same
+ * expanded-metal mesh, so the mesh is already the one thing every photograph on
+ * this shop has in common — the closest thing a catalogue with no brand names
+ * has to a signature. This stylesheet makes it the shop's own surface too: the
+ * page stands in front of the same wall the products were shot against, and a
+ * card stops being a tile pasted onto a background and becomes a lit frame hung
+ * on it.
+ *
+ * It is the owner's own photograph (`marathon-fence.jpg`, handed over as taken:
+ * dark mesh on a near-white field), levelled and cut to a 447x384 tile that
+ * repeats without a seam. It is darkened HERE, by multiplying it against
+ * `--mc-wall`, rather than shipped as a dark file — one number decides how deep
+ * the wall is, it can be moved in a live preview, and the shipped asset stays
+ * the photograph rather than a treatment of it.
+ *
+ * THE FRAME follows from the wall. A photograph sitting directly on a texture
+ * reads as a hole in it, so every photograph is inset in a frame: a hairline
+ * edge, a translucent plate so the mesh still shows through the letterboxing on
+ * the 37 odd-ratio photos, and a light top-and-bottom scrim on the photograph
+ * itself. The scrim is what makes uneven catalogue photography sit down on a
+ * dark page — a white studio sweep stops glaring, and a dark warehouse shot
+ * keeps its edges.
+ *
  * NAMESPACE. Every selector is prefixed `mc-`. Nothing here can reach Dawn's
  * own cards, and in particular nothing can reach the /search results that
  * marathon-search.js writes, which must keep working untouched.
  */
 
 :root {
-  /* Departure 1 — see the header note. */
-  --mc-field: rgb(38 34 31);
-  --mc-field-edge: rgb(255 255 255 / 0.07);
+  /* Departure 1 — see the header note. The field is now TRANSLUCENT: it is the
+     plate a photograph is mounted on, and the mesh behind it has to stay
+     legible through the letterboxing or the frame reads as a sticker. */
+  --mc-field: rgb(14 13 12 / 0.58);
+  --mc-field-edge: rgb(255 255 255 / 0.14);
+  /* Departure 3 — the wall. `--mc-wall` is what white in the photograph becomes
+     once the texture is multiplied against it, so it is the single number that
+     decides how deep the mesh sits. `--mc-fence` is the texture's URL and is
+     declared by snippets/marathon-identity.liquid, because a static .css asset
+     cannot ask Liquid for another asset's address. If that snippet is ever
+     missing, the url() resolves to nothing and the page is a plain dark shop —
+     it does not break. */
+  --mc-wall: rgb(56 56 56);
+  --mc-wall-flat: rgb(23 22 21);
+  --mc-fence-scale: 300px;
+  /* Departure 4 — the display face. The headline voice in the concept is a
+     heavy grotesque set in caps, tight, with the tracking opened right up on
+     the small labels underneath it. That contrast is doing the work, not any
+     one typeface, so this is a stack of what is already on the device rather
+     than a webfont on the critical path: Archivo where the shop has it, the
+     platform grotesque everywhere else. */
+  --mc-display: "Archivo", "Helvetica Neue", Helvetica, "Segoe UI", Roboto, Arial, sans-serif;
   /* Departure 2 — see the header note. */
   --mc-gap: 12px;
 
@@ -71,6 +113,11 @@
   --mc-fg: rgb(var(--color-foreground, 247 248 250));
   --mc-bg: rgb(var(--color-background, 18 18 18));
   --mc-radius: var(--media-radius, 10px);
+  /* Departure 5 — the frame's corner. The theme rounds media to 10px, which is
+     a soft, app-like corner. A frame hung on a metal wall is not soft; 3px is
+     enough to stop the corner looking chipped and little enough that the frame
+     reads as cut rather than moulded. */
+  --mc-frame-radius: 3px;
   --mc-btn-radius: var(--buttons-radius, 4px);
   --mc-btn: rgb(var(--color-button, 77 62 51));
   --mc-btn-text: rgb(var(--color-button-text, 249 244 233));
@@ -82,7 +129,39 @@
 }
 
 @media screen and (min-width: 750px) {
-  :root { --mc-gap: 16px; }
+  :root { --mc-gap: 16px; --mc-fence-scale: 360px; }
+}
+
+/* ─── THE WALL ──────────────────────────────────────────────────────────────
+   The texture is LIGHT — mesh on near-white — and is darkened by multiplying it
+   against `--mc-wall`: white lands on the wall colour, the mesh's own blacks
+   stay black, and the metal keeps the depth the camera caught. Shipping a
+   pre-darkened file would have been one less rule and one more asset to
+   re-export every time the wall moves a shade.
+
+   IT IS APPLIED ONLY WHERE THE BLEND IS SUPPORTED. Without `background-blend-
+   mode` the same file paints as a near-WHITE grid over a dark shop — a broken
+   page, not a degraded one — so the texture is declared inside @supports and
+   everything outside it falls back to the flat dark field the theme already
+   had. Every browser this shop sees has supported the blend since 2015; the
+   guard is for the one that does not.
+
+   IT SCROLLS. `background-attachment: fixed` would hold the wall still behind
+   the page, which reads well on a laptop and is a decade-old repaint bug on iOS
+   Safari — and this is a phone-first shop. A seamless tile that scrolls with
+   the page reads as a wall the shop is built on, which is the truer metaphor
+   anyway. */
+body {
+  background-color: var(--mc-wall-flat);
+}
+@supports (background-blend-mode: multiply) {
+  body {
+    background-color: var(--mc-wall);
+    background-image: var(--mc-fence);
+    background-size: var(--mc-fence-scale) auto;
+    background-repeat: repeat;
+    background-blend-mode: multiply;
+  }
 }
 
 /* ─── GRID ─────────────────────────────────────────────────────────────────── */
@@ -114,14 +193,43 @@
   display: block;
   aspect-ratio: 3 / 4;
   background: var(--mc-field);
-  border-radius: var(--mc-radius);
+  border-radius: var(--mc-frame-radius);
   overflow: hidden;
-  /* A hairline rather than a shadow: it holds the frame's edge against a photo
-     whose own background happens to match the field, without adding a second
-     visual language to a page that is already all photographs. */
-  box-shadow: inset 0 0 0 1px var(--mc-field-edge);
+  /* THREE EDGES, ALL HAIRLINES, NO SECOND VISUAL LANGUAGE.
+     The inner line holds the frame against a photo whose own background happens
+     to match the plate. The outer line is what separates the frame from the
+     mesh behind it — without it a 3:4 rectangle of dark plate on a dark
+     textured wall has no edge at all and the grid dissolves. The drop is short
+     and hard rather than soft and wide: it should read as a frame standing off
+     the wall, not as a card floating over a page. */
+  box-shadow:
+    inset 0 0 0 1px var(--mc-field-edge),
+    0 1px 2px rgb(0 0 0 / 0.55),
+    0 6px 18px rgb(0 0 0 / 0.35);
   text-decoration: none;
   cursor: pointer;
+}
+/* THE SCRIM — the "darkness" the frame puts on a photograph. It is a top-and-
+   bottom fall-off, not a flat tint: a flat tint takes the same amount off the
+   product itself, while a fall-off darkens only the corners a photograph
+   rarely uses, which is where a white studio sweep glares against the wall and
+   where a dark warehouse shot loses its edge. It sits ABOVE the photograph and
+   BELOW the sold-out badge, and it is inert to the pointer so the whole frame
+   stays one link. */
+.mc-card__media::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      rgb(0 0 0 / 0.26) 0%,
+      rgb(0 0 0 / 0) 30%,
+      rgb(0 0 0 / 0) 62%,
+      rgb(0 0 0 / 0.38) 100%
+    );
 }
 .mc-card__media img {
   width: 100%;
@@ -133,6 +241,14 @@
   /* Never upscale: 131 live photos have a side under 600px and a card is at most
      ~340 CSS px, so this only ever guards the small ones from being blown up. */
   image-rendering: auto;
+  /* "CRISPY". A small, uniform grade applied to every photograph so 703 of them
+     shot in different rooms under different lights read as one catalogue: a
+     touch of contrast for the edges, a touch of saturation so a dark colourway
+     does not go grey once the scrim is over it, and a hair of brightness off so
+     nothing punches a hole in the wall. Kept deliberately small — this is
+     grading, not an effect, and anything stronger starts lying about the
+     condition of used goods, which is the one thing this shop may not do. */
+  filter: brightness(0.96) contrast(1.07) saturate(1.06);
 }
 
 /* ─── THE LABEL UNDER THE PHOTO ────────────────────────────────────────────── */
@@ -169,6 +285,10 @@
 /* A sold-out product is still listed — "everything listed" — but says so. */
 .mc-card__sold {
   position: absolute;
+  /* Above the scrim — a sold-out badge is information, not part of the picture. */
+  z-index: 2;
+  font-family: var(--mc-display);
+  text-transform: uppercase;
   inset-inline-start: 0.8rem;
   inset-block-start: 0.8rem;
   font-size: 1.1rem;
@@ -196,7 +316,7 @@
   gap: 0.9rem;
   padding: 1.2rem;
   overflow-y: auto;
-  border-radius: var(--mc-radius);
+  border-radius: var(--mc-frame-radius);
   color: rgb(255 255 255 / 0.92);
   /* The balance here is deliberate. The photograph is the only thing that
      identifies these products, so hiding it completely while the shopper picks
@@ -318,6 +438,8 @@
    is the same treatment the product page already uses, so the grid and the
    product page make the same promise in the same visual language. */
 .mc-size {
+  font-family: var(--mc-display);
+  letter-spacing: 0.06em;
   min-width: 4.2rem;
   padding: 0.6rem 0.9rem;
   border: 1px solid rgb(255 255 255 / 0.35);
@@ -361,6 +483,10 @@
   background: rgb(14 12 11 / 0.96);
 }
 .mc-add {
+  font-family: var(--mc-display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 600;
   width: 100%;
   padding: 1.1rem 1rem;
   border: 0;
@@ -413,8 +539,19 @@
 }
 
 /* ─── CATEGORY NAVIGATION ──────────────────────────────────────────────────── */
+/* The navigation is furniture, and furniture standing on a textured wall needs
+   a ground or the mesh reads straight through the words. A near-opaque band the
+   full width of the screen is what the header already does one row above it, so
+   the two read as one piece of chrome rather than two. */
 .mc-nav {
-  border-block-end: 1px solid rgb(var(--color-foreground, 247 248 250) / 0.12);
+  border-block-end: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(13 13 13 / 0.88);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.mc-nav__link, .mc-nav__toggle {
+  font-family: var(--mc-display);
+  letter-spacing: 0.08em;
 }
 .mc-nav__scroll {
   display: flex;
@@ -455,9 +592,12 @@
   display: grid;
   gap: 0.2rem;
   padding: 1rem;
-  background: rgb(28 25 23);
-  border: 1px solid rgb(255 255 255 / 0.12);
-  border-radius: var(--mc-radius);
+  background: rgb(20 19 18 / 0.97);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: var(--mc-frame-radius);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.55);
 }
 .mc-nav__panel[hidden] { display: none; }
 .mc-nav__panel a { padding: 0.6rem 0.8rem; border-radius: var(--mc-btn-radius); }
@@ -476,7 +616,13 @@
   margin: 0 0 1.2rem;
   font-size: var(--mc-label-sm);
 }
-.mc-sort__label { opacity: 0.5; }
+.mc-sort__label {
+  opacity: 0.45;
+  font-family: var(--mc-display);
+  font-size: 1.1rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
 .mc-sort__link {
   text-decoration: none;
   color: rgb(var(--color-foreground, 247 248 250) / 0.65);
@@ -515,9 +661,15 @@
   .mc-siblings { flex-wrap: wrap; overflow: visible; margin-inline: 0; padding-inline: 0; margin-block-end: 2.4rem; }
 }
 .mc-siblings a {
-  font-size: var(--mc-label-sm);
-  padding: 0.6rem 1.2rem;
+  font-family: var(--mc-display);
+  font-size: 1.1rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.7rem 1.3rem;
   border-radius: 999px;
+  background: rgb(0 0 0 / 0.35);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
   text-decoration: none;
   color: rgb(var(--color-foreground, 247 248 250) / 0.75);
   border: 1px solid rgb(var(--color-foreground, 247 248 250) / 0.2);
@@ -536,10 +688,36 @@
   .mc-page { padding-block: 2.4rem 6.4rem; }
   .mc-head { margin-block-end: 1.6rem; }
 }
-.mc-head__title { font-size: 2.8rem; font-weight: inherit; margin: 0 0 0.4rem; line-height: 1.15; }
-.mc-head__count { font-size: var(--mc-label-sm); opacity: 0.6; margin: 0; }
+/* ─── THE DISPLAY VOICE ─────────────────────────────────────────────────────
+   Two settings, used everywhere and nowhere else: a heavy grotesque in caps,
+   set tight, for anything that names a section of the shop; and the same face
+   at label size with the tracking opened right up for anything that labels a
+   control. The gap between them is what carries the identity — a headline that
+   is nearly touching and a label that is nearly spelled out.
+
+   The PRODUCT NAME is deliberately excluded from both. These names are machine-
+   generated and carry no brand, so setting them in caps would shout a string
+   that says nothing; they stay quiet, lowercase and out of the way, which is
+   the rule the rest of this file already follows. */
+.mc-head__title {
+  font-family: var(--mc-display);
+  font-size: 3.2rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  line-height: 0.95;
+  margin: 0 0 0.6rem;
+}
+.mc-head__count {
+  font-family: var(--mc-display);
+  font-size: 1.1rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  margin: 0;
+}
 @media screen and (min-width: 750px) {
-  .mc-head__title { font-size: 3.6rem; }
+  .mc-head__title { font-size: 4.6rem; }
 }
 
 .mc-empty {
@@ -555,8 +733,24 @@
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 1.6rem; margin: 0 0 1.4rem;
 }
-.mc-rail__title { font-size: 2rem; font-weight: inherit; margin: 0; }
-.mc-rail__more { font-size: var(--mc-label-sm); white-space: nowrap; opacity: 0.75; }
+.mc-rail__title {
+  font-family: var(--mc-display);
+  font-size: 2.2rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  margin: 0;
+}
+@media screen and (min-width: 750px) { .mc-rail__title { font-size: 2.8rem; } }
+.mc-rail__more {
+  font-family: var(--mc-display);
+  font-size: 1.1rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0.7;
+}
 .mc-rail__more:hover { opacity: 1; }
 
 /* A rail scrolls horizontally rather than wrapping, so a thin section shows
@@ -614,6 +808,160 @@
   opacity: 0.8;
 }
 
+/* ─── THE HERO ──────────────────────────────────────────────────────────────
+   The one place on the shop that says what the shop is, and the only place the
+   wall is allowed to be the subject rather than the ground.
+
+   IT IS FULL-BLEED, AND IT IS THE SAME TEXTURE AT THE SAME SCALE as the rest of
+   the page — not a bigger, prettier crop. The wall running uninterrupted from
+   the hero into the grid below is the whole idea; a hero with its own treatment
+   would just be a banner, which is what every other shop has.
+
+   WHAT IT ADDS is light. `--mc-fence-scale` stays put and a two-stop gradient
+   is laid over the mesh: bright at the top where the eyebrow sits, falling to
+   near-black at the bottom where the headline and the buttons are. That is what
+   makes 800px of repeating diamond read as a lit wall instead of wallpaper, and
+   it is also what guarantees the type has contrast to sit on — the headline is
+   over the dark end by construction, at every viewport, with no image to load
+   and nothing to go wrong.
+
+   THE HEADLINE IS AN <h1> ON THE HOME PAGE, which is where the shop's name and
+   its one sentence belong. Category pages keep their own <h1> (the category),
+   and the hero does not render there. */
+.mc-hero {
+  position: relative;
+  margin-block-end: 4rem;
+  padding-block: 8rem 3.2rem;
+  background-color: var(--mc-wall-flat);
+  background-image: linear-gradient(
+    180deg,
+    rgb(0 0 0 / 0.05) 0%,
+    rgb(0 0 0 / 0.35) 46%,
+    rgb(0 0 0 / 0.82) 100%
+  );
+  border-block-end: 1px solid rgb(255 255 255 / 0.08);
+}
+@supports (background-blend-mode: multiply) {
+  .mc-hero {
+    background-color: var(--mc-wall);
+    background-image:
+      linear-gradient(
+        180deg,
+        rgb(0 0 0 / 0.05) 0%,
+        rgb(0 0 0 / 0.35) 46%,
+        rgb(0 0 0 / 0.82) 100%
+      ),
+      var(--mc-fence);
+    background-size: auto, var(--mc-fence-scale) auto;
+    background-repeat: no-repeat, repeat;
+    /* The gradient paints normally over the mesh; the mesh multiplies into the
+       wall colour underneath it, exactly as the page does. */
+    background-blend-mode: normal, multiply;
+  }
+}
+@media screen and (min-width: 750px) {
+  .mc-hero { padding-block: 12rem 5rem; margin-block-end: 5.6rem; }
+}
+
+.mc-hero__eyebrow {
+  font-family: var(--mc-display);
+  font-size: 1.1rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.72);
+  margin: 0 0 1.6rem;
+}
+.mc-hero__title {
+  font-family: var(--mc-display);
+  /* Fluid rather than stepped: this headline is three short lines and its job
+     is to fill the measure at every width. Clamped at both ends so it never
+     wraps to five lines on a 320px phone and never runs past the text column on
+     a wide desktop. */
+  font-size: clamp(4.4rem, 13vw, 9.6rem);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: -0.03em;
+  line-height: 0.88;
+  margin: 0 0 2rem;
+  color: rgb(250 249 246);
+}
+@media screen and (min-width: 750px) {
+  .mc-hero__title { font-size: clamp(6rem, 8vw, 11rem); }
+}
+.mc-hero__lede {
+  max-width: 52rem;
+  margin: 0 0 3rem;
+  font-size: 1.6rem;
+  line-height: 1.55;
+  color: rgb(255 255 255 / 0.8);
+}
+.mc-hero__actions { display: flex; flex-wrap: wrap; gap: 1.2rem; }
+
+/* The button is an outline, not a fill: a filled button on a photographed metal
+   wall reads as a sticker stuck to it, and the shop already has one filled
+   button — Add to cart — which should stay the only one. */
+.mc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 4.8rem;
+  padding: 0 2.4rem;
+  border: 1px solid rgb(255 255 255 / 0.55);
+  border-radius: var(--mc-btn-radius);
+  background: rgb(0 0 0 / 0.28);
+  color: rgb(255 255 255 / 0.95);
+  text-decoration: none;
+  font-family: var(--mc-display);
+  font-size: 1.2rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.mc-btn:hover { border-color: rgb(255 255 255 / 0.95); background: rgb(0 0 0 / 0.5); }
+
+/* ─── WHAT WE ACTUALLY PROMISE ──────────────────────────────────────────────
+   A strip of claims under the catalogue. It is short on purpose.
+
+   EVERY LINE HERE IS A CLAIM ABOUT USED GOODS SOLD BY AN INDEPENDENT RESELLER,
+   which makes it the same kind of statement as a condition grade: it may say
+   only what docs/RETURNS-AND-CONDITION.md actually commits to, and it may not
+   be padded out to fill a row. One true promise on its own is the correct
+   result, not a layout to fix — so the strip centres what it has rather than
+   stretching two items across a desktop width, and the section renders nothing
+   at all when nothing is set. */
+.mc-promise {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.2rem 4.8rem;
+  margin-block: 1.6rem 0;
+  padding: 2.4rem 1.6rem;
+  border-block-start: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(0 0 0 / 0.4);
+}
+.mc-promise__item {
+  display: flex;
+  align-items: center;
+  gap: 1.2rem;
+  text-decoration: none;
+  color: inherit;
+}
+.mc-promise__item svg { flex: 0 0 auto; opacity: 0.75; }
+.mc-promise__term {
+  display: block;
+  font-family: var(--mc-display);
+  font-size: 1.2rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.92);
+}
+.mc-promise__detail {
+  display: block;
+  font-size: 1.2rem;
+  margin-block-start: 0.3rem;
+  color: rgb(255 255 255 / 0.6);
+}
+a.mc-promise__item:hover .mc-promise__detail { color: rgb(255 255 255 / 0.9); }
+
 /* ─── SEARCH RESULTS ───────────────────────────────────────────────────────── */
 /* marathon-search.js is NOT touched by this rebuild — it writes Dawn's own card
    markup and must keep working exactly as it does. What it does not get is the
@@ -624,7 +972,14 @@
    3:4 neutral frame as the rest of the shop, so results do not look like a
    different website. */
 .template-search .card__inner.ratio { --ratio-percent: 133.33% !important; }
-.template-search .card__inner { background: var(--mc-field) !important; }
+.template-search .card__inner {
+  background: var(--mc-field) !important;
+  border-radius: var(--mc-frame-radius) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--mc-field-edge),
+    0 1px 2px rgb(0 0 0 / 0.55),
+    0 6px 18px rgb(0 0 0 / 0.35) !important;
+}
 .template-search .card__media img,
 .template-search .card__inner img {
   object-fit: contain !important;

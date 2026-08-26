@@ -1,14 +1,54 @@
 # Marathon Club storefront — install, preview, publish, revert
 
-Two things live in this folder:
+Three things live in this folder:
 
 1. **The photo-first storefront** — the grid, the quick view, the category
-   navigation and the home page. New in this change.
-2. **The brand-aware search wiring** (`marathon-search.js`) — built earlier,
+   navigation and the home page.
+2. **The fence identity** — the wall the whole shop now stands in front of, the
+   frame every photograph hangs in, the display type, the hero, and the row of
+   promises under the catalogue. New in this change; see "The fence identity"
+   below for what it is and what it replaces.
+3. **The brand-aware search wiring** (`marathon-search.js`) — built earlier,
    unchanged here, **still not installed on the live theme.** Verified
    2026-08-21: the live pages do not reference it.
 
 Install them together. It is one pass through the same editor.
+
+---
+
+## The fence identity — what it is, and the two things it removes
+
+Every Marathon Club product is photographed against the same expanded-metal
+mesh, which makes the mesh the one thing every photograph in a catalogue with no
+brand names has in common. This change makes it the shop's surface as well: the
+page stands in front of the same wall the products were shot against, and every
+photograph is inset in a frame hung on it.
+
+The texture is the owner's own photograph, levelled to take the camera's
+lighting falloff out and cut to a **447×384 tile that repeats with no seam** —
+53 KB, greyscale, one file. It ships **light**, exactly as taken, and is
+darkened in CSS by multiplying it into `--mc-wall`. How deep the wall sits is
+therefore one value in `marathon-storefront.css`, changeable in a live preview,
+rather than a re-export.
+
+**Two claims come off the home page, and this is the part to read before
+publishing.** The strip under the catalogue made three promises; the shop can
+stand behind one:
+
+| claim | what happens | why |
+|---|---|---|
+| Authentic — Checked & Verified | **removed** | Marathon Club is an independent reseller and is not an authorised dealer for anything, so it cannot vouch for provenance. "Authentic" is already refused everywhere else — `scripts/shopify/compliance.test.mjs` fails the returns page if the word appears in it. |
+| Fast delivery — 1–3 working days | **removed** | A courier's promise, not the shop's, stated on the home page as if it were the shop's. |
+| Easy returns — 7 days to return | **restated** | The real policy is not a returns policy: it is a **14-day exchange on anything faulty**, and it explicitly does not cover change of mind or the disclosed condition grade (`docs/RETURNS-AND-CONDITION.md`). It now says that, and links to the page that spells it out. |
+
+The row is three theme settings, two of them blank. Leave them blank unless
+something else becomes true — a row of one honest promise is the correct result,
+not a layout to fix, and the strip centres what it has rather than stretching to
+fill a desktop width.
+
+**If the live theme has its own trust bar**, it is not in this folder and this
+change cannot remove it. Delete it in the theme editor at step 3d, or the shop
+will show both.
 
 ---
 
@@ -88,6 +128,12 @@ On **the copy** → **⋯ → Edit code**.
 | `marathon-storefront.js` | `theme/assets/marathon-storefront.js` |
 | `marathon-search.js` | `theme/assets/marathon-search.js` |
 
+**And one file that is not pasted.** `marathon-fence.jpg` is an image, so it is
+uploaded rather than typed: **Assets → Add a new asset → Upload a file** →
+`theme/assets/marathon-fence.jpg`. Upload it under exactly that name — the
+stylesheet asks for it by name and the shop renders as a plain dark page without
+it, which is a degrade, not a break, and easy to miss.
+
 ### Snippets (Snippets → Add a new snippet)
 
 | create this file | paste from |
@@ -95,6 +141,8 @@ On **the copy** → **⋯ → Edit code**.
 | `marathon-card.liquid` | `theme/snippets/marathon-card.liquid` |
 | `marathon-nav.liquid` | `theme/snippets/marathon-nav.liquid` |
 | `marathon-rail.liquid` | `theme/snippets/marathon-rail.liquid` |
+| `marathon-identity.liquid` | `theme/snippets/marathon-identity.liquid` |
+| `marathon-promise-mark.liquid` | `theme/snippets/marathon-promise-mark.liquid` |
 
 ### Sections (Sections → Add a new section)
 
@@ -120,6 +168,21 @@ Save each one.
 Save. That covers every entry point — header search, search modal, mobile
 drawer, empty-state form — because they all submit to `/search` and the script
 acts on the results page rather than on any one form.
+
+### 3a-ii. The identity — one more line in the layout
+
+**Layout → `theme.liquid`.** Immediately before `</head>`:
+
+```liquid
+{% render 'marathon-identity' %}
+```
+
+Save. The home page and the category pages carry the identity on their own —
+both sections render this snippet — so this line is what extends it to the
+**product page, the cart, the search results and the policy pages**. Without it
+the shop changes surface halfway through a visit, which is worse than not
+changing it at all. Rendering it twice is safe: the stylesheet is the same URL
+both times and the custom property is declared with the same value.
 
 ### 3b. The collection page — swap the grid section
 
@@ -157,6 +220,24 @@ Save. Everything currently on the home page — "Own Your Stride", the three
 "Example product title / R 19.99" placeholder cards, "In the heart of the city,
 where dreams collide" — is Shopify's default demo content and goes with it.
 
+### 3d. Remove anything the home page now says twice
+
+`marathon-home` renders its own hero and its own promise row. Whatever the live
+home page already had in those two places is **not in this folder** and survives
+the `index.json` swap only if it lives in another section — so open the home page
+in the theme editor and delete, from the sidebar:
+
+* **the banner above the rails**, if one is left — otherwise there are two
+  headlines. (Or keep the theme's own and turn mine off: **Home rails → Hero →
+  Show the hero**.)
+* **the trust bar** — the row reading *Authentic · Fast delivery · Easy
+  returns*. Two of those three claims are not ones this shop can make; see "The
+  fence identity" at the top of this file for why, and what replaces them.
+
+Then check **Home rails → What we promise**: it should read *14-day exchange /
+On anything faulty*, with the second and third slots blank, and it should point
+at `/pages/returns-and-condition`.
+
 ---
 
 ## 4. Test on the preview
@@ -171,6 +252,23 @@ mobile.
 > run (`/products/sneaker-navy-white` has ten sizes) and confirm the panel grows
 > to fit — the price, the condition line, every size and the Add to cart button
 > all present, nothing cut off at the bottom.
+
+**The identity — look at this first, because it is on every screen**
+- The mesh is **behind everything**, at the same scale on the home page and on a
+  category page, and it does not restart or jump when you scroll between them.
+- The mesh does not **seam**. Scroll the full length of a category page on a
+  phone and look for a repeating line, horizontal or vertical. There should be
+  none — the tile was cut to a whole number of cells in both directions — but a
+  seam is the one defect that only shows up at real size on a real screen.
+- Every photograph sits in a **frame**: a hairline edge, and the mesh visible
+  through the letterboxing on a photo that is not 3:4. A photo with a white
+  studio background must not glare, and a dark one must not lose its edge
+  against the wall.
+- **If the wall is missing** and the shop is a flat dark page, `marathon-fence.jpg`
+  did not upload, or uploaded under a different name. Nothing else breaks.
+- The row under the catalogue reads **14-day exchange / On anything faulty** and
+  nothing else. If the words *Authentic* or *Fast delivery* are anywhere on the
+  home page, step 3d was missed.
 
 **The grid**
 - Tap a photograph. Price, condition and sizes appear over it, and **the address
