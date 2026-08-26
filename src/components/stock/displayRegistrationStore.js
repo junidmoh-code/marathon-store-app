@@ -96,16 +96,19 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
       return { ok: true, already: true, warning: slotWarning(res, "Already registered") };
     }
 
-    const existing = (await get(ref(database, path))).val();
-    if (existing && !store) {
-      return { ok: false, message: "Already registered (shop not recorded). If this is a SECOND display, pick its shop; to fix the size, use Change size." };
-    }
-
-    await runTransaction(ref(database, path), (cur) => {
+    // The store-less duplicate guard lives INSIDE the transaction: a
+    // pre-transaction get let two concurrent store-less submissions both pass
+    // and both bump (CodeRabbit, PR #460). Aborting on an existing row makes
+    // the second submission fail deterministically whatever the interleaving.
+    const txn = await runTransaction(ref(database, path), (cur) => {
       if (cur === null) return rowFor(product, size, sizeKey, nowIso);
+      if (!store) return undefined;   // exists + no store → abort, report duplicate
       const q = (Number(cur.qty) || 0) + 1;
       return { ...cur, qty: q, bumps: highWater(cur, q), retiredAt: null, at: nowIso, by: auth.currentUser?.uid || null };
     });
+    if (!txn.committed) {
+      return { ok: false, message: "Already registered (shop not recorded). If this is a SECOND display, pick its shop; to fix the size, use Change size." };
+    }
 
     let warning = null;
     if (store) {
@@ -137,6 +140,12 @@ export async function editDisplaySize({ hub, product, fromSizeKey, toSize, slotS
     const fromRow = fromSnap.val();
     const toRow = toSnap.val();
     const fromQty = Number(fromRow?.qty) || 0;
+    // A correction MOVES a live fact. A stale selection (the row was retired
+    // or moved on another device since this screen loaded) must not mint a
+    // destination fact out of nothing. (CodeRabbit, PR #460.)
+    if (fromQty <= 0) {
+      return { ok: false, message: "Nothing is registered at that size any more — the list may be stale; re-open the product." };
+    }
     const toQty = (Number(toRow?.qty) || 0) + 1;
     const moved = {
       ...(toRow || rowFor(product, toSize, toKey, nowIso)),
