@@ -64,6 +64,9 @@
   --mc-field-edge: rgb(255 255 255 / 0.07);
   /* Departure 2 — see the header note. */
   --mc-gap: 12px;
+  /* The hairline between album tiles. Deliberately a token: it is the one
+     measurement in the grid that is a judgement rather than arithmetic. */
+  --mc-hairline: 2px;
 
   /* Everything below is the theme's own token, with a fallback that matches
      what Feather actually computes, so this file still renders correctly if it
@@ -85,22 +88,54 @@
   :root { --mc-gap: 16px; }
 }
 
-/* ─── GRID ─────────────────────────────────────────────────────────────────── */
-/* Phone first: two columns. One column would make a 700-product catalogue an
-   endless scroll and wastes half the screen on a 3:4 photo; three is too small
-   to tell two black sneakers apart. Two is the density that still lets a
-   shopper recognise a shoe. */
+/* ─── THE ALBUM GRID ───────────────────────────────────────────────────────── */
+/* Photographs and nothing else — no name, no price, no card. The catalogue's
+   names are machine-generated and carry no brand, so under a thumbnail they are
+   noise competing with the only thing that identifies the product. The text
+   still exists on the product page, where a search engine and a shopper who has
+   committed both need it; the grid simply stops repeating it.
+ *
+ * SQUARE, AND THE SQUARE IS LOAD-BEARING. Three across at 1:1 puts roughly six
+ * rows on a large phone and fewer on a small one, which is the density the shop
+ * is meant to be browsed at. A taller ratio would show fewer products per
+ * screen and a shorter one would waste the width. It is not a style choice, so
+ * it does not move.
+ *
+ * `cover`, NOT `contain` — a deliberate reversal of the earlier decision.
+ * Identical cropping is the whole point of an album: one mismatched frame and
+ * the wall stops reading as a wall. 94.7% of these photos are 3:4 portrait, so
+ * a centre square crop takes about 25% off the height, and the product sits
+ * mid-frame in almost all of them. The cost is real and it is accepted: the
+ * uncropped photograph is one tap away on the product page.
+ *
+ * A HAIRLINE BETWEEN TILES, AND NO PAGE MARGIN. The tiles were butted together
+ * with no gap at all, and that was wrong for this catalogue specifically: it is
+ * full of black shoes photographed against dark backgrounds, and two of those
+ * side by side bleed into one another with nothing between them. Two pixels is
+ * enough to read as a separation and too little to read as spacing — the wall
+ * still looks like a wall.
+ *
+ * The gap is BETWEEN tiles only. The grid itself still runs the full width of
+ * the screen with nothing down either edge: `gap` never applies outside the
+ * outermost tracks, and the negative margin escapes the theme's `.page-width`
+ * container without the section having to move out of it.
+ *
+ * The tiles get slightly narrower to pay for it — at three across on a 390px
+ * screen, 130px becomes about 129px — and they stay square, because the square
+ * comes from `aspect-ratio` on the tile rather than from any width arithmetic.
+ * The column count does not change to compensate. */
 .mc-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--mc-gap);
+  grid-template-columns: repeat(var(--mc-cols, 3), 1fr);
+  gap: var(--mc-hairline, 2px);
   margin: 0;
   padding: 0;
   list-style: none;
+  /* Full-bleed out of any centred container. */
+  width: 100vw;
+  margin-inline-start: calc(50% - 50vw);
+  max-width: 100vw;
 }
-@media screen and (min-width: 600px)  { .mc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media screen and (min-width: 990px)  { .mc-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-@media screen and (min-width: 1400px) { .mc-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 
 .mc-card {
   position: relative;
@@ -112,185 +147,187 @@
 .mc-card__media {
   position: relative;
   display: block;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 1 / 1;
   background: var(--mc-field);
-  border-radius: var(--mc-radius);
   overflow: hidden;
-  /* A hairline rather than a shadow: it holds the frame's edge against a photo
-     whose own background happens to match the field, without adding a second
-     visual language to a page that is already all photographs. */
-  box-shadow: inset 0 0 0 1px var(--mc-field-edge);
   text-decoration: none;
   cursor: pointer;
+  /* THE FENCE-ERA FRAME. A dark mat around every photograph, not a borderless
+     tile-to-tile wall. box-sizing: border-box means the padding eats INTO the
+     fixed aspect box rather than growing it, so the grid's column math and
+     infinite-scroll layout are untouched — this is a visual skin only. */
+  box-sizing: border-box;
+  /* Wider than a hairline on purpose — these photographs are shot against the
+     SAME fence, so a thin mat nearly disappears into a photo's own dark
+     corners. The mat has to be wide enough to read as a deliberate surround
+     even against a busy backdrop. */
+  padding: var(--mc-frame, 10px);
+  background: var(--mc-frame-fill, rgb(10 9 8));
+  border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  border-radius: var(--mc-frame-radius, 6px);
+  box-shadow: 0 3px 14px rgb(0 0 0 / 0.55);
 }
 .mc-card__media img {
   width: 100%;
   height: 100%;
-  /* contain, never cover — see the header note on the 37 outliers. */
-  object-fit: contain;
+  object-fit: cover;          /* identical crop on every tile — see above */
   object-position: center;
   display: block;
-  /* Never upscale: 131 live photos have a side under 600px and a card is at most
-     ~340 CSS px, so this only ever guards the small ones from being blown up. */
-  image-rendering: auto;
+  border-radius: calc(var(--mc-frame-radius, 6px) - 3px);
+  /* Darkened enough to read as a deliberate treatment against a fence-shot
+     photo, not just noise — this, together with the mat, is what makes a
+     tile read as "framed" rather than "a photo pasted on a page". Shoppers
+     still read true colour and condition off the product page's own gallery,
+     which is untouched. */
+  filter: brightness(0.86) saturate(0.92) contrast(1.03);
+}
+@media screen and (min-width: 750px) {
+  .mc-card__media { padding: var(--mc-frame-lg, 13px); }
 }
 
-/* ─── THE LABEL UNDER THE PHOTO ────────────────────────────────────────────── */
-/* Name and price sit at the same weight and nearly the same size. Neither is a
-   heading. A shopper scanning this page is reading photographs; the text is
-   there to confirm, not to attract. */
-.mc-card__meta {
+/* ─── DENSITY ──────────────────────────────────────────────────────────────── */
+/* Two, three or four across, the way pinching works in a photo library. Three
+   is the default and the one the shop is designed around; the others are there
+   to be felt. The choice is remembered per browser, and every read and write is
+   guarded because a private window can throw on access rather than return null. */
+.mc-density {
   display: flex;
+  align-items: center;
   gap: 0.8rem;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 0.8rem 0.2rem 0;
-}
-.mc-card__name {
+  padding: 0.8rem 0 1.2rem;
   font-size: var(--mc-label-sm);
-  line-height: 1.35;
-  color: rgb(var(--color-foreground, 247 248 250) / 0.72);
-  text-decoration: none;
-  /* Two lines maximum. These names are machine-generated and some run long;
-     an unclamped name shoves the row below it out of alignment. */
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
-.mc-card__name:hover { color: var(--mc-fg); }
-.mc-card__price {
-  font-size: var(--mc-label-sm);
-  white-space: nowrap;
-  color: var(--mc-fg);
+.mc-density__label { opacity: 0.5; }
+.mc-density__btn {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  padding: 0.5rem 0.7rem;
+  background: none;
+  border: 1px solid rgb(var(--color-foreground, 247 248 250) / 0.22);
+  border-radius: var(--mc-btn-radius);
+  color: inherit;
+  cursor: pointer;
+  line-height: 1;
 }
-.mc-card__price--out { color: rgb(var(--color-foreground, 247 248 250) / 0.45); }
+.mc-density__btn i {
+  display: block;
+  width: 3px;
+  height: 11px;
+  background: currentColor;
+  opacity: 0.55;
+  font-style: normal;
+}
+.mc-density__btn:hover { border-color: rgb(var(--color-foreground, 247 248 250) / 0.55); }
+.mc-density__btn[aria-pressed="true"] {
+  border-color: var(--mc-fg);
+}
+.mc-density__btn[aria-pressed="true"] i { opacity: 1; }
 
-/* A sold-out product is still listed — "everything listed" — but says so. */
+/* ─── SOLD OUT ─────────────────────────────────────────────────────────────── */
+/* The ONE mark allowed on a tile. It is not a label under the photo — it is on
+   it, and it is here because a wall of photographs with no way to tell a sold
+   item from an available one would send shoppers into the overlay to find out.
+   Small, low-contrast, and it never covers the product. */
 .mc-card__sold {
   position: absolute;
-  inset-inline-start: 0.8rem;
-  inset-block-start: 0.8rem;
-  font-size: 1.1rem;
-  letter-spacing: 0.04em;
-  padding: 0.3rem 0.7rem;
-  border-radius: var(--mc-btn-radius);
-  background: rgb(0 0 0 / 0.55);
-  color: rgb(255 255 255 / 0.85);
+  inset-inline-start: 0;
+  inset-block-end: 0;
+  font-size: 1rem;
+  letter-spacing: 0.03em;
+  padding: 0.3rem 0.6rem;
+  background: rgb(0 0 0 / 0.6);
+  color: rgb(255 255 255 / 0.8);
   pointer-events: none;
 }
 
 /* ─── THE OVERLAY ──────────────────────────────────────────────────────────── */
-/* Sits ON the photograph, which is what the brief asks for and also what keeps
-   the shopper in the grid: nothing moves, nothing navigates, the row does not
-   reflow. `hidden` is removed by JS; without JS the panel never opens and the
-   card is a plain link to the real product page. */
+/* A MODAL OVER THE GALLERY, not a card that grows inside it. The panel used to
+   take the full grid row, which pushed every photograph below it down and hid
+   the two beside it — tapping one picture rearranged the wall. Now nothing in
+   the grid moves at all: the panel is fixed over the viewport and the gallery
+   underneath is untouched, so closing returns to precisely the same view
+   without any correction being needed.
+
+   Tapping the backdrop closes. That works because the backdrop IS this element
+   and the content sits in a child sheet, so a click can be told apart by which
+   of the two it landed on. */
 .mc-panel[hidden] { display: none; }
 .mc-panel {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  z-index: 2;
-  /* See the "PANELS GROW" note below the close button. */
+  z-index: 30;                      /* over Dawn's header (3/4) and the nav (20) */
   display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-  padding: 1.2rem;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1.6rem;
   overflow-y: auto;
-  border-radius: var(--mc-radius);
-  color: rgb(255 255 255 / 0.92);
-  /* The balance here is deliberate. The photograph is the only thing that
-     identifies these products, so hiding it completely while the shopper picks
-     a size would take away the one cue they have that this is the item they
-     wanted. But the panel sits over ARBITRARY photography — a white studio
-     sweep one card, a dark warehouse rack the next — so the text has to stay
-     legible over any of it.
-     The blur does most of that work: it destroys the high-frequency detail that
-     makes text hard to read while leaving the product's shape and colour
-     readable underneath. The tint then only has to carry contrast, not opacity,
-     so it can stay short of solid. */
-  background: rgb(14 12 11 / 0.88);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
+  background: rgb(8 7 6 / 0.72);
+  -webkit-backdrop-filter: blur(14px) saturate(0.9);
+  backdrop-filter: blur(14px) saturate(0.9);
   animation: mc-fade var(--mc-duration) ease-out;
 }
 @keyframes mc-fade { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .mc-panel { animation: none; }
+@media (prefers-reduced-motion: reduce) { .mc-panel { animation: none; } }
+
+.mc-panel__sheet {
+  position: relative;
+  width: 100%;
+  max-width: 46rem;
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.4rem;
+  border-radius: var(--mc-radius);
+  background: rgb(24 21 19);
+  color: rgb(255 255 255 / 0.94);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 0.55);
+  /* Follows a downward drag, and springs back if the drag is abandoned. */
+  transition: transform 0.18s ease-out;
+}
+.mc-panel__sheet.is-dragging { transition: none; }
+
+/* THE PRODUCT'S OWN PHOTOGRAPH, and NOT cropped square. The tile is square
+   because the wall needs to be; this is the one place the whole product should
+   be visible, so it keeps its real proportions on the frame's neutral field. */
+.mc-panel__photo {
+  width: 100%;
+  max-height: 46vh;
+  object-fit: contain;
+  background: var(--mc-field);
+  border-radius: var(--mc-btn-radius);
+  display: block;
 }
 
-/* STICKY, NOT ABSOLUTE. An absolutely positioned child of a scroll container
-   scrolls away with the content, so when the panel could still overflow, the
-   way OUT of it left the screen while the way to buy stayed — and on a phone
-   there is no Escape key.
-
-   NOTE, so nobody deletes the wrong thing: what actually guarantees both
-   buttons are reachable now is `min-height: 100%` with an auto height on the
-   panel, which means it never overflows and therefore never scrolls. These two
-   sticky rules consequently never engage. They are kept as belt-and-braces for
-   any future change that caps the panel's height — but they are the braces, not
-   the belt. Remove the min-height and the original bug comes straight back.
-
-   The negative bottom margin gives back most of the line this would otherwise
-   occupy; it costs about 11px of flow where `absolute` cost none. */
 .mc-panel__close {
-  position: sticky;
-  align-self: flex-end;
-  inset-block-start: 0;
-  margin-block-end: -3rem;
-  z-index: 3;
-  width: 3.2rem;
-  height: 3.2rem;
+  position: absolute;
+  inset-block-start: 0.6rem;
+  inset-inline-end: 0.6rem;
+  z-index: 2;
+  width: 3.4rem;
+  height: 3.4rem;
   display: grid;
   place-items: center;
-  background: none;
+  background: rgb(0 0 0 / 0.55);
   border: 0;
-  color: inherit;
-  font-size: 1.8rem;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 1.9rem;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.7;
 }
-.mc-panel__close:hover { opacity: 1; }
+.mc-panel__close:hover { background: rgb(0 0 0 / 0.8); }
 
 .mc-panel__title {
   font-size: var(--mc-label);
   line-height: 1.3;
   margin: 0;
-  padding-inline-end: 3rem;   /* clear of the sticky close button */
+  padding-inline-end: 3rem;
   font-weight: inherit;
 }
-
-/* ─── PANELS GROW RATHER THAN CLIP ─────────────────────────────────────────── */
-/* Measured at a 600px viewport, which is the TIGHTEST layout in the design —
-   three columns of 181px, narrower than the four-column card at 990px:
-   panel 284px tall, content 409px. Every open card overflowed by 80–125px.
-   The sticky buy controls kept it usable, but "usable if you discover you can
-   scroll a panel" is not the same as working.
-   So the panel releases its bottom edge and sizes to its CONTENT, growing down
-   over the cards below like a popover. It is never shorter than the card
-   (`min-height: 100%`) and never shorter than what it holds.
-
-   This is not scoped to a breakpoint. It was tempting to apply it only above
-   600px, since below that the card already expands to full width — but a phone
-   card still overflowed by 41px, and "the tight case is the one I remembered to
-   check" is how the 600px hole got there in the first place. One rule, every
-   width, no arithmetic to get wrong. Swept and verified at 390, 599, 600, 749,
-   900, 989, 990, 1200, 1399, 1400 and 1600: zero overflow everywhere, with the
-   buy button and the close button both in view. */
-.mc-panel {
-  inset-block-end: auto;
-  min-height: 100%;
-}
-/* 1, not 5. All this has to beat is its own siblings — every other .mc-card is
-   `z-index: auto`, and the only requirement is that an earlier open card paints
-   over the ones after it. Dawn 15.4.1 runs its chrome at 3 and 4
-   (`.section-header` 3, `.shopify-section-group-header-group` 4, `.menu-drawer`
-   3, `.predictive-search` 3), so 5 would have put a panel — now up to 730px
-   tall — over the logo, search and cart. That is invisible on this shop today
-   only because the sticky-header setting happens to be OFF, which is a theme
-   setting, not a guarantee. */
-.mc-card.is-open { z-index: 1; }
-.mc-panel__price { font-size: 1.6rem; margin: 0; }
+.mc-panel__price { font-size: 1.7rem; margin: 0; }
 
 /* ─── CONDITION ────────────────────────────────────────────────────────────── */
 /* A public claim about used goods, so it is stated in full, in the shopper's
@@ -352,14 +389,23 @@
    inside a 266px frame. The background is opaque so scrolled size pills do not
    run underneath the button. */
 .mc-panel__actions {
-  margin-top: auto;
+  /* NO `margin-top: auto`. It pushed the buy controls to the bottom of a panel
+     that is now taller than its content — `min-height: 100%` makes the panel at
+     least as tall as the tile it covers — which opened a dead band of nothing
+     between the size pills and the button. The controls now follow the sizes
+     directly and any slack falls below them, where it reads as padding. */
   display: grid;
   gap: 0.6rem;
-  position: sticky;
-  bottom: 0;
-  padding-block-start: 0.8rem;
-  background: rgb(14 12 11 / 0.96);
+  padding-block-start: 0.4rem;
 }
+
+/* THE STICKY BUY BAR IS GONE, and this is why. It was kept as belt-and-braces
+   after `min-height: 100%` made the panel un-scrollable — a review pass called
+   it dead code and I left it in "just in case". It was not dead: `bottom: 0`
+   on a sticky element pushes it DOWN when its container has spare room, and a
+   panel that is at least as tall as the tile it covers usually does. The result
+   was a 61px band of nothing between the last size pill and Add to cart.
+   Harmless-looking insurance that actively damaged the layout it was insuring. */
 .mc-add {
   width: 100%;
   padding: 1.1rem 1rem;
@@ -381,9 +427,14 @@
   color: rgb(255 255 255 / 0.7);
 }
 .mc-panel__link:hover { color: rgb(255 255 255 / 1); }
+/* COLLAPSED WHEN EMPTY. It used to reserve a line so that "Added to cart."
+   appearing would not shift the button — but the message is absent almost
+   always, so the reservation was a permanent band of nothing above the buy
+   button on every single open. A small shift at the moment of adding is a
+   better trade than a hole that is there the rest of the time. */
+.mc-panel__status:empty { display: none; }
 .mc-panel__status {
   font-size: 1.15rem;
-  min-height: 1.5rem;
   color: rgb(255 255 255 / 0.85);
 }
 .mc-panel__status--error { color: rgb(255 180 170); }
@@ -392,25 +443,11 @@
    condition line and a button. So an OPEN card takes the full grid width: the
    photograph gets bigger, the detail fits, and the shopper is still in the
    grid. Tapping again puts it back. */
-@media screen and (max-width: 599px) {
-  /* SCOPED TO THE GRID. `grid-column: 1 / -1` only means "full width" in the
-     two-column browsing grid. A home rail is a horizontal scroller with
-     `grid-auto-flow: column`, where 1 / -1 resolves against implicit tracks and
-     does nothing at all — the card stayed 168px wide and the panel clipped. */
-  .mc-grid > .mc-card.is-open { grid-column: 1 / -1; }
-  .mc-grid > .mc-card.is-open .mc-card__media { aspect-ratio: 4 / 3; }
-
-  /* A rail card widens by taking a second track, which IS how you get width in
-     a column-flow grid, and grows taller so the detail has somewhere to go. */
-  .mc-rail__track > .mc-card.is-open { grid-column: span 2; }
-  .mc-rail__track > .mc-card.is-open .mc-card__media { aspect-ratio: 1 / 1; }
-
-  .mc-panel { padding: 1.6rem; }
-}
-@media screen and (min-width: 600px) and (max-width: 989px) {
-  /* Same story at tablet width: the rail is still a scroller there. */
-  .mc-rail__track > .mc-card.is-open { grid-column: span 2; }
-}
+/* NOTHING HAPPENS TO THE TILE WHEN IT OPENS. The panel is a modal now, so the
+   card does not expand, does not take the row, and does not move its
+   neighbours. The rules that used to do all three are gone deliberately — they
+   are what made opening a photograph rearrange the gallery. */
+.mc-card.is-open { z-index: auto; }
 
 /* ─── CATEGORY NAVIGATION ──────────────────────────────────────────────────── */
 .mc-nav {
@@ -489,6 +526,132 @@
   text-underline-offset: 0.4rem;
 }
 
+/* ─── THE SIDE MENU'S EXPANDABLE GROUPS ────────────────────────────────────── */
+/* A chevron that turns, because Dawn removes the native disclosure marker and
+   a group otherwise reads as an ordinary link. */
+.mc-drawer-summary {
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+}
+.mc-drawer-summary::-webkit-details-marker { display: none; }
+.mc-drawer-summary::after {
+  content: "";
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-inline-start: 1.2rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.6;
+  transition: transform var(--mc-duration) ease;
+}
+.mc-drawer-group[open] > .mc-drawer-summary::after { transform: rotate(-135deg); }
+@media (prefers-reduced-motion: reduce) {
+  .mc-drawer-summary::after { transition: none; }
+}
+/* The children sit in from their parent so the structure reads at a glance. */
+.mc-drawer-group > ul { padding-inline-start: 1.6rem; }
+
+
+/* ─── "SEE ALL" ────────────────────────────────────────────────────────────── */
+/* A real target — 44px minimum, the smallest reliable thumb size — carrying a
+   slow drift of mixed colour.
+ *
+ * NO HUE-ROTATE. The first attempt animated `filter: hue-rotate` through a full
+ * 360deg to get the "changing" quality, and a full turn necessarily passes
+ * through every hue on the wheel — the button spent a chunk of its cycle a flat
+ * green, which is not the effect at all. The palette has to STAY in its family
+ * and move within it.
+ *
+ * SO: TWO GRADIENTS, DRIFTING AGAINST EACH OTHER. A linear sweep underneath and
+ * a soft radial bloom on top, travelling at different speeds and in opposite
+ * directions, combined with `plus-lighter` so where they overlap the colour
+ * genuinely mixes rather than one covering the other. Because 19s and 27s do
+ * not divide into each other, the pairing almost never repeats — the colour is
+ * never quite the same twice, which is the quality being asked for, and it
+ * never leaves blue/violet/pink/amber.
+ *
+ * THE COLOUR IS ON PSEUDO-ELEMENTS, not the button, so the label stays pure
+ * white over the top of it and is never tinted by what is moving underneath. */
+.mc-rail__more {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 4.4rem;
+  padding: 0 1.8rem;
+  white-space: nowrap;
+  text-decoration: none;
+  font-size: var(--mc-label-sm);
+  color: #fff;
+  /* THE LABEL HAS TO SURVIVE EVERY FRAME OF THE MIX. `plus-lighter` blends
+     UPWARDS, so the brightest moment of the cycle is the one that decides
+     legibility — an earlier, more saturated version washed out to a pale lilac
+     and white-on-pale-pink was genuinely hard to read. The palette is darker
+     now and the blooms are roughly half their old strength, so the button stays
+     in a deep blue/violet/magenta range instead of climbing into pastel. The
+     text shadow is the belt: it holds contrast on the lightest frame without
+     being visible on the darkest. */
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.45);
+  border-radius: var(--mc-btn-radius);
+  background-color: #1b1726;          /* the deep ground the colour floats on */
+  transition: filter var(--mc-duration) ease;
+}
+.mc-rail__more::before,
+.mc-rail__more::after {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  z-index: -1;
+  pointer-events: none;
+}
+/* The sweep. */
+.mc-rail__more::before {
+  background: linear-gradient(
+    100deg,
+    #1a3fb8 0%, #5232c4 26%, #8c2fae 50%, #b83a74 74%, #1a3fb8 100%
+  );
+  background-size: 240% 100%;
+  opacity: 0.92;
+  animation: mc-siri-sweep 19s linear infinite;
+}
+/* The bloom, travelling the other way and mixing where it lands. */
+.mc-rail__more::after {
+  /* NO CYAN, NO AMBER. Both were in the previous attempt and both left the
+     family the moment they mixed: `plus-lighter` is ADDITIVE, so a cyan bloom
+     over the blue sweep summed to teal, and an amber one over the magenta
+     summed to gold. The button spent half its cycle looking green and the other
+     half looking like a discount badge.
+     Every colour here now sits inside blue-violet-pink, so any sum of any two
+     of them lands inside it too — the mix can only ever be another shade of the
+     same family. */
+  background:
+    radial-gradient(40% 120% at 22% 50%, rgb(255 122 168 / 0.30), transparent 72%),
+    radial-gradient(36% 120% at 74% 50%, rgb(138 116 255 / 0.28), transparent 72%);
+  background-size: 200% 100%;
+  mix-blend-mode: plus-lighter;
+  animation: mc-siri-bloom 27s linear infinite;
+}
+@keyframes mc-siri-sweep {
+  from { background-position: 0% 50%; }
+  to   { background-position: 240% 50%; }
+}
+@keyframes mc-siri-bloom {
+  from { background-position: 200% 50%; }
+  to   { background-position: -200% 50%; }
+}
+.mc-rail__more:hover { filter: brightness(1.1); }
+
+/* HELD STILL for anyone who asked for that — frozen on one frame of the mix,
+   so the button keeps its colour and simply stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  .mc-rail__more::before,
+  .mc-rail__more::after { animation: none; }
+}
+
 /* Sibling strip on a category page: the "where else can I go" row. A dropdown
    hides the rest of the shop; this states it.
 
@@ -527,6 +690,34 @@
   background: var(--mc-fg); color: var(--mc-bg); border-color: transparent;
 }
 
+/* ─── INFINITE SCROLL ──────────────────────────────────────────────────────── */
+/* The "load more" anchor is a real link for no-JS and for crawlers; the script
+   hides it and fetches instead. Kept in the DOM (not display:none) while
+   loading so the observer still has something to watch. */
+.mc-more { padding: 2.4rem 1.6rem; text-align: center; }
+.mc-more__link { font-size: var(--mc-label-sm); opacity: 0.75; }
+.mc-more.is-auto .mc-more__link { visibility: hidden; }
+.mc-more.is-loading::after {
+  content: "";
+  display: block;
+  width: 1.8rem; height: 1.8rem;
+  margin: 0 auto;
+  border: 2px solid rgb(var(--color-foreground, 247 248 250) / 0.25);
+  border-top-color: rgb(var(--color-foreground, 247 248 250) / 0.8);
+  border-radius: 50%;
+  animation: mc-spin 0.7s linear infinite;
+}
+@keyframes mc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .mc-more.is-loading::after { animation: none; }
+}
+.mc-end {
+  padding: 3.2rem 1.6rem 1.6rem;
+  text-align: center;
+  font-size: var(--mc-label-sm);
+  opacity: 0.5;
+}
+
 /* ─── PAGE FURNITURE ───────────────────────────────────────────────────────── */
 /* Tight at the top on a phone: every pixel above the first photograph is a
    pixel of catalogue the shopper cannot see. */
@@ -547,17 +738,16 @@
   text-align: center;
   opacity: 0.7;
   font-size: var(--mc-label);
+  line-height: 2.6;
 }
 
 /* ─── HOME RAILS ───────────────────────────────────────────────────────────── */
 .mc-rail { margin-block-end: 4.8rem; }
 .mc-rail__head {
-  display: flex; align-items: baseline; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
   gap: 1.6rem; margin: 0 0 1.4rem;
 }
 .mc-rail__title { font-size: 2rem; font-weight: inherit; margin: 0; }
-.mc-rail__more { font-size: var(--mc-label-sm); white-space: nowrap; opacity: 0.75; }
-.mc-rail__more:hover { opacity: 1; }
 
 /* A rail scrolls horizontally rather than wrapping, so a thin section shows
    three photographs and simply stops — it never renders a half-empty grid row,
@@ -629,3 +819,132 @@
 .template-search .card__inner img {
   object-fit: contain !important;
 }
+
+/* ─── THE FENCE ────────────────────────────────────────────────────────────── */
+/* SITE-WIDE, NOT A HERO-ONLY EFFECT. The brief is "the fence is the identity —
+   the same visual language from the first scroll to checkout", so this rule is
+   on `body`, loaded by theme.liquid (not just this file's own two sections),
+   which is what makes it apply on product pages, cart and search too.
+
+   THE TEXTURE IS A REAL PRODUCT PHOTOGRAPH, not an invented graphic. Every
+   product on this shop is shot against the same dark diamond mesh; a tileable
+   crop of that exact mesh (scripts/shopify/fence-texture.mjs, from a real
+   catalogue photograph, grayscaled, tone-inverted so the wire reads as the
+   highlight and the gap as the shadow, then compressed into a narrow dark
+   range) is the background here — so the products and the environment are
+   LITERALLY the same surface, not a texture that merely resembles it.
+
+   SUBTLE ON PURPOSE. The wire tone sits at roughly rgb(40) against a rgb(18)
+   gap — about a 1.2x luminance step — dark enough that ordinary body copy at
+   ~90% white passes WCAG AA comfortably over either tone, and dense enough
+   that product photography stays the thing a shopper's eye lands on. The
+   linear-gradient wash on top pins the very top of the page a touch darker
+   (where the header and nav sit and need the most contrast) and eases off
+   toward the mid-page. `background-attachment: scroll`, not `fixed` — fixed
+   backgrounds force their own compositing layer on scroll on many mobile
+   browsers, and this is a phone-first catalogue. */
+/* !important IS DELIBERATE HERE, not a specificity fight left unresolved.
+   Several of Dawn's own component stylesheets (component-menu-drawer.css,
+   component-search.css and others) load with `media="print"` and switch to
+   `all` on their own `onload`, which is Dawn's documented pattern for
+   non-critical CSS — but it means they attach to the CSSOM asynchronously,
+   AFTER this file, regardless of where their <link> sits in the document.
+   One of them re-declares `body { background: ... }` at equal specificity,
+   and whichever finishes loading last wins — non-deterministically, since it
+   depends on network timing. Verified on the real preview theme: without
+   `!important` the fence was invisible on some loads and present on others.
+   `!important` makes this deterministic without touching Dawn's own files. */
+body {
+  background-color: rgb(13 12 11) !important;
+  background-image:
+    linear-gradient(180deg, rgb(8 7 6 / 0.82) 0%, rgb(10 9 8 / 0.62) 42%, rgb(10 9 8 / 0.7) 100%),
+    url('fence-tile-mono.webp') !important;
+  background-repeat: no-repeat, repeat !important;
+  background-size: 100% 100%, 224px 224px !important;
+  background-attachment: scroll !important;
+}
+@media screen and (min-width: 750px) {
+  body { background-size: 100% 100%, 320px 320px !important; }
+}
+
+/* ─── TYPOGRAPHY — HEAVY CONDENSED CAPS + WIDE-TRACKED LABELS ────────────────── */
+/* Two roles, matched to the concept page: a HEADING role (Oswald, 700, all
+   caps, tight tracking — the "BUILT AROUND THE FENCE" register) for anything
+   that leads a page or a rail, and a LABEL role (the theme's own body font,
+   all caps, wide-tracked, small) for the quiet furniture — nav, sort, the
+   eyebrow line above a heading. Oswald is loaded once, site-wide, in
+   theme.liquid; nothing here assumes it loaded, since every rule below falls
+   back to the theme's own heading font if the network request is slow or
+   blocked. */
+.mc-head__title,
+.mc-rail__title,
+.mc-hero__title {
+  font-family: 'Oswald', var(--font-heading-family, sans-serif);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+.mc-nav__link,
+.mc-nav__toggle,
+.mc-sort__label,
+.mc-sort__link,
+.mc-siblings a,
+.mc-hero__eyebrow,
+.mc-density__label {
+  /* NEITHER of the theme's own fonts — the heading face is an italic serif
+     display font and the body face on this shop is Newsreader (also serif),
+     and the label role in the concept page is specifically a crisp UPRIGHT
+     sans. A plain system-ui stack rather than a second web-font request. */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 500;
+}
+.mc-hero__eyebrow {
+  font-size: 1.1rem;
+  letter-spacing: 0.22em;
+  opacity: 0.7;
+  margin: 0 0 0.8rem;
+}
+
+/* ─── THE HERO ─────────────────────────────────────────────────────────────── */
+/* One statement, one line of context, one way in — the concept page's
+   register, kept to plain descriptive language: no brand, sub-label or
+   silhouette term belongs in theme copy (the payment gateway scans the whole
+   catalogue for exactly those words), so this says what the shop IS rather
+   than naming anything in it. */
+.mc-hero {
+  padding-block: 3.2rem 2.4rem;
+  max-width: 64rem;
+}
+.mc-hero__title {
+  font-size: 3.6rem;
+  line-height: 1.05;
+  margin: 0 0 1.2rem;
+}
+@media screen and (min-width: 750px) {
+  .mc-hero { padding-block: 5.6rem 3.6rem; }
+  .mc-hero__title { font-size: 5.6rem; }
+}
+.mc-hero__lede {
+  max-width: 46rem;
+  margin: 0 0 2rem;
+  font-size: 1.5rem;
+  line-height: 1.55;
+  opacity: 0.82;
+}
+.mc-hero__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 1rem 1.8rem;
+  border: 1px solid rgb(var(--color-foreground, 247 248 250) / 0.45);
+  border-radius: var(--mc-btn-radius);
+  text-decoration: none;
+  color: var(--mc-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 1.2rem;
+  font-weight: 500;
+}
+.mc-hero__cta:hover { border-color: var(--mc-fg); background: rgb(255 255 255 / 0.06); }

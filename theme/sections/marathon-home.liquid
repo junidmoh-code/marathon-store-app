@@ -22,9 +22,26 @@
       Pants               781    5.5%      Shorts              92   0.6%
       Bags                597    4.2%
 
+  THE RAILS MIX — the order is NOT plain sell-through. Straight sell-through put
+  three clothing rails in the first five and a shopper landing on the home page
+  saw one kind of thing. The rule now:
+
+    Group the categories into families — Footwear, Clothing, Headwear, Bags,
+    Fragrance. Order the families by their best-selling member, and order the
+    categories inside each family by sell-through. Then take one from each
+    family in turn, round-robin, until they run out.
+
+  So the first five rails are one from every family, led by the best seller
+  overall, and the strongest category in each family surfaces before the second
+  of anything. Sell-through still decides what leads and what is inside each
+  family — it decides ORDER, not adjacency.
+
+  Caps & Hats is its own family rather than part of Clothing. The data has it
+  tagged Clothing, but nobody shops for a cap by browsing clothing, and leaving
+  it inside that family buried it in eighth place.
+
   That order is the default of `rail_order` below, so it is visible and
-  editable in the theme editor rather than compiled in. Re-run the script and
-  paste the new line to refresh it; nothing breaks if nobody ever does.
+  editable in the theme editor rather than compiled in.
 
   WHY THE ORDER IS BAKED RATHER THAN FETCHED. A live ranking would mean a Cloud
   Function call on every home page load, a cold start in front of the shopper,
@@ -48,10 +65,27 @@
 
 {%- render 'marathon-nav' -%}
 
+<div class="page-width">
+  {%- comment -%}
+    THE HERO. Plain descriptive language only — no brand, sub-label or
+    silhouette term, same rule as every product title on this shop, because
+    the payment gateway scans theme copy along with the catalogue.
+  {%- endcomment -%}
+  <div class="mc-hero">
+    {%- if section.settings.eyebrow != blank -%}
+      <p class="mc-hero__eyebrow">{{ section.settings.eyebrow }}</p>
+    {%- endif -%}
+    {%- if section.settings.heading != blank -%}
+      <h1 class="mc-hero__title">{{ section.settings.heading }}</h1>
+    {%- endif -%}
+    {%- if section.settings.lede != blank -%}
+      <p class="mc-hero__lede">{{ section.settings.lede }}</p>
+    {%- endif -%}
+    <a class="mc-hero__cta" href="/collections/all?sort_by=created-descending">See everything &rarr;</a>
+  </div>
+</div>
+
 <div class="page-width mc-page">
-  {%- if section.settings.lede != blank -%}
-    <p class="mc-lede">{{ section.settings.lede }}</p>
-  {%- endif -%}
 
   {%- liquid
     assign all_tags = collections.all.all_tags
@@ -200,7 +234,7 @@
   {%- endcomment -%}
   {%- if rendered == 0 -%}
     <p class="mc-empty">
-      <a href="/collections/all?sort_by=created-descending">Browse everything &rarr;</a>
+      <a class="mc-rail__more" href="/collections/all?sort_by=created-descending">See all &rarr;</a>
     </p>
   {%- endif -%}
 </div>
@@ -216,7 +250,7 @@
       "id": "rail_order",
       "label": "Rail order — Label~tag~collection handle, best-selling first",
       "info": "Label~tag~collection-handle rows, best-selling first. From POS sell-through, 56 days to 2026-08-21. `node scripts/shopify/sell-through.mjs` prints a paste-ready replacement in exactly this format.",
-      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Caps & Hats~Caps & Hats~caps-hats;T-Shirts~T-Shirts~t-shirts;Jeans & Denim~Jeans & Denim~pants;Bags~Bags~bags;Perfume~Perfume~fragrance;Sandals & Slides~Sandals & Slides~sandals-slides;Boots~Boots~boots;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
+      "default": "Sneakers~Sneakers~sneakers;Tracksuits & Sets~Tracksuits & Sets~tracksuits;Caps & Hats~Caps & Hats~caps-hats;Bags~Bags~bags;Perfume~Perfume~fragrance;Soccer Boots~Soccer Boots~soccer-boots;Clothing~Clothing~clothing;Sandals & Slides~Sandals & Slides~sandals-slides;T-Shirts~T-Shirts~t-shirts;Boots~Boots~boots;Jeans & Denim~Jeans & Denim~pants;Jackets & Coats~Jackets & Coats~jackets;Hoodies & Sweatshirts~Hoodies & Sweatshirts~hoodies-sweats;Shorts & Vests~Shorts & Vests~shorts"
     },
     {
       "type": "range",
@@ -252,6 +286,18 @@
       "id": "lede",
       "label": "Opening line",
       "default": "Clearance, factory surplus and pre-loved stock. Checked by hand, graded, and listed only in the sizes we hold."
+    },
+    {
+      "type": "text",
+      "id": "eyebrow",
+      "label": "Hero eyebrow",
+      "default": "Curated in South Africa"
+    },
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Hero heading",
+      "default": "Built different. Made to stand out."
     }
   ],
   "presets": [{ "name": "Home rails" }]

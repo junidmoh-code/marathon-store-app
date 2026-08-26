@@ -74,10 +74,18 @@
 
   function close(useHistory) {
     if (!openCard) return;
-    var panel = $("[data-mc-panel]", openCard);
+    // No drift correction is needed any more, and that is the point: the modal
+    // never touched the gallery, so there is nothing to put back. The earlier
+    // version expanded the tile into a full row and had to measure and undo the
+    // ~130px shift that caused.
+    var card = openCard;
+    var panel = $("[data-mc-panel]", card);
     if (panel) panel.hidden = true;
-    openCard.classList.remove(OPEN_CLASS);
+    var sheet = panel && $("[data-mc-sheet]", panel);
+    if (sheet) { sheet.style.transform = ""; sheet.classList.remove("is-dragging"); }
+    card.classList.remove(OPEN_CLASS);
     openCard = null;
+    unlockScroll();
     if (!useHistory) return;
     document.title = listTitle;
     try {
@@ -113,22 +121,66 @@
       if (t) document.title = t;
     }
 
-    // A panel the shopper never sees is a panel that did not open. A card can
-    // be out of view VERTICALLY on the browsing grid and HORIZONTALLY in a home
-    // rail, which is a sideways scroller — so both axes are checked.
-    var rect = card.getBoundingClientRect();
-    var offScreen =
-      rect.top < 0 || rect.bottom > window.innerHeight ||
-      rect.left < 0 || rect.right > window.innerWidth;
-    if (offScreen) {
-      // A shopper who has asked for reduced motion gets the jump, not the glide.
-      var still = false;
-      try { still = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
-      card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: still ? "auto" : "smooth" });
-    }
+    // NO scrollIntoView. The panel is a modal centred in the viewport, so there
+    // is nothing to scroll TO — and scrolling the gallery behind an overlay is
+    // exactly how a shopper loses their place. The page does not move.
+    lockScroll();
     var closeBtn = $("[data-mc-close]", panel);
     if (closeBtn) closeBtn.focus({ preventScroll: true });
   }
+
+  // ── scroll lock ────────────────────────────────────────────────────────────
+  // The gallery must not scroll behind the modal — on a phone that is how the
+  // shopper's place gets lost. Position-fixing the body would itself jump the
+  // page, so the scroll offset is captured, the body pinned at that offset, and
+  // the offset restored on close.
+  var lockedAt = 0;
+  function lockScroll() {
+    lockedAt = window.scrollY;
+    document.body.style.position = "fixed";
+    document.body.style.top = -lockedAt + "px";
+    document.body.style.width = "100%";
+  }
+  function unlockScroll() {
+    document.body.style.position = "";
+    document.body.style.top = "";
+    document.body.style.width = "";
+    window.scrollTo(0, lockedAt);
+  }
+
+  // ── swipe down to close ────────────────────────────────────────────────────
+  // The gesture people already know from a photo library. Only a drag that
+  // starts at the TOP of the sheet's own scroll counts, so dragging down while
+  // reading a long size list scrolls the sheet instead of dismissing it.
+  var dragY = null, dragSheet = null;
+  document.addEventListener("touchstart", function (ev) {
+    var sheet = ev.target.closest && ev.target.closest("[data-mc-sheet]");
+    if (!sheet || sheet.scrollTop > 0) return;
+    dragSheet = sheet;
+    dragY = ev.touches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener("touchmove", function (ev) {
+    if (!dragSheet || dragY === null) return;
+    var dy = ev.touches[0].clientY - dragY;
+    if (dy <= 0) return;
+    dragSheet.classList.add("is-dragging");
+    dragSheet.style.transform = "translateY(" + dy + "px)";
+  }, { passive: true });
+
+  document.addEventListener("touchend", function (ev) {
+    if (!dragSheet) return;
+    var dy = 0;
+    var m = /translateY\((\d+(?:\.\d+)?)px\)/.exec(dragSheet.style.transform || "");
+    if (m) dy = parseFloat(m[1]);
+    dragSheet.classList.remove("is-dragging");
+    if (dy > 90) {            // far enough to mean it
+      close(true);
+    } else {
+      dragSheet.style.transform = "";   // springs back
+    }
+    dragSheet = null; dragY = null;
+  }, { passive: true });
 
   // ── clicks ─────────────────────────────────────────────────────────────────
   document.addEventListener("click", function (ev) {
@@ -165,8 +217,14 @@
     var add = target.closest && target.closest("[data-mc-add]");
     if (add) { ev.preventDefault(); addToCart(add); return; }
 
-    // A click anywhere outside an open card closes it.
-    if (openCard && !(target.closest && target.closest("[data-mc-card]"))) close(true);
+    // TAPPING THE BACKDROP CLOSES. The panel element IS the backdrop and the
+    // content sits in a child sheet, so "outside" is a click that landed on the
+    // panel but not inside the sheet.
+    if (openCard) {
+      var inPanel = target.closest && target.closest("[data-mc-panel]");
+      if (inPanel && !(target.closest && target.closest("[data-mc-sheet]"))) { close(true); return; }
+      if (!inPanel && !(target.closest && target.closest("[data-mc-card]"))) close(true);
+    }
   });
 
   document.addEventListener("keydown", function (ev) {
@@ -286,6 +344,219 @@
         if (fresh) host.innerHTML = fresh.innerHTML;
       })
       .catch(function () { /* cosmetic only */ });
+  }
+
+  // ── density ────────────────────────────────────────────────────────────────
+  // Two, three or four across. The choice is a per-browser convenience, so it
+  // lives in localStorage — and every access is wrapped, because a private
+  // window can THROW on the accessor rather than return null, which would take
+  // the whole script down with it.
+  var DENSITY_KEY = "mc-cols";
+
+  function readDensity() {
+    try {
+      var v = parseInt(window.localStorage.getItem(DENSITY_KEY), 10);
+      return v >= 2 && v <= 4 ? v : null;
+    } catch (e) { return null; }
+  }
+  function writeDensity(n) {
+    try { window.localStorage.setItem(DENSITY_KEY, String(n)); } catch (e) { /* fine */ }
+  }
+
+  function applyDensity(n) {
+    $$("[data-mc-grid]").forEach(function (g) { g.style.setProperty("--mc-cols", String(n)); });
+    $$("[data-mc-density] [data-mc-cols]").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-mc-cols") === String(n) ? "true" : "false");
+    });
+  }
+
+  var saved = readDensity();
+  if (saved) applyDensity(saved);
+
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest && ev.target.closest("[data-mc-cols]");
+    if (!btn) return;
+    ev.preventDefault();
+    var n = parseInt(btn.getAttribute("data-mc-cols"), 10);
+    if (!(n >= 2 && n <= 4)) return;
+    applyDensity(n);
+    writeDensity(n);
+  });
+
+  // ── infinite scroll ────────────────────────────────────────────────────────
+  // The server renders one page; this fetches the next as the shopper nears the
+  // bottom and appends its cards. Images keep `loading="lazy"` exactly as the
+  // server wrote them, so appending markup does not download anything until it
+  // is nearly on screen.
+  //
+  // SCROLL POSITION IS THE WHOLE POINT. Being thrown back to the top after
+  // looking at something is what makes people leave, so there are three
+  // separate defences:
+  //
+  //   1. The quick view never navigates. Opening and closing a product is
+  //      pushState only, so the page does not move at all — the panel opens
+  //      where the shopper already is.
+  //   2. `history.scrollRestoration = "manual"`. Browsers try to restore scroll
+  //      on a back-navigation BEFORE the appended pages exist, land at a
+  //      position that is now near the top of a much shorter document, and the
+  //      shopper is thrown to the start. Taking it over is the only way to
+  //      restore after the pages are back.
+  //   3. Depth and offset are saved per URL. Coming back to a grid — from a
+  //      product page, or via bfcache-less back — re-fetches the pages that were
+  //      loaded, then restores the exact offset.
+  var SCROLL_KEY = "mc-scroll";
+
+  function gridState() {
+    var grid = $("[data-mc-grid]");
+    if (!grid) return null;
+    return { grid: grid, key: window.location.pathname + window.location.search };
+  }
+
+  function saveScroll() {
+    var st = gridState();
+    if (!st) return;
+    try {
+      window.sessionStorage.setItem(SCROLL_KEY, JSON.stringify({
+        key: st.key,
+        y: window.scrollY,
+        pages: pagesLoaded,
+        at: Date.now(),
+      }));
+    } catch (e) { /* private window — the grid still works, it just forgets */ }
+  }
+
+  function readScroll() {
+    try {
+      var raw = window.sessionStorage.getItem(SCROLL_KEY);
+      if (!raw) return null;
+      var v = JSON.parse(raw);
+      // Ten minutes. Older than that and the shopper is starting a new visit,
+      // not resuming one; dropping them mid-grid would be the confusing answer.
+      if (!v || Date.now() - v.at > 600000) return null;
+      return v;
+    } catch (e) { return null; }
+  }
+
+  var pagesLoaded = 1;
+  var loading = false;
+
+  function moreEl() { return $("[data-mc-more]"); }
+
+  /** Fetch the next page and append its cards. Resolves false when there is no more. */
+  function loadNext() {
+    var more = moreEl();
+    if (!more || loading) return Promise.resolve(false);
+    var link = $("[data-mc-next]", more);
+    if (!link) return Promise.resolve(false);
+    loading = true;
+    more.classList.add("is-loading");
+    return fetch(link.href, { headers: { "X-Requested-With": "fetch" } })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var grid = $("[data-mc-grid]");
+        var incoming = doc.querySelector("[data-mc-grid]");
+        if (!grid || !incoming) throw new Error("next page had no grid");
+        // Move the cards across as-is. `loading="lazy"` came from the server and
+        // is preserved, so nothing downloads until it is nearly in view.
+        while (incoming.firstElementChild) grid.appendChild(incoming.firstElementChild);
+        pagesLoaded++;
+
+        // Swap in the next sentinel, or the end marker.
+        var nextMore = doc.querySelector("[data-mc-more]");
+        var end = doc.querySelector("[data-mc-end]");
+        if (nextMore) more.replaceWith(nextMore);
+        else if (end) more.replaceWith(end);
+        else more.remove();
+        return true;
+      })
+      .catch(function () {
+        // Leave the link visible and clickable — a failed fetch degrades to the
+        // ordinary "next page" anchor rather than a dead end.
+        more.classList.remove("is-auto");
+        return false;
+      })
+      .then(function (ok) {
+        loading = false;
+        var m = moreEl();
+        if (m) m.classList.remove("is-loading");
+        observe();
+        return ok;
+      });
+  }
+
+  // TWO TRIGGERS, NOT ONE. IntersectionObserver is the efficient one, but it is
+  // not universally reliable — it did not fire at all for this sentinel inside a
+  // framed viewport during testing, and a shopper whose browser does the same
+  // would hit an infinite scroll that never loads. So a throttled scroll check
+  // runs alongside it. Both call the same guarded loadNext(), which no-ops while
+  // a fetch is in flight, so a double trigger costs nothing.
+  var observer = null;
+  var NEAR = 800;                            // start a screen early, so it feels seamless
+
+  function nearBottom() {
+    var more = moreEl();
+    if (!more) return false;
+    return more.getBoundingClientRect().top - window.innerHeight < NEAR;
+  }
+
+  function observe() {
+    var more = moreEl();
+    if (!more) return;                       // end of collection — nothing to watch
+    more.classList.add("is-auto");           // hide the link; scrolling drives now
+    if ("IntersectionObserver" in window) {
+      if (observer) observer.disconnect();
+      observer = new IntersectionObserver(function (entries) {
+        if (entries.some(function (e) { return e.isIntersecting; })) loadNext();
+      }, { rootMargin: NEAR + "px 0px" });
+      observer.observe(more);
+    }
+    // The belt: check once now in case the sentinel is already in range on a
+    // short first page, and on every throttled scroll thereafter.
+    if (nearBottom()) loadNext();
+  }
+
+  // A TIME THROTTLE, NOT requestAnimationFrame. rAF is the usual choice and it
+  // is the wrong one here: it is throttled hard or suspended outright in
+  // backgrounded and framed contexts, and during testing the scroll trigger
+  // simply stopped firing after the first page because the callback never ran.
+  // A timestamp cannot be suspended.
+  var lastScrollCheck = 0;
+  function onScroll() {
+    var now = Date.now();
+    if (now - lastScrollCheck < 150) return;
+    lastScrollCheck = now;
+    if (nearBottom()) loadNext();
+  }
+
+  // Restore depth and offset when returning to a grid we have seen.
+  function restoreScroll() {
+    var st = gridState();
+    var saved = readScroll();
+    if (!st || !saved || saved.key !== st.key || saved.pages <= 1) return;
+    var want = Math.min(saved.pages, 20);    // bounded: 20 pages is far past any real scroll
+    (function step() {
+      if (pagesLoaded >= want) {
+        window.scrollTo(0, saved.y);
+        return;
+      }
+      loadNext().then(function (ok) { if (ok) step(); else window.scrollTo(0, saved.y); });
+    })();
+  }
+
+  if ($("[data-mc-grid]")) {
+    try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch (e) {}
+    observe();
+    restoreScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    window.addEventListener("pagehide", saveScroll);
+    window.addEventListener("beforeunload", saveScroll);
+    // Also on every quick-view open: that is the moment before a shopper might
+    // tap "View full details" and leave the grid entirely.
+    document.addEventListener("click", function (ev) {
+      if (ev.target.closest && ev.target.closest("[data-mc-open], .mc-panel__link")) saveScroll();
+    }, true);
   }
 
   // ── category dropdowns ─────────────────────────────────────────────────────

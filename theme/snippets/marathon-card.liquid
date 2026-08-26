@@ -126,21 +126,52 @@
     {%- if sold_out -%}<span class="mc-card__sold">Sold out</span>{%- endif -%}
   </a>
 
-  <div class="mc-card__meta">
-    <a class="mc-card__name" href="{{ product.url }}" data-mc-open>{{ product.title }}</a>
-    <span class="mc-card__price{% if sold_out %} mc-card__price--out{% endif %}">
-      {{- product.price | money -}}
-    </span>
-  </div>
+  {%- comment -%}
+    NO NAME AND NO PRICE UNDER THE PHOTO. The grid is photographs; the text
+    lives in the panel below and on the product page, which is what search
+    engines read and what a committed shopper reads. The <a> above still carries
+    the product URL, so the link a crawler follows is unchanged — only the
+    visible text is gone.
+
+    The alt attribute is NOT dropped with it: a screen reader has no photograph,
+    and stripping the alt would make the grid unusable rather than quiet.
+  {%- endcomment -%}
 
   {%- comment -%}
     The panel. `hidden` until JS opens it — and it stays hidden forever if JS
     never runs, which is the graceful degradation described above.
   {%- endcomment -%}
-  <div class="mc-panel" hidden data-mc-panel>
-    <button type="button" class="mc-panel__close" data-mc-close aria-label="Close">&times;</button>
+  <div class="mc-panel" hidden data-mc-panel role="dialog" aria-modal="true" aria-label="{{ product.title | escape }}">
+    {%- comment -%}
+      The sheet. Clicks on the backdrop (this element's padding) close; clicks
+      inside the sheet do not — that split is why the sheet is a real element
+      rather than the panel being styled as one.
+    {%- endcomment -%}
+    <div class="mc-panel__sheet" data-mc-sheet>
+      <button type="button" class="mc-panel__close" data-mc-close aria-label="Close">&times;</button>
 
-    <p class="mc-panel__title">{{ product.title }}</p>
+      {%- comment -%}
+        THE PHOTOGRAPH, LARGE. The panel used to be text only, which is absurd on
+        a shop where the photograph is the only thing that identifies a product —
+        the shopper taps a picture and the picture disappears. Rendered at a
+        bigger width than the tile and NOT cropped square: this is the one place
+        the whole product should be visible, so it keeps its real proportions.
+        Lazy, because it is inside a panel that is hidden until opened.
+      {%- endcomment -%}
+      {%- if product.featured_media -%}
+        {{
+          product.featured_media.preview_image
+          | image_url: width: 1000
+          | image_tag:
+            loading: 'lazy',
+            widths: '400,600,800,1000',
+            sizes: '(min-width: 750px) 460px, 92vw',
+            class: 'mc-panel__photo',
+            alt: img_alt
+        }}
+      {%- endif -%}
+
+      <p class="mc-panel__title">{{ product.title }}</p>
     <p class="mc-panel__price">{{ product.price | money }}</p>
 
     {%- comment -%}
@@ -192,6 +223,7 @@
         {% if sold_out %}disabled{% endif %}
       >{% if sold_out %}Sold out{% else %}Add to cart{% endif %}</button>
       <a class="mc-panel__link" href="{{ product.url }}">View full details</a>
+      </div>
     </div>
   </div>
 </article>

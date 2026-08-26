@@ -22,8 +22,31 @@
 {%- render 'marathon-nav' -%}
 
 {%- liquid
-  assign here = collection.current_tags.first
   assign all_tags = collections.all.all_tags
+
+  # WHICH TAG IS THIS PAGE? `collection.current_tags` is the documented answer
+  # and it came back EMPTY on the live shop at
+  # /collections/all/sneakers — Shopify's own <title> said 'tagged "Sneakers"'
+  # while the drop was blank, so the heading rendered "Products" and the sibling
+  # strip did not render at all.
+  #
+  # The URL is the reliable source: /collections/{handle}/{tag}. Only consulted
+  # when the path actually HAS a third segment, so /collections/all and
+  # /collections/under-r500 stay untagged rather than matching a tag by accident.
+  assign here = collection.current_tags.first
+  if here == blank
+    assign path_parts = request.path | remove_first: '/' | split: '/'
+    if path_parts.size >= 3
+      assign seg = path_parts[2]
+      for t in all_tags
+        assign t_handle = t | handleize
+        if t_handle == seg
+          assign here = t
+          break
+        endif
+      endfor
+    endif
+  endif
   assign footwear = 'Sneakers,Boots,Sandals & Slides,Soccer Boots' | split: ','
   assign everything_else = 'Tracksuits & Sets,Caps & Hats,Jerseys,Polos,Jeans & Denim,Jackets & Coats,Hoodies & Sweatshirts,T-Shirts,Shorts & Vests,Bags,Perfume' | split: ','
 
@@ -38,8 +61,14 @@
 <div class="page-width mc-page">
   <header class="mc-head">
     <h1 class="mc-head__title">
+      {%- comment -%}
+        `here`, not `collection.current_tags`. The drop is empty on this shop
+        (see the note above), so joining it rendered an EMPTY heading the moment
+        the URL-derived fallback started working — the tag was known and the
+        title still printed nothing.
+      {%- endcomment -%}
       {%- if here != blank -%}
-        {{ collection.current_tags | join: ' · ' }}
+        {{ here }}
       {%- else -%}
         {{ collection.title | default: 'Everything' }}
       {%- endif -%}
@@ -156,10 +185,29 @@
       {%- endcomment -%}
       <p class="mc-empty">
         Nothing in this section right now.
-        <a href="/collections/all?sort_by=created-descending">See everything</a>.
+        <br>
+        {%- comment -%} Same treatment as every other "see all" — one CTA style
+          across the shop, not a link here and a button there. {%- endcomment -%}
+        <a class="mc-rail__more" href="/collections/all?sort_by=created-descending">See all &rarr;</a>
       </p>
     {%- else -%}
-      <div class="mc-grid">
+      {%- comment -%}
+        DENSITY — two, three or four across. Rendered as real buttons so it works
+        before the script loads; the script only wires them up and remembers the
+        choice. `--mc-cols` on the grid is the single knob.
+      {%- endcomment -%}
+      <div class="mc-density" data-mc-density>
+        <span class="mc-density__label">Size</span>
+        {%- for n in (2..4) -%}
+          <button type="button" class="mc-density__btn" data-mc-cols="{{ n }}"
+                  aria-pressed="{% if n == 3 %}true{% else %}false{% endif %}"
+                  aria-label="{{ n }} across">
+            {%- for i in (1..n) -%}<i></i>{%- endfor -%}
+          </button>
+        {%- endfor -%}
+      </div>
+
+      <div class="mc-grid" data-mc-grid style="--mc-cols: 3;">
         {%- for product in collection.products -%}
           {%- comment -%} The first row is eager. Five, not two: the grid is
             five columns at >=1400px, and a lazy card in the opening row renders
@@ -172,8 +220,36 @@
         {%- endfor -%}
       </div>
 
-      {%- if paginate.pages > 1 -%}
-        {{ paginate | default_pagination }}
+      {%- comment -%}
+        INFINITE SCROLL — no pagination control, nothing to click.
+
+        The server still paginates: each request renders ONE page of cards, and
+        the browser fetches the next one as the shopper approaches the bottom.
+        Loading a whole category up front is not an option — Sneakers is 324
+        photographs and a phone would not survive it.
+
+        WITHOUT JAVASCRIPT this link is an ordinary "next page" anchor and the
+        catalogue is still fully walkable — which is also how a crawler pages
+        through it. The script hides it and takes over.
+      {%- endcomment -%}
+      {%- if paginate.next -%}
+        <div class="mc-more" data-mc-more>
+          <a class="mc-more__link" href="{{ paginate.next.url }}" data-mc-next>
+            Load more ({{ paginate.current_page | plus: 1 }} of {{ paginate.pages }})
+          </a>
+        </div>
+      {%- else -%}
+        {%- comment -%}
+          THE END OF A COLLECTION. It says so rather than simply stopping, so a
+          shopper knows they have seen everything rather than wondering whether
+          more is still loading. And because loading stops here, the footer is
+          reachable by scrolling — an infinite scroll that never ends is an
+          infinite scroll with no footer.
+        {%- endcomment -%}
+        <p class="mc-end" data-mc-end>
+          That&rsquo;s all {{ collection.products_count }}
+          {% if collection.products_count == 1 %}item{% else %}items{% endif %}.
+        </p>
       {%- endif -%}
     {%- endif -%}
   {%- endpaginate -%}
