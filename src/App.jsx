@@ -7845,8 +7845,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     (cart || []).forEach(l => {
       if (l.intent === "refill") return;                 // desktop = customer orders
       const dp = !!l.requestDisplayPartner;
-      const key = `${l.product?.id}__${l.size}__${dp ? "dp" : ""}`;
-      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, dp, qty: 0 });
+      // A display-pair PULL groups apart from a classic partner line — mixing
+      // them let "+" mint an unflagged twin and "−" strip the flagged one.
+      const pull = l.displayPairRequest === true;
+      const key = `${l.product?.id}__${l.size}__${dp ? "dp" : ""}${pull ? "pull" : ""}`;
+      if (!m.has(key)) m.set(key, { key, product: l.product, size: l.size, dp, pull, qty: 0 });
       m.get(key).qty++;
     });
     return [...m.values()];
@@ -8203,9 +8206,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           : `Size ${g.size === "Free Size" ? "OS" : formatSize(g.size)} · ${typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice) : "—"}`}
                       </div>
                       <div className="ad-step">
-                        <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp)}>−</button>
+                        <button onClick={() => onRemoveOne(g.product.id, g.size, g.dp, g.pull)}>−</button>
                         <span>{g.qty}</span>
-                        <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>
+                        {/* A pull is ONE known unit — there is no "+" for it. */}
+                        {g.pull
+                          ? <button disabled title="The display pair is a single known unit" style={{ opacity:.3, cursor:"not-allowed" }}>+</button>
+                          : <button onClick={() => g.dp ? onAddDisplayPartner(g.product, g.size) : onQuickAdd(g.product, g.size, 1)}>+</button>}
                       </div>
                     </div>
                     <div className="ad-lp">{g.dp ? "—" : (typeof g.product?.retailPrice === "number" ? fmtR(g.product.retailPrice * g.qty) : "—")}</div>
@@ -8316,7 +8322,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             onClick={() => {
                               if (out) { if (clothingOrder || isDeactivated(qv)) setQvNa({ size: sz, left: 0 }); return; }
                               if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
-                              setQvNa(null); setQvDisplayPrompt(null); setQvSize(sz);
+                              // A plain size selection drops any display-pair
+                              // claim — it belongs to the prompted size only.
+                              setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(sz);
                             }}>
                             {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
                             {dOnly ? (
@@ -8362,7 +8370,10 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                   {!clothingOrder && (
                   <div>
                     <div className="ad-qlab">Display Partner (optional)</div>
-                    <button onClick={() => setQvDP(v => !v)}
+                    {/* A MANUAL toggle (either direction) drops any display-pair
+                        claim — that claim is only ever minted by the prompt
+                        button, and must never ride a hand-made partner line. */}
+                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); }}
                             style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                      border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
                                      background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
@@ -8846,12 +8857,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     && computeHubForItem({ product: p }) === "hub1";
   const sneakerAvail = (pid, size) =>
     cellAvailability({ cells: hub1CellsState.cells, promised: hub1Promised, productId: pid, size });
-  // Units of this product+size already in the cart (partner rows excluded —
-  // they become requests, not pulls). Mirrors clothingInCart so stacked adds
-  // can't order past what Hub 1 can actually give out.
+  // Units of this product+size already in the cart. Classic partner rows are
+  // excluded (they become requests, not pulls) — but a display-pair PULL line
+  // IS a pull of a known unit and counts, so the same single pair can never
+  // be pulled twice within one cart session (the tile flips ✕ the moment the
+  // first pull line is in the cart). Mirrors clothingInCart otherwise.
   const sneakerInCart = (pid, size) =>
     cart.filter(l => (l.productType || "sneaker") !== "clothing"
-      && l.product?.id === pid && l.size === size && !l.requestDisplayPartner).length;
+      && l.product?.id === pid && l.size === size
+      && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
   const sneakerOut = (p, s) =>
     sneakerServedByHub1(p) && hub1CellsState.settled && !hub1CellsState.error
     && !!s && sneakerAvail(p.id, s) <= sneakerInCart(p.id, s);
@@ -8979,8 +8993,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   };
   // Remove one cart line matching a product+size (+ display-partner flag) — the
   // desktop drawer − / remove.
-  const removeOneLine = (productId, size, dp = false) => setCart(c => {
-    const i = c.findIndex(l => l.product?.id === productId && l.size === size && !!l.requestDisplayPartner === !!dp);
+  const removeOneLine = (productId, size, dp = false, pull = false) => setCart(c => {
+    const i = c.findIndex(l => l.product?.id === productId && l.size === size
+      && !!l.requestDisplayPartner === !!dp && !!l.displayPairRequest === !!pull);
     return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
   });
   // Desktop Display-Partner request — ONE line, size optional (sneakers only),
@@ -9817,7 +9832,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                     onClick={() => {
                       if (out) { if (clothing || isDeactivated(selected)) setNaNote({ size: s, left: 0 }); return; }
                       if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
-                      setNaNote(null); setDisplayPrompt(null); setPendingSize(s);
+                      // A plain size selection drops any display-pair claim —
+                      // the claim belongs to the size the prompt was about.
+                      setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
                     }}
                     style={out
                       ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
@@ -9854,7 +9871,16 @@ function AssistantView({ products, onExit, orders = [] }) {
             <div style={{ marginBottom:"1.25rem" }}>
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
-                <button onClick={() => setPendingDisplayPartner(v => !v)}
+                <button onClick={() => {
+                  // A manual toggle drops any display-pair claim — AND the
+                  // prompt-minted size selection with it: leaving the display-
+                  // only size selected would place a plain line into a shelf
+                  // that is empty on purpose, the exact false-OOS this feature
+                  // kills.
+                  setPendingDisplayPartner(v => !v);
+                  if (pendingDisplayPair) setPendingSize("");
+                  setPendingDisplayPair(null);
+                }}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Request Display Partner
                 </button>
@@ -10249,7 +10275,11 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (o.displayRefillHub !== selectedHub) return;
       if (o.displayRefillStatus) {
         const rAt = resolvedAtMs(o);
-        const win = o.displayRefillStatus === "stockDepleted" ? DEPLETED_VISIBLE_MS : RESOLVED_VISIBLE_MS;
+        // The 7-day depleted window (and the revival below) is HUB 1 ONLY —
+        // the display-pair pull is a hub1 feature and hub2/hub3 keep their
+        // 24h behaviour exactly (owner constraint, 2026-08-26).
+        const win = o.displayRefillStatus === "stockDepleted" && selectedHub === "hub1"
+          ? DEPLETED_VISIBLE_MS : RESOLVED_VISIBLE_MS;
         if (rAt && nowTick - rAt < win) completed.push(o);
       } else {
         const scheduledAt = new Date(o.displayRefillScheduledAt).getTime();
@@ -10280,10 +10310,16 @@ function WarehouseView({ products = [], orders, onExit }) {
     [orders, selectedHub, whProductsById]
   );
   const depletedCards = useMemo(
-    () => completedRefills.filter((o) => o.displayRefillStatus === "stockDepleted"),
-    [completedRefills]
+    () => selectedHub === "hub1"
+      ? completedRefills.filter((o) => o.displayRefillStatus === "stockDepleted")
+      : [],
+    [completedRefills, selectedHub]
   );
   const depletedIdsKey = depletedCards.map((o) => o.id).sort().join(",");
+  // Coarse re-probe tick (5 min): a ready promise consuming the last unit, or
+  // fresh stock landing, updates "Stock has arrived" without a tab remount —
+  // and without probing on every /orders stream delta.
+  const reviveTick = Math.floor(nowTick / (5 * 60 * 1000));
   const [revivedIds, setRevivedIds] = useState({});
   useEffect(() => {
     if (!depletedIdsKey) { setRevivedIds({}); return undefined; }
@@ -10304,7 +10340,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     })();
     return () => { on = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [depletedIdsKey, selectedHub]);
+  }, [depletedIdsKey, selectedHub, reviveTick]);
   const dueWithRevived = useMemo(() => [
     ...dueRefills,
     ...depletedCards.filter((o) => revivedIds[o.id]).map((o) => ({ ...o, _revivedDepleted: true })),
@@ -10507,6 +10543,21 @@ function WarehouseView({ products = [], orders, onExit }) {
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
+    // A FAILED display-pair pull reinstates the slot it tombstoned at order
+    // creation: the pair never left the floor, and without this the marker
+    // disappears while the cell still reads 1 — the next order for that size
+    // would be a plain line into an empty shelf, the exact false-OOS the pull
+    // exists to kill. Best-effort, like the clear it reverses.
+    if (status === STATUS.OUT_OF_STOCK && order.displayPairRequest === true && order.productId && order.size) {
+      const slotStore = displaySlotStoreFor(order);
+      if (slotStore) {
+        setDisplaySlot({
+          store: slotStore, productId: order.productId, productName: order.productName || "",
+          size: String(order.size), bookedHub: order.placedAtHub || order.hub || "hub1",
+          source: "manual", orderId: order.id,
+        }).catch(() => {});
+      }
+    }
     // Hub 2 dispatch hold: a Hub 2 order going READY holds its customer-facing
     // reveal (TV + voice + WhatsApp) until notifyReadyAt = now + HUB2_DISPATCH_HOLD_MS.
     // readyNotifyPending flags it for the server reveal sweep (which sends the
