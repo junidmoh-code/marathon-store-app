@@ -151,12 +151,31 @@ describe("registration is idempotent — the mandatory mutation proof", () => {
     expect(r.ok).toBe(true);
     expect(cellQty("6")).toBe(2);
     // Two devices adding "one more" from the same base build the SAME movement
-    // id — the second is a no-op on stock:
-    setPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6/qty`, 1); // other device still sees base 1
+    // id — the second is a no-op on stock. A true stale snapshot carries the
+    // whole old row (qty AND the bumps high-water mark):
+    setPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6/qty`, 1);
+    setPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6/bumps`, 1);
     const r2 = await addExtraDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
     expect(r2.ok).toBe(true);
     expect(r2.idempotent).toBe(true);
     expect(cellQty("6")).toBe(2);          // still two — never three
+  });
+
+  it("a CARD-DECREMENTED row mints a fresh id — the next extra unit is booked, never skipped", async () => {
+    // The Display Registration card can retire a fact (qty walks down) while
+    // the bumps ladder stays put. Deriving the movement id from qty alone
+    // re-minted an existing id here: applyMovement skipped it as idempotent
+    // while qty still bumped — a display claimed with no unit booked.
+    // (Adversarial review, PR #460.)
+    await registerDisplayUnit({ hub: HUB, product: PRODUCT, size: "6", styleCode: STYLE });
+    await addExtraDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });   // qty 2, bumps 2, stock 2
+    setPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6/qty`, 1); // card retired one fact
+    const r3 = await addExtraDisplayUnit({ hub: HUB, product: PRODUCT, size: "6" });
+    expect(r3.ok).toBe(true);
+    expect(r3.idempotent).not.toBe(true);   // a NEW movement — the unit is booked
+    expect(cellQty("6")).toBe(3);
+    expect(getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6/qty`)).toBe(2);
+    expect(getPath(`settings/hubSneakerCount/register/${HUB}/${PRODUCT.id}__6/bumps`)).toBe(3);
   });
 });
 
