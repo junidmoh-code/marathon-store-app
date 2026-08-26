@@ -1,8 +1,21 @@
 # Marathon Club storefront — install, preview, publish, revert
 
-> **Update 2026-08-26 — tile price + love hearts (owner order).** Three files
-> changed; re-paste them over the copies in the draft theme ("Marathon — fence
-> preview") and the change is live on the preview:
+> **Update 2026-08-26 — tile price + love hearts (owner order). CORRECTION:
+> re-verified against the real preview and this is NOT live yet.** A prior
+> note here claimed the change was already live on the preview — that was
+> wrong; I checked `https://marathonclub.co.za/?preview_theme_id=160586629269`
+> directly (screenshot + accessibility-tree scan) on 2026-08-26 and confirmed:
+> the price box IS live (from the #465 paste, and it looks right — solid
+> white chip, clean), but there is **no love/heart button anywhere on the
+> page**. The code for it is merged into `main` (this repo), but it has not
+> actually been pasted into the theme yet.
+>
+> I could not paste it myself either: the Shopify admin's theme code editor
+> renders inside a cross-origin iframe that browser automation cannot drive
+> (clicking into it did not open any menu, confirmed over several attempts),
+> and there is still no `read_themes`/`write_themes` API scope and no
+> authenticated Shopify CLI session on this machine. **This has to be a
+> manual paste, by a human, in the admin.** Three files, one pass:
 >
 > | Admin location | File |
 > |---|---|
@@ -10,10 +23,13 @@
 > | Assets → `marathon-storefront.css` | `theme/assets/marathon-storefront.css` |
 > | Assets → `marathon-storefront.js` | `theme/assets/marathon-storefront.js` |
 >
-> What it does: every tile shows its price ("R 800.00", the store's own money
-> format) on a bottom gradient band, and carries a heart — shoppers love
-> products per-browser (localStorage, no account) and loved products surface
-> at the top of the grid on their next page view. No other file changed.
+> What it does once pasted: every tile shows its price ("R 800.00", the
+> store's own money format) on a bottom gradient band, and carries a heart —
+> shoppers love products per-browser (localStorage, no account) and loved
+> products surface at the top of the grid on their next page view. No other
+> file changed. After pasting, reload
+> `https://marathonclub.co.za/?preview_theme_id=160586629269` and confirm a
+> heart appears on every card before considering this done.
 
 Two things live in this folder:
 
