@@ -176,7 +176,7 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
       </div>
 
       {/* search / scan */}
-      <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)}
+      <input value={query} onChange={(e) => setQuery(e.target.value)}
         placeholder="Search by name, or scan the label / barcode…"
         style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 12, border: BORDER, background: CARD, color: "#fff", fontSize: 15, fontFamily: "inherit", marginBottom: 8 }} />
       {results.length > 0 && (

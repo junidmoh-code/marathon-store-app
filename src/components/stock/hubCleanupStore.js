@@ -425,6 +425,7 @@ export async function addExtraDisplayUnit({ hub, product, size, store = null }) 
         size: rawSize, bookedHub: hub, source: "registration",
       });
       if (!slot.ok) warning = `Added, but the display slot could not be saved (${slot.message || "write failed"}).`;
+      else if (slot.superseded) warning = "Added, but a newer slot write won the race — check the display record.";
     } catch (err) {
       warning = `Added, but the display slot could not be saved (${String(err?.message || err)}).`;
     }

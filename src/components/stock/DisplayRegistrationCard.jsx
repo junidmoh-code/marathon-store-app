@@ -17,12 +17,10 @@ import { CARD, BORDER } from "./ui";
 export default function DisplayRegistrationCard({ onOpen }) {
   return (
     <div style={{ background: CARD, border: BORDER, borderRadius: 15, padding: "16px 17px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+      {/* Title only — owner asked for no description line (2026-08-26). */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="2.2"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
         <div style={{ fontWeight: 800, color: "#fff", fontSize: 15 }}>Display Registration</div>
-      </div>
-      <div style={{ color: "rgba(255,255,255,.55)", fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
-        New stock in? Register which size went on the display wall. Wrong size on record? Fix it here.
       </div>
       <button onClick={onOpen}
         style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(251,191,36,.4)",
