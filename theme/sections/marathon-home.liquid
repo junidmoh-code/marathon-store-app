@@ -61,7 +61,11 @@
   one.
 {%- endcomment -%}
 
-{{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
+{%- comment -%}
+  marathon-storefront.css is loaded site-wide from theme.liquid (the fence
+  background and typography have to reach every page, not just this one) —
+  loading it again here would double the <link> tag on the home page.
+{%- endcomment -%}
 
 {%- render 'marathon-nav' -%}
 

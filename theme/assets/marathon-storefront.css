@@ -67,6 +67,14 @@
   /* The hairline between album tiles. Deliberately a token: it is the one
      measurement in the grid that is a judgement rather than arithmetic. */
   --mc-hairline: 2px;
+  /* The fence-era card frame: mat width, fill, edge and radius. Real custom
+     properties (not just fallback values on var()) so a theme editor setting
+     could override them later, matching --mc-field/--mc-gap above. */
+  --mc-frame: 10px;
+  --mc-frame-lg: 13px;
+  --mc-frame-fill: rgb(10 9 8);
+  --mc-frame-edge: rgb(255 255 255 / 0.10);
+  --mc-frame-radius: 6px;
 
   /* Everything below is the theme's own token, with a fallback that matches
      what Feather actually computes, so this file still renders correctly if it
@@ -231,8 +239,13 @@
    Small, low-contrast, and it never covers the product. */
 .mc-card__sold {
   position: absolute;
-  inset-inline-start: 0;
-  inset-block-end: 0;
+  /* Absolutely positioned children sit relative to the PADDING box of their
+     containing block, and .mc-card__media now carries the frame mat as
+     padding — inset: 0 here would put this badge in the corner of the dark
+     mat instead of flush against the photo, floating off the product it is
+     describing. Offsetting by the same padding puts it back on the photo. */
+  inset-inline-start: var(--mc-frame, 10px);
+  inset-block-end: var(--mc-frame, 10px);
   font-size: 1rem;
   letter-spacing: 0.03em;
   padding: 0.3rem 0.6rem;
