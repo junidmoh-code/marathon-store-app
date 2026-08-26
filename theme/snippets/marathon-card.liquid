@@ -124,28 +124,30 @@
       }}
     {%- endif -%}
     {%- comment -%}
-      A BADGE ON THE PHOTO, NOT TEXT UNDER THE FRAME. Both this and
-      `mc-card__sold` are absolutely positioned inside the frame's own padding
-      box (see the `mc-card__sold` rule for why the offset has to match
-      `--mc-frame`) so a price chip reads as part of the SAME dark-mat design
-      language as the sold-out badge — never a separate line of loose text
-      floating in the gap below a tile, which is what shipped first and read
-      as an afterthought. Opposite corner from the sold-out badge because the
-      two are mutually exclusive per product but the grid still mixes both
-      kinds of tile, and giving each its own corner keeps a scanned row from
-      reading as randomly placed labels.
+      SOLD OUT is still a badge ON the photo — absolutely positioned inside
+      the frame's own padding box (see the `mc-card__sold` rule for why the
+      offset has to match `--mc-frame`).
 
-      NO PRODUCT NAME. The price is the only text a tile carries; the name
-      still lives only in the panel and on the product page, which is what
-      search engines read. The <a> above still carries the product URL, so
-      the link a crawler follows is unchanged.
+      NO PRODUCT NAME anywhere on the tile. The price is the only text a tile
+      carries; the name still lives only in the panel and on the product
+      page, which is what search engines read. The <a> above still carries
+      the product URL, so the link a crawler follows is unchanged.
     {%- endcomment -%}
     {%- if sold_out -%}
       <span class="mc-card__sold">Sold out</span>
-    {%- else -%}
-      <span class="mc-card__price">{{ product.price | money }}</span>
     {%- endif -%}
   </a>
+  {%- comment -%}
+    PRICE AS A FOOTER OF THE FRAME, NOT A BADGE ON THE PHOTO. A solid black
+    strip, white text, sitting directly below the photo as part of the same
+    dark mat (see `.mc-card__media:has(+ .mc-card__price)` in the CSS) — a
+    sibling of the media link, never inside it, so it isn't clipped by the
+    photo's fixed-aspect `overflow: hidden` box and can sit in normal flow.
+    Omitted for sold-out tiles, which keep their on-photo badge instead.
+  {%- endcomment -%}
+  {%- unless sold_out -%}
+    <span class="mc-card__price">{{ product.price | money }}</span>
+  {%- endunless -%}
 
 
   {%- comment -%}
