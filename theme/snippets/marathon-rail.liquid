@@ -15,7 +15,7 @@
     rail_products  the products to show
     rail_limit     how many to show
     rail_min       render nothing below this many
-    rail_count     optional; shown next to "See all" when known
+    rail_count     accepted and ignored — the button says "See all", nothing more
 {%- endcomment -%}
 
 {%- liquid
@@ -27,7 +27,10 @@
     <div class="mc-rail__head">
       <h2 class="mc-rail__title">{{ rail_title }}</h2>
       <a class="mc-rail__more" href="{{ rail_url }}">
-        See all{% if rail_count %} {{ rail_count }}{% endif %} &rarr;
+        {%- comment -%} No count. "See all 564" made the button about the
+          number rather than the invitation, and the number is the least
+          interesting thing on it. {%- endcomment -%}
+        See all &rarr;
       </a>
     </div>
     <div class="mc-rail__track">

@@ -87,6 +87,100 @@
   assign rows = 'New In~collection~new-in;Footwear~tag~Footwear~Sneakers,Boots,Sandals & Slides,Soccer Boots;Clothing~tag~Clothing~Tracksuits & Sets,Caps & Hats,Jerseys,Polos,Jeans & Denim,Jackets & Coats,Hoodies & Sweatshirts,T-Shirts,Shorts & Vests;Bags~tag~Bags;Perfume~tag~Perfume;Under R500~collection~under-r500' | split: ';'
 -%}
 
+{%- comment -%}
+  ONE TREE, TWO SURFACES. `variant: 'drawer'` renders the same categories as
+  Dawn's slide-out menu list instead of the top strip.
+
+  This is why they cannot disagree: the hamburger used to render
+  `section.settings.menu.links`, the hand-built Shopify Main menu, which held
+  four rows while the shop had thirteen collections — and the app can never
+  repair that, because it has no `write_online_store_navigation` scope. Reading
+  the collections themselves means nobody has to touch the admin again and the
+  two surfaces are the same data by construction rather than by discipline.
+{%- endcomment -%}
+{%- if variant == 'drawer' -%}
+  <ul class="menu-drawer__menu has-submenu list-menu" role="list">
+    <li>
+      <a href="/collections/all?sort_by=created-descending"
+         class="menu-drawer__menu-item list-menu__item link link--text focus-inset{% if request.path == '/collections/all' %} menu-drawer__menu-item--active{% endif %}">
+        Everything
+      </a>
+    </li>
+    {%- for row in rows -%}
+      {%- liquid
+        assign parts = row | split: '~'
+        assign label = parts[0]
+        assign kind = parts[1]
+        assign target = parts[2]
+        assign visible = false
+        assign url = ''
+        assign url_path = ''
+        if kind == 'tag'
+          if all_tags contains target
+            assign visible = true
+            assign url_path = target | handleize | prepend: '/collections/all/'
+            assign url = url_path | append: '?sort_by=created-descending'
+          endif
+        else
+          assign c = collections[target]
+          if c != blank and c.all_products_count > 0
+            assign visible = true
+            assign url_path = c.url
+            assign url = c.url
+          endif
+        endif
+        assign kids = parts[3] | split: ','
+      -%}
+      {%- if visible -%}
+        <li>
+          {%- if kids.size > 0 -%}
+            {%- comment -%}
+              A native <details>. Dawn's own submenu JS is bound to its
+              linklist markup, and native disclosure needs no script at all —
+              which also means the drawer still opens and closes with
+              JavaScript off.
+            {%- endcomment -%}
+            <details class="mc-drawer-group">
+              {%- comment -%}
+                Dawn sets `summary { list-style: none }`, which removes the
+                browser's own disclosure triangle — so without a marker of our
+                own, "Footwear" looked exactly like the plain links beside it
+                and gave no hint that it opens.
+              {%- endcomment -%}
+              <summary class="menu-drawer__menu-item list-menu__item link link--text focus-inset mc-drawer-summary">
+                {{ label }}
+              </summary>
+              <ul class="menu-drawer__menu list-menu" role="list">
+                <li>
+                  <a href="{{ url }}" class="menu-drawer__menu-item link link--text list-menu__item focus-inset">
+                    All {{ label | downcase }}
+                  </a>
+                </li>
+                {%- for kid in kids -%}
+                  {%- if all_tags contains kid -%}
+                    {%- assign kid_path = kid | handleize | prepend: '/collections/all/' -%}
+                    {%- assign kid_url = kid_path | append: '?sort_by=created-descending' -%}
+                    <li>
+                      <a href="{{ kid_url }}"
+                         class="menu-drawer__menu-item link link--text list-menu__item focus-inset{% if request.path == kid_path %} menu-drawer__menu-item--active{% endif %}">
+                        {{ kid }}
+                      </a>
+                    </li>
+                  {%- endif -%}
+                {%- endfor -%}
+              </ul>
+            </details>
+          {%- else -%}
+            <a href="{{ url }}"
+               class="menu-drawer__menu-item list-menu__item link link--text focus-inset{% if request.path == url_path %} menu-drawer__menu-item--active{% endif %}">
+              {{ label }}
+            </a>
+          {%- endif -%}
+        </li>
+      {%- endif -%}
+    {%- endfor -%}
+  </ul>
+{%- else -%}
 <nav class="mc-nav" aria-label="Categories">
   <div class="page-width">
     <div class="mc-nav__scroll">
@@ -159,3 +253,4 @@
     </div>
   </div>
 </nav>
+{%- endif -%}
