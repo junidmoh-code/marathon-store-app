@@ -30,8 +30,8 @@ const SLOTS = {
 describe("displayUnitsByCell — live slots per hub cell", () => {
   const m = displayUnitsByCell(SLOTS, "hub1");
   it("counts live hub1-booked slots per pid::sizeKey, with the stores", () => {
-    expect(m["p1::6"]).toEqual({ units: 2, stores: ["marathon-pe", "trophy"] });
-    expect(m["p2::5_5"]).toEqual({ units: 1, stores: ["marathon-pe"] });
+    expect(m["p1::6"]).toEqual({ units: 2, stores: ["marathon-pe", "trophy"], unverified: 0 });
+    expect(m["p2::5_5"]).toEqual({ units: 1, stores: ["marathon-pe"], unverified: 0 });
   });
   it("HUB-SCOPED: a hub2-booked slot never appears in hub1's map (hub2/hub3 unchanged, pinned)", () => {
     expect(m["p4::7"]).toBeUndefined();
@@ -44,6 +44,37 @@ describe("displayUnitsByCell — live slots per hub cell", () => {
   });
   it("empty/absent slots map is safe", () => {
     expect(displayUnitsByCell(null, "hub1")).toEqual({});
+  });
+});
+
+describe("displayUnitsByCell — the REGISTER as the store-less second source", () => {
+  // The live /settings/hubSneakerCount/register/{hub} shape: keys pid__sizeKey.
+  const REGISTER = {
+    p1__6: { qty: 1 },        // ALSO slot-backed (pe+trophy) — double-count guard case
+    p9__8: { qty: 1 },        // register-only: the 71% case — size known, store not
+    p9__5_5: { qty: 2 },      // register-only, two units, half size
+    p9___: { qty: 1 },        // one-size sentinel — never a display cell
+    p9__9: { qty: 0 },        // zero qty — nothing to show
+  };
+  const m = displayUnitsByCell(SLOTS, "hub1", REGISTER);
+  it("a register-only row shows the cell with unverified units and NO stores", () => {
+    expect(m["p9::8"]).toEqual({ units: 1, stores: [], unverified: 1 });
+    expect(m["p9::5_5"]).toEqual({ units: 2, stores: [], unverified: 2 });
+  });
+  it("DOUBLE-COUNT GUARD: a new-flow registration (slot + register) counts its slots, not the sum", () => {
+    // p1 size 6: two live slots, register qty 1 → unexplained max(0, 1-2)=0.
+    expect(m["p1::6"]).toEqual({ units: 2, stores: ["marathon-pe", "trophy"], unverified: 0 });
+  });
+  it("sentinel and zero-qty rows contribute nothing", () => {
+    expect(m["p9::_"]).toBeUndefined();
+    expect(m["p9::9"]).toBeUndefined();
+  });
+  it("register alone (no slots) still lights the marker map", () => {
+    const only = displayUnitsByCell(null, "hub1", { p9__7: { qty: 1 } });
+    expect(only["p9::7"]).toEqual({ units: 1, stores: [], unverified: 1 });
+  });
+  it("passing no register keeps the slot-only behaviour byte-identical", () => {
+    expect(displayUnitsByCell(SLOTS, "hub1")).toEqual(displayUnitsByCell(SLOTS, "hub1", null));
   });
 });
 

@@ -128,6 +128,17 @@ export function useDisplaySlots(enabled = true) {
   return usePath(DISPLAY_SLOTS_ROOT, enabled);
 }
 
+// /settings/hubSneakerCount/register/{hub} → { "pid__sizeKey": row } — the
+// display REGISTER: every registered display's size (qty, style code), but no
+// store and never decremented (write-only-upward history; hubCleanupStore.js
+// is the writer). The display marker reads it as the store-less second source
+// (71% of registered displays have no slot — measured 2026-08-26). Cost,
+// stated: the hub1 node is ~172 KB, subscribed on assistant devices next to
+// the ~60 KB slots node and the ~474 KB hub1 stock subtree.
+export function useDisplayRegister(hub, enabled = true) {
+  return usePath(hub ? `settings/hubSneakerCount/register/${hub}` : null, enabled);
+}
+
 // /stock_movements -> array sorted newest-first. Optionally filter by productId.
 export function useMovements(productId) {
   const val = usePath("stock_movements");
