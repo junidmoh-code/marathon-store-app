@@ -44,18 +44,50 @@
 import { slotIsLive } from "./displaySlots";
 import { isFootwearProduct, promisedKey, availableUnits } from "./availabilityCore";
 
-// Live display units per hub cell, from the whole slots map.
-// → { "pid::sizeKey": { units, stores: [store, ...] } }
-export function displayUnitsByCell(slots, hub) {
+// Live display units per hub cell — TWO sources, one map:
+//
+//   • SLOTS (store known, current state) — one unit per live hub-booked slot.
+//   • THE REGISTER (size known, store not) — measured 2026-08-26: 381 of the
+//     534 hub1 register rows have NO live slot (71% of registered products
+//     showed no display marker at all), because most registrations never
+//     picked a store and only the slot writer records one. The register rows
+//     all carry the SIZE, which is what the marker needs.
+//
+// The two overlap on new-flow registrations (which write both), so register
+// units are counted as the UNEXPLAINED remainder — max(0, regQty − live
+// slots) — exactly offShelf.js's double-count guard. `unverified` says how
+// many of a cell's units came from the store-less register: the register is
+// never decremented, so a ghost row (display long sold and replaced) can
+// keep a glyph alive — the informational tier wears that; the request flow
+// simply carries no store for them and tombstones nothing.
+//
+// `register` is the /settings/hubSneakerCount/register/{hub} node (keys
+// "pid__sizeKey"); pass null to key on slots alone.
+// → { "pid::sizeKey": { units, stores: [store, ...], unverified } }
+export function displayUnitsByCell(slots, hub, register = null) {
   const out = {};
   for (const [store, byPid] of Object.entries(slots || {})) {
     for (const [pid, slot] of Object.entries(byPid || {})) {
       if (!slotIsLive(slot) || slot.bookedHub !== hub) continue;
       const key = `${pid}::${slot.sizeKey}`;
-      (out[key] ||= { units: 0, stores: [] });
+      (out[key] ||= { units: 0, stores: [], unverified: 0 });
       out[key].units += 1;
       out[key].stores.push(store);
     }
+  }
+  for (const [regKey, row] of Object.entries(register || {})) {
+    const i = regKey.lastIndexOf("__");
+    if (i <= 0) continue;
+    const pid = regKey.slice(0, i);
+    const sizeKey = regKey.slice(i + 2);
+    if (!sizeKey || sizeKey === "_") continue;
+    const qty = Number(row?.qty) || 0;
+    if (qty <= 0) continue;
+    const key = `${pid}::${sizeKey}`;
+    const cur = (out[key] ||= { units: 0, stores: [], unverified: 0 });
+    const unexplained = Math.max(0, qty - cur.stores.length);
+    cur.units += unexplained;
+    cur.unverified += unexplained;
   }
   return out;
 }

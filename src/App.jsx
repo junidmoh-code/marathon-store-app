@@ -88,7 +88,7 @@ import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock
 import { readyPromisedByCell, cellAvailability, isFootwearProduct, promisedKey } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -8375,7 +8375,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           Size {formatSize(qvDisplayPrompt.size)} — on display
                         </div>
                         <div style={{ color:"#E8D5A8", fontSize:11.5, fontWeight:600, marginBottom:8 }}>
-                          The only size {formatSize(qvDisplayPrompt.size)} at Hub 1 is the display pair{qvDisplayPrompt.stores?.length ? ` (on ${qvDisplayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : ""}.
+                          The only size {formatSize(qvDisplayPrompt.size)} at Hub 1 is the display pair{qvDisplayPrompt.stores?.length ? ` (on ${qvDisplayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : " (registered as a display — the shop wasn't recorded)"}.
                         </div>
                         <div style={{ display:"flex", gap:8 }}>
                           <button onClick={() => {
@@ -8680,7 +8680,15 @@ function AssistantView({ products, onExit, orders = [] }) {
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
   const displaySlots = useDisplaySlots(effectiveStoreMode !== "pine");
-  const hub1DisplayUnits = useMemo(() => displayUnitsByCell(displaySlots, "hub1"), [displaySlots]);
+  // The register joins as the store-less second source: 71% of registered
+  // displays have no slot (store never picked at registration), so keying the
+  // marker on slots alone left most registered displays invisible (owner
+  // report, 2026-08-26). displayUnitsByCell applies the double-count guard.
+  const hub1DisplayRegister = useDisplayRegister("hub1", effectiveStoreMode !== "pine");
+  const hub1DisplayUnits = useMemo(
+    () => displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister),
+    [displaySlots, hub1DisplayRegister]
+  );
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that
   // store's warehouse→shop transfer (order.destShop). A single mis-tap here
@@ -9828,7 +9836,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                   Size {formatSize(displayPrompt.size)} — on display
                 </div>
                 <div style={{ color:"#E8D5A8", fontSize:"0.8rem", fontWeight:600, marginBottom:10 }}>
-                  The only size {formatSize(displayPrompt.size)} at Hub 1 is the display pair{displayPrompt.stores?.length ? ` (on ${displayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : ""}.
+                  The only size {formatSize(displayPrompt.size)} at Hub 1 is the display pair{displayPrompt.stores?.length ? ` (on ${displayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : " (registered as a display — the shop wasn't recorded)"}.
                 </div>
                 <div style={{ display:"flex", gap:8 }}>
                   <button onClick={() => {
@@ -11497,7 +11505,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                   const displayPairBanner = order.displayPairRequest === true ? (
                     <div style={{ background:"rgba(251,191,36,.12)", border:"1px solid rgba(251,191,36,.5)", borderRadius:10, padding:"9px 12px", marginBottom:8 }}>
                       <div style={{ color:"#FBBF24", fontSize:12.5, fontWeight:800, letterSpacing:".04em" }}>
-                        DISPLAY PAIR — it is ON THE DISPLAY{order.displayPairStore ? ` at ${labelFor(order.displayPairStore)}` : ""}
+                        DISPLAY PAIR — it is ON THE DISPLAY{order.displayPairStore ? ` at ${labelFor(order.displayPairStore)}` : " (shop not recorded — check the display walls)"}
                       </div>
                       <div style={{ color:"#E8D5A8", fontSize:11.5, fontWeight:600, marginTop:2 }}>
                         The shelf is empty on purpose: take size {formatSize(order.size)} off the display and send it. Do not mark it out of stock.
