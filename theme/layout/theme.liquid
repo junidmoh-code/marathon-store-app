@@ -304,6 +304,27 @@
   </head>
 
   <body class="gradient{% if settings.animations_hover_elements != 'none' %} animate--hover-{{ settings.animations_hover_elements }}{% endif %}">
+    {%- comment -%}
+      THE FENCE, FIXED. A real element, not `background-attachment: fixed` on
+      body/html — that property is well known to be janky on iOS Safari, and
+      this is a phone-first catalogue. `position: fixed` + `z-index: -1` (see
+      marathon-storefront.css) paints this above the canvas/root background
+      but below every normal-flow element on the page, in every browser,
+      without creating a stacking context of its own — so it holds still
+      while the header, grid and cards scroll over it, from the homepage
+      through checkout.
+    {%- endcomment -%}
+    {%- comment -%}
+      NOT `<div ...></div>`. Dawn's own base stylesheet has a blanket
+      accessibility rule, `div:empty { display: none; }` (auto-hiding
+      childless wrapper divs) — it silently ate an EMPTY fence-bg div
+      completely, at every opacity setting, which is why nothing rendered no
+      matter how the background-image/gradient was tuned. A single space
+      makes the div non-empty (a real text node, unlike an HTML comment,
+      which some browsers still treat as not counting toward `:empty`)
+      without giving it any visible content of its own.
+    {%- endcomment -%}
+    <div class="mc-fence-bg" aria-hidden="true"> </div>
     <a class="skip-to-content-link button visually-hidden" href="#MainContent">
       {{ 'accessibility.skip_to_text' | t }}
     </a>
