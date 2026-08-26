@@ -8,21 +8,13 @@
 //
 // One tiny one-shot read for the stat line, same discipline as every card.
 
-import React, { useEffect, useState } from "react";
-import { CARD, BORDER, BLUE_L } from "./ui";
-import { loadRegister } from "./hubCleanupStore";
+// No reads at all: HubCleanupCard on the same home screen already pulls the
+// whole ~172 KB register node for its stat — a second identical read for a
+// cosmetic count doubled that bill on every admin home mount.
+import React from "react";
+import { CARD, BORDER } from "./ui";
 
 export default function DisplayRegistrationCard({ onOpen }) {
-  const [units, setUnits] = useState(null);
-  useEffect(() => {
-    let cancelled = false;
-    loadRegister("hub1")
-      .then((reg) => {
-        if (!cancelled) setUnits(Object.values(reg || {}).reduce((n, r) => n + (Number(r?.qty) || 0), 0));
-      })
-      .catch(() => { if (!cancelled) setUnits(null); });
-    return () => { cancelled = true; };
-  }, []);
   return (
     <div style={{ background: CARD, border: BORDER, borderRadius: 15, padding: "16px 17px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
@@ -30,8 +22,7 @@ export default function DisplayRegistrationCard({ onOpen }) {
         <div style={{ fontWeight: 800, color: "#fff", fontSize: 15 }}>Display Registration</div>
       </div>
       <div style={{ color: "rgba(255,255,255,.55)", fontSize: 12, lineHeight: 1.5, marginBottom: 10 }}>
-        New stock in? Register which size went on the display. Wrong size on record? Fix it here.
-        {units != null && <span style={{ color: BLUE_L }}> {units} display units registered at Hub 1.</span>}
+        New stock in? Register which size went on the display wall. Wrong size on record? Fix it here.
       </div>
       <button onClick={onOpen}
         style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(251,191,36,.4)",

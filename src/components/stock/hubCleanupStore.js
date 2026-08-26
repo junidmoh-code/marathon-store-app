@@ -282,6 +282,7 @@ export async function registerDisplayUnit({ hub, product, size, qty = 1, styleCo
     sizeKey,
     size: rawSize,
     qty: n,
+    bumps: n,   // the high-water mark addExtra's movement-id ladder climbs
     at: serverNowIso(),
     by: user ? user.uid : null,
     movementId: res.movementId,
@@ -382,7 +383,15 @@ export async function addExtraDisplayUnit({ hub, product, size, store = null }) 
   if (!existing || !Number.isInteger(Number(existing.qty))) {
     return { ok: false, message: "Register the first unit before adding another." };
   }
-  const base = Number(existing.qty);
+  // The movement-id ladder climbs the HIGH-WATER MARK (`bumps`), not the raw
+  // qty: the Display Registration card can now DECREMENT qty (retire / move a
+  // fact), and deriving from qty after a decrement re-minted an id that
+  // already existed — applyMovement skipped it as idempotent while the qty
+  // still bumped, a display claimed with no unit booked. Rows the card never
+  // touched carry no `bumps` and fall back to qty, exactly yesterday's ids.
+  // (Adversarial review, PR #460.)
+  const qtyBase = Number(existing.qty);
+  const base = Math.max(Number(existing.bumps) || 0, qtyBase);
 
   const res = await applyMovement({
     type: "received",
@@ -398,9 +407,13 @@ export async function addExtraDisplayUnit({ hub, product, size, store = null }) 
   if (!res.ok) return { ok: false, message: `Could not add the unit: ${res.reason || "write failed"}` };
 
   // Guarded bump: only the writer whose movement actually counted moves the
-  // record from `base` to `base+1`; the race loser's transaction aborts.
+  // record forward; the race loser's transaction aborts. The whole row is
+  // transacted so qty and the bumps ladder advance together.
   try {
-    await runTransaction(ref(database, `${recPath}/qty`), (cur) => (cur === base ? base + 1 : undefined));
+    await runTransaction(ref(database, recPath), (cur) => {
+      if (!cur || Number(cur.qty) !== qtyBase) return undefined;
+      return { ...cur, qty: qtyBase + 1, bumps: base + 1, retiredAt: null };
+    });
   } catch { /* movement carries the truth; the next load shows it */ }
   // A second physical display usually stands at the OTHER shop — the store
   // pick files its slot there (one slot per product per store; best-effort).

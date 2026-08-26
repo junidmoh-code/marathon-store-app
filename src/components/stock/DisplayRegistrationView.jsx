@@ -26,6 +26,7 @@ import { useDisplaySlots, useDisplayRegister } from "./useStock";
 import { slotIsLive } from "./displaySlots";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
+import { decodeSizeKey } from "../../utils/sizeKey";
 import { recordDisplayFact, editDisplaySize, removeDisplayFact } from "./displayRegistrationStore";
 
 const HUBS = ["hub1", "hub2"];
@@ -46,37 +47,55 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
   const [size, setSize] = useState("");
   const [store, setStore] = useState("marathon-pe");
   const [editing, setEditing] = useState(null);   // { fromSizeKey } — the row being resized
+  const [confirmRemove, setConfirmRemove] = useState(null);   // sizeKey awaiting the second tap
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState(null);         // { tone: "ok"|"err", text }
-  const searchRef = useRef(null);
+  const [note, setNote] = useState(null);         // { tone: "ok"|"err"|"warn", text }
 
   const slots = useDisplaySlots(true);
   const register = useDisplayRegister(hub, true);
 
   const results = useMemo(() => (query.trim() ? searchProducts(products, query, { limit: 12 }) : []), [products, query]);
 
-  // Scanner: window-level burst listener (never while typing in an input —
-  // the listener itself refuses focused fields, so the search box keeps
-  // plain keyboard entry). A scan resolves through /barcodes and lands on
-  // the product directly.
+  // The scan resolver, shared by the burst listener and the typed-digits
+  // fallback: /barcodes first (many-to-one; codes never mirrored onto the
+  // product record live only there), then the product list.
+  const productsRef = useRef(products);
+  productsRef.current = products;
+  const resolveScan = async (value) => {
+    try {
+      const hit = await lookupBarcode(String(value));
+      const pid = hit?.productId;
+      const p = pid ? productsRef.current.find((x) => x.id === pid) : null;
+      if (p) { pick(p); setNote(null); return true; }
+      setNote({ tone: "err", text: `Scan ${value} matched no product — search by name instead.` });
+    } catch {
+      setNote({ tone: "err", text: "Scan lookup failed — search by name instead." });
+    }
+    return false;
+  };
+  const resolveScanRef = useRef(resolveScan);
+  resolveScanRef.current = resolveScan;
+
+  // Scanner: window-level burst listener, installed ONCE (refs keep the
+  // handler current — re-subscribing on every products update ripped the
+  // global listener out repeatedly).
   useEffect(() => {
     const uninstall = installBarcodeListener();
-    const unsub = subscribeBarcode(async (value) => {
-      try {
-        const hit = await lookupBarcode(String(value));
-        const pid = hit?.productId;
-        const p = pid ? products.find((x) => x.id === pid) : null;
-        if (p) { pick(p); setNote(null); }
-        else setNote({ tone: "err", text: `Scan ${value} matched no product — search by name instead.` });
-      } catch {
-        setNote({ tone: "err", text: "Scan lookup failed — search by name instead." });
-      }
-    });
+    const unsub = subscribeBarcode((value) => { resolveScanRef.current(value); });
     return () => { unsub(); uninstall(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [products]);
+  }, []);
 
-  const pick = (p) => { setSelected(p); setQuery(""); setSize(""); setEditing(null); setNote(null); };
+  // A scan INTO the focused search box types the digits instead of raising
+  // the burst event (the listener refuses focused inputs by design) — so a
+  // digits-only query also runs through the /barcodes index after a beat.
+  useEffect(() => {
+    const q = query.trim();
+    if (!/^\d{4,}$/.test(q)) return undefined;
+    const t = setTimeout(() => { resolveScanRef.current(q); }, 350);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const pick = (p) => { setSelected(p); setQuery(""); setSize(""); setEditing(null); setConfirmRemove(null); setNote(null); };
 
   const realSizes = useMemo(() =>
     (selected?.sizes || []).map(String).map((s) => s.trim()).filter((s) => s && s !== "_"), [selected]);
@@ -90,7 +109,7 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
       const i = key.lastIndexOf("__");
       if (i <= 0 || key.slice(0, i) !== selected.id) continue;
       const sizeKey = key.slice(i + 2);
-      out[sizeKey] = { sizeKey, size: row?.size || sizeKey.replace(/(\d)_(\d)/g, "$1.$2"), qty: Number(row?.qty) || 0, stores: [] };
+      out[sizeKey] = { sizeKey, size: row?.size || decodeSizeKey(sizeKey), qty: Number(row?.qty) || 0, movementBacked: !!row?.movementId, stores: [] };
     }
     for (const [st, byPid] of Object.entries(slots || {})) {
       const slot = byPid?.[selected.id];
@@ -102,15 +121,20 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
 
   const slotStoresFor = (sizeKey) => (facts.find((f) => f.sizeKey === sizeKey)?.stores) || [];
 
+  const finish = (res, okText) => {
+    if (!res.ok) { setNote({ tone: "err", text: res.message || "Could not save — try again." }); return false; }
+    setNote(res.warning ? { tone: "warn", text: res.warning } : { tone: "ok", text: okText });
+    return true;
+  };
+
   const doRegister = async () => {
-    if (!selected || !size || busy) return;
+    if (!selected || !size || !store || busy) return;
     setBusy(true);
-    const res = await recordDisplayFact({ hub, product: selected, size, store: store || null });
+    const res = await recordDisplayFact({ hub, product: selected, size, store, slots });
     setBusy(false);
-    setNote(res.ok
-      ? { tone: "ok", text: `Registered: size ${formatSize(size)} on the display${store ? ` at ${labelFor(store)}` : ""}.` }
-      : { tone: "err", text: res.message || "Could not save — try again." });
-    if (res.ok) setSize("");
+    if (finish(res, res.already
+      ? `Already registered: size ${formatSize(size)} at ${labelFor(store)}.`
+      : `Registered: size ${formatSize(size)} on the display at ${labelFor(store)}.`)) setSize("");
   };
 
   const doEdit = async (toSize) => {
@@ -121,20 +145,17 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
       slotStores: slotStoresFor(editing.fromSizeKey),
     });
     setBusy(false);
-    setNote(res.ok
-      ? { tone: "ok", text: `Fixed: the display is size ${formatSize(toSize)} now.` }
-      : { tone: "err", text: res.message || "Could not save — try again." });
-    if (res.ok) setEditing(null);
+    if (finish(res, `Fixed: the display is size ${formatSize(toSize)} now.`)) setEditing(null);
   };
 
   const doRemove = async (f) => {
     if (!selected || busy) return;
+    if (confirmRemove !== f.sizeKey) { setConfirmRemove(f.sizeKey); return; }   // two deliberate taps
+    setConfirmRemove(null);
     setBusy(true);
     const res = await removeDisplayFact({ hub, product: selected, sizeKey: f.sizeKey, slotStores: f.stores });
     setBusy(false);
-    setNote(res.ok
-      ? { tone: "ok", text: `Removed the size ${formatSize(f.size)} display record.` }
-      : { tone: "err", text: res.message || "Could not save — try again." });
+    finish(res, `Removed the size ${formatSize(f.size)} display record.`);
   };
 
   return (
@@ -170,11 +191,19 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
         </div>
       )}
 
-      {note && (
-        <div style={{ background: note.tone === "ok" ? "rgba(74,222,128,.1)" : "rgba(248,113,113,.1)", border: `1px solid ${note.tone === "ok" ? "rgba(74,222,128,.4)" : "rgba(248,113,113,.4)"}`, color: note.tone === "ok" ? "#4ADE80" : "#F87171", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>
-          {note.text}
-        </div>
-      )}
+      {note && (() => {
+        const tones = {
+          ok:   { bg: "rgba(74,222,128,.1)", bd: "rgba(74,222,128,.4)", fg: "#4ADE80" },
+          warn: { bg: "rgba(251,191,36,.1)", bd: "rgba(251,191,36,.4)", fg: AMBER },
+          err:  { bg: "rgba(248,113,113,.1)", bd: "rgba(248,113,113,.4)", fg: "#F87171" },
+        };
+        const t = tones[note.tone] || tones.err;
+        return (
+          <div style={{ background: t.bg, border: `1px solid ${t.bd}`, color: t.fg, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>
+            {note.text}
+          </div>
+        );
+      })()}
 
       {selected && (
         <div style={{ background: CARD, border: BORDER, borderRadius: 14, padding: 16 }}>
@@ -194,13 +223,16 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
                   Size {formatSize(f.size)}{f.qty > 1 ? ` ×${f.qty}` : ""}
                   <span style={{ color: "rgba(233,238,255,.55)", fontWeight: 600 }}>
                     {" "}— {f.stores.length ? `on ${f.stores.map((s) => labelFor(s)).join(", ")}'s display` : "shop not recorded"}
+                    {f.movementBacked ? " · booked by the count lane (removing the record does not un-book the pair)" : ""}
                   </span>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
                   <button onClick={() => { setEditing(editing?.fromSizeKey === f.sizeKey ? null : { fromSizeKey: f.sizeKey }); setNote(null); }}
                     style={{ ...chip(editing?.fromSizeKey === f.sizeKey, AMBER), padding: "6px 10px", fontSize: 11.5 }}>Change size</button>
                   <button onClick={() => doRemove(f)} disabled={busy}
-                    style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid rgba(248,113,113,.4)", background: "rgba(248,113,113,.08)", color: "#F87171", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>Remove</button>
+                    style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid rgba(248,113,113,${confirmRemove === f.sizeKey ? ".8" : ".4"})`, background: confirmRemove === f.sizeKey ? "rgba(248,113,113,.2)" : "rgba(248,113,113,.08)", color: "#F87171", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+                    {confirmRemove === f.sizeKey ? "Really remove?" : "Remove"}
+                  </button>
                 </div>
               </div>
               {editing?.fromSizeKey === f.sizeKey && (
@@ -229,15 +261,17 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
             </div>
             <div style={{ fontSize: 11, color: "rgba(233,238,255,.5)", fontWeight: 700, marginBottom: 6 }}>WHOSE DISPLAY WALL?</div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              {/* Required — a store-less registration is exactly the shop-
+                  unknown row the display marker had to work around. */}
               {STORES.map((st) => (
-                <button key={st} onClick={() => setStore(store === st ? "" : st)} style={chip(store === st)}>{labelFor(st)}</button>
+                <button key={st} onClick={() => setStore(st)} style={chip(store === st)}>{labelFor(st)}</button>
               ))}
             </div>
-            <button onClick={doRegister} disabled={!size || busy}
+            <button onClick={doRegister} disabled={!size || !store || busy}
               style={{ width: "100%", padding: "12px", borderRadius: 11, border: "none", fontFamily: "inherit",
-                       background: size && !busy ? "#4ADE80" : "rgba(255,255,255,.06)",
-                       color: size && !busy ? "#04351a" : "rgba(233,238,255,.3)", fontWeight: 800, fontSize: 14, cursor: size && !busy ? "pointer" : "not-allowed" }}>
-              {size ? `Register size ${formatSize(size)} on the display` : "Pick a size"}
+                       background: size && store && !busy ? "#4ADE80" : "rgba(255,255,255,.06)",
+                       color: size && store && !busy ? "#04351a" : "rgba(233,238,255,.3)", fontWeight: 800, fontSize: 14, cursor: size && store && !busy ? "pointer" : "not-allowed" }}>
+              {!size ? "Pick a size" : !store ? "Pick the shop wall" : `Register size ${formatSize(size)} on ${labelFor(store)}'s display`}
             </button>
             <div style={{ color: "rgba(255,255,255,.35)", fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
               Records the display fact only — no stock is added or moved. New-stock pairs are already booked by receiving.
