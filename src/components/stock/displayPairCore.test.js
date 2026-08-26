@@ -10,7 +10,8 @@ import {
 import { promisedKey } from "./availabilityCore";
 
 const SNEAKER = { id: "p1", category: "Footwear", productType: "sneaker" };
-const PRODUCTS = { p1: SNEAKER };
+const PERFUME = { id: "pf", categoryKey: "perfumes" };   // NOT footwear
+const PRODUCTS = { p1: SNEAKER, pf: PERFUME };
 
 // The live slot shape: /settings/displaySlots/{store}/{pid}.
 const SLOTS = {
@@ -71,15 +72,21 @@ describe("pendingDisplayPullsByCell — the incoming-order claim", () => {
     { status: "incoming", displayPairRequest: true, productId: "p1", size: "6" },
     { status: "incoming", displayPairRequest: true, productId: "p1", size: "5.5" },
     { status: "ready", displayPairRequest: true, productId: "p1", size: "7" },      // ready = the promise map's job
+    { status: "coming_tomorrow", displayPairRequest: true, productId: "p1", size: "9" }, // deferred pull — STILL a claim
     { status: "incoming", productId: "p1", size: "8" },                             // plain order — not a pull
     { status: "incoming", displayPairRequest: true, productId: "p1" },              // sizeless — unattributable
+    { status: "incoming", displayPairRequest: true, productId: "pf", size: "6" },   // not footwear — excluded
+    { status: "incoming", displayPairRequest: true, productId: "p1", size: "10", qty: 2 }, // qty carries
     null,
   ];
-  it("counts only INCOMING displayPairRequest footwear orders, encoded-key space", () => {
+  it("counts pending (incoming + coming_tomorrow) displayPairRequest FOOTWEAR orders, encoded-key space", () => {
     const m = pendingDisplayPullsByCell(orders, PRODUCTS);
     expect(m["p1::6"]).toBe(1);
     expect(m["p1::5_5"]).toBe(1);
-    expect(Object.keys(m).sort()).toEqual(["p1::5_5", "p1::6"]);
+    expect(m["p1::9"]).toBe(1);        // a Tomorrow'd pull keeps its claim
+    expect(m["p1::10"]).toBe(2);       // qty carries, not a flat 1
+    expect(m["pf::6"]).toBeUndefined(); // perfume never enters the footwear map
+    expect(Object.keys(m).sort()).toEqual(["p1::10", "p1::5_5", "p1::6", "p1::9"]);
   });
   it("merges with the ready-promise map by summing shared keys", () => {
     const merged = mergePromised({ "p1::6": 1 }, pendingDisplayPullsByCell(orders, PRODUCTS));
@@ -89,11 +96,15 @@ describe("pendingDisplayPullsByCell — the incoming-order claim", () => {
 });
 
 describe("displaySlotStoreFor — whose slot the order clears / refills", () => {
-  it("the slot named on the order wins over the ordering shop", () => {
-    expect(displaySlotStoreFor({ displayPairStore: "marathon-pe", destShop: "trophy" })).toBe("marathon-pe");
+  it("a pull targets the slot named on the order", () => {
+    expect(displaySlotStoreFor({ displayPairRequest: true, displayPairStore: "marathon-pe", destShop: "trophy" })).toBe("marathon-pe");
   });
-  it("classic partner orders keep destShop", () => {
+  it("an AMBIGUOUS pull (two stores displayed the size) targets NOTHING — never a destShop guess", () => {
+    expect(displaySlotStoreFor({ displayPairRequest: true, displayPairStore: null, destShop: "trophy" })).toBe(null);
+  });
+  it("classic partner orders keep destShop, byte-identical", () => {
     expect(displaySlotStoreFor({ destShop: "trophy" })).toBe("trophy");
+    expect(displaySlotStoreFor({ requestDisplayPartner: true, destShop: "trophy" })).toBe("trophy");
     expect(displaySlotStoreFor({})).toBe(null);
   });
 });

@@ -71,16 +71,19 @@ export function displayOnly(avail, displayUnits) {
   return a > 0 && d > 0 && a <= d;
 }
 
-// Pending display pulls: an INCOMING displayPairRequest order is a hard claim
-// on a known unit whose slot has ALREADY been tombstoned (the clear happens at
-// order creation), so without this term the tile would read as plain shelf
-// stock for the window until the warehouse marks it Ready. Ready orders are
-// already netted by readyPromisedByCell; this covers the incoming gap.
-// Same key space, same footwear-only rule, mergeable with the promise map.
+// Pending display pulls: an INCOMING (or COMING-TOMORROW) displayPairRequest
+// order is a hard claim on a known unit whose slot has ALREADY been
+// tombstoned (the clear happens at order creation), so without this term the
+// tile would read as plain shelf stock until the warehouse marks it Ready.
+// coming_tomorrow is in: a deferred pull is still alive and its pair is still
+// claimed — dropping it un-✕'d the tile and invited a second pull of the same
+// unit. Ready orders are already netted by readyPromisedByCell (the maps are
+// disjoint by status). Same key space, same footwear-only rule.
+const PENDING_PULL_STATUSES = new Set(["incoming", "coming_tomorrow"]);
 export function pendingDisplayPullsByCell(orders, productsById) {
   const out = {};
   for (const o of orders || []) {
-    if (!o || o.status !== "incoming" || o.displayPairRequest !== true) continue;
+    if (!o || !PENDING_PULL_STATUSES.has(o.status) || o.displayPairRequest !== true) continue;
     if (!o.productId) continue;
     const p = productsById ? productsById[o.productId] : null;
     if (!p || !isFootwearProduct(p)) continue;
@@ -102,11 +105,15 @@ export function mergePromised(...maps) {
 // Which store's slot a display-pair order clears / the refill later re-fills.
 // A display pull can take ANOTHER store's display (Trophy orders the size;
 // the pair sits on Marathon PE's floor) — clearing the ORDERING shop's slot
-// there would tombstone an unrelated live display. The slot named on the
-// order wins; destShop is the classic partner case (the shop's own display
-// sold at its till).
+// there would tombstone an unrelated live display. So a PULL targets the
+// slot named on the order or NOTHING AT ALL: when two stores each display
+// the same pid+size the prompt refuses to guess (displayPairStore null), and
+// guessing here with a destShop fallback would tombstone the ordering shop's
+// unrelated slot. Classic partner orders (no displayPairRequest) keep the
+// destShop behaviour byte-identical: the shop's own display sold at its till.
 export function displaySlotStoreFor(orderOrItem) {
-  return orderOrItem?.displayPairStore || orderOrItem?.destShop || null;
+  if (orderOrItem?.displayPairRequest === true) return orderOrItem.displayPairStore || null;
+  return orderOrItem?.destShop || null;
 }
 
 // A "Stock Depleted" display-refill task is revivable once the hub can

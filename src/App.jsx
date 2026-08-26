@@ -8352,7 +8352,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               setQvSize(qvDisplayPrompt.size);
                               setQvDP(true);
                               setQvQty(1);
-                              setQvDisplayPair({ store: qvDisplayPrompt.stores?.[0] || effectiveShop });
+                              // Store only when unambiguous — see the phone
+                              // sheet's twin: never guess whose slot to clear.
+                              setQvDisplayPair({ store: qvDisplayPrompt.stores?.length === 1 ? qvDisplayPrompt.stores[0] : null });
                               setQvDisplayPrompt(null);
                             }}
                             style={{ flex:1, padding:"8px 10px", borderRadius:8, border:"1px solid rgba(251,191,36,.6)", background:"rgba(251,191,36,.16)", color:"#FBBF24", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
@@ -9791,7 +9793,11 @@ function AssistantView({ products, onExit, orders = [] }) {
                   <button onClick={() => {
                       setPendingSize(displayPrompt.size);
                       setPendingDisplayPartner(true);
-                      setPendingDisplayPair({ store: displayPrompt.stores?.[0] || effectiveShop });
+                      // Store only when UNAMBIGUOUS — two stores each showing
+                      // this size means we refuse to guess whose slot to
+                      // tombstone; the prompt copy names them all and the
+                      // picker takes whichever pair they find.
+                      setPendingDisplayPair({ store: displayPrompt.stores?.length === 1 ? displayPrompt.stores[0] : null });
                       setPendingQty(1);
                       setDisplayPrompt(null);
                     }}
@@ -10341,13 +10347,22 @@ function WarehouseView({ products = [], orders, onExit }) {
     return () => { on = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depletedIdsKey, selectedHub, reviveTick]);
+  // Session-local dismissal: tapping Stock Depleted on a REVIVED card is the
+  // operator saying "I looked, there is still nothing to put out" — without
+  // this the probe would bounce the card straight back and the button would
+  // read as dead. The probe's opinion returns on the next session.
+  const [dismissedRevived, setDismissedRevived] = useState({});
   const dueWithRevived = useMemo(() => [
     ...dueRefills,
-    ...depletedCards.filter((o) => revivedIds[o.id]).map((o) => ({ ...o, _revivedDepleted: true })),
-  ], [dueRefills, depletedCards, revivedIds]);
+    ...depletedCards.filter((o) => revivedIds[o.id] && !dismissedRevived[o.id])
+      // _revivedAt buckets the card under TODAY in the day-collapsed list —
+      // its scheduledAt is days old by construction (the whole point of the
+      // revival) and would land it in the collapsed "Older" section.
+      .map((o) => ({ ...o, _revivedDepleted: true, _revivedAt: new Date(nowTick).toISOString() })),
+  ], [dueRefills, depletedCards, revivedIds, dismissedRevived, nowTick]);
   const completedSansRevived = useMemo(
-    () => completedRefills.filter((o) => !revivedIds[o.id]),
-    [completedRefills, revivedIds]
+    () => completedRefills.filter((o) => !revivedIds[o.id] || dismissedRevived[o.id]),
+    [completedRefills, revivedIds, dismissedRevived]
   );
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
   // Size run order — the SHARED hubSizeRank comparator (letters S→4XL in run
@@ -11408,6 +11423,24 @@ function WarehouseView({ products = [], orders, onExit }) {
                   // Real sizes only — the "_" one-size sentinel is not a choice.
                   const sizeChoices = (Array.isArray(guardProduct?.sizes) ? guardProduct.sizes : [])
                     .map(String).map((s) => s.trim()).filter((s) => s && s !== "_");
+                  // DISPLAY-PAIR PULL banner (2026-08-26), hoisted ABOVE the
+                  // branch split: the staged send flow only renders when
+                  // productIsFootwear agrees (categoryKey allow-list), and a
+                  // divergently-keyed product (designer-shoes today) or a
+                  // missing product record falls to the plain 2×2 grid —
+                  // where "Mark as Out of Stock" is one tap away, the exact
+                  // false outcome this banner exists to kill. So the banner
+                  // rides the ORDER FLAG alone and renders on BOTH branches.
+                  const displayPairBanner = order.displayPairRequest === true ? (
+                    <div style={{ background:"rgba(251,191,36,.12)", border:"1px solid rgba(251,191,36,.5)", borderRadius:10, padding:"9px 12px", marginBottom:8 }}>
+                      <div style={{ color:"#FBBF24", fontSize:12.5, fontWeight:800, letterSpacing:".04em" }}>
+                        DISPLAY PAIR — it is ON THE DISPLAY{order.displayPairStore ? ` at ${labelFor(order.displayPairStore)}` : ""}
+                      </div>
+                      <div style={{ color:"#E8D5A8", fontSize:11.5, fontWeight:600, marginTop:2 }}>
+                        The shelf is empty on purpose: take size {formatSize(order.size)} off the display and send it. Do not mark it out of stock.
+                      </div>
+                    </div>
+                  ) : null;
                   if (needsSentSize) {
                     // ── STAGED, CONFIRMED SEND (owner fix 2026-08-06) ────────
                     // No inline size buttons: the card shows SEND; sizes appear
@@ -11431,20 +11464,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                     };
                     return (
                       <div style={{ padding:"0 12px 10px 16px" }}>
-                        {/* DISPLAY-PAIR PULL (2026-08-26): the shelf is empty
-                            and the pair to send IS the display pair — say so
-                            plainly, because "shelf empty → mark out of stock"
-                            is the exact false outcome this row exists to kill. */}
-                        {order.displayPairRequest === true && (
-                          <div style={{ background:"rgba(251,191,36,.12)", border:"1px solid rgba(251,191,36,.5)", borderRadius:10, padding:"9px 12px", marginBottom:8 }}>
-                            <div style={{ color:"#FBBF24", fontSize:12.5, fontWeight:800, letterSpacing:".04em" }}>
-                              DISPLAY PAIR — it is ON THE DISPLAY{order.displayPairStore ? ` at ${labelFor(order.displayPairStore)}` : ""}
-                            </div>
-                            <div style={{ color:"#E8D5A8", fontSize:11.5, fontWeight:600, marginTop:2 }}>
-                              The shelf is empty on purpose: take size {formatSize(order.size)} off the display and send it. Do not mark it out of stock.
-                            </div>
-                          </div>
-                        )}
+                        {displayPairBanner}
                         {flow.step === "idle" && (
                           <div style={{ display:"flex", gap:8 }}>
                             <button onClick={() => d({ type: "OPEN_SEND" })}
@@ -11514,6 +11534,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                   }
                   return (
                     <div style={{ padding:"0 12px 10px 16px" }}>
+                      {displayPairBanner}
                       {!pickerOpen ? (
                         // 2×2 action grid — Sent / OOS on top row, Tomorrow / Substitute on bottom.
                         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -11612,7 +11633,14 @@ function WarehouseView({ products = [], orders, onExit }) {
             completedRefills={completedSansRevived}
             showCompleted={showRefilledCompleted}
             setShowCompleted={setShowRefilledCompleted}
-            onSetStatus={setDisplayRefillStatus}
+            onSetStatus={(order, status, size) => {
+              // Stock Depleted on a revived card also dismisses it locally —
+              // the operator's judgement must be able to override the probe.
+              if (order._revivedDepleted && status === "stockDepleted") {
+                setDismissedRevived((d) => ({ ...d, [order.id]: true }));
+              }
+              setDisplayRefillStatus(order, status, size);
+            }}
             onUndo={undoDisplayRefill}
             products={products}
             nowTick={nowTick}
@@ -11986,7 +12014,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
         <DayCollapsible
           sectionKey="refills-due"
           items={dueRefills}
-          dateOf={(o) => o.displayRefillScheduledAt}
+          dateOf={(o) => o._revivedAt || o.displayRefillScheduledAt}
           includeOlder={true}
           emptyMessage="No display refills due."
           renderItem={(order) => (
@@ -12009,6 +12037,13 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               {order._revivedDepleted && (
                 <div style={{ background:"rgba(74,222,128,.1)", border:"1px solid rgba(74,222,128,.4)", borderRadius:8, padding:"6px 10px", marginBottom:10, color:"#4ADE80", fontSize:11.5, fontWeight:700 }}>
                   Stock has arrived — this display was waiting on stock. Put a pair on the display and tap Refilled.
+                </div>
+              )}
+              {/* A cross-store pull: the replacement pair belongs on the
+                  slot's own floor, which is not the ordering shop's. */}
+              {order.displayPairRequest === true && order.displayPairStore && order.displayPairStore !== order.destShop && (
+                <div style={{ background:"rgba(251,191,36,.08)", border:"1px solid rgba(251,191,36,.35)", borderRadius:8, padding:"6px 10px", marginBottom:10, color:"#FBBF24", fontSize:11.5, fontWeight:700 }}>
+                  The display this refill replaces is on {labelFor(order.displayPairStore)}'s floor — the new pair goes there.
                 </div>
               )}
               <div style={{ display:"flex", gap:8 }}>
@@ -12047,6 +12082,10 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
             sectionKey="refills-done"
             items={completedRefills}
             dateOf={(o) => o.displayRefilledAt || o.displayRefillStockDepletedAt}
+            // Depleted tasks stay listed 7 days at hub1 — without includeOlder
+            // the collapsible dropped anything past 2 days while the header
+            // still counted it ("Show Completed (3)" over an empty list).
+            includeOlder={true}
             emptyMessage="No completed refills."
             renderItem={(order) => {
               const isDepleted = order.displayRefillStatus === "stockDepleted";
