@@ -7770,7 +7770,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel, sneakerOut, sneakerDisplayOnly }) {
+                            hubQty, servingHubLabel, sneakerOut, sneakerDisplayOnly, sneakerDisplayInfo }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
   // clothing catalog with live per-size availability at the serving CR hub
@@ -8143,12 +8143,19 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // quick-view with the prompt already up.
                               const dOnly = !out && !clothingOrder && !isDeactivated(p)
                                 ? sneakerDisplayOnly?.(p, sz) : null;
+                              // Quiet tier — glyph on any AVAILABLE size that
+                              // is on a display; amber only when it is the
+                              // last one. Never on a ✕/deactivated tile — the
+                              // ✕ is authoritative (the drift rule).
+                              const dInfo = !clothingOrder && !out && !isDeactivated(p) ? sneakerDisplayInfo?.(p, sz) : null;
                               return (
                                 <button key={sz} className="ad-sz" disabled={out}
                                   title={out ? (isDeactivated(p) ? "Deactivated — finished line" : `Not available at ${servingHubLabel}`)
-                                    : dOnly ? "Only the display pair remains at Hub 1 — tap to request it" : undefined}
+                                    : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
+                                    : dInfo ? "This size is on a display" : undefined}
                                   style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
-                                    : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" } : undefined}
+                                    : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
+                                    : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
                                     e.stopPropagation(); if (out) return;
                                     if (dOnly) { openQv(p); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
@@ -8156,9 +8163,17 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                     // holds everything the hub has — no ✓ flash
                                     // for an add that didn't happen.
                                     if (!onQuickAdd(p, sz, 1)) return;
-                                    const b = e.currentTarget, t = b.textContent; b.classList.add("flash"); b.textContent = "✓";
-                                    setTimeout(() => { b.classList.remove("flash"); b.textContent = t; }, 430);
-                                  }}>{sz === "Free Size" ? "OS" : sz}{dOnly ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
+                                    // Class-only flash for EVERY tile: the old
+                                    // textContent swap destroyed any child
+                                    // span (glyph, ✕) that mounted during the
+                                    // 430 ms window — React never repaints a
+                                    // manually-mutated node. .flash's solid
+                                    // green is the feedback; the ✓ added
+                                    // nothing worth that failure mode.
+                                    const b = e.currentTarget;
+                                    b.classList.add("flash");
+                                    setTimeout(() => b.classList.remove("flash"), 430);
+                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
                               );
                             })}
                           </div>
@@ -8315,11 +8330,26 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         // blocked; tapping opens the display-pair prompt.
                         const dOnly = !out && !clothingOrder && !qvDP && !isDeactivated(qv)
                           ? sneakerDisplayOnly?.(qv, sz) : null;
+                        // Quiet tier — same rule as the phone sheet and the
+                        // hover grid: never on a ✕/deactivated tile.
+                        const dInfo = !clothingOrder && !out && !isDeactivated(qv)
+                          ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
                             style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" }
-                              : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" } : undefined}
+                              : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
+                              : dInfo ? { position:"relative" } : undefined}
                             onClick={() => {
+                              // Deselect FIRST — before the out gate — so a
+                              // size that went ✕ while selected can still be
+                              // un-stuck. A prompt-minted selection unwinds
+                              // partner mode with it (leaving qvDP on kept the
+                              // Add button live for a cancelled request).
+                              if (qvSize === sz) {
+                                if (qvDisplayPair) setQvDP(false);
+                                setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(null);
+                                return;
+                              }
                               if (out) { if (clothingOrder || isDeactivated(qv)) setQvNa({ size: sz, left: 0 }); return; }
                               if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                               // A plain size selection drops any display-pair
@@ -8327,9 +8357,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(sz);
                             }}>
                             {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
-                            {dOnly ? (
-                              <span aria-label="only the display pair remains" style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                            {dInfo ? (
+                              <span aria-label={dOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                               </span>
                             ) : null}
                           </button>
@@ -8398,6 +8428,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       // the quick-view open with the explanatory note.
                       const added = onQuickAdd(qv, qvSize, qvQty);
                       if (clothingOrder && added < qvQty) { setQvNa({ size: qvSize, left: 0 }); return; }
+                      // A ZERO add (a sneaker size that went ✕ while the panel
+                      // was open) must not close the panel as if it succeeded.
+                      if (!added) return;
                       setQv(null);
                     };
                     const label = dp
@@ -8886,6 +8919,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     const avail = sneakerAvail(p.id, s) - sneakerInCart(p.id, s);
     return displayOnly(avail, d.units) ? { stores: d.stores } : null;
   };
+  // THE QUIET TIER (owner ask, 2026-08-26): a size that is on a display shows
+  // the small glyph ALWAYS — informational, no tint, no prompt — so staff can
+  // see at a glance which size is out on a floor. It only escalates to the
+  // amber marker + "Request display pair" prompt when the display pair is the
+  // last availability (sneakerDisplayOnly above). Same slots data the screen
+  // already streams; needs no availability read, so no settled gate.
+  const sneakerDisplayInfo = (p, s) =>
+    (s && sneakerServedByHub1(p) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -9375,7 +9416,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerDisplayOnly={sneakerDisplayOnly} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -9833,9 +9874,31 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // (that flow already exists to ask for what hub1 lacks).
                 const dispOnly = !out && !clothing && !pendingDisplayPartner && !isDeactivated(selected)
                   ? sneakerDisplayOnly(selected, s) : null;
+                // The quiet tier: any AVAILABLE size on a display carries the
+                // glyph — amber only when the display pair is the last one.
+                // Never on a ✕/deactivated tile: the ✕ is authoritative
+                // (displayPairCore's drift rule — a cell the books call empty
+                // must not advertise a display), and the two on one 34px tile
+                // say opposite things.
+                const dispInfo = !clothing && !out && !isDeactivated(selected)
+                  ? sneakerDisplayInfo(selected, s) : null;
                 return (
-                  <button key={s} disabled={snkOut}
+                  <button key={s} disabled={snkOut && pendingSize !== s}
                     onClick={() => {
+                      // Tapping the ALREADY-SELECTED size deselects it — a
+                      // mis-tapped size was otherwise stuck (owner bug report
+                      // 2026-08-26; it matters most on a size-optional Display
+                      // Partner request). It stays tappable even when the size
+                      // went ✕ while selected (the disabled attr exempts the
+                      // selected size for exactly this escape). A prompt-minted
+                      // selection unwinds partner mode with it — leaving the
+                      // toggle on kept the Add button live for a request the
+                      // user just cancelled.
+                      if (pendingSize === s) {
+                        if (pendingDisplayPair) setPendingDisplayPartner(false);
+                        setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize("");
+                        return;
+                      }
                       if (out) { if (clothing || isDeactivated(selected)) setNaNote({ size: s, left: 0 }); return; }
                       if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
                       // A plain size selection drops any display-pair claim —
@@ -9843,14 +9906,14 @@ function AssistantView({ products, onExit, orders = [] }) {
                       setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
                     }}
                     style={out
-                      ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor:"not-allowed", fontWeight:"700", fontSize:"1rem" }
+                      ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor: pendingSize===s ? "pointer" : "not-allowed", fontWeight:"700", fontSize:"1rem" }
                       : dispOnly
                         ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?"#FBBF24":"rgba(251,191,36,.45)", background: pendingSize===s?"rgba(251,191,36,.18)":"rgba(251,191,36,.08)", color:"#FBBF24", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }
-                        : { padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
+                        : { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
                     <SizeTag size={s} />{snkOut ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
-                    {dispOnly ? (
-                      <span aria-label="only the display pair remains" style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                    {dispInfo ? (
+                      <span aria-label={dispOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={dispOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                       </span>
                     ) : null}
                   </button>
@@ -11882,13 +11945,22 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
   // a warehouse. Pick, see it selected, then Send.
   const [sizeSheet, setSizeSheet] = useState(null);   // { order, options, picked }
 
+  // EVERY footwear refill asks which size is going ON THE DISPLAY NOW (owner
+  // bug report 2026-08-26). It used to ask only when the order carried no
+  // size — but the staged send ALWAYS stamps sentSize, so the sheet never
+  // appeared, and the system silently recorded the SENT size as the new
+  // display size when staff often put a different size out. The sent size is
+  // only the PRESELECTED suggestion (one extra tap when it happens to match);
+  // what staff confirm is what the display slot records. Falls back to the
+  // direct action only when the product declares no sizes to choose from.
   const refillSizeChoices = (order) => {
     const known = order.sentSize || order.size || null;
     const prod = resolveProductById(order.productId);
-    if (known || !productIsFootwear(prod)) return { needed: false, options: [] };
+    if (!productIsFootwear(prod)) return { needed: false, options: [], known };
     const options = (Array.isArray(prod?.sizes) ? prod.sizes : [])
       .map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
-    return { needed: true, options };
+    if (!options.length && known) return { needed: false, options: [], known };
+    return { needed: true, options, known };
   };
   const fmtWaiting = (iso) => {
     const ms = nowTick - new Date(iso).getTime();
@@ -11958,12 +12030,13 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                style={{ background:"rgba(10,13,24,.97)", border:"1px solid rgba(74,127,255,.32)", borderRadius:18,
                         padding:"20px 20px 16px", maxWidth:420, width:"100%", boxShadow:"0 24px 60px rgba(0,0,0,.6)" }}>
             <div style={{ fontSize:16.5, fontWeight:800, color:"#fff", marginBottom:3 }}>
-              Which size are you sending?
+              Which size is going on the display?
             </div>
             <div style={{ fontSize:12.5, color:"rgba(233,238,255,.55)", lineHeight:1.5, marginBottom:14 }}>
               #{sizeSheet.order.id} · {sizeSheet.order.productName}
               <br />
-              This goes on the display register, and the till uses it to take the sale off the right hub.
+              The size of the pair you are putting out NOW — not the one that was sent.
+              It goes on the display register, and the till uses it to take the sale off the right hub.
             </div>
 
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
@@ -12000,7 +12073,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                          border:"none", color: sizeSheet.picked ? "#04351a" : "rgba(233,238,255,.32)",
                          borderRadius:11, padding:"11px 22px", fontSize:13.5, fontWeight:800,
                          cursor: sizeSheet.picked ? "pointer" : "not-allowed" }}>
-                {sizeSheet.picked ? `Send size ${sizeSheet.picked}` : "Pick a size"}
+                {sizeSheet.picked ? `Size ${formatSize(sizeSheet.picked)} is on the display` : "Pick a size"}
               </button>
             </div>
           </div>
@@ -12051,8 +12124,8 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                           const sz = refillSizeChoices(order);
                           // Footwear with no size on the order opens the confirm
                           // sheet; everything else keeps the direct action.
-                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: null });
-                          else onSetStatus(order, "refilled", order.sentSize || order.size || null);
+                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: sz.known && sz.options.includes(String(sz.known)) ? String(sz.known) : null });
+                          else onSetStatus(order, "refilled", sz.known || null);
                         }}
                         style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
