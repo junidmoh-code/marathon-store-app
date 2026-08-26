@@ -63,6 +63,13 @@
 {%- if section.settings.hero_show -%}
   <section class="mc-hero">
     <div class="page-width">
+      {%- comment -%}
+        The panel is not a wrapper for spacing — it is the readable ground the
+        headline sits on. The hero itself has no background at all: what shows
+        behind this panel is the fixed wall, in the same place and at the same
+        scale as everywhere else on the page.
+      {%- endcomment -%}
+      <div class="mc-hero__panel">
       {%- if section.settings.hero_eyebrow != blank -%}
         <p class="mc-hero__eyebrow">{{ section.settings.hero_eyebrow }}</p>
       {%- endif -%}
@@ -83,6 +90,7 @@
             {{ section.settings.cta_two_label }}
           </a>
         {%- endif -%}
+      </div>
       </div>
     </div>
   </section>

@@ -24,10 +24,14 @@
   THE TEXTURE. `marathon-fence.jpg` is the owner's own photograph of the mesh,
   levelled to remove the camera's lighting falloff and cut to a tile that
   repeats without a seam (447x384, one whole number of cells in each direction,
-  53 KB, greyscale). It is LIGHT — mesh on near-white, exactly as photographed.
-  The stylesheet darkens it with a multiply blend rather than shipping a dark
-  copy, so the depth of the wall is one number in CSS that can be tuned in the
-  theme editor's own preview instead of a re-export.
+  53 KB, greyscale). It is used at its own colours — black mesh on a near-white
+  field, exactly as photographed. Nothing tints, darkens or recolours it.
+
+  THE WALL DOES NOT MOVE. The stylesheet paints it on a fixed layer behind the
+  page, so the shop scrolls across a wall that stays where it is and everything
+  else floats on top of it. That is done with a `position: fixed` element rather
+  than `background-attachment: fixed`, which degrades to a scrolling background
+  on iOS Safari — see the note in the stylesheet.
 {%- endcomment -%}
 {{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
 <style>

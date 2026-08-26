@@ -26,10 +26,24 @@ photograph is inset in a frame hung on it.
 
 The texture is the owner's own photograph, levelled to take the camera's
 lighting falloff out and cut to a **447×384 tile that repeats with no seam** —
-53 KB, greyscale, one file. It ships **light**, exactly as taken, and is
-darkened in CSS by multiplying it into `--mc-wall`. How deep the wall sits is
-therefore one value in `marathon-storefront.css`, changeable in a live preview,
-rather than a re-export.
+53 KB, greyscale, one file. It is used **at its own colours**: black mesh on a
+near-white field, exactly as photographed. Nothing tints, darkens or recolours
+it.
+
+**The wall does not move.** It is painted on a `position: fixed` layer behind
+the page, so the shop scrolls across a wall that stays where it is, and
+everything else — frames, labels, the navigation, the hero — floats on top as
+translucent white glass with the mesh reading through it. It is a fixed
+*element* rather than `background-attachment: fixed`, because that one-liner
+quietly degrades to a scrolling background on iOS Safari, which is where most
+of this traffic is and is the one thing this may not do.
+
+**⚠️ The shop becomes a LIGHT shop.** The wall is near-white, so this file sets
+its own near-black type rather than inheriting the theme's near-white
+foreground. The marathon sections handle themselves — but **the theme's own
+pages do not**: Feather is a dark scheme, so on a light wall its product page,
+cart and policy pages would render near-white text on a near-white ground. See
+step 3a-ii before you install the layout line.
 
 **Two claims come off the home page, and this is the part to read before
 publishing.** The strip under the catalogue made three promises; the shop can
@@ -184,6 +198,18 @@ the shop changes surface halfway through a visit, which is worse than not
 changing it at all. Rendering it twice is safe: the stylesheet is the same URL
 both times and the custom property is declared with the same value.
 
+**Then switch the theme to a light colour scheme, in the same pass.** The wall
+is near-white and the theme is dark, so every page this rebuild does *not* own
+would otherwise put near-white text on it. In **Theme editor → Colours**, set
+the scheme used by the header, footer and product pages to a light one — a
+near-black foreground on a transparent or white background. Check the product
+page and the cart before moving on; those two are the ones that will show it.
+
+If you would rather not re-scheme the theme yet, **leave this line out**. The
+home page and the category pages still carry the wall on their own, and the
+rest of the shop stays exactly as it is today. That is a smaller, safe first
+step — it just means the surface changes when a shopper opens a product.
+
 ### 3b. The collection page — swap the grid section
 
 **Templates → `collection.json`.** Find the section whose `"type"` is
@@ -254,18 +280,30 @@ mobile.
 > all present, nothing cut off at the bottom.
 
 **The identity — look at this first, because it is on every screen**
-- The mesh is **behind everything**, at the same scale on the home page and on a
-  category page, and it does not restart or jump when you scroll between them.
+- **Scroll, and watch the mesh.** It must stay exactly where it is while the
+  page moves over it. If it scrolls with the content, the fixed layer is not
+  taking effect — that is the single most important check here, and it is the
+  one most likely to behave differently on a real iPhone than in a desktop
+  browser's phone simulator.
+- Everything on the page reads as **floating on** the wall: the mesh is visible
+  *through* the card frames, the labels, the navigation bar and the hero panel,
+  not just around them.
+- The mesh is the colour of the photograph — **black on near-white**. If it is
+  grey, dark or tinted, something is recolouring it.
+- The mesh is at the same scale on the home page and on a category page, and
+  does not restart or jump when you move between them.
 - The mesh does not **seam**. Scroll the full length of a category page on a
   phone and look for a repeating line, horizontal or vertical. There should be
   none — the tile was cut to a whole number of cells in both directions — but a
   seam is the one defect that only shows up at real size on a real screen.
-- Every photograph sits in a **frame**: a hairline edge, and the mesh visible
-  through the letterboxing on a photo that is not 3:4. A photo with a white
-  studio background must not glare, and a dark one must not lose its edge
-  against the wall.
-- **If the wall is missing** and the shop is a flat dark page, `marathon-fence.jpg`
-  did not upload, or uploaded under a different name. Nothing else breaks.
+- Every photograph sits in a **frame**: a hairline edge, a short lift, and the
+  mesh visible through the letterboxing on a photo that is not 3:4.
+- **Product names and prices must be readable.** They sit on a small glass chip
+  for exactly this reason — 12px type directly over a diamond mesh disappears.
+  If any small text is sitting on bare mesh, say so.
+- **If the wall is missing** and the shop is a flat light grey page,
+  `marathon-fence.jpg` did not upload, or uploaded under a different name.
+  Nothing else breaks.
 - The row under the catalogue reads **14-day exchange / On anything faulty** and
   nothing else. If the words *Authentic* or *Fast delivery* are anywhere on the
   home page, step 3d was missed.
