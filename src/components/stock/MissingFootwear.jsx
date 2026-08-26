@@ -50,14 +50,17 @@ import { serverNowIso } from "../../utils/serverTime";
 import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, footwearRequestSubmitReason } from "./actionReasons";
 import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
 import { isDeactivated } from "../../utils/deactivation";
-import { REACTIVE_REFILL_HUBS } from "./reactiveRefillHubs.js";
 import { useRefillRequests } from "./useStock";
 
 const HUBS = ["hub1", "hub2"];   // DETECTION scope: "missing" = zero units at BOTH hubs
-// Where a human may RAISE a line (owner order 2026-08-25): hub1 is engine-only,
-// so Request/Solve offer hub2 alone. Reservation math below still spans BOTH
-// hubs — open hub1 rows (engine-raised) genuinely consume Central.
-const REQUESTABLE_HUBS = REACTIVE_REFILL_HUBS.filter((h) => HUBS.includes(h));
+// Where a human may RAISE a line. HUB 1 IS BACK (owner order 2026-08-26,
+// reversing the 2026-08-25 single-path narrowing FOR THIS SURFACE ONLY):
+// Missing Products seeds both hubs again, like before — the owner's picks
+// here are deliberate introductions, not the reactive noise the single-path
+// decision silenced. The Tomorrow writer and sale-driven rows stay hub2-only
+// (see reactiveRefillHubs.js); the engine treats an open human hub1 row as
+// inbound, so no cell is ever double-asked.
+const REQUESTABLE_HUBS = HUBS;
 // Solve raises work into a hub's refill queue. Both hubs have one: the queue
 // component is now destination-parameterised (it was hub2-only because CLOTHING
 // is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the

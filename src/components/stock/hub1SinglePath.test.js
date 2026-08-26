@@ -38,9 +38,14 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     expect(hub2.ok).toBe(true);
     expect(hub2.record.requestingLocation).toBe("hub2");
   });
-  it("Missing Sneakers offers ONLY reactive hubs as destinations (source pins)", () => {
+  it("Missing Sneakers offers BOTH hubs (owner reversal 2026-08-26 — this surface left the single path)", () => {
+    // The 2026-08-25 single-path order narrowed this picker to hub2; the owner
+    // reversed it for Missing Products the next day ("I should get to seed
+    // hub one and hub two like before"). The picker offers the full HUBS list;
+    // the Tomorrow writer and sale rows stay reactive-hub-gated (tests below).
     const mf = src("./MissingFootwear.jsx");
-    expect(mf).toContain("REQUESTABLE_HUBS = REACTIVE_REFILL_HUBS.filter");
+    expect(mf).toContain("REQUESTABLE_HUBS = HUBS");
+    expect(mf).not.toContain("REACTIVE_REFILL_HUBS");
     expect(mf.split("dests[card.pid] || REQUESTABLE_HUBS[0]").length - 1).toBe(2);
     expect(mf).toContain("solveHub[card.pid] || REQUESTABLE_HUBS[0]");
     expect(mf.split("{REQUESTABLE_HUBS.map((h) => (").length - 1).toBe(2);
