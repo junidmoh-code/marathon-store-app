@@ -134,7 +134,7 @@
  * The column count does not change to compensate. */
 .mc-grid {
   display: grid;
-  grid-template-columns: repeat(var(--mc-cols, 3), 1fr);
+  grid-template-columns: repeat(var(--mc-cols, 2), 1fr);
   gap: var(--mc-hairline, 2px);
   margin: 0;
   padding: 0;
@@ -251,6 +251,39 @@
   padding: 0.3rem 0.6rem;
   background: rgb(0 0 0 / 0.6);
   color: rgb(255 255 255 / 0.8);
+  pointer-events: none;
+}
+
+/* ─── PRICE BADGE ──────────────────────────────────────────────────────────── */
+/* The one piece of text every card carries, so the grid reads as a shop and
+   not a photo album — a badge ON the photo, in the SAME frame as the sold-out
+   badge and built the same way, not a separate line of text floating under
+   the tile. Opposite corner from `.mc-card__sold` (bottom-END here vs.
+   bottom-START there): the two never appear on the same card, but pinning
+   each to its own corner keeps a scanned row legible instead of every badge
+   landing in the same spot regardless of which one it is.
+
+   A SOLID CHIP, NOT BARE TEXT — needs to hold up against a light studio-sweep
+   photo AND a dark warehouse-shot one without disappearing into either, which
+   plain text sitting on the image cannot do. rgb(255 255 255 / 0.95) on a
+   near-opaque dark fill is the shop's own high-contrast pairing already used
+   for `.mc-size[aria-pressed=true]` — reusing it here instead of inventing a
+   third treatment. */
+.mc-card__price {
+  position: absolute;
+  /* Same reasoning as `.mc-card__sold` above: absolutely positioned children
+     sit relative to the PADDING box, and the frame mat IS that padding, so
+     offsetting by `--mc-frame` puts this flush against the photo instead of
+     in the corner of the dark mat surrounding it. */
+  inset-inline-end: var(--mc-frame, 10px);
+  inset-block-end: var(--mc-frame, 10px);
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.35rem 0.7rem;
+  background: rgb(255 255 255 / 0.95);
+  color: rgb(10 9 8);
+  border-radius: var(--mc-btn-radius);
   pointer-events: none;
 }
 
@@ -835,49 +868,70 @@
 
 /* ─── THE FENCE ────────────────────────────────────────────────────────────── */
 /* SITE-WIDE, NOT A HERO-ONLY EFFECT. The brief is "the fence is the identity —
-   the same visual language from the first scroll to checkout", so this rule is
-   on `body`, loaded by theme.liquid (not just this file's own two sections),
-   which is what makes it apply on product pages, cart and search too.
+   the same visual language from the first scroll to checkout", so this paints
+   on `.mc-fence-bg`, a real element theme.liquid inserts as the first child of
+   `<body>` (not a hero-only background), which is what makes it apply on
+   product pages, cart and search too.
 
-   THE TEXTURE IS A REAL PRODUCT PHOTOGRAPH, not an invented graphic. Every
-   product on this shop is shot against the same dark diamond mesh; a tileable
-   crop of that exact mesh (scripts/shopify/fence-texture.mjs, from a real
-   catalogue photograph, grayscaled, tone-inverted so the wire reads as the
-   highlight and the gap as the shadow, then compressed into a narrow dark
-   range) is the background here — so the products and the environment are
-   LITERALLY the same surface, not a texture that merely resembles it.
+   THE TEXTURE IS A REAL PRODUCT PHOTOGRAPH, not an invented graphic, and it
+   is the photograph's OWN colourway — dark wire, its real mid-grey field —
+   not an inverted or grayscaled abstraction. `fence-tile-color.webp`
+   (scripts/shopify/fence-texture.mjs) is the same crop as before, `linear()`
+   -scaled by measured histogram, not guessed: wire (~5% of pixels, ~21/255)
+   down to ~8/255, field (~95% of pixels, median ~218/255) down to ~65/255 —
+   dark enough to read as a dark theme, bright enough that the diamond
+   pattern is plainly visible rather than a near-black square. THAT scaling
+   is what carries the legibility work — a field around 65/255 still clears
+   WCAG AA for white body copy by a comfortable margin with no help from
+   anything on top of it. The gradient wash is deliberately kept minimal (a
+   barely-there vignette, not a cover) — the brief is "the fence photo reads
+   as the
+   dominant visual", so the wash exists only to give the header strip a
+   touch more separation, not to darken the page.
 
-   SUBTLE ON PURPOSE. The wire tone sits at roughly rgb(40) against a rgb(18)
-   gap — about a 1.2x luminance step — dark enough that ordinary body copy at
-   ~90% white passes WCAG AA comfortably over either tone, and dense enough
-   that product photography stays the thing a shopper's eye lands on. The
-   linear-gradient wash on top pins the very top of the page a touch darker
-   (where the header and nav sit and need the most contrast) and eases off
-   toward the mid-page. `background-attachment: scroll`, not `fixed` — fixed
-   backgrounds force their own compositing layer on scroll on many mobile
-   browsers, and this is a phone-first catalogue. */
+   FIXED, NOT SCROLLING. `.mc-fence-bg` is `position: fixed; inset: 0;
+   z-index: -1` (see theme.liquid for why this is a dedicated element rather
+   than `background-attachment: fixed` on body/html, which is unreliable on
+   iOS Safari) — it holds still while the header, grid and cards scroll over
+   it. Because the layer is fixed, the faint top vignette always sits under
+   the header rather than scrolling away with page content. If a future pass
+   ever finds a spot genuinely illegible, the fix is a light backdrop behind
+   that specific text block (or a text-shadow), NOT turning this wash back
+   up — a page-wide wash strong enough to guarantee every case legible is
+   exactly what made the fence disappear before. */
 /* !important IS DELIBERATE HERE, not a specificity fight left unresolved.
    Several of Dawn's own component stylesheets (component-menu-drawer.css,
    component-search.css and others) load with `media="print"` and switch to
    `all` on their own `onload`, which is Dawn's documented pattern for
    non-critical CSS — but it means they attach to the CSSOM asynchronously,
    AFTER this file, regardless of where their <link> sits in the document.
-   One of them re-declares `body { background: ... }` at equal specificity,
-   and whichever finishes loading last wins — non-deterministically, since it
-   depends on network timing. Verified on the real preview theme: without
-   `!important` the fence was invisible on some loads and present on others.
-   `!important` makes this deterministic without touching Dawn's own files. */
-body {
+   Verified on the real preview theme with the old body-background version of
+   this rule: without `!important` the fence was invisible on some loads and
+   present on others, because whichever stylesheet finished loading last won a
+   same-specificity fight non-deterministically. `.mc-fence-bg` is a class
+   Dawn's own stylesheets have no reason to target, so this may no longer be
+   a live risk — `!important` is kept anyway since it costs nothing here and
+   the failure mode it guards against is invisible until it happens. */
+.mc-fence-bg {
+  /* Belt-and-suspenders alongside the non-empty text node in theme.liquid:
+     Dawn's base stylesheet has `div:empty { display: none; }`, which beats a
+     bare `.mc-fence-bg { display: block }` on specificity (a type selector +
+     pseudo-class outranks a single class). `!important` is what actually
+     wins here, regardless of which fix is in place on the markup side. */
+  display: block !important;
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
   background-color: rgb(13 12 11) !important;
   background-image:
-    linear-gradient(180deg, rgb(8 7 6 / 0.82) 0%, rgb(10 9 8 / 0.62) 42%, rgb(10 9 8 / 0.7) 100%),
-    url('fence-tile-mono.webp') !important;
+    linear-gradient(180deg, rgb(8 7 6 / 0.16) 0%, rgb(10 9 8 / 0.02) 30%, rgb(10 9 8 / 0.06) 100%),
+    url('fence-tile-color.webp') !important;
   background-repeat: no-repeat, repeat !important;
   background-size: 100% 100%, 224px 224px !important;
-  background-attachment: scroll !important;
 }
 @media screen and (min-width: 750px) {
-  body { background-size: 100% 100%, 320px 320px !important; }
+  .mc-fence-bg { background-size: 100% 100%, 320px 320px !important; }
 }
 
 /* ─── TYPOGRAPHY — HEAVY CONDENSED CAPS + WIDE-TRACKED LABELS ────────────────── */
