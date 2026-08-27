@@ -266,6 +266,29 @@ describe("4. heartbeat", () => {
     assert.match(day({ publisherTickAt: null }).reasons.join(" "), /never recorded a tick/);
   });
 
+  // Caught in review: comparing THROUGH NaN made every non-numeric heartbeat
+  // read as a fresh tick. `nowMs - NaN > STALE` is false, so no reason was
+  // pushed and publisherDead stayed false — a silent pass, in the one check
+  // whose whole purpose is to fire before a day is lost.
+  test("a heartbeat that is not a number is treated as NO heartbeat", () => {
+    // [] and "" are in here deliberately: both coerce to 0 through Number(),
+    // which would have been read as "ticked at the epoch" rather than as no
+    // heartbeat — the right alarm for the wrong reason, and a coercion that
+    // could just as easily land somewhere that reads healthy.
+    for (const bad of ["soon", NaN, {}, [], true, false, "", "  ", Infinity, -Infinity, "2026-08-27T10:00:00Z"]) {
+      const v = day({ publisherTickAt: bad });
+      assert.match(v.reasons.join(" "), /never recorded a tick/, JSON.stringify(bad));
+      assert.equal(v.severity, "silent", JSON.stringify(bad));
+    }
+  });
+
+  test("a numeric STRING is still a real heartbeat", () => {
+    // RTDB round-trips are not always typed the way they were written; a
+    // timestamp that arrives as "1787836263000" is a timestamp.
+    const v = day({ publisherTickAt: String(NOW - 2 * MIN) });
+    assert.equal(v.reasons.some((r) => /tick/.test(r)), false);
+  });
+
   test("a recent tick says nothing", () => {
     assert.equal(day({ publisherTickAt: NOW - 3 * MIN }).reasons.some((r) => /tick/.test(r)), false);
   });

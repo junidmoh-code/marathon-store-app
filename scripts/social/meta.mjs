@@ -407,17 +407,19 @@ export async function publishFacebookStory({ pageId, token, media, sleep }) {
   // because Meta's failure for it is an opaque 400.
   if (items.length > 1) throw new Error(`a story takes one item, got ${items.length}`);
   const item = items[0];
+  // One place decides which endpoint a medium belongs to, and it is the same
+  // function the tests pin — rather than three more string literals here that
+  // could drift from it.
+  const endpoint = `${pageId}/${fbStoryEndpoint(item)}`;
 
   let res;
   if (isVideo(item)) {
-    const start = await graph(`${pageId}/video_stories`, {
-      method: "POST", token, params: { upload_phase: "start" },
-    });
+    const start = await graph(endpoint, { method: "POST", token, params: { upload_phase: "start" } });
     if (!start?.video_id || !start?.upload_url) {
       throw new Error(`Facebook did not open a video-story upload session: ${JSON.stringify(start)}`);
     }
     await uploadStoryVideoBytes(start.upload_url, item.url, token);
-    res = await graph(`${pageId}/video_stories`, {
+    res = await graph(endpoint, {
       method: "POST", token,
       params: { upload_phase: "finish", video_id: start.video_id, video_state: "PUBLISHED" },
     });
@@ -429,9 +431,7 @@ export async function publishFacebookStory({ pageId, token, media, sleep }) {
       method: "POST", token, params: { url: item.url, published: "false" },
     });
     if (!photoId) throw new Error("Facebook returned no photo id for the story upload");
-    res = await graph(`${pageId}/photo_stories`, {
-      method: "POST", token, params: { photo_id: photoId },
-    });
+    res = await graph(endpoint, { method: "POST", token, params: { photo_id: photoId } });
   }
 
   const id = fbStoryResultId(res);
@@ -517,7 +517,18 @@ export const STORY_PERMALINK_GAP_MS = 2000;
 export async function fbStoryPermalink({ pageId, token, postId, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   for (let attempt = 0; attempt < STORY_PERMALINK_ATTEMPTS; attempt++) {
     if (attempt) await sleep(STORY_PERMALINK_GAP_MS);
-    const res = await graph(`${pageId}/stories`, { token, params: { fields: "post_id,url,status" } });
+    let res;
+    try {
+      res = await graph(`${pageId}/stories`, { token, params: { fields: "post_id,url,status" } });
+    } catch (err) {
+      // A dropped socket or a Meta 5xx on the FIRST read must not cost the
+      // remaining attempts — that is the same "one flaky moment" that the
+      // publish path already guards against, and here it would silently
+      // record a published story with no link. A permanent failure (a bad
+      // token, a gone Page) will fail identically on every attempt, so stop.
+      if (!err?.retryable) return null;
+      continue;
+    }
     const row = (res?.data || []).find((r) => String(r.post_id) === String(postId));
     if (row?.url) return row.url;
   }

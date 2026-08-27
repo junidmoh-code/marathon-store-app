@@ -79,7 +79,7 @@ const MUTATIONS = [
     ""],
 
   ["the heartbeat check is removed",
-    "} else if (nowMs - Number(publisherTickAt) > HEARTBEAT_STALE_MS) {",
+    "} else if (nowMs - tickAt > HEARTBEAT_STALE_MS) {",
     "} else if (false) {"],
 
   ["a never-ticking publisher is treated as fine",
@@ -105,6 +105,24 @@ const MUTATIONS = [
   ["the alarm message loses its reasons",
     'return `${head} ${verdict.reasons.join("; ")}.`;',
     "return head;"],
+
+  // Added after review found the original heartbeat check comparing THROUGH
+  // NaN — every non-numeric value read as a fresh tick. These pin the fix.
+  ["the heartbeat value is coerced instead of type-checked",
+    "  const tickAt = timestampOrNull(publisherTickAt);\n  const haveTick = tickAt !== null;",
+    "  const tickAt = Number(publisherTickAt);\n  const haveTick = publisherTickAt != null;"],
+
+  ["a non-timestamp heartbeat is accepted as valid",
+    "  if (typeof v === \"number\") return Number.isFinite(v) ? v : null;",
+    "  if (typeof v === \"number\") return v;"],
+
+  ["an object or array heartbeat coerces instead of being refused",
+    "  return null;\n}\n\n/** Midnight SAST",
+    "  return Number(v);\n}\n\n/** Midnight SAST"],
+
+  ["a numeric string heartbeat stops counting as a heartbeat",
+    '  if (typeof v === "string" && v.trim() !== "") {',
+    "  if (false) {"],
 
   ["policyTotal stops counting RTDB's object form",
     'const len = (v) => (Array.isArray(v) ? v.length : v && typeof v === "object" ? Object.keys(v).length : 0);',

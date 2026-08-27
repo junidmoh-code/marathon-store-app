@@ -4734,6 +4734,14 @@ exports.socialHealthScan = onSchedule(
     const [policy, logSnap, postsSnap, tickSnap] = await Promise.all([
       loadSocialPolicy(db),
       db.ref(`social_autopilot_log/${saDate}`).once("value"),
+      // The WHOLE node, deliberately. Three of the four checks need a
+      // different slice of it — anything approved and overdue regardless of
+      // age, anything in failed, and today's due-and-published — and no
+      // single .orderByChild query answers all three, so a query-per-check
+      // would be three reads of overlapping data rather than one. The node
+      // held 47 records on 2026-08-27 and grows by a handful a day; if it
+      // ever reaches the tens of thousands this becomes the thing to revisit,
+      // with an .indexOn("scheduledAt") and a windowed read.
       db.ref(SOCIAL_POSTS_PATH).once("value"),
       db.ref("social_health/publisher/lastTickAt").once("value"),
     ]);

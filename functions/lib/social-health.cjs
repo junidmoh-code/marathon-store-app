@@ -53,6 +53,26 @@ const PUBLISH_GRACE_MS = 20 * 60 * 1000;
 // of an hour instead of at the end of a silent week.
 const HEARTBEAT_STALE_MS = 15 * 60 * 1000;
 
+/**
+ * A heartbeat value, or null if it is not a timestamp.
+ *
+ * TYPE-CHECKED rather than coerced, which is not pedantry — `Number([])` and
+ * `Number("")` are both 0, so a corrupt heartbeat of `[]` would be read as
+ * "ticked at the epoch" and reported as 29 million minutes stale. That is the
+ * right verdict for the wrong reason, and the next such value might coerce to
+ * something that reads as healthy instead. A numeric STRING is accepted on
+ * purpose: RTDB does not always round-trip a number as a number, and
+ * "1787836263000" is a timestamp by any honest reading.
+ */
+function timestampOrNull(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /** Midnight SAST of the SA day containing `ms`, as epoch ms. */
 function sastMidnight(ms) {
   return Math.floor((ms + SAST_OFFSET_MS) / DAY_MS) * DAY_MS - SAST_OFFSET_MS;
@@ -172,10 +192,19 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
   }
 
   // ── 4. HEARTBEAT ──────────────────────────────────────────────────────────
-  if (publisherTickAt == null) {
+  // The value is VALIDATED, not merely compared. Arithmetic against a
+  // non-number yields NaN, every comparison with NaN is false, and the check
+  // would then pass silently on a heartbeat that is not a timestamp — a
+  // corrupt write, a string, a half-finished migration. That is the precise
+  // failure mode this module exists to prevent, in the one check meant to fire
+  // BEFORE a day is lost, so anything that is not a finite number is treated
+  // the same as no heartbeat at all.
+  const tickAt = timestampOrNull(publisherTickAt);
+  const haveTick = tickAt !== null;
+  if (!haveTick) {
     reasons.push("the publisher has never recorded a tick");
-  } else if (nowMs - Number(publisherTickAt) > HEARTBEAT_STALE_MS) {
-    const mins = Math.round((nowMs - Number(publisherTickAt)) / 60000);
+  } else if (nowMs - tickAt > HEARTBEAT_STALE_MS) {
+    const mins = Math.round((nowMs - tickAt) / 60000);
     reasons.push(`the publisher has not ticked for ${mins} minutes`);
   }
 
@@ -185,7 +214,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
   // "degraded". The two get different words in the alert because "the engine
   // has stopped" and "the engine is limping" are different nights.
   const nothingPublished = earliestDue !== undefined && publishedToday.length === 0;
-  const publisherDead = publisherTickAt == null || nowMs - Number(publisherTickAt) > HEARTBEAT_STALE_MS;
+  const publisherDead = !haveTick || nowMs - tickAt > HEARTBEAT_STALE_MS;
   const severity = reasons.length === 0
     ? "ok"
     : (nothingPublished || publisherDead) ? "silent" : "degraded";

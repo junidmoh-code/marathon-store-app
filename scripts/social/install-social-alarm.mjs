@@ -130,6 +130,15 @@ async function ensureChannel() {
   const found = (list.data.notificationChannels || [])
     .find((c) => c.type === "email" && c.labels?.email_address === RECIPIENT);
   if (found) {
+    // A channel Google has told us is UNVERIFIED delivers nothing, so --verify
+    // must FAIL on it rather than print a tick. Note the distinction from the
+    // note below: a status that is absent is not a no — it is simply not
+    // reported for a channel created through the API — and failing on an
+    // absent status would make --verify permanently red for a channel that
+    // works.
+    if (VERIFY && found.verificationStatus && found.verificationStatus !== "VERIFIED") {
+      return fail(`the email channel for ${RECIPIENT} is ${found.verificationStatus} — Google will deliver nothing until the address is confirmed. Open the verification email, or resend it from GCP console → Monitoring → Alerting → Notification channels.`);
+    }
     log(`✓ email channel → ${RECIPIENT}${found.verificationStatus ? ` (${found.verificationStatus})` : ""}`);
     // THE ONE THING THIS SCRIPT CANNOT PROVE. Every other link in the chain is
     // checkable from here — the marker is in the source, the metric counted
