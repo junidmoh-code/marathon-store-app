@@ -124,30 +124,27 @@
       }}
     {%- endif -%}
     {%- comment -%}
-      SOLD OUT is still a badge ON the photo — absolutely positioned inside
-      the frame's own padding box (see the `mc-card__sold` rule for why the
-      offset has to match `--mc-frame`).
-
-      NO PRODUCT NAME anywhere on the tile. The price is the only text a tile
-      carries; the name still lives only in the panel and on the product
-      page, which is what search engines read. The <a> above still carries
-      the product URL, so the link a crawler follows is unchanged.
+      NO PRODUCT NAME anywhere on the tile. The price (or "Sold out") is the
+      only text a tile carries; the name still lives only in the panel and on
+      the product page, which is what search engines read. The <a> above
+      still carries the product URL, so the link a crawler follows is
+      unchanged.
     {%- endcomment -%}
-    {%- if sold_out -%}
-      <span class="mc-card__sold">Sold out</span>
-    {%- endif -%}
   </a>
   {%- comment -%}
-    PRICE AS A FOOTER OF THE FRAME, NOT A BADGE ON THE PHOTO. A solid black
-    strip, white text, sitting directly below the photo as part of the same
-    dark mat (see `.mc-card__media:has(+ .mc-card__price)` in the CSS) — a
-    sibling of the media link, never inside it, so it isn't clipped by the
-    photo's fixed-aspect `overflow: hidden` box and can sit in normal flow.
-    Omitted for sold-out tiles, which keep their on-photo badge instead.
+    ONE FOOTER SLOT, ALWAYS PRESENT, EITHER CONTENT. This used to be two
+    different things — an on-photo `.mc-card__sold` corner badge for sold-out
+    tiles, and a below-photo `.mc-card__price` footer for everything else —
+    which meant a sold-out tile had no footer at all and was shorter than its
+    neighbours: the wall of photos stopped lining up wherever stock ran out.
+    Same class, same box, same position for both states now: a solid black
+    strip directly below the photo, part of the same dark mat (see
+    `.mc-card__media:has(+ .mc-card__price)` in the CSS) — a sibling of the
+    media link, never inside it, so it isn't clipped by the photo's
+    fixed-aspect `overflow: hidden` box and can sit in normal flow. Every
+    tile, sold out or not, is now the exact same height.
   {%- endcomment -%}
-  {%- unless sold_out -%}
-    <span class="mc-card__price">{{ product.price | money }}</span>
-  {%- endunless -%}
+  <span class="mc-card__price">{% if sold_out %}Sold out{% else %}{{ product.price | money }}{% endif %}</span>
 
 
   {%- comment -%}

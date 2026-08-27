@@ -63,6 +63,7 @@
 -%}
 
 <div class="page-width mc-page">
+  {%- render 'marathon-back', fallback: routes.root_url -%}
   <header class="mc-head">
     <h1 class="mc-head__title">
       {%- comment -%}
@@ -204,7 +205,7 @@
         <span class="mc-density__label">Size</span>
         {%- for n in (2..4) -%}
           <button type="button" class="mc-density__btn" data-mc-cols="{{ n }}"
-                  aria-pressed="{% if n == 2 %}true{% else %}false{% endif %}"
+                  aria-pressed="{% if n == 3 %}true{% else %}false{% endif %}"
                   aria-label="{{ n }} across">
             {%- for i in (1..n) -%}<i></i>{%- endfor -%}
           </button>
@@ -212,15 +213,16 @@
       </div>
 
       {%- comment -%}
-        DEFAULT IS 2, SERVER-RENDERED. A fresh visitor (no `mc-cols` in
+        DEFAULT IS 3, SERVER-RENDERED. A fresh visitor (no `mc-cols` in
         localStorage yet — see marathon-storefront.js's readDensity/
         applyDensity, which only touches the grid when a saved value exists)
-        gets exactly this inline value, so 2-across has to be right here, not
-        just in the script. A returning shopper's own saved choice still wins,
-        applied client-side before first paint of the grid is meaningfully
-        visible.
+        gets exactly this inline value, so 3-across has to be right here, not
+        just in the CSS fallback (which this inline value overrides anyway,
+        being more specific) or the script. A returning shopper's own saved
+        choice still wins, applied client-side before first paint of the grid
+        is meaningfully visible.
       {%- endcomment -%}
-      <div class="mc-grid" data-mc-grid style="--mc-cols: 2;">
+      <div class="mc-grid" data-mc-grid style="--mc-cols: 3;">
         {%- for product in collection.products -%}
           {%- comment -%} The first row is eager. Five, not two: the grid is
             five columns at >=1400px, and a lazy card in the opening row renders
