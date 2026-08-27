@@ -78,9 +78,9 @@ const MUTATIONS = [
     guard: "GATE 2 — the route refuses to mount the card for anyone but the owner",
     file: APP,
     from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags }} products={products} onExit={() => setRole(null)} />
+    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;`,
-    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags }} products={products} onExit={() => setRole(null)} />;`,
+    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />;`,
     tests: GATE_TESTS,
   },
   // ── GATE 2b: the component's own check ────────────────────────────────────
