@@ -20,15 +20,17 @@
   both added in the CSS and JS for this page specifically.
 {%- endcomment -%}
 <div class="mc-loved-page" data-mc-loved-page>
-  <a href="{{ routes.root_url }}" class="mc-nav__link mc-loved-page__back" data-mc-back data-mc-back-fallback="{{ routes.root_url }}">&larr; Back to shop</a>
+  <div class="mc-loved-page__inner">
+    <a href="{{ routes.root_url }}" class="mc-nav__link mc-loved-page__back" data-mc-back data-mc-back-fallback="{{ routes.root_url }}">&larr; Back to shop</a>
 
-  <p class="mc-head__title mc-loved-page__title">Loved</p>
+    <p class="mc-head__title mc-loved-page__title">Loved</p>
 
-  <p class="mc-wishlist__empty mc-loved-page__empty" data-mc-wishlist-empty hidden>
-    Nothing loved yet. Tap the heart on a photograph to keep it here.
-  </p>
+    <p class="mc-wishlist__empty mc-loved-page__empty" data-mc-wishlist-empty hidden>
+      Nothing loved yet. Tap the heart on a photograph to keep it here.
+    </p>
 
-  <div class="mc-wishlist__list mc-loved-page__list" data-mc-wishlist-list></div>
+    <div class="mc-wishlist__list mc-loved-page__list" data-mc-wishlist-list></div>
+  </div>
 </div>
 
 {% schema %}
