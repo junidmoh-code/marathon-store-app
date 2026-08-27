@@ -46,11 +46,20 @@
 //      clear, remove or delete.
 //
 // ── ACCESS ───────────────────────────────────────────────────────────────────
-// Super-admin only, through three independent gates: the home tile does not
-// render (App.jsx), the route refuses to mount this component (App.jsx), and
-// setCategoryPolicy re-checks the caller's email server-side. THE COMPONENT IS
-// SPLIT so the default export holds ZERO hooks — a refused viewer must open no
-// subscription and start no fetch.
+// The owner, OR an account carrying the `engine_policy` permission (2026-08-27),
+// through FOUR independent gates: the home tile does not render (App.jsx), the
+// route refuses to mount this component (App.jsx), this component refuses on its
+// own (the `Refused` branch below), and setCategoryPolicy re-checks server-side —
+// itself twice, in the onCall wrapper and again inside the write module, which
+// reads the permission flag for itself rather than being told the answer.
+//
+// The check is the Auth email OR /users/{uid}/permFlags/engine_policy === true —
+// the SAME scalar the server reads, so a client answer and a server answer
+// cannot drift. Not the permissions array, not a role, not a stockRole. See
+// src/config/enginePolicy.js.
+//
+// THE COMPONENT IS SPLIT so the default export holds ZERO hooks — a refused
+// viewer must open no subscription and start no fetch.
 //
 // NONE OF THAT IS A SECURITY BOUNDARY YET. /config/refillEngine is writable by
 // any stockRole 'admin' account (four live). The console rule printed by
@@ -69,7 +78,7 @@ import {
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
-import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
+import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
 // httpsCallable to 70,000ms; the census, the row list and the group model can
@@ -190,7 +199,11 @@ function Refused({ onExit }) {
   return (
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, color: "#fff", padding: "2rem 1rem" }}>
       <div style={{ ...GLASS, maxWidth: 420, margin: "12vh auto", padding: "1.5rem" }}>
-        <div style={{ fontSize: "1.05rem", fontWeight: 700 }}>Engine Policy is owner-only</div>
+        <div style={{ fontSize: "1.05rem", fontWeight: 700 }}>You don't have access to Engine Policy</div>
+        {/* The same voice the rest of this folder uses for a refusal — Adjust,
+            In Transit and Introduce all say "ask an admin". It names no person:
+            two refusals on one card must not speak differently. */}
+        <div style={{ fontSize: ".82rem", color: GRAY, marginTop: 6 }}>Ask an admin if you need it.</div>
         <button onClick={onExit} style={{ ...bGhost, marginTop: "1.2rem" }}>Back</button>
       </div>
     </div>
@@ -198,7 +211,7 @@ function Refused({ onExit }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Everything below runs ONLY for a verified super-admin.
+// Everything below runs ONLY for the owner or a holder of `engine_policy`.
 // ═════════════════════════════════════════════════════════════════════════════
 function EnginePolicyAuthed({ viewer, products, onExit }) {
   const [census, setCensus] = useState(null);
@@ -216,7 +229,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // policy question asked per PRODUCT instead of per category — which shop
   // carries this line — so it belongs here rather than on a surface of its own.
   // The tab renders inside EnginePolicyAuthed, which only ever mounts for a
-  // verified super-admin, and it re-checks that condition for itself below:
+  // verified viewer, and it re-checks that condition for itself below:
   // three independent gates, exactly as the card's other contents have.
   const [tab, setTab] = useState("categories");
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
@@ -608,7 +621,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
 
         {tab === "seating" && !open ? (
           // GATE 2c. EnginePolicyAuthed already only mounts for a verified
-          // super-admin, and App.jsx gates the tile and the route. This is a
+          // viewer, and App.jsx gates the tile and the route. This is a
           // fourth, independent check on the tab itself, so that deleting any
           // one of them leaves the others working — mutation-proved, not
           // asserted.
@@ -1245,6 +1258,29 @@ function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave
   );
 }
 
+// The name on a history row. Staff sign in as {username}@marathon.internal, and
+// their local part IS their username — "mc" reads correctly. The owner's does
+// not: his address is a gmail one whose local part is a string nobody calls him,
+// and UserManagement already synthesises "Super Admin" for the same record
+// (UserManagement.jsx:268). So he is the one special case, and everyone else is
+// their username. Anything unexpected is shown verbatim rather than being cut at
+// a character that might not be there. (Round 2 review, PR #469.)
+//
+// Not a /users lookup keyed on `byUid`: the card makes no such read today, and
+// one read per history row to improve a label is not a trade this screen should
+// make. The username is what the staff editor lists people by anyway.
+function whoLabel(by) {
+  if (by === null || by === undefined || by === "") return "";
+  // A non-string `by` should not silently vanish: the server writes a string
+  // today, but a label that disappears is how a change ends up looking
+  // authorless. Coerce, then apply the same rules. (CodeRabbit, PR #469.)
+  const s = typeof by === "string" ? by : String(by);
+  if (!s || s === "[object Object]") return "";
+  if (s === ADMIN_EMAIL) return "Super Admin";
+  const at = s.indexOf("@");
+  return at > 0 ? s.slice(0, at) : s;
+}
+
 function History({ entries, onRevert, busy }) {
   const list = (entries || []).slice(0, 20);
   if (!list.length) return null;
@@ -1267,7 +1303,14 @@ function History({ entries, onRevert, busy }) {
               )}
             </div>
             <div style={{ color: "#6b7280", fontSize: ".74rem", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {fmtWhen(h.at)} · {(h.changes || []).slice(0, 3).map((ch) =>
+              {/* WHO, not just when. One writer needed no byline; two do — and
+                  the server has always stamped `by`, so this is the reader
+                  catching up with the record. An old entry with no `by` says
+                  nothing rather than guessing. (Fable spec review, PR #469.) */}
+              {/* Keyed on the LABEL, not on `h.by`: a `by` that is present but
+                  yields no label would otherwise print a bare separator with a
+                  blank name after it. (CodeRabbit, PR #469.) */}
+              {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
                 `${ch.loc || ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>

@@ -46,8 +46,11 @@ const CARD = "src/components/stock/EnginePolicyCard.jsx";
 const CORE = "src/components/stock/enginePolicyCore.js";
 const MODEL = "functions/lib/category-policy.cjs";
 const WRITE = "functions/lib/category-policy-write.cjs";
+const FUNCTIONS = "functions/index.js";
+const ACTIONS = "src/components/stock/SeatingActions.jsx";
 
 const GATE_TESTS = ["src/components/stock/enginePolicyGates.test.jsx"];
+const SEAT_TESTS = ["src/components/stock/seatingWriteGate.test.jsx"];
 const CORE_TESTS = ["src/components/stock/enginePolicyCore.test.js"];
 const SERVER_TESTS = ["test/category-policy-write.test.cjs"];
 
@@ -63,9 +66,9 @@ const MUTATIONS = [
   },
   {
     id: "M-TILE-2",
-    guard: "GATE 1 — the tile's identity comes from the auth email, not a permissions record",
+    guard: "GATE 1 — the tile reads the flag MIRROR, not the permissions array the server cannot see",
     file: APP,
-    from: `  const enginePolicyViewer = { email: homeUser?.email };`,
+    from: `  const enginePolicyViewer = { email: homeUser?.email, permFlags: homePerm?.permFlags };`,
     to: `  const enginePolicyViewer = { email: homeUser?.email, permissions: homePerm?.permissions };`,
     tests: GATE_TESTS,
   },
@@ -74,10 +77,10 @@ const MUTATIONS = [
     id: "M-ROUTE",
     guard: "GATE 2 — the route refuses to mount the card for anyone but the owner",
     file: APP,
-    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email }} onExit={() => setRole(null)} />
+    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
+    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;`,
-    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email }} onExit={() => setRole(null)} />;`,
+    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />;`,
     tests: GATE_TESTS,
   },
   // ── GATE 2b: the component's own check ────────────────────────────────────
@@ -95,29 +98,129 @@ const MUTATIONS = [
     id: "M-HOOKS",
     guard: "GATE 2b — the gate holds ZERO hooks, so a refused viewer starts nothing",
     file: CARD,
-    from: `export default function EnginePolicyCard({ viewer, onExit }) {
+    from: `export default function EnginePolicyCard({ viewer, products, onExit }) {
   if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;`,
-    to: `export default function EnginePolicyCard({ viewer, onExit }) {
+    to: `export default function EnginePolicyCard({ viewer, products, onExit }) {
   const [x] = useState(0);   // MUTATION: a hook above the gate
   if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;`,
     tests: GATE_TESTS,
   },
+  // ── GATE 3a: the callable WRAPPER ─────────────────────────────────────────
+  // Deleted with the write module's own check LEFT INTACT — the test that the
+  // two server checks are genuinely independent rather than one reported twice.
+  // Until PR #469 nothing proved this side at all, and the comment beside it
+  // claimed the gate "survives a refactor of either side". (Sonnet review.)
+  {
+    id: "M-WRAPPER",
+    guard: "GATE 3a — the callable's own check is CALLED, not just the module's",
+    file: FUNCTIONS,
+    from: `    await assertEnginePolicy(request);`,
+    to: ``,
+    tests: GATE_TESTS,
+  },
+  {
+    id: "M-WRAPPER-AWAIT",
+    guard: "GATE 3a — …and it is AWAITED, not left as a floating promise",
+    file: FUNCTIONS,
+    from: `    await assertEnginePolicy(request);`,
+    to: `    assertEnginePolicy(request);`,
+    tests: GATE_TESTS,
+  },
+  // TWO PROPERTIES, TWO MUTATIONS. The first draft moved both lines in one
+  // edit, so a single guard stood for "reads === true" AND "fails closed" —
+  // and either one surviving alone would have credited the pair. (CodeRabbit,
+  // PR #469.)
+  {
+    id: "M-WRAPPER-FLAG",
+    guard: "GATE 3a — the callable's grant is the boolean true, not anything truthy",
+    file: FUNCTIONS,
+    from: `    granted = snap.val() === true;
+  } catch (err) {
+    console.error("assertEnginePolicy: permission read failed:", err.message);`,
+    to: `    granted = !!snap.val();
+  } catch (err) {
+    console.error("assertEnginePolicy: permission read failed:", err.message);`,
+    tests: GATE_TESTS,
+  },
+  {
+    id: "M-WRAPPER-CLOSED",
+    guard: "GATE 3a — …and a read error REFUSES; a gate that opens when the database is unreachable is not a gate",
+    file: FUNCTIONS,
+    from: `    throw new HttpsError("unavailable", "Could not check permissions. Try again.");
+  }
+  if (!granted) {
+    throw new HttpsError("permission-denied", "Engine Policy permission required.");`,
+    to: `    granted = true;
+  }
+  if (!granted) {
+    throw new HttpsError("permission-denied", "Engine Policy permission required.");`,
+    tests: GATE_TESTS,
+  },
+  // ── THE SEATING TAB'S OWN WRITES ──────────────────────────────────────────
+  // Not a gate on the screen — a gate on three buttons that write RTDB directly
+  // and would otherwise fail at the database for a grantee with no stockRole.
+  {
+    id: "M-SEATING",
+    guard: "The seating buttons ask what the RULES ask before offering the write",
+    file: ACTIONS,
+    from: `  if (!canSwitchOff && !canMove) {`,
+    to: `  if (false) {`,
+    tests: SEAT_TESTS,
+  },
+  {
+    id: "M-SEATING-ROLE",
+    guard: "…and switching off is stockRole 'admin', not merely HAVING a stockRole (/stock_targets asks for admin)",
+    file: "src/config/enginePolicy.js",
+    from: `  return viewer.stockRole === "admin";`,
+    to: `  return !!viewer.stockRole;`,
+    tests: SEAT_TESTS,
+  },
+  {
+    id: "M-SEATING-MOVE",
+    guard: "…while MOVING asks the movement rule's own question — collapsing the two refuses someone the rules allow",
+    file: "src/config/enginePolicy.js",
+    from: `  return ["admin", "warehouse", "store"].includes(viewer.stockRole);`,
+    to: `  return viewer.stockRole === "admin";`,
+    tests: SEAT_TESTS,
+  },
+  {
+    id: "M-SEATING-TICK",
+    guard: "The switch-off tick cannot smuggle a switch-off past the gate",
+    file: ACTIONS,
+    from: `  const offToo = alsoOff && canSwitchOff;`,
+    to: `  const offToo = alsoOff;`,
+    tests: SEAT_TESTS,
+  },
   // ── GATE 3: the server ────────────────────────────────────────────────────
   {
     id: "M-SERVER",
-    guard: "GATE 3 — setCategoryPolicy refuses every caller but the owner",
+    guard: "GATE 3 — an account WITHOUT the engine_policy flag is refused",
     file: WRITE,
-    from: `  if (typeof callerEmail !== "string" || callerEmail !== adminEmail) {
-    throw httpsError("permission-denied", "Engine policy is owner-only.");
-  }`,
+    from: `  if (!granted) throw httpsError("permission-denied", "Engine Policy permission required.");`,
     to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-FLAG",
+    guard: "GATE 3 — the grant is the boolean true, not anything truthy that lands in the field",
+    file: WRITE,
+    from: `    granted = snap.val() === true;`,
+    to: `    granted = !!snap.val();`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OWNER",
+    guard: "GATE 3 — the owner clause is an EQUALITY on the owner's email, not \"any caller who has one\"",
+    file: WRITE,
+    from: `  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;`,
+    to: `  if (typeof callerEmail === "string" && callerEmail) return;`,
     nodeTests: SERVER_TESTS,
   },
   {
     id: "M-SERVER-2",
     guard: "GATE 3 — the check is CALLED, not merely defined (the deletion that looks like a refactor)",
     file: WRITE,
-    from: `  assertSuperAdmin(callerEmail, adminEmail);
+    from: `  await assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail });
 
   const d = data && typeof data === "object" ? data : {};`,
     to: `  const d = data && typeof data === "object" ? data : {};`,

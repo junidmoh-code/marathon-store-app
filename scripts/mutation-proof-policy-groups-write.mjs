@@ -40,9 +40,9 @@ const BOTH = ["test/policy-groups-write.test.cjs", "test/category-policy-write.t
 const MUTATIONS = [
   {
     id: "M-ADMIN",
-    guard: "GATE 3 — the server-side owner check runs on every action, including the new ones",
+    guard: "GATE 3 — the server-side caller check runs on every action, including the new ones",
     file: WRITE,
-    from: `  assertSuperAdmin(callerEmail, adminEmail);`,
+    from: `  await assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail });`,
     to: ``,
     nodeTests: BOTH,
   },
@@ -50,8 +50,8 @@ const MUTATIONS = [
     id: "M-ADMIN-2",
     guard: "…and it is an EQUALITY on the owner's email, not \"any caller who has one\"",
     file: WRITE,
-    from: `  if (typeof callerEmail !== "string" || callerEmail !== adminEmail) {`,
-    to: `  if (typeof callerEmail !== "string" || !callerEmail) {`,
+    from: `  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;`,
+    to: `  if (typeof callerEmail === "string" && callerEmail) return;`,
     nodeTests: BOTH,
   },
   // ── THE TWO ROW CONSTRAINTS ───────────────────────────────────────────────

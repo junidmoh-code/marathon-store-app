@@ -43,6 +43,10 @@ const { enginePolicyVisibleForViewer } = await import("../../config/enginePolicy
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const OWNER = { email: ADMIN_EMAIL };
 const STAFF = { email: "rashid@marathon.internal" };
+// The second identity the gate admits since 2026-08-27: a staff account whose
+// /users record carries the flag. Same shape the app builds — an Auth email and
+// the permFlags mirror off the /users record, nothing else.
+const GRANTED = { email: "mc@marathon.internal", permFlags: { engine_policy: true } };
 
 const render = (props) => {
   let tree;
@@ -72,13 +76,44 @@ describe("the identity test itself", () => {
     }
   });
 
-  it("no permission, stockRole or store scope opens it", () => {
-    // The brief is explicit that this is not permission-gated, and the reason
-    // matters: the owner's own /users record has NO permissions array, so a
-    // permission gate would lock out the only intended user while admitting
-    // whoever the permission was later granted to.
-    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permissions: ["engine_policy", "user_management"], stockRole: "admin", destShop: null })).toBe(false);
+  it("admits an account carrying the engine_policy FLAG", () => {
+    expect(enginePolicyVisibleForViewer(GRANTED)).toBe(true);
+    // …and the owner still needs no record at all: his clause is the email.
+    expect(enginePolicyVisibleForViewer({ email: ADMIN_EMAIL, permFlags: null })).toBe(true);
+  });
+
+  it("the permissions ARRAY is not the signal — only the flag mirror is", () => {
+    // Two copies of one grant exist: the array (what the editor edits) and the
+    // permFlags mirror (what a rule and the server can read). This gate reads
+    // the SAME field the server callable reads, so a client answer and a server
+    // answer cannot drift; reading the array here would let them.
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permissions: ["engine_policy", "user_management"] })).toBe(false);
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permissions: ["engine_policy"], permFlags: { shopify_publish: true } })).toBe(false);
+  });
+
+  it("no stockRole, role or store scope opens it", () => {
+    // stockRole 'admin' is deliberately NOT a way in, even though the live RTDB
+    // rule lets those accounts write /config/refillEngine directly. This screen
+    // is granted by name or not at all.
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, stockRole: "admin", role: "admin", destShop: null })).toBe(false);
     expect(enginePolicyVisibleForViewer({ permissions: ["everything"], stockRole: "admin" })).toBe(false);
+  });
+
+  it("the flag must be the boolean true, not anything truthy", () => {
+    // permFlagsFor writes booleans. A string, a 1 or an object in that field is
+    // a stray write, not a grant.
+    for (const v of ["true", 1, "yes", {}, ["engine_policy"]]) {
+      expect(enginePolicyVisibleForViewer({ email: STAFF.email, permFlags: { engine_policy: v } }),
+        `must refuse permFlags.engine_policy = ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+
+  it("a missing or unreadable /users record refuses rather than admitting", () => {
+    // AuthGate sets permRecord to null on a read failure, so this is the shape
+    // a transient outage produces. It must fail closed.
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permFlags: null })).toBe(false);
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permFlags: undefined })).toBe(false);
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email })).toBe(false);
   });
 });
 
@@ -98,6 +133,12 @@ describe("GATE 2b — the component refuses on its own", () => {
 
   it("admits the owner — so the refusals above are not vacuous", () => {
     const names = screenNames(render({ viewer: OWNER }));
+    expect(names).toContain("EnginePolicyAuthed");
+    expect(names).not.toContain("Refused");
+  });
+
+  it("admits a granted staff account mounted directly", () => {
+    const names = screenNames(render({ viewer: GRANTED }));
     expect(names).toContain("EnginePolicyAuthed");
     expect(names).not.toContain("Refused");
   });
@@ -154,6 +195,76 @@ describe("the default export runs zero hooks", () => {
   });
 });
 
+// ── GATE 3a — THE CALLABLE WRAPPER, IN functions/index.js ────────────────────
+// The write module's own check is mutation-proven by the node suite. The
+// WRAPPER's check was not, and the comment beside it claims the gate "survives a
+// refactor of either side" — a stronger guarantee than anything was testing.
+// Deleting `await assertEnginePolicy(request)` from the onCall body broke
+// nothing automated, because the module still refused. (Sonnet architect review,
+// PR #469.)
+//
+// Source-level, for the same reason the App.jsx assertions below are: index.js
+// is CommonJS, pulls firebase-admin at module load and registers Cloud Functions
+// as a side effect. Coarse, but it fails loudly the moment the call is removed.
+describe("functions/index.js — the callable's own gate", () => {
+  const fnSrc = readFileSync(new URL("../../../functions/index.js", import.meta.url), "utf8");
+  const body = () => {
+    const i = fnSrc.indexOf("exports.setCategoryPolicy = onCall(");
+    expect(i, "functions/index.js must declare setCategoryPolicy").toBeGreaterThan(-1);
+    return fnSrc.slice(i, i + 1400);
+  };
+
+  it("GATE 3a — setCategoryPolicy awaits the permission check before doing anything", () => {
+    const b = body();
+    expect(b).toMatch(/await\s+assertEnginePolicy\(\s*request\s*\)/);
+    // …and BEFORE the module is reached, not after it has already written.
+    const gateAt = b.search(/await\s+assertEnginePolicy\(/);
+    const workAt = b.indexOf("applyCategoryPolicy");
+    expect(workAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeLessThan(workAt);
+  });
+
+  it("GATE 3a — the gate is AWAITED, so a rejected promise cannot be stepped over", () => {
+    // `assertEnginePolicy(request);` without await is a floating promise: the
+    // refusal lands after the write has already been ordered. Every call site
+    // in the callable body must carry the await. (No lookbehind — see
+    // noLookbehind.test.js; one blanked the whole app on old Safari once.)
+    const calls = [...body().matchAll(/(\w+\s+)?assertEnginePolicy\(/g)];
+    expect(calls.length, "the callable must call assertEnginePolicy").toBeGreaterThan(0);
+    for (const c of calls) {
+      expect((c[1] || "").trim(), `un-awaited assertEnginePolicy call: ${c[0]}`).toBe("await");
+    }
+  });
+
+  const gateDecl = () => {
+    const i = fnSrc.indexOf("async function assertEnginePolicy(request)");
+    expect(i, "functions/index.js must define assertEnginePolicy").toBeGreaterThan(-1);
+    return fnSrc.slice(i, i + 900);
+  };
+
+  it("the check reads the same scalar the client gate reads, strictly", () => {
+    const decl = gateDecl();
+    expect(decl).toContain("permFlags/engine_policy");
+    // `=== true`, not truthy: the flag is written as a boolean, and anything
+    // else landing in that field is a stray write, not a grant.
+    expect(decl).toMatch(/snap\.val\(\)\s*===\s*true/);
+    expect(decl).not.toMatch(/granted\s*=\s*!!/);
+  });
+
+  it("the check FAILS CLOSED — a read error refuses rather than admitting", () => {
+    // Stated separately from the strictness above, because one assertion
+    // covering both properties would be credited by either one surviving.
+    // (CodeRabbit, PR #469.)
+    const decl = gateDecl();
+    expect(decl).toMatch(/catch[\s\S]*throw new HttpsError\("unavailable"/);
+    // …and the catch must not quietly hand out the grant instead.
+    const catchAt = decl.indexOf("catch (err)");
+    expect(catchAt).toBeGreaterThan(-1);
+    expect(decl.slice(catchAt, decl.indexOf("}", decl.indexOf("throw", catchAt))))
+      .not.toMatch(/granted\s*=\s*true/);
+  });
+});
+
 // ── GATES 1 AND 2, IN App.jsx ────────────────────────────────────────────────
 describe("App.jsx — the tile and the route", () => {
   const appSrc = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
@@ -186,15 +297,18 @@ describe("App.jsx — the tile and the route", () => {
     expect(tile).toMatch(/enginePolicyVisibleForViewer\(\s*enginePolicyViewer\s*\)\s*&&\s*\{\s*key:\s*"engine_policy"/);
   });
 
-  it("GATE 1 — the tile's viewer comes from the AUTH email, not from a permissions record", () => {
+  it("GATE 1 — the tile's viewer is the AUTH email plus the permFlags mirror, and nothing else", () => {
     const line = lineWith("const enginePolicyViewer");
     expect(line).toMatch(/homeUser\?\.email/);
-    expect(line).not.toMatch(/permRecord|permissions|hasPermission|stockRole/);
+    expect(line).toMatch(/permFlags:\s*homePerm\?\.permFlags/);
+    // Not the array, not the helper, not the stock role: those would each be a
+    // different grant from the one the server checks.
+    expect(line).not.toMatch(/hasPermission|permissions:|stockRole/);
   });
 
   it("GATE 2 — the route guards the mount, independently of the tile", () => {
     const block = around("else if (role === ROLES.ENGINE_POLICY)", 0, 500);
-    expect(block).toMatch(/enginePolicyVisibleForViewer\(\s*\{\s*email:\s*authUser\?\.email\s*\}\s*\)/);
+    expect(block).toMatch(/enginePolicyVisibleForViewer\(\s*\{\s*email:\s*authUser\?\.email,\s*permFlags:\s*permRecord\?\.permFlags\s*\}\s*\)/);
     // Authorized branch first; the refusal arm must not be the privileged screen.
     expect(block).toMatch(/enginePolicyVisibleForViewer[\s\S]*\?[\s\S]*<EnginePolicyCard/);
     const cardAt = block.indexOf("<EnginePolicyCard");

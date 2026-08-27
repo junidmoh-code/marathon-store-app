@@ -4,7 +4,7 @@
 // Two of the assertions in this file are load-bearing beyond their own subject
 // and are mutation-proven in scripts/mutation-proof-engine-policy.mjs:
 //
-//   M-SERVER  deleting the owner check must make tests fail
+//   M-SERVER  deleting the caller check must make tests fail
 //   M-DRIFT   deleting the drift check must make tests fail
 //
 // Everything else pins the shape of a policy the engine will honour, and the
@@ -77,17 +77,19 @@ async function rejects(fn, code) {
   });
 }
 
-// ── GATE 3: THE OWNER CHECK ──────────────────────────────────────────────────
-// Every identity that exists in this system, tried against the door. The staff
-// case is the one that matters day to day: they sign in as
-// {username}@marathon.internal, and there is no permission that promotes them.
-test("only the owner's email may write the policy", async () => {
-  const edit = { categoryKey: "caps-beanies", policy: { hub2: { target: 10, minQty: 5, reorderPoint: 2 } } };
+// ── GATE 3: THE CALLER CHECK ─────────────────────────────────────────────────
+// Two identities are admitted and no others: the owner's email, and an account
+// whose OWN /users record carries permFlags/engine_policy === true (owner
+// request 2026-08-27). Staff sign in as {username}@marathon.internal and can
+// never match the first, so the flag is the only other way in.
+const EDIT = { categoryKey: "caps-beanies", policy: { hub2: { target: 10, minQty: 5, reorderPoint: 2 } } };
+
+test("no email but the owner's opens the door on its own", async () => {
   for (const who of [undefined, null, "", "junid@marathon.internal", "ahmed@marathon.internal",
                      "someone@gmail.com", "GUNIDMOH@GMAIL.COM", "gunidmoh@gmail.com.evil.com"]) {
     const db = makeFakeDb(world());
     await rejects(() => applyCategoryPolicy({
-      db, callerEmail: who, adminEmail: OWNER, data: edit, nowMs: NOW,
+      db, callerEmail: who, adminEmail: OWNER, data: EDIT, nowMs: NOW,
     }), "permission-denied");
     // Refused means REFUSED: no history entry, no mutation, not even a read-only
     // side effect. A gate that logs the attempt into the audit trail would let
@@ -95,6 +97,86 @@ test("only the owner's email may write the policy", async () => {
     assert.deepEqual(history(db), []);
     assert.equal(policyAt(db).hub2.reorderPoint, 0);
   }
+});
+
+// The mutation M-SERVER deletes the refusal below. Without THIS test — a caller
+// who has a uid and a /users record and simply is not granted — that deletion
+// would still pass, because every caller above is refused a step earlier for
+// having no uid at all.
+test("a signed-in staff account WITHOUT the flag is refused", async () => {
+  for (const users of [
+    undefined,                                              // no /users node at all
+    { mc: {} },                                             // a record, no permFlags
+    { mc: { permFlags: {} } },                              // permFlags, no key
+    { mc: { permFlags: { shopify_publish: true } } },       // some OTHER grant
+    { mc: { permFlags: { engine_policy: false } } },        // explicitly not granted
+    { mc: { stockRole: "admin", permissions: ["engine_policy"] } }, // the array is NOT the signal
+  ]) {
+    const db = makeFakeDb({ ...world(), ...(users ? { users } : {}) });
+    await rejects(() => applyCategoryPolicy({
+      db, callerEmail: "mc@marathon.internal", callerUid: "mc", adminEmail: OWNER, data: EDIT, nowMs: NOW,
+    }), "permission-denied");
+    assert.deepEqual(history(db), []);
+    assert.equal(policyAt(db).hub2.reorderPoint, 0);
+  }
+});
+
+// …and the refusals above are not vacuous: the grant really does open it.
+test("a staff account WITH the flag may write the policy", async () => {
+  const db = makeFakeDb({ ...world(), users: { mc: { permFlags: { engine_policy: true } } } });
+  const res = await applyCategoryPolicy({
+    db, callerEmail: "mc@marathon.internal", callerUid: "mc", adminEmail: OWNER, data: EDIT, nowMs: NOW,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(policyAt(db).hub2.reorderPoint, 2);
+  // The audit trail names the person, not "an admin" — the whole point of a
+  // second person being able to change this is knowing which one did.
+  const [entry] = history(db);
+  assert.equal(entry.by, "mc@marathon.internal");
+  assert.equal(entry.byUid, "mc");
+});
+
+// The flag is written as a boolean by permFlagsFor. Anything else that lands in
+// that field — a string, a 1, an object — is not a grant, and a truthy test
+// would turn a stray write into one.
+test("the grant is the boolean true and nothing else truthy", async () => {
+  for (const v of ["true", 1, "yes", { ok: true }, ["engine_policy"]]) {
+    const db = makeFakeDb({ ...world(), users: { mc: { permFlags: { engine_policy: v } } } });
+    await rejects(() => applyCategoryPolicy({
+      db, callerEmail: "mc@marathon.internal", callerUid: "mc", adminEmail: OWNER, data: EDIT, nowMs: NOW,
+    }), "permission-denied");
+  }
+});
+
+// FAIL CLOSED. A gate that opens when the database is unreachable is not a gate,
+// and "unavailable" says try again rather than telling a granted person they
+// have lost access.
+test("an unreadable /users record refuses rather than admitting", async () => {
+  const db = makeFakeDb({ ...world(), users: { mc: { permFlags: { engine_policy: true } } } });
+  const realRef = db.ref.bind(db);
+  db.ref = (path) => {
+    if (String(path).startsWith("users/")) {
+      return { once: async () => { throw new Error("network"); } };
+    }
+    return realRef(path);
+  };
+  await rejects(() => applyCategoryPolicy({
+    db, callerEmail: "mc@marathon.internal", callerUid: "mc", adminEmail: OWNER, data: EDIT, nowMs: NOW,
+  }), "unavailable");
+  assert.deepEqual(history(db), []);
+  assert.equal(policyAt(db).hub2.reorderPoint, 0);
+});
+
+// The owner clause must never consult /users: his record carries no permissions
+// array and no permFlags at all, which is exactly why the gate is written with
+// the email FIRST and returns before any read.
+test("the owner is admitted with no /users record whatsoever", async () => {
+  const db = makeFakeDb(world());
+  const res = await applyCategoryPolicy({
+    db, callerEmail: OWNER, callerUid: "owner-uid", adminEmail: OWNER, data: EDIT, nowMs: NOW,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(policyAt(db).hub2.reorderPoint, 2);
 });
 
 test("an unconfigured admin identity refuses everyone rather than letting everyone in", async () => {
@@ -359,10 +441,17 @@ test("the census answers the list without the browser reading /products or /stoc
   assert.equal(policyAt(db).hub2.reorderPoint, 0);
 });
 
-test("the census is behind the owner check too", async () => {
+test("the census is behind the caller check too", async () => {
   const db = makeFakeDb(world());
   await rejects(() => applyCategoryPolicy({
     db, callerEmail: "ahmed@marathon.internal", adminEmail: OWNER, data: { action: "census" }, nowMs: NOW,
+  }), "permission-denied");
+  // …including for a signed-in account that simply has not been granted it. A
+  // census is a catalogue-wide read at the owner's expense.
+  const db2 = makeFakeDb({ ...world(), users: { mc: { permFlags: {} } } });
+  await rejects(() => applyCategoryPolicy({
+    db: db2, callerEmail: "mc@marathon.internal", callerUid: "mc", adminEmail: OWNER,
+    data: { action: "census" }, nowMs: NOW,
   }), "permission-denied");
 });
 

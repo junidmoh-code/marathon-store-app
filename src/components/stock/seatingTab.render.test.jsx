@@ -133,7 +133,10 @@ describe("GATE 2c — the tab has its own gate", () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<EnginePolicyCard viewer={STAFF} products={PRODUCTS} onExit={() => {}} />); });
     expect(tree.root.findAllByType(SeatingTab).length).toBe(0);
-    expect(text(tree)).toContain("owner-only");
+    // The refusal wording stopped saying "owner-only" when the `engine_policy`
+    // grant landed (2026-08-27) — an ungranted staff account is refused just
+    // the same, and the screen now says so without naming an owner.
+    expect(text(tree)).toContain("don't have access");
   });
 });
 

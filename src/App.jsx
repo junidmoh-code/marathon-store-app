@@ -2815,9 +2815,11 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
-  // Engine Policy's tile gate reads the FIREBASE AUTH email and nothing else —
-  // not permRecord, not hasPermission, not stockRole. See src/config/enginePolicy.js.
-  const enginePolicyViewer = { email: homeUser?.email };
+  // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
+  // MIRROR — not hasPermission, not the permissions array, not stockRole. The
+  // flag is the same scalar the server callable checks, so the two can never
+  // disagree about a grant. See src/config/enginePolicy.js.
+  const enginePolicyViewer = { email: homeUser?.email, permFlags: homePerm?.permFlags };
   // Who-am-I, home only (owner directive 2026-08-08): the global "Signed in:"
   // pill is gone, so the bare name in the hero of BOTH home branches is the one
   // identity signal in the app. Hoisted above the isDesktop split — it used to
@@ -2969,9 +2971,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // deleting it leaves the route gate working, and deleting the route gate
       // leaves this one working. Both are mutation-proven.
       //
-      // `enginePolicyViewer` is built from the Firebase Auth email, NOT from a
-      // permissions array: Junid's /users record has no permissions array at
-      // all, so a permission-based gate would lock out the only intended user.
+      // `enginePolicyViewer` carries the Firebase Auth email and the permFlags
+      // mirror, and the predicate admits the owner on the EMAIL ALONE: Junid's
+      // /users record has no permissions array at all, so a gate that only
+      // asked about a permission would lock out the one person it exists for.
+      // The `engine_policy` grant (owner request 2026-08-27) sits beside that
+      // clause, never in place of it.
       enginePolicyVisibleForViewer(enginePolicyViewer) && { key:"engine_policy", icon:RoleIcons.engine_policy, name:"Engine Policy", desc:"What each shop keeps, and when to reorder", onClick:()=>onSelect(ROLES.ENGINE_POLICY) },
     ].filter(Boolean) },
   ]
@@ -18264,8 +18269,17 @@ function AppInner() {
   // ── ENGINE POLICY — GATE 2 OF 3: THE ROUTE ────────────────────────────────
   // Evaluated INDEPENDENTLY of the tile. A persisted role in localStorage, a
   // pasted hash, or hand-edited component state all arrive here, and none of
-  // them reach the screen: the check is on the live Firebase Auth email, which
-  // no stored value can forge.
+  // them reach the screen: the check is on the live Firebase Auth email and the
+  // live /users record, neither of which a stored value can forge.
+  //
+  // The viewer object is built HERE, inline, from this component's own values —
+  // it is deliberately not the tile's `enginePolicyViewer`. Two gates sharing
+  // one object would be one gate with two call sites.
+  //
+  // `stockRole` rides along on the viewer PASSED TO THE CARD but is deliberately
+  // NOT part of the gate: it decides only whether the Seating tab's three
+  // direct-to-RTDB buttons can write, which is the question the live rules ask
+  // (see enginePolicySeatingWritable). It opens nothing on its own.
   //
   // A refused viewer gets AdminSignInScreen, not a refusal — the same treatment
   // #admin/users has had since PR #302, and the useful response, because the
@@ -18280,8 +18294,8 @@ function AppInner() {
   // Gate 3 (the server) and gate 2b (the component's own check, which holds no
   // hooks so a refused viewer opens nothing) are both real and independent.
   // Deleting any one of the three must fail tests.
-  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email }} products={products} onExit={() => setRole(null)} />
+  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
+    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;

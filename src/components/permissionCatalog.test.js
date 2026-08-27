@@ -42,6 +42,45 @@ describe("display_checks permission — safe grant shape", () => {
   });
 });
 
+// ─── engine_policy — the 2026-08-27 grant ────────────────────────────────────
+// It sits in the STOCK group because that is where a person looks for it, and
+// that placement is the risk: a reflex `stock: true` on a neighbouring line
+// would auto-link a stockRole and hand the holder write on /stock_targets, the
+// engine kill switch, /locations and every /config branch — the exact
+// over-grant this permission exists to avoid. The Categories tab needs no such
+// thing: every change there goes through the setCategoryPolicy callable. (The
+// Seating tab writes RTDB directly and asks for a stockRole itself — see
+// enginePolicySeatingWritable.)
+describe("engine_policy permission — safe grant shape", () => {
+  const KEY = "engine_policy";
+  const entry = ALL_PERMISSIONS.find((p) => p.key === KEY);
+
+  it("is grantable from the editor", () => {
+    expect(entry, "engine_policy missing from PERMISSION_GROUPS").toBeTruthy();
+  });
+
+  it("lives in the 'Stock' group", () => {
+    const grp = PERMISSION_GROUPS.find((g) => g.title === "Stock");
+    expect(grp).toBeTruthy();
+    expect(grp.perms.map((p) => p.key)).toContain(KEY);
+  });
+
+  it("does NOT auto-link a stockRole", () => {
+    expect(entry?.stock).toBeFalsy();
+    expect(STOCK_PERM_KEYS).not.toContain(KEY);
+  });
+
+  it("is in NO role default — one tap on a role preset must never confer it", () => {
+    for (const role of Object.keys(ROLE_DEFAULT_PERMS)) {
+      expect(ROLE_DEFAULT_PERMS[role], `role ${role} must not auto-grant ${KEY}`).not.toContain(KEY);
+    }
+  });
+
+  it("is marked sensitive, so the editor styles it as a consequential grant", () => {
+    expect(entry?.sensitive).toBe(true);
+  });
+});
+
 describe("STOCK_PERM_KEYS derivation is sound", () => {
   it("contains exactly the entries flagged stock:true", () => {
     const flagged = ALL_PERMISSIONS.filter((p) => p.stock).map((p) => p.key);
