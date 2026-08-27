@@ -100,20 +100,27 @@ say "3/7  Installing dependencies"
 # checkout moved, the dependencies did not, and the agent was left running new
 # code against whatever was in node_modules. Resolved the same way NODE_BIN is,
 # a few steps below, and for the same reason.
+# RESOLVING npm IS NOT ENOUGH ON ITS OWN. npm is a shell script whose shebang
+# is `#!/usr/bin/env node`, so calling it by absolute path from a PATH that has
+# no node fails with "env: node: No such file or directory" — a different
+# error, one step later, saying nothing about npm. Node's directory therefore
+# goes ON THE PATH, which fixes npm's shebang and every child process it
+# spawns, rather than being handed to npm alone.
+NPM_DIR=""
+for candidate in /opt/homebrew/bin /usr/local/bin; do
+  if [ -x "$candidate/npm" ] && [ -x "$candidate/node" ]; then NPM_DIR="$candidate"; break; fi
+done
+if [ -n "$NPM_DIR" ]; then export PATH="$NPM_DIR:$PATH"; fi
+
 NPM_BIN="$(command -v npm 2>/dev/null || true)"
-if [ -z "$NPM_BIN" ]; then
-  for candidate in /opt/homebrew/bin/npm /usr/local/bin/npm; do
-    if [ -x "$candidate" ]; then NPM_BIN="$candidate"; break; fi
-  done
-fi
-if [ -z "$NPM_BIN" ] || [ ! -x "$NPM_BIN" ]; then
-  bad "no npm found — looked on PATH, then /opt/homebrew/bin/npm and /usr/local/bin/npm."
+if [ -z "$NPM_BIN" ] || [ ! -x "$NPM_BIN" ] || ! command -v node >/dev/null 2>&1; then
+  bad "no usable node+npm pair found — looked on PATH, then /opt/homebrew/bin and /usr/local/bin."
   bad "REFUSING to continue: the clone has been updated but its dependencies have not,"
   bad "and an agent running new code against old node_modules fails in ways that do not"
-  bad "look like a missing npm. Install Node, or run this with npm on PATH."
+  bad "look like a missing npm. Install Node, or run this with node and npm on PATH."
   exit 2
 fi
-echo "     using: $NPM_BIN"
+echo "     using: $NPM_BIN (node $(node -v 2>/dev/null || echo '?'))"
 # ONLY functions/ — that is where firebase-admin and google-auth-library live,
 # and they are the only dependencies the publisher's import graph reaches.
 # The root install pulls vite and puppeteer, which this machine has no use for.
