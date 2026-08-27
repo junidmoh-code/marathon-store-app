@@ -63,9 +63,9 @@ const MUTATIONS = [
   },
   {
     id: "M-TILE-2",
-    guard: "GATE 1 — the tile's identity comes from the auth email, not a permissions record",
+    guard: "GATE 1 — the tile reads the flag MIRROR, not the permissions array the server cannot see",
     file: APP,
-    from: `  const enginePolicyViewer = { email: homeUser?.email };`,
+    from: `  const enginePolicyViewer = { email: homeUser?.email, permFlags: homePerm?.permFlags };`,
     to: `  const enginePolicyViewer = { email: homeUser?.email, permissions: homePerm?.permissions };`,
     tests: GATE_TESTS,
   },
@@ -74,10 +74,10 @@ const MUTATIONS = [
     id: "M-ROUTE",
     guard: "GATE 2 — the route refuses to mount the card for anyone but the owner",
     file: APP,
-    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email }} onExit={() => setRole(null)} />
+    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
+    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;`,
-    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email }} onExit={() => setRole(null)} />;`,
+    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags }} products={products} onExit={() => setRole(null)} />;`,
     tests: GATE_TESTS,
   },
   // ── GATE 2b: the component's own check ────────────────────────────────────
@@ -95,9 +95,9 @@ const MUTATIONS = [
     id: "M-HOOKS",
     guard: "GATE 2b — the gate holds ZERO hooks, so a refused viewer starts nothing",
     file: CARD,
-    from: `export default function EnginePolicyCard({ viewer, onExit }) {
+    from: `export default function EnginePolicyCard({ viewer, products, onExit }) {
   if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;`,
-    to: `export default function EnginePolicyCard({ viewer, onExit }) {
+    to: `export default function EnginePolicyCard({ viewer, products, onExit }) {
   const [x] = useState(0);   // MUTATION: a hook above the gate
   if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;`,
     tests: GATE_TESTS,
