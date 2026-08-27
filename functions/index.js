@@ -4798,6 +4798,60 @@ exports.socialDailyAutopilot = onSchedule(
   }
 );
 
+// ── A STOCK CHANGE HAS TO REACH THE SHOP WINDOW ──────────────────────────────
+//
+// reconcile.mjs writes a product's inventory to Shopify exactly ONCE, inside
+// the block that applies its publish intent. A product already live and on is
+// skipped on every later tick, so its quantity is whatever it was on the day it
+// went live. Everything that has happened to that stock since — sales, counts,
+// transfers — never reached the storefront.
+//
+// Measured 2026-08-27 across 283 live variants: 15 drifted, 14 of them with
+// SHOPIFY HIGHER than the app, and two offering stock against an app count of
+// zero. Sellable and unfulfillable at the same time.
+//
+// WHY A MARKER AND NOT A PUSH FROM HERE. This function has no Shopify
+// credentials and should not have them — the token lives in the mini's .env
+// beside the reconciler that already holds a lockfile and a rate-limit budget.
+// A second writer to the same shop, on a different machine, with no shared
+// lock, is how two systems start fighting over one number. So this does the one
+// thing a trigger is good at: it says WHICH product moved, cheaply, and lets
+// the thing that owns the Shopify session decide when to act.
+//
+// WHY A MARKER AND NOT A TIMESTAMP CURSOR. A cursor ("push everything changed
+// since T") cannot distinguish "pushed successfully" from "read and dropped on
+// a failure". A marker is removed only after its push succeeded, so a failed
+// push is still pending on the next tick rather than silently behind.
+//
+// COST. One small write per changed product cell. /stock is ~5.36 MB and
+// reading it whole every two minutes to find what moved would be ~2.6 GB a day
+// to usually discover nothing.
+exports.stockChangeMarksInventoryDirty = onValueWritten(
+  {
+    ref:            "/stock/{location}/{productId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 30,
+    // NOT retried. The marker is idempotent and the very next stock write for
+    // this product re-creates it; a retry storm on a bulk count would be far
+    // worse than one missed marker, which the --all sweep repairs anyway.
+    retry:          false,
+  },
+  async (event) => {
+    const { productId, location } = event.params;
+    // in_transit is not sellable (inventory.mjs's UNSELLABLE_LOCATIONS), so a
+    // movement into or out of it cannot change the network total and marking
+    // it would be pure noise on every transfer.
+    if (location === "in_transit") return;
+    // A delete leaves no cells; that IS a change to the total and must mark.
+    await admin.database().ref(`shopify_inventory_dirty/${productId}`).set({
+      at: Date.now(),
+      location,
+    });
+  }
+);
+
 // ── THE WATCHDOG: A QUIET DAY MUST NOT BE ABLE TO PASS UNNOTICED ─────────────
 //
 // Everything above this line reports its own failures honestly, and on
