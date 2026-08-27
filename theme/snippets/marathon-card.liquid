@@ -207,14 +207,12 @@
     <p class="mc-panel__price">{{ product.price | money }}</p>
 
     {%- comment -%}
-      CONDITION SITS HERE — above the sizes, above the button. It is a public
-      claim about used goods and the shopper reads it BEFORE choosing to buy,
-      not after. (On the theme's own product template it currently renders
-      below Add to cart; see theme/INSTALL.md.)
+      CONDITION IS DELIBERATELY OMITTED FROM THIS QUICK-ADD PANEL (owner
+      instruction 2026-08-27): the panel is the fast add-to-cart flow, and the
+      condition grade stays where a shopper reads full detail before buying —
+      the product page (`condition` is still computed above for anything else
+      that might need it later, but is not rendered here).
     {%- endcomment -%}
-    {%- if condition != blank -%}
-      <p class="mc-panel__condition"><b>Condition:</b> {{ condition }}</p>
-    {%- endif -%}
 
     {%- unless single_variant -%}
       <div>
