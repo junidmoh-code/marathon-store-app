@@ -195,6 +195,58 @@ describe("the default export runs zero hooks", () => {
   });
 });
 
+// ── GATE 3a — THE CALLABLE WRAPPER, IN functions/index.js ────────────────────
+// The write module's own check is mutation-proven by the node suite. The
+// WRAPPER's check was not, and the comment beside it claims the gate "survives a
+// refactor of either side" — a stronger guarantee than anything was testing.
+// Deleting `await assertEnginePolicy(request)` from the onCall body broke
+// nothing automated, because the module still refused. (Sonnet architect review,
+// PR #469.)
+//
+// Source-level, for the same reason the App.jsx assertions below are: index.js
+// is CommonJS, pulls firebase-admin at module load and registers Cloud Functions
+// as a side effect. Coarse, but it fails loudly the moment the call is removed.
+describe("functions/index.js — the callable's own gate", () => {
+  const fnSrc = readFileSync(new URL("../../../functions/index.js", import.meta.url), "utf8");
+  const body = () => {
+    const i = fnSrc.indexOf("exports.setCategoryPolicy = onCall(");
+    expect(i, "functions/index.js must declare setCategoryPolicy").toBeGreaterThan(-1);
+    return fnSrc.slice(i, i + 1400);
+  };
+
+  it("GATE 3a — setCategoryPolicy awaits the permission check before doing anything", () => {
+    const b = body();
+    expect(b).toMatch(/await\s+assertEnginePolicy\(\s*request\s*\)/);
+    // …and BEFORE the module is reached, not after it has already written.
+    const gateAt = b.search(/await\s+assertEnginePolicy\(/);
+    const workAt = b.indexOf("applyCategoryPolicy");
+    expect(workAt).toBeGreaterThan(-1);
+    expect(gateAt).toBeLessThan(workAt);
+  });
+
+  it("GATE 3a — the gate is AWAITED, so a rejected promise cannot be stepped over", () => {
+    // `assertEnginePolicy(request);` without await is a floating promise: the
+    // refusal lands after the write has already been ordered. Every call site
+    // in the callable body must carry the await. (No lookbehind — see
+    // noLookbehind.test.js; one blanked the whole app on old Safari once.)
+    const calls = [...body().matchAll(/(\w+\s+)?assertEnginePolicy\(/g)];
+    expect(calls.length, "the callable must call assertEnginePolicy").toBeGreaterThan(0);
+    for (const c of calls) {
+      expect((c[1] || "").trim(), `un-awaited assertEnginePolicy call: ${c[0]}`).toBe("await");
+    }
+  });
+
+  it("the check reads the same scalar the client gate reads", () => {
+    const i = fnSrc.indexOf("async function assertEnginePolicy(request)");
+    expect(i, "functions/index.js must define assertEnginePolicy").toBeGreaterThan(-1);
+    const decl = fnSrc.slice(i, i + 900);
+    expect(decl).toContain("permFlags/engine_policy");
+    expect(decl).toMatch(/===\s*true/);
+    // Fail closed: a read error refuses rather than admitting.
+    expect(decl).toMatch(/catch[\s\S]*throw new HttpsError\("unavailable"/);
+  });
+});
+
 // ── GATES 1 AND 2, IN App.jsx ────────────────────────────────────────────────
 describe("App.jsx — the tile and the route", () => {
   const appSrc = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");

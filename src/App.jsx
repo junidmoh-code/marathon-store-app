@@ -18276,6 +18276,11 @@ function AppInner() {
   // it is deliberately not the tile's `enginePolicyViewer`. Two gates sharing
   // one object would be one gate with two call sites.
   //
+  // `stockRole` rides along on the viewer PASSED TO THE CARD but is deliberately
+  // NOT part of the gate: it decides only whether the Seating tab's three
+  // direct-to-RTDB buttons can write, which is the question the live rules ask
+  // (see enginePolicySeatingWritable). It opens nothing on its own.
+  //
   // A refused viewer gets AdminSignInScreen, not a refusal — the same treatment
   // #admin/users has had since PR #302, and the useful response, because the
   // ordinary way to land here unauthorized is a deep link opened before signing
@@ -18290,7 +18295,7 @@ function AppInner() {
   // hooks so a refused viewer opens nothing) are both real and independent.
   // Deleting any one of the three must fail tests.
   else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags }} products={products} onExit={() => setRole(null)} />
+    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;

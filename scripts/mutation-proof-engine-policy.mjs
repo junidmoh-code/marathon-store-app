@@ -46,8 +46,11 @@ const CARD = "src/components/stock/EnginePolicyCard.jsx";
 const CORE = "src/components/stock/enginePolicyCore.js";
 const MODEL = "functions/lib/category-policy.cjs";
 const WRITE = "functions/lib/category-policy-write.cjs";
+const FUNCTIONS = "functions/index.js";
+const ACTIONS = "src/components/stock/SeatingActions.jsx";
 
 const GATE_TESTS = ["src/components/stock/enginePolicyGates.test.jsx"];
+const SEAT_TESTS = ["src/components/stock/seatingWriteGate.test.jsx"];
 const CORE_TESTS = ["src/components/stock/enginePolicyCore.test.js"];
 const SERVER_TESTS = ["test/category-policy-write.test.cjs"];
 
@@ -101,6 +104,62 @@ const MUTATIONS = [
   const [x] = useState(0);   // MUTATION: a hook above the gate
   if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;`,
     tests: GATE_TESTS,
+  },
+  // ── GATE 3a: the callable WRAPPER ─────────────────────────────────────────
+  // Deleted with the write module's own check LEFT INTACT — the test that the
+  // two server checks are genuinely independent rather than one reported twice.
+  // Until PR #469 nothing proved this side at all, and the comment beside it
+  // claimed the gate "survives a refactor of either side". (Sonnet review.)
+  {
+    id: "M-WRAPPER",
+    guard: "GATE 3a — the callable's own check is CALLED, not just the module's",
+    file: FUNCTIONS,
+    from: `    await assertEnginePolicy(request);`,
+    to: ``,
+    tests: GATE_TESTS,
+  },
+  {
+    id: "M-WRAPPER-AWAIT",
+    guard: "GATE 3a — …and it is AWAITED, not left as a floating promise",
+    file: FUNCTIONS,
+    from: `    await assertEnginePolicy(request);`,
+    to: `    assertEnginePolicy(request);`,
+    tests: GATE_TESTS,
+  },
+  {
+    id: "M-WRAPPER-FLAG",
+    guard: "GATE 3a — the callable reads the same scalar the client does, and fails closed on a read error",
+    file: FUNCTIONS,
+    from: `    granted = snap.val() === true;
+  } catch (err) {
+    console.error("assertEnginePolicy: permission read failed:", err.message);
+    throw new HttpsError("unavailable", "Could not check permissions. Try again.");`,
+    to: `    granted = snap.val() === true;
+  } catch (err) {
+    console.error("assertEnginePolicy: permission read failed:", err.message);
+    granted = true;`,
+    tests: GATE_TESTS,
+  },
+  // ── THE SEATING TAB'S OWN WRITES ──────────────────────────────────────────
+  // Not a gate on the screen — a gate on three buttons that write RTDB directly
+  // and would otherwise fail at the database for a grantee with no stockRole.
+  {
+    id: "M-SEATING",
+    guard: "The seating buttons ask what the RULES ask before offering the write",
+    file: ACTIONS,
+    from: `  const canWrite = enginePolicySeatingWritable(viewer);
+  if (!canWrite) {`,
+    to: `  const canWrite = enginePolicySeatingWritable(viewer);
+  if (false) {`,
+    tests: SEAT_TESTS,
+  },
+  {
+    id: "M-SEATING-ROLE",
+    guard: "…and it is stockRole 'admin', not merely HAVING a stockRole (/stock_targets asks for admin)",
+    file: "src/config/enginePolicy.js",
+    from: `  return viewer.stockRole === "admin";`,
+    to: `  return !!viewer.stockRole;`,
+    tests: SEAT_TESTS,
   },
   // ── GATE 3: the server ────────────────────────────────────────────────────
   {

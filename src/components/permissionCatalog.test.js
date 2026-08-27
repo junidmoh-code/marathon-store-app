@@ -47,8 +47,10 @@ describe("display_checks permission — safe grant shape", () => {
 // that placement is the risk: a reflex `stock: true` on a neighbouring line
 // would auto-link a stockRole and hand the holder write on /stock_targets, the
 // engine kill switch, /locations and every /config branch — the exact
-// over-grant this permission exists to avoid. The card itself writes NOTHING
-// directly; every change goes through the setCategoryPolicy callable.
+// over-grant this permission exists to avoid. The Categories tab needs no such
+// thing: every change there goes through the setCategoryPolicy callable. (The
+// Seating tab writes RTDB directly and asks for a stockRole itself — see
+// enginePolicySeatingWritable.)
 describe("engine_policy permission — safe grant shape", () => {
   const KEY = "engine_policy";
   const entry = ALL_PERMISSIONS.find((p) => p.key === KEY);

@@ -18,6 +18,7 @@ import {
   movePlan, moveBlockers, moveAndSwitchOff,
 } from "./seatingStore";
 import { seatingAt, SEAT_REASON } from "./seatingCore";
+import { enginePolicySeatingWritable } from "../../config/enginePolicy";
 import { nextScanAt } from "./enginePolicyCore";
 import { labelFor } from "./locations";
 import { serverNowMs } from "../../utils/serverTime";
@@ -72,6 +73,27 @@ export default function SeatingActions({ seat, product, label, registry, locatio
   };
 
   const canUndo = undo.restore.length > 0;
+
+  // ── THE WRITES ON THIS TAB ARE NOT THE CALLABLE'S ─────────────────────────
+  // Everything else on this card goes through setCategoryPolicy, which writes
+  // with the Admin SDK, so `engine_policy` is enough for it. These three
+  // buttons write /stock_targets and /stock straight from the browser, and the
+  // RULES ask for stockRole 'admin'. Asking the same question here turns a raw
+  // PERMISSION_DENIED after the confirm press into a sentence before it.
+  // See src/config/enginePolicy.js for why the permission does not simply
+  // carry a stockRole. (Fable spec review, PR #469.)
+  const canWrite = enginePolicySeatingWritable(viewer);
+  if (!canWrite) {
+    return (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,.08)" }}>
+        <div style={{ ...GLASS, padding: ".7rem .9rem", border: "1px solid rgba(251,191,36,.45)",
+          color: AMBER, fontSize: ".82rem" }}>
+          Switching a shop off moves stock, so it needs Stock access as well as Engine
+          Policy. Ask Junid to add it — everything else on this screen still works.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,.08)" }}>

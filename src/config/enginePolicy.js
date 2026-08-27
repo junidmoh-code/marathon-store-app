@@ -61,7 +61,9 @@
 // every signed-in staff member, and not by nobody. Note what that means for
 // this change: the people who could already write the node directly are NOT the
 // people this permission admits, and granting it adds no RTDB write of its own.
-// The card writes nothing directly; every change goes through the callable.
+// Every change on the Categories tab goes through the callable. (The Seating
+// tab is the one exception and is handled explicitly — see
+// enginePolicySeatingWritable below.)
 //
 // The console rule printed by scripts/print-engine-policy-rule.mjs narrows
 // those four to one; it is not live yet. The third gate — setCategoryPolicy's
@@ -78,6 +80,43 @@ export const ENGINE_POLICY_PERMISSION = "engine_policy";
 // `viewer` is { email, permFlags } — the email from the Firebase Auth user
 // (never from the /users record), permFlags from the /users record itself.
 // Absent, anonymous, or an account without the flag: false.
+
+// ─── SEATING WRITES ARE A DIFFERENT QUESTION ─────────────────────────────────
+// Everything on the Categories tab goes through the setCategoryPolicy callable,
+// which writes with the Admin SDK — so `engine_policy` alone is enough for it.
+//
+// THE SEATING TAB DOES NOT. Switch off, Move and switch off, and Re-seat write
+// /stock_targets and /stock STRAIGHT FROM THE BROWSER (seatingStore.js →
+// applyMovement), and the live rules ask for something this permission
+// deliberately does not carry:
+//
+//   /stock_targets/$loc/$pid/$size  .write  … stockRole === 'admin'
+//   /stock/$loc/$pid/$size          .write  … stockRole exists
+//
+// So a grantee without a stockRole would open the card, work happily through
+// every category, then tap Switch off and collect a raw PERMISSION_DENIED. The
+// codebase already names that exact failure mode — UserManagement warns that
+// granting a stock permission with no stockRole "would open the screen but
+// silently block every write" — and this permission opts out of the stockRole
+// auto-link ON PURPOSE, because linking one would hand over the engine kill
+// switch, /locations and every /config branch.
+//
+// The answer is therefore neither to auto-link a stockRole nor to let the
+// buttons fail: it is to ASK THE SAME QUESTION THE RULES ASK, and say so in
+// words. MC happens to hold stockRole 'admin' already (from the Shopify
+// Publishing grant, 2026-08-23), so he never meets this — which is exactly why
+// it has to be handled now rather than found by the next grantee.
+//
+// Read is not gated: /stock_targets and /stock are readable by any signed-in
+// non-anonymous account, so the tab still SHOWS where a product sits.
+export function enginePolicySeatingWritable(viewer) {
+  if (!viewer) return false;
+  if (viewer.email === ADMIN_EMAIL) return true;
+  // Not "has a stockRole" — 'admin', because /stock_targets asks for 'admin'
+  // and a switch-off writes a target row before it writes a cell.
+  return viewer.stockRole === "admin";
+}
+
 export function enginePolicyVisibleForViewer(viewer) {
   if (!viewer) return false;
   // Gate A — the owner, on the Auth email alone. Deliberately consults nothing

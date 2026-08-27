@@ -46,11 +46,20 @@
 //      clear, remove or delete.
 //
 // ── ACCESS ───────────────────────────────────────────────────────────────────
-// Super-admin only, through three independent gates: the home tile does not
-// render (App.jsx), the route refuses to mount this component (App.jsx), and
-// setCategoryPolicy re-checks the caller's email server-side. THE COMPONENT IS
-// SPLIT so the default export holds ZERO hooks — a refused viewer must open no
-// subscription and start no fetch.
+// The owner, OR an account carrying the `engine_policy` permission (2026-08-27),
+// through FOUR independent gates: the home tile does not render (App.jsx), the
+// route refuses to mount this component (App.jsx), this component refuses on its
+// own (the `Refused` branch below), and setCategoryPolicy re-checks server-side —
+// itself twice, in the onCall wrapper and again inside the write module, which
+// reads the permission flag for itself rather than being told the answer.
+//
+// The check is the Auth email OR /users/{uid}/permFlags/engine_policy === true —
+// the SAME scalar the server reads, so a client answer and a server answer
+// cannot drift. Not the permissions array, not a role, not a stockRole. See
+// src/config/enginePolicy.js.
+//
+// THE COMPONENT IS SPLIT so the default export holds ZERO hooks — a refused
+// viewer must open no subscription and start no fetch.
 //
 // NONE OF THAT IS A SECURITY BOUNDARY YET. /config/refillEngine is writable by
 // any stockRole 'admin' account (four live). The console rule printed by
@@ -1245,6 +1254,16 @@ function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave
   );
 }
 
+// The name on a history row. Staff sign in as {username}@marathon.internal and
+// the owner as a gmail address; neither reads well in full beside a timestamp,
+// so the local part is the label. Anything unexpected is shown verbatim rather
+// than being cut at a character that might not be there.
+function whoLabel(by) {
+  if (typeof by !== "string" || !by) return "";
+  const at = by.indexOf("@");
+  return at > 0 ? by.slice(0, at) : by;
+}
+
 function History({ entries, onRevert, busy }) {
   const list = (entries || []).slice(0, 20);
   if (!list.length) return null;
@@ -1267,7 +1286,11 @@ function History({ entries, onRevert, busy }) {
               )}
             </div>
             <div style={{ color: "#6b7280", fontSize: ".74rem", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {fmtWhen(h.at)} · {(h.changes || []).slice(0, 3).map((ch) =>
+              {/* WHO, not just when. One writer needed no byline; two do — and
+                  the server has always stamped `by`, so this is the reader
+                  catching up with the record. An old entry with no `by` says
+                  nothing rather than guessing. (Fable spec review, PR #469.) */}
+              {fmtWhen(h.at)}{h.by ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
                 `${ch.loc || ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>

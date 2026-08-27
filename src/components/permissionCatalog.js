@@ -38,12 +38,17 @@ export const PERMISSION_GROUPS = [
     // in it is felt across the whole network before anyone notices, which is
     // why it is `sensitive` and why it was owner-only until now.
     //
-    // NO `stock: true`, and that is not an oversight. The card writes NOTHING
-    // directly — every change goes through the setCategoryPolicy callable,
-    // which writes with the Admin SDK. A stockRole would grant this holder
-    // write on /stock_targets, /locations, the engine kill switch and every
-    // /config branch: the exact over-grant the Online & Content keys below
-    // exist to end. See src/config/enginePolicy.js.
+    // NO `stock: true`, and that is not an oversight. Every change on the
+    // Categories tab goes through the setCategoryPolicy callable, which writes
+    // with the Admin SDK. A stockRole would grant this holder write on
+    // /stock_targets, /locations, the engine kill switch and every /config
+    // branch: the exact over-grant the Online & Content keys below exist to end.
+    //
+    // ONE TAB IS DIFFERENT and the honest note belongs here: Seating writes
+    // /stock_targets and /stock straight from the browser, so those three
+    // buttons DO need a stockRole. They ask for it themselves and say so in
+    // words rather than failing at the database. See
+    // enginePolicySeatingWritable in src/config/enginePolicy.js.
     { key: "engine_policy",    label: "Engine Policy",   desc: "What each shop keeps, and when to reorder", sensitive: true },
   ] },
   { title: "Business", perms: [
