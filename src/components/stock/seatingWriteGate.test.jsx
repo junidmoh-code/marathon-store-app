@@ -32,6 +32,7 @@ vi.mock("firebase/database", () => ({ ref: () => ({}), get: async () => ({ exist
 
 // The PLANS are not what is under test — the gate above them is. Stubbed so a
 // missing branch in a pure helper cannot masquerade as a refusal.
+const moveSpy = vi.fn(async () => ({ ok: true, moved: 1, replayed: 0, failed: [], switchedOff: false }));
 vi.mock("./seatingStore", () => ({
   switchOffBlockers: () => null,
   switchOffPlan: () => [{ sizeKey: "_" }],
@@ -40,7 +41,7 @@ vi.mock("./seatingStore", () => ({
   moveBlockers: () => "",
   switchOff: async () => ({ ok: true, rowCount: 1 }),
   reseat: async () => ({ ok: true, rowCount: 1 }),
-  moveAndSwitchOff: async () => ({ ok: true, moved: 1, failed: [], switchedOff: true }),
+  moveAndSwitchOff: (...a) => moveSpy(...a),
 }));
 
 const SeatingActions = (await import("./SeatingActions.jsx")).default;
@@ -194,6 +195,54 @@ describe("SeatingActions refuses in words rather than at the database", () => {
   it("no viewer at all writes nothing", () => {
     expect(buttonLabels(render(null))).toBe("");
     expect(buttonLabels(render(undefined))).toBe("");
+  });
+});
+
+// ── WHAT ACTUALLY REACHES THE STORE ──────────────────────────────────────────
+// The buttons being right is not the same as the CALL being right. The tick
+// defaults to ON and is not rendered for a mover — so if the raw tick state
+// were passed through, a 'store' grantee pressing Move would silently ask for a
+// switch-off they are refused, and lose the target row half of the action at
+// the database after the stock had already moved. This asserts on the argument,
+// which is the only place that can be checked. (Mutation M-SEATING-TICK.)
+describe("the move a non-admin sends asks for no switch-off", () => {
+  const clickText = (tree, needle) => {
+    const btn = tree.root.findAll((n) => n.type === "button"
+      && JSON.stringify(n.props.children || "").includes(needle))[0];
+    expect(btn, `no button matching ${needle}`).toBeTruthy();
+    act(() => { btn.props.onClick(); });
+  };
+  // The destination chips are labelled by `labelFor`, which reads a location
+  // registry this test does not stub — so they are picked by being neither the
+  // action nor Cancel, rather than by a label this test would be asserting
+  // against itself.
+  const clickDestination = (tree) => {
+    const btn = tree.root.findAll((n) => n.type === "button"
+      && !/Move|Cancel|Switch|Re-seat/.test(JSON.stringify(n.props.children || "")))[0];
+    expect(btn, "no destination button offered").toBeTruthy();
+    act(() => { btn.props.onClick(); });
+  };
+
+  it("a 'store' viewer's move is sent with alsoSwitchOff false", async () => {
+    moveSpy.mockClear();
+    const tree = render(GRANTED_STORE);
+    clickText(tree, "Move stock");        // open the confirm
+    clickDestination(tree);               // pick the one destination offered
+    clickText(tree, "Move only");         // and go
+    await act(async () => {});
+    expect(moveSpy).toHaveBeenCalledTimes(1);
+    expect(moveSpy.mock.calls[0][0].alsoSwitchOff).toBe(false);
+  });
+
+  it("the owner's move still carries the tick, so the above is not vacuous", async () => {
+    moveSpy.mockClear();
+    const tree = render(OWNER);
+    clickText(tree, "Move and switch off");
+    clickDestination(tree);
+    clickText(tree, "Move and switch off");
+    await act(async () => {});
+    expect(moveSpy).toHaveBeenCalledTimes(1);
+    expect(moveSpy.mock.calls[0][0].alsoSwitchOff).toBe(true);
   });
 });
 
