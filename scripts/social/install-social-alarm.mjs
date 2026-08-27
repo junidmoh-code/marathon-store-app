@@ -242,11 +242,18 @@ function policyBody(channelName) {
     enabled: true,
     notificationChannels: [channelName],
     alertStrategy: {
-      // Close the incident on its own after half a day. Without this an
-      // incident stays open forever (the metric simply stops reporting rather
-      // than reporting zero), and the NEXT bad day would be folded into the
-      // still-open incident and send no second email.
-      autoClose: "43200s",
+      // ── 30 MINUTES, THE SHORTEST GOOGLE ALLOWS, AND FOR A REASON ──────────
+      // An open incident does not notify again. A LONG autoClose therefore
+      // silences the alarm exactly when it matters most: a bad night at 22:25
+      // and a bad morning at 07:25 are nine hours apart, so anything above
+      // that folds the second day into the first day's still-open incident and
+      // sends no email — two silent days reported once. Thirty minutes means
+      // every bad day opens its own incident and sends its own email.
+      //
+      // This does NOT re-send within a day: socialHealthScan dedupes on the
+      // day's alerted signature and writes one log line per distinct problem,
+      // so the metric only increments again when something actually changed.
+      autoClose: "1800s",
     },
   };
 }
