@@ -95,6 +95,68 @@
   if product.variants.size == 1
     assign single_variant = true
   endif
+
+  # ─── PANEL TITLE: SPLIT INTO A TWO-LINE HIERARCHY ──────────────────────────
+  # Owner order 2026-08-27 (reference mockup): "Navy Pique Polo" / "Tennis
+  # Court Chest Graphic" instead of one long italic line. These titles are
+  # machine-generated, brand-stripped descriptive phrases (see
+  # src/utils/shopifyTriggers.js `cleanTitleFor`) — sentence case, no
+  # structured "name + detail" field to read a split from — so this looks for
+  # the first " with " or " in " (the two connectors this catalogue's
+  # generator actually uses between a garment and its detail, e.g. "high-top
+  # WITH gum sole", "duffle IN embossed black monogram") and splits there.
+  # `split` + `first`/`last` rather than an index: `first` is everything
+  # before the FIRST match, `last` is everything after it, and if the
+  # connector never occurs `split` returns a one-element array where both
+  # equal the whole title — which is exactly "no subtitle", handled below by
+  # never rendering an empty one.
+  assign panel_title = product.title
+  assign panel_subtitle = ''
+  assign lower_title = product.title | downcase
+  if lower_title contains ' with '
+    assign panel_title = product.title | split: ' with ' | first
+    assign panel_subtitle = product.title | split: ' with ' | last
+  elsif lower_title contains ' in '
+    assign panel_title = product.title | split: ' in ' | first
+    assign panel_subtitle = product.title | split: ' in ' | last
+  endif
+
+  # TITLE CASE, WORD BY WORD. `capitalize` only uppercases a string's own
+  # first letter — applied to the whole title it would do nothing for every
+  # word after the first, since a sentence-case title is already lowercase
+  # from the second word on. Splitting on spaces and capitalizing each piece
+  # gets "navy pique polo" to "Navy Pique Polo" without a title-case filter,
+  # which Liquid does not have.
+  assign panel_title_words = panel_title | split: ' '
+  assign panel_title = ''
+  for w in panel_title_words
+    assign cw = w | capitalize
+    assign panel_title = panel_title | append: cw | append: ' '
+  endfor
+  assign panel_title = panel_title | strip
+
+  if panel_subtitle != blank
+    assign panel_subtitle_words = panel_subtitle | split: ' '
+    assign panel_subtitle = ''
+    for w in panel_subtitle_words
+      assign cw = w | capitalize
+      assign panel_subtitle = panel_subtitle | append: cw | append: ' '
+    endfor
+    assign panel_subtitle = panel_subtitle | strip
+  endif
+
+  # ─── PANEL PRICE: MAJOR/MINOR SPLIT FOR THE BASELINE-ALIGNED ".00" ────────
+  # Splits whatever `money` actually renders (currency symbol, spacing and
+  # thousands separator all come from the shop's own settings, not hardcoded
+  # here) on its decimal point, so "R 350.00" becomes "R 350" + ".00" without
+  # assuming a currency symbol or its position.
+  assign panel_price_str = product.price | money
+  assign panel_price_parts = panel_price_str | split: '.'
+  assign panel_price_major = panel_price_parts | first
+  assign panel_price_minor = panel_price_parts | last
+  if panel_price_parts.size < 2
+    assign panel_price_minor = '00'
+  endif
 -%}
 
 <article
@@ -204,8 +266,11 @@
         }}
       {%- endif -%}
 
-      <p class="mc-panel__title">{{ product.title }}</p>
-    <p class="mc-panel__price">{{ product.price | money }}</p>
+      <p class="mc-panel__title">{{ panel_title }}</p>
+      {%- if panel_subtitle != blank -%}
+        <p class="mc-panel__subtitle">{{ panel_subtitle }}</p>
+      {%- endif -%}
+      <p class="mc-panel__price">{{ panel_price_major }}<span class="mc-panel__price-minor">.{{ panel_price_minor }}</span></p>
 
     {%- comment -%}
       CONDITION IS DELIBERATELY OMITTED FROM THIS QUICK-ADD PANEL (owner
