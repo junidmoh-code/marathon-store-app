@@ -90,9 +90,17 @@ export default function SeatingActions({ seat, product, label, registry, locatio
   //     database from the browser, and that is what the sentence now says.
   //   · "Stock access" — ambiguous, and it points at the wrong control. The
   //     Stock GROUP in User Management holds permissions (stock_add, barcode)
-  //     that do NOT open this; the gate is the stockRole, and specifically
-  //     'admin'. A person told "Stock access" ticks a permission and is refused
-  //     again. It names the Admin stock role.
+  //     that do NOT open this; the gate is the stockRole. A person told "Stock
+  //     access" ticks a permission and is refused again.
+  //   · "you need A STOCK ROLE" — the second draft, and false for the one role
+  //     that has one and still cannot act: 'pos' (User Management calls it
+  //     "POS — Till sales only"). That person would read it, check their
+  //     account, find a stock role already set and conclude the screen is
+  //     broken. It names the actual roles now, on both bars.
+  //   · "Admin stock role" — the right requirement under a name the granting
+  //     screen does not use: stockRole 'admin' READS AS "Full" in the radio
+  //     list (UserManagement.jsx). Naming it "Admin" sends someone hunting for
+  //     a control that is not there — the same class of error twice over.
   // It also no longer says who to ask: every other refusal in this folder says
   // "ask an admin" or names nothing, and this one should not go out of its way
   // to solicit a grant the design deliberately refuses to automate.
@@ -110,8 +118,9 @@ export default function SeatingActions({ seat, product, label, registry, locatio
       <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,.08)" }}>
         <div style={{ ...GLASS, padding: ".7rem .9rem", border: "1px solid rgba(251,191,36,.45)",
           color: AMBER, fontSize: ".82rem" }}>
-          These write stock records straight to the database, so they need a stock
-          role as well as Engine Policy. Everything else on this screen still works.
+          These write stock records straight to the database. Moving stock needs the
+          Store, Warehouse or Full stock role; switching a shop off needs Full.
+          Everything else on this screen still works.
         </div>
       </div>
     );
@@ -194,7 +203,14 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             </label>
           ) : (
             <div style={{ fontSize: ".75rem", color: AMBER, marginTop: ".7rem" }}>
-              {label} stays on — switching a shop off needs the Admin stock role.
+              {/* NOT JUST "stays on". An emptied shop that is still carried has
+                  cells at 0, and a zero cell is what ARMS the engine — which is
+                  why "Move and switch off" is the ticked default in the first
+                  place. Someone who cannot untick it did not choose this, so
+                  they are told what happens next, in the same voice the
+                  switch-off confirm uses two blocks down. */}
+              {label} stays on, so the engine refills it at {scan.label} — switching a
+              shop off needs the Full stock role.
             </div>
           )}
 
@@ -256,7 +272,7 @@ export default function SeatingActions({ seat, product, label, registry, locatio
               disabled={!!busy || !lines.length}
               title={!lines.length ? "Nothing here to move"
                 : canSwitchOff ? "Move the stock, and switch this shop off"
-                : "Move the stock only — switching off needs the Admin stock role"}
+                : "Move the stock only — switching off needs the Full stock role"}
               style={{ ...bGray, opacity: (busy || !lines.length) ? .45 : 1 }}
             >{canSwitchOff ? "Move and switch off" : "Move stock"}</button>
           )}

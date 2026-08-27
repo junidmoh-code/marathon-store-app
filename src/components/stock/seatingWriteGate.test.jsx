@@ -147,10 +147,13 @@ describe("SeatingActions refuses in words rather than at the database", () => {
   it("a granted viewer WITH NO stockRole AT ALL gets an explanation and no buttons", () => {
     const tree = render(GRANTED_NO_STOCK);
     expect(buttonLabels(tree)).toBe("");
-    // It names a stock ROLE — not "Stock access", which points at the Stock
-    // permission group, which does not open this. The vaguer wording sent
-    // people to tick the wrong toggle. (Round 2 review.)
-    expect(text(tree)).toContain("stock role");
+    // It names the ACTUAL ROLES, on both bars. Not "Stock access" (that is the
+    // permission group, which does not open this), and not the bare "you need a
+    // stock role" — which is FALSE for a 'pos' holder, who has one and still
+    // cannot act. Loosening this assertion is what let that sentence ship.
+    // (Delta review, PR #469.)
+    expect(text(tree)).toContain("Store, Warehouse or Full");
+    expect(text(tree)).toContain("switching a shop off needs Full");
     // …and it names what still works, so the screen does not read as broken.
     expect(text(tree)).toContain("still works");
     // It must NOT repeat the claim this file's own header disproves: plain
@@ -176,6 +179,26 @@ describe("SeatingActions refuses in words rather than at the database", () => {
     // can be made and was still making it. (Delta review, PR #469.)
     const titles = tree.root.findAllByType("button").map((b) => b.props.title || "").join(" | ");
     expect(titles).not.toMatch(/switch this shop off/);
+  });
+
+  // The role that HAS a stock role and still cannot act. The refusal sentence
+  // must be true for them too, or it reads as a broken screen to the one person
+  // best placed to believe it.
+  it("a 'pos' holder is refused in words that are true of them", () => {
+    const tree = render({ ...GRANTED_NO_STOCK, stockRole: "pos" });
+    expect(buttonLabels(tree)).toBe("");
+    expect(text(tree)).not.toMatch(/need a stock role|needs a stock role/);
+    expect(text(tree)).toContain("Store, Warehouse or Full");
+  });
+
+  it("names the roles by the labels the granting screen shows", () => {
+    // stockRole 'admin' READS AS "Full" in User Management's radio list. A
+    // message naming "Admin" sends someone hunting for a control that is not
+    // there — the same class of error as "Stock access" before it.
+    for (const v of [{ ...GRANTED_NO_STOCK }, GRANTED_STORE]) {
+      const t = text(render(v));
+      expect(t).not.toMatch(/Admin stock role/);
+    }
   });
 
   it("the switch-off tick is not offered to someone who may not switch off", () => {

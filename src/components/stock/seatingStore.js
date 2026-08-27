@@ -47,6 +47,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { seatingSizes, seatingAt, SEATING_OFF_SOURCE } from "./seatingCore";
 import { applyMovement } from "./applyMovement";
 import { isTransitLane } from "./transitLanes";
+import { ADMIN_EMAIL } from "../../config/enginePolicy";
 
 // RTDB path segments: a junk size key must fail loudly here rather than write
 // somewhere else. (Same guard as utils/sizeKey assertSafeSegment.)
@@ -120,6 +121,23 @@ function actorOf(viewer) {
   const uid = auth?.currentUser?.uid;
   if (!uid) throw new Error("Not signed in.");
   return { uid, email: viewer?.email || auth?.currentUser?.email || null };
+}
+
+// ── THE ROLE THAT GOES IN THE LEDGER ─────────────────────────────────────────
+// `actorRole: "admin"` used to be hardcoded on every movement this file writes.
+// That was true of everyone who could reach it — until the Engine Policy
+// permission let a 'store' or 'warehouse' account move stock from the Seating
+// tab (PR #469), at which point every one of their transfers would have been
+// filed under a role they do not hold. The uid beside it is honest; the label
+// would not have been, and it is the label a movement report groups by.
+//
+// The RULES check the caller's real stockRole on /stock_movements/$mv/type, so
+// this field never granted anything — it only ever described. It now describes
+// correctly. The owner has no stockRole on his record and is 'admin' in fact,
+// so he keeps the label he always had. (Adversarial delta review, PR #469.)
+function actorRoleOf(viewer) {
+  if (typeof viewer?.stockRole === "string" && viewer.stockRole) return viewer.stockRole;
+  return viewer?.email && viewer.email === ADMIN_EMAIL ? "admin" : null;
 }
 
 // ── SWITCH OFF ───────────────────────────────────────────────────────────────
@@ -380,7 +398,7 @@ export async function moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff 
         qty,
         from: negative ? dest : seat.loc,
         to: negative ? seat.loc : dest,
-        actorRole: "admin",
+        actorRole: actorRoleOf(viewer),
         reason: "seating_move",
         movementId: `${batchId}_${seat.pid}_${line.sizeKey}`,
         link: { transferId: batchId },
