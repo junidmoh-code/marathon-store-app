@@ -4204,29 +4204,53 @@ async function generateOnePost(db, {
     // wrong thing. There is no "these five products" URL to link to, and
     // inventing one that 404s would be worse than the front door.
     const link = picks.length === 1 ? picks[0].link : SOCIAL_STOREFRONT;
-    // ── A STORY HAS NOWHERE TO PUT A CAPTION ────────────────────────────────
-    // Meta drops it (igContainerPayload strips the field for media_type
-    // STORIES) and Facebook stories are refused entirely today (see
-    // sendFacebook in publish.mjs). Paying for an Anthropic call whose output
-    // is discarded on every platform that would receive it is money and a
-    // failure point spent on nothing — so a story skips straight to the same
-    // plain line the fallback would have produced, without ever calling the
-    // model. Not written as `captionSource: "fallback"`: that value means
-    // "the model failed", and a story's caption was never asked for one.
+    // ── A STORY HAS NOWHERE TO PUT A CAPTION — ITS FEED TWIN DOES ───────────
+    // Meta drops a story's caption (igContainerPayload strips the field for
+    // media_type STORIES, and Facebook's story endpoints have no message field
+    // at all). Paying for an Anthropic call whose output is discarded on every
+    // platform that would receive it is money and a failure point spent on
+    // nothing — so a story skips straight to the same plain line the fallback
+    // would have produced, without ever calling the model. Not written as
+    // `captionSource: "fallback"`: that value means "the model failed", and a
+    // story's caption was never asked for one.
+    //
+    // UNLESS IT IS TWINNED. The same picture now also goes on the feed, where
+    // a caption IS shown, so the model is asked for a real one and the twin
+    // carries it. The story still carries none — the two records are separate
+    // and each is honest about its own surface.
+    const wantsTwin = socialTwin.wantsFeedTwin(format, media, STORY_ALSO_POSTS_TO_FEED);
     const { caption, source: captionSource, reason: captionReason } =
-      format === "story"
+      format === "story" && !wantsTwin
         ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
         : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
+    // ── THE STORY'S OWN CAPTION FIELDS, ALL THREE OF THEM ───────────────────
+    // A story keeps the plain line whether or not a caption was written for
+    // its twin, because nothing can show a story's caption and putting a
+    // model-written one there would be a lie in the queue.
+    //
+    // captionSource and captionNote have to follow it. Leaving them as the
+    // twin's meant the story record read `captionSource: "ai"` next to a
+    // caption the model never wrote — and, when the model had failed, carried
+    // a captionNote explaining a failure that had nothing to do with it. Three
+    // fields describe one caption; they cannot come from two.
+    const {
+      caption: storyCaption,
+      captionSource: storyCaptionSource,
+      captionNote: storyCaptionNote,
+    } = socialTwin.primaryCaptionFields(format, {
+      fallback: socialCaption.fallbackCaption({ kind, products: picks }),
+      caption, captionSource, captionNote: captionReason,
+    });
 
     const nowMs = Date.now();
-    await db.ref(`${SOCIAL_POSTS_PATH}/${postId}`).set({
+    const record = {
       status,
       kind,
       format,
       media,
-      caption,
-      captionSource,
-      ...(captionReason ? { captionNote: captionReason } : {}),
+      caption: storyCaption,
+      captionSource: storyCaptionSource,
+      ...(storyCaptionNote ? { captionNote: storyCaptionNote } : {}),
       link,
       platforms,
       // No slot ⇒ the post is created UNSCHEDULED and, crucially, is
@@ -4250,13 +4274,44 @@ async function generateOnePost(db, {
       createdAt: nowMs,
       updatedAt: nowMs,
       updatedBy,
-    });
+    };
+
+    // ── THE FEED TWIN ────────────────────────────────────────────────────────
+    // A SEPARATE RECORD, not a second surface on this one. The publisher, the
+    // queue, the retry budget and the per-platform results all key off one
+    // record being one thing that goes to one place; teaching them that a post
+    // can be two shapes at once would have touched every one of them. Two
+    // records that happen to share an image touch none.
+    //
+    // It shares: the picture (the identical URL — see STORY_ALSO_POSTS_TO_FEED),
+    // the products, the link, the platforms, and the SLOT. Sharing the slot is
+    // the point: "post them both places" means both go out on the same tick,
+    // not hours apart. Two records on one timestamp is fine — the publisher
+    // takes whatever is due, and nothing here calls claimSlot for the twin, so
+    // it never eats a slot the policy wanted for something else.
+    //
+    // It does NOT share: the caption (a story has none, a feed post shows one),
+    // the status history, or the retries. Either can fail, be edited or be
+    // thrown away without touching the other.
+    //
+    // The image is NOT re-uploaded, so the failure cleanup below still has
+    // exactly one object to worry about.
+    const twinId = wantsTwin ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
+    const twin = twinId
+      ? socialTwin.buildFeedTwin(record, {
+          twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
+        })
+      : null;
+    // ONE atomic update for both — see twinWriteUpdates for why that matters.
+    await db.ref().update(socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin));
+
     for (const p of picks) used.add(p.pid);
     return {
       ok: true,
       created: {
         postId, kind, format, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
         scheduledAt: scheduledAt || null,
+        ...(twinId ? { twinId, twinFormat: "feed" } : {}),
       },
     };
   } catch (err) {
@@ -4395,9 +4450,16 @@ exports.generateSocialPosts = onCall(
 );
 
 // ── THE DAILY RHYTHM, AUTOMATIC ──────────────────────────────────────────────
-// Two feed posts a day — a reel and a photo — and three stories, generated
+// Six generations a day — by default two reels, a photo and three stories —
 // with NO human in the loop: "automated or not at all" (owner brief,
-// 2026-08-25). This is the ONE place in the social engine that writes
+// 2026-08-25).
+//
+// What reaches the accounts is more than what is generated: every story's
+// picture is ALSO posted to the feed as its own record, so the default policy
+// puts SIX posts on the feed (four photos — the one photo plus three story
+// twins — and two reels) and three stories, on Instagram and Facebook both.
+// See STORY_ALSO_POSTS_TO_FEED for why the twin reuses the same image and what
+// that costs (nothing but a caption). This is the ONE place in the social engine that writes
 // status "approved" directly rather than "draft" — everywhere else, nothing
 // reaches "approved" without Junid tapping it in the queue.
 //
@@ -4446,6 +4508,48 @@ const MAX_ITEMS_PER_DAY = 8;
 // "single" directly — a story is glanced at for two seconds, and one hero
 // product reads fastest there.
 const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
+
+// ── EVERY STORY ALSO GOES ON THE FEED, AS THE SAME PICTURE ───────────────────
+// Owner brief, 2026-08-27: "post all the stories on feeds as well, same picture
+// should be posted both places". A story is gone in 24 hours; the picture that
+// earned it is worth keeping.
+//
+// The twin reuses the STORY'S OWN IMAGE — the identical Storage URL, not a
+// re-render. That is a deliberate choice made against a measurement rather
+// than a guess. Instagram's feed used to refuse anything narrower than 4:5,
+// which would have made a 9:16 story impossible to feed-post without cropping
+// it; checked against the live account on 2026-08-27, a 9:16 feed container is
+// now ACCEPTED and the image comes back off Instagram's own CDN at 1072x1920.
+// It is not cropped to 4:5. So there is nothing to re-render, no second
+// generation to pay for, and no crop that could cut a product in half — the
+// twin is the same photograph, whole.
+//
+// The one visible consequence, stated because it is a real one: Instagram's
+// GRID thumbnail is at most 4:5, so a 9:16 post is centre-cropped in the grid
+// and whole when opened. That is inherent to posting a story-shaped picture on
+// the feed, not a defect in this code.
+//
+// WHAT IT COSTS: nothing extra to generate. One Nano Banana Pro image already
+// paid for, used twice. The twin does add one caption call — a story does not
+// need a caption and skips the model entirely, but a feed post shows one, so
+// the twin gets a real one. That is a few hundredths of a cent.
+//
+// WHAT THE DAY LOOKS LIKE with the default policy (2 reels, 1 photo, 3
+// stories): six generations, and on the FEED six posts — four photos (the one
+// photo plus the three story twins) and two reels — plus three stories. Which
+// is why the Policy tab still reads "1 photo": the other three feed photos ARE
+// the stories.
+// A BUILD-TIME flag, the same convention as SOCIAL_AUTOPILOT_ENABLED and the
+// other switches in this file: set STORY_ALSO_POSTS_TO_FEED=false in
+// functions/.env and redeploy functions:socialDailyAutopilot and
+// functions:generateSocialPosts. It was a bare `true` in the first draft,
+// which documented an off switch that did not exist.
+//
+// KEEP IN STEP WITH socialCore.js's STORY_ALSO_POSTS_TO_FEED, which is what
+// the Policy tab reads to describe the day. A test pins the two literals
+// together, because a screen that promises feed copies the backend is not
+// making is worse than a screen that says nothing.
+const STORY_ALSO_POSTS_TO_FEED = process.env.STORY_ALSO_POSTS_TO_FEED !== "false";
 
 /**
  * The saved policy, or the built-in defaults if nothing has been saved.
@@ -4521,6 +4625,7 @@ function parseHHMM(s) {
 // sastMidnightUtc rather than re-deriving the day-boundary arithmetic too.
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
 const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
+const socialTwin = require("./lib/social-twin.cjs");
 const DAY_MS = 86400000;
 
 /** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */
@@ -4662,6 +4767,11 @@ exports.socialDailyAutopilot = onSchedule(
 
       await claimRef.update({
         finishedAt: Date.now(), created: created.length, skipped: skipped.length,
+        // Recorded so the day's record shows what actually went into the
+        // queue, not just what was generated. socialHealthScan judges the day
+        // on `created` — the generations — which is the number that goes to
+        // zero when the picture engine is broken.
+        feedTwins: created.filter((c) => c.twinId).length,
         estCostUSD: +estCostUSD.toFixed(4),
       });
       await logReorderUsage(db, saDate, {
@@ -4669,8 +4779,14 @@ exports.socialDailyAutopilot = onSchedule(
         postsCreated: created.length, skipped: skipped.length,
         estimatedCostUSD: +estCostUSD.toFixed(4), style,
       });
-      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ~$${estCostUSD.toFixed(3)}`,
-        { created: created.map((c) => `${c.kind}/${c.format}`), skipped });
+      // Twins are counted separately from generations on purpose. `created` is
+      // how many pictures were MADE and paid for; twins are how many extra
+      // records those pictures also fill. Folding them into one number would
+      // make a six-image day read as nine and quietly inflate every cost
+      // comparison against it.
+      const twins = created.filter((c) => c.twinId).length;
+      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} feed twin(s), ~$${estCostUSD.toFixed(3)}`,
+        { created: created.map((c) => `${c.kind}/${c.format}${c.twinId ? "+feed" : ""}`), skipped });
     } catch (err) {
       // The claim must not lie about a run that blew up partway through — a
       // half-finished day (the reel made, the crash before the stories) is

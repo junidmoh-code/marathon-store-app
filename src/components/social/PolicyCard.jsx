@@ -18,6 +18,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { GRAY, GREEN, RED, BLUE_L, GLASS, bBlue, bGray, bRed, input as inputStyle } from "../stock/ui";
 import { loadSocialPolicy, saveSocialPolicy, DEFAULT_POLICY_TIMES } from "./socialStore";
+import { STORY_ALSO_POSTS_TO_FEED } from "./socialCore";
 import { asList } from "../../utils/rtdbList";
 
 // A safety ceiling, not a design opinion. socialDailyAutopilot generates
@@ -37,7 +38,15 @@ const MAX_TOTAL_PER_DAY = 8;
 const SECTIONS = [
   { key: "reels", label: "Reels", singular: "Reel", hint: "A vertical video, made from a still and encoded when it actually sends." },
   { key: "photos", label: "Photos", singular: "Photo", hint: "The ordinary feed post — the square-ish 4:5 card." },
-  { key: "stories", label: "Stories", singular: "Story", hint: "Vertical, one item, gone in 24 hours." },
+  {
+    key: "stories", label: "Stories", singular: "Story",
+    // The second sentence is only true while the backend is making twins, so
+    // it is conditional rather than baked into the string. See
+    // STORY_ALSO_POSTS_TO_FEED in socialCore.js.
+    hint: STORY_ALSO_POSTS_TO_FEED
+      ? "Vertical, one item, gone in 24 hours — and the same picture also goes on the feed."
+      : "Vertical, one item, gone in 24 hours.",
+  },
 ];
 
 const SECTION_TITLE = {
@@ -217,6 +226,39 @@ export default function PolicyCard({ onNotice, notice }) {
           {total} post{total === 1 ? "" : "s"} a day
         </span>
       </div>
+      {/* ── WHAT THE NUMBERS ABOVE ACTUALLY PRODUCE ──────────────────────────
+          The counts above are GENERATIONS — how many pictures get made and
+          paid for. What reaches the accounts is more, because every story's
+          picture is posted to the feed as well, so "1 photo" on this screen
+          is not "1 photo on the feed". Spelling that out here is the whole
+          reason this line exists: without it the screen quietly disagrees
+          with the feed, and the screen looks wrong. Derived, never
+          hardcoded — change a count above and this follows. */}
+      {total > 0 && (() => {
+        // ── WHAT THE NUMBERS ABOVE ACTUALLY PRODUCE ──────────────────────────
+        // The counts are SLOTS — one item made per slot. What reaches the
+        // accounts is more than that whenever stories are twinned, because a
+        // story's picture is posted to the feed as well. Saying so here is the
+        // whole point: without it the screen reads "1 photo" while four photos
+        // land, and a screen that quietly disagrees with the feed is one you
+        // stop trusting.
+        //
+        // Everything below is DERIVED. Change a count above and this follows,
+        // and if the twin is ever switched off the sentence changes with it
+        // rather than promising copies nobody is making.
+        const twins = STORY_ALSO_POSTS_TO_FEED ? stories.length : 0;
+        const feedPhotos = photos.length + twins;
+        const feedPosts = feedPhotos + reels.length;
+        const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+        return (
+          <div style={{ fontSize: 11.5, color: GRAY, marginTop: 8, lineHeight: 1.55 }}>
+            On Instagram and Facebook that lands as <strong>{plural(feedPosts, "feed post", "feed posts")}</strong>
+            {feedPosts > 0 && <> ({plural(feedPhotos, "photo", "photos")}, {plural(reels.length, "reel", "reels")})</>}
+            {stories.length > 0 && <> and <strong>{plural(stories.length, "story", "stories")}</strong></>}.
+            {twins > 0 && " Each story's picture goes on the feed too — one picture, both places, nothing extra made."}
+          </div>
+        );
+      })()}
       {overTotal && (
         <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
           {MAX_TOTAL_PER_DAY} a day is the most one unattended run makes — remove a time above to save.
