@@ -37,7 +37,7 @@ const MAX_TOTAL_PER_DAY = 8;
 const SECTIONS = [
   { key: "reels", label: "Reels", singular: "Reel", hint: "A vertical video, made from a still and encoded when it actually sends." },
   { key: "photos", label: "Photos", singular: "Photo", hint: "The ordinary feed post — the square-ish 4:5 card." },
-  { key: "stories", label: "Stories", singular: "Story", hint: "Vertical, one item, gone in 24 hours." },
+  { key: "stories", label: "Stories", singular: "Story", hint: "Vertical, one item, gone in 24 hours — and the same picture also goes on the feed." },
 ];
 
 const SECTION_TITLE = {
@@ -217,6 +217,24 @@ export default function PolicyCard({ onNotice, notice }) {
           {total} post{total === 1 ? "" : "s"} a day
         </span>
       </div>
+      {/* ── WHAT THE NUMBERS ABOVE ACTUALLY PRODUCE ──────────────────────────
+          The counts above are GENERATIONS — how many pictures get made and
+          paid for. What reaches the accounts is more, because every story's
+          picture is posted to the feed as well, so "1 photo" on this screen
+          is not "1 photo on the feed". Spelling that out here is the whole
+          reason this line exists: without it the screen quietly disagrees
+          with the feed, and the screen looks wrong. Derived, never
+          hardcoded — change a count above and this follows. */}
+      {total > 0 && (
+        <div style={{ fontSize: 11.5, color: GRAY, marginTop: 8, lineHeight: 1.55 }}>
+          That makes <strong>{total}</strong> picture{total === 1 ? "" : "s"} a day, posted to Instagram and Facebook as{" "}
+          <strong>{reels.length + photos.length + stories.length}</strong> feed post
+          {reels.length + photos.length + stories.length === 1 ? "" : "s"}
+          {" "}({photos.length + stories.length} photo{photos.length + stories.length === 1 ? "" : "s"}, {reels.length} reel{reels.length === 1 ? "" : "s"})
+          {stories.length > 0 && <> and <strong>{stories.length}</strong> stor{stories.length === 1 ? "y" : "ies"}</>}.
+          {stories.length > 0 && " Each story's picture is on the feed too — one picture, both places, nothing extra to generate."}
+        </div>
+      )}
       {overTotal && (
         <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
           {MAX_TOTAL_PER_DAY} a day is the most one unattended run makes — remove a time above to save.
