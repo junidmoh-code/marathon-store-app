@@ -421,7 +421,12 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  /* Bumped from 0.9rem (redesign, owner order 2026-08-27: "reduce visual
+     clutter and give each section enough breathing room") — the title and
+     its subtitle pull back TOWARD each other with a negative margin below,
+     so this wider default gap is what actually separates the real sections
+     (photo, title block, price, sizes, buy controls) from one another. */
+  gap: 1.1rem;
   padding: 1.4rem;
   border-radius: var(--mc-radius);
   background: rgb(24 21 19);
@@ -431,6 +436,22 @@
   transition: transform 0.18s ease-out;
 }
 .mc-panel__sheet.is-dragging { transition: none; }
+
+/* ─── QUICK-VIEW PANEL TYPE (owner order 2026-08-27, reference mockup) ──────
+   "One clean modern sans-serif throughout... remove the excessive italic
+   typography." Root cause: Dawn's own heading face IS an italic serif, and
+   these elements were never in the sitewide Oswald/tracked-sans override
+   list (that list is for PAGE headings — nav, rails, the hero — not a
+   modal's own title/price/buttons), so the panel was the one place still
+   showing it. Scoped to `.mc-panel__sheet` descendants specifically, not
+   site-wide — Inter is loaded ONLY for this popup (see theme.liquid), the
+   rest of the site keeps its established heading/label registers. */
+.mc-panel__sheet {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+}
+.mc-panel__sheet * {
+  font-style: normal !important;
+}
 
 /* THE PRODUCT'S OWN PHOTOGRAPH, and NOT cropped square. The tile is square
    because the wall needs to be; this is the one place the whole product should
@@ -473,14 +494,42 @@
 }
 .mc-panel__close:hover { background: rgb(0 0 0 / 0.8); }
 
+/* CLEAR TWO-LEVEL HIERARCHY (owner order 2026-08-27, reference mockup),
+   replacing one long italic line: a ~19–20px/600 title, and where the
+   product's name actually splits into "garment + detail" (see the Liquid
+   split above), a lighter ~14–16px/400 subtitle right under it — pulled up
+   with a negative margin so the two read as one grouped title block rather
+   than two more sections at the panel's normal 1.1rem rhythm. */
 .mc-panel__title {
-  font-size: var(--mc-label);
+  font-size: 1.95rem;
   line-height: 1.3;
   margin: 0;
   padding-inline-end: 3rem;
-  font-weight: inherit;
+  font-weight: 600;
 }
-.mc-panel__price { font-size: 1.7rem; margin: 0; }
+.mc-panel__subtitle {
+  font-size: 1.5rem;
+  font-weight: 400;
+  line-height: 1.35;
+  margin: -0.6rem 0 0;
+  padding-inline-end: 3rem;
+  color: rgb(255 255 255 / 0.62);
+}
+/* ~30px, 500–600 weight, strong hierarchy right under the title block
+   (owner order 2026-08-27). The ".00" rides the SAME baseline as "R 350" —
+   inline elements share a baseline by default, so no vertical-align trick is
+   needed — just a smaller size and a little transparency to read as the
+   quieter half of one number, not a separate line. */
+.mc-panel__price {
+  font-size: 3rem;
+  font-weight: 600;
+  margin: 0;
+}
+.mc-panel__price-minor {
+  font-size: 1.8rem;
+  font-weight: 500;
+  opacity: 0.72;
+}
 
 /* ─── CONDITION ────────────────────────────────────────────────────────────── */
 /* A public claim about used goods, so it is stated in full, in the shopper's
@@ -499,27 +548,44 @@
 .mc-panel__condition b { font-weight: 600; }
 
 /* ─── SIZES ────────────────────────────────────────────────────────────────── */
-.mc-sizes { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; }
-.mc-sizes__legend { font-size: 1.1rem; opacity: 0.65; margin: 0 0 0.4rem; }
+.mc-sizes { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0; }
+/* 14px/500, upright, with real air before the buttons (owner order
+   2026-08-27: "10–12px spacing between the label and size buttons"). */
+.mc-sizes__legend {
+  font-size: 1.4rem;
+  font-weight: 500;
+  opacity: 0.65;
+  margin: 0 0 1.1rem;
+}
 
-/* The single most important behaviour on the site: a sold-out size is RENDERED,
-   is legible, and cannot be bought. Removing it would tell a shopper the size
-   never existed; greying it out alone reads as "not selected". The strikethrough
-   is the same treatment the product page already uses, so the grid and the
-   product page make the same promise in the same visual language. */
+/* RECTANGULAR, NOT PILLS (owner order 2026-08-27, reference mockup) — a
+   clean outlined button, not the oval shape this used everywhere before.
+   44–48px tall, so `min-height` rather than a fixed `height`: the text must
+   still be able to grow the box on a very long size label without clipping.
+
+   The single most important BEHAVIOUR on the site is unchanged: a sold-out
+   size is RENDERED, is legible, and cannot be bought. Removing it would tell
+   a shopper the size never existed; greying it out alone reads as "not
+   selected". Only the visual language of that state changed here — a dim
+   border and muted text instead of a dashed one, per the mockup — the
+   strikethrough itself (`text-decoration`) stays, still the same promise the
+   product page's own size row makes. */
 .mc-size {
-  min-width: 4.2rem;
-  padding: 0.6rem 0.9rem;
-  border: 1px solid rgb(255 255 255 / 0.35);
-  border-radius: 999px;
+  min-width: 4.6rem;
+  min-height: 4.6rem;
+  padding: 0.6rem 1.1rem;
+  border: 1px solid rgb(255 255 255 / 0.55);
+  border-radius: 0.6rem;
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: var(--mc-label-sm);
+  font-size: 1.4rem;
+  font-weight: 500;
   line-height: 1;
   cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
-.mc-size:hover:not([disabled]) { border-color: rgb(255 255 255 / 0.8); }
+.mc-size:hover:not([disabled]) { border-color: rgb(255 255 255 / 0.9); }
 .mc-size[aria-pressed="true"] {
   background: rgb(255 255 255 / 0.95);
   color: rgb(20 18 16);
@@ -527,9 +593,9 @@
 }
 .mc-size[disabled] {
   cursor: not-allowed;
-  opacity: 0.45;
+  border-color: rgb(255 255 255 / 0.14);
+  color: rgb(255 255 255 / 0.38);
   text-decoration: line-through;
-  border-style: dashed;
 }
 
 /* ─── ADD ──────────────────────────────────────────────────────────────────── */
@@ -559,30 +625,39 @@
    panel that is at least as tall as the tile it covers usually does. The result
    was a 61px band of nothing between the last size pill and Add to cart.
    Harmless-looking insurance that actively damaged the layout it was insuring. */
+/* 56–60px tall, 6–8px radius, 2px tracking (owner order 2026-08-27, reference
+   mockup) — bigger and more deliberately spaced-out than the site's other
+   `.button`/`.mc-hero__cta` controls, because this is the one purchase
+   decision in the whole quick-view flow and it should feel like the premium
+   fashion-retail "buy" button the mockup shows, not a generic form submit. */
 .mc-add {
   width: 100%;
   padding: 1.1rem 1rem;
   border: 0;
-  border-radius: var(--mc-btn-radius);
+  border-radius: 0.7rem;
   background: var(--mc-btn);
   color: var(--mc-btn-text);
   font: inherit;
-  font-size: var(--mc-label);
-  /* Same label-role treatment as the site-wide `.button` rule and
-     `.mc-hero__cta` — every buy control reads as one consistent register. */
+  font-size: 1.55rem;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.2rem;
   font-weight: 600;
   cursor: pointer;
-  /* 44px minimum touch target — this is a phone-first surface. */
-  min-height: 4.4rem;
+  min-height: 5.8rem;
 }
 .mc-add[disabled] { opacity: 0.45; cursor: not-allowed; }
 .mc-add.is-busy { opacity: 0.7; }
 .mc-panel__link {
-  font-size: 1.15rem;
+  font-size: 1.4rem;
+  font-weight: 400;
   text-align: center;
+  text-decoration: underline;
   color: rgb(255 255 255 / 0.7);
+  /* `.mc-panel__actions` already puts a 0.6rem `gap` above every child —
+     this adds to it, landing the button-to-link space at ~2rem (20px) total,
+     the middle of the mockup's "~18–22px" ask, rather than stacking a fresh
+     margin naively on top without accounting for that existing gap. */
+  margin-block-start: 1.4rem;
 }
 .mc-panel__link:hover { color: rgb(255 255 255 / 1); }
 /* COLLAPSED WHEN EMPTY. It used to reserve a line so that "Added to cart."

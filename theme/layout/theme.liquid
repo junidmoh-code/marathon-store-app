@@ -296,10 +296,15 @@
         document.documentElement.classList.add('shopify-design-mode');
       }
     </script>
-    {%- comment -%} Fence redesign: heavy condensed heading font, loaded once, site-wide. {%- endcomment -%}
+    {%- comment -%} Fence redesign: heavy condensed heading font, loaded once, site-wide. Inter added
+      2026-08-27 for the quick-view panel specifically (owner order: "one clean modern sans-serif...
+      remove the excessive italic typography") — Dawn's own heading face is an italic serif, and the
+      panel's title/price/legend/button were never in the sitewide Oswald-or-sans override list, so
+      they were the one place on the theme still showing it. One combined request keeps this a single
+      render-blocking round trip instead of two. {%- endcomment -%}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     {{ 'marathon-storefront.css' | asset_url | stylesheet_tag }}
   </head>
 
