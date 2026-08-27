@@ -59,8 +59,13 @@
  */
 
 :root {
-  /* Departure 1 — see the header note. */
-  --mc-field: rgb(38 34 31);
+  /* Departure 1 — see the header note. Was `rgb(38 34 31)`, derived from the
+     theme's own brown button shadow — replaced 2026-08-27 along with the
+     no-brown pass below: this is now only the base COLOUR beneath the fence
+     tile image (see "THE FENCE, ON THE LETTERBOX TOO"), matched to
+     `.mc-fence-bg`'s own base tone so the two surfaces read as the same
+     material rather than two different dark fills. */
+  --mc-field: rgb(13 12 11);
   --mc-field-edge: rgb(255 255 255 / 0.07);
   /* Departure 2 — see the header note. */
   --mc-gap: 12px;
@@ -179,11 +184,30 @@
 }
 
 /* ─── THE FRAME ────────────────────────────────────────────────────────────── */
+/* THE FENCE, ON THE LETTERBOX TOO (owner order 2026-08-27). `--mc-field`
+   used to be a flat colour — Junid's screenshot showed it plainly around a
+   non-3:4 shoe-box photo in the quick-view panel and asked for the same
+   fence surface as the rest of the site there instead, not a plain box. This
+   reuses the EXACT sitewide asset (`fence-tile-color.webp`, see "THE FENCE"
+   below for why that file's own brightness/contrast scaling is already
+   tuned for legibility) as a plain tiled `background-image` — no fixed
+   position or parallax needed for a small contained area, just the same
+   tile at the same two breakpoint sizes (224px / 320px) the sitewide layer
+   already uses, so nothing here is a fresh judgement call. `--mc-field`
+   itself is now only the base colour under that tile (see its own comment),
+   painted on `.mc-card__media` (rarely visible — the grid crops with
+   `cover`), `.mc-panel__photo` (the actual letterboxed case: `contain` on a
+   non-square photo), `.mc-wishlist__thumb`, and the search results' Dawn
+   card below, for the same reason — every place a photo can leave its own
+   field visible should show the SAME field. */
 .mc-card__media {
   position: relative;
   display: block;
   aspect-ratio: 1 / 1;
-  background: var(--mc-field);
+  background-color: var(--mc-field);
+  background-image: url('fence-tile-color.webp');
+  background-repeat: repeat;
+  background-size: 224px 224px;
   overflow: hidden;
   text-decoration: none;
   cursor: pointer;
@@ -415,9 +439,19 @@
   width: 100%;
   max-height: 46vh;
   object-fit: contain;
-  background: var(--mc-field);
+  background-color: var(--mc-field);
+  background-image: url('fence-tile-color.webp');
+  background-repeat: repeat;
+  background-size: 224px 224px;
   border-radius: var(--mc-btn-radius);
   display: block;
+}
+@media screen and (min-width: 750px) {
+  .mc-card__media,
+  .mc-panel__photo,
+  .mc-wishlist__thumb {
+    background-size: 320px 320px;
+  }
 }
 
 .mc-panel__close {
@@ -602,7 +636,10 @@
   display: block;
   aspect-ratio: 1 / 1;
   overflow: hidden;
-  background: var(--mc-field);
+  background-color: var(--mc-field);
+  background-image: url('fence-tile-color.webp');
+  background-repeat: repeat;
+  background-size: 224px 224px;
   border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
   border-radius: var(--mc-frame-radius, 6px);
 }
@@ -1043,7 +1080,15 @@
    3:4 neutral frame as the rest of the shop, so results do not look like a
    different website. */
 .template-search .card__inner.ratio { --ratio-percent: 133.33% !important; }
-.template-search .card__inner { background: var(--mc-field) !important; }
+.template-search .card__inner {
+  background-color: var(--mc-field) !important;
+  background-image: url('fence-tile-color.webp') !important;
+  background-repeat: repeat !important;
+  background-size: 224px 224px !important;
+}
+@media screen and (min-width: 750px) {
+  .template-search .card__inner { background-size: 320px 320px !important; }
+}
 .template-search .card__media img,
 .template-search .card__inner img {
   object-fit: contain !important;
