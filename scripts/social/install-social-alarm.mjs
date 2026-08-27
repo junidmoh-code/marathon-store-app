@@ -131,6 +131,18 @@ async function ensureChannel() {
     .find((c) => c.type === "email" && c.labels?.email_address === RECIPIENT);
   if (found) {
     log(`✓ email channel → ${RECIPIENT}${found.verificationStatus ? ` (${found.verificationStatus})` : ""}`);
+    // THE ONE THING THIS SCRIPT CANNOT PROVE. Every other link in the chain is
+    // checkable from here — the marker is in the source, the metric counted
+    // the test line, the policy is enabled and wired to this channel. Whether
+    // Google's mail actually lands in the inbox is only knowable from the
+    // inbox. `verificationStatus` comes back undefined for a channel created
+    // through the API, which is neither a yes nor a no, so it is reported as
+    // the open question it is rather than assumed either way.
+    if (!found.verificationStatus || found.verificationStatus === "UNVERIFIED") {
+      log(`  ↳ delivery to ${RECIPIENT} is the one link only the inbox can confirm.`);
+      log("    Run --test and look. If nothing arrives, verify the channel once in");
+      log("    GCP console → Monitoring → Alerting → Notification channels.");
+    }
     return found;
   }
   if (VERIFY) return fail(`no email notification channel for ${RECIPIENT}`);
