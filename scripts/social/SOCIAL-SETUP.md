@@ -203,6 +203,21 @@ to run 3a step 5 and 3b again.
 
 ---
 
+## 3c. Facebook stories — WIRED UP 2026-08-27
+
+Instagram stories always worked. Facebook stories did not, and the failure was
+quiet: `publishFacebook` had no notion of format, so every story-format post
+went to the **Page feed** as an ordinary timeline post with 9:16 artwork.
+
+Facebook's stories are a separate API, now wired up and confirmed against the
+live Page — a photo story and a video story were both published and both read
+back from `GET /{page}/stories` as `status: "published"`.
+
+Nothing to do here. It needs no extra scope: the same Page token already in
+Secret Manager posts them.
+
+---
+
 ## 4. TikTok — honestly, not yet
 
 TikTok is **not** posted by the scheduler, and the queue records it as *skipped*
@@ -317,6 +332,71 @@ quiet night.
 ```
 ssh marathonclub@100.64.186.78 'launchctl bootout gui/$(id -u)/com.marathon.socialpublish'
 ```
+
+---
+
+## 5b. The alarm — INSTALLED 2026-08-27, nothing to do
+
+The engine's worst failure is not an error, it is a quiet day. On 2026-08-27
+every part reported success and the day's reel and three stories were never
+made: Gemini answered 429 "prepayment credits are depleted" six times into a
+log nobody was reading. The launchd agent was alive, the token was valid, no
+post was marked failed, and one leftover post published at 11:00 — so
+"did anything post today?" would have said yes.
+
+`socialHealthScan` (Cloud Function, hourly 07:25–22:25 SAST) now assesses the
+day on four independent questions, any one of which raises the alarm:
+
+| # | question | catches |
+|---|---|---|
+| 1 | did the 06:00 generator run, and make what the policy asked for? | the 2026-08-27 failure |
+| 2 | is anything approved, due and 20+ minutes late? | a publisher that has stopped |
+| 3 | was anything owed today, and did nothing publish? | total silence |
+| 4 | has the Mac mini ticked in the last 15 minutes? | a dead launchd agent, *before* the day is lost |
+
+**The alarm arrives as an email to junidmoh@gmail.com**, sent by Google Cloud
+Monitoring off a log-based metric — not by this project, and not by the Mac
+mini. That separation is the point: an alarm running on the same machinery as
+the thing it watches is not an alarm.
+
+One email per distinct problem per day, not one per hourly run — the day's
+record carries the signature of what was last alerted on, so a day that gets
+*worse* sends a second email and a day that stays the same does not.
+
+Check it, or reinstall it after a change:
+
+```
+node scripts/social/install-social-alarm.mjs --verify   # assert, change nothing
+node scripts/social/install-social-alarm.mjs            # create / update (idempotent)
+node scripts/social/install-social-alarm.mjs --test     # send a real test email
+```
+
+The full verdict for any day is in RTDB at `/social_health/days/<date>`, and
+the publisher's heartbeat at `/social_health/publisher`. Both are written by
+the Admin SDK and need **no database rule** — nothing in the browser reads
+them today. If a screen is ever built on them, this is the rule and it goes in
+**Firebase console → Realtime Database → Rules**, as one new top-level key:
+
+```json
+"social_health": {
+  ".read": "auth != null && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'",
+  ".write": false
+}
+```
+
+`".write": false` is deliberate: only the Admin SDK writes here, and it bypasses
+rules. A browser must never be able to forge a healthy day.
+
+### Why not WhatsApp
+
+It was the first choice and it cannot carry this. Meta accepts a free-form
+WhatsApp message only inside a 24-hour window the *recipient* opens, which no
+unattended alarm can depend on. The alternative — a new approved template —
+needs the WhatsApp Business Account id, and checked on 2026-08-27: the
+whatsapp system-user token holds `whatsapp_business_management` but not
+`business_management`, and the Meta Page token holds `business_management` but
+not `whatsapp_business_management`. Neither can enumerate the WABA, so no
+combination of the credentials this project already has can create one.
 
 ---
 

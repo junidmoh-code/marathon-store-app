@@ -46,7 +46,7 @@ import {
   MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot, nextSlots,
 } from "../../src/components/social/socialCore.js";
 import { readSecret, credentialStatus } from "./secrets.mjs";
-import { publishInstagram, publishFacebook, metaPreflight } from "./meta.mjs";
+import { publishInstagram, publishFacebook, publishFacebookStory, metaPreflight } from "./meta.mjs";
 import { ensureReelVideo } from "./reel-media.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -243,20 +243,20 @@ async function sendFacebook(post, creds) {
     throw e;
   }
   // ── A STORY IS NOT A FEED POST WITH A TALL PICTURE ─────────────────────────
-  // publishFacebook only knows the Page feed (/photos, /videos, /feed). Meta's
-  // Facebook story endpoints (photo_stories / video_stories — see
-  // fbStoryEndpoint in meta.mjs) are not wired up here yet: nobody has run one
-  // against the live Page to confirm the two-call upload shape actually works
-  // the way the docs describe. Sending a story-format image to the ordinary
-  // feed path would silently post 9:16 artwork — with its caption stripped
-  // for nothing, since the feed still shows one — as a regular Page post,
-  // which is the wrong thing in the wrong place. Skipped instead, the same
-  // honest way TikTok is: visible, not counted as a failure, and it costs the
-  // post no retries.
+  // publishFacebook only knows the Page feed (/photos, /videos, /feed).
+  // Facebook's stories are a SEPARATE API (photo_stories / video_stories), and
+  // routing a story through the feed path is not a near-miss — it publishes
+  // 9:16 artwork as a permanent timeline post, which is the wrong thing in the
+  // wrong place. That is what was happening in production until 2026-08-27:
+  // every "story" the queue sent to Facebook landed on the Page feed, because
+  // publishFacebook had no notion of format at all.
+  //
+  // The story endpoints are now wired up and CONFIRMED against the live Page
+  // (2026-08-27): a photo story returned {"success":true,"post_id":…} and
+  // GET /{page}/stories listed it as status "published". No caption is passed
+  // — Meta's story endpoints take no message field, on either medium.
   if (formatOf(post) === "story") {
-    const e = new Error("Facebook stories are not wired up yet — this post is going out on Instagram only. See fbStoryEndpoint in scripts/social/meta.mjs.");
-    e.notConnected = true;
-    throw e;
+    return publishFacebookStory({ pageId: creds.pageId, token: creds.token, media: post.media });
   }
   const { caption } = captionFor(post, "facebook");
   return publishFacebook({ pageId: creds.pageId, token: creds.token, media: post.media, caption });
@@ -344,6 +344,35 @@ async function main() {
       log(`  ${p.id}  ${describePost(p)}  due ${formatSlot(p.scheduledAt)}  ${postBlocker(p, { requireDue: true }) || "DUE NOW"}`);
     }
     return 0;
+  }
+
+  // ── THE HEARTBEAT ─────────────────────────────────────────────────────────
+  // One write per tick, the whole point of which is that it happens on a tick
+  // with NOTHING to do. Every other trace this program leaves is a trace of
+  // work; a publisher that has silently stopped leaves no trace at all, and
+  // "no failures in the log" reads identically to "no log". socialHealthScan
+  // in functions/index.js watches this timestamp and raises the alarm when it
+  // goes stale, which catches a dead launchd agent within about fifteen
+  // minutes instead of at the end of a day with nothing on it.
+  //
+  // It carries a CAPABILITY FINGERPRINT as well as a time, because the mini
+  // runs its own checkout and can silently fall behind main — on 2026-08-27 it
+  // was 43 commits back, which is why every Facebook "story" had been going
+  // out as an ordinary Page feed post. A boolean written by the code that
+  // either has the story path or does not is a fact about what is RUNNING,
+  // which a commit sha in a deploy note is not.
+  //
+  // Never fatal. A publisher that can still post must not be stopped by a
+  // failure to say so.
+  if (!DRY_RUN) {
+    try {
+      await db.ref("social_health/publisher").update({
+        lastTickAt: Date.now(),
+        capabilities: { facebookStories: true },
+      });
+    } catch (err) {
+      warn(`⚠ could not write the heartbeat: ${String(err?.message || err)}`);
+    }
   }
 
   // A read-only preflight, so a revoked token is one clear line at the top of

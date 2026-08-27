@@ -109,6 +109,28 @@ export function fbStoryEndpoint(item) {
   return isVideo(item) ? "video_stories" : "photo_stories";
 }
 
+/**
+ * A Facebook story succeeded if Meta said so — and it says so in a shape
+ * NOTHING ELSE in this API uses.
+ *
+ * /photos, /videos and /feed all answer with `{ id }`. The story endpoints
+ * answer with `{ success: true, post_id: "…" }` — no `id` key at all.
+ * Verified against the live Page on 2026-08-27:
+ *
+ *   POST /{page}/photos?published=false  → {"id":"1062362476170688"}
+ *   POST /{page}/photo_stories           → {"success":true,"post_id":"3024988904507445"}
+ *
+ * Reading `id` off that response yields undefined, which would be stored as
+ * the post's Facebook id and make a successful story indistinguishable from a
+ * broken one forever after. Hence one function, tested, rather than a `.id`
+ * at each call site.
+ */
+export function fbStoryResultId(res) {
+  const id = res && (res.post_id ?? res.id);
+  if (!id) throw new Error(`Facebook accepted the story but returned no post id: ${JSON.stringify(res)}`);
+  return String(id);
+}
+
 /** The parent payload for a carousel of already-created children. */
 export function igCarouselPayload(childIds, caption) {
   if (!Array.isArray(childIds) || childIds.length < 2) {
@@ -343,6 +365,186 @@ export async function publishFacebook({ pageId, token, media, caption, sleep }) 
   fbids.forEach((id, i) => { params[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }); });
   const { id: postId } = await graph(`${pageId}/feed`, { method: "POST", token, params });
   return { id: postId, permalink: `https://facebook.com/${postId}` };
+}
+
+/**
+ * Publish one STORY to a Facebook Page.
+ *
+ * This is a different API from the Page feed, not a variant of it, which is
+ * why it is its own function rather than a flag on publishFacebook. Confirmed
+ * against the live Page on 2026-08-27 — see fbStoryResultId for the exact
+ * request/response pair.
+ *
+ * A PHOTO story is two calls:
+ *   1. POST /{page}/photos  { url, published: false }   → { id }
+ *   2. POST /{page}/photo_stories { photo_id }          → { success, post_id }
+ * Step 1 is the same unpublished upload the multi-photo feed post already
+ * uses; only step 2 is new. The photo is never visible as a Page post.
+ *
+ * A VIDEO story is a three-phase resumable upload, because /video_stories does
+ * NOT accept a file_url the way /videos does — Meta fetches nothing here, we
+ * push the bytes:
+ *   1. POST /{page}/video_stories { upload_phase: "start" } → { video_id, upload_url }
+ *   2. POST upload_url with the raw bytes
+ *   3. POST /{page}/video_stories { upload_phase: "finish", video_id } → { success, post_id }
+ *
+ * NO CAPTION, on either medium. Meta's story endpoints take no message field
+ * at all — everything a story says is composited onto the artwork, exactly as
+ * on Instagram. The caption is therefore not passed rather than passed and
+ * ignored, so one place decides and there is nothing to silently drop.
+ *
+ * The PERMALINK is best-effort and deliberately so. A story's URL is not in
+ * the publish response; it has to be read back from GET /{page}/stories, whose
+ * `url` field is the shareable link. If that read fails the story still
+ * exists, so a failure there must never turn a successful publish into a
+ * failed one — the same rule publishInstagram already follows.
+ */
+export async function publishFacebookStory({ pageId, token, media, sleep }) {
+  const items = (media || []).filter((m) => m && m.url);
+  if (!items.length) throw new Error("no media to publish");
+  // A story is one item on Facebook for the same reason it is on Instagram:
+  // there is no story carousel in this API. Refused here rather than sent,
+  // because Meta's failure for it is an opaque 400.
+  if (items.length > 1) throw new Error(`a story takes one item, got ${items.length}`);
+  const item = items[0];
+  // One place decides which endpoint a medium belongs to, and it is the same
+  // function the tests pin — rather than three more string literals here that
+  // could drift from it.
+  const endpoint = `${pageId}/${fbStoryEndpoint(item)}`;
+
+  let res;
+  if (isVideo(item)) {
+    const start = await graph(endpoint, { method: "POST", token, params: { upload_phase: "start" } });
+    if (!start?.video_id || !start?.upload_url) {
+      // RETRYABLE. A 200 carrying no session is Meta having a moment, not a
+      // post that can never work — and without this flag publish.mjs reads it
+      // as permanent, moves the post to Failed after one attempt, and it needs
+      // un-approving and re-approving by hand to ever run again. Every other
+      // anomaly on this path (transport, upload host) is already marked; these
+      // two guards were the only ones that consumed the post on a first blip.
+      const e = new Error(`Facebook did not open a video-story upload session: ${JSON.stringify(start)}`);
+      e.retryable = true;
+      throw e;
+    }
+    await uploadStoryVideoBytes(start.upload_url, item.url, token);
+    res = await graph(endpoint, {
+      method: "POST", token,
+      params: { upload_phase: "finish", video_id: start.video_id, video_state: "PUBLISHED" },
+    });
+  } else {
+    // published:false — the photo must exist as an asset without ever
+    // appearing on the Page's timeline. This is the same call the multi-photo
+    // feed path makes; only what we do with the id differs.
+    const { id: photoId } = await graph(`${pageId}/photos`, {
+      method: "POST", token, params: { url: item.url, published: "false" },
+    });
+    if (!photoId) {
+      const e = new Error("Facebook returned no photo id for the story upload");
+      e.retryable = true;   // same reasoning as the video session above
+      throw e;
+    }
+    res = await graph(endpoint, { method: "POST", token, params: { photo_id: photoId } });
+  }
+
+  const id = fbStoryResultId(res);
+  let permalink = null;
+  try { permalink = await fbStoryPermalink({ pageId, token, postId: id, sleep }); } catch { /* not fatal */ }
+  return { id, permalink };
+}
+
+/**
+ * Push the video bytes to the session URL Meta handed back.
+ *
+ * Deliberately streams from OUR public URL into memory once rather than
+ * chunking: a story video is seconds long and a few megabytes, and a resumable
+ * multi-chunk uploader is a lot of untested machinery for a file that fits in
+ * one request. `offset: 0` + the full `file_size` is the single-chunk form of
+ * the same protocol.
+ *
+ * The upload host is rupload.facebook.com, not graph.facebook.com, and it
+ * wants `Authorization: OAuth <token>` — NOT `Bearer`. That difference is the
+ * whole reason this does not go through graph().
+ */
+async function uploadStoryVideoBytes(uploadUrl, sourceUrl, token) {
+  let bytes;
+  try {
+    const src = await fetch(sourceUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!src.ok) throw new Error(`HTTP ${src.status}`);
+    bytes = Buffer.from(await src.arrayBuffer());
+  } catch (err) {
+    const e = new Error(`could not read the story video from storage: ${String(err?.message || err)}`);
+    e.retryable = true;
+    throw e;
+  }
+  let res;
+  try {
+    res = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `OAuth ${token}`,
+        offset: "0",
+        file_size: String(bytes.length),
+        "Content-Type": "application/octet-stream",
+      },
+      body: bytes,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const e = new Error(`could not reach Meta's upload host: ${String(err?.message || err)}`);
+    e.status = 0;
+    e.retryable = true;
+    throw e;
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    const err = new Error(metaError(res.status, text));
+    err.status = res.status;
+    err.retryable = isRetryable(res.status, err.message);
+    throw err;
+  }
+}
+
+/**
+ * The shareable URL of a story we just posted, or null.
+ *
+ * GET /{page}/stories lists the Page's live stories with a `url` — matched on
+ * post_id rather than assumed to be first, because a story posted seconds
+ * earlier by anything else would otherwise hand back the wrong link.
+ *
+ * IT IS RETRIED, because the list lags the publish. Measured against the live
+ * Page on 2026-08-27: a PHOTO story appeared in this list immediately, and a
+ * VIDEO story published at the same moment did not — its first read returned
+ * nothing and a read moments later returned the url. A single attempt would
+ * therefore have recorded every video story with a null permalink, which reads
+ * exactly like a story that did not publish.
+ *
+ * Still best-effort, and deliberately so: the story EXISTS whether or not we
+ * can read its link back, so exhausting the attempts returns null rather than
+ * throwing. Turning a successful publish into a failure over a cosmetic field
+ * would be the worse bug — the same rule publishInstagram follows.
+ */
+export const STORY_PERMALINK_ATTEMPTS = 4;
+export const STORY_PERMALINK_GAP_MS = 2000;
+
+export async function fbStoryPermalink({ pageId, token, postId, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
+  for (let attempt = 0; attempt < STORY_PERMALINK_ATTEMPTS; attempt++) {
+    if (attempt) await sleep(STORY_PERMALINK_GAP_MS);
+    let res;
+    try {
+      res = await graph(`${pageId}/stories`, { token, params: { fields: "post_id,url,status" } });
+    } catch (err) {
+      // A dropped socket or a Meta 5xx on the FIRST read must not cost the
+      // remaining attempts — that is the same "one flaky moment" that the
+      // publish path already guards against, and here it would silently
+      // record a published story with no link. A permanent failure (a bad
+      // token, a gone Page) will fail identically on every attempt, so stop.
+      if (!err?.retryable) return null;
+      continue;
+    }
+    const row = (res?.data || []).find((r) => String(r.post_id) === String(postId));
+    if (row?.url) return row.url;
+  }
+  return null;
 }
 
 /** Read-only preflight: does this token still work, and on what? Never prints it. */

@@ -4,10 +4,11 @@
 // isRetryable had no test, and that is exactly where a live bug was hiding:
 // Meta's throttling arrives as HTTP 400 with a code, not as 429, so a throttled
 // evening was classed permanent and parked the week's post after one attempt.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   GRAPH_VERSION, CONTAINER_MAX_WAIT_MS, REQUEST_TIMEOUT_MS,
   isVideo, igContainerPayload, fbStoryEndpoint, igCarouselPayload, metaError, isRetryable, waitForContainer,
+  fbStoryResultId, fbStoryPermalink, STORY_PERMALINK_ATTEMPTS, publishFacebookStory,
 } from "./meta.mjs";
 
 describe("isRetryable — Meta's throttling is an HTTP 400", () => {
@@ -170,5 +171,256 @@ describe("Facebook stories use their own endpoints, not the Page feed", () => {
   });
   it("a video story goes to video_stories", () => {
     expect(fbStoryEndpoint({ type: "video", url: "x" })).toBe("video_stories");
+  });
+});
+
+// ── THE SHAPE THAT MADE FACEBOOK STORIES LOOK LIKE FEED POSTS ────────────────
+// Facebook's story endpoints answer { success, post_id }; every other endpoint
+// in this file answers { id }. Reading `.id` off a story response silently
+// yields undefined — a published story recorded as having no id, which is
+// indistinguishable from a broken one. Verified live 2026-08-27.
+describe("fbStoryResultId — a story response is not shaped like anything else", () => {
+  it("reads post_id, which is the only key a story response carries", () => {
+    expect(fbStoryResultId({ success: true, post_id: "3024988904507445" })).toBe("3024988904507445");
+  });
+
+  it("still accepts a bare id, so a future response shape does not break it", () => {
+    expect(fbStoryResultId({ id: "123" })).toBe("123");
+  });
+
+  it("prefers post_id when Meta sends both", () => {
+    expect(fbStoryResultId({ id: "wrong", post_id: "right" })).toBe("right");
+  });
+
+  it("always returns a string — a numeric id must not become a number", () => {
+    // post ids exceed Number.MAX_SAFE_INTEGER territory in shape if not in
+    // value; storing one as a number is how ids start losing digits.
+    expect(fbStoryResultId({ success: true, post_id: 3024988904507445 })).toBe("3024988904507445");
+  });
+
+  it("REFUSES a response with no id rather than storing undefined", () => {
+    // This is the whole point of the function. A success with no usable id is
+    // a state we cannot record honestly, so it must be an error, not a post
+    // whose Facebook id is the string "undefined".
+    for (const bad of [{ success: true }, {}, null, undefined, { post_id: "" }, { post_id: null }]) {
+      expect(() => fbStoryResultId(bad), JSON.stringify(bad)).toThrow(/no post id/i);
+    }
+  });
+});
+
+describe("publishFacebookStory is wired up — the skip is gone", () => {
+  it("the publisher no longer refuses Facebook stories", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("./publish.mjs", import.meta.url), "utf8");
+    // The old guard threw a notConnected error for every story. If this string
+    // ever comes back, Facebook has silently stopped getting stories again.
+    expect(src).not.toMatch(/Facebook stories are not wired up yet/);
+    expect(src).toMatch(/publishFacebookStory\(/);
+  });
+
+  it("a story is never sent to the Page feed path", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("./publish.mjs", import.meta.url), "utf8");
+    // sendFacebook must return from the story branch BEFORE it reaches
+    // publishFacebook — the feed call must come after the story call in the
+    // function body, with a return in between.
+    const fn = src.slice(src.indexOf("async function sendFacebook"), src.indexOf("async function sendTikTok"));
+    const story = fn.indexOf("publishFacebookStory(");
+    const feed = fn.indexOf("publishFacebook({");
+    expect(story).toBeGreaterThan(-1);
+    expect(feed).toBeGreaterThan(story);
+    expect(fn.slice(story, feed)).toMatch(/return/);
+  });
+});
+
+describe("a Facebook story carries no caption", () => {
+  it("sendFacebook does not build a caption on the story path", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("./publish.mjs", import.meta.url), "utf8");
+    const fn = src.slice(src.indexOf("async function sendFacebook"), src.indexOf("async function sendTikTok"));
+    const story = fn.indexOf("publishFacebookStory(");
+    // captionFor must be called only AFTER the story branch has returned.
+    expect(fn.slice(0, story)).not.toMatch(/captionFor\(/);
+  });
+});
+
+// ── THE PERMALINK RACE THAT ONLY VIDEO STORIES LOSE ─────────────────────────
+// Measured live 2026-08-27: a photo story was in GET /{page}/stories
+// immediately; a video story published in the same minute was NOT on the first
+// read and WAS moments later. One attempt would have recorded every video
+// story with a null permalink — indistinguishable from a story that failed.
+describe("fbStoryPermalink retries, and still never throws", () => {
+  const ok = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+  const listing = (postId) => ({ data: [{ post_id: postId, url: `https://facebook.com/stories/x/${postId}/`, status: "published" }] });
+
+  // The real fetch is put back after every test in here — a leaked stub turns
+  // an unrelated failure in another file into a mystery.
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  it("returns the url on the first read when it is already there", async () => {
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return ok(listing("123")); };
+    const url = await fbStoryPermalink({
+      pageId: "P", token: "t", postId: "123",
+      sleep: async () => { throw new Error("must not sleep when the first read works"); },
+    });
+    expect(url).toBe("https://facebook.com/stories/x/123/");
+    expect(calls).toBe(1);
+  });
+
+  it("keeps reading until the story shows up — the video case", async () => {
+    let n = 0;
+    globalThis.fetch = async () => { n++; return ok(n < 3 ? { data: [] } : listing("456")); };
+    const slept = [];
+    const url = await fbStoryPermalink({ pageId: "P", token: "t", postId: "456", sleep: async (ms) => { slept.push(ms); } });
+    expect(url).toBe("https://facebook.com/stories/x/456/");
+    expect(n).toBe(3);
+    expect(slept.length).toBe(2);   // it waited between reads, it did not spin
+  });
+
+  it("gives up after a bounded number of attempts and returns null", async () => {
+    let n = 0;
+    globalThis.fetch = async () => { n++; return ok({ data: [] }); };
+    const url = await fbStoryPermalink({ pageId: "P", token: "t", postId: "789", sleep: async () => {} });
+    expect(url).toBe(null);
+    expect(n).toBe(STORY_PERMALINK_ATTEMPTS);
+  });
+
+  it("a transient failure on one read does not cost the remaining attempts", async () => {
+    // Caught in review: a rejected graph() call escaped the loop, so one
+    // dropped socket recorded a published story with no link.
+    let n = 0;
+    globalThis.fetch = async () => {
+      n++;
+      if (n === 1) return { ok: false, status: 503, text: async () => "unavailable" };
+      return ok(listing("222"));
+    };
+    const url = await fbStoryPermalink({ pageId: "P", token: "t", postId: "222", sleep: async () => {} });
+    expect(url).toBe("https://facebook.com/stories/x/222/");
+    expect(n).toBe(2);
+  });
+
+  it("a PERMANENT failure stops immediately — retrying cannot re-mint a token", async () => {
+    let n = 0;
+    globalThis.fetch = async () => {
+      n++;
+      return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "Invalid OAuth access token", code: 190 } }) };
+    };
+    const url = await fbStoryPermalink({ pageId: "P", token: "t", postId: "333", sleep: async () => {} });
+    expect(url).toBe(null);
+    expect(n).toBe(1);
+  });
+
+  it("never returns ANOTHER story's url", async () => {
+    // The listing is newest-first, so "take the first row" would hand back
+    // whatever was posted most recently — including something posted by hand
+    // from the Facebook app seconds earlier.
+    globalThis.fetch = async () => ok({ data: [
+      { post_id: "999", url: "https://facebook.com/stories/x/999/", status: "published" },
+      { post_id: "111", url: "https://facebook.com/stories/x/111/", status: "published" },
+    ] });
+    expect(await fbStoryPermalink({ pageId: "P", token: "t", postId: "111", sleep: async () => {} }))
+      .toBe("https://facebook.com/stories/x/111/");
+  });
+});
+
+// ── THE CALL SEQUENCE, PINNED ────────────────────────────────────────────────
+// A story is not one request, and getting the ORDER or the ENDPOINT wrong
+// fails as an opaque Meta 400. These stub the transport and assert the exact
+// sequence that was confirmed against the live Page on 2026-08-27.
+describe("publishFacebookStory makes the calls Meta actually expects", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  const reply = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+
+  it("a PHOTO story: unpublished upload, then photo_stories, then the link", async () => {
+    const seen = [];
+    globalThis.fetch = async (u, init) => {
+      const path = new URL(String(u)).pathname;
+      const body = init?.body ? String(init.body) : "";
+      seen.push(`${init?.method || "GET"} ${path}`);
+      if (path.endsWith("/photos")) {
+        // The photo must go up UNPUBLISHED — otherwise it also lands on the
+        // Page timeline, which is the bug this whole change exists to fix.
+        expect(body).toMatch(/published=false/);
+        return reply({ id: "PHOTO1" });
+      }
+      if (path.endsWith("/photo_stories")) {
+        expect(body).toMatch(/photo_id=PHOTO1/);
+        return reply({ success: true, post_id: "STORY1" });
+      }
+      return reply({ data: [{ post_id: "STORY1", url: "https://facebook.com/stories/x/1/" }] });
+    };
+
+    const out = await publishFacebookStory({ pageId: "PAGE", token: "t", media: [{ type: "image", url: "https://x/a.jpg" }] });
+    expect(out).toEqual({ id: "STORY1", permalink: "https://facebook.com/stories/x/1/" });
+    expect(seen).toEqual(["POST /v21.0/PAGE/photos", "POST /v21.0/PAGE/photo_stories", "GET /v21.0/PAGE/stories"]);
+  });
+
+  it("a VIDEO story: start, bytes, finish — never the photo endpoints", async () => {
+    const seen = [];
+    globalThis.fetch = async (u, init) => {
+      const url = String(u);
+      const body = init?.body ? String(init.body) : "";
+      if (url.startsWith("https://upload.example/")) {
+        // The upload host wants OAuth, NOT Bearer — the whole reason this call
+        // does not go through graph().
+        expect(init.headers.Authorization).toBe("OAuth t");
+        expect(init.headers.offset).toBe("0");
+        seen.push("UPLOAD");
+        return { ok: true, status: 200, text: async () => "{}" };
+      }
+      if (url.startsWith("https://storage.example/")) {
+        seen.push("FETCH SOURCE");
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) };
+      }
+      const path = new URL(url).pathname;
+      seen.push(`${init?.method || "GET"} ${path}`);
+      if (/upload_phase=start/.test(body)) return reply({ video_id: "V1", upload_url: "https://upload.example/V1" });
+      if (/upload_phase=finish/.test(body)) {
+        expect(body).toMatch(/video_id=V1/);
+        return reply({ success: true, post_id: "STORY2" });
+      }
+      return reply({ data: [{ post_id: "STORY2", url: "https://facebook.com/stories/x/2/" }] });
+    };
+
+    const out = await publishFacebookStory({ pageId: "PAGE", token: "t", media: [{ type: "video", url: "https://storage.example/a.mp4" }] });
+    expect(out.id).toBe("STORY2");
+    expect(seen).toEqual([
+      "POST /v21.0/PAGE/video_stories",
+      "FETCH SOURCE",
+      "UPLOAD",
+      "POST /v21.0/PAGE/video_stories",
+      "GET /v21.0/PAGE/stories",
+    ]);
+    expect(seen.some((c) => /photo/.test(c))).toBe(false);
+  });
+
+  it("refuses a story carousel before Meta has to", async () => {
+    globalThis.fetch = async () => { throw new Error("must not reach the network"); };
+    await expect(publishFacebookStory({
+      pageId: "P", token: "t",
+      media: [{ type: "image", url: "https://x/a.jpg" }, { type: "image", url: "https://x/b.jpg" }],
+    })).rejects.toThrow(/a story takes one item/);
+  });
+
+  it("refuses an empty media list", async () => {
+    globalThis.fetch = async () => { throw new Error("must not reach the network"); };
+    await expect(publishFacebookStory({ pageId: "P", token: "t", media: [] })).rejects.toThrow(/no media/);
+  });
+
+  it("a published story with an unreadable link is still a success", async () => {
+    globalThis.fetch = async (u) => {
+      const path = new URL(String(u)).pathname;
+      if (path.endsWith("/photos")) return reply({ id: "P1" });
+      if (path.endsWith("/photo_stories")) return reply({ success: true, post_id: "S1" });
+      return { ok: false, status: 500, text: async () => "boom" };   // the link read fails
+    };
+    const out = await publishFacebookStory({
+      pageId: "P", token: "t", media: [{ type: "image", url: "https://x/a.jpg" }], sleep: async () => {},
+    });
+    expect(out).toEqual({ id: "S1", permalink: null });
   });
 });

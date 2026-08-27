@@ -4520,6 +4520,7 @@ function parseHHMM(s) {
 // comment on socialScheduleSlots). socialScheduleSlots below shares
 // sastMidnightUtc rather than re-deriving the day-boundary arithmetic too.
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
+const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
 const DAY_MS = 86400000;
 
 /** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */
@@ -4678,6 +4679,132 @@ exports.socialDailyAutopilot = onSchedule(
       await claimRef.update({ finishedAt: Date.now(), error: String(err && err.message).slice(0, 500) });
       throw err;
     }
+  }
+);
+
+// ── THE WATCHDOG: A QUIET DAY MUST NOT BE ABLE TO PASS UNNOTICED ─────────────
+//
+// Everything above this line reports its own failures honestly, and on
+// 2026-08-27 that was not enough. The autopilot fired on time, the Meta token
+// was valid, the launchd agent on the Mac mini ticked every two minutes all
+// day, no post was marked failed — and the day's reel and its three stories
+// were never made, because Gemini answered 429 "prepayment credits are
+// depleted" six times into a log nobody was reading. The only way to find out
+// was to go and look.
+//
+// This function is the thing that looks. The judgement lives in
+// lib/social-health.cjs, which is pure and replays that exact day in its
+// tests; this is only the reading and the shouting.
+//
+// HOW THE ALARM ACTUALLY REACHES A PHONE. It is the console.error below, with
+// the literal marker SOCIAL_ENGINE_ALARM. A Cloud Monitoring log-based alert
+// policy matches that marker and emails junidmoh@gmail.com — no Meta template
+// to get approved, no app to open, no device permission to grant, and no
+// credential this project did not already have. Google operates the delivery,
+// which matters: an alarm that runs on the same machinery as the thing it
+// watches is not an alarm. The policy is created by
+// scripts/social/install-social-alarm.mjs and is asserted, live, by
+// --verify in that script.
+//
+// THE MARKER IS LOAD-BEARING. Renaming the string below without updating the
+// alert policy silently disconnects the alarm and leaves every green check in
+// place — exactly the failure this whole function exists to prevent. The
+// installer's --verify is what pins the two together.
+//
+// WHY HOURLY, not once at the end of the day: the heartbeat check catches a
+// dead publisher BEFORE the day is lost, and a stoppage found at 09:25 can
+// still be fixed in time for the 11:00 slot. The day's record carries the
+// signature of what was last alerted on, so sixteen runs produce one email —
+// and a second one only if the day gets worse.
+exports.socialHealthScan = onSchedule(
+  {
+    // :25 rather than :00 — nothing else in this project runs then, and an
+    // off-minute keeps it clear of every other scheduler's rush.
+    schedule: "25 7-22 * * *",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    memory: "256MiB",
+    timeoutSeconds: 120,
+  },
+  async () => {
+    const db = admin.database();
+    const nowMs = Date.now();
+    const saDate = saDateForUsage(nowMs);
+
+    const [policy, logSnap, postsSnap, tickSnap] = await Promise.all([
+      loadSocialPolicy(db),
+      db.ref(`social_autopilot_log/${saDate}`).once("value"),
+      // The WHOLE node, deliberately. Three of the four checks need a
+      // different slice of it — anything approved and overdue regardless of
+      // age, anything in failed, and today's due-and-published — and no
+      // single .orderByChild query answers all three, so a query-per-check
+      // would be three reads of overlapping data rather than one. The node
+      // held 47 records on 2026-08-27 and grows by a handful a day; if it
+      // ever reaches the tens of thousands this becomes the thing to revisit,
+      // with an .indexOn("scheduledAt") and a windowed read.
+      db.ref(SOCIAL_POSTS_PATH).once("value"),
+      db.ref("social_health/publisher/lastTickAt").once("value"),
+    ]);
+
+    const posts = Object.entries(postsSnap.val() || {}).map(([id, p]) => ({ id, ...(p || {}) }));
+    const verdict = assessSocialDay({
+      nowMs,
+      policy,
+      autopilotLog: logSnap.val(),
+      posts,
+      publisherTickAt: tickSnap.val() ?? null,
+    });
+
+    // The record is written on EVERY run, healthy or not. A watchdog that only
+    // writes when it is unhappy is indistinguishable from a watchdog that has
+    // stopped running.
+    //
+    // `reasons` is written as an explicit null when there are none. RTDB
+    // cannot store an empty array — it drops the key — and update() does not
+    // remove keys it is not given, so a day that went bad at 09:25 and
+    // RECOVERED by 11:25 would have kept its stale reasons sitting under
+    // `ok: true`. A record that contradicts itself is worse than no record.
+    await db.ref(`social_health/days/${saDate}`).update({
+      checkedAt: nowMs,
+      ok: verdict.ok,
+      severity: verdict.severity,
+      reasons: verdict.reasons.length ? verdict.reasons : null,
+      counts: verdict.counts,
+    });
+
+    if (verdict.ok) {
+      console.log(`socialHealthScan ${saDate}: ok`, verdict.counts);
+      return;
+    }
+
+    // ── ALERT ONCE PER DISTINCT PROBLEM, NOT ONCE PER RUN ────────────────────
+    // The signature is severity plus the reasons themselves, so sixteen runs
+    // over one bad day send one email — but a day that gets WORSE (the
+    // publisher dies at 14:00 on top of a generator that failed at 06:00)
+    // changes the signature and sends a second one, which is the whole point.
+    // JSON, not a joined string. One of the reasons quotes
+    // autopilotLog.error verbatim, so a "|" anywhere in a Gemini or Meta error
+    // message could make two DIFFERENT reason lists join to the same
+    // signature — and a newly appeared failure would then match the stored one
+    // and suppress its own alarm. A delimiter that can appear in the data is
+    // not a delimiter.
+    const signature = JSON.stringify({ severity: verdict.severity, reasons: verdict.reasons });
+    // alertedSignature and alertedAt are deliberately NOT cleared when a day
+    // recovers. They record what was already sent, and clearing them would let
+    // the same problem re-alert if it came back the same day.
+    const alerted = (await db.ref(`social_health/days/${saDate}/alertedSignature`).once("value")).val();
+    if (alerted === signature) {
+      console.log(`socialHealthScan ${saDate}: still ${verdict.severity}, already alerted`);
+      return;
+    }
+
+    // THE MARKER. See the header — an alert policy matches this literal.
+    console.error(`SOCIAL_ENGINE_ALARM ${alarmMessage(verdict)}`);
+
+    await db.ref(`social_health/days/${saDate}`).update({
+      alertedSignature: signature,
+      alertedAt: nowMs,
+    });
   }
 );
 
