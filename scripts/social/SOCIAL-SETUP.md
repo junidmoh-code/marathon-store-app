@@ -464,6 +464,54 @@ thrown away in the queue without touching the other. The twin carries
 
 ---
 
+## 5d. Reel length — 15 seconds, four moves (2026-08-27)
+
+Reels were **6 seconds**. Six seconds is a GIF, not a reel: watch time is the
+signal Instagram's discovery system reads, and six seconds accumulates almost
+none of it.
+
+**Now 15 seconds**, with four distinct camera moves instead of one slow creep:
+push in → hold and drift up → pull back to the full scene → settle low on the
+price.
+
+### Why 15 and not 45
+
+The published numbers disagree, and the headline one is the wrong one for us.
+Socialinsider's 2026 study of ~140,000 business reels put the **45–60s** bracket
+top for engagement and median views; most other guidance says **15–30s**. Both
+are measuring videos with something *happening* — cuts, speech, a story.
+
+**Ours is one photograph.** A minute of slow pan on a still gets abandoned, and
+**completion rate** is the signal underneath both studies: a short clip most
+people finish outranks a long one most people quit. So the number is chosen
+against what we can actually fill — the floor of the 15–30s band, 2.5x what it
+was, with enough movement to earn the extra nine seconds.
+
+**This is a guess with a plan to stop guessing.** Once
+`instagram_manage_insights` is on the token, reel retention is readable per
+post and `REEL_SECONDS` should be set from our own completion numbers. It is
+one constant in one place for exactly that reason.
+
+### The move is bounded by the design's own safe area
+
+`social-design.cjs` reserves `safeTop` 250px and `safeBottom` 320px on a reel
+and draws the wordmark and the shop line there. A zoom of Z crops
+`h*(1-1/Z)/2` per edge; a y offset crops `h*|y|` more from one of them. At the
+deepest point (1.14 with y −0.05) the bottom loses 214px — inside the 320px the
+design left empty, which is why the drift goes **up**: the space below the shop
+line is the only room on this canvas. A test enforces this; a reel that crops
+its own branding is worse than one that moves less.
+
+### Measured on the mini
+
+`1080x1920 · h264 High · yuv420p · color_range tv · 30fps · 450 frames ·
+15.000s · AAC · 2.9 MB · 5.1s to encode` — well inside the 120-second tick.
+
+`npm run proof:social` runs all three social mutation proofs, including
+`mutation-proof-reel-motion.mjs` (17/17).
+
+---
+
 ## 6. Day to day
 
 App → **Social**.
