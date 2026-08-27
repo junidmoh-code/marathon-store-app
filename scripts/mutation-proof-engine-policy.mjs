@@ -184,6 +184,14 @@ const MUTATIONS = [
     tests: SEAT_TESTS,
   },
   {
+    id: "M-SEATING-REFILL",
+    guard: "The refill promise is made ONLY where something arms the seat — an unarmed shelf is not told it is handled",
+    file: ACTIONS,
+    from: `              {label} stays {ARMED_REASONS.has(seat.reason)`,
+    to: `              {label} stays {true || ARMED_REASONS.has(seat.reason)`,
+    tests: SEAT_TESTS,
+  },
+  {
     id: "M-SEATING-TICK",
     guard: "The switch-off tick cannot smuggle a switch-off past the gate",
     file: ACTIONS,
