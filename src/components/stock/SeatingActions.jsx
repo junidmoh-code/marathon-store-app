@@ -31,6 +31,18 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGray, bRed, bGreen, bGhost } f
 // `destinations` is what a human may PICK. They are deliberately not the same
 // list: offering in_transit as a destination would park stock in the transit
 // holding with no /transfers doc and nobody expecting it.
+// The seat states in which SOMETHING resolves a target, so a re-stock really is
+// coming. Written as the ARMED list rather than the unarmed one on purpose: a
+// new SEAT_REASON added later defaults to "we do not promise a refill", which is
+// the safe direction for a sentence somebody acts on.
+const ARMED_REASONS = new Set([
+  SEAT_REASON.EXPLICIT_ROW,
+  SEAT_REASON.CATEGORY_POLICY,
+  SEAT_REASON.FOOTWEAR_RULE,
+  SEAT_REASON.SUBCATEGORY_RULE,
+  SEAT_REASON.CLOTHING_RULE,
+]);
+
 export default function SeatingActions({ seat, product, label, registry, locations, destinations, ctx, viewer, onDone, onFail }) {
   const [busy, setBusy] = useState("");
   const [confirm, setConfirm] = useState("");   // "" | "off" | "move"
@@ -208,9 +220,20 @@ export default function SeatingActions({ seat, product, label, registry, locatio
                   why "Move and switch off" is the ticked default in the first
                   place. Someone who cannot untick it did not choose this, so
                   they are told what happens next, in the same voice the
-                  switch-off confirm uses two blocks down. */}
-              {label} stays on, so the engine refills it at {scan.label} — switching a
-              shop off needs the Full stock role.
+                  switch-off confirm uses two blocks down.
+                  BUT ONLY WHERE SOMETHING ACTUALLY ARMS IT. `seat.reason` is
+                  the screen's own answer to that question, and three of its
+                  values mean nothing will fire: CELL_ONLY (stock with no
+                  target — the kill switch off, or a category nothing rules on),
+                  SWITCHED_OFF, and NOT_SEATED. Footwear normally sits in
+                  CELL_ONLY by owner policy — sneaker refills are sales-only —
+                  so an unconditional promise would tell a mover their emptied
+                  shoe shelf was handled when nothing was coming. That is the
+                  stockout nobody investigates. (Final pre-merge review.) */}
+              {label} stays {ARMED_REASONS.has(seat.reason)
+                ? <>on, so the engine refills it at {scan.label}</>
+                : <>as it is, and nothing is set to refill it</>} — switching a shop
+              off needs the Full stock role.
             </div>
           )}
 

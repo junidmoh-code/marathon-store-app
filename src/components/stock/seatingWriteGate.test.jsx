@@ -55,7 +55,9 @@ const GRANTED_WITH_STOCK = { ...GRANTED_NO_STOCK, stockRole: "admin" };
 // and the screen has to say so. (Adversarial re-review, PR #469.)
 const GRANTED_STORE = { ...GRANTED_NO_STOCK, stockRole: "store" };
 
-const SEAT = { loc: "marathon-pe", pid: "p1", reason: "carried" };
+// `reason` is load-bearing in these tests: it is how the screen knows whether
+// anything is set to refill this seat. "clothing_rule" = armed.
+const SEAT = { loc: "marathon-pe", pid: "p1", reason: "clothing_rule" };
 const CTX = { stock: {}, targets: {} };
 
 const render = (viewer) => {
@@ -72,6 +74,28 @@ const render = (viewer) => {
   return tree;
 };
 const text = (tree) => JSON.stringify(tree.toJSON());
+// Same render, with the seat's arming state varied — that state is what the
+// refill sentence is allowed to depend on.
+const renderSeat = (viewer, reason) => {
+  let tree;
+  act(() => {
+    tree = TestRenderer.create(
+      <SeatingActions
+        seat={{ ...SEAT, reason }} product={{ name: "Black Cap" }} label="PE" registry={{}}
+        locations={["marathon-pe", "hub2"]} destinations={["hub2"]} ctx={CTX}
+        viewer={viewer} onDone={() => {}} onFail={() => {}}
+      />,
+    );
+  });
+  return tree;
+};
+// Open the move confirm, where the sentence lives.
+const openMove = (tree) => {
+  const btn = tree.root.findAll((n) => n.type === "button"
+    && /Move/.test(JSON.stringify(n.props.children || "")))[0];
+  expect(btn, "no move button offered").toBeTruthy();
+  act(() => { btn.props.onClick(); });
+};
 const buttonLabels = (tree) =>
   tree.root.findAllByType("button").map((b) => JSON.stringify(b.props.children)).join(" | ");
 
@@ -199,6 +223,38 @@ describe("SeatingActions refuses in words rather than at the database", () => {
       const t = text(render(v));
       expect(t).not.toMatch(/Admin stock role/);
     }
+  });
+
+  // ── THE PROMISE THAT MUST NOT BE UNCONDITIONAL ────────────────────────────
+  // A mover who cannot untick "Switch off" empties a shop that stays carried.
+  // Telling them the engine will refill it is true ONLY where something arms
+  // the seat. Footwear normally is not armed — sneaker refills are sales-only
+  // by owner policy — so the unconditional version told a mover their emptied
+  // shoe shelf was handled when nothing was coming. (Final pre-merge review.)
+  it("promises a refill only where something actually arms the seat", () => {
+    for (const reason of ["clothing_rule", "category_policy", "explicit_row",
+                          "footwear_rule", "subcategory_rule"]) {
+      const tree = renderSeat(GRANTED_STORE, reason);
+      openMove(tree);
+      expect(text(tree), `${reason} is armed and should say so`).toMatch(/engine refills it/);
+    }
+  });
+
+  it("says plainly that nothing is coming when the seat is NOT armed", () => {
+    for (const reason of ["cell_only", "switched_off", "not_seated"]) {
+      const tree = renderSeat(GRANTED_STORE, reason);
+      openMove(tree);
+      const t = text(tree);
+      expect(t, `${reason} must not promise a refill`).not.toMatch(/engine refills it/);
+      expect(t, `${reason} must say nothing is coming`).toMatch(/nothing is set to refill it/);
+    }
+  });
+
+  it("an unknown seat state promises nothing — the safe default", () => {
+    // A SEAT_REASON added later must not inherit the promise by accident.
+    const tree = renderSeat(GRANTED_STORE, "some_future_reason");
+    openMove(tree);
+    expect(text(tree)).not.toMatch(/engine refills it/);
   });
 
   it("the switch-off tick is not offered to someone who may not switch off", () => {
