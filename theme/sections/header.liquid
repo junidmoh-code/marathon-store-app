@@ -288,16 +288,27 @@
       {%- comment -%}
         A REAL PAGE, NOT A POPOVER (owner order 2026-08-27). Loved products
         used to live in a `.mc-panel` overlay opened by this same icon; now it
-        is a full page with its own address (`/pages/loved`) so a shopper can
-        navigate to it, bookmark it, or land on it after a reload — none of
-        which a JS-only overlay supports. The page ITSELF still reads
-        `localStorage` client-side (see marathon-storefront.js's
-        `renderAllWishlists`); nothing here is server-rendered per-shopper.
-        Requires a Shopify Page titled "Loved" with template `page.loved` —
-        see theme/INSTALL.md.
+        is a full page with its own address so a shopper can navigate to it,
+        bookmark it, or land on it after a reload — none of which a JS-only
+        overlay supports. The page ITSELF still reads `localStorage`
+        client-side (see marathon-storefront.js's `renderAllWishlists`);
+        nothing here is server-rendered per-shopper.
+
+        `?view=loved` IS LOAD-BEARING, not decoration. The Shopify Page named
+        "Loved" (handle `loved`) exists, but its stored template is
+        "Default page" — Shopify's own "Theme template" picker in the Pages
+        admin only lists alternate templates that exist on the CURRENTLY
+        PUBLISHED theme, and this work lives on an unpublished preview theme,
+        so `page.loved` was never selectable there no matter how many times
+        the theme was pushed. `?view=<suffix>` sidesteps that entirely: it
+        renders the alternate template for WHICHEVER theme is actually being
+        viewed (preview or live) regardless of what the page's stored
+        template says, so this link works today, on the preview, without any
+        admin step — and it will keep working after publish too, so leave it
+        even once the picker eventually offers "loved" as a real option.
       {%- endcomment -%}
       <a
-        href="{{ pages.loved.url | default: '/pages/loved' }}"
+        href="{{ pages.loved.url | default: '/pages/loved' }}?view=loved"
         class="header__icon header__icon--wishlist link focus-inset"
       >
         <span class="svg-wrapper">{{ 'icon-heart.svg' | inline_asset_content }}</span>
