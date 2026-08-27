@@ -83,8 +83,24 @@ let client;
  * it. Status 0 is a network failure with no response at all; 429 and 5xx are
  * Google asking to be asked again. A 404 is an answer and is never retried.
  */
-const TRANSIENT = (status) => status === 0 || status === 429 || status >= 500;
 const ATTEMPTS = 3;
+
+/**
+ * Is this worth trying again, given what the call would DO?
+ *
+ * A read can always be retried. A WRITE cannot, and the distinction matters
+ * here: status 0 means no response arrived, which does not mean nothing
+ * happened — a create that timed out on the way back has still created. Retry
+ * that and this script makes a SECOND notification channel for the same
+ * address. So a write is retried only on 429, the one answer that says the
+ * server refused to process it; everything else a write hits is reported, not
+ * repeated.
+ */
+function worthRetrying(status, method) {
+  if (status === 429) return true;
+  if (method !== "GET") return false;
+  return status === 0 || status >= 500;
+}
 
 async function api(url, { method = "GET", body } = {}) {
   client ||= await new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] }).getClient();
@@ -97,7 +113,7 @@ async function api(url, { method = "GET", body } = {}) {
     } catch (err) {
       const status = err?.response?.status ?? 0;
       last = { ok: false, status, data: err?.response?.data ?? { error: String(err?.message || err) } };
-      if (!TRANSIENT(status)) break;
+      if (!worthRetrying(status, method)) break;
     }
   }
   return last;
@@ -170,9 +186,14 @@ async function ensureChannel() {
     // absent status would make --verify permanently red for a channel that
     // works.
     if (VERIFY && found.verificationStatus && found.verificationStatus !== "VERIFIED") {
-      return fail(`the email channel for ${RECIPIENT} is ${found.verificationStatus} — Google will deliver nothing until the address is confirmed. Open the verification email, or resend it from GCP console → Monitoring → Alerting → Notification channels.`);
+      // RECORDED, not returned. Failing out here would skip the metric and
+      // policy checks below and report one problem at a time, which turns a
+      // single run of --verify into three. The exit code is already set; the
+      // rest of the chain still gets checked.
+      fail(`the email channel for ${RECIPIENT} is ${found.verificationStatus} — Google will deliver nothing until the address is confirmed. Open the verification email, or resend it from GCP console → Monitoring → Alerting → Notification channels.`);
+    } else {
+      log(`✓ email channel → ${RECIPIENT}${found.verificationStatus ? ` (${found.verificationStatus})` : ""}`);
     }
-    log(`✓ email channel → ${RECIPIENT}${found.verificationStatus ? ` (${found.verificationStatus})` : ""}`);
     // THE ONE THING THIS SCRIPT CANNOT PROVE. Every other link in the chain is
     // checkable from here — the marker is in the source, the metric counted
     // the test line, the policy is enabled and wired to this channel. Whether
