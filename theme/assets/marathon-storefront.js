@@ -655,13 +655,33 @@
     var img = $(".mc-card__media img", card);
     var priceEl = $(".mc-card__price", card);
     var singleInput = $("[data-mc-single]", card);
+    // EVERY SIZE, CAPTURED OFF THE SAME HIDDEN PANEL THE QUICK-VIEW USES
+    // (see marathon-card.liquid's `.mc-sizes [data-mc-size]` buttons) — so the
+    // wishlist can offer its OWN size picker without a network call, the same
+    // "no endpoint" rule as everything else here. Sold-out sizes are captured
+    // too (available: false) so the wishlist's picker can grey them out the
+    // same way the card's own panel does.
+    var variants = $$("[data-mc-size]", card).map(function (btn) {
+      return {
+        id: btn.getAttribute("data-variant-id"),
+        title: btn.textContent.replace(/\s*—\s*sold out\s*$/i, "").trim(),
+        available: !btn.disabled,
+      };
+    });
     return {
       url: card.getAttribute("data-mc-url") || "",
       title: card.getAttribute("data-mc-title") || "",
       image: img ? img.currentSrc || img.src : "",
       price: priceEl ? priceEl.textContent.trim() : "",
       variantId: singleInput ? singleInput.value : null,
-      soldOut: !!$(".mc-card__sold", card),
+      // `.mc-card__sold` no longer exists — sold-out is now the price footer
+      // showing "Sold out" text (see marathon-card.liquid) — so this reads
+      // the card's own `data-mc-sold-out` attribute instead of a dead class.
+      // (Fixed 2026-08-27: found live, mid-verification, by a sold-out item's
+      // wishlist row wrongly getting a size picker and an enabled-looking
+      // Add to cart — `soldOut` was silently always false.)
+      soldOut: card.getAttribute("data-mc-sold-out") === "true",
+      variants: variants,
     };
   }
   // Mark every heart in `scope` from the stored set. Called at load and after
@@ -722,10 +742,18 @@
   // one never touches the address bar, unlike the product quick-view panel,
   // because "loved products" is not a page a shopper would ever share a link
   // to or expect Back to return them from.
-  var wishlistPanel = $("[data-mc-wishlist-panel]");
-  if (wishlistPanel) {
-    var wishlistList = $("[data-mc-wishlist-list]", wishlistPanel);
-    var wishlistEmpty = $("[data-mc-wishlist-empty]", wishlistPanel);
+  // ANY NUMBER OF WISHLIST CONTAINERS ON ONE PAGE. Used to be exactly one (the
+  // global modal); the dedicated Loved page (owner order 2026-08-27) adds a
+  // second, and the modal itself may or may not still be in the DOM depending
+  // on the theme's current markup — this loop makes neither assumption. Every
+  // `[data-mc-wishlist-list]` on the page is found, paired with the nearest
+  // `[data-mc-wishlist-empty]` in the SAME sheet/page wrapper (never a
+  // different container's empty state), and kept in sync together.
+  var wishlistLists = $$("[data-mc-wishlist-list]");
+  if (wishlistLists.length) {
+    function scopeFor(listEl) {
+      return listEl.closest(".mc-wishlist__sheet, .mc-loved-page") || listEl.parentElement || document;
+    }
 
     function renderWishlistRow(id, meta) {
       var row = document.createElement("div");
@@ -752,27 +780,63 @@
       price.textContent = meta.soldOut ? "Sold out" : meta.price || "";
       body.appendChild(price);
 
+      var variants = meta.variants || [];
+
+      // A SIZE PICKER INSIDE THE ROW ITSELF (owner order 2026-08-27) — the
+      // exact same buttons/markup the quick-view panel uses (`.mc-sizes`,
+      // `.mc-size`, sold-out struck through and disabled), so a shopper never
+      // has to leave the wishlist to buy a sized product. Rendered only when
+      // there IS a size run to pick from; a true single-variant product (bags,
+      // fragrance) keeps the old one-tap "Add to cart" below instead.
+      if (!meta.soldOut && variants.length > 1) {
+        var legend = document.createElement("p");
+        legend.className = "mc-sizes__legend";
+        legend.textContent = "Size";
+        body.appendChild(legend);
+
+        var sizes = document.createElement("div");
+        sizes.className = "mc-sizes mc-wishlist__sizes";
+        sizes.setAttribute("role", "group");
+        variants.forEach(function (v) {
+          var sBtn = document.createElement("button");
+          sBtn.type = "button";
+          sBtn.className = "mc-size";
+          sBtn.setAttribute("data-mc-wishlist-size", v.id);
+          sBtn.setAttribute("aria-pressed", "false");
+          if (!v.available) {
+            sBtn.disabled = true;
+            sBtn.setAttribute("aria-disabled", "true");
+          }
+          sBtn.textContent = v.title;
+          sizes.appendChild(sBtn);
+        });
+        body.appendChild(sizes);
+      }
+
       var actions = document.createElement("div");
       actions.className = "mc-wishlist__actions";
 
-      if (meta.variantId && !meta.soldOut) {
-        // Single-variant products only (bags, fragrance) — the one case where
-        // a cart-ready variant id was already on the card with nothing to
-        // pick, so a real "Add to cart" belongs here. A product with a size
-        // run needs that choice made on the real product page — see the
-        // "View product" link below for everything else, sold-out included.
+      if (!meta.soldOut && (meta.variantId || variants.length > 1)) {
+        // A single-variant product already has its one buyable id
+        // (`meta.variantId`); a sized product starts with no id selected —
+        // the size-picker click handler below fills `data-mc-wishlist-add`
+        // in and enables the button the moment a size is chosen.
         var add = document.createElement("button");
         add.type = "button";
         add.className = "mc-add mc-wishlist__add";
         add.textContent = "Add to cart";
-        add.setAttribute("data-mc-wishlist-add", meta.variantId);
+        if (meta.variantId) {
+          add.setAttribute("data-mc-wishlist-add", meta.variantId);
+        } else {
+          add.disabled = true;
+        }
         actions.appendChild(add);
       }
 
       var view = document.createElement("a");
       view.className = "mc-panel__link mc-wishlist__view";
       view.href = meta.url || "#";
-      view.textContent = meta.variantId && !meta.soldOut ? "View product" : "View & choose a size";
+      view.textContent = "View product";
       actions.appendChild(view);
 
       var remove = document.createElement("button");
@@ -787,45 +851,58 @@
       return row;
     }
 
-    // RE-READS STATE EVERY OPEN, not once at load — a card loved or unloved
-    // on the grid since the panel last opened must never show stale here.
-    function renderWishlist() {
+    // RE-READS STATE EVERY TIME, not once at load — a card loved or unloved
+    // elsewhere since this last ran must never show stale here. Called on
+    // script init (the Loved page has no "open" event to hang this off) and
+    // again after every remove/add so every container stays in sync.
+    function renderAllWishlists() {
       var loved = readLoved();
       var meta = readMeta();
-      wishlistList.innerHTML = "";
-      var shown = 0;
-      loved.forEach(function (id) {
-        var m = meta[id];
-        if (!m) return; // meta can only be missing if storage was hand-edited
-        wishlistList.appendChild(renderWishlistRow(id, m));
-        shown++;
+      wishlistLists.forEach(function (listEl) {
+        var scope = scopeFor(listEl);
+        var emptyEl = $("[data-mc-wishlist-empty]", scope);
+        listEl.innerHTML = "";
+        var shown = 0;
+        loved.forEach(function (id) {
+          var m = meta[id];
+          if (!m) return; // meta can only be missing if storage was hand-edited
+          listEl.appendChild(renderWishlistRow(id, m));
+          shown++;
+        });
+        if (emptyEl) emptyEl.hidden = shown > 0;
+        listEl.hidden = shown === 0;
       });
-      wishlistEmpty.hidden = shown > 0;
-      wishlistList.hidden = shown === 0;
     }
+    renderAllWishlists();
 
-    function openWishlist() {
-      renderWishlist();
-      wishlistPanel.hidden = false;
-    }
+    var wishlistPanel = $("[data-mc-wishlist-panel]");
     function closeWishlist() {
-      wishlistPanel.hidden = true;
+      if (wishlistPanel) wishlistPanel.hidden = true;
     }
 
     document.addEventListener("click", function (ev) {
-      if (ev.target.closest("[data-mc-wishlist-open]")) {
-        ev.preventDefault();
-        openWishlist();
-        return;
-      }
-      if (ev.target.closest("[data-mc-wishlist-close]")) {
+      if (wishlistPanel && ev.target.closest("[data-mc-wishlist-close]")) {
         closeWishlist();
         return;
       }
       // Backdrop click (the panel's own padding, not the sheet) closes —
-      // same split as the quick-view panel.
-      if (ev.target === wishlistPanel) {
+      // same split as the quick-view panel. Harmless no-op on the Loved page,
+      // which has no such backdrop element.
+      if (wishlistPanel && ev.target === wishlistPanel) {
         closeWishlist();
+        return;
+      }
+      var sizeBtn = ev.target.closest("[data-mc-wishlist-size]");
+      if (sizeBtn) {
+        var row = sizeBtn.closest("[data-mc-wishlist-item]");
+        $$("[data-mc-wishlist-size]", row).forEach(function (b) {
+          b.setAttribute("aria-pressed", b === sizeBtn ? "true" : "false");
+        });
+        var rowAdd = $("[data-mc-wishlist-add]", row) || $(".mc-wishlist__add", row);
+        if (rowAdd) {
+          rowAdd.setAttribute("data-mc-wishlist-add", sizeBtn.getAttribute("data-mc-wishlist-size"));
+          rowAdd.disabled = false;
+        }
         return;
       }
       var removeBtn = ev.target.closest("[data-mc-wishlist-remove]");
@@ -839,7 +916,7 @@
         delete meta[id];
         writeMeta(meta);
         applyLoved(document); // keeps a still-visible grid card's heart in sync
-        renderWishlist();
+        renderAllWishlists();
         return;
       }
       var addBtn = ev.target.closest("[data-mc-wishlist-add]");
@@ -875,7 +952,7 @@
     });
 
     document.addEventListener("keydown", function (ev) {
-      if (ev.key === "Escape" && !wishlistPanel.hidden) closeWishlist();
+      if (ev.key === "Escape" && wishlistPanel && !wishlistPanel.hidden) closeWishlist();
     });
   }
 })();

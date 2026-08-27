@@ -12,17 +12,15 @@
   the panel opens, so a card loved or unloved on a DIFFERENT page since the
   last open is never shown stale.
 
-  OPENED BY the heart icon in sections/header.liquid (data-mc-wishlist-open),
-  present on every page because this snippet and the script that drives it are
-  both rendered globally in theme.liquid, not just by marathon-grid or
-  marathon-home.
-
-  WHY NOT A DEDICATED PAGE TEMPLATE. The cart already works as a drawer over
-  whatever page the shopper is on; a wishlist that took over the page would be
-  a worse version of the exact interaction the cart already gets right, and
-  would need its own template plus a nav entry pointing at a real theme
-  section. This is a fixed overlay identical in kind to the product quick-view
-  panel — same reasoning, same component. */
+  SUPERSEDED AS THE PRIMARY ENTRY POINT (owner order 2026-08-27): the header
+  heart in sections/header.liquid now links straight to a real page
+  (`sections/marathon-loved.liquid` via `templates/page.loved.json`) instead
+  of opening this overlay — a shopper can navigate to it, bookmark it, or
+  reload on it, none of which a JS-only panel supports. This snippet is left
+  in place, still rendered globally by theme.liquid, as inert markup: nothing
+  currently opens it, but nothing breaks if some other entry point ever does
+  again, since marathon-storefront.js's `renderAllWishlists()` populates every
+  `[data-mc-wishlist-list]` on the page, this one included.
 {%- endcomment -%}
 <div class="mc-panel mc-wishlist" hidden data-mc-wishlist-panel role="dialog" aria-modal="true" aria-label="Loved products">
   <div class="mc-panel__sheet mc-wishlist__sheet" data-mc-sheet>

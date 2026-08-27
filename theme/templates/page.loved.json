@@ -1,0 +1,9 @@
+{
+  "sections": {
+    "main": {
+      "type": "marathon-loved",
+      "settings": {}
+    }
+  },
+  "order": ["main"]
+}

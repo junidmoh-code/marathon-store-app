@@ -1,0 +1,40 @@
+{%- comment -%}
+  ─── THE LOVED PAGE ─────────────────────────────────────────────────────────
+
+  A real page (owner order 2026-08-27), not the `.mc-panel` overlay this used
+  to be — see snippets/marathon-wishlist.liquid for the modal this replaced
+  as the primary entry point and theme/INSTALL.md for the one manual step
+  (creating the Shopify Page that assigns this template).
+
+  STILL A SHELL, NOT A LIST — same reason as the old panel: loved products
+  live in `localStorage` ("mc-loved" / "mc-loved-meta"), written by the heart
+  button on a card wherever it was tapped, so there is no set of product IDs
+  known at RENDER time to loop over here. marathon-storefront.js's
+  `renderAllWishlists()` fills every `[data-mc-wishlist-list]` on the page —
+  this one included — the moment the script runs, not on some "open" event,
+  because a static page has no open event.
+
+  Reuses `data-mc-wishlist-*` attributes and the row markup the old modal
+  used, so the existing add-to-cart / remove / re-render JS needs no
+  duplicate logic — only a bigger photo treatment and an inline size picker,
+  both added in the CSS and JS for this page specifically.
+{%- endcomment -%}
+<div class="mc-loved-page" data-mc-loved-page>
+  <a href="{{ routes.root_url }}" class="mc-nav__link mc-loved-page__back" data-mc-back data-mc-back-fallback="{{ routes.root_url }}">&larr; Back to shop</a>
+
+  <p class="mc-head__title mc-loved-page__title">Loved</p>
+
+  <p class="mc-wishlist__empty mc-loved-page__empty" data-mc-wishlist-empty hidden>
+    Nothing loved yet. Tap the heart on a photograph to keep it here.
+  </p>
+
+  <div class="mc-wishlist__list mc-loved-page__list" data-mc-wishlist-list></div>
+</div>
+
+{% schema %}
+{
+  "name": "Loved page",
+  "settings": [],
+  "presets": [{ "name": "Loved page" }]
+}
+{% endschema %}
