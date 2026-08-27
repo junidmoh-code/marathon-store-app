@@ -4758,11 +4758,17 @@ exports.socialHealthScan = onSchedule(
     // The record is written on EVERY run, healthy or not. A watchdog that only
     // writes when it is unhappy is indistinguishable from a watchdog that has
     // stopped running.
+    //
+    // `reasons` is written as an explicit null when there are none. RTDB
+    // cannot store an empty array — it drops the key — and update() does not
+    // remove keys it is not given, so a day that went bad at 09:25 and
+    // RECOVERED by 11:25 would have kept its stale reasons sitting under
+    // `ok: true`. A record that contradicts itself is worse than no record.
     await db.ref(`social_health/days/${saDate}`).update({
       checkedAt: nowMs,
       ok: verdict.ok,
       severity: verdict.severity,
-      reasons: verdict.reasons,
+      reasons: verdict.reasons.length ? verdict.reasons : null,
       counts: verdict.counts,
     });
 
@@ -4777,6 +4783,9 @@ exports.socialHealthScan = onSchedule(
     // publisher dies at 14:00 on top of a generator that failed at 06:00)
     // changes the signature and sends a second one, which is the whole point.
     const signature = `${verdict.severity}|${verdict.reasons.join("|")}`;
+    // alertedSignature and alertedAt are deliberately NOT cleared when a day
+    // recovers. They record what was already sent, and clearing them would let
+    // the same problem re-alert if it came back the same day.
     const alerted = (await db.ref(`social_health/days/${saDate}/alertedSignature`).once("value")).val();
     if (alerted === signature) {
       console.log(`socialHealthScan ${saDate}: still ${verdict.severity}, already alerted`);
