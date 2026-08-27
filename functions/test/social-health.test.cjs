@@ -224,6 +224,34 @@ describe("3. silence", () => {
     assert.equal(v.reasons.some((r) => /nothing has published/.test(r)), false);
   });
 
+  // Caught in review. A discarded post still carries the slot it was going to
+  // take, and counting it made the day look OWED — so a day on which nothing
+  // was ever going to publish reported "nothing has published today". A false
+  // alarm is what teaches you to ignore the real one.
+  test("a DISCARDED post with a past slot today owes nothing", () => {
+    const v = day({ posts: [{ id: "d", status: "discarded", scheduledAt: at(9) }], policy: { reels: [], photos: [], stories: [] }, autopilotLog: null });
+    assert.equal(v.counts.dueToday, 0);
+    assert.equal(v.reasons.some((r) => /nothing has published/.test(r)), false);
+  });
+
+  test("a DRAFT with a past slot today owes nothing either", () => {
+    const v = day({ posts: [{ id: "x", status: "draft", scheduledAt: at(9) }], policy: { reels: [], photos: [], stories: [] }, autopilotLog: null });
+    assert.equal(v.counts.dueToday, 0);
+    assert.equal(v.reasons.some((r) => /nothing has published/.test(r)), false);
+  });
+
+  test("an APPROVED post with a past slot today still owes", () => {
+    const v = day({ posts: [{ id: "a", status: "approved", scheduledAt: at(9) }] });
+    assert.equal(v.counts.dueToday, 1);
+    assert.match(v.reasons.join(" "), /nothing has published today/);
+  });
+
+  test("a FAILED post counts as owed — it was going to publish and did not", () => {
+    const v = day({ posts: [{ id: "f", status: "failed", scheduledAt: at(9) }] });
+    assert.equal(v.counts.dueToday, 1);
+    assert.match(v.reasons.join(" "), /nothing has published today/);
+  });
+
   test("a day with nothing scheduled at all raises no silence alarm", () => {
     const v = day({ posts: [], policy: { reels: [], photos: [], stories: [] }, autopilotLog: null });
     assert.equal(v.reasons.some((r) => /nothing has published/.test(r)), false);

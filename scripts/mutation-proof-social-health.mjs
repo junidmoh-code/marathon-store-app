@@ -94,9 +94,21 @@ const MUTATIONS = [
     'const severity = reasons.length === 0\n    ? "ok"\n    : (nothingPublished || publisherDead) ? "silent" : "degraded";',
     'const severity = reasons.length === 0 ? "ok" : "degraded";'],
 
-  ["a dead publisher no longer counts toward 'silent'",
+  // These two were ONE mutation under the first name, which was wrong: setting
+  // nothingPublished to false does not stop a dead publisher forcing "silent",
+  // because publisherDead is a separate term. The mutation was killed, but not
+  // by the property its name claimed.
+  ["nothing publishing no longer counts toward 'silent'",
     "const nothingPublished = earliestDue !== undefined && publishedToday.length === 0;",
     "const nothingPublished = false;"],
+
+  ["a dead publisher no longer counts toward 'silent'",
+    "const publisherDead = !haveTick || nowMs - tickAt > HEARTBEAT_STALE_MS;",
+    "const publisherDead = false;"],
+
+  ["a DISCARDED post is enough to make the day look owed",
+    'const OWED_STATUSES = new Set(["approved", "posting", "posted", "failed"]);',
+    'const OWED_STATUSES = new Set(["approved", "posting", "posted", "failed", "draft", "discarded"]);'],
 
   ["the SA offset is dropped, filing every evening under the wrong day",
     "return Math.floor((ms + SAST_OFFSET_MS) / DAY_MS) * DAY_MS - SAST_OFFSET_MS;",

@@ -4782,7 +4782,13 @@ exports.socialHealthScan = onSchedule(
     // over one bad day send one email — but a day that gets WORSE (the
     // publisher dies at 14:00 on top of a generator that failed at 06:00)
     // changes the signature and sends a second one, which is the whole point.
-    const signature = `${verdict.severity}|${verdict.reasons.join("|")}`;
+    // JSON, not a joined string. One of the reasons quotes
+    // autopilotLog.error verbatim, so a "|" anywhere in a Gemini or Meta error
+    // message could make two DIFFERENT reason lists join to the same
+    // signature — and a newly appeared failure would then match the stored one
+    // and suppress its own alarm. A delimiter that can appear in the data is
+    // not a delimiter.
+    const signature = JSON.stringify({ severity: verdict.severity, reasons: verdict.reasons });
     // alertedSignature and alertedAt are deliberately NOT cleared when a day
     // recovers. They record what was already sent, and clearing them would let
     // the same problem re-alert if it came back the same day.

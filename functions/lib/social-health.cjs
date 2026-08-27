@@ -173,7 +173,15 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
   // "Meant to" counts BOTH what the policy asked the generator for and what
   // was already sitting approved for a slot today — a day with an empty policy
   // but a scheduled backlog post is still a day that owes a post.
+  // A DRAFT was never approved and a DISCARDED post was thrown away — neither
+  // is owed, however recent its slot. Counting them meant a single discarded
+  // post with a slot earlier today was enough to make earliestDue defined, so
+  // a day on which nothing was ever going to publish reported "nothing has
+  // published today". A false alarm is not a cautious alarm; it is the thing
+  // that teaches you to ignore the real one.
+  const OWED_STATUSES = new Set(["approved", "posting", "posted", "failed"]);
   const dueToday = all.filter((p) =>
+    OWED_STATUSES.has(p.status) &&
     Number.isFinite(Number(p.scheduledAt)) &&
     Number(p.scheduledAt) >= dayStart && Number(p.scheduledAt) < dayEnd);
   const publishedToday = all.filter((p) =>

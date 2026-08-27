@@ -416,7 +416,15 @@ export async function publishFacebookStory({ pageId, token, media, sleep }) {
   if (isVideo(item)) {
     const start = await graph(endpoint, { method: "POST", token, params: { upload_phase: "start" } });
     if (!start?.video_id || !start?.upload_url) {
-      throw new Error(`Facebook did not open a video-story upload session: ${JSON.stringify(start)}`);
+      // RETRYABLE. A 200 carrying no session is Meta having a moment, not a
+      // post that can never work — and without this flag publish.mjs reads it
+      // as permanent, moves the post to Failed after one attempt, and it needs
+      // un-approving and re-approving by hand to ever run again. Every other
+      // anomaly on this path (transport, upload host) is already marked; these
+      // two guards were the only ones that consumed the post on a first blip.
+      const e = new Error(`Facebook did not open a video-story upload session: ${JSON.stringify(start)}`);
+      e.retryable = true;
+      throw e;
     }
     await uploadStoryVideoBytes(start.upload_url, item.url, token);
     res = await graph(endpoint, {
@@ -430,7 +438,11 @@ export async function publishFacebookStory({ pageId, token, media, sleep }) {
     const { id: photoId } = await graph(`${pageId}/photos`, {
       method: "POST", token, params: { url: item.url, published: "false" },
     });
-    if (!photoId) throw new Error("Facebook returned no photo id for the story upload");
+    if (!photoId) {
+      const e = new Error("Facebook returned no photo id for the story upload");
+      e.retryable = true;   // same reasoning as the video session above
+      throw e;
+    }
     res = await graph(endpoint, { method: "POST", token, params: { photo_id: photoId } });
   }
 

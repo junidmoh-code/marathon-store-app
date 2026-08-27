@@ -279,6 +279,44 @@ function policyBody(channelName) {
   };
 }
 
+/**
+ * Which fields of the live policy no longer match what this script would
+ * write? Returns a list of human-readable differences, empty when it matches.
+ *
+ * Compares only the fields THIS SCRIPT SETS — the API decorates a policy with
+ * `name`, `creationRecord`, `mutationRecord` and per-condition names that we
+ * never author, and a naive deep-equal would report those as drift forever.
+ */
+function policyDrift(live, want) {
+  const out = [];
+  const cmp = (label, a, b) => {
+    const A = JSON.stringify(a), B = JSON.stringify(b);
+    if (A !== B) out.push(`${label}: live ${A} — expected ${B}`);
+  };
+  cmp("enabled", live.enabled !== false, want.enabled);
+  cmp("combiner", live.combiner, want.combiner);
+  cmp("autoClose", live.alertStrategy?.autoClose, want.alertStrategy.autoClose);
+  cmp("notificationChannels", (live.notificationChannels || []).slice().sort(), want.notificationChannels.slice().sort());
+  cmp("conditions", (live.conditions || []).length, want.conditions.length);
+
+  const lt = live.conditions?.[0]?.conditionThreshold;
+  const wt = want.conditions[0].conditionThreshold;
+  if (!lt) {
+    out.push("condition: live policy has no threshold condition at all");
+    return out;
+  }
+  for (const k of ["filter", "comparison", "thresholdValue", "duration"]) {
+    // thresholdValue comes back absent when it is 0, and duration absent when
+    // it is "0s" — the API omits defaults rather than echoing them, so an
+    // absent field that we asked to be the default is NOT drift.
+    const liveV = lt[k] ?? (k === "thresholdValue" ? 0 : k === "duration" ? "0s" : undefined);
+    cmp(`condition.${k}`, liveV, wt[k]);
+  }
+  cmp("condition.aggregations", lt.aggregations, wt.aggregations);
+  cmp("condition.trigger", lt.trigger, wt.trigger);
+  return out;
+}
+
 async function ensurePolicy(channelName) {
   const base = `https://monitoring.googleapis.com/v3/projects/${PROJECT}/alertPolicies`;
   const list = await api(base);
@@ -286,12 +324,16 @@ async function ensurePolicy(channelName) {
   const found = (list.data.alertPolicies || []).find((p) => p.displayName === POLICY_NAME);
   if (found) {
     if (VERIFY) {
-      if (found.enabled === false) return fail(`alert policy "${POLICY_NAME}" exists but is DISABLED`);
-      if (!(found.notificationChannels || []).includes(channelName)) {
-        return fail(`alert policy "${POLICY_NAME}" is not wired to the ${RECIPIENT} channel`);
+      // EVERY field this script sets, not the three most obvious ones. A
+      // drifted comparison, threshold, duration, aggregation or trigger can
+      // stop one log line from ever opening an incident, and a drifted
+      // autoClose silently swallows the SECOND bad day — all while "enabled,
+      // wired, watching the metric" stays true. Checking three fields and
+      // reporting a tick is how a verifier ends up certifying a dead alarm.
+      const drift = policyDrift(found, policyBody(channelName));
+      if (drift.length) {
+        return fail(`alert policy "${POLICY_NAME}" has drifted:\n    ${drift.join("\n    ")}`);
       }
-      const f = found.conditions?.[0]?.conditionThreshold?.filter || "";
-      if (!f.includes(METRIC)) return fail(`alert policy "${POLICY_NAME}" no longer watches ${METRIC}`);
       log(`✓ alert policy "${POLICY_NAME}"`);
       return found;
     }
