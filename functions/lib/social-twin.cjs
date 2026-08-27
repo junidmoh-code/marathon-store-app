@@ -106,4 +106,31 @@ function twinWriteUpdates(postsPath, storyId, story, twinId, twin) {
   return updates;
 }
 
-module.exports = { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, TWIN_ROLE };
+/**
+ * The caption fields for the PRIMARY record — three fields that describe one
+ * caption, so they cannot come from two places.
+ *
+ * A story keeps the plain fallback line: nothing can display a story's caption
+ * (Meta drops it, and Facebook's story endpoints have no message field), so a
+ * model-written one there would be a lie in the queue. When the story is
+ * twinned a caption IS written — for the FEED copy — and the trap is letting
+ * only `caption` fall back to the plain line while `captionSource` and
+ * `captionNote` keep describing the twin's. That produced a story record
+ * reading `captionSource: "ai"` beside a caption the model never wrote, and,
+ * when the model had failed, a note explaining a failure nothing to do with it.
+ *
+ * @returns { caption, captionSource, captionNote } — captionNote is null when
+ *          there is none; the caller omits the key rather than writing null.
+ */
+function primaryCaptionFields(format, { fallback, caption, captionSource, captionNote }) {
+  if (format === "story") {
+    return { caption: fallback, captionSource: "not-needed", captionNote: null };
+  }
+  return {
+    caption,
+    captionSource: captionSource || null,
+    captionNote: captionNote || null,
+  };
+}
+
+module.exports = { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, TWIN_ROLE };

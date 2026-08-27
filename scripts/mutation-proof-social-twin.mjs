@@ -25,9 +25,12 @@ const MUTATIONS = [
     "    caption: caption == null ? null : caption,",
     "    caption: story.caption,"],
 
+  // Anchored with the line above it: `captionSource: captionSource || null,`
+  // now appears in buildFeedTwin AND in primaryCaptionFields, and an anchor
+  // that matches twice is a mutation that never applies.
   ["captionSource stays 'not-needed' on a surface that shows one",
-    "    captionSource: captionSource || null,",
-    "    captionSource: story.captionSource,"],
+    "    caption: caption == null ? null : caption,\n    captionSource: captionSource || null,",
+    "    caption: caption == null ? null : caption,\n    captionSource: story.captionSource,"],
 
   ["the twin is left as a story — two stories, nothing on the feed",
     '    format: "feed",',
@@ -72,6 +75,24 @@ const MUTATIONS = [
   ["an absent caption note becomes a null one",
     "  else delete twin.captionNote;",
     "  else twin.captionNote = null;"],
+
+  // The bug found reviewing this change: only `caption` fell back to the plain
+  // line while captionSource and captionNote still described the twin's.
+  ["a story's captionSource still describes the twin's caption",
+    '    return { caption: fallback, captionSource: "not-needed", captionNote: null };',
+    "    return { caption: fallback, captionSource, captionNote: captionNote || null };"],
+
+  ["a story inherits the twin's caption note",
+    "captionSource: \"not-needed\", captionNote: null };",
+    "captionSource: \"not-needed\", captionNote: captionNote || null };"],
+
+  ["a story is given the model's caption after all",
+    '  if (format === "story") {',
+    "  if (false) {"],
+
+  ["an absent note becomes undefined, which throws on an RTDB write",
+    "    captionNote: captionNote || null,",
+    "    captionNote,"],
 
   ["it builds a twin with no ids at all",
     '  if (!twinId || !storyId) throw new Error("buildFeedTwin: both ids are required");',

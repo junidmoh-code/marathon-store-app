@@ -4223,12 +4223,24 @@ async function generateOnePost(db, {
       format === "story" && !wantsTwin
         ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
         : await writeSocialCaption({ kind, picks, link, styleNotes: library.notes });
-    // The STORY's own caption stays the plain line whether or not a caption was
-    // written for the twin — nothing reads it, and storing a model-written
-    // caption on a record that cannot show one would be a lie in the queue.
-    const storyCaption = format === "story"
-      ? socialCaption.fallbackCaption({ kind, products: picks })
-      : caption;
+    // ── THE STORY'S OWN CAPTION FIELDS, ALL THREE OF THEM ───────────────────
+    // A story keeps the plain line whether or not a caption was written for
+    // its twin, because nothing can show a story's caption and putting a
+    // model-written one there would be a lie in the queue.
+    //
+    // captionSource and captionNote have to follow it. Leaving them as the
+    // twin's meant the story record read `captionSource: "ai"` next to a
+    // caption the model never wrote — and, when the model had failed, carried
+    // a captionNote explaining a failure that had nothing to do with it. Three
+    // fields describe one caption; they cannot come from two.
+    const {
+      caption: storyCaption,
+      captionSource: storyCaptionSource,
+      captionNote: storyCaptionNote,
+    } = socialTwin.primaryCaptionFields(format, {
+      fallback: socialCaption.fallbackCaption({ kind, products: picks }),
+      caption, captionSource, captionNote: captionReason,
+    });
 
     const nowMs = Date.now();
     const record = {
@@ -4236,9 +4248,9 @@ async function generateOnePost(db, {
       kind,
       format,
       media,
-      caption: format === "story" ? storyCaption : caption,
-      captionSource,
-      ...(captionReason ? { captionNote: captionReason } : {}),
+      caption: storyCaption,
+      captionSource: storyCaptionSource,
+      ...(storyCaptionNote ? { captionNote: storyCaptionNote } : {}),
       link,
       platforms,
       // No slot ⇒ the post is created UNSCHEDULED and, crucially, is

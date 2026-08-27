@@ -5,7 +5,7 @@
 "use strict";
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
-const { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, TWIN_ROLE } = require("../lib/social-twin.cjs");
+const { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, TWIN_ROLE } = require("../lib/social-twin.cjs");
 
 const SLOT = Date.UTC(2026, 7, 28, 7, 0);   // 09:00 SAST
 const IMG = { url: "https://storage/aiStudio/social/posts/S1/0.jpg", type: "image" };
@@ -183,5 +183,53 @@ describe("what the day adds up to", () => {
     assert.equal(feedPhotos, 4, "four of them photos");
     assert.equal(policy.reels, 2, "two of them reels");
     assert.equal(policy.stories, 3, "three stories");
+  });
+});
+
+// ── THREE FIELDS, ONE CAPTION ────────────────────────────────────────────────
+// The bug this exists to stop: a twinned story wrote the plain line into
+// `caption` while `captionSource` and `captionNote` still described the TWIN's
+// model-written caption. The record then read "ai" beside a caption the model
+// never wrote, and on a model failure carried a note about a failure that had
+// nothing to do with it.
+describe("primaryCaptionFields", () => {
+  const twinWrote = { fallback: "Black mesh daypack.", caption: "Sold out twice.", captionSource: "ai", captionNote: null };
+
+  test("a story keeps the plain line AND says so in all three fields", () => {
+    const f = primaryCaptionFields("story", twinWrote);
+    assert.equal(f.caption, "Black mesh daypack.");
+    assert.equal(f.captionSource, "not-needed");
+    assert.equal(f.captionNote, null);
+  });
+
+  test("a story never inherits the twin's failure note", () => {
+    const f = primaryCaptionFields("story", { ...twinWrote, captionSource: "fallback", captionNote: "model refused" });
+    assert.equal(f.captionSource, "not-needed");
+    assert.equal(f.captionNote, null);
+  });
+
+  test("captionSource is never 'ai' on a record that shows no caption", () => {
+    for (const src of ["ai", "fallback", "model", undefined]) {
+      assert.equal(primaryCaptionFields("story", { ...twinWrote, captionSource: src }).captionSource, "not-needed");
+    }
+  });
+
+  test("a feed post or reel keeps what the model actually produced", () => {
+    for (const format of ["feed", "reel"]) {
+      const f = primaryCaptionFields(format, twinWrote);
+      assert.equal(f.caption, "Sold out twice.", format);
+      assert.equal(f.captionSource, "ai", format);
+    }
+  });
+
+  test("a real note survives on a feed post", () => {
+    const f = primaryCaptionFields("feed", { ...twinWrote, captionSource: "fallback", captionNote: "model refused" });
+    assert.equal(f.captionNote, "model refused");
+  });
+
+  test("an absent note is null, never undefined — undefined throws on an RTDB write", () => {
+    const f = primaryCaptionFields("feed", { fallback: "x", caption: "y", captionSource: "ai" });
+    assert.equal(f.captionNote, null);
+    assert.equal(f.captionSource, "ai");
   });
 });
