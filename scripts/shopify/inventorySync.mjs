@@ -48,17 +48,28 @@ export const MAX_PER_RUN = 40;
  * /stock node. Returns null when the product has no id map, which is not an
  * error: a product that was never pushed to Shopify has nothing to correct.
  */
-export async function desiredFor(db, pid) {
+export async function desiredFor(db, pid, locNames = null) {
   const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
   if (!map?.variants) return null;
   const sizes = Object.keys(map.variants);
-  const locNames = Object.keys((await db.ref("stock").get()).val() || {});
+  // ── THE LOCATION NAMES COME FROM /locations, NOT FROM /stock ───────────────
+  // The first version did Object.keys(await db.ref("stock").get()) to learn the
+  // location names — which pulls the WHOLE /stock node, 5.36 MB, to read ten
+  // strings off the top of it. Once per product, over 866 products, that is
+  // ~4.6 GB of reads per full run, and it is why the first correction pass was
+  // on course to take hours. /locations is a ten-row config node.
+  const locs = locNames || Object.keys((await db.ref("locations").get()).val() || {});
   const tree = {};
-  for (const loc of locNames) {
+  for (const loc of locs) {
     const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
     if (cells) tree[loc] = { [pid]: cells };
   }
   return { map, totals: networkTotals(tree, pid, sizes) };
+}
+
+/** The location names, read once and passed down. */
+export async function locationNames(db) {
+  return Object.keys((await db.ref("locations").get()).val() || {});
 }
 
 /**
@@ -68,8 +79,8 @@ export async function desiredFor(db, pid) {
  * the drift before anyone corrects it — the same dry-run discipline
  * reconcile.mjs already has.
  */
-export async function syncProduct(db, graphql, pid, { commit = false, locationId = null } = {}) {
-  const desired = await desiredFor(db, pid);
+export async function syncProduct(db, graphql, pid, { commit = false, locationId = null, locNames = null } = {}) {
+  const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map" };
   const { map, totals } = desired;
 
@@ -94,19 +105,34 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
     currentById.set(n.id, n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0);
   }
 
-  const drift = items
-    .map((i) => ({ ...i, shopify: currentById.get(i.inventoryItemId) }))
-    .filter((i) => i.shopify !== undefined && i.shopify !== i.quantity);
+  // ── AN ID SHOPIFY DOES NOT KNOW COSTS ONE VARIANT, NOT THE PRODUCT ────────
+  // One live product's id map points at inventory items that no longer exist
+  // on the shop. inventorySetQuantities rejects the WHOLE mutation on a single
+  // unknown id, so sending the stale ones meant that product's four
+  // oversellable variants stayed oversellable — the id map is stale, and the
+  // correction it blocked was the thing that mattered.
+  //
+  // The read-back above already says which ids Shopify knows: an id missing
+  // from its response is one it cannot resolve. Those are dropped from the
+  // write and reported, rather than being allowed to veto their neighbours.
+  const known = items.filter((i) => currentById.has(i.inventoryItemId));
+  const unknown = items.filter((i) => !currentById.has(i.inventoryItemId));
 
-  if (!drift.length) return { pid, ok: true, drift: [], changed: 0 };
-  if (!commit) return { pid, ok: true, drift, changed: 0, dryRun: true };
+  const drift = known
+    .map((i) => ({ ...i, shopify: currentById.get(i.inventoryItemId) }))
+    .filter((i) => i.shopify !== i.quantity);
+
+  const stale = unknown.length ? { staleVariants: unknown.map((i) => i.sizeKey) } : {};
+  if (!known.length) return { pid, ok: false, why: `every mapped inventory item is unknown to Shopify — the id map is stale`, ...stale };
+  if (!drift.length) return { pid, ok: true, drift: [], changed: 0, ...stale };
+  if (!commit) return { pid, ok: true, drift, changed: 0, dryRun: true, ...stale };
 
   // Write EVERY mapped item, not just the drifted ones. inventorySetQuantities
   // is absolute, and sending the full set means one call whose result is the
   // whole truth for this product rather than a patch whose correctness depends
   // on the read above still being current.
-  await setAvailable(graphql, locId, items.map(({ inventoryItemId, quantity }) => ({ inventoryItemId, quantity })));
-  return { pid, ok: true, drift, changed: drift.length };
+  await setAvailable(graphql, locId, known.map(({ inventoryItemId, quantity }) => ({ inventoryItemId, quantity })));
+  return { pid, ok: true, drift, changed: drift.length, ...stale };
 }
 
 /**
@@ -124,6 +150,7 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
   if (!pids.length) return { seen: 0, pushed: 0, cleared: 0, results: [] };
 
   const locId = commit ? await requireSingleLocation(graphql) : null;
+  const locNames = await locationNames(db);
   const results = [];
   let pushed = 0, cleared = 0;
   for (const pid of pids.slice(0, max)) {
@@ -135,7 +162,7 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
       continue;
     }
     try {
-      const r = await syncProduct(db, graphql, pid, { commit, locationId: locId });
+      const r = await syncProduct(db, graphql, pid, { commit, locationId: locId, locNames });
       results.push(r);
       if (r.changed) pushed++;
       if (commit) { await db.ref(`${DIRTY_PATH}/${pid}`).remove(); cleared++; }

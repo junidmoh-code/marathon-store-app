@@ -20,6 +20,9 @@ function fakeDb(tree) {
 }
 
 const world = (over = {}) => ({
+  // /locations is where the location NAMES come from. Reading them off /stock
+  // pulled the whole 5.36 MB node once per product.
+  locations: over.locations ?? { trophy: { id: "trophy" }, in_transit: { id: "in_transit" } },
   [DIRTY_PATH]: over.markers ?? { p1: { at: 1, location: "trophy" } },
   shopify_sync: over.sync ?? { p1: { variants: { 8: { shopifyInventoryItemId: "gid://ii/1" } } } },
   stock: over.stock ?? { trophy: { p1: { 8: { qty: 2 } } } },
@@ -135,5 +138,69 @@ describe("what gets written", () => {
     const g = fakeGraphql({ shopifyHas: 0 });
     const r = await syncProduct(db, g, "p1", { commit: true });
     expect(r.drift[0].quantity).toBe(1);
+  });
+});
+
+// ── ONE STALE ID MUST NOT VETO ITS NEIGHBOURS ────────────────────────────────
+// A live product's id map points at inventory items that no longer exist on the
+// shop. inventorySetQuantities rejects the WHOLE mutation on one unknown id, so
+// sending them meant that product's oversellable variants stayed oversellable.
+describe("an inventory item Shopify does not know", () => {
+  // The read-back only answers for ids Shopify can resolve; an id missing from
+  // the response is the signal.
+  function partialGraphql(knownIds, shopifyHas = 5) {
+    const calls = [];
+    return Object.assign(async (q, vars) => {
+      calls.push({ q, vars });
+      if (/locations\(first: 2\)/.test(q)) return { locations: { nodes: [{ id: "gid://loc/1", name: "Main" }] } };
+      if (/InventoryItem/.test(q) && /query/.test(q)) {
+        return { nodes: (vars.ids || []).filter((id) => knownIds.includes(id))
+          .map((id) => ({ id, inventoryLevel: { quantities: [{ name: "available", quantity: shopifyHas }] } })) };
+      }
+      return { inventorySetQuantities: { userErrors: [] } };
+    }, { calls });
+  }
+
+  const twoVariants = () => world({
+    sync: { p1: { variants: { 8: { shopifyInventoryItemId: "gid://ii/8" }, 9: { shopifyInventoryItemId: "gid://ii/GONE" } } } },
+    stock: { trophy: { p1: { 8: { qty: 1 }, 9: { qty: 1 } } } },
+  });
+
+  it("is dropped from the write, and the good variant is still corrected", async () => {
+    const db = fakeDb(twoVariants());
+    const g = partialGraphql(["gid://ii/8"]);
+    const r = await syncProduct(db, g, "p1", { commit: true });
+    expect(r.ok).toBe(true);
+    expect(r.staleVariants).toEqual(["9"]);
+    const mutation = g.calls.find((c) => /inventorySetQuantities/.test(c.q));
+    expect(mutation.vars.input.quantities.map((x) => x.inventoryItemId)).toEqual(["gid://ii/8"]);
+  });
+
+  it("is reported rather than swallowed — a stale id map is a real problem", async () => {
+    const db = fakeDb(twoVariants());
+    const r = await syncProduct(db, partialGraphql(["gid://ii/8"]), "p1", { commit: true });
+    expect(r.staleVariants.length).toBe(1);
+  });
+
+  it("a product where EVERY id is unknown fails loudly instead of silently succeeding", async () => {
+    const db = fakeDb(twoVariants());
+    const r = await syncProduct(db, partialGraphql([]), "p1", { commit: true });
+    expect(r.ok).toBe(false);
+    expect(r.why).toMatch(/id map is stale/);
+  });
+});
+
+describe("the whole /stock node is never read", () => {
+  it("location names come from /locations", async () => {
+    // 5.36 MB per product over 866 products is ~4.6 GB a run. The first version
+    // did exactly that to read ten strings.
+    const reads = [];
+    const tree = world();
+    const db = {
+      ref: (path) => { reads.push(path); return { get: async () => ({ val: () => path.split("/").reduce((o, k) => (o == null ? undefined : o[k]), tree) ?? null }), remove: async () => {} }; },
+    };
+    await syncProduct(db, fakeGraphql(), "p1", { commit: false });
+    expect(reads).toContain("locations");
+    expect(reads).not.toContain("stock");
   });
 });
