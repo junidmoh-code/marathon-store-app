@@ -102,6 +102,7 @@
   data-mc-card
   data-mc-url="{{ product.url }}"
   data-mc-title="{{ product.title | escape }}"
+  data-mc-sold-out="{{ sold_out }}"
 >
   <a class="mc-card__media" href="{{ product.url }}" data-mc-open>
     {%- if product.featured_media -%}

@@ -92,6 +92,33 @@
   --mc-label-sm: 1.2rem;
 }
 
+/* ─── NO BROWN, ANYWHERE (owner order 2026-08-27) ───────────────────────────── */
+/* `--color-button` computes to a brown (77,62,51) from the live theme's own
+   default colour scheme — that's where `.mc-add`/`.mc-wishlist__add` got it
+   from via `--mc-btn` above, and it's also what Dawn's OWN buttons (product
+   page "Add to cart", cart's "Check out") render with, since they read the
+   same token. Redeclaring the custom property alone is not enough: Dawn
+   re-declares `--color-button` per `.color-scheme-*` wrapper, which is a
+   class selector and beats a bare `:root` token on specificity, so a section
+   using its own scheme would keep the brown regardless of what `:root` says.
+   Overriding the RENDERED button classes directly, `!important`, reaches
+   every scheme the same way the fence background's own `!important` reaches
+   every async-loaded component stylesheet (see "THE FENCE" below) — same
+   class of cascade problem, same fix. */
+:root {
+  --color-button: 255 255 255 !important;
+  --color-button-text: 10 9 8 !important;
+}
+.button,
+.button--primary,
+.button--secondary,
+.cart__checkout-button,
+.shopify-payment-button__button--unbranded {
+  background-color: rgb(255 255 255) !important;
+  color: rgb(10 9 8) !important;
+  border-color: rgb(255 255 255) !important;
+}
+
 @media screen and (min-width: 750px) {
   :root { --mc-gap: 16px; }
 }
@@ -579,6 +606,19 @@
   border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
   border-radius: var(--mc-frame-radius, 6px);
 }
+/* THE LOVED PAGE (owner order 2026-08-27) IS A REAL PAGE, WITH ROOM — its
+   photos read more like the quick-view panel's big photograph than the old
+   panel's cramped thumbnail. `.mc-wishlist__item`'s column width is a single
+   property override, everything else (price box, actions, remove) inherits
+   unchanged from the shared `.mc-wishlist__*` rules above. */
+.mc-loved-page { max-width: 60rem; margin: 0 auto; padding: 2.4rem 1.6rem 4rem; }
+.mc-loved-page__back { display: inline-block; margin-block-end: 1.2rem; }
+.mc-loved-page__title { font-size: 2.6rem; margin: 0 0 1.6rem; }
+.mc-loved-page .mc-wishlist__item { grid-template-columns: 13rem 1fr; gap: 1.6rem; }
+@media screen and (min-width: 750px) {
+  .mc-loved-page .mc-wishlist__item { grid-template-columns: 18rem 1fr; }
+}
+.mc-loved-page .mc-wishlist__sizes { margin-block-end: 0.2rem; }
 .mc-wishlist__thumb img {
   width: 100%;
   height: 100%;

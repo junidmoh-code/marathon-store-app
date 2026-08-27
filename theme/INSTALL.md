@@ -22,6 +22,17 @@
 > and `marathon-search.js` (see below — it turned out to already be wired in
 > `layout/theme.liquid`, contrary to this doc's older claim) are all
 > confirmed working on the real preview, not just in the code.
+>
+> **ONE MANUAL STEP LEFT, and it's content, not theme code — CLI push can't do
+> it.** The header heart now links to `/pages/loved`
+> (`sections/marathon-loved.liquid` via `templates/page.loved.json`, both
+> pushed by the CLI same as everything else). But the PAGE at that URL is a
+> Shopify content object, not a theme file, and this app's token has no
+> content-write scope (same class of gap as the theme scope this doc already
+> documents). **Someone with admin access needs to: Online Store → Pages → Add
+> page → title "Loved" → in the sidebar's "Theme template" dropdown pick
+> `page.loved` → Save.** Takes under a minute, one time only, survives every
+> future theme push.
 
 Two things live in this folder:
 
