@@ -1,45 +1,43 @@
 # Marathon Club storefront — install, preview, publish, revert
 
-> **Update 2026-08-26 — tile price + love hearts (owner order). CORRECTION:
-> re-verified against the real preview and this is NOT live yet.** A prior
-> note here claimed the change was already live on the preview — that was
-> wrong; I checked `https://marathonclub.co.za/?preview_theme_id=160586629269`
-> directly (screenshot + accessibility-tree scan) on 2026-08-26 and confirmed:
-> the price box IS live (from the #465 paste, and it looks right — solid
-> white chip, clean), but there is **no love/heart button anywhere on the
-> page**. The code for it is merged into `main` (this repo), but it has not
-> actually been pasted into the theme yet.
+> **Update 2026-08-27 — the manual-paste workflow below is HISTORICAL. Theme
+> pushes now go through the Shopify CLI**, installed and authenticated on
+> this machine (`npm install -g @shopify/cli @shopify/theme`, then
+> `shopify theme push --store=nu3ei8-0p.myshopify.com
+> --theme=160586629269 --only=<path> --nodelete` from inside `theme/`) — no
+> more copy-pasting into the admin's code editor, which the rest of this doc
+> was written around because that iframe blocks browser automation. The CLI
+> path bypasses that entirely: it authenticates as the operator's own Shopify
+> login, not through the constrained `read_themes`/`write_themes` app scopes
+> this doc previously found denied. `--only` + `--nodelete` keeps a push
+> scoped to just the files being changed, since `theme/` here is a curated
+> SUBSET of the full live theme, not a complete theme directory — never push
+> without `--only` or you will wipe everything else on the remote theme.
 >
-> I could not paste it myself either: the Shopify admin's theme code editor
-> renders inside a cross-origin iframe that browser automation cannot drive
-> (clicking into it did not open any menu, confirmed over several attempts),
-> and there is still no `read_themes`/`write_themes` API scope and no
-> authenticated Shopify CLI session on this machine. **This has to be a
-> manual paste, by a human, in the admin.** Three files, one pass:
->
-> | Admin location | File |
-> |---|---|
-> | Snippets → `marathon-card` | `theme/snippets/marathon-card.liquid` |
-> | Assets → `marathon-storefront.css` | `theme/assets/marathon-storefront.css` |
-> | Assets → `marathon-storefront.js` | `theme/assets/marathon-storefront.js` |
->
-> What it does once pasted: every tile shows its price ("R 800.00", the
-> store's own money format) on a bottom gradient band, and carries a heart —
-> shoppers love products per-browser (localStorage, no account) and loved
-> products surface at the top of the grid on their next page view. No other
-> file changed. After pasting, reload
-> `https://marathonclub.co.za/?preview_theme_id=160586629269` and confirm a
-> heart appears on every card before considering this done.
+> Re-verified live on `https://marathonclub.co.za/?preview_theme_id=160586629269`
+> on 2026-08-27: the price footer (now a solid black box, not the white chip
+> or gradient band described below — see `marathon-storefront.css`'s "PRICE
+> BADGE" section for the current design and why it changed twice), the love
+> hearts (header icon + per-card, real add-to-cart from the wishlist panel),
+> and `marathon-search.js` (see below — it turned out to already be wired in
+> `layout/theme.liquid`, contrary to this doc's older claim) are all
+> confirmed working on the real preview, not just in the code.
 
 Two things live in this folder:
 
 1. **The photo-first storefront** — the grid, the quick view, the category
    navigation and the home page. New in this change.
 2. **The brand-aware search wiring** (`marathon-search.js`) — built earlier,
-   unchanged here, **still not installed on the live theme.** Verified
-   2026-08-21: the live pages do not reference it.
+   confirmed INSTALLED and working on the live preview (re-verified
+   2026-08-27, superseding the "still not installed" claim this doc made on
+   2026-08-21 based on an earlier, different live theme).
 
-Install them together. It is one pass through the same editor.
+The theme's code, including everything below the CLI note above, is now kept
+in sync in this repo (`theme/layout/theme.liquid`, `theme/sections/header.liquid`
+and `header-group.json`, `theme/templates/product.json`, etc., alongside the
+`marathon-*` files that started this project) rather than living only on the
+Shopify side — so a future change should edit here first, then push, the same
+as any other file in this repo.
 
 ---
 

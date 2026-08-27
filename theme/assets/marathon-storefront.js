@@ -586,6 +586,29 @@
     toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
   });
 
+  // ─── BACK (snippets/marathon-back.liquid) ───────────────────────────────────
+  // The control's `href` is always a real, working link — a collection page
+  // or `routes.root_url`, rendered by Liquid — so it never dead-ends even
+  // with JavaScript off. When JS IS on and the referrer that got the shopper
+  // to THIS page was this same site, `history.back()` is the better answer:
+  // it returns to the exact scroll position and any filters/sort the shopper
+  // had set, which a plain link to a fresh collection page cannot. A
+  // cross-site or empty referrer (arrived via a shared link, a new tab, a
+  // search engine) falls through to the plain link instead — there is
+  // nothing of ours on the stack to go back TO.
+  document.addEventListener("click", function (ev) {
+    var back = ev.target.closest && ev.target.closest("[data-mc-back]");
+    if (!back) return;
+    var ref = document.referrer;
+    if (!ref) return; // no same-site history — let the fallback link work
+    try {
+      if (new URL(ref).origin === location.origin) {
+        ev.preventDefault();
+        history.back();
+      }
+    } catch (e) { /* malformed referrer — fall through to the link */ }
+  });
+
   // ─── LOVED (owner order 2026-08-26) ─────────────────────────────────────────
   // Tap the heart to keep a product in mind; decide later. Loved products
   // SURFACE AT THE TOP of the grid on the next page view — deliberately not
@@ -597,6 +620,15 @@
   // rather than return null. No account, no endpoint — a cleared browser
   // forgets, and that is the honest cost of zero-friction loving.
   var LOVE_KEY = "mc-loved";
+  // A SECOND KEY, ALONGSIDE THE IDS: photo, price, url and (when the product
+  // has only one variant) its cart-ready variant id, captured from the card's
+  // OWN DOM at the moment of the tap. Nothing is fetched for this — the same
+  // "no endpoint" rule as the ID list — so the wishlist panel can render a
+  // photo and a price for a product loved on a completely different page
+  // without a network call. The cost is that a price change or a restock
+  // after the tap is not reflected until the shopper re-loves the item; that
+  // is an acceptable staleness for a save-for-later list, not a checkout.
+  var META_KEY = "mc-loved-meta";
   function readLoved() {
     try {
       var v = JSON.parse(localStorage.getItem(LOVE_KEY) || "[]");
@@ -605,6 +637,32 @@
   }
   function writeLoved(ids) {
     try { localStorage.setItem(LOVE_KEY, JSON.stringify(ids)); } catch (e) { /* private window */ }
+  }
+  function readMeta() {
+    try {
+      var v = JSON.parse(localStorage.getItem(META_KEY) || "{}");
+      return v && typeof v === "object" ? v : {};
+    } catch (e) { return {}; }
+  }
+  function writeMeta(map) {
+    try { localStorage.setItem(META_KEY, JSON.stringify(map)); } catch (e) { /* private window */ }
+  }
+  // Reads everything the wishlist panel needs off the CARD that was just
+  // hearted — the same card the tap happened on, whether that is a grid tile
+  // or (later) a product-page equivalent, as long as it carries these same
+  // data attributes and classes.
+  function captureCardMeta(card) {
+    var img = $(".mc-card__media img", card);
+    var priceEl = $(".mc-card__price", card);
+    var singleInput = $("[data-mc-single]", card);
+    return {
+      url: card.getAttribute("data-mc-url") || "",
+      title: card.getAttribute("data-mc-title") || "",
+      image: img ? img.currentSrc || img.src : "",
+      price: priceEl ? priceEl.textContent.trim() : "",
+      variantId: singleInput ? singleInput.value : null,
+      soldOut: !!$(".mc-card__sold", card),
+    };
   }
   // Mark every heart in `scope` from the stored set. Called at load and after
   // each infinite-scroll append (the click handler below is delegated and
@@ -641,10 +699,183 @@
     var id = String(b.getAttribute("data-product-id"));
     var loved = readLoved();
     var i = loved.indexOf(id);
-    if (i === -1) loved.push(id); else loved.splice(i, 1);
+    var meta = readMeta();
+    if (i === -1) {
+      loved.push(id);
+      var card = b.closest("[data-mc-card]");
+      if (card) meta[id] = captureCardMeta(card);
+    } else {
+      loved.splice(i, 1);
+      delete meta[id];
+    }
     writeLoved(loved);
+    writeMeta(meta);
     b.setAttribute("aria-pressed", i === -1 ? "true" : "false");
   });
   applyLoved(document);
   surgeLoved();
+
+  // ─── THE WISHLIST PANEL ──────────────────────────────────────────────────────
+  // Opened from the header heart (sections/header.liquid), rendered once,
+  // globally, by snippets/marathon-wishlist.liquid. Reuses `.mc-panel`'s own
+  // fixed-overlay CSS and this file's own history-free open/close pair — this
+  // one never touches the address bar, unlike the product quick-view panel,
+  // because "loved products" is not a page a shopper would ever share a link
+  // to or expect Back to return them from.
+  var wishlistPanel = $("[data-mc-wishlist-panel]");
+  if (wishlistPanel) {
+    var wishlistList = $("[data-mc-wishlist-list]", wishlistPanel);
+    var wishlistEmpty = $("[data-mc-wishlist-empty]", wishlistPanel);
+
+    function renderWishlistRow(id, meta) {
+      var row = document.createElement("div");
+      row.className = "mc-wishlist__item";
+      row.setAttribute("data-mc-wishlist-item", id);
+
+      var link = document.createElement("a");
+      link.className = "mc-wishlist__thumb";
+      link.href = meta.url || "#";
+      if (meta.image) {
+        var img = document.createElement("img");
+        img.src = meta.image;
+        img.alt = meta.title || "";
+        img.loading = "lazy";
+        link.appendChild(img);
+      }
+      row.appendChild(link);
+
+      var body = document.createElement("div");
+      body.className = "mc-wishlist__body";
+
+      var price = document.createElement("p");
+      price.className = "mc-card__price mc-wishlist__price";
+      price.textContent = meta.soldOut ? "Sold out" : meta.price || "";
+      body.appendChild(price);
+
+      var actions = document.createElement("div");
+      actions.className = "mc-wishlist__actions";
+
+      if (meta.variantId && !meta.soldOut) {
+        // Single-variant products only (bags, fragrance) — the one case where
+        // a cart-ready variant id was already on the card with nothing to
+        // pick, so a real "Add to cart" belongs here. A product with a size
+        // run needs that choice made on the real product page — see the
+        // "View product" link below for everything else, sold-out included.
+        var add = document.createElement("button");
+        add.type = "button";
+        add.className = "mc-add mc-wishlist__add";
+        add.textContent = "Add to cart";
+        add.setAttribute("data-mc-wishlist-add", meta.variantId);
+        actions.appendChild(add);
+      }
+
+      var view = document.createElement("a");
+      view.className = "mc-panel__link mc-wishlist__view";
+      view.href = meta.url || "#";
+      view.textContent = meta.variantId && !meta.soldOut ? "View product" : "View & choose a size";
+      actions.appendChild(view);
+
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "mc-wishlist__remove";
+      remove.textContent = "Remove";
+      remove.setAttribute("data-mc-wishlist-remove", id);
+      actions.appendChild(remove);
+
+      body.appendChild(actions);
+      row.appendChild(body);
+      return row;
+    }
+
+    // RE-READS STATE EVERY OPEN, not once at load — a card loved or unloved
+    // on the grid since the panel last opened must never show stale here.
+    function renderWishlist() {
+      var loved = readLoved();
+      var meta = readMeta();
+      wishlistList.innerHTML = "";
+      var shown = 0;
+      loved.forEach(function (id) {
+        var m = meta[id];
+        if (!m) return; // meta can only be missing if storage was hand-edited
+        wishlistList.appendChild(renderWishlistRow(id, m));
+        shown++;
+      });
+      wishlistEmpty.hidden = shown > 0;
+      wishlistList.hidden = shown === 0;
+    }
+
+    function openWishlist() {
+      renderWishlist();
+      wishlistPanel.hidden = false;
+    }
+    function closeWishlist() {
+      wishlistPanel.hidden = true;
+    }
+
+    document.addEventListener("click", function (ev) {
+      if (ev.target.closest("[data-mc-wishlist-open]")) {
+        ev.preventDefault();
+        openWishlist();
+        return;
+      }
+      if (ev.target.closest("[data-mc-wishlist-close]")) {
+        closeWishlist();
+        return;
+      }
+      // Backdrop click (the panel's own padding, not the sheet) closes —
+      // same split as the quick-view panel.
+      if (ev.target === wishlistPanel) {
+        closeWishlist();
+        return;
+      }
+      var removeBtn = ev.target.closest("[data-mc-wishlist-remove]");
+      if (removeBtn) {
+        var id = removeBtn.getAttribute("data-mc-wishlist-remove");
+        var loved = readLoved();
+        var i = loved.indexOf(id);
+        if (i !== -1) loved.splice(i, 1);
+        writeLoved(loved);
+        var meta = readMeta();
+        delete meta[id];
+        writeMeta(meta);
+        applyLoved(document); // keeps a still-visible grid card's heart in sync
+        renderWishlist();
+        return;
+      }
+      var addBtn = ev.target.closest("[data-mc-wishlist-add]");
+      if (addBtn) {
+        var variantId = addBtn.getAttribute("data-mc-wishlist-add");
+        addBtn.classList.add("is-busy");
+        addBtn.disabled = true;
+        var originalText = addBtn.textContent;
+        addBtn.textContent = "Adding…";
+        fetch(shopRoot() + "cart/add.js", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ items: [{ id: Number(variantId), quantity: 1 }] }),
+        })
+          .then(function (res) {
+            return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+          })
+          .then(function (r) {
+            if (!r.ok) {
+              throw new Error((r.body && (r.body.description || r.body.message)) || "Could not add that.");
+            }
+            addBtn.textContent = "Added";
+            refreshCartCount();
+          })
+          .catch(function () {
+            addBtn.textContent = originalText;
+          })
+          .then(function () {
+            addBtn.classList.remove("is-busy");
+            addBtn.disabled = false;
+          });
+      }
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && !wishlistPanel.hidden) closeWishlist();
+    });
+  }
 })();

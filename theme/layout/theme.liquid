@@ -399,5 +399,16 @@
       <script src="{{ 'cart-drawer.js' | asset_url }}" defer="defer"></script>
     {%- endif -%}
       <script src="{{ 'marathon-search.js' | asset_url }}" defer="defer"></script>
+      {%- comment -%}
+        LOADED GLOBALLY, NOT JUST BY THE TWO SECTIONS THAT ALREADY EMIT IT.
+        The header wishlist icon (sections/header.liquid, data-mc-wishlist-open)
+        lives on every page, including ones with neither marathon-grid nor
+        marathon-home on them (product page, cart, search, policy pages) — so the
+        script that answers its click has to be here too. Idempotent: the file's
+        own `window.__marathonStorefront` guard means loading it twice on a page
+        that also has one of the two sections is a no-op, not a double-init.
+      {%- endcomment -%}
+      <script src="{{ 'marathon-storefront.js' | asset_url }}" defer="defer"></script>
+      {%- render 'marathon-wishlist' -%}
   </body>
 </html>

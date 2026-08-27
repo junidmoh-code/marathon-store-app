@@ -134,7 +134,7 @@
  * The column count does not change to compensate. */
 .mc-grid {
   display: grid;
-  grid-template-columns: repeat(var(--mc-cols, 2), 1fr);
+  grid-template-columns: repeat(var(--mc-cols, 3), 1fr);
   gap: var(--mc-hairline, 2px);
   margin: 0;
   padding: 0;
@@ -171,19 +171,19 @@
      even against a busy backdrop. */
   padding: var(--mc-frame, 10px);
   background: var(--mc-frame-fill, rgb(10 9 8));
-  border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
-  border-radius: var(--mc-frame-radius, 6px);
-  box-shadow: 0 3px 14px rgb(0 0 0 / 0.55);
-}
-/* When a price footer follows (every available product), square off the
-   photo's bottom corners and drop its bottom border — `.mc-card__price`
-   picks up right where the photo's mat ends, same fill, same side borders,
-   rounded only at its own bottom corners, so the two read as one continuous
-   frame rather than two stacked boxes. A sold-out tile has no price footer,
-   so its frame stays fully rounded on its own. */
-.mc-card__media:has(+ .mc-card__price) {
+  border-block-start: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  border-inline: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  /* NO bottom border, squared bottom corners: the footer slot always follows
+     now — price or "Sold out", same box either way (see `.mc-card__price`
+     and marathon-card.liquid) — so the photo is ALWAYS squared off at the
+     bottom, never fully rounded on its own. `.mc-card__price` picks up right
+     where the mat ends, same fill, same side borders, rounded only at its
+     own bottom corners, reading as one continuous frame. Used to be
+     conditional (`:has(+ .mc-card__price)`) back when a sold-out tile had no
+     footer at all — that was the bug this fixes: a sold-out tile was
+     shorter than its neighbours, with nothing occupying the footer's height. */
   border-radius: var(--mc-frame-radius, 6px) var(--mc-frame-radius, 6px) 0 0;
-  border-block-end: none;
+  box-shadow: 0 3px 14px rgb(0 0 0 / 0.55);
 }
 .mc-card__media img {
   width: 100%;
@@ -507,6 +507,11 @@
   color: var(--mc-btn-text);
   font: inherit;
   font-size: var(--mc-label);
+  /* Same label-role treatment as the site-wide `.button` rule and
+     `.mc-hero__cta` — every buy control reads as one consistent register. */
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
   cursor: pointer;
   /* 44px minimum touch target — this is a phone-first surface. */
   min-height: 4.4rem;
@@ -540,6 +545,98 @@
    neighbours. The rules that used to do all three are gone deliberately — they
    are what made opening a photograph rearrange the gallery. */
 .mc-card.is-open { z-index: auto; }
+
+/* ─── THE WISHLIST PANEL ──────────────────────────────────────────────────────
+   Global (rendered once by snippets/marathon-wishlist.liquid, opened from the
+   header heart on every page), so it borrows `.mc-panel`/`.mc-panel__sheet`
+   wholesale for the overlay chrome and only adds what a LIST of products,
+   rather than one product's detail, actually needs. */
+.mc-wishlist__sheet { max-width: 40rem; }
+.mc-wishlist__title { font-size: 2rem; margin: 0 0 0.4rem; padding-inline-end: 3rem; }
+.mc-wishlist__empty {
+  margin: 1rem 0 0.4rem;
+  font-size: 1.2rem;
+  line-height: 1.5;
+  opacity: 0.75;
+}
+.mc-wishlist__list { display: grid; gap: 1rem; }
+.mc-wishlist__item {
+  display: grid;
+  grid-template-columns: 6.4rem 1fr;
+  gap: 1rem;
+  padding-block-start: 1rem;
+  border-block-start: 1px solid rgb(255 255 255 / 0.10);
+}
+.mc-wishlist__list .mc-wishlist__item:first-child {
+  padding-block-start: 0;
+  border-block-start: 0;
+}
+.mc-wishlist__thumb {
+  display: block;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: var(--mc-field);
+  border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  border-radius: var(--mc-frame-radius, 6px);
+}
+.mc-wishlist__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: brightness(0.86) saturate(0.92) contrast(1.03);
+}
+.mc-wishlist__body { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+/* `.mc-card__price` gives this the same black-box treatment as a grid tile;
+   it only needs to stop being a full-width footer here, since it sits beside
+   a thumbnail rather than under one. */
+.mc-wishlist__price {
+  display: inline-block;
+  border-radius: var(--mc-frame-radius, 6px);
+}
+.mc-wishlist__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; }
+.mc-wishlist__add {
+  width: auto;
+  min-height: 0;
+  padding: 0.6rem 1.1rem;
+  font-size: 1.1rem;
+}
+.mc-wishlist__view { font-size: 1.1rem; }
+.mc-wishlist__remove {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: 1.1rem;
+  color: rgb(255 255 255 / 0.55);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.mc-wishlist__remove:hover { color: rgb(255 255 255 / 0.85); }
+
+/* THE HEADER HEART ITSELF. Dawn's own `icon-heart.svg` ships marked up for an
+   accordion toggle it was originally built for (`class="icon icon-accordion
+   icon-heart"`, baked into the SVG file, not added by context) — that class
+   sets `fill: none` for a line icon, which makes a heart with no `stroke`
+   attribute of its own render as literally nothing. Forcing the fill here
+   restores it as the same solid heart glyph as `.mc-love` on a card. */
+.header__icon--wishlist svg { fill: currentColor !important; stroke: none !important; }
+
+/* ─── BACK (snippets/marathon-back.liquid) ───────────────────────────────────── */
+.mc-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+  color: rgb(255 255 255 / 0.7);
+  text-decoration: none;
+  font-size: var(--mc-label-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 500;
+}
+.mc-back:hover { color: var(--mc-fg); }
+.mc-back span { font-size: 1.3em; line-height: 1; }
 
 /* ─── CATEGORY NAVIGATION ──────────────────────────────────────────────────── */
 .mc-nav {
@@ -997,6 +1094,54 @@
   text-transform: uppercase;
   letter-spacing: 0.01em;
 }
+
+/* SITE-WIDE, NOT JUST THE CUSTOM SECTIONS. Dawn marks every page heading with
+   one of its own type-scale utility classes (`.h0`–`.h4`) regardless of which
+   tag carries it — the product title is an `<h2 class="h1">`, a policy page's
+   heading is `<h1 class="h0">`, the search results heading is `<h2 class="h2">`
+   — so targeting those classes here, once, is what makes the product page,
+   cart, search results and every static page (About, policies) pick up the
+   SAME condensed caps as the homepage and the grid, without touching each
+   section's own file. `!important`: `component-*.css` files load with
+   `media="print"` switched to `all` on their own async `onload` (Dawn's
+   documented pattern for non-critical CSS), landing on the CSSOM after this
+   file regardless of `<link>` order — same non-deterministic cascade race
+   already found and fixed for the fence background. */
+/* EXCEPT the wordmark. `shop.name` in the header is itself an `.h2`
+   (sections/header.liquid), and the concept page keeps it as the one serif
+   element on an otherwise condensed-caps site — the brand mark, not a page
+   heading. `:not()` here, rather than reordering the rules, keeps this whole
+   block a single readable statement of "every heading except this one".
+
+   `.title`/`.title--primary` is Dawn's OTHER heading-utility family, distinct
+   from `.h0`–`.h4` — the cart ("Your cart"), search results, the collection
+   grid's own fallback heading, list-collections, blog and 404 all carry one
+   or the other (some carry both together; `main-blog.liquid`'s heading is
+   `.title--primary` with no bare `.title`, so both are listed, not just the
+   shorter one). */
+.h0:not(.header__heading-link *),
+.h1:not(.header__heading-link *),
+.h2:not(.header__heading-link *),
+.h3:not(.header__heading-link *),
+.h4:not(.header__heading-link *),
+.title, .title--primary,
+/* AND THE BARE TAGS, NO CLASS AT ALL. `sections/main-product.liquid` renders
+   the product title TWICE: a plain, classless `<h1>{{ product.title }}</h1>`
+   (Dawn's own SEO/accessibility duplicate — the one real semantic h1 for the
+   page) sitting right next to a `.h1`-classed `<h2>`. On the live product
+   page the classless one is the one actually laid out and visible — the
+   `.h2.h1` next to it renders at zero size — so a rule that only matches the
+   utility class never reaches the text a shopper actually sees. Scoped to
+   `main`, not `h1`/`h2` bare, so an unrelated bare heading somewhere in
+   Dawn's own chrome (there are none known, but the selector should not be a
+   landmine if one appears) is not silently swept up by a global tag rule. */
+main h1:not([class]), main h2:not([class]), main h3:not([class]), main h4:not([class]) {
+  font-family: 'Oswald', var(--font-heading-family, sans-serif) !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.01em !important;
+}
+
 .mc-nav__link,
 .mc-nav__toggle,
 .mc-sort__label,
@@ -1018,6 +1163,53 @@
   letter-spacing: 0.22em;
   opacity: 0.7;
   margin: 0 0 0.8rem;
+}
+
+/* SITE-WIDE BODY TEXT — the same LABEL-role sans as the rest of the design,
+   not the theme's own Newsreader serif. Two roles were already covered
+   (Oswald for headings above, the tracked sans for nav/labels), but ordinary
+   paragraph text — product descriptions, the cart's line-item details, the
+   condition line, footer copy — was still falling through to Dawn's own
+   `--font-body-family`, which is a serif face.
+
+   `body *`, NOT JUST `body`. A rule on `body` alone only sets `body`'s OWN
+   font, which descendants inherit — but inheritance is the WEAKEST source in
+   the cascade: any element with its own matching font-family rule, even a
+   plain one with no `!important`, wins over an inherited value regardless of
+   how important the ancestor's rule was. Dawn's `.rte` (rich text — product
+   descriptions, the condition line) and several other component classes DO
+   set their own font-family, so `body { !important }` alone left every one
+   of them still serif — verified on the real preview, not assumed. Matching
+   every descendant directly, still `!important`, is what actually reaches
+   them: two `!important` declarations are compared by specificity, and
+   `main h1:not([class])`/`.h1` etc. above still outrank a bare `body *` for
+   the headings that need to stay Oswald. */
+body, body * {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+}
+
+/* ─── BUTTONS — CHECKOUT, ADD TO CART, EVERY `.button` DAWN RENDERS ─────────── */
+/* `.button` is Dawn's own base class for every submit-style control in the
+   theme: the product page's Add to cart AND its dynamic checkout button
+   (snippets/buy-buttons.liquid), the cart page's checkout button
+   (sections/main-cart-footer.liquid, `.cart__checkout-button`), and the cart
+   drawer's equivalent — one rule here reaches all of them, the same way
+   `.h0`–`.h4` reached every page heading. Native Shopify checkout itself
+   (the page after the button is pressed) is a separate, hosted flow this
+   theme cannot restyle on this store's plan — this covers the button that
+   leads to it, which is theme-side.
+
+   Label-role type (the same tracked sans as nav/sort/eyebrows), not the
+   Oswald heading face — a buy button reads as an action, not a headline, and
+   this matches `.mc-hero__cta`'s already-established button register on the
+   home page. Colour and radius are Dawn's own (`--color-button` etc., via
+   `--mc-btn`/`--mc-btn-radius` above) — only the type and tracking change. */
+.button {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.1em !important;
+  font-weight: 600 !important;
+  border-radius: var(--mc-btn-radius) !important;
 }
 
 /* ─── THE HERO ─────────────────────────────────────────────────────────────── */

@@ -100,6 +100,18 @@
 {%- endcomment -%}
 {%- if variant == 'drawer' -%}
   <ul class="menu-drawer__menu has-submenu list-menu" role="list">
+    {%- comment -%}
+      HOME, first row. Without this the only way back to the homepage from
+      inside the drawer was the wordmark itself — not obvious as a link on
+      every visitor's first read, and every OTHER row here is a real nav
+      entry, so home should be one too, not an implicit assumption.
+    {%- endcomment -%}
+    <li>
+      <a href="{{ routes.root_url }}"
+         class="menu-drawer__menu-item list-menu__item link link--text focus-inset{% if request.page_type == 'index' %} menu-drawer__menu-item--active{% endif %}">
+        Home
+      </a>
+    </li>
     <li>
       <a href="/collections/all?sort_by=created-descending"
          class="menu-drawer__menu-item list-menu__item link link--text focus-inset{% if request.path == '/collections/all' %} menu-drawer__menu-item--active{% endif %}">
@@ -191,6 +203,15 @@
         Fixing the children and leaving the parent alphabetical was the bug one
         link to the left.
       {%- endcomment -%}
+      {%- comment -%}
+        HOME, first row — same reasoning as the drawer variant above: every
+        other row here is a real link, home should not be the one exception
+        that only works by clicking the wordmark.
+      {%- endcomment -%}
+      <a class="mc-nav__link"
+         href="{{ routes.root_url }}"
+         {% if request.page_type == 'index' %}aria-current="page"{% endif %}>Home</a>
+
       <a class="mc-nav__link"
          href="/collections/all?sort_by=created-descending"
          {% if request.path == '/collections/all' %}aria-current="page"{% endif %}>Everything</a>

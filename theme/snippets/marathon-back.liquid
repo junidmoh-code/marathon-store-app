@@ -1,0 +1,21 @@
+{%- comment -%}
+  ─── BACK ───────────────────────────────────────────────────────────────────
+
+  A real control, not a reliance on the browser's own Back button (a shopper
+  who arrived via a shared link, a new tab, or search has no "back" to press
+  at all). `data-mc-back` is wired in marathon-storefront.js: it calls
+  `history.back()` when this tab actually has somewhere of ours to go back
+  TO, and falls through to a plain link otherwise — so the control never
+  dead-ends. The `href` here is that fallback, resolved at RENDER time from
+  `document.referrer` when JavaScript can, or the given `fallback` param when
+  it can't (no-JS, or a referrer Shopify's own privacy policy stripped).
+
+  ACCEPTS
+    fallback   URL to use if there's no referrer and no history to walk back
+               through — pass the sensible parent (a collection page's own
+               URL, or `routes.root_url` on the product page).
+    label      link text, defaults to "Back"
+{%- endcomment -%}
+<a class="mc-back" href="{{ fallback | default: routes.root_url }}" data-mc-back>
+  <span aria-hidden="true">&larr;</span> {{ label | default: 'Back' }}
+</a>
