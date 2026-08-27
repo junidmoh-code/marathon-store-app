@@ -54,6 +54,7 @@ import {
   validatePayload,
 } from "./compliance.mjs";
 import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } from "./media.mjs";
+import { sweepDirty } from "./inventorySync.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable,
   TRACKED_VARIANT, untrackedVariants, enforceTracking,
@@ -891,6 +892,41 @@ for (const { pid, want } of capped) {
   } catch (e) {
     results.push({ pid, ok: false, why: String(e?.message || e) });
   }
+}
+
+// ── INVENTORY SWEEP — the quantity cannot rot either ─────────────────────────
+// Same argument as the search-index sweep below, and a more expensive bug: the
+// per-product push above only fires on a state CHANGE, so a product that is
+// already live never has its quantity written again. On 2026-08-27, 15 of 283
+// live variants had drifted, 14 with Shopify HIGHER than the app, two of them
+// offering stock the app did not have at all.
+//
+// Driven by the markers stockChangeMarksInventoryDirty writes, so a quiet shop
+// costs one small read. Bounded per run; a marker survives a failed push and
+// is only cleared once the numbers are actually on Shopify.
+try {
+  const liveNowInv = new Set(Object.entries(await readAllPublishNodes(db))
+    .filter(([, n]) => n?.state === "live" && n?.liveState === "on")
+    .map(([p]) => p));
+  const inv = await sweepDirty(db, graphql, {
+    commit: COMMIT,
+    isLive: (pid) => liveNowInv.has(pid),
+    log: console.log,
+  });
+  if (inv.seen) {
+    console.log(`\ninventory: ${inv.seen} marked · ${inv.pushed} corrected · ${inv.cleared} cleared` +
+      (inv.remaining ? ` · ${inv.remaining} left for the next tick` : ""));
+    for (const r of inv.results) {
+      if (r.drift?.length) {
+        for (const d of r.drift) {
+          const danger = d.shopify > d.quantity ? "  ← was OVERSELLABLE" : "";
+          console.log(`  ${r.pid} ${d.sizeKey}: shopify ${d.shopify} → ${d.quantity}${danger}`);
+        }
+      }
+    }
+  }
+} catch (e) {
+  console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — run sync-inventory.mjs --all --commit`);
 }
 
 // ── SEARCH-INDEX SWEEP — the index cannot rot ────────────────────────────────
