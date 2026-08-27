@@ -105,19 +105,33 @@ const MUTATIONS = [
   // ── GATE 3: the server ────────────────────────────────────────────────────
   {
     id: "M-SERVER",
-    guard: "GATE 3 — setCategoryPolicy refuses every caller but the owner",
+    guard: "GATE 3 — an account WITHOUT the engine_policy flag is refused",
     file: WRITE,
-    from: `  if (typeof callerEmail !== "string" || callerEmail !== adminEmail) {
-    throw httpsError("permission-denied", "Engine policy is owner-only.");
-  }`,
+    from: `  if (!granted) throw httpsError("permission-denied", "Engine Policy permission required.");`,
     to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-FLAG",
+    guard: "GATE 3 — the grant is the boolean true, not anything truthy that lands in the field",
+    file: WRITE,
+    from: `    granted = snap.val() === true;`,
+    to: `    granted = !!snap.val();`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OWNER",
+    guard: "GATE 3 — the owner clause is an EQUALITY on the owner's email, not \"any caller who has one\"",
+    file: WRITE,
+    from: `  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;`,
+    to: `  if (typeof callerEmail === "string" && callerEmail) return;`,
     nodeTests: SERVER_TESTS,
   },
   {
     id: "M-SERVER-2",
     guard: "GATE 3 — the check is CALLED, not merely defined (the deletion that looks like a refactor)",
     file: WRITE,
-    from: `  assertSuperAdmin(callerEmail, adminEmail);
+    from: `  await assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail });
 
   const d = data && typeof data === "object" ? data : {};`,
     to: `  const d = data && typeof data === "object" ? data : {};`,

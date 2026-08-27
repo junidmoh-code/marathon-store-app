@@ -43,6 +43,10 @@ const { enginePolicyVisibleForViewer } = await import("../../config/enginePolicy
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 const OWNER = { email: ADMIN_EMAIL };
 const STAFF = { email: "rashid@marathon.internal" };
+// The second identity the gate admits since 2026-08-27: a staff account whose
+// /users record carries the flag. Same shape the app builds — an Auth email and
+// the permFlags mirror off the /users record, nothing else.
+const GRANTED = { email: "mc@marathon.internal", permFlags: { engine_policy: true } };
 
 const render = (props) => {
   let tree;
@@ -72,13 +76,44 @@ describe("the identity test itself", () => {
     }
   });
 
-  it("no permission, stockRole or store scope opens it", () => {
-    // The brief is explicit that this is not permission-gated, and the reason
-    // matters: the owner's own /users record has NO permissions array, so a
-    // permission gate would lock out the only intended user while admitting
-    // whoever the permission was later granted to.
-    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permissions: ["engine_policy", "user_management"], stockRole: "admin", destShop: null })).toBe(false);
+  it("admits an account carrying the engine_policy FLAG", () => {
+    expect(enginePolicyVisibleForViewer(GRANTED)).toBe(true);
+    // …and the owner still needs no record at all: his clause is the email.
+    expect(enginePolicyVisibleForViewer({ email: ADMIN_EMAIL, permFlags: null })).toBe(true);
+  });
+
+  it("the permissions ARRAY is not the signal — only the flag mirror is", () => {
+    // Two copies of one grant exist: the array (what the editor edits) and the
+    // permFlags mirror (what a rule and the server can read). This gate reads
+    // the SAME field the server callable reads, so a client answer and a server
+    // answer cannot drift; reading the array here would let them.
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permissions: ["engine_policy", "user_management"] })).toBe(false);
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permissions: ["engine_policy"], permFlags: { shopify_publish: true } })).toBe(false);
+  });
+
+  it("no stockRole, role or store scope opens it", () => {
+    // stockRole 'admin' is deliberately NOT a way in, even though the live RTDB
+    // rule lets those accounts write /config/refillEngine directly. This screen
+    // is granted by name or not at all.
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, stockRole: "admin", role: "admin", destShop: null })).toBe(false);
     expect(enginePolicyVisibleForViewer({ permissions: ["everything"], stockRole: "admin" })).toBe(false);
+  });
+
+  it("the flag must be the boolean true, not anything truthy", () => {
+    // permFlagsFor writes booleans. A string, a 1 or an object in that field is
+    // a stray write, not a grant.
+    for (const v of ["true", 1, "yes", {}, ["engine_policy"]]) {
+      expect(enginePolicyVisibleForViewer({ email: STAFF.email, permFlags: { engine_policy: v } }),
+        `must refuse permFlags.engine_policy = ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+
+  it("a missing or unreadable /users record refuses rather than admitting", () => {
+    // AuthGate sets permRecord to null on a read failure, so this is the shape
+    // a transient outage produces. It must fail closed.
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permFlags: null })).toBe(false);
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email, permFlags: undefined })).toBe(false);
+    expect(enginePolicyVisibleForViewer({ email: STAFF.email })).toBe(false);
   });
 });
 
@@ -98,6 +133,12 @@ describe("GATE 2b — the component refuses on its own", () => {
 
   it("admits the owner — so the refusals above are not vacuous", () => {
     const names = screenNames(render({ viewer: OWNER }));
+    expect(names).toContain("EnginePolicyAuthed");
+    expect(names).not.toContain("Refused");
+  });
+
+  it("admits a granted staff account mounted directly", () => {
+    const names = screenNames(render({ viewer: GRANTED }));
     expect(names).toContain("EnginePolicyAuthed");
     expect(names).not.toContain("Refused");
   });
@@ -186,15 +227,18 @@ describe("App.jsx — the tile and the route", () => {
     expect(tile).toMatch(/enginePolicyVisibleForViewer\(\s*enginePolicyViewer\s*\)\s*&&\s*\{\s*key:\s*"engine_policy"/);
   });
 
-  it("GATE 1 — the tile's viewer comes from the AUTH email, not from a permissions record", () => {
+  it("GATE 1 — the tile's viewer is the AUTH email plus the permFlags mirror, and nothing else", () => {
     const line = lineWith("const enginePolicyViewer");
     expect(line).toMatch(/homeUser\?\.email/);
-    expect(line).not.toMatch(/permRecord|permissions|hasPermission|stockRole/);
+    expect(line).toMatch(/permFlags:\s*homePerm\?\.permFlags/);
+    // Not the array, not the helper, not the stock role: those would each be a
+    // different grant from the one the server checks.
+    expect(line).not.toMatch(/hasPermission|permissions:|stockRole/);
   });
 
   it("GATE 2 — the route guards the mount, independently of the tile", () => {
     const block = around("else if (role === ROLES.ENGINE_POLICY)", 0, 500);
-    expect(block).toMatch(/enginePolicyVisibleForViewer\(\s*\{\s*email:\s*authUser\?\.email\s*\}\s*\)/);
+    expect(block).toMatch(/enginePolicyVisibleForViewer\(\s*\{\s*email:\s*authUser\?\.email,\s*permFlags:\s*permRecord\?\.permFlags\s*\}\s*\)/);
     // Authorized branch first; the refusal arm must not be the privileged screen.
     expect(block).toMatch(/enginePolicyVisibleForViewer[\s\S]*\?[\s\S]*<EnginePolicyCard/);
     const cardAt = block.indexOf("<EnginePolicyCard");

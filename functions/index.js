@@ -635,6 +635,43 @@ async function assertPhotoGeneration(request) {
   }
 }
 
+// ─── ENGINE POLICY — ITS OWN GATE ────────────────────────────────────────────
+// setCategoryPolicy sat behind assertAdmin — the super-admin email and nobody
+// else — until 2026-08-27, when the owner asked for a second person (MC) to be
+// able to change the category map. There was no lesser grant to give: no
+// permission, no role and no stockRole opened that screen.
+//
+// So it gets the `photo_generation` treatment, for the same reason: the
+// narrowest possible grant, read from the SAME scalar the client gate reads
+// (/users/{uid}/permFlags/engine_policy — see permFlagsFor in
+// src/components/permissionCatalog.js). Reading the array instead would let a
+// client answer and a server answer drift the moment a mirror write failed.
+//
+// Nothing else about the account matters: not its role, not its stockRole, not
+// any other permission. Note in particular that a stockRole 'admin' does NOT
+// open this — those accounts can already write /config/refillEngine directly
+// through the SDK, which is a live-rules hole this gate cannot close and does
+// not pretend to (see the module header in lib/category-policy-write.cjs).
+//
+// FAIL CLOSED: an RTDB read error refuses. A gate that opens when the database
+// is unreachable is not a gate.
+async function assertEnginePolicy(request) {
+  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  let granted = false;
+  try {
+    const snap = await admin.database().ref(`users/${uid}/permFlags/engine_policy`).once("value");
+    granted = snap.val() === true;
+  } catch (err) {
+    console.error("assertEnginePolicy: permission read failed:", err.message);
+    throw new HttpsError("unavailable", "Could not check permissions. Try again.");
+  }
+  if (!granted) {
+    throw new HttpsError("permission-denied", "Engine Policy permission required.");
+  }
+}
+
 exports.getBroadcastGroups = onCall(
   { region: "us-central1", secrets: [broadcastToken] },
   async (request) => {
@@ -3006,6 +3043,10 @@ const VALID_PERMISSIONS = [
   // also needs a flag in /users/{uid}/permFlags before a RULE can read it.
   "shopify_publish",  // Shopify Publishing (writes /shopify_publish)
   "photo_generation", // generateProductPhotos — SPENDS MONEY per image
+  // Engine Policy card + setCategoryPolicy (owner request 2026-08-27). Granting
+  // it opens the category map for the WHOLE network; it grants no RTDB write of
+  // its own — the callable writes with the Admin SDK.
+  "engine_policy",
   "display_refills", // legacy no-op — kept for back-compat only
 ];
 
@@ -3536,11 +3577,15 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // owner-armed map that says what each category keeps at each location, and when
 // the engine asks for more. Reached from the Engine Policy card.
 //
-// Everything it does — the owner check, validation, the drift check, the
+// Everything it does — the caller check, validation, the drift check, the
 // rollback snapshot, the audit entry, the post-verify and the dry-run preview —
 // lives in lib/category-policy-write.cjs, injected with `db` and the caller's
-// email so every branch is unit-testable without firebase-admin. This is the
+// identity so every branch is unit-testable without firebase-admin. This is the
 // wrapper and nothing else.
+//
+// WHO MAY CALL IT (changed 2026-08-27): the owner's email, OR an account
+// carrying the `engine_policy` permission flag. See assertEnginePolicy above
+// for why the flag and not the permissions array.
 //
 // GATE 3 OF 3, and read the module header for the honest limits of it: live
 // RTDB rules already gate /config/refillEngine on stockRole 'admin' (as does
@@ -3560,10 +3605,11 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 exports.setCategoryPolicy = onCall(
   { region: "europe-west1", timeoutSeconds: 300, memory: "512MiB" },
   async (request) => {
-    // assertAdmin ALSO runs here, above the module, so the gate survives a
-    // refactor of either side. The module's own check is the one the mutation
-    // proof breaks; this one is belt to its braces.
-    assertAdmin(request);
+    // assertEnginePolicy ALSO runs here, above the module, so the gate survives
+    // a refactor of either side. The module's own check is the one the mutation
+    // proof breaks; this one is belt to its braces. Both read the same flag,
+    // and both refuse when the read fails.
+    await assertEnginePolicy(request);
     try {
       return await applyCategoryPolicy({
         db: admin.database(),

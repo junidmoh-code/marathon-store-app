@@ -32,6 +32,19 @@ export const PERMISSION_GROUPS = [
     { key: "stock_management", label: "Stock",          desc: "Transfers, locator & history", stock: true },
     { key: "stock_add",        label: "Set / Add Stock", desc: "Adjust on-hand counts", stock: true },
     { key: "barcode",          label: "Barcodes",        desc: "Create & print product barcodes", stock: true },
+    // ── ENGINE POLICY (added 2026-08-27, owner request) ─────────────────────
+    // Opens the Engine Policy card: the category map that says what every shop
+    // keeps of each category and when the engine asks for more. A wrong number
+    // in it is felt across the whole network before anyone notices, which is
+    // why it is `sensitive` and why it was owner-only until now.
+    //
+    // NO `stock: true`, and that is not an oversight. The card writes NOTHING
+    // directly — every change goes through the setCategoryPolicy callable,
+    // which writes with the Admin SDK. A stockRole would grant this holder
+    // write on /stock_targets, /locations, the engine kill switch and every
+    // /config branch: the exact over-grant the Online & Content keys below
+    // exist to end. See src/config/enginePolicy.js.
+    { key: "engine_policy",    label: "Engine Policy",   desc: "What each shop keeps, and when to reorder", sensitive: true },
   ] },
   { title: "Business", perms: [
     { key: "insights",      label: "Insights",          desc: "Business analytics" },

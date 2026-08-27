@@ -6,13 +6,17 @@
 // holds only the onCall wrapper.
 //
 // ── GATE 3 OF 3: THE SERVER CHECK ────────────────────────────────────────────
-// assertSuperAdmin below is the THIRD independent gate on the Engine Policy
-// feature. The other two are in the client (the home tile does not render, and
-// the route refuses to mount the component). Those two are CONVENIENCE AND
-// HONESTY, not security: anyone can edit their own JavaScript. This one is the
-// only gate an attacker cannot reach around, and it fails closed on an absent
-// token, an anonymous session, a staff {username}@marathon.internal account,
-// and any Google account that is not the owner's.
+// assertEnginePolicyCaller below is the THIRD independent gate on the Engine
+// Policy feature. The other two are in the client (the home tile does not
+// render, and the route refuses to mount the component). Those two are
+// CONVENIENCE AND HONESTY, not security: anyone can edit their own JavaScript.
+// This one is the only gate an attacker cannot reach around, and it fails
+// closed on an absent token, an anonymous session, any account without the
+// `engine_policy` flag, and any Google account that is not the owner's.
+//
+// It admits exactly two identities: the owner's email, and an account whose own
+// /users record carries permFlags/engine_policy === true (owner request
+// 2026-08-27). It reads that flag itself rather than being told the answer.
 //
 // ── AND IT IS STILL NOT A SECURITY BOUNDARY, TODAY ───────────────────────────
 // STATE THIS PRECISELY, BECAUSE an earlier version of this comment
@@ -119,20 +123,44 @@ function canonical(v) {
 const sameValue = (a, b) => canonical(a) === canonical(b);
 
 // ── GATE 3 ───────────────────────────────────────────────────────────────────
-// Email identity, deliberately, and deliberately NOT a permissions array:
-// the owner's own /users record carries no permissions array at all — his
-// access works because hasPermission short-circuits on the hardcoded admin
-// constant. A permission-based gate here would lock out the one person the
-// feature exists for while letting through anyone a permission was granted to.
-// Staff sign in as {username}@marathon.internal and can never match.
+// TWO ways through, and only two:
+//
+//   A. the owner's email — checked on the EMAIL ALONE, because the owner's own
+//      /users record carries no permissions array at all. His access works
+//      because hasPermission short-circuits on the hardcoded admin constant, so
+//      a gate that asked only about a permission would lock out the one person
+//      the feature exists for.
+//   B. `permFlags/engine_policy === true` on the CALLER'S OWN /users record
+//      (owner request 2026-08-27). Staff sign in as {username}@marathon.internal
+//      and can never match A, so B is the only way a second person gets in.
+//
+// A role, a stockRole, a store scope and every other permission are all still
+// nothing here.
+//
+// THIS READS THE FLAG ITSELF rather than trusting a boolean handed in by the
+// wrapper. The two gates are only independent if each can refuse with the other
+// deleted, and a `callerGranted: true` argument would make this one a pass-
+// through of the caller's opinion. Same field, same `=== true`, twice.
+//
+// FAIL CLOSED: an unreadable /users record refuses with "unavailable", never
+// with access. A gate that opens when the database is unreachable is not a gate.
 //
 // DELETING THIS FUNCTION, OR ITS CALL, MUST FAIL TESTS. See
 // scripts/mutation-proof-engine-policy.mjs (M-SERVER).
-function assertSuperAdmin(callerEmail, adminEmail) {
+async function assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail }) {
   if (!adminEmail) throw httpsError("failed-precondition", "Admin identity is not configured.");
-  if (typeof callerEmail !== "string" || callerEmail !== adminEmail) {
-    throw httpsError("permission-denied", "Engine policy is owner-only.");
+  if (typeof callerEmail === "string" && callerEmail === adminEmail) return;
+  if (typeof callerUid !== "string" || !callerUid) {
+    throw httpsError("permission-denied", "Engine Policy permission required.");
   }
+  let granted = false;
+  try {
+    const snap = await db.ref(`users/${callerUid}/permFlags/engine_policy`).once("value");
+    granted = snap.val() === true;
+  } catch (err) {
+    throw httpsError("unavailable", "Could not check permissions. Try again.");
+  }
+  if (!granted) throw httpsError("permission-denied", "Engine Policy permission required.");
 }
 
 // The callable protocol's error shape, produced without importing
@@ -663,7 +691,7 @@ async function readHistory(db, limit = 25) {
 
 // ── THE ENTRY POINT ──────────────────────────────────────────────────────────
 async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, data, nowMs }) {
-  assertSuperAdmin(callerEmail, adminEmail);
+  await assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail });
 
   const d = data && typeof data === "object" ? data : {};
   const categoryKey = d.categoryKey;
@@ -676,7 +704,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   const knownCategoryKeys = Object.keys(taxonomy?.cats || {});
   const knownLocations = Object.keys(locationsNode || {});
 
-  // Read-only. Reached only after the owner check above, so a refused caller
+  // Read-only. Reached only after the caller check above, so a refused caller
   // does not get a catalogue-wide census either.
   if (d.action === "census") {
     // The cache key includes the live policy, so arming a category through any
@@ -1140,7 +1168,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 }
 
 module.exports = {
-  applyCategoryPolicy, assertSuperAdmin, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
+  applyCategoryPolicy, assertEnginePolicyCaller, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
   modelGroupArming, rowLocationsFor, deriveSizeRun, deriveGroupSizeRun,
   HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH,
   MAX_ROW_EDITS_PER_CALL, MAX_ROWS_PER_READ, httpsError, readMapPaged,

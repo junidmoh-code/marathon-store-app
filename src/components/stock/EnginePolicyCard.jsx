@@ -190,7 +190,7 @@ function Refused({ onExit }) {
   return (
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, color: "#fff", padding: "2rem 1rem" }}>
       <div style={{ ...GLASS, maxWidth: 420, margin: "12vh auto", padding: "1.5rem" }}>
-        <div style={{ fontSize: "1.05rem", fontWeight: 700 }}>Engine Policy is owner-only</div>
+        <div style={{ fontSize: "1.05rem", fontWeight: 700 }}>You don't have access to Engine Policy</div>
         <button onClick={onExit} style={{ ...bGhost, marginTop: "1.2rem" }}>Back</button>
       </div>
     </div>
@@ -198,7 +198,7 @@ function Refused({ onExit }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Everything below runs ONLY for a verified super-admin.
+// Everything below runs ONLY for the owner or a holder of `engine_policy`.
 // ═════════════════════════════════════════════════════════════════════════════
 function EnginePolicyAuthed({ viewer, products, onExit }) {
   const [census, setCensus] = useState(null);
@@ -216,7 +216,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // policy question asked per PRODUCT instead of per category — which shop
   // carries this line — so it belongs here rather than on a surface of its own.
   // The tab renders inside EnginePolicyAuthed, which only ever mounts for a
-  // verified super-admin, and it re-checks that condition for itself below:
+  // verified viewer, and it re-checks that condition for itself below:
   // three independent gates, exactly as the card's other contents have.
   const [tab, setTab] = useState("categories");
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
@@ -608,7 +608,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
 
         {tab === "seating" && !open ? (
           // GATE 2c. EnginePolicyAuthed already only mounts for a verified
-          // super-admin, and App.jsx gates the tile and the route. This is a
+          // viewer, and App.jsx gates the tile and the route. This is a
           // fourth, independent check on the tab itself, so that deleting any
           // one of them leaves the others working — mutation-proved, not
           // asserted.
