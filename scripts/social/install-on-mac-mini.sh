@@ -1,4 +1,24 @@
 #!/bin/bash
+
+# ── THE WHOLE SCRIPT IS PARSED BEFORE ANY OF IT RUNS ─────────────────────────
+# This is not style. Step 2 does `git reset --hard` on the clone that CONTAINS
+# THIS FILE, so the file changes on disk while bash is executing it — and bash
+# reads a script incrementally, by BYTE OFFSET. After the reset it carries on
+# reading the new file from the old offset, which lands mid-statement and runs
+# a spliced mixture of the two versions.
+#
+# That is not theoretical. On 2026-08-27 a fix that resolves npm absolutely was
+# merged, installed, and CONFIRMED PRESENT on disk — and the very next run
+# still died on "npm: command not found", because bash was executing the
+# previous version's bytes from a file that no longer said that.
+#
+# Wrapping everything in braces makes bash parse to the closing brace before
+# executing anything, so the entire script is in memory before step 2 can
+# rewrite it. The same idiom the `curl … | bash` install pattern above needs
+# for the same reason. NOTHING may follow the closing brace: bash would read
+# that from the changed file. The last statement inside it is an explicit exit.
+{
+
 # ── INSTALL THE SOCIAL PUBLISHER ON THE MAC MINI ─────────────────────────────
 # One command, idempotent, safe to re-run:
 #
@@ -330,3 +350,6 @@ cat <<EOF
    launchctl bootout gui/\$UID/$LABEL
 ═══════════════════════════════════════════════════════════════════════════
 EOF
+
+exit 0
+}
