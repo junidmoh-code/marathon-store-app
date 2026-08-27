@@ -163,18 +163,32 @@ const MUTATIONS = [
     id: "M-SEATING",
     guard: "The seating buttons ask what the RULES ask before offering the write",
     file: ACTIONS,
-    from: `  const canWrite = enginePolicySeatingWritable(viewer);
-  if (!canWrite) {`,
-    to: `  const canWrite = enginePolicySeatingWritable(viewer);
-  if (false) {`,
+    from: `  if (!canSwitchOff && !canMove) {`,
+    to: `  if (false) {`,
     tests: SEAT_TESTS,
   },
   {
     id: "M-SEATING-ROLE",
-    guard: "…and it is stockRole 'admin', not merely HAVING a stockRole (/stock_targets asks for admin)",
+    guard: "…and switching off is stockRole 'admin', not merely HAVING a stockRole (/stock_targets asks for admin)",
     file: "src/config/enginePolicy.js",
     from: `  return viewer.stockRole === "admin";`,
     to: `  return !!viewer.stockRole;`,
+    tests: SEAT_TESTS,
+  },
+  {
+    id: "M-SEATING-MOVE",
+    guard: "…while MOVING asks the movement rule's own question — collapsing the two refuses someone the rules allow",
+    file: "src/config/enginePolicy.js",
+    from: `  return ["admin", "warehouse", "store"].includes(viewer.stockRole);`,
+    to: `  return viewer.stockRole === "admin";`,
+    tests: SEAT_TESTS,
+  },
+  {
+    id: "M-SEATING-TICK",
+    guard: "The switch-off tick cannot smuggle a switch-off past the gate",
+    file: ACTIONS,
+    from: `  const offToo = alsoOff && canSwitchOff;`,
+    to: `  const offToo = alsoOff;`,
     tests: SEAT_TESTS,
   },
   // ── GATE 3: the server ────────────────────────────────────────────────────

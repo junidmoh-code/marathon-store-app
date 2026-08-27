@@ -117,6 +117,35 @@ export function enginePolicySeatingWritable(viewer) {
   return viewer.stockRole === "admin";
 }
 
+// ─── AND MOVING IS NOT SWITCHING OFF ─────────────────────────────────────────
+// The first version of the gate above stood over all three buttons at once and
+// demanded 'admin' for every one of them. That is right for Switch off, for
+// Re-seat, and for Move-and-switch-off with the tick left in — all three write
+// /stock_targets. It is WRONG for the fourth thing this screen can do.
+//
+// Un-tick "Switch off {label}" and the action becomes Move only, which calls
+// applyMovement and nothing else: /stock and /stock_movements, no target row
+// (seatingStore.js — `if (!alsoSwitchOff) return` lands before switchOff). The
+// rules ask less of it:
+//
+//   /stock/$loc/$pid/$size            .write     … stockRole EXISTS
+//   /stock_movements/$mv/type         .validate  … 'transfer_out' needs
+//                                                  warehouse | store | admin
+//
+// So a grantee holding stockRole 'store' may legitimately move the stock and
+// may not switch the shop off — and the coarse gate told them they could do
+// neither, in a sentence claiming they lacked stock access altogether. Refusing
+// someone who would have succeeded is a smaller harm than offering a button
+// that fails, but it is still a wrong answer, and this screen is not allowed to
+// give one. (Adversarial re-review, PR #469.)
+export function enginePolicySeatingMovable(viewer) {
+  if (!viewer) return false;
+  if (viewer.email === ADMIN_EMAIL) return true;
+  // The movement rule's own list, in its own order. `p` roles (POS) are absent
+  // deliberately: they may record a sale, not a transfer.
+  return ["admin", "warehouse", "store"].includes(viewer.stockRole);
+}
+
 export function enginePolicyVisibleForViewer(viewer) {
   if (!viewer) return false;
   // Gate A — the owner, on the Auth email alone. Deliberately consults nothing

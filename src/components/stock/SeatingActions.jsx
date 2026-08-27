@@ -18,7 +18,7 @@ import {
   movePlan, moveBlockers, moveAndSwitchOff,
 } from "./seatingStore";
 import { seatingAt, SEAT_REASON } from "./seatingCore";
-import { enginePolicySeatingWritable } from "../../config/enginePolicy";
+import { enginePolicySeatingWritable, enginePolicySeatingMovable } from "../../config/enginePolicy";
 import { nextScanAt } from "./enginePolicyCore";
 import { labelFor } from "./locations";
 import { serverNowMs } from "../../utils/serverTime";
@@ -96,15 +96,22 @@ export default function SeatingActions({ seat, product, label, registry, locatio
   // It also no longer says who to ask: every other refusal in this folder says
   // "ask an admin" or names nothing, and this one should not go out of its way
   // to solicit a grant the design deliberately refuses to automate.
-  const canWrite = enginePolicySeatingWritable(viewer);
-  if (!canWrite) {
+  // TWO ANSWERS, because the buttons ask two different things of the rules.
+  // `canSwitchOff` covers everything that writes a /stock_targets row — Switch
+  // off, Re-seat, and Move WITH the tick left in. `canMove` covers Move only,
+  // which writes a movement and a cell and nothing else. A person can hold the
+  // second without the first, and this screen must not tell them otherwise.
+  const canSwitchOff = enginePolicySeatingWritable(viewer);
+  const canMove = enginePolicySeatingMovable(viewer);
+  // The tick can only ever mean "yes" for someone allowed to switch off.
+  const offToo = alsoOff && canSwitchOff;
+  if (!canSwitchOff && !canMove) {
     return (
       <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,.08)" }}>
         <div style={{ ...GLASS, padding: ".7rem .9rem", border: "1px solid rgba(251,191,36,.45)",
           color: AMBER, fontSize: ".82rem" }}>
-          These three write stock records straight to the database, so they need the
-          Admin stock role as well as Engine Policy. Everything else on this screen
-          still works.
+          These write stock records straight to the database, so they need a stock
+          role as well as Engine Policy. Everything else on this screen still works.
         </div>
       </div>
     );
@@ -168,30 +175,42 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             </div>
           )}
 
-          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: ".7rem",
-            fontSize: ".8rem", color: "#dfe7ff", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={alsoOff}
-              onChange={(e) => setAlsoOff(e.target.checked)}
-              aria-label="Switch off the source"
-            />
-            Switch off {label}
-          </label>
+          {/* THE TICK IS THE SWITCH-OFF, so it goes with it. A viewer who may
+              move but not switch off is offered Move only and told why, rather
+              than being handed a tick that turns their allowed action into a
+              refused one at the database. `offToo` — not `alsoOff` — is what
+              reaches the store, so a stale ticked state cannot leak through a
+              role change on an open screen. */}
+          {canSwitchOff ? (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: ".7rem",
+              fontSize: ".8rem", color: "#dfe7ff", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={alsoOff}
+                onChange={(e) => setAlsoOff(e.target.checked)}
+                aria-label="Switch off the source"
+              />
+              Switch off {label}
+            </label>
+          ) : (
+            <div style={{ fontSize: ".75rem", color: AMBER, marginTop: ".7rem" }}>
+              {label} stays on — switching a shop off needs the Admin stock role.
+            </div>
+          )}
 
           <div style={{ display: "flex", gap: 8, marginTop: ".7rem", flexWrap: "wrap" }}>
             <button
               onClick={() => run("move",
-                () => moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff: alsoOff, locations }),
+                () => moveAndSwitchOff({ seat, ctx, viewer, dest, alsoSwitchOff: offToo, locations }),
                 // "moved to" is only true of the positive legs; a negative
                 // travels the other way, so the wording says "moved with".
                 (r) => `${r.moved} ${lines.some((l) => l.qty < 0) ? "moved with" : "moved to"} ${labelFor(dest, registry)}`
                   + (r.replayed ? ` · ${r.replayed} already sent` : "")
                   + (r.failed.length ? ` · ${r.failed.length} failed: ${r.failed.join(" · ")}` : "")
-                  + (alsoOff ? (r.switchedOff ? ` · ${label} switched off.` : ` · ${label} left ON (${FAILURES[r.offReason] || r.offReason || "see the row"}).`) : "."))}
+                  + (offToo ? (r.switchedOff ? ` · ${label} switched off.` : ` · ${label} left ON (${FAILURES[r.offReason] || r.offReason || "see the row"}).`) : "."))}
               disabled={!!busy || !!destBlocked}
               style={{ ...bGreen, opacity: (busy || destBlocked) ? .5 : 1 }}
-            >{busy === "move" ? "…" : alsoOff ? "Move and switch off" : "Move only"}</button>
+            >{busy === "move" ? "…" : offToo ? "Move and switch off" : "Move only"}</button>
             <button onClick={() => { setConfirm(""); setDest(""); }} disabled={!!busy} style={bGhost}>Cancel</button>
           </div>
         </div>
@@ -220,21 +239,27 @@ export default function SeatingActions({ seat, product, label, registry, locatio
         </div>
       ) : confirm === "move" ? null : (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            onClick={() => setConfirm("off")}
-            disabled={!!busy || !!blockers || seat.reason === SEAT_REASON.SWITCHED_OFF}
-            title={blockers ? "Move the stock out first" : "This shop does not carry this line"}
-            style={{ ...bGray, opacity: (busy || blockers || seat.reason === SEAT_REASON.SWITCHED_OFF) ? .45 : 1 }}
-          >Switch off</button>
+          {/* Each button is offered against the rule IT will meet, not against
+              the strictest rule on the row. */}
+          {canSwitchOff && (
+            <button
+              onClick={() => setConfirm("off")}
+              disabled={!!busy || !!blockers || seat.reason === SEAT_REASON.SWITCHED_OFF}
+              title={blockers ? "Move the stock out first" : "This shop does not carry this line"}
+              style={{ ...bGray, opacity: (busy || blockers || seat.reason === SEAT_REASON.SWITCHED_OFF) ? .45 : 1 }}
+            >Switch off</button>
+          )}
 
-          <button
-            onClick={() => setConfirm("move")}
-            disabled={!!busy || !lines.length}
-            title={lines.length ? "Move the stock, and switch this shop off" : "Nothing here to move"}
-            style={{ ...bGray, opacity: (busy || !lines.length) ? .45 : 1 }}
-          >Move and switch off</button>
+          {canMove && (
+            <button
+              onClick={() => setConfirm("move")}
+              disabled={!!busy || !lines.length}
+              title={lines.length ? "Move the stock, and switch this shop off" : "Nothing here to move"}
+              style={{ ...bGray, opacity: (busy || !lines.length) ? .45 : 1 }}
+            >{canSwitchOff ? "Move and switch off" : "Move stock"}</button>
+          )}
 
-          {canUndo && (
+          {canUndo && canSwitchOff && (
             <button
               onClick={() => run("reseat", () => reseat({ seat, ctx, locations }),
                 (r) => `${label} re-seated — ${r.rowCount} ${r.rowCount === 1 ? "row" : "rows"} restored.`)}

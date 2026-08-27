@@ -44,11 +44,15 @@ vi.mock("./seatingStore", () => ({
 }));
 
 const SeatingActions = (await import("./SeatingActions.jsx")).default;
-const { enginePolicySeatingWritable } = await import("../../config/enginePolicy.js");
+const { enginePolicySeatingWritable, enginePolicySeatingMovable } = await import("../../config/enginePolicy.js");
 
 const OWNER = { email: "gunidmoh@gmail.com" };
 const GRANTED_NO_STOCK = { email: "mc@marathon.internal", permFlags: { engine_policy: true } };
 const GRANTED_WITH_STOCK = { ...GRANTED_NO_STOCK, stockRole: "admin" };
+// The person the coarse first gate got wrong: allowed to move stock by the
+// movement rule, not allowed to write a target row. Both halves are true at once
+// and the screen has to say so. (Adversarial re-review, PR #469.)
+const GRANTED_STORE = { ...GRANTED_NO_STOCK, stockRole: "store" };
 
 const SEAT = { loc: "marathon-pe", pid: "p1", reason: "carried" };
 const CTX = { stock: {}, targets: {} };
@@ -82,6 +86,7 @@ describe("enginePolicySeatingWritable", () => {
       // /stock_targets, and a switch-off writes a target row first. Half a
       // write is worse than none: it would leave the row set and the cells not.
       { email: "x@marathon.internal", stockRole: "warehouse" },
+      { email: "x@marathon.internal", stockRole: "store" },
       { email: "x@marathon.internal", stockRole: "" },
       // The engine_policy flag is not a stock grant, however it is spelled.
       { email: "x@marathon.internal", permFlags: { engine_policy: true, stock_add: true } },
@@ -89,6 +94,39 @@ describe("enginePolicySeatingWritable", () => {
     ]) {
       expect(enginePolicySeatingWritable(v), `must refuse ${JSON.stringify(v)}`).toBe(false);
     }
+  });
+
+  it("MOVING asks the movement rule's question instead — a wider list", () => {
+    // /stock needs a stockRole to exist; the movement's own type rule admits
+    // warehouse | store | admin for a transfer_out. Nothing else.
+    for (const role of ["admin", "warehouse", "store"]) {
+      expect(enginePolicySeatingMovable({ email: "x@marathon.internal", stockRole: role }),
+        `must admit ${role}`).toBe(true);
+    }
+    expect(enginePolicySeatingMovable(OWNER)).toBe(true);
+    for (const v of [
+      null, undefined, {}, GRANTED_NO_STOCK,
+      // POS roles record a sale; they do not transfer.
+      { email: "x@marathon.internal", stockRole: "pos" },
+      { email: "x@marathon.internal", stockRole: "p" },
+      { email: "x@marathon.internal", stockRole: "" },
+      { email: "x@marathon.internal", stockRole: true },
+      { email: "x@marathon.internal", permissions: ["stock_management"] },
+    ]) {
+      expect(enginePolicySeatingMovable(v), `must refuse ${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+
+  it("the two are ordered — anyone who may switch off may also move", () => {
+    // If this ever inverted, the screen would offer a switch-off to somebody it
+    // refuses a move to, and the combined action would half-complete.
+    for (const role of ["admin", "warehouse", "store", "pos", "", undefined]) {
+      const v = { email: "x@marathon.internal", stockRole: role };
+      if (enginePolicySeatingWritable(v)) {
+        expect(enginePolicySeatingMovable(v), `${role} may switch off but not move`).toBe(true);
+      }
+    }
+    expect(enginePolicySeatingWritable(OWNER) && enginePolicySeatingMovable(OWNER)).toBe(true);
   });
 
   it("is NOT the gate that opens the screen — the two answer different questions", async () => {
@@ -105,13 +143,13 @@ describe("enginePolicySeatingWritable", () => {
 
 // ── THE ACTIONS THEMSELVES ───────────────────────────────────────────────────
 describe("SeatingActions refuses in words rather than at the database", () => {
-  it("a granted viewer WITHOUT a stockRole gets an explanation and no buttons", () => {
+  it("a granted viewer WITH NO stockRole AT ALL gets an explanation and no buttons", () => {
     const tree = render(GRANTED_NO_STOCK);
     expect(buttonLabels(tree)).toBe("");
-    // It names the ACTUAL requirement — the Admin stock role, not "Stock
-    // access": the Stock permission group does not open this, so the vaguer
-    // wording sent people to tick the wrong toggle. (Round 2 review.)
-    expect(text(tree)).toContain("Admin stock role");
+    // It names a stock ROLE — not "Stock access", which points at the Stock
+    // permission group, which does not open this. The vaguer wording sent
+    // people to tick the wrong toggle. (Round 2 review.)
+    expect(text(tree)).toContain("stock role");
     // …and it names what still works, so the screen does not read as broken.
     expect(text(tree)).toContain("still works");
     // It must NOT repeat the claim this file's own header disproves: plain
@@ -119,6 +157,27 @@ describe("SeatingActions refuses in words rather than at the database", () => {
     expect(text(tree)).not.toMatch(/[Ss]witching a shop off moves stock/);
     // House style: no other refusal in this folder names a person.
     expect(text(tree)).not.toContain("Junid");
+  });
+
+  // ── THE CASE THE COARSE GATE GOT WRONG ────────────────────────────────────
+  it("a 'store' stockRole is offered the MOVE and refused the switch-off", () => {
+    const tree = render(GRANTED_STORE);
+    const labels = buttonLabels(tree);
+    // The movement rule admits warehouse|store|admin for transfer_out, so this
+    // person may move. Refusing them was a wrong answer, not a safe one.
+    expect(labels).toContain("Move stock");
+    // …and the target row still needs 'admin', so these stay away.
+    expect(labels).not.toContain("Switch off");
+    expect(labels).not.toContain("Re-seat");
+    // The button must not promise the switch-off it cannot perform.
+    expect(labels).not.toContain("Move and switch off");
+  });
+
+  it("the switch-off tick is not offered to someone who may not switch off", () => {
+    // The tick turns an allowed action into a refused one at the database.
+    // It goes with the thing it controls, replaced by the reason.
+    const tree = render(GRANTED_STORE);
+    expect(tree.root.findAllByType("input").length).toBe(0);
   });
 
   it("the owner still gets the buttons — the refusal above is not vacuous", () => {
@@ -145,7 +204,7 @@ describe("SeatingActions refuses in words rather than at the database", () => {
 describe("the refusal is placed after the hooks, not before them", () => {
   const src = readFileSync(new URL("./SeatingActions.jsx", import.meta.url), "utf8");
   it("no hook appears anywhere after the gate", () => {
-    const at = src.indexOf("const canWrite = enginePolicySeatingWritable(viewer);");
+    const at = src.indexOf("const canSwitchOff = enginePolicySeatingWritable(viewer);");
     expect(at, "SeatingActions must gate on enginePolicySeatingWritable").toBeGreaterThan(-1);
     // TO THE END OF THE COMPONENT, not to the next `return (`. The first draft
     // stopped at the refusal branch's own return — about ten lines — so it read
@@ -185,7 +244,7 @@ describe("the refusal is placed after the hooks, not before them", () => {
   });
 
   it("the gate is above every write call site, not beside them", () => {
-    const at = src.indexOf("const canWrite = enginePolicySeatingWritable(viewer);");
+    const at = src.indexOf("const canSwitchOff = enginePolicySeatingWritable(viewer);");
     for (const fn of ["switchOff(", "reseat(", "moveAndSwitchOff("]) {
       const callAt = src.indexOf(`${fn}{ seat`);
       expect(callAt, `SeatingActions must call ${fn}`).toBeGreaterThan(-1);
