@@ -633,6 +633,7 @@
   border-block-start: 0;
 }
 .mc-wishlist__thumb {
+  position: relative;
   display: block;
   aspect-ratio: 1 / 1;
   overflow: hidden;
@@ -643,6 +644,7 @@
   border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
   border-radius: var(--mc-frame-radius, 6px);
 }
+.mc-wishlist__thumb-link { display: block; width: 100%; height: 100%; }
 /* THE LOVED PAGE (owner order 2026-08-27) IS A REAL PAGE, WITH ROOM — its
    photos read more like the quick-view panel's big photograph than the old
    panel's cramped thumbnail. `.mc-wishlist__item`'s column width is a single
@@ -692,24 +694,61 @@
   border-radius: var(--mc-frame-radius, 6px);
 }
 .mc-wishlist__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; }
+/* BOLD ON PURPOSE (redesign, owner order 2026-08-27: "make it bold and
+   clean") — every loved product carries this button now, sold-out excepted,
+   so it needs to read as the row's one clear action, not a quiet aside. */
 .mc-wishlist__add {
   width: auto;
   min-height: 0;
-  padding: 0.6rem 1.1rem;
-  font-size: 1.1rem;
+  padding: 0.7rem 1.4rem;
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
-.mc-wishlist__view { font-size: 1.1rem; }
+
+/* "REMOVE" IS A PLAIN × ON THE PHOTO NOW, NOT A TEXT LINK IN THE ACTIONS ROW
+   (redesign, owner order 2026-08-27) — a small dark badge in the corner a
+   shopper already expects a dismiss control to live in, same visual
+   language as `.mc-panel__close`, scaled down for a thumbnail instead of a
+   full photo. */
 .mc-wishlist__remove {
-  background: none;
-  border: 0;
+  position: absolute;
+  inset-block-start: 0.4rem;
+  inset-inline-start: 0.4rem;
+  z-index: 2;
+  width: 2.4rem;
+  height: 2.4rem;
+  display: grid;
+  place-items: center;
   padding: 0;
-  font: inherit;
-  font-size: 1.1rem;
-  color: rgb(255 255 255 / 0.55);
-  text-decoration: underline;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 1;
   cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
 }
-.mc-wishlist__remove:hover { color: rgb(255 255 255 / 0.85); }
+.mc-wishlist__remove:hover { background: rgb(0 0 0 / 0.85); transform: scale(1.08); }
+
+/* THE SIZE POP-OUT (redesign, owner order 2026-08-27: "sizes option will
+   pop out black box with available size... clean... bold"). Hidden until
+   "Add to cart" is tapped on a sized product — see marathon-storefront.js.
+   Reuses `.mc-size`'s own pill buttons wholesale; only the box around them
+   is new here. `mc-fade` is the same keyframe the quick-view panel already
+   uses, so a pop-out anywhere on this site opens the same way. */
+.mc-wishlist__sizepop {
+  margin-block-start: 0.2rem;
+  padding: 1rem;
+  background: var(--mc-frame-fill, rgb(10 9 8));
+  border: 1px solid var(--mc-frame-edge, rgb(255 255 255 / 0.10));
+  border-radius: var(--mc-btn-radius);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+  animation: mc-fade 0.15s ease-out;
+}
+.mc-wishlist__sizepop[hidden] { display: none; }
+.mc-wishlist__sizepop .mc-sizes__legend { margin: 0 0 0.5rem; }
 
 /* THE HEADER HEART ITSELF. Dawn's own `icon-heart.svg` ships marked up for an
    accordion toggle it was originally built for (`class="icon icon-accordion
