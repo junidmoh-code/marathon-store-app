@@ -647,8 +647,28 @@
    photos read more like the quick-view panel's big photograph than the old
    panel's cramped thumbnail. `.mc-wishlist__item`'s column width is a single
    property override, everything else (price box, actions, remove) inherits
-   unchanged from the shared `.mc-wishlist__*` rules above. */
-.mc-loved-page { max-width: 60rem; margin: 0 auto; padding: 2.4rem 1.6rem 4rem; }
+   unchanged from the shared `.mc-wishlist__*` rules above.
+
+   SOLID BACKGROUND, MATCHING THE CART (owner order 2026-08-27, second pass).
+   Every OTHER page on this theme shows the fence pattern because nothing
+   paints over the fixed `.mc-fence-bg` layer sitting behind `body` — but
+   Dawn's own cart section wraps in `color-background-1`, which resolves to
+   a fully OPAQUE `rgb(18 18 18)` (the theme's own `--color-background`,
+   already aliased here as `--mc-bg`) that hides the fence entirely across
+   its full width. Confirmed by inspecting the live cart page's computed
+   styles. This page had no such wrapper, so it showed fence texture where
+   the cart shows flat black — this makes them match exactly: full-bleed
+   solid fill (same 100vw/negative-margin technique `.mc-grid` uses,
+   necessary because this element does not span the viewport on its own),
+   with the max-width/padding that used to live here moved to a new inner
+   wrapper so the CONTENT still reads at the same width as before. */
+.mc-loved-page {
+  background: var(--mc-bg);
+  width: 100vw;
+  margin-inline-start: calc(50% - 50vw);
+  max-width: 100vw;
+}
+.mc-loved-page__inner { max-width: 60rem; margin: 0 auto; padding: 2.4rem 1.6rem 4rem; }
 .mc-loved-page__back { display: inline-block; margin-block-end: 1.2rem; }
 .mc-loved-page__title { font-size: 2.6rem; margin: 0 0 1.6rem; }
 .mc-loved-page .mc-wishlist__item { grid-template-columns: 13rem 1fr; gap: 1.6rem; }
