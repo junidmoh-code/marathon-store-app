@@ -254,7 +254,9 @@ export default function SeatingActions({ seat, product, label, registry, locatio
             <button
               onClick={() => setConfirm("move")}
               disabled={!!busy || !lines.length}
-              title={lines.length ? "Move the stock, and switch this shop off" : "Nothing here to move"}
+              title={!lines.length ? "Nothing here to move"
+                : canSwitchOff ? "Move the stock, and switch this shop off"
+                : "Move the stock only — switching off needs the Admin stock role"}
               style={{ ...bGray, opacity: (busy || !lines.length) ? .45 : 1 }}
             >{canSwitchOff ? "Move and switch off" : "Move stock"}</button>
           )}

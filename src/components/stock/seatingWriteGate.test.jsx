@@ -172,6 +172,10 @@ describe("SeatingActions refuses in words rather than at the database", () => {
     expect(labels).not.toContain("Re-seat");
     // The button must not promise the switch-off it cannot perform.
     expect(labels).not.toContain("Move and switch off");
+    // …and neither may its TOOLTIP, which is a second place the same promise
+    // can be made and was still making it. (Delta review, PR #469.)
+    const titles = tree.root.findAllByType("button").map((b) => b.props.title || "").join(" | ");
+    expect(titles).not.toMatch(/switch this shop off/);
   });
 
   it("the switch-off tick is not offered to someone who may not switch off", () => {
