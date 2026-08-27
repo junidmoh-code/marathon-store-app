@@ -72,10 +72,32 @@ fi
 echo "     at commit: $(git -C "$CLONE" rev-parse --short HEAD)"
 
 say "3/7  Installing dependencies"
+# ── npm IS RESOLVED, NOT ASSUMED ─────────────────────────────────────────────
+# SOCIAL-SETUP.md tells you to run this over ssh, and a non-interactive ssh
+# shell on this machine gets PATH=/usr/bin:/bin:/usr/sbin:/sbin — no
+# /opt/homebrew/bin, so a bare `npm` is "command not found". That failed at
+# step 3 of 7, AFTER the clone had already been reset to origin/main: the
+# checkout moved, the dependencies did not, and the agent was left running new
+# code against whatever was in node_modules. Resolved the same way NODE_BIN is,
+# a few steps below, and for the same reason.
+NPM_BIN="$(command -v npm 2>/dev/null || true)"
+if [ -z "$NPM_BIN" ]; then
+  for candidate in /opt/homebrew/bin/npm /usr/local/bin/npm; do
+    if [ -x "$candidate" ]; then NPM_BIN="$candidate"; break; fi
+  done
+fi
+if [ -z "$NPM_BIN" ] || [ ! -x "$NPM_BIN" ]; then
+  bad "no npm found — looked on PATH, then /opt/homebrew/bin/npm and /usr/local/bin/npm."
+  bad "REFUSING to continue: the clone has been updated but its dependencies have not,"
+  bad "and an agent running new code against old node_modules fails in ways that do not"
+  bad "look like a missing npm. Install Node, or run this with npm on PATH."
+  exit 2
+fi
+echo "     using: $NPM_BIN"
 # ONLY functions/ — that is where firebase-admin and google-auth-library live,
 # and they are the only dependencies the publisher's import graph reaches.
 # The root install pulls vite and puppeteer, which this machine has no use for.
-( cd "$CLONE/functions" && npm install --omit=dev --no-audit --no-fund --silent )
+( cd "$CLONE/functions" && "$NPM_BIN" install --omit=dev --no-audit --no-fund --silent )
 ok "functions dependencies installed"
 
 say "4/7  Checking credentials"
