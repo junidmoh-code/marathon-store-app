@@ -755,13 +755,56 @@
       return listEl.closest(".mc-wishlist__sheet, .mc-loved-page") || listEl.parentElement || document;
     }
 
+    // Extracted from the old inline add-to-cart click handler (owner order
+    // 2026-08-27, redesign pass) so BOTH a direct single-variant tap on
+    // "Add to cart" and a size picked from the pop-out below fire the exact
+    // same fetch — a shopper on a sized product no longer has to click
+    // "Add to cart" a second time after choosing a size.
+    function performWishlistAdd(variantId, btnEl) {
+      btnEl.classList.add("is-busy");
+      btnEl.disabled = true;
+      var originalText = btnEl.textContent;
+      btnEl.textContent = "Adding…";
+      fetch(shopRoot() + "cart/add.js", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ items: [{ id: Number(variantId), quantity: 1 }] }),
+      })
+        .then(function (res) {
+          return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+        })
+        .then(function (r) {
+          if (!r.ok) {
+            throw new Error((r.body && (r.body.description || r.body.message)) || "Could not add that.");
+          }
+          btnEl.textContent = "Added";
+          refreshCartCount();
+        })
+        .catch(function () {
+          btnEl.textContent = originalText;
+        })
+        .then(function () {
+          btnEl.classList.remove("is-busy");
+          btnEl.disabled = false;
+        });
+    }
+
     function renderWishlistRow(id, meta) {
       var row = document.createElement("div");
       row.className = "mc-wishlist__item";
       row.setAttribute("data-mc-wishlist-item", id);
 
+      // THE THUMB IS A WRAPPER NOW, NOT THE LINK ITSELF (redesign, owner
+      // order 2026-08-27) — "Remove" moves onto the photo as a plain × in
+      // the top-left corner, and a button can't nest inside the `<a>` it
+      // would otherwise sit on top of without either stealing the link's
+      // click or needing stopPropagation gymnastics. A sibling button
+      // positioned over a sibling link has neither problem.
+      var thumb = document.createElement("div");
+      thumb.className = "mc-wishlist__thumb";
+
       var link = document.createElement("a");
-      link.className = "mc-wishlist__thumb";
+      link.className = "mc-wishlist__thumb-link";
       link.href = meta.url || "#";
       if (meta.image) {
         var img = document.createElement("img");
@@ -770,7 +813,21 @@
         img.loading = "lazy";
         link.appendChild(img);
       }
-      row.appendChild(link);
+      thumb.appendChild(link);
+
+      // NO SEPARATE "Remove" TEXT LINK (owner order 2026-08-27): the photo
+      // IS the "view product" link now — tapping it is how a shopper views
+      // the product, so a redundant "View product" link is gone — and
+      // removing is a plain × badge, not a row of text competing with it.
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "mc-wishlist__remove";
+      remove.setAttribute("aria-label", "Remove from loved");
+      remove.setAttribute("data-mc-wishlist-remove", id);
+      remove.textContent = "×";
+      thumb.appendChild(remove);
+
+      row.appendChild(thumb);
 
       var body = document.createElement("div");
       body.className = "mc-wishlist__body";
@@ -781,72 +838,65 @@
       body.appendChild(price);
 
       var variants = meta.variants || [];
-
-      // A SIZE PICKER INSIDE THE ROW ITSELF (owner order 2026-08-27) — the
-      // exact same buttons/markup the quick-view panel uses (`.mc-sizes`,
-      // `.mc-size`, sold-out struck through and disabled), so a shopper never
-      // has to leave the wishlist to buy a sized product. Rendered only when
-      // there IS a size run to pick from; a true single-variant product (bags,
-      // fragrance) keeps the old one-tap "Add to cart" below instead.
-      if (!meta.soldOut && variants.length > 1) {
-        var legend = document.createElement("p");
-        legend.className = "mc-sizes__legend";
-        legend.textContent = "Size";
-        body.appendChild(legend);
-
-        var sizes = document.createElement("div");
-        sizes.className = "mc-sizes mc-wishlist__sizes";
-        sizes.setAttribute("role", "group");
-        variants.forEach(function (v) {
-          var sBtn = document.createElement("button");
-          sBtn.type = "button";
-          sBtn.className = "mc-size";
-          sBtn.setAttribute("data-mc-wishlist-size", v.id);
-          sBtn.setAttribute("aria-pressed", "false");
-          if (!v.available) {
-            sBtn.disabled = true;
-            sBtn.setAttribute("aria-disabled", "true");
-          }
-          sBtn.textContent = v.title;
-          sizes.appendChild(sBtn);
-        });
-        body.appendChild(sizes);
-      }
-
       var actions = document.createElement("div");
       actions.className = "mc-wishlist__actions";
+      var sizepop = null;
 
-      if (!meta.soldOut && (meta.variantId || variants.length > 1)) {
-        // A single-variant product already has its one buyable id
-        // (`meta.variantId`); a sized product starts with no id selected —
-        // the size-picker click handler below fills `data-mc-wishlist-add`
-        // in and enables the button the moment a size is chosen.
+      // "Add to cart" ON EVERY LOVED PRODUCT (owner order 2026-08-27), sold
+      // out excepted. A true single-variant product (bags, fragrance) has
+      // its buyable id already and adds on the first tap, same as before. A
+      // sized product's button carries NO variant id until one is chosen —
+      // tapping it with none set opens the size pop-out below instead of
+      // trying to add nothing.
+      if (!meta.soldOut) {
         var add = document.createElement("button");
         add.type = "button";
         add.className = "mc-add mc-wishlist__add";
         add.textContent = "Add to cart";
-        if (meta.variantId) {
-          add.setAttribute("data-mc-wishlist-add", meta.variantId);
-        } else {
-          add.disabled = true;
+        if (meta.variantId && variants.length <= 1) {
+          add.setAttribute("data-mc-wishlist-variant", meta.variantId);
         }
         actions.appendChild(add);
+
+        // A SIZE PICKER THAT POPS OUT OF "Add to cart", NOT ONE SITTING
+        // OPEN IN THE ROW BY DEFAULT (redesign, owner order 2026-08-27) —
+        // same `.mc-sizes`/`.mc-size` buttons the quick-view panel uses
+        // (sold-out struck through and disabled), just hidden until the add
+        // button is tapped. Picking a size adds immediately — see the click
+        // handler below — so this never needs a second confirm.
+        if (variants.length > 1) {
+          sizepop = document.createElement("div");
+          sizepop.className = "mc-wishlist__sizepop";
+          sizepop.hidden = true;
+          sizepop.setAttribute("data-mc-wishlist-sizepop", "");
+
+          var legend = document.createElement("p");
+          legend.className = "mc-sizes__legend";
+          legend.textContent = "Size";
+          sizepop.appendChild(legend);
+
+          var sizes = document.createElement("div");
+          sizes.className = "mc-sizes mc-wishlist__sizes";
+          sizes.setAttribute("role", "group");
+          variants.forEach(function (v) {
+            var sBtn = document.createElement("button");
+            sBtn.type = "button";
+            sBtn.className = "mc-size";
+            sBtn.setAttribute("data-mc-wishlist-size", v.id);
+            sBtn.setAttribute("aria-pressed", "false");
+            if (!v.available) {
+              sBtn.disabled = true;
+              sBtn.setAttribute("aria-disabled", "true");
+            }
+            sBtn.textContent = v.title;
+            sizes.appendChild(sBtn);
+          });
+          sizepop.appendChild(sizes);
+        }
       }
 
-      var view = document.createElement("a");
-      view.className = "mc-panel__link mc-wishlist__view";
-      view.href = meta.url || "#";
-      view.textContent = "View product";
-      actions.appendChild(view);
-
-      var remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "mc-wishlist__remove";
-      remove.textContent = "Remove";
-      remove.setAttribute("data-mc-wishlist-remove", id);
-      actions.appendChild(remove);
-
       body.appendChild(actions);
+      if (sizepop) body.appendChild(sizepop);
       row.appendChild(body);
       return row;
     }
@@ -892,17 +942,22 @@
         closeWishlist();
         return;
       }
+      // PICKING A SIZE ADDS IMMEDIATELY (redesign, owner order 2026-08-27) —
+      // no second tap on "Add to cart" needed once a size is chosen.
       var sizeBtn = ev.target.closest("[data-mc-wishlist-size]");
       if (sizeBtn) {
         var row = sizeBtn.closest("[data-mc-wishlist-item]");
         $$("[data-mc-wishlist-size]", row).forEach(function (b) {
           b.setAttribute("aria-pressed", b === sizeBtn ? "true" : "false");
         });
-        var rowAdd = $("[data-mc-wishlist-add]", row) || $(".mc-wishlist__add", row);
+        var rowAdd = $(".mc-wishlist__add", row);
+        var variantId = sizeBtn.getAttribute("data-mc-wishlist-size");
         if (rowAdd) {
-          rowAdd.setAttribute("data-mc-wishlist-add", sizeBtn.getAttribute("data-mc-wishlist-size"));
-          rowAdd.disabled = false;
+          rowAdd.setAttribute("data-mc-wishlist-variant", variantId);
+          performWishlistAdd(variantId, rowAdd);
         }
+        var pop = $("[data-mc-wishlist-sizepop]", row);
+        if (pop) pop.hidden = true;
         return;
       }
       var removeBtn = ev.target.closest("[data-mc-wishlist-remove]");
@@ -919,35 +974,20 @@
         renderAllWishlists();
         return;
       }
-      var addBtn = ev.target.closest("[data-mc-wishlist-add]");
+      // "Add to cart" WITH A RESOLVED VARIANT ADDS DIRECTLY (single-variant
+      // products); WITHOUT ONE, IT OPENS THE SIZE POP-OUT INSTEAD (owner
+      // order 2026-08-27) — the same button does both, distinguished only
+      // by whether a variant id has been resolved onto it yet.
+      var addBtn = ev.target.closest(".mc-wishlist__add");
       if (addBtn) {
-        var variantId = addBtn.getAttribute("data-mc-wishlist-add");
-        addBtn.classList.add("is-busy");
-        addBtn.disabled = true;
-        var originalText = addBtn.textContent;
-        addBtn.textContent = "Adding…";
-        fetch(shopRoot() + "cart/add.js", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ items: [{ id: Number(variantId), quantity: 1 }] }),
-        })
-          .then(function (res) {
-            return res.json().then(function (body) { return { ok: res.ok, body: body }; });
-          })
-          .then(function (r) {
-            if (!r.ok) {
-              throw new Error((r.body && (r.body.description || r.body.message)) || "Could not add that.");
-            }
-            addBtn.textContent = "Added";
-            refreshCartCount();
-          })
-          .catch(function () {
-            addBtn.textContent = originalText;
-          })
-          .then(function () {
-            addBtn.classList.remove("is-busy");
-            addBtn.disabled = false;
-          });
+        var addVariantId = addBtn.getAttribute("data-mc-wishlist-variant");
+        if (addVariantId) {
+          performWishlistAdd(addVariantId, addBtn);
+        } else {
+          var addRow = addBtn.closest("[data-mc-wishlist-item]");
+          var addPop = addRow && $("[data-mc-wishlist-sizepop]", addRow);
+          if (addPop) addPop.hidden = !addPop.hidden;
+        }
       }
     });
 
