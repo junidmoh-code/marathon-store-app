@@ -73,15 +73,47 @@ const VERIFY = args.includes("--verify");
 const TEST = args.includes("--test");
 
 let client;
+
+/**
+ * One API call, retried through transient failures.
+ *
+ * THE RETRY IS NOT A NICETY. Without it this script reported "log metric
+ * social_engine_alarm does not exist" on a dropped socket — a verifier crying
+ * wolf about the alarm, which is the fastest way to teach someone to ignore
+ * it. Status 0 is a network failure with no response at all; 429 and 5xx are
+ * Google asking to be asked again. A 404 is an answer and is never retried.
+ */
+const TRANSIENT = (status) => status === 0 || status === 429 || status >= 500;
+const ATTEMPTS = 3;
+
 async function api(url, { method = "GET", body } = {}) {
   client ||= await new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] }).getClient();
-  try {
-    const res = await client.request({ url, method, data: body });
-    return { ok: true, status: res.status, data: res.data };
-  } catch (err) {
-    return { ok: false, status: err?.response?.status ?? 0, data: err?.response?.data ?? { error: String(err?.message || err) } };
+  let last;
+  for (let i = 0; i < ATTEMPTS; i++) {
+    if (i) await new Promise((r) => setTimeout(r, 1500 * i));
+    try {
+      const res = await client.request({ url, method, data: body });
+      return { ok: true, status: res.status, data: res.data };
+    } catch (err) {
+      const status = err?.response?.status ?? 0;
+      last = { ok: false, status, data: err?.response?.data ?? { error: String(err?.message || err) } };
+      if (!TRANSIENT(status)) break;
+    }
   }
+  return last;
 }
+
+/**
+ * Did this call say "not there", or did it fail to say anything?
+ *
+ * The difference is the whole reliability of --verify. Only a 404 means the
+ * thing is absent; anything else — a network failure, a permissions error, a
+ * Google 500 — means we DO NOT KNOW, and must say so in those words rather
+ * than assert an absence the API never reported.
+ */
+const isAbsent = (res) => res.status === 404;
+const undetermined = (what, res) =>
+  fail(`could not determine whether ${what} exists (HTTP ${res.status || "no response"}): ${JSON.stringify(res.data).slice(0, 300)}`);
 
 const log = (...a) => console.log(...a);
 const fail = (msg) => { console.error(`✗ ${msg}`); process.exitCode = 1; };
@@ -104,6 +136,7 @@ async function ensureMetric() {
     filter: METRIC_FILTER,
   };
   const existing = await api(`${base}/${METRIC}`);
+  if (!existing.ok && !isAbsent(existing)) return undetermined(`log metric ${METRIC}`, existing);
   if (existing.ok) {
     if (VERIFY) {
       if (existing.data.filter !== METRIC_FILTER) return fail(`metric ${METRIC} exists but its filter has drifted:\n  ${existing.data.filter}`);
