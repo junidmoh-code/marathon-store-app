@@ -686,12 +686,23 @@
   filter: brightness(0.86) saturate(0.92) contrast(1.03);
 }
 .mc-wishlist__body { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+/* NAME ABOVE PRICE (redesign, owner order 2026-08-27) — `.h4` (Dawn's own
+   type-scale class) already gets the sitewide Oswald treatment from the
+   TYPOGRAPHY block below in cascade order, matching the cart's own product
+   name; this rule only trims Dawn's default heading margins, which are
+   sized for a section heading, not a tight list row. */
+.mc-wishlist__name { margin: 0; line-height: 1.2; }
 /* `.mc-card__price` gives this the same black-box treatment as a grid tile;
    it only needs to stop being a full-width footer here, since it sits beside
-   a thumbnail rather than under one. */
+   a thumbnail rather than under one. BIGGER than the grid tile's price
+   (redesign, owner order 2026-08-27: "make it bigger") — this is a list of a
+   few loved things, not a wall of a hundred, so the price can afford to be
+   the second-loudest thing in the row, right under the name. */
 .mc-wishlist__price {
   display: inline-block;
   border-radius: var(--mc-frame-radius, 6px);
+  font-size: 1.5rem;
+  padding: 0.7rem 1.1rem;
 }
 .mc-wishlist__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.8rem; }
 /* BOLD ON PURPOSE (redesign, owner order 2026-08-27: "make it bold and
@@ -710,11 +721,14 @@
    (redesign, owner order 2026-08-27) — a small dark badge in the corner a
    shopper already expects a dismiss control to live in, same visual
    language as `.mc-panel__close`, scaled down for a thumbnail instead of a
-   full photo. */
+   full photo. TOP-RIGHT (moved from top-left, second pass, same order) —
+   matches `.mc-panel__close`'s own corner and `.mc-love`'s corner on a grid
+   tile, so a dismiss/utility control is always found in the same place
+   across this whole site, not just consistent within this one page. */
 .mc-wishlist__remove {
   position: absolute;
   inset-block-start: 0.4rem;
-  inset-inline-start: 0.4rem;
+  inset-inline-end: 0.4rem;
   z-index: 2;
   width: 2.4rem;
   height: 2.4rem;
