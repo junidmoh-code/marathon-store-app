@@ -791,11 +791,18 @@
 /* ─── CATEGORY NAVIGATION ──────────────────────────────────────────────────── */
 .mc-nav {
   border-block-end: 1px solid rgb(var(--color-foreground, 247 248 250) / 0.12);
+  /* THE CONTAINING BLOCK FOR THE CATEGORY DROPDOWNS, and it has to live out
+     here rather than on .mc-nav__group. See the panel rule below — this line
+     and that one are a pair, and separating them re-breaks the navigation. */
+  position: relative;
 }
 .mc-nav__scroll {
   display: flex;
   gap: 2.4rem;
   align-items: center;
+  /* The strip scrolls sideways on a phone — but per CSS Overflow, a non-visible
+     overflow-x forces overflow-y to `auto` as well, so this element CLIPS IN
+     BOTH AXES. That is what silently ate the dropdowns; see .mc-nav__panel. */
   overflow-x: auto;
   scrollbar-width: none;
   padding: 1.1rem 0;
@@ -814,7 +821,19 @@
   text-decoration: underline;
   text-underline-offset: 0.5rem;
 }
-.mc-nav__group { position: relative; }
+/* DELIBERATELY NOT `position: relative`.
+   An absolutely positioned element is clipped by a scrolling ancestor only when
+   that ancestor sits BETWEEN the element and its containing block. Making the
+   group the containing block put .mc-nav__scroll in between — so the panel was
+   clipped to the 53px-tall strip and opened into a 3-pixel sliver. Measured on
+   production 2026-08-27: panel 222px tall at y153-375, clip box y103-156, three
+   pixels of overlap, and `elementFromPoint` over the panel returned the page
+   BEHIND it. The button worked the whole time — aria-expanded flipped, the
+   panel unhid and laid out at full size — it was just invisible and untappable,
+   which reads to a shopper as "Footwear does nothing".
+   Keeping this `static` hands the containing block up to .mc-nav, which is
+   OUTSIDE the scroll container, and the clip no longer applies. */
+.mc-nav__group { position: static; }
 .mc-nav__toggle {
   background: none; border: 0; padding: 0; font: inherit;
   font-size: var(--mc-label);
@@ -825,6 +844,10 @@
 .mc-nav__panel {
   position: absolute;
   z-index: 20;
+  /* Positioned against .mc-nav (see .mc-nav__group above): 100% is the height
+     of the whole strip, so the panel hangs just under the navigation bar and
+     spans from the strip's left edge — which also means it does not slide away
+     when the strip is scrolled sideways. */
   inset-block-start: calc(100% + 0.8rem);
   inset-inline-start: 0;
   min-width: 22rem;
