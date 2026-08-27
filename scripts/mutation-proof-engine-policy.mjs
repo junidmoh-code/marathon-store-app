@@ -126,18 +126,34 @@ const MUTATIONS = [
     to: `    assertEnginePolicy(request);`,
     tests: GATE_TESTS,
   },
+  // TWO PROPERTIES, TWO MUTATIONS. The first draft moved both lines in one
+  // edit, so a single guard stood for "reads === true" AND "fails closed" —
+  // and either one surviving alone would have credited the pair. (CodeRabbit,
+  // PR #469.)
   {
     id: "M-WRAPPER-FLAG",
-    guard: "GATE 3a — the callable reads the same scalar the client does, and fails closed on a read error",
+    guard: "GATE 3a — the callable's grant is the boolean true, not anything truthy",
     file: FUNCTIONS,
     from: `    granted = snap.val() === true;
   } catch (err) {
-    console.error("assertEnginePolicy: permission read failed:", err.message);
-    throw new HttpsError("unavailable", "Could not check permissions. Try again.");`,
-    to: `    granted = snap.val() === true;
+    console.error("assertEnginePolicy: permission read failed:", err.message);`,
+    to: `    granted = !!snap.val();
   } catch (err) {
-    console.error("assertEnginePolicy: permission read failed:", err.message);
-    granted = true;`,
+    console.error("assertEnginePolicy: permission read failed:", err.message);`,
+    tests: GATE_TESTS,
+  },
+  {
+    id: "M-WRAPPER-CLOSED",
+    guard: "GATE 3a — …and a read error REFUSES; a gate that opens when the database is unreachable is not a gate",
+    file: FUNCTIONS,
+    from: `    throw new HttpsError("unavailable", "Could not check permissions. Try again.");
+  }
+  if (!granted) {
+    throw new HttpsError("permission-denied", "Engine Policy permission required.");`,
+    to: `    granted = true;
+  }
+  if (!granted) {
+    throw new HttpsError("permission-denied", "Engine Policy permission required.");`,
     tests: GATE_TESTS,
   },
   // ── THE SEATING TAB'S OWN WRITES ──────────────────────────────────────────

@@ -1270,10 +1270,15 @@ function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave
 // one read per history row to improve a label is not a trade this screen should
 // make. The username is what the staff editor lists people by anyway.
 function whoLabel(by) {
-  if (typeof by !== "string" || !by) return "";
-  if (by === ADMIN_EMAIL) return "Super Admin";
-  const at = by.indexOf("@");
-  return at > 0 ? by.slice(0, at) : by;
+  if (by === null || by === undefined || by === "") return "";
+  // A non-string `by` should not silently vanish: the server writes a string
+  // today, but a label that disappears is how a change ends up looking
+  // authorless. Coerce, then apply the same rules. (CodeRabbit, PR #469.)
+  const s = typeof by === "string" ? by : String(by);
+  if (!s || s === "[object Object]") return "";
+  if (s === ADMIN_EMAIL) return "Super Admin";
+  const at = s.indexOf("@");
+  return at > 0 ? s.slice(0, at) : s;
 }
 
 function History({ entries, onRevert, busy }) {
@@ -1302,7 +1307,10 @@ function History({ entries, onRevert, busy }) {
                   the server has always stamped `by`, so this is the reader
                   catching up with the record. An old entry with no `by` says
                   nothing rather than guessing. (Fable spec review, PR #469.) */}
-              {fmtWhen(h.at)}{h.by ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
+              {/* Keyed on the LABEL, not on `h.by`: a `by` that is present but
+                  yields no label would otherwise print a bare separator with a
+                  blank name after it. (CodeRabbit, PR #469.) */}
+              {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
                 `${ch.loc || ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>

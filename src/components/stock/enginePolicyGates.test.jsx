@@ -236,14 +236,32 @@ describe("functions/index.js — the callable's own gate", () => {
     }
   });
 
-  it("the check reads the same scalar the client gate reads", () => {
+  const gateDecl = () => {
     const i = fnSrc.indexOf("async function assertEnginePolicy(request)");
     expect(i, "functions/index.js must define assertEnginePolicy").toBeGreaterThan(-1);
-    const decl = fnSrc.slice(i, i + 900);
+    return fnSrc.slice(i, i + 900);
+  };
+
+  it("the check reads the same scalar the client gate reads, strictly", () => {
+    const decl = gateDecl();
     expect(decl).toContain("permFlags/engine_policy");
-    expect(decl).toMatch(/===\s*true/);
-    // Fail closed: a read error refuses rather than admitting.
+    // `=== true`, not truthy: the flag is written as a boolean, and anything
+    // else landing in that field is a stray write, not a grant.
+    expect(decl).toMatch(/snap\.val\(\)\s*===\s*true/);
+    expect(decl).not.toMatch(/granted\s*=\s*!!/);
+  });
+
+  it("the check FAILS CLOSED — a read error refuses rather than admitting", () => {
+    // Stated separately from the strictness above, because one assertion
+    // covering both properties would be credited by either one surviving.
+    // (CodeRabbit, PR #469.)
+    const decl = gateDecl();
     expect(decl).toMatch(/catch[\s\S]*throw new HttpsError\("unavailable"/);
+    // …and the catch must not quietly hand out the grant instead.
+    const catchAt = decl.indexOf("catch (err)");
+    expect(catchAt).toBeGreaterThan(-1);
+    expect(decl.slice(catchAt, decl.indexOf("}", decl.indexOf("throw", catchAt))))
+      .not.toMatch(/granted\s*=\s*true/);
   });
 });
 

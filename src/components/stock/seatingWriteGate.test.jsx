@@ -144,11 +144,44 @@ describe("SeatingActions refuses in words rather than at the database", () => {
 // it, but only for the props they happen to use; this states the rule.
 describe("the refusal is placed after the hooks, not before them", () => {
   const src = readFileSync(new URL("./SeatingActions.jsx", import.meta.url), "utf8");
-  it("no useState/useMemo appears after the gate", () => {
+  it("no hook appears anywhere after the gate", () => {
     const at = src.indexOf("const canWrite = enginePolicySeatingWritable(viewer);");
     expect(at, "SeatingActions must gate on enginePolicySeatingWritable").toBeGreaterThan(-1);
-    const after = src.slice(at, src.indexOf("return (", at));
+    // TO THE END OF THE COMPONENT, not to the next `return (`. The first draft
+    // stopped at the refusal branch's own return — about ten lines — so it read
+    // past nothing and would have passed with a hook sitting in the whole
+    // authorized body below. A test whose only job is to catch that must not be
+    // able to miss it. (CodeRabbit, PR #469.)
+    const endOfComponent = src.indexOf("\n}\n", at);
+    expect(endOfComponent, "could not find the end of the component").toBeGreaterThan(at);
+    const after = src.slice(at, endOfComponent);
+    // Sanity: the slice really does span the authorized body, not a stub.
+    expect(after).toContain("Move and switch off");
     expect(after).not.toMatch(/use(State|Memo|Effect|Callback|Ref)\(/);
+  });
+
+  it("survives a viewer going from refused to allowed mid-mount", () => {
+    // The runtime proof of the same property: React throws
+    // "Rendered more hooks than during the previous render" if the early
+    // return sits above a hook and the answer changes under one instance —
+    // which is exactly what happens when permRecord arrives a beat after auth.
+    let tree;
+    act(() => { tree = TestRenderer.create(<SeatingActions
+      seat={SEAT} product={{ name: "Black Cap" }} label="PE" registry={{}}
+      locations={["marathon-pe", "hub2"]} destinations={["hub2"]} ctx={CTX}
+      viewer={GRANTED_NO_STOCK} onDone={() => {}} onFail={() => {}} />); });
+    expect(buttonLabels(tree)).toBe("");
+    act(() => { tree.update(<SeatingActions
+      seat={SEAT} product={{ name: "Black Cap" }} label="PE" registry={{}}
+      locations={["marathon-pe", "hub2"]} destinations={["hub2"]} ctx={CTX}
+      viewer={GRANTED_WITH_STOCK} onDone={() => {}} onFail={() => {}} />); });
+    expect(buttonLabels(tree)).toContain("Switch off");
+    // …and back again, which is a revoked grant on a screen already open.
+    act(() => { tree.update(<SeatingActions
+      seat={SEAT} product={{ name: "Black Cap" }} label="PE" registry={{}}
+      locations={["marathon-pe", "hub2"]} destinations={["hub2"]} ctx={CTX}
+      viewer={GRANTED_NO_STOCK} onDone={() => {}} onFail={() => {}} />); });
+    expect(buttonLabels(tree)).toBe("");
   });
 
   it("the gate is above every write call site, not beside them", () => {
