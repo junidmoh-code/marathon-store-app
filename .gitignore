@@ -25,3 +25,7 @@ scripts/targets/out/
 # Census / model output — machine-local working data, regenerated on demand
 # (scripts/model-category-policy.mjs writes here). Never committed.
 var/
+
+# Meta audience exports — real customers, never committed
+marathon-audience/
+*-audience/
