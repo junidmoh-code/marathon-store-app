@@ -832,6 +832,20 @@
       var body = document.createElement("div");
       body.className = "mc-wishlist__body";
 
+      // NAME, THEN PRICE (redesign, owner order 2026-08-27) — the grid tile
+      // deliberately has no name (the photograph is the identity there), but
+      // this is a saved-for-later LIST, where a shopper is scanning several
+      // rows and needs the title to tell them apart at a glance, same as a
+      // cart line item does. `.h4` is Dawn's own type-scale utility class,
+      // not a bespoke one — the sitewide heading rule in
+      // marathon-storefront.css already targets it, so this renders in
+      // EXACTLY the same face as the cart's own product name with zero new
+      // CSS, rather than a close approximation that could drift from it.
+      var name = document.createElement("p");
+      name.className = "mc-wishlist__name h4";
+      name.textContent = meta.title || "";
+      body.appendChild(name);
+
       var price = document.createElement("p");
       price.className = "mc-card__price mc-wishlist__price";
       price.textContent = meta.soldOut ? "Sold out" : meta.price || "";
@@ -895,8 +909,14 @@
         }
       }
 
-      body.appendChild(actions);
+      // "Add to cart" LAST, AT THE BOTTOM OF THE STACK (redesign, owner
+      // order 2026-08-27) — name and price read top-down like a receipt,
+      // and the one actionable control sits at the foot of that, not
+      // wedged in the middle. The size pop-out, when it opens, appears
+      // ABOVE the button it opened from rather than pushing it further
+      // down — DOM order here controls that: sizepop first, actions last.
       if (sizepop) body.appendChild(sizepop);
+      body.appendChild(actions);
       row.appendChild(body);
       return row;
     }
