@@ -411,21 +411,26 @@ at the same minute, going to Instagram and Facebook both.
 
 With the default policy that makes a day look like this:
 
-| generated | on the feed | on stories |
+| policy slots | on the feed | on stories |
 |---|---|---|
 | 2 reels | 2 reels | — |
 | 1 photo | 1 photo | — |
 | 3 stories | **3 photos** (the twins) | 3 stories |
-| **6 pictures** | **6 posts** (4 photos + 2 reels) | **3 stories** |
+| **6 slots** | **6 posts** (4 photos + 2 reels) | **3 stories** |
 
-**Six pictures, nine posts.** The cost does not change: one Nano Banana Pro
-image is paid for once and used twice. The twin adds one caption call, a few
+**Six slots, nine posts.** The cost does not change: the autopilot makes one
+image per slot, and a twinned story's image is paid for once and used twice.
+(Slots, not "images paid for": the *manual* Generate tab can also make a "new
+arrivals" post, which reuses photographs the storefront already has and
+generates nothing. The autopilot never picks that kind.) The twin adds one caption call, a few
 hundredths of a cent — a story shows no caption and skips the model entirely,
 but a feed post does show one, so the twin gets a real one and the story keeps
 its plain line.
 
-This is why the **Policy tab still reads "1 photo"**. It counts *generations*,
-not what lands. The screen now says so underneath the total.
+This is why the **Policy tab still reads "1 photo"**. It counts *slots*, not
+what lands. The screen now spells out what those slots produce, underneath the
+total — and if the twin is ever switched off, that sentence changes with it
+rather than promising copies nobody is making.
 
 ### Why the same picture and not a 4:5 re-render
 
@@ -441,9 +446,14 @@ inherent to putting a story-shaped picture on a feed, not a fault in the code.
 
 ### Turning it off
 
-`STORY_ALSO_POSTS_TO_FEED` in `functions/index.js`, then redeploy
-`functions:socialDailyAutopilot` and `functions:generateSocialPosts`. It is a
-build-time constant, like the other switches in that file.
+Set `STORY_ALSO_POSTS_TO_FEED=false` in `functions/.env`, then redeploy
+`functions:socialDailyAutopilot` and `functions:generateSocialPosts`. A
+build-time flag, the same convention as `SOCIAL_AUTOPILOT_ENABLED`.
+
+`socialCore.js` carries a **mirror** of the same flag, which is what the Policy
+tab reads to describe the day — the browser never creates a twin. Turn the
+backend off and flip the mirror too; `socialFormat.test.js` pins the two
+literals together and fails until you do.
 
 ### The two records are independent
 

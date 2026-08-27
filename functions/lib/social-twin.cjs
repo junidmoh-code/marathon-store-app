@@ -98,12 +98,25 @@ function buildFeedTwin(story, { twinId, storyId, caption, captionSource, caption
  * writing, so this stays pure.
  */
 function twinWriteUpdates(postsPath, storyId, story, twinId, twin) {
-  const updates = { [`${postsPath}/${storyId}`]: story };
-  if (twinId && twin) {
-    updates[`${postsPath}/${twinId}`] = twin;
-    updates[`${postsPath}/${storyId}/twinId`] = twinId;
-  }
-  return updates;
+  // ── NO PATH MAY BE AN ANCESTOR OF ANOTHER ────────────────────────────────
+  // RTDB REJECTS an update map containing both a path and a descendant of it.
+  // The back-reference was originally its own key —
+  // `social_posts/<id>/twinId` alongside `social_posts/<id>` — which is
+  // exactly that shape, so every twinned generation would have THROWN at the
+  // write: the picture already paid for cleaned up, the post lost, and the
+  // day's story silently missing. It never reached production; it would have
+  // failed on the first story the moment it did.
+  //
+  // twinId therefore goes INSIDE the story object, where it was always
+  // logically part of the record anyway. The twin is built before this from
+  // the story WITHOUT it, so the twin never inherits a pointer to itself.
+  const hasTwin = Boolean(twinId && twin);
+  return hasTwin
+    ? {
+        [`${postsPath}/${storyId}`]: { ...story, twinId },
+        [`${postsPath}/${twinId}`]: twin,
+      }
+    : { [`${postsPath}/${storyId}`]: story };
 }
 
 /**

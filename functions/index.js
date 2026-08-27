@@ -4539,7 +4539,17 @@ const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 // photo plus the three story twins) and two reels — plus three stories. Which
 // is why the Policy tab still reads "1 photo": the other three feed photos ARE
 // the stories.
-const STORY_ALSO_POSTS_TO_FEED = true;
+// A BUILD-TIME flag, the same convention as SOCIAL_AUTOPILOT_ENABLED and the
+// other switches in this file: set STORY_ALSO_POSTS_TO_FEED=false in
+// functions/.env and redeploy functions:socialDailyAutopilot and
+// functions:generateSocialPosts. It was a bare `true` in the first draft,
+// which documented an off switch that did not exist.
+//
+// KEEP IN STEP WITH socialCore.js's STORY_ALSO_POSTS_TO_FEED, which is what
+// the Policy tab reads to describe the day. A test pins the two literals
+// together, because a screen that promises feed copies the backend is not
+// making is worse than a screen that says nothing.
+const STORY_ALSO_POSTS_TO_FEED = process.env.STORY_ALSO_POSTS_TO_FEED !== "false";
 
 /**
  * The saved policy, or the built-in defaults if nothing has been saved.

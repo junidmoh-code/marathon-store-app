@@ -65,12 +65,23 @@ const MUTATIONS = [
     "  return !!enabled"],
 
   ["the two records are written separately — a crash loses the twin",
-    "    updates[`${postsPath}/${twinId}`] = twin;",
-    "  /* mutated */ if (false) updates[`${postsPath}/${twinId}`] = twin;"],
+    "        [`${postsPath}/${twinId}`]: twin,\n",
+    ""],
 
   ["the back-reference is written without the twin existing",
-    "  if (twinId && twin) {",
-    "  if (twinId) {"],
+    "  const hasTwin = Boolean(twinId && twin);",
+    "  const hasTwin = Boolean(twinId);"],
+
+  // The bug review caught before it ever ran: an update map containing both a
+  // path and a descendant of it is REJECTED by RTDB outright, so every twinned
+  // generation would have thrown at the write and lost the post.
+  ["the back-reference goes back to being its own path, which RTDB rejects",
+    "        [`${postsPath}/${storyId}`]: { ...story, twinId },",
+    "        [`${postsPath}/${storyId}`]: story,\n        [`${postsPath}/${storyId}/twinId`]: twinId,"],
+
+  ["the caller's record is mutated instead of copied",
+    "{ ...story, twinId }",
+    "Object.assign(story, { twinId })"],
 
   ["an absent caption note becomes a null one",
     "  else delete twin.captionNote;",

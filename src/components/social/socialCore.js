@@ -144,6 +144,18 @@ export const postKind = (key) => KIND_BY_KEY.get(key) || null;
 // `format` says WHERE it lands, which decides its canvas, its media type and
 // whether it needs a video at all:
 //
+// ── EVERY STORY IS ALSO A FEED POST ──────────────────────────────────────────
+// A MIRROR of STORY_ALSO_POSTS_TO_FEED in functions/index.js, which is where
+// the decision is actually made — the browser never creates a twin, it only
+// describes what the backend will do. Mirrored rather than read because the
+// backend's copy is a build-time flag with no representation in the database,
+// and a screen guessing at it would be worse than one that is pinned to it.
+//
+// socialFormat.test.js asserts the two literals agree. If you change one,
+// that test fails until you change the other — the same drift guard the
+// Mon/Wed/Sat plist and SLOT_DAYS already live under.
+export const STORY_ALSO_POSTS_TO_FEED = true;
+
 //   feed   1080x1350, a still, media_type from the media
 //   story  1080x1920, a still, media_type=STORIES, no caption, 24h
 //   reel   1080x1920, a VIDEO, media_type=REELS

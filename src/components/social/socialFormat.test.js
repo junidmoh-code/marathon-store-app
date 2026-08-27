@@ -4,7 +4,8 @@
 // whether it needs a video at all.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo } from "./socialCore.js";
+import { readFileSync } from "node:fs";
+import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo, STORY_ALSO_POSTS_TO_FEED } from "./socialCore.js";
 import { hasVideo, stillOf } from "../../../scripts/social/reel-media.mjs";
 
 const require = createRequire(import.meta.url);
@@ -84,5 +85,36 @@ describe("the publisher's contract with formats", () => {
 
   it("passes the post's format to Instagram", () => {
     expect(src).toMatch(/format: post\.format \|\| "feed"/);
+  });
+});
+
+// ── THE FEED-TWIN FLAG IS IN TWO PLACES, SO IT IS PINNED ─────────────────────
+// The decision is the backend's; socialCore.js only MIRRORS it so the Policy
+// tab can describe the day honestly. A screen promising feed copies the
+// backend is not making is worse than a screen that says nothing, and the two
+// literals can only be kept together by something that fails when they part.
+// Same guard the plist and SLOT_DAYS already live under.
+describe("STORY_ALSO_POSTS_TO_FEED does not drift", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("the browser's mirror matches the backend's default", () => {
+    const fn = read("../../../functions/index.js");
+    // The backend default is "on unless the env says false".
+    const backend = /const STORY_ALSO_POSTS_TO_FEED = process\.env\.STORY_ALSO_POSTS_TO_FEED !== "false";/.test(fn);
+    expect(backend, "functions/index.js must default the flag ON via env").toBe(true);
+    expect(STORY_ALSO_POSTS_TO_FEED).toBe(true);
+  });
+
+  it("the backend flag is an ENV switch, never a bare literal", () => {
+    // It shipped as `= true` in the first draft, which documented an off
+    // switch that did not exist.
+    const fn = read("../../../functions/index.js");
+    expect(fn).not.toMatch(/const STORY_ALSO_POSTS_TO_FEED = true;/);
+    expect(fn).toMatch(/process\.env\.STORY_ALSO_POSTS_TO_FEED/);
+  });
+
+  it("the browser never creates a twin — it only describes one", () => {
+    const core = read("./socialCore.js");
+    expect(core).not.toMatch(/buildFeedTwin|twinWriteUpdates/);
   });
 });

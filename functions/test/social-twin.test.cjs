@@ -150,11 +150,38 @@ describe("both records are written in ONE update", () => {
     const s = story();
     const t = twinOf(s);
     const u = twinWriteUpdates("social_posts", "S1", s, "T1", t);
-    assert.deepEqual(Object.keys(u).sort(), [
-      "social_posts/S1", "social_posts/S1/twinId", "social_posts/T1",
-    ].sort());
-    assert.equal(u["social_posts/S1/twinId"], "T1");
+    assert.deepEqual(Object.keys(u).sort(), ["social_posts/S1", "social_posts/T1"]);
+    assert.equal(u["social_posts/S1"].twinId, "T1");
     assert.equal(u["social_posts/T1"].format, "feed");
+  });
+
+  // ── THE ONE THAT WOULD HAVE THROWN AT RUNTIME ────────────────────────────
+  // RTDB rejects an update map containing both a path and a descendant of it.
+  // The back-reference was originally its own key, `social_posts/S1/twinId`,
+  // sitting next to `social_posts/S1` — so every twinned generation would have
+  // thrown at the write, cleaned up the picture it had just paid for, and lost
+  // the post. Caught in review before it ever ran.
+  test("NO key is an ancestor of another — RTDB rejects that map outright", () => {
+    const u = twinWriteUpdates("social_posts", "S1", story(), "T1", twinOf());
+    const keys = Object.keys(u);
+    for (const a of keys) {
+      for (const b of keys) {
+        if (a === b) continue;
+        assert.equal(b.startsWith(a + "/"), false, `${b} is a descendant of ${a}`);
+      }
+    }
+  });
+
+  test("the back-reference lives INSIDE the story record", () => {
+    const u = twinWriteUpdates("social_posts", "S1", story(), "T1", twinOf());
+    assert.equal("social_posts/S1/twinId" in u, false);
+    assert.equal(u["social_posts/S1"].twinId, "T1");
+  });
+
+  test("adding twinId does not mutate the caller's record", () => {
+    const s = story();
+    twinWriteUpdates("social_posts", "S1", s, "T1", twinOf());
+    assert.equal("twinId" in s, false);
   });
 
   test("with no twin it is a plain single-record write", () => {
@@ -166,7 +193,7 @@ describe("both records are written in ONE update", () => {
   test("a twin id with no twin record writes neither — never a dangling pointer", () => {
     const u = twinWriteUpdates("social_posts", "S1", story(), "T1", null);
     assert.deepEqual(Object.keys(u), ["social_posts/S1"]);
-    assert.equal("social_posts/S1/twinId" in u, false);
+    assert.equal("twinId" in u["social_posts/S1"], false);
   });
 });
 
