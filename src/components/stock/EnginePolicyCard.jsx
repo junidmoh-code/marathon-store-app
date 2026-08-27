@@ -78,7 +78,7 @@ import {
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
-import { enginePolicyVisibleForViewer } from "../../config/enginePolicy";
+import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
 // httpsCallable to 70,000ms; the census, the row list and the group model can
@@ -200,6 +200,10 @@ function Refused({ onExit }) {
     <div style={{ minHeight: "100vh", background: BG, fontFamily: FONT, color: "#fff", padding: "2rem 1rem" }}>
       <div style={{ ...GLASS, maxWidth: 420, margin: "12vh auto", padding: "1.5rem" }}>
         <div style={{ fontSize: "1.05rem", fontWeight: 700 }}>You don't have access to Engine Policy</div>
+        {/* The same voice the rest of this folder uses for a refusal — Adjust,
+            In Transit and Introduce all say "ask an admin". It names no person:
+            two refusals on one card must not speak differently. */}
+        <div style={{ fontSize: ".82rem", color: GRAY, marginTop: 6 }}>Ask an admin if you need it.</div>
         <button onClick={onExit} style={{ ...bGhost, marginTop: "1.2rem" }}>Back</button>
       </div>
     </div>
@@ -1254,12 +1258,20 @@ function RowsPanel({ category: c, rows, meta, rowDraft, busy, onRowField, onSave
   );
 }
 
-// The name on a history row. Staff sign in as {username}@marathon.internal and
-// the owner as a gmail address; neither reads well in full beside a timestamp,
-// so the local part is the label. Anything unexpected is shown verbatim rather
-// than being cut at a character that might not be there.
+// The name on a history row. Staff sign in as {username}@marathon.internal, and
+// their local part IS their username — "mc" reads correctly. The owner's does
+// not: his address is a gmail one whose local part is a string nobody calls him,
+// and UserManagement already synthesises "Super Admin" for the same record
+// (UserManagement.jsx:268). So he is the one special case, and everyone else is
+// their username. Anything unexpected is shown verbatim rather than being cut at
+// a character that might not be there. (Round 2 review, PR #469.)
+//
+// Not a /users lookup keyed on `byUid`: the card makes no such read today, and
+// one read per history row to improve a label is not a trade this screen should
+// make. The username is what the staff editor lists people by anyway.
 function whoLabel(by) {
   if (typeof by !== "string" || !by) return "";
+  if (by === ADMIN_EMAIL) return "Super Admin";
   const at = by.indexOf("@");
   return at > 0 ? by.slice(0, at) : by;
 }

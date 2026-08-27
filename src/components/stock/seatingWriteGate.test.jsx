@@ -108,9 +108,17 @@ describe("SeatingActions refuses in words rather than at the database", () => {
   it("a granted viewer WITHOUT a stockRole gets an explanation and no buttons", () => {
     const tree = render(GRANTED_NO_STOCK);
     expect(buttonLabels(tree)).toBe("");
-    expect(text(tree)).toContain("needs Stock access");
+    // It names the ACTUAL requirement — the Admin stock role, not "Stock
+    // access": the Stock permission group does not open this, so the vaguer
+    // wording sent people to tick the wrong toggle. (Round 2 review.)
+    expect(text(tree)).toContain("Admin stock role");
     // …and it names what still works, so the screen does not read as broken.
-    expect(text(tree)).toContain("everything else on this screen still works");
+    expect(text(tree)).toContain("still works");
+    // It must NOT repeat the claim this file's own header disproves: plain
+    // Switch off moves nothing, it refuses while units are present.
+    expect(text(tree)).not.toMatch(/[Ss]witching a shop off moves stock/);
+    // House style: no other refusal in this folder names a person.
+    expect(text(tree)).not.toContain("Junid");
   });
 
   it("the owner still gets the buttons — the refusal above is not vacuous", () => {

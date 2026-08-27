@@ -82,14 +82,29 @@ export default function SeatingActions({ seat, product, label, registry, locatio
   // PERMISSION_DENIED after the confirm press into a sentence before it.
   // See src/config/enginePolicy.js for why the permission does not simply
   // carry a stockRole. (Fable spec review, PR #469.)
+  //
+  // THE WORDING IS LOAD-BEARING, and a first draft got it wrong twice:
+  //   · "switching a shop off moves stock" — false, and contradicted by this
+  //     file's own header three lines up. Switch off moves nothing; it REFUSES
+  //     while units are present. What these buttons actually do is write to the
+  //     database from the browser, and that is what the sentence now says.
+  //   · "Stock access" — ambiguous, and it points at the wrong control. The
+  //     Stock GROUP in User Management holds permissions (stock_add, barcode)
+  //     that do NOT open this; the gate is the stockRole, and specifically
+  //     'admin'. A person told "Stock access" ticks a permission and is refused
+  //     again. It names the Admin stock role.
+  // It also no longer says who to ask: every other refusal in this folder says
+  // "ask an admin" or names nothing, and this one should not go out of its way
+  // to solicit a grant the design deliberately refuses to automate.
   const canWrite = enginePolicySeatingWritable(viewer);
   if (!canWrite) {
     return (
       <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,.08)" }}>
         <div style={{ ...GLASS, padding: ".7rem .9rem", border: "1px solid rgba(251,191,36,.45)",
           color: AMBER, fontSize: ".82rem" }}>
-          Switching a shop off moves stock, so it needs Stock access as well as Engine
-          Policy. Ask Junid to add it — everything else on this screen still works.
+          These three write stock records straight to the database, so they need the
+          Admin stock role as well as Engine Policy. Everything else on this screen
+          still works.
         </div>
       </div>
     );
