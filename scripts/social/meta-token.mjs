@@ -46,6 +46,14 @@
 //         pages_show_list
 //         pages_read_engagement
 //         pages_manage_posts
+//         instagram_manage_insights   ← SIXTH, added 2026-08-27
+//
+//      instagram_manage_insights is what the /insights edge requires. Without
+//      it every insights call — follower demographics by country, reach,
+//      accounts_engaged — returns "(#10) Application does not have permission
+//      for this action", which reads like an app problem and is in fact a
+//      missing tick box. Publishing works fine without it, which is why it was
+//      absent for months without anyone noticing.
 //      (ads_management / ads_read are only needed if the Page sits under a
 //      Business Manager that demands them; add them if the token exchange
 //      below complains about a missing scope.)

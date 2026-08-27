@@ -131,6 +131,15 @@ top-right → *Generate Access Token*):
 - `pages_show_list`
 - `pages_read_engagement`
 - `pages_manage_posts`
+- `instagram_manage_insights`
+
+**The sixth one is easy to miss and nothing breaks without it.** Publishing
+works fine; only the `/insights` edge fails, and it fails as
+`(#10) Application does not have permission for this action` — which reads like
+an app misconfiguration rather than an unticked box. It is what every audience
+number needs: follower demographics by country and city, reach, accounts
+engaged. It was absent from 2026-08-27's token and that is why the follower
+analysis could only be an estimate.
 
 Add `ads_management` and `ads_read` **only** if the exchange in 3b complains
 about a missing scope — some Pages under a Business Manager require them.
