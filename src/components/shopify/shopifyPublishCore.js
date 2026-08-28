@@ -8,6 +8,7 @@ import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers";
 import { NAME_PROPOSAL_KEY, isPendingProposal, isRefusedProposal, validateVisionName } from "../../utils/visionNaming";
 import { isPriceRecord } from "../../utils/productCategory";
 import { normalizePhotoList, CONDITIONS } from "./publishShared";
+import { staleHandleBlock } from "../../utils/shopifyHandle";
 
 // Condition values, exactly these three (owner spec 2026-08-13). NO default:
 // a product with condition unset is state=blocked and cannot be pushed.
@@ -148,6 +149,42 @@ export function blockedReason(node) {
   if (!node || normalizedState(node) !== "blocked") return null;
   if (!CONDITIONS.includes(node.condition)) return "Condition not set — pick one of the three grades to unblock";
   return node.blockedReason || null;
+}
+
+// ─── A BLOCK IS ONLY TRUE WHILE THE NAME IT WAS ABOUT IS STILL THE NAME ──────
+// A recorded refusal is a snapshot of one publish attempt, and the intent is
+// consumed with it — a block clears only when somebody publishes again. So a
+// handle-collision refusal from August ("Shopify product gid://…9338746241173
+// already owns handle 'sneaker-black'") sits on the row for ever, describing a
+// collision between a handle the product no longer wants and a Shopify product
+// that has since been renamed to something else entirely.
+//
+// That is not a blocked product. It is a product nobody has tried to publish
+// since it was renamed. Judged at RENDER time, against the name it has NOW.
+//
+// Evaluated ONLY for handle collisions: those name the exact fact that went
+// stale. A compliance refusal, a missing photo, a size mismatch — none of those
+// are answered by a rename, and softening them would talk somebody straight
+// into the refusal again. The reconciler re-validates everything at apply time
+// regardless; this decides what the row SAYS, never what the push allows.
+//
+// → { blocked, reason, staleNote }
+//   blocked   — should the row still read as blocked
+//   reason    — the sentence to show when it is
+//   staleNote — the quiet aside when it is not: an earlier attempt under a
+//               different name was refused, and that is worth knowing
+export function blockStatus(node, effectiveName) {
+  const reason = blockedReason(node);
+  if (!reason) return { blocked: false, reason: null, staleNote: null };
+  // A condition-unset block is about the condition, not the name.
+  if (!CONDITIONS.includes(node?.condition)) return { blocked: true, reason, staleNote: null };
+  const { stale } = staleHandleBlock(reason, effectiveName);
+  if (!stale) return { blocked: true, reason, staleNote: null };
+  return {
+    blocked: false,
+    reason: null,
+    staleNote: "An earlier attempt under a different name was refused. The name has changed since — this is ready to publish.",
+  };
 }
 
 // ─── PUBLISHING PHOTOS ───────────────────────────────────────────────────────

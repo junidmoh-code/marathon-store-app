@@ -38,7 +38,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
-  CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
+  CONDITIONS, STATE_FILTERS, checkCleanName, blockStatus, reviewStateFor, matchesStateFilter,
   pendingProposal, proposalApplyBlocker,
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
   isPublishableProduct,
@@ -258,7 +258,9 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
   const on = isOn(node);
   const pending = isPendingSwitch(node);
   const photoCount = effectivePhotoList(product, node).photos.length;
-  const blocked = blockedReason(node);
+  // The block is judged against the name the product has NOW — a refusal
+  // recorded under a name it no longer carries is not a block (blockStatus).
+  const { blocked, staleNote } = blockStatus(node, effective.name);
   const nameVerdict = checkCleanName(effective.name);
   // Why this product came off the shop, in one sentence — null while it is on.
   const offStory = state === "live" && !on ? describeOff(node) : null;
@@ -399,6 +401,9 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           )}
           {blocked && (
             <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>⛔ {blocked}</div>
+          )}
+          {staleNote && (
+            <div style={{ fontSize: 10.5, color: GRAY, marginTop: 5 }}>{staleNote}</div>
           )}
           {error && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{error}</div>}
         </div>
@@ -989,9 +994,17 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // view. A row that fails the same gates the publish write enforces
   // (condition unset, no valid name) gets a disabled checkbox with the reason
   // inline — never a silent skip.
-  const selectionEligible = (node) => {
+  // A STALE BLOCK IS NOT A BLOCK. reviewStateFor reads the stored `state`,
+  // which still says "blocked" for a product whose recorded refusal was about
+  // a handle its current name no longer produces — so without this it would
+  // stay unselectable for ever, behind a sentence the row itself no longer
+  // shows. The name is what settles it, so the product comes in too.
+  const selectionEligible = (node, product) => {
+    if (isPendingSwitch(node)) return false;
     const st = reviewStateFor(node);
-    return (st === "awaiting" || st === "approved") && !isPendingSwitch(node);
+    if (st === "awaiting" || st === "approved") return true;
+    if (st !== "blocked" || !product) return false;
+    return !blockStatus(node, effectiveNameFor(product, node).name).blocked;
   };
   // Prune the selection whenever ANY node update disqualifies a selected row
   // — local writes and external ones alike (the window-focus refetch can pull
@@ -1052,7 +1065,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const selectionFor = (p) => {
     if (filter === "live") return undefined;
     const node = nodes[p.id] || null;
-    if (!selectionEligible(node)) return undefined;
+    if (!selectionEligible(node, p)) return undefined;
     const blocker = blockerFor(p);
     return {
       selected: selected.has(p.id),
@@ -1423,7 +1436,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             ? matched.filter((p) => {
                 const node = nodes[p.id] || null;
                 return matchesStateFilter(filter, reviewStateFor(node)) &&
-                       selectionEligible(node) &&
+                       selectionEligible(node, p) &&
                        !blockerFor(p);
               })
             : [];

@@ -59,6 +59,7 @@ import {
   TRACKED_VARIANT, untrackedVariants, enforceTracking,
 } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
+import { adoptionVerdict, requestFreshName } from "./adopt.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_REASON } from "./publishNode.mjs";
 // Storefront collections. The map is repo data (collectionMap.mjs); the gids
 // are read from /shopify_sync/_collections and NEVER guessed — a product joins
@@ -281,6 +282,27 @@ const failSafeUnpublish = async (gid) => {
 // product is off the sales channel and markBlocked can record liveState "off".
 // A refusal that never published leaves the field alone: it has learned nothing
 // new about the channel and guessing would be a second lie beside the first.
+// The exact owner of a handle, or null. Direct lookup by identifier — exact by
+// construction and NOT behind the search index, so an orphan from a run that
+// crashed seconds ago still shows. The search fallback is weaker (index lag)
+// and is still filtered to the exact handle.
+const probeHandleOwner = async (handle) => {
+  try {
+    const byId = await graphql(
+      `query ($h: String!) { productByIdentifier(identifier: { handle: $h }) { id title handle } }`,
+      { h: handle }
+    );
+    return byId.productByIdentifier || null;
+  } catch {
+    console.error("  ⚠ productByIdentifier unavailable — falling back to search-index handle probe");
+    const hit = await graphql(
+      `query ($q: String!) { products(first: 25, query: $q) { nodes { id title handle } } }`,
+      { q: `handle:'${handle}'` }
+    );
+    return hit.products.nodes.find((n) => n.handle === handle) || null;
+  }
+};
+
 const refuse = async (pid, why, { tookDown = false } = {}) => {
   console.error(`  🛑 ${pid} REFUSED: ${why}`);
   await markBlocked(db, pid, why, UPDATED_BY, { wasTakenDown: tookDown });
@@ -469,12 +491,59 @@ for (const { pid, want } of capped) {
     }
 
     let gid = mapNode?.shopifyProductId ?? null;
+    // ── SOMETHING ON SHOPIFY ALREADY OWNS THE HANDLE WE WANT ─────────────────
+    // Handles are unique per shop and buildHandle is deterministic, so this is
+    // the strong duplicate probe: a crashed earlier run (productSet applied,
+    // claim never written), a legacy product, a twin. It runs BEFORE the create
+    // so an adoption can fall through into the reconcile-in-place path below —
+    // an adopted product is a mapped product, and mapped products are exactly
+    // what that path is for.
+    //
+    // Until now this ALWAYS refused, and told the operator to run a script by
+    // name. Refusing an orphan from our own crashed run is not caution, it is
+    // a dead end: nothing else will ever clean it up, and the block outlives
+    // the name that caused it. adoptionVerdict decides, and it fails CLOSED —
+    // see adopt.mjs for what it will not touch and why.
+    let adoptedNow = false;
+    if (!gid) {
+      const handleHit = await probeHandleOwner(payload.handle);
+      if (handleHit) {
+        const verdict = await adoptionVerdict(graphql, handleHit.id, online.id);
+        if (verdict.ok) {
+          try {
+            // The atomic half: claimShopifyProduct scans /shopify_sync inside a
+            // transaction and REFUSES if any other record already maps this
+            // gid. That is the guarantee that matters — an adoption that
+            // overwrote a real listing belonging to another product would be
+            // the worst outcome this whole path can produce — and it is made
+            // against the server's value, not the read above.
+            await claimShopifyProduct(db, pid, handleHit.id);
+            gid = handleHit.id;
+            adoptedNow = true;
+            console.log(`  adopted the orphan holding "${payload.handle}": ${handleHit.id} (${verdict.why})`);
+          } catch (e) {
+            await requestFreshName(db, pid, `the storefront address this name produces is taken by another listing`);
+            await refuse(pid, `the web address this name would use is already taken by another listing on the shop ("${handleHit.title}"). A new name has been requested for this product; it will be suggested for review shortly.`);
+            continue;
+          }
+        } else {
+          // Not ours to take. Say WHOSE it is — the operator's next question is
+          // always "taken by what?" — and get a new name moving without anybody
+          // having to ask for one.
+          await requestFreshName(db, pid, verdict.why);
+          await refuse(pid, `the web address this name would use ("${payload.handle}") already belongs to another listing on the shop: "${handleHit.title}" — ${verdict.why}. A new name has been requested for this product; it will be suggested for review shortly.`);
+          continue;
+        }
+      }
+    }
     const createdNow = !gid;
     if (gid) {
       // RECONCILE the mapped product's pushed fields from the CURRENT record —
       // a rename or condition change made while the product sat OFF must land
       // before it becomes visible again.
-      console.log(`  /shopify_sync maps to ${gid} — reconciling fields`);
+      console.log(adoptedNow
+        ? `  adopted ${gid} — updating it in place from the current record`
+        : `  /shopify_sync maps to ${gid} — reconciling fields`);
       const upd = await graphql(
         `mutation ($input: ProductUpdateInput!) {
           productUpdate(product: $input) { product { id } userErrors { field message } }
@@ -492,42 +561,18 @@ for (const { pid, want } of capped) {
       // adopted deliberately, never claimed by accident), DRAFT create, atomic
       // gid claim, read-back → ID map, media attach.
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
-      // TWO duplicate guards. The handle probe is the strong one: handles are
-      // unique per shop and buildHandle is deterministic, so a crashed earlier
-      // run (productSet applied, claim never written) or a twin-titled product
-      // surfaces here even when the search index hasn't caught the title yet —
-      // and the slug charset ([a-z0-9-]) has no quoting hazards. Refusing
-      // (not auto-claiming) is deliberate: a product with no /shopify_sync
-      // entry is not ours to adopt without a human.
-      let handleHit = null;
-      try {
-        // Direct lookup — exact by construction and NOT behind the search
-        // index, so an orphan from a run that crashed seconds ago still shows.
-        const byId = await graphql(
-          `query ($h: String!) { productByIdentifier(identifier: { handle: $h }) { id title handle } }`,
-          { h: payload.handle }
-        );
-        handleHit = byId.productByIdentifier;
-      } catch {
-        // Field unavailable on this API version — fall back to the search
-        // probe (weaker: index lag), still filtered to the exact handle.
-        console.error("  ⚠ productByIdentifier unavailable — falling back to search-index handle probe");
-        const dupeHandle = await graphql(
-          `query ($q: String!) { products(first: 25, query: $q) { nodes { id title handle } } }`,
-          { q: `handle:'${payload.handle}'` }
-        );
-        handleHit = dupeHandle.products.nodes.find((n) => n.handle === payload.handle) || null;
-      }
-      if (handleHit) {
-        await refuse(pid, `Shopify product ${handleHit.id} already owns handle "${payload.handle}" (an orphan from a crashed run, or a legacy/twin product) — adopt it via round-trip.mjs or remove it, then re-publish`);
-        continue;
-      }
+      // The handle probe already ran above (it can ADOPT, so it has to run
+      // before the create branch is chosen). What is left here is the weaker
+      // title guard.
       const dupe = await graphql(
         `query ($q: String!) { products(first: 25, query: $q) { nodes { id title } } }`,
         { q: `title:'${payload.title.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'` }
       );
       if (dupe.products.nodes.some((n) => n.title === payload.title)) {
-        await refuse(pid, "a product with this exact title already exists — adopt via round-trip.mjs first");
+        // NO SCRIPT NAME IN A MESSAGE A PERSON READS. The remedy is a new
+        // name, and one is already on its way.
+        await requestFreshName(db, pid, "another listing on the shop already carries this exact title");
+        await refuse(pid, "another listing on the shop already carries this exact title. A new name has been requested for this product; it will be suggested for review shortly.");
         continue;
       }
       const price = Number(product.retailPrice).toFixed(2);

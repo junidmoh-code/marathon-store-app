@@ -23,7 +23,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
-  CONDITIONS, checkCleanName, blockedReason, reviewStateFor, effectiveNameFor,
+  CONDITIONS, checkCleanName, blockStatus, reviewStateFor, effectiveNameFor,
   isOn, isPendingSwitch, canGoLive, effectivePhotoList, normalizedState,
   pendingProposal, proposalApplyBlocker,
 } from "./shopifyPublishCore";
@@ -348,7 +348,7 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
   const pending = isPendingSwitch(node);
   const photoList = useMemo(() => effectivePhotoList(product, node), [product, node]);
   const verdict = checkCleanName(draft); // the LIVE trigger check
-  const blocked = blockedReason(node);
+  const { blocked, staleNote } = blockStatus(node, effectiveNameFor(product, node).name);
   const isLive = state === "live";
   // Why it came off the shop, in one sentence — null while it is on. DECLARED
   // AFTER isLive, not beside `on`: a const read before its declaration is in
@@ -623,6 +623,9 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
                 reconciler re-checks everything before anything goes public.
               </div>
             </div>
+          )}
+          {staleNote && (
+            <div style={{ fontSize: 11, color: GRAY, lineHeight: 1.5, marginBottom: 8 }}>{staleNote}</div>
           )}
           {isLive && (
             <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>

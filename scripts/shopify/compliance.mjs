@@ -10,6 +10,10 @@
 // field. Every push path calls it LAST, after all builders — nothing reaches
 // the Shopify client without a pass. Pure functions, no I/O.
 import { triggersInText } from "../../src/utils/shopifyTriggers.js";
+// ONE slug builder, shared with the browser: the page has to decide whether a
+// recorded handle-collision refusal still describes the product's current name,
+// and a second copy of this arithmetic here would be a second answer.
+import { handleFromName } from "../../src/utils/shopifyHandle.js";
 // CONDITIONS and the description template moved to publishShared.js
 // (2026-08-14): the product page previews the description exactly as pushed,
 // so browser and scripts must read ONE template. Re-exported here so every
@@ -23,10 +27,9 @@ export const VENDOR = "Marathon Club";
 // Handle derives from the CLEANED title only — set explicitly so Shopify can
 // never derive it from a dirty source. Lowercase alnum + single hyphens.
 export function buildHandle(cleanTitle) {
-  const handle = String(cleanTitle ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const handle = handleFromName(cleanTitle);
+  // The push path THROWS where the page merely gets "": a product with no
+  // derivable slug must stop here, not go to Shopify and let it guess one.
   if (!handle) throw new Error(`cannot build a handle from title: ${JSON.stringify(cleanTitle)}`);
   return handle;
 }

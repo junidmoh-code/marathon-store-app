@@ -11,6 +11,7 @@
 //   node scripts/shopify/vision-name.mjs --subcategory Boots    scope: one legacy subcategory
 //   node scripts/shopify/vision-name.mjs --pids p1,p2           scope: named products
 //   node scripts/shopify/vision-name.mjs --unnamed-only         only products with no cleanName
+//   node scripts/shopify/vision-name.mjs --requested            only products the reconciler asked for
 //   node scripts/shopify/vision-name.mjs --limit 50             cap the scope
 //   node scripts/shopify/vision-name.mjs --confirm-batch 50     SPEND. Must equal the scope size.
 //
@@ -63,6 +64,17 @@ const arg = (name) => {
   return v;
 };
 const LIVE_ONLY = flags.includes("--live-only");
+// ── SERVING THE RECONCILER'S NEW-NAME REQUESTS ───────────────────────────────
+// When a publish is refused because the web address the name produces already
+// belongs to another listing, the cure is a different name and nothing else.
+// The reconciler records the request on the node (adopt.mjs, requestFreshName)
+// rather than leaving a person to notice the refusal and go and ask — a
+// feature that only works when somebody intervenes is not built.
+//
+// --requested scopes this run to exactly those nodes. The marker is cleared as
+// the proposal lands, so a served request cannot be re-served and cannot spend
+// twice on the same product.
+const REQUESTED_ONLY = flags.includes("--requested");
 const UNNAMED_ONLY = flags.includes("--unnamed-only");
 const CATEGORY = arg("--category");
 const SUBCATEGORY = arg("--subcategory");
@@ -114,8 +126,18 @@ for (const [pid, p] of Object.entries(products)) {
   if (LIVE_ONLY && !confirmedOn(publish[pid])) continue;
   if (isPriceRecord(p)) { skipped.priceRecord += 1; continue; }
   const node = publish[pid];
+  const requested = Number(node?.nameRerunRequestedAt) > 0;
+  if (REQUESTED_ONLY && !requested) continue;
   // THE ONE HARD EXCLUSION. A name Junid typed is his decision.
-  if (!mayProposeFor(node)) { skipped.manual += 1; continue; }
+  //
+  // A REQUEST OVERRIDES IT, and only a request. The reconciler does not ask for
+  // a new name as an opinion — it asks because it has PROVED the current one
+  // cannot be published: the storefront address it produces belongs to another
+  // listing. Honouring "manual" there would leave the product blocked for ever
+  // behind a name no publish can ever use. The proposal still goes to the
+  // review lane for a human decision, so his name is replaced only if he says
+  // so; nothing here writes cleanName.
+  if (!requested && !mayProposeFor(node)) { skipped.manual += 1; continue; }
   if (UNNAMED_ONLY && node?.cleanName) continue;
   // One image per call, so a product with no photo has nothing to read.
   const photo = String(p.photoUrl || "").trim();
@@ -331,7 +353,14 @@ async function writeProposal(pid, proposal, identity, product, node) {
   // filter WHILE IT IS STILL ON THE STOREFRONT. `undefined` aborts, so an
   // existing state of any value is left alone.
   await db.ref(`shopify_publish/${pid}/state`).transaction((cur) => (cur ? undefined : "awaiting"));
-  await db.ref(`shopify_publish/${pid}`).update({ [NAME_PROPOSAL_KEY]: proposal });
+  await db.ref(`shopify_publish/${pid}`).update({
+    [NAME_PROPOSAL_KEY]: proposal,
+    // A served request is a spent request. Cleared in the SAME update as the
+    // proposal it produced, so a crash between the two cannot leave a marker
+    // that spends on this product again on the next run.
+    nameRerunRequestedAt: null,
+    nameRerunReason: null,
+  });
   if (!identity) return;
   const text = identityTextFrom(identity);
   if (!text) return;

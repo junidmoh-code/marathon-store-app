@@ -63,6 +63,33 @@ export CHUNK="${CHUNK:-100}"
 export LOG
 echo "── run-naming.sh started $(date '+%F %T') (pid $$) ──" >> "$LOG"
 
+# ── FIRST: the names the reconciler has ASKED for ────────────────────────────
+# A publish refused because the storefront address a name produces already
+# belongs to another listing has exactly one cure — a different name. The
+# reconciler records that request on the node (scripts/shopify/adopt.mjs) and
+# this serves it, so nobody has to notice the refusal and go and ask.
+#
+# It runs BEFORE the backlog and is not gated on the backlog finishing: a
+# blocked product is a product off the shop, and it should not wait behind
+# 2,000 unnamed ones.
+#
+# The confirm-batch handshake is honoured, not bypassed — the quote is read and
+# echoed back. CAPPED: a run this size means something is wrong upstream (a
+# whole batch colliding at once), and spending on it unattended is not the
+# answer. It says so and leaves the backlog run to proceed.
+REQ_CAP="${REQ_CAP:-50}"
+REQ_QUOTE=$(caffeinate -i -m node scripts/shopify/vision-name.mjs --requested 2>&1)
+REQ_N=$(printf '%s\n' "$REQ_QUOTE" | sed -n 's/^scope: \([0-9][0-9]*\) product.*/\1/p' | head -1)
+if [ -n "${REQ_N:-}" ] && [ "$REQ_N" -gt 0 ] 2>/dev/null; then
+  if [ "$REQ_N" -gt "$REQ_CAP" ]; then
+    echo "$(date '+%F %T') ⚠ $REQ_N new-name requests waiting — over the $REQ_CAP cap, NOT run. Something upstream is refusing in bulk; look at the publishing page." >> "$LOG"
+  else
+    echo "$(date '+%F %T') serving $REQ_N new-name request(s) from the reconciler" >> "$LOG"
+    caffeinate -i -m node scripts/shopify/vision-name.mjs --requested --confirm-batch "$REQ_N" >> "$LOG" 2>&1 \
+      || echo "$(date '+%F %T') ⚠ the new-name request pass exited non-zero — the backlog run continues" >> "$LOG"
+  fi
+fi
+
 # -i no idle sleep, -m keep the disk awake. NOT -d: the display may sleep.
 # The lid is still the owner's call — a closed lid sleeps regardless, and
 # changing that would mean changing his power settings, which this does not do.
