@@ -563,106 +563,143 @@
   }
 
   // ── category dropdowns ─────────────────────────────────────────────────────
-  // POSITIONED IN JS, `position: fixed` (owner report 2026-08-28: "footwear
-  // and clothing aren't working" — real bug, found live, not a phantom).
-  // `.mc-nav__panel` used to be `position: absolute`, placed via CSS relative
-  // to `.mc-nav__group`. That group sits inside `.mc-nav__scroll`, which
-  // carries `overflow-x: auto` for the row's own horizontal scroll — and per
-  // the CSS spec, setting only ONE overflow axis to a non-`visible` value
-  // makes the OTHER axis compute to `auto` too, not stay `visible`. So the
-  // panel was being silently clipped to `.mc-nav__scroll`'s own height (the
-  // nav bar's height, nowhere near the panel's) on every browser, every
-  // time — clicking the toggle DID work (verified: the class toggled, the
-  // `hidden` attribute came off), the panel was just invisible, clipped to
-  // nothing. `position: fixed` escapes that clipping entirely (fixed
-  // positioning is relative to the viewport, not the nearest positioned
-  // ancestor, and nothing between here and the viewport creates a
-  // containing block for it), computed here from the toggle's own
-  // `getBoundingClientRect()` so it still visually anchors under the
-  // button it opened from.
   //
-  // CLAMPED INTO THE VIEWPORT (added 2026-08-28, after the owner reported
-  // Footwear/Clothing STILL not working once the `fixed` change above was
-  // live — so the clipping was one of two bugs, not the whole of it).
-  // `left` used to be the toggle's own left edge, unclamped. Measured on the
-  // live shop: the nav strip's content is 858px wide, so on a ~390px phone
-  // Footwear and Clothing can only be reached by scrolling the strip most of
-  // the way right — which puts those buttons near the right edge, and a
-  // 242-265px panel hung off the button's left edge then starts at ~300px and
-  // ends at ~568px. Off the screen. The click worked and the panel opened,
-  // exactly as before; it simply opened where a phone cannot show it.
+  // THE PANELS ARE MOVED OUT OF THE NAV STRIP, ONTO <body>, AT LOAD. That one
+  // line is the whole fix for iPhones, and it is worth reading why, because
+  // this bug survived two earlier repairs that were both correct as far as
+  // they went.
   //
-  // So the panel is pushed back inside the viewport horizontally, and given a
-  // height budget of whatever is left below the button (the CSS sets
-  // `overflow-y: auto`, so Clothing's ten rows scroll inside the panel on a
-  // short screen instead of running off the bottom). Both are computed from
-  // real measurements at open time rather than assumed, because the strip's
-  // scroll position means the same button is at a different place every time.
+  // The story so far. `.mc-nav__panel` began as `position: absolute` inside
+  // `.mc-nav__group`, which lives in `.mc-nav__scroll` — the row's own
+  // horizontal scroller, `overflow-x: auto`. Per the CSS spec, setting one
+  // overflow axis to a non-`visible` value makes the OTHER compute to `auto`
+  // too, so the panel was clipped to the height of the nav bar and nothing was
+  // visible on any browser. Switching it to `position: fixed` cured that on
+  // every desktop browser, because fixed positioning is resolved against the
+  // viewport and ignores an ancestor's overflow. Clamping its `left` then
+  // cured a second, narrow-screen-only fault where it opened past the right
+  // edge of the display. Both real, both fixed, both verified.
+  //
+  // And on an actual iPhone it still did nothing. Owner screenshot, iOS
+  // Safari, 2026-08-28: Footwear and Clothing circled in red, "still not
+  // clickable on the phone version".
+  //
+  // The reason is that "fixed positioning is resolved against the viewport" is
+  // not true on iOS inside a `-webkit-overflow-scrolling: touch` scroller.
+  // Safari promotes such a scroller to its own compositing layer and a `fixed`
+  // DESCENDANT of it is positioned and clipped against that layer instead of
+  // the viewport — it behaves like `absolute` again. So on iPhones, and only
+  // on iPhones, the panel was still being clipped to the height of the nav bar
+  // by the original bug, straight through both repairs. A tap opened a panel
+  // nobody could see, which is indistinguishable from a dead button.
+  //
+  // Reparenting to <body> removes the argument entirely rather than arguing
+  // with it. With no scroller, no overflow and no compositing layer anywhere
+  // between the panel and the viewport, `position: fixed` means the same thing
+  // on every browser there is. `-webkit-overflow-scrolling: touch` has also
+  // been dropped from the stylesheet — iOS has had momentum scrolling by
+  // default since iOS 13 and the property is deprecated — so even a future
+  // panel that stayed inside the strip would not hit this.
+  //
+  // The cost of reparenting is that a panel is no longer inside its group in
+  // the DOM, so nothing can be found by walking up from it. Hence `navGroups`:
+  // the toggle/panel pairing is captured once, from the markup, before
+  // anything is moved, and every piece of logic below reads that list instead
+  // of the DOM tree. The `<script>` is deferred, so the markup is fully parsed
+  // by the time this runs.
   var NAV_PANEL_MARGIN = 12;
-  function positionNavPanel(toggle, panel) {
-    var r = toggle.getBoundingClientRect();
+  var navGroups = [];
+  $$("[data-mc-navgroup]").forEach(function (group) {
+    var toggle = $("[data-mc-navtoggle]", group);
+    var panel = $("[data-mc-navpanel]", group);
+    if (!toggle || !panel) return;
+    panel.hidden = true;
+    document.body.appendChild(panel);
+    navGroups.push({ group: group, toggle: toggle, panel: panel });
+  });
+
+  // CLAMPED INTO THE VIEWPORT. `left` was once the toggle's own left edge,
+  // unclamped. Measured on the live shop: the nav strip's content is 858px
+  // wide, so on a ~390px phone Footwear and Clothing are only reachable by
+  // scrolling the strip most of the way right — which puts those buttons near
+  // the right edge, and a 242-265px panel hung off the button's left edge then
+  // ran from ~300px to ~568px, off the side of the screen. So it is pushed
+  // back inside the viewport, and given a height budget of whatever is left
+  // below the button (the stylesheet sets `overflow-y: auto`, so Clothing's
+  // ten rows scroll inside the panel on a short screen rather than running off
+  // the bottom). Both are measured at open time, not assumed: the strip's
+  // scroll position puts the same button somewhere different every time.
+  function positionNavPanel(entry) {
+    var r = entry.toggle.getBoundingClientRect();
     var top = r.bottom + 8;
-    // Clear any previous clamp before measuring, or the panel's width would be
-    // read back through the last open's max-height/left and drift each time.
-    panel.style.maxHeight = "";
-    var w = panel.getBoundingClientRect().width;
+    // Clear the previous clamp before measuring or the width reads back
+    // through the last open's max-height and drifts a little each time.
+    entry.panel.style.maxHeight = "";
+    var w = entry.panel.getBoundingClientRect().width;
     var maxLeft = window.innerWidth - w - NAV_PANEL_MARGIN;
     var left = Math.max(NAV_PANEL_MARGIN, Math.min(r.left, maxLeft));
-    panel.style.top = top + "px";
-    panel.style.left = left + "px";
-    panel.style.maxHeight = Math.max(120, window.innerHeight - top - NAV_PANEL_MARGIN) + "px";
+    entry.panel.style.top = top + "px";
+    entry.panel.style.left = left + "px";
+    entry.panel.style.maxHeight =
+      Math.max(120, window.innerHeight - top - NAV_PANEL_MARGIN) + "px";
   }
-  function closeNavGroup(g) {
-    g.classList.remove("is-open");
-    var p = $("[data-mc-navpanel]", g);
-    if (p) p.hidden = true;
-    var t = $("[data-mc-navtoggle]", g);
-    if (t) t.setAttribute("aria-expanded", "false");
+  function closeNavGroup(entry) {
+    entry.group.classList.remove("is-open");
+    entry.panel.hidden = true;
+    entry.toggle.setAttribute("aria-expanded", "false");
   }
   document.addEventListener("click", function (ev) {
     var toggle = ev.target.closest && ev.target.closest("[data-mc-navtoggle]");
-    var openGroups = $$("[data-mc-navgroup].is-open");
+    // A click inside a panel is a click on one of its links: close everything
+    // EXCEPT that panel and let the link navigate. Its own group would once
+    // have been spared by `group.contains(target)`; now that the panel lives
+    // on <body> the group no longer contains it, so the panel is asked
+    // directly.
+    var inPanel = ev.target.closest && ev.target.closest("[data-mc-navpanel]");
 
-    openGroups.forEach(function (g) {
-      if (toggle && g.contains(toggle)) return;
-      closeNavGroup(g);
+    navGroups.forEach(function (entry) {
+      if (!entry.group.classList.contains("is-open")) return;
+      if (toggle && entry.toggle === toggle) return;
+      if (inPanel && entry.panel === inPanel) return;
+      closeNavGroup(entry);
     });
 
     if (!toggle) return;
     ev.preventDefault();
-    var group = toggle.closest("[data-mc-navgroup]");
-    var panel = $("[data-mc-navpanel]", group);
-    var nowOpen = !group.classList.contains("is-open");
-    group.classList.toggle("is-open", nowOpen);
-    if (panel) {
-      panel.hidden = !nowOpen;
-      if (nowOpen) positionNavPanel(toggle, panel);
+    var entry = null;
+    for (var i = 0; i < navGroups.length; i++) {
+      if (navGroups[i].toggle === toggle) { entry = navGroups[i]; break; }
     }
-    toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+    if (!entry) return;
+    var nowOpen = !entry.group.classList.contains("is-open");
+    entry.group.classList.toggle("is-open", nowOpen);
+    entry.panel.hidden = !nowOpen;
+    if (nowOpen) positionNavPanel(entry);
+    entry.toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
   });
-  // A fixed-position panel does not follow the page when it scrolls, so it has
-  // to be re-placed rather than left to drift away from its button.
+
+  // A fixed panel does not follow the page when it scrolls, so it is re-placed
+  // rather than left to drift away from its button.
   //
-  // This used to CLOSE the panel on any scroll event instead, which is a
-  // liability on a phone for two reasons. The nav strip is horizontally
-  // scrollable and, on a narrow screen, scrolling it is how a shopper reaches
-  // Footwear and Clothing in the first place — a nudge of that strip while the
-  // panel is open would shut it. And on iOS the address bar collapsing fires a
-  // window scroll of its own, unprompted, which could shut the panel a moment
-  // after it opened and read exactly like "clicking does nothing". Repositioning
-  // is both the friendlier behaviour and the one with no false triggers; the
-  // panel only closes if the button it belongs to has actually left the screen.
+  // This used to CLOSE on any scroll event instead, which is a liability on a
+  // phone twice over. The nav strip is horizontally scrollable and, on a
+  // narrow screen, scrolling it is HOW a shopper reaches Footwear and Clothing
+  // — a nudge of that strip would have shut the panel. And on iOS the address
+  // bar collapsing fires a window scroll of its own, unprompted, which could
+  // shut the panel a moment after it opened and read exactly like "clicking
+  // does nothing". Repositioning has no false triggers; the panel closes only
+  // once the button it belongs to has actually left the screen. The listener
+  // captures, so the strip's own sideways scroll is seen too — `scroll` does
+  // not bubble, but it does propagate down the capture path.
   function reflowOpenNavPanels() {
-    $$("[data-mc-navgroup].is-open").forEach(function (g) {
-      var t = $("[data-mc-navtoggle]", g);
-      var p = $("[data-mc-navpanel]", g);
-      if (!t || !p) return;
-      var r = t.getBoundingClientRect();
+    navGroups.forEach(function (entry) {
+      if (!entry.group.classList.contains("is-open")) return;
+      var r = entry.toggle.getBoundingClientRect();
       if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) {
-        closeNavGroup(g);
+        closeNavGroup(entry);
         return;
       }
-      positionNavPanel(t, p);
+      positionNavPanel(entry);
     });
   }
   var navReflowQueued = false;

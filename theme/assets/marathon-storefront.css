@@ -874,7 +874,15 @@
   overflow-x: auto;
   scrollbar-width: none;
   padding: 1.1rem 0;
-  -webkit-overflow-scrolling: touch;
+  /* NO `-webkit-overflow-scrolling: touch` (removed 2026-08-28). It is
+     deprecated — iOS has scrolled these with momentum by default since iOS 13,
+     so it bought nothing — and it was actively harmful here: Safari promotes a
+     scroller carrying it to its own compositing layer, and a `position: fixed`
+     DESCENDANT of that layer is then positioned and clipped against the layer
+     instead of the viewport. That is what kept the Footwear and Clothing
+     dropdowns invisible on iPhones through two fixes that worked everywhere
+     else. The panels are also moved out to <body> in marathon-storefront.js,
+     so neither this property nor this scroller can reach them again. */
 }
 .mc-nav__scroll::-webkit-scrollbar { display: none; }
 .mc-nav__link {
