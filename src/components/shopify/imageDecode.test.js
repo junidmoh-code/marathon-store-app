@@ -169,3 +169,14 @@ describe("the refusal carries its own diagnosis", () => {
     expect(blank).toContain("no type");
   });
 });
+
+describe("the size ceiling admits real camera output (owner report 2026-08-28, same evening)", () => {
+  it("a 60 MB ProRAW DNG passes the gate; 200 MB is refused with its size named", async () => {
+    const { uploadFileProblem } = await import("./photoTools.js");
+    expect(uploadFileProblem({ type: "image/x-adobe-dng", name: "IMG_8001.DNG", size: 60 * 1024 * 1024 })).toBe(null);
+    expect(uploadFileProblem({ type: "image/heic", name: "IMG_8002.HEIC", size: 3 * 1024 * 1024 })).toBe(null);
+    const msg = uploadFileProblem({ type: "image/jpeg", name: "x.jpg", size: 200 * 1024 * 1024 });
+    expect(msg).toContain("200 MB");
+    expect(msg).toContain("150 MB");
+  });
+});

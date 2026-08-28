@@ -24,7 +24,15 @@ import { storage } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "./imageDecode";
 
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // pre-compression ceiling — phone originals fit, junk doesn't
+// Pre-compression sanity ceiling. 25 MB refused a real camera-roll photo the
+// same evening the format gate was widened for it (owner report, 2026-08-28):
+// a 48-megapixel ProRAW DNG from a current iPhone is 30–80 MB. The ceiling's
+// only real job is absurdity ("this is not a photo of anything"), because the
+// two things it was guarding are guarded elsewhere: a video is refused by the
+// image/* type gate, and memory is bounded by resize-DURING-decode, never by
+// the file size (the blob goes straight to the decoder, below the JS heap).
+// So: comfortably above anything a phone camera writes, and nothing more.
+const MAX_UPLOAD_BYTES = 150 * 1024 * 1024;
 
 // Why a picked file can't become a publishing photo, or null when it can.
 //
@@ -47,7 +55,10 @@ export function uploadFileProblem(file) {
     return `That doesn't look like a photo (${describePickedFile(file)}). Pick an image from the camera roll.`;
   }
   if (file.size > MAX_UPLOAD_BYTES) {
-    return "That file is over 25 MB — it's too big to be a photo. Pick another one.";
+    // Same discipline as the type refusal: name the evidence. ceil, not round:
+    // a 150.4 MB file must not read "150 MB — over the 150 MB ceiling"
+    // (CodeRabbit, PR #503).
+    return `That file is ${Math.ceil(file.size / (1024 * 1024))} MB — over the 150 MB ceiling, too big to be a photo. Pick another one.`;
   }
   return null;
 }
