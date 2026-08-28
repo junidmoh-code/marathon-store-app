@@ -99,7 +99,38 @@
   two surfaces are the same data by construction rather than by discipline.
 {%- endcomment -%}
 {%- if variant == 'drawer' -%}
-  <ul class="menu-drawer__menu has-submenu list-menu" role="list">
+  {%- comment -%}
+    NO `has-submenu` ON THIS LIST — it is load-bearing by its ABSENCE. Owner
+    report 2026-08-28: "if you click the burger sign you will see the
+    categories but clothing and sneakers they don't open." Reproduced live, and
+    it was worse than not opening: tapping Footwear blanked the ENTIRE drawer.
+
+    Dawn's own `MenuDrawer` element binds a click handler to every `<summary>`
+    inside the drawer, ours included, and that handler does
+
+        detailsElement.closest('.has-submenu').classList.add('submenu-open')
+
+    against Dawn's stylesheet rule
+
+        .js .menu-drawer__navigation .submenu-open { visibility: hidden; }
+
+    Dawn hides the parent list because it expects a `.menu-drawer__submenu`
+    panel to slide in over the top of it. Ours is a native `<details>` that
+    expands IN PLACE — there is no second panel — so the list went
+    `visibility: hidden` and nothing replaced it. Measured live: the details
+    really did open (`open` set, `menu-opening` added, the child list laid out
+    256px tall) and the drawer was simply invisible. Worse, tapping the summary
+    a second time re-adds `submenu-open` while the native toggle closes the
+    details, so the drawer stayed blank until the drawer itself was closed.
+
+    `has-submenu` was ours to begin with — copied from Dawn's linklist markup
+    when this snippet was written. Dropping it makes `closest('.has-submenu')`
+    return null, so Dawn's handler has nothing to hide and the native
+    disclosure does exactly what it says. The defensive rule in
+    marathon-storefront.css keeps this true even if the class arrives by some
+    other path.
+  {%- endcomment -%}
+  <ul class="menu-drawer__menu list-menu" role="list">
     {%- comment -%}
       HOME, first row. Without this the only way back to the homepage from
       inside the drawer was the wordmark itself — not obvious as a link on

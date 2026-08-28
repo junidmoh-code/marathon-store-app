@@ -995,6 +995,22 @@
 }
 /* The children sit in from their parent so the structure reads at a glance. */
 .mc-drawer-group > ul { padding-inline-start: 1.6rem; }
+/* THE DRAWER MUST NEVER BLANK ITSELF (owner report 2026-08-28: "click the
+   burger sign, clothing and sneakers don't open" — in fact the whole menu
+   went empty). Dawn's `MenuDrawer` script marks the list a submenu belongs to
+   with `submenu-open`, and Dawn's stylesheet answers that with
+   `.js .menu-drawer__navigation .submenu-open { visibility: hidden; }` —
+   correct for Dawn, which slides a separate `.menu-drawer__submenu` panel in
+   over the hidden list. These groups are native `<details>` that expand in
+   place instead, so there is no panel to slide in and hiding the list hides
+   everything. The real fix is in snippets/marathon-nav.liquid, which no longer
+   gives Dawn's script a `.has-submenu` ancestor to find; this rule is the belt
+   to that pair of braces, so the drawer cannot disappear again if the class
+   ever arrives by another route. Scoped to this navigation only — no Dawn
+   slide-in submenu exists anywhere in this theme to break. Carries `.js` and
+   one class more than Dawn's selector so it wins on specificity rather than on
+   which stylesheet happens to load second. */
+.js .menu-drawer__navigation .menu-drawer__menu.submenu-open { visibility: visible; }
 
 
 /* ─── "SEE ALL" ────────────────────────────────────────────────────────────── */
