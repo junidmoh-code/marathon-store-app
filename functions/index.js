@@ -3047,6 +3047,11 @@ const VALID_PERMISSIONS = [
   // it opens the category map for the WHOLE network; it grants no RTDB write of
   // its own — the callable writes with the Admin SDK.
   "engine_policy",
+  // Card Recon (2026-08-28): capture the FNB terminal's batch slip and see the
+  // variance against the POS tender ledger. Gates the phone screen and the
+  // cardBatchCapture callable (cardRecon/cardRecon.js) via the permFlags
+  // scalar; spends a Gemini OCR call per capture. NOT a stock permission.
+  "card_recon",
   "display_refills", // legacy no-op — kept for back-compat only
 ];
 
@@ -3571,6 +3576,21 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // being redeployed; it does NOT remove the running instance, which still holds
 // the GEMINI_API_KEY secret binding and is still callable by any admin:
 //   firebase functions:delete cleanProductPhoto --region europe-west1
+
+// ─── CARD RECON — cardBatchCapture (the FNB batch slip becomes evidence) ─────
+// Managers photograph the card terminal's own Batch Report; the callable OCRs
+// it (Gemini 3.6 Flash structured JSON — the readStyleCodeLabel tier-2
+// plumbing, same GEMINI_API_KEY secret), refuses unsound reads (unmapped TID,
+// duplicate batch, low confidence, line-count shortfall, TSN gaps), computes
+// expected card takings for the till over the slip's OWN Opened→Closed window
+// from /pos/paymentEvents tender legs (Admin SDK — the browser never reads POS
+// money), and writes slip + expected + variance APPEND-ONLY at
+// /pos/card_batches. Nobody types the card total anywhere. Gated by the
+// dedicated card_recon permission flag, not stockRole. Cost logged to
+// /aiAssistant/usage. Model + docs: functions/lib/card-recon.cjs,
+// lib/card-expected.cjs, docs/CARD-RECON.md.
+//   firebase deploy --only functions:cardBatchCapture
+exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the

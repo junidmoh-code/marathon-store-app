@@ -33,6 +33,7 @@ import { formatSize } from "./utils/sizeLabel";
 import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import EnginePolicyCard from "./components/stock/EnginePolicyCard";
+import CardReconScreen from "./components/cardrecon/CardReconScreen";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { useSpecials } from "./components/TvSpecialsRail";
@@ -329,7 +330,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -348,6 +349,11 @@ const ROLE_TO_PERMISSION = {
   [ROLES.ADMIN]:            "product_admin",
   [ROLES.BROADCAST_GROUPS]: "broadcast",
   [ROLES.USER_MANAGEMENT]:  "user_management",
+  // Card Recon — the FNB batch-slip capture. Its own dedicated permission
+  // (manager grant, per-user only, never in a role preset), NOT stockRole:
+  // the screen writes nothing itself — the cardBatchCapture callable re-checks
+  // the same permFlags scalar server-side.
+  [ROLES.CARD_RECON]:       "card_recon",
   // NOTE: ROLES.STOCK is intentionally NOT permission-mapped here — opening the Stock
   // section is gated by /users/{uid}/stockRole (warehouse|admin), computed as
   // canAccessStock, NOT by an app permission, so the seed counters (stockRole
@@ -2673,6 +2679,16 @@ const RoleIcons = {
       <circle cx="10" cy="18" r="2"/>
     </svg>
   ),
+  card_recon: (
+    // A payment card: rounded rectangle with its magstripe band. The only
+    // rounded-rect-with-a-bar in the set — checked against Display (screen on a
+    // stand) and Barcodes (six free-standing rules, no frame).
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/>
+      <line x1="2.5" y1="10" x2="21.5" y2="10"/>
+      <line x1="6" y1="15" x2="11" y2="15"/>
+    </svg>
+  ),
   barcodes: (
     // A barcode. Six thin full-height rules at uneven spacing — deliberately not
     // the Insights chart's three fat bottom-aligned bars, which is the only
@@ -2960,6 +2976,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
+      // Card Recon — capture the card machine's batch slip, see the variance
+      // against the POS tender ledger. Dedicated per-user permission; the
+      // figure is OCR'd from the slip, never typed.
+      hasPermission(ROLE_TO_PERMISSION[ROLES.CARD_RECON]) && { key:"card_recon", icon:RoleIcons.card_recon, name:"Card Recon", desc:"Batch slip capture · variance", onClick:()=>onSelect(ROLES.CARD_RECON) },
       // AI Studio — super-admin sees every tool; `photo_generation` sees the
       // Photo Studio and NOTHING else (the view filters its own tool list, and
       // the description below changes to match so the card never promises a tab
@@ -18334,6 +18354,7 @@ function AppInner() {
   else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
     ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;
+  else if (role === ROLES.CARD_RECON) view = guard(ROLES.CARD_RECON, <CardReconScreen onExit={() => setRole(null)} />);
   else if (role === ROLES.BARCODES)  view = <BarcodeCatalog products={products} canMint={canMint} onExit={() => setRole(null)} />;
   else if (role === ROLES.LABEL_PRINT) view = <LabelPrintView products={products} onExit={() => setRole(null)} />;
   else if (role === ROLES.ASSISTANT) view = guard(ROLES.ASSISTANT,        <AssistantView products={products} orders={orders} onExit={() => setRole(null)} />);
