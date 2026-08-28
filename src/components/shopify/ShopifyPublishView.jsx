@@ -60,6 +60,7 @@ import {
 } from "./shopifyPublishCore";
 import { describeOff } from "./publishAudit";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
+import { topCategory, UNCATEGORIZED_TOP } from "../../utils/productCategory.js";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
   applyNameProposal, dismissNameProposal, loadProposalPage,
@@ -577,11 +578,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   //   · Awaiting is WINDOWED. Bodies are fetched for the rows on screen and
   //     nothing else (the effect below), so a 2,700-row list costs the same
   //     as one screen of it until somebody asks for more.
+  // THE SEARCH READS THE ORIGINAL NAME (owner instruction 2026-08-28): the
+  // catalogue name staff know from the box label and barcode — "Sneaker Bad
+  // Bunny x Indoor Benito" — never the cleaned listing name the website shows.
+  // The person searching is holding the shoe, not reading the storefront.
+  // Style codes match too, because that is the other string on the label.
   const q = debouncedQuery.trim().toLowerCase();
-  const matchesQuery = useCallback((p, node) => {
+  const matchesQuery = useCallback((p) => {
     if (!q) return true;
     return String(p.name || "").toLowerCase().includes(q) ||
-           String(node?.cleanName || "").toLowerCase().includes(q);
+           String(p.styleCode || "").toLowerCase().includes(q);
   }, [q]);
 
   // ── THE SORT KEY MUST NOT BE SOMETHING THE WINDOW FETCHES ─────────────────
@@ -612,7 +618,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       // productById, never a fresh walk — it is the one index that keeps a
       // price record out of every list on this page.
       const p = productById.get(pid);
-      if (!p || !matchesQuery(p, n)) continue;
+      if (!p || !matchesQuery(p)) continue;
       out.push(p);
     }
     return out.sort(byCatalogueName);
@@ -627,17 +633,66 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // A product whose body has not loaded yet is INCLUDED. Its tab is decided by
   // publishTabFor(undefined) → "awaiting", which is right: a node we have not
   // read cannot be on the storefront, because every on node arrived at mount.
-  const awaitingList = useMemo(() => {
+  //
+  // ── THE CATALOGUE, BACK (owner instruction 2026-08-28) ────────────────────
+  // Not as the thirty collapsed sections #492 removed — as FILTER CHIPS over
+  // the same flat windowed list: pick a department (Footwear / Clothing / …),
+  // optionally a shelf inside it (Sneakers, T-Shirts, …), and the list narrows.
+  // One tap to a department instead of thirty to an answer, and the read
+  // discipline is untouched: chips only filter what membership already
+  // computed from fields in hand — no node body is fetched for a count.
+  const [catTop, setCatTop] = useState("all");
+  const [catSub, setCatSub] = useState("all");
+  useEffect(() => { setCatSub("all"); }, [catTop]);
+
+  // Membership first (tab logic only), then the chips are counted from it,
+  // then search + catalogue narrow it. Counting after the query would make
+  // every chip's number jump on each keystroke.
+  const awaitingAll = useMemo(() => {
     if (filter !== "awaiting") return null;
     const out = [];
     for (const p of productById.values()) {
-      const n = nodes[p.id];
-      if (publishTabFor(n) !== "awaiting") continue;
-      if (!matchesQuery(p, n)) continue;
+      if (publishTabFor(nodes[p.id]) !== "awaiting") continue;
       out.push(p);
     }
-    return out.sort(byCatalogueName);
-  }, [filter, productById, nodes, matchesQuery, byCatalogueName]);
+    return out;
+  }, [filter, productById, nodes]);
+
+  // Department chips (top-level category), and shelf chips within the picked
+  // department. Both from the catalogue fields already in hand.
+  const catalogueTops = useMemo(() => {
+    if (!awaitingAll) return null;
+    const counts = new Map();
+    for (const p of awaitingAll) {
+      const t = topCategory(p);
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+    // Stable, meaningful order: the real departments first, Uncategorized last.
+    return [...counts.entries()].sort((a, b) =>
+      (a[0] === UNCATEGORIZED_TOP) - (b[0] === UNCATEGORIZED_TOP) || b[1] - a[1]);
+  }, [awaitingAll]);
+  const catalogueSubs = useMemo(() => {
+    if (!awaitingAll || catTop === "all") return null;
+    const counts = new Map();
+    for (const p of awaitingAll) {
+      if (topCategory(p) !== catTop) continue;
+      const s = String(p.subcategory || "").trim() || "No shelf";
+      counts.set(s, (counts.get(s) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }, [awaitingAll, catTop]);
+
+  const awaitingList = useMemo(() => {
+    if (!awaitingAll) return null;
+    return awaitingAll.filter((p) => {
+      if (catTop !== "all" && topCategory(p) !== catTop) return false;
+      if (catSub !== "all") {
+        const s = String(p.subcategory || "").trim() || "No shelf";
+        if (s !== catSub) return false;
+      }
+      return matchesQuery(p);
+    }).sort(byCatalogueName);
+  }, [awaitingAll, catTop, catSub, matchesQuery, byCatalogueName]);
 
   const fullList = liveList || awaitingList;
 
@@ -738,16 +793,16 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (!pendingProposal(n)) continue;
       const p = productById.get(pid);
       if (!p) continue;
-      if (q && !(String(p.name || "").toLowerCase().includes(q) ||
-                 String(n.cleanName || "").toLowerCase().includes(q) ||
-                 String(n.nameProposal?.name || "").toLowerCase().includes(q))) continue;
+      // Same matcher as the tabs: the ORIGINAL catalogue name and style code,
+      // never the cleaned/proposed listing text — see matchesQuery above.
+      if (!matchesQuery(p)) continue;
       out.push(p);
     }
     out.sort((a, b) =>
       (Number(nodes[a.id]?.nameProposal?.proposedAt) || 0) -
       (Number(nodes[b.id]?.nameProposal?.proposedAt) || 0));
     return out;
-  }, [filter, productById, nodes, q, proposalsLoaded]);
+  }, [filter, productById, nodes, matchesQuery, proposalsLoaded]);
 
   // ─── THE WINDOW ───────────────────────────────────────────────────────────
   // A flat Awaiting list is ~2,700 rows. Rendering them all would be slow on a
@@ -758,7 +813,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // Reset on a tab change and on a new search, because "show 60 more" means
   // nothing against a list you are no longer looking at.
   const [shown, setShown] = useState(PAGE_SIZE);
-  useEffect(() => { setShown(PAGE_SIZE); }, [filter, q]);
+  useEffect(() => { setShown(PAGE_SIZE); }, [filter, q, catTop, catSub]);
   const visible = useMemo(() => (fullList ? fullList.slice(0, shown) : null), [fullList, shown]);
   // Pids whose body read FAILED. They must not count as pending: a read that
   // errored is never coming back on its own — the effect below is keyed on the
@@ -770,7 +825,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // Cleared on a tab change AND on a new search: both rebuild the window, and a
   // pid carried over as "failed" would render its row from a null node — saying
   // "awaiting review" about a product whose body simply did not arrive.
-  useEffect(() => { setFailedBodies(new Set()); }, [filter, q]);
+  useEffect(() => { setFailedBodies(new Set()); }, [filter, q, catTop, catSub]);
   const retryBodies = useCallback(() => {
     for (const pid of failedBodies) requestedPids.current.delete(pid);
     setFailedBodies(new Set());
@@ -1279,7 +1334,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search products…"
+          placeholder="Search the original name (as on the label)…"
           style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
         />
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
@@ -1290,6 +1345,45 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             </button>
           ))}
         </div>
+        {/* THE CATALOGUE — department, then shelf, as one-tap filter chips over
+            the same flat list. Awaiting review only: that is where the work
+            is, and where "show me just the sneakers" was asked for. */}
+        {filter === "awaiting" && catalogueTops && catalogueTops.length > 0 && (
+          <>
+            <div style={{ display: "flex", gap: 6, marginTop: 10, overflowX: "auto",
+                          WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
+              <button onClick={() => setCatTop("all")}
+                style={{ ...(catTop === "all" ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.72rem", flexShrink: 0 }}>
+                All departments
+              </button>
+              {catalogueTops.map(([top, n]) => (
+                <button key={top} onClick={() => setCatTop(top)}
+                  style={{ ...(catTop === top ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.72rem",
+                           flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                  {top}
+                  <span style={{ fontSize: 10, opacity: 0.65, fontVariantNumeric: "tabular-nums" }}>{n}</span>
+                </button>
+              ))}
+            </div>
+            {catalogueSubs && catalogueSubs.length > 1 && (
+              <div style={{ display: "flex", gap: 6, marginTop: 8, overflowX: "auto",
+                            WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
+                <button onClick={() => setCatSub("all")}
+                  style={{ ...(catSub === "all" ? tabOn : tabOff), padding: "5px 11px", fontSize: "0.7rem", flexShrink: 0 }}>
+                  All {catTop.toLowerCase()}
+                </button>
+                {catalogueSubs.map(([sub, n]) => (
+                  <button key={sub} onClick={() => setCatSub(sub)}
+                    style={{ ...(catSub === sub ? tabOn : tabOff), padding: "5px 11px", fontSize: "0.7rem",
+                             flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                    {sub}
+                    <span style={{ fontSize: 10, opacity: 0.65, fontVariantNumeric: "tabular-nums" }}>{n}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       <div style={{ padding: "6px 14px 0" }}>
@@ -1427,7 +1521,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         {keys && pipeline && !proposedList && visible && (
           fullList.length === 0 ? (
             <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
-              {q ? "Nothing matches that search."
+              {q || (filter === "awaiting" && catTop !== "all")
+                 ? "Nothing matches that search or catalogue pick."
                  : filter === "live" ? "Nothing is on the shop yet."
                  : "Nothing is waiting — every product is on the shop."}
             </div>

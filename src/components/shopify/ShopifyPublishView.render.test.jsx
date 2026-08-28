@@ -139,7 +139,7 @@ const COND = "Very good — light cosmetic marks";
 const PRODUCTS = [
   { id: "p1", name: "Plain tee black", category: "Clothing", subcategory: "Tees", retailPrice: 199, photoUrl: "https://x/p1.jpg" },
   { id: "p2", name: "Plain tee white", category: "Clothing", subcategory: "Tees", photoUrl: "https://x/p2.jpg" },
-  { id: "p3", name: "Court sneaker grey", category: "Footwear", subcategory: "Sneakers", retailPrice: 899, photoUrl: "https://x/p3.jpg" },
+  { id: "p3", name: "Court sneaker grey", category: "Footwear", subcategory: "Sneakers", retailPrice: 899, photoUrl: "https://x/p3.jpg", styleCode: "FZ4117" },
 ];
 
 const PROPOSAL = {
@@ -204,7 +204,7 @@ const goBack = async () => {
 // photo picker carries a hidden type="file" input; keep it out).
 const pageNameInput = (tree) =>
   tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" &&
-    n.props.type !== "file" && n.props.placeholder !== "Search products…")[0];
+    n.props.type !== "file" && !String(n.props.placeholder || "").startsWith("Search"))[0];
 
 beforeEach(() => {
   mockCache.clear();
@@ -233,24 +233,37 @@ beforeEach(() => {
   heldReads.length = 0;
 });
 
-test("mounts on Awaiting review as ONE flat list — no category headings anywhere", async () => {
-  // Categories are gone (owner instruction 2026-08-28). A heading between the
-  // reviewer and the rows is exactly what this removed.
+test("mounts on Awaiting review as ONE flat list, with the catalogue as filter CHIPS — never sections", async () => {
+  // The catalogue is back (owner instruction 2026-08-28) — as one-tap filter
+  // chips over the same flat windowed list, NOT the thirty collapsed section
+  // headings #492 removed. Rows are simply there from the first render; a
+  // chip narrows them; nothing has to be opened to be seen.
   let tree;
   await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
   await flush();
-  const out = texts(tree);
-  expect(out).not.toContain("Clothing");
-  expect(out).not.toContain("Footwear");
+  let out = texts(tree);
   expect(out).toContain("Plain tee black");   // the rows are simply there
   expect(out).toContain("Court sneaker grey");
-  // …and so are the three tabs, and only those three.
+  // …the three tabs…
   expect(out).toContain("Live");
   expect(out).toContain("Awaiting review");
   expect(out).toContain("Suggested names");
-  expect(out).not.toContain('"All"');
-  // No node keys in this fixture ⇒ nothing to fetch. The window asks for the
-  // bodies of rows on screen and nothing else.
+  // …and the department chips, with counts, as BUTTONS (a filter, not a heading).
+  expect(out).toContain("All departments");
+  expect(out).toContain("Clothing");
+  expect(out).toContain("Footwear");
+  // Tapping a department narrows the flat list — no section ever opens.
+  await act(() => { button(tree, "Clothing").props.onClick(); });
+  await flush();
+  out = texts(tree);
+  expect(out).toContain("Plain tee black");
+  expect(out).not.toContain("Court sneaker grey");
+  await act(() => { button(tree, "All departments").props.onClick(); });
+  await flush();
+  expect(texts(tree)).toContain("Court sneaker grey");
+  // No node keys in this fixture ⇒ nothing to fetch. The chips and their
+  // counts come from catalogue fields already in hand — the window asks for
+  // the bodies of rows on screen and nothing else.
   expect(calls.nodesFor.length).toBe(0);
 });
 
@@ -271,7 +284,7 @@ test("the window fetches bodies for the rows on screen and no others; rows show 
   expect(out).toContain('"2"," photo"');      // publishing-set count on the row (JSX splits text nodes)
   expect(out).toContain("Court sneaker");     // one list — nothing is behind a heading any more
   // The list holds NO name editor — editing lives on the product page.
-  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && n.props.placeholder !== "Search products…");
+  const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type !== "checkbox" && !String(n.props.placeholder || "").startsWith("Search"));
   expect(inputs.length).toBe(0);
 });
 
@@ -1595,4 +1608,63 @@ test("a failed body read shows the rows, says so, and the retry actually re-read
   // …and the real body landed, so the row now shows its cleaned name.
   expect(texts(tree)).toContain("Basic tee black");
   expect(texts(tree)).not.toContain("didn't load");
+});
+
+// ─── THE SEARCH READS THE ORIGINAL NAME (owner instruction 2026-08-28) ───────
+// The person searching is holding the shoe and reading its label — the
+// catalogue name and the style code. The cleaned name the website shows must
+// NOT match: finding a product by a name the label doesn't carry is how the
+// wrong box gets published.
+const searchInput = (tree) =>
+  tree.root.findAll((n) => n.type === "input" && String(n.props.placeholder || "").startsWith("Search"))[0];
+const typeSearch = async (tree, value) => {
+  await act(() => { searchInput(tree).props.onChange({ target: { value } }); });
+  await act(async () => { vi.advanceTimersByTime(300); });   // past the 250ms debounce
+  await flush(); await flush();
+};
+
+test("search matches the ORIGINAL catalogue name, and NOT the cleaned website name", async () => {
+  await withFakeTimers(async () => {
+    keys = new Set(["p2"]);
+    bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", cleanNameSource: "manual", nameApprovedAt: 5 };
+    let tree;
+    await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+    await flush(); await flush();
+    // The WEBSITE name finds nothing…
+    await typeSearch(tree, "Basic tee");
+    let out = texts(tree);
+    expect(out).not.toContain("Plain tee white");
+    expect(out).toContain("Nothing matches");
+    // …the ORIGINAL name finds the row.
+    await typeSearch(tree, "plain tee white");
+    expect(texts(tree)).toContain("Plain tee white");
+  });
+});
+
+test("search matches the style code on the label", async () => {
+  await withFakeTimers(async () => {
+    let tree;
+    await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+    await flush(); await flush();
+    await typeSearch(tree, "fz41");
+    const out = texts(tree);
+    expect(out).toContain("Court sneaker grey");
+    expect(out).not.toContain("Plain tee black");
+  });
+});
+
+test("catalogue chips and search compose — and the chips never fetch a node body", async () => {
+  await withFakeTimers(async () => {
+    let tree;
+    await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+    await flush(); await flush();
+    await act(() => { button(tree, "Clothing").props.onClick(); });
+    await flush();
+    await typeSearch(tree, "white");
+    const out = texts(tree);
+    expect(out).toContain("Plain tee white");
+    expect(out).not.toContain("Plain tee black");
+    expect(out).not.toContain("Court sneaker grey");
+    expect(calls.nodesFor.length).toBe(0);   // no keys in this fixture — chips cost no reads
+  });
 });
