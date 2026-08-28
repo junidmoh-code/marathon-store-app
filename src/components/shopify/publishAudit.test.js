@@ -118,7 +118,9 @@ describe("describeOff", () => {
       nameApprovedAt: at + 5,
     });
     expect(s.renamedSince).toBe(true);
-    expect(s.text).toContain("ready to publish again");
+    // The FLAG, not a second sentence: the product page renders its own line
+    // for this, and saying it in both places said it twice on one screen.
+    expect(s.text).not.toContain("ready to publish again");
   });
 
   it("does NOT claim the rename landed when the approval predates the switch-off", () => {
@@ -130,7 +132,6 @@ describe("describeOff", () => {
       nameApprovedAt: 999,
     });
     expect(s.renamedSince).toBe(false);
-    expect(s.text).not.toContain("ready to publish again");
   });
 
   it("never claims a rename for an off that was not about renaming", () => {

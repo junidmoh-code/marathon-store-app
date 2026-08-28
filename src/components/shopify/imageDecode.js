@@ -49,11 +49,22 @@ export const ACCEPTED_TYPES = [
 // the extension answers instead.
 const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|heics?|heifs?|avif|gif|bmp|tiff?)$/i;
 
-/** Is this something we are willing to try to decode? */
+/**
+ * Is this something we are willing to try to decode?
+ *
+ * EITHER the reported type or the file name may vouch for it, and a rejection
+ * needs both to fail. The type alone is not enough to refuse on: a picker that
+ * hands over a HEIC labelled `application/octet-stream` — which they do — was
+ * being turned away by exactly the refusal this work exists to remove, just
+ * with a different cause (CodeRabbit review, 2026-08-28).
+ *
+ * SVG is still refused on both counts: it is in neither list. It is a document
+ * with script and fetch semantics, not a photograph.
+ */
 export function isAcceptedImageFile(file) {
   if (!file) return false;
   const type = String(file.type || "").toLowerCase();
-  if (type) return ACCEPTED_TYPES.includes(type);
+  if (type && ACCEPTED_TYPES.includes(type)) return true;
   return ACCEPTED_EXTENSIONS.test(String(file.name || ""));
 }
 

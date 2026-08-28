@@ -95,6 +95,8 @@ for (const { pid } of plans) {
   const result = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
     const merge = planMigration(cur);
     if (!merge) return cur; // already migrated by the time we got here
+    // A transaction returns the WHOLE node, so offAuditFields (which merges and
+    // trims a map) is right here — unlike the update() paths, which add a child.
     const audit = merge.liveState === "off"
       ? offAuditFields(cur, buildOffRecord({
           at,

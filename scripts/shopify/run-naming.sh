@@ -78,6 +78,15 @@ echo "── run-naming.sh started $(date '+%F %T') (pid $$) ──" >> "$LOG"
 # whole batch colliding at once), and spending on it unattended is not the
 # answer. It says so and leaves the backlog run to proceed.
 REQ_CAP="${REQ_CAP:-50}"
+# A NON-NUMERIC CAP IS NOT NO CAP. `[ "$N" -gt "$REQ_CAP" ]` on a non-numeric
+# value fails, evaluates false, and the batch is served UNCAPPED — the opposite
+# of what setting a cap means (CodeRabbit review, 2026-08-28). Refuse instead.
+case "$REQ_CAP" in
+  ''|*[!0-9]*)
+    echo "$(date '+%F %T') ⚠ REQ_CAP=\"$REQ_CAP\" is not a number — refusing to run the new-name pass uncapped" >> "$LOG"
+    exit 2
+    ;;
+esac
 REQ_QUOTE=$(caffeinate -i -m node scripts/shopify/vision-name.mjs --requested 2>&1)
 REQ_N=$(printf '%s\n' "$REQ_QUOTE" | sed -n 's/^scope: \([0-9][0-9]*\) product.*/\1/p' | head -1)
 if [ -n "${REQ_N:-}" ] && [ "$REQ_N" -gt 0 ] 2>/dev/null; then

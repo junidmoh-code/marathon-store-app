@@ -27,12 +27,15 @@
 //      the cheap early answer, not the guarantee.
 //   2. ZERO INVENTORY. Stock on a product is evidence somebody set it up for
 //      sale. Anything above zero, on any variant, is refused.
-//   3. ON NO SALES CHANNEL AT ALL. Not "not on OUR channel" — ANY. The first
-//      version of this checked only the Online Store publication, which would
-//      have let a zero-stock ACTIVE product published to a marketplace, a
-//      wholesale catalog or a POS channel be adopted and overwritten in place
-//      (Codex review, 2026-08-28). A product somebody put on a channel is a
-//      product somebody set up.
+//   3. ON NO SALES CHANNEL AT ALL. Not "not on OUR channel", and not "not on a
+//      channel while ACTIVE" — ANY channel, ANY status. Two reviews walked this
+//      one back in stages (2026-08-28): first it checked only the Online Store
+//      publication, so a zero-stock ACTIVE product on POS, the Shop app or a
+//      marketplace looked like litter; then it still allowed a DRAFT product
+//      attached to a channel — and Shopify's status and publications are
+//      independent, so such a product becomes VISIBLE on that channel the moment
+//      its status flips, which is exactly what adopting it does. A product
+//      somebody put on a channel is a product somebody set up.
 //
 // Any one failing refuses. Anything the API cannot answer refuses — an unknown
 // is not a yes.
@@ -85,12 +88,24 @@ export async function adoptionVerdict(graphql, gid, onlineStorePublicationId) {
   if (anyChannel === null && !onOurChannel) {
     return { ok: false, why: "the shop would not say which sales channels it is on" };
   }
+  // ANY CHANNEL AT ALL, WHATEVER THE STATUS. Not "any channel while ACTIVE":
+  // Shopify's status and its publications are independent, and a DRAFT product
+  // that is already attached to a channel becomes visible on that channel the
+  // instant its status changes — which is precisely what adopting it does, since
+  // the reconciler sets ACTIVE at the end of a publish. Adoption would therefore
+  // have put our product in front of customers on a channel nobody chose for it
+  // (CodeRabbit review, 2026-08-28, with the Shopify docs to match).
+  //
+  // This also makes the code say what the header always claimed: on NO sales
+  // channel at all.
   const published = anyChannel === true || onOurChannel;
-  if (published && p.status === "ACTIVE") {
+  if (published) {
     return {
       ok: false,
-      why: onOurChannel ? "it is on sale on the storefront right now"
-                        : "it is live on another sales channel",
+      why: onOurChannel
+        ? (p.status === "ACTIVE" ? "it is on sale on the storefront right now"
+                                 : "it is already set up on the storefront")
+        : "it is set up on another sales channel",
     };
   }
   const total = Number(p.totalInventory);
@@ -105,14 +120,10 @@ export async function adoptionVerdict(graphql, gid, onlineStorePublicationId) {
   if (units > 0) {
     return { ok: false, why: `it holds ${units} unit${units === 1 ? "" : "s"} of stock` };
   }
-  // The wording has to be TRUE on both branches — it lands verbatim in a
-  // refusal a shop assistant reads. "Unpublished orphan" for a product still
-  // attached to a channel would have been a small lie (architect review).
+  // Only one branch survives now: anything on a channel refused above.
   return {
     ok: true,
-    why: published
-      ? `${String(p.status || "unknown").toLowerCase()} product with no stock, still attached to a sales channel`
-      : `${String(p.status || "unknown").toLowerCase()} product with no stock, on no sales channel`,
+    why: `${String(p.status || "unknown").toLowerCase()} product with no stock, on no sales channel`,
   };
 }
 

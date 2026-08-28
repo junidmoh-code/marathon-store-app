@@ -47,11 +47,24 @@ describe("adoptionVerdict", () => {
     expect(v.why).toMatch(/another sales channel/);
   });
 
-  it("adopts a DRAFT product attached to a channel — draft is not visible to anyone", async () => {
+  it("REFUSES a DRAFT product attached to a channel — it goes VISIBLE the moment status flips", async () => {
+    // Shopify's status and its publications are independent. A draft already
+    // attached to a channel becomes visible there the instant it turns ACTIVE —
+    // which is exactly what adopting it does, since the reconciler sets ACTIVE
+    // at the end of a publish. Adoption would have put our product in front of
+    // customers on a channel nobody chose (CodeRabbit review).
     const v = await adoptionVerdict(
       gql({ ...base, status: "DRAFT", resourcePublicationsCount: { count: 2 } }), base.id, PUB);
-    expect(v.ok).toBe(true);
-    expect(v.why).toMatch(/still attached to a sales channel/);   // and it SAYS so
+    expect(v.ok).toBe(false);
+    expect(v.why).toMatch(/another sales channel/);
+  });
+
+  it("REFUSES a DRAFT product already set up on OUR storefront channel", async () => {
+    const v = await adoptionVerdict(
+      gql({ ...base, status: "DRAFT", publishedOnPublication: true, resourcePublicationsCount: { count: 1 } }),
+      base.id, PUB);
+    expect(v.ok).toBe(false);
+    expect(v.why).toMatch(/already set up on the storefront/);
   });
 
   it("REFUSES when the shop will not say which channels it is on — an unknown is not a yes", async () => {

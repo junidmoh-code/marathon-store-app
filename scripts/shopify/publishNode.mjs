@@ -42,7 +42,7 @@
 // cleanName: a name is generated once and never regenerated (AI is
 // non-deterministic; a re-run must not silently change a reviewed title).
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { buildOffRecord, offAuditFields } from "../../src/components/shopify/publishAudit.js";
+import { buildOffRecord, OFF_LOG_KEEP } from "../../src/components/shopify/publishAudit.js";
 
 export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
 
@@ -56,17 +56,44 @@ export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
 // Read ONCE per process and cached: it is a client-side metadata value with no
 // rules and no round trip after the handshake, and an off record's `at` and its
 // log key must be the SAME instant — two calls to a live clock are two numbers.
-// The off-audit fields for a script-side write, log INCLUDED AND TRIMMED.
-// The first version used the untrimmed update() form on the argument that
-// script-side offs are rare — which is true of a healthy shop and false of the
-// case that matters: a product the validator refuses on every tick would grow
-// its log without limit (Codex review, 2026-08-28). One small point read of the
-// log child is cheaper than an unbounded node.
-async function offFields(db, productId, record) {
-  let existing = null;
-  try { existing = (await db.ref(`shopify_publish/${productId}/offLog`).get()).val(); }
-  catch { existing = null; }   // an unreadable log must never block a take-down
-  return offAuditFields({ offLog: existing }, record, record.at);
+// ── THE OFF RECORD IS ADDED, NEVER REPLACED ─────────────────────────────────
+// The fields a script-side off write merges in. `offLog/<at>` is a CHILD PATH,
+// so the update adds one entry and leaves every sibling alone.
+//
+// It went through a version that read the whole log, trimmed it in memory and
+// wrote the map back — and both reviewers caught the same thing: a transient
+// read failure, or a read gone stale because another off committed in between,
+// then wrote a ONE-ENTRY map over the top and deleted the history the node
+// exists to keep. That read also sat between the fail-safe unpublish and the
+// write recording it, so a hung read meant a product genuinely off Shopify with
+// the app still believing it live (CodeRabbit + architect, 2026-08-28).
+//
+// So the record write needs no read at all, and the trim is a separate, later,
+// best-effort step that only ever deletes named keys.
+function offFields(record) {
+  return { lastOff: record, [`offLog/${record.at}`]: record };
+}
+
+// Delete the oldest entries beyond OFF_LOG_KEEP, BY NAME. Runs AFTER the state
+// write, so a failure or a hang here cannot cost the take-down record — the
+// worst case is a log a few entries longer than intended.
+//
+// It deletes only keys it has SEEN, and only ones older than the newest KEEP,
+// so an entry a concurrent writer added in the meantime is never in the delete
+// list. Deleting an already-deleted key is a no-op.
+async function trimOffLog(db, productId) {
+  try {
+    const existing = (await db.ref(`shopify_publish/${productId}/offLog`).get()).val();
+    if (!existing) return;
+    const keys = Object.keys(existing).filter((k) => /^\d+$/.test(k)).sort((a, b) => Number(a) - Number(b));
+    const drop = keys.slice(0, Math.max(0, keys.length - OFF_LOG_KEEP));
+    if (!drop.length) return;
+    const kill = {};
+    for (const k of drop) kill[`offLog/${k}`] = null;
+    await db.ref(`shopify_publish/${productId}`).update(kill);
+  } catch (e) {
+    console.error(`  ⚠ ${productId}: could not trim the off log (${String(e?.message || e)}) — the record itself is written`);
+  }
 }
 
 let offsetMs = null;
@@ -134,13 +161,9 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
   // does not name one is a bug, not a shrug: an unexplained off is precisely
   // the state docs/PUBLISH-AUTO-OFF.md exists because of, so the default names
   // the script rather than leaving the row with nothing to say.
-  const audit = liveState === "off" && offReason !== KEEP_EXISTING_OFF_REASON
-    ? await offFields(db, productId, buildOffRecord({
-        at,
-        actor: updatedBy,
-        reasonCode: offReason,
-        detail: offDetail,
-      }))
+  const recordOff = liveState === "off" && offReason !== KEEP_EXISTING_OFF_REASON;
+  const audit = recordOff
+    ? offFields(buildOffRecord({ at, actor: updatedBy, reasonCode: offReason, detail: offDetail }))
     : {};
   await db.ref(`shopify_publish/${productId}`).update({
     state: "live",
@@ -153,6 +176,7 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
     updatedAt: at,
     updatedBy,
   });
+  if (recordOff) await trimOffLog(db, productId);
 }
 
 // The reconciler's refusal write: the apply-time validator said no. The
@@ -181,13 +205,14 @@ export async function markBlocked(db, productId, reason, updatedBy, { wasTakenDo
     // a product nobody can see. Refusals that never published leave the field
     // alone — they have no new fact about the channel.
     ...(wasTakenDown ? { liveState: "off" } : {}),
-    ...(await offFields(db, productId, buildOffRecord({
+    ...offFields(buildOffRecord({
       at,
       actor: updatedBy,
       reasonCode: "reconciler_refused",
       detail: String(reason),
-    }))),
+    })),
     updatedAt: at,
     updatedBy,
   });
+  await trimOffLog(db, productId);
 }

@@ -150,9 +150,10 @@ export function describeOff(node) {
   const approved = Number(node.nameApprovedAt) || 0;
   const renamedSince =
     rec.reasonCode === "off_to_rename" && approved > 0 && approved >= (Number(rec.at) || 0);
-  return {
-    known: true,
-    renamedSince,
-    text: `${head} — ${why}.` + (renamedSince ? " Renamed since; ready to publish again." : ""),
-  };
+  // `text` states what HAPPENED. `renamedSince` is a separate fact the caller
+  // decides how to show — the product page gives it its own green line, and
+  // appending it to the sentence as well printed the same thing twice on the
+  // same screen (CodeRabbit review, 2026-08-28). One fact, one place, and the
+  // caller owns the emphasis.
+  return { known: true, renamedSince, text: `${head} — ${why}.` };
 }

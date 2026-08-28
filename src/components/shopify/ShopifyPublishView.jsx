@@ -584,12 +584,22 @@ export default function ShopifyPublishView({ products = [], onExit }) {
            String(node?.cleanName || "").toLowerCase().includes(q);
   }, [q]);
 
-  const byListingName = useCallback((a, b) => {
-    const an = effectiveNameFor(a, nodes[a.id]).name || a.name || "";
-    const bn = effectiveNameFor(b, nodes[b.id]).name || b.name || "";
-    return String(an).localeCompare(String(bn), undefined, { sensitivity: "base" }) ||
-           String(a.id).localeCompare(String(b.id));
-  }, [nodes]);
+  // ── THE SORT KEY MUST NOT BE SOMETHING THE WINDOW FETCHES ─────────────────
+  // This sorted on the LISTING name, which comes from the node — and the nodes
+  // are exactly what the window goes and fetches for the rows it is showing. So
+  // every batch of bodies re-sorted the list, changed which products fell
+  // inside the window, and sent the effect after a fresh set: a feedback loop
+  // that terminates only because a pid is never fetched twice, having walked an
+  // unbounded slice of a 3,600-product catalogue to get there. On this page, of
+  // all pages (CodeRabbit review, 2026-08-28).
+  //
+  // The catalogue name is already in hand for every product, costs nothing, and
+  // never moves under us — so the window is settled from the first render and
+  // fetches exactly the rows it shows. It is also the name staff know and the
+  // one the row's top line carries.
+  const byCatalogueName = useCallback((a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }) ||
+    String(a.id).localeCompare(String(b.id)), []);
 
   // LIVE — published and on. Built from NODES, not from a catalogue walk: the
   // question "what can a customer see" is answered by the node, and every one
@@ -605,8 +615,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (!p || !matchesQuery(p, n)) continue;
       out.push(p);
     }
-    return out.sort(byListingName);
-  }, [filter, nodes, productById, matchesQuery, byListingName]);
+    return out.sort(byCatalogueName);
+  }, [filter, nodes, productById, matchesQuery, byCatalogueName]);
 
   // AWAITING REVIEW — everything that is not on the shop. Never reviewed,
   // reviewed and unpublished, refused, and ON SHOPIFY BUT OFF: that last group
@@ -626,8 +636,8 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       if (!matchesQuery(p, n)) continue;
       out.push(p);
     }
-    return out.sort(byListingName);
-  }, [filter, productById, nodes, matchesQuery, byListingName]);
+    return out.sort(byCatalogueName);
+  }, [filter, productById, nodes, matchesQuery, byCatalogueName]);
 
   const fullList = liveList || awaitingList;
 

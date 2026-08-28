@@ -27,10 +27,20 @@ describe("isAcceptedImageFile", () => {
     }
   });
 
+  it("accepts a HEIC the picker mislabelled — application/octet-stream", () => {
+    // Pickers do this. Refusing on the type alone turned the photo away with a
+    // different cause but the same result as the bug this work removes.
+    expect(isAcceptedImageFile(fileOf("application/octet-stream", "IMG_0042.HEIC"))).toBe(true);
+    expect(isAcceptedImageFile(fileOf("application/octet-stream", "scan.pdf"))).toBe(false);
+  });
+
   it("refuses an SVG — a document with script semantics, not a photograph", () => {
     expect(ACCEPTED_TYPES).not.toContain("image/svg+xml");
+    // Refused on BOTH counts now that either may vouch for a file: it is in
+    // neither the type list nor the extension list.
     expect(isAcceptedImageFile(fileOf("image/svg+xml", "logo.svg"))).toBe(false);
     expect(isAcceptedImageFile(fileOf("", "logo.svg"))).toBe(false);
+    expect(isAcceptedImageFile(fileOf("image/svg+xml", "logo.png"))).toBe(true); // an image by name
   });
 
   it("refuses a video and no file at all", () => {
