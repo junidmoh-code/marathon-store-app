@@ -248,3 +248,17 @@ describe("a clear that cannot act says so", () => {
     expect(saved).toHaveLength(0);
   });
 });
+
+describe("the context signature is canonical", () => {
+  it("a re-read that returns the same bytes in a different key order is not a change", async () => {
+    const { ctxSig } = await import("./ProductTargetEditor.jsx");
+    const a = { targets: { trophy: { j1: { S: { target: 1, minQty: 1 }, M: { target: 2, minQty: 1 } } } },
+      stock: { trophy: { j1: { S: { qty: 1 } } } } };
+    const b = { targets: { trophy: { j1: { M: { minQty: 1, target: 2 }, S: { minQty: 1, target: 1 } } } },
+      stock: { trophy: { j1: { S: { qty: 1 } } } } };
+    expect(ctxSig(a, "trophy", "j1")).toBe(ctxSig(b, "trophy", "j1"));
+    // …and a real change still moves it
+    const c = { ...a, stock: { trophy: { j1: { S: { qty: 2 } } } } };
+    expect(ctxSig(c, "trophy", "j1")).not.toBe(ctxSig(a, "trophy", "j1"));
+  });
+});

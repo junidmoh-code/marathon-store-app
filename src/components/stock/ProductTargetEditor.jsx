@@ -44,7 +44,18 @@ import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, input } 
 // reassurance about a state that no longer exists, which is the one thing this
 // key exists to prevent. (CodeRabbit, PR #497.)
 export function ctxSig(ctx, loc, pid) {
-  return JSON.stringify([ctx?.targets?.[loc]?.[pid] ?? null, ctx?.stock?.[loc]?.[pid] ?? null]);
+  // CANONICAL, not raw JSON. RTDB key order is not stable across reads, so a
+  // plain stringify would report the world as changed on a re-read that
+  // returned the same bytes — and a Save that disables itself for no visible
+  // reason is a worse bug than the one this key fixes.
+  const canon = (v) => {
+    if (v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return v.map(canon);
+    const out = {};
+    for (const k of Object.keys(v).sort()) if (v[k] !== undefined) out[k] = canon(v[k]);
+    return out;
+  };
+  return JSON.stringify(canon([ctx?.targets?.[loc]?.[pid] ?? null, ctx?.stock?.[loc]?.[pid] ?? null]));
 }
 
 export function draftKey(draft, sig = "") {

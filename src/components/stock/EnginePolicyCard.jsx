@@ -622,6 +622,12 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     if (!ok) return;
     setBusy("revert");
     try {
+      // allowRemoveForeign, and the drift check is what makes it safe rather
+      // than a loophole: every size the revert touches is expected to still
+      // hold what THIS entry left, so a row somebody else has since replaced
+      // fails the check before the flag is ever consulted. Without it a revert
+      // would break on a row a script had merely re-stamped with the same
+      // numbers under a different source.
       await setCategoryPolicyFn()({ action: "setProductTargets", loc: h.loc, pid: h.pid,
         rows, remove, expected, allowRemoveForeign: true });
       flash("ok", `${h.productName || h.pid} put back to how it was on ${fmtWhen(h.at)}.`);
