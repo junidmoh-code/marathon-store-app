@@ -1706,3 +1706,20 @@ test("catSub resets IN THE SAME state update as the department pick — never vi
   expect(src).toMatch(/setCatTop\(top\); setCatSub\("all"\)/);
   expect(src).not.toMatch(/useEffect\([^;]*setCatSub/s);
 });
+
+test("a malformed non-string styleCode never false-matches a search", async () => {
+  // Without the typeof guard, an object styleCode coerces to "[object Object]"
+  // and matches any search containing "object".
+  await withFakeTimers(async () => {
+    const EXT = [...PRODUCTS,
+      { id: "p5", name: "Slide sandal black", category: "Footwear", subcategory: "Slides",
+        photoUrl: "https://x/p5.jpg", styleCode: { bySize: { 8: "AA1" } } }];
+    let tree;
+    await act(() => { tree = create(<ShopifyPublishView products={EXT} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+    await flush(); await flush();
+    await typeSearch(tree, "object");
+    const out = texts(tree);
+    expect(out).not.toContain("Slide sandal black");
+    expect(out).toContain("Nothing matches");
+  });
+});
