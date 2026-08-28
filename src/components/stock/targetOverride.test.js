@@ -289,6 +289,22 @@ describe("an Ask at never rides on a switched-off size", () => {
     // Ask at — with a message about a size deliberately set to nothing.
     expect("reorderPoint" in plan.rows[1]).toBe(false);
   });
+
+  it("and a size ALREADY at 0 is not rewritten when an Ask at is typed for the location", () => {
+    // The no-change test has to compare the value that would LAND. Comparing
+    // the typed one rewrote a byte-identical row — which re-stamps somebody
+    // else's row as this card's and files a history entry for nothing.
+    const c = ctx({ trophy: { p1: { M: { target: 0, minQty: 0, source: "excluded" } } } });
+    const plan = overridePlan(c, "trophy", "p1", draftOf(c, { S: "3" }, "1"));
+    expect(plan.rows.map((r) => r.sizeKey)).toEqual(["S"]);
+    expect(plan.changes.map((ch) => ch.sizeKey)).toEqual(["S"]);
+  });
+
+  it("but a STORED Ask at on a switched-off row is still stripped", () => {
+    const c = ctx({ trophy: { p1: { M: { target: 0, minQty: 0, reorderPoint: 1, source: "excluded" } } } });
+    const plan = overridePlan(c, "trophy", "p1", draftOf(c, {}, ""));
+    expect(plan.rows).toEqual([{ sizeKey: "M", target: 0, minQty: 0 }]);
+  });
 });
 
 describe("the drift expectation is what the editor was OPENED on", () => {

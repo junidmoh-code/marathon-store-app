@@ -263,22 +263,31 @@ export function overridePlan(ctx, loc, pid, draft) {
     }
 
     const prevRp = prev && typeof prev.reorderPoint === "number" ? prev.reorderPoint : null;
+    // ── AN "ASK AT" NEVER RIDES ON A 0 ──────────────────────────────────────
+    // The gate is "have > reorderPoint → stay silent", and a target of 0 has no
+    // room below it — the server refuses the pair outright (reorderPoint must
+    // be below Keep). So the value that would actually LAND is worked out once
+    // and used for the no-change test, the row and the change list alike.
+    //
+    // Comparing the TYPED value while writing the effective one made a size
+    // already at 0 fail the no-change test the moment an "Ask at" was typed for
+    // the location: it was rewritten with byte-identical content, which
+    // re-stamps somebody else's row as this card's doing and files a history
+    // entry for a change that changed nothing. The trigger is an ordinary mixed
+    // save — some sizes kept, one switched off, one "Ask at". (CodeRabbit, #497.)
+    const effRp = rp !== null && target > 0 ? rp : null;
     // A SIZE WHOSE NUMBERS DID NOT MOVE IS NOT REWRITTEN. Sending it anyway
     // would re-stamp the row as this card's doing — quietly taking ownership of
     // somebody else's decision — and would fill the history with entries that
-    // changed nothing.
-    if (prev !== null && prevTarget === target && prevRp === rp) continue;
+    // changed nothing. A STORED "Ask at" on a switched-off row is still
+    // stripped: prevRp is non-null there and effRp is null, so the row does not
+    // match and is rewritten without it.
+    if (prev !== null && prevTarget === target && prevRp === effRp) continue;
     const row = { sizeKey, target, minQty: derivedMinQty(target) };
-    // AN "ASK AT" NEVER RIDES ON A 0. The gate is "have > reorderPoint → stay
-    // silent", and a target of 0 has no room below it — the server refuses the
-    // pair outright (reorderPoint must be below Keep). Attaching it anyway made
-    // a perfectly ordinary mixed save — three sizes kept, two switched off,
-    // one Ask at for the location — fail with a message about a size the owner
-    // had deliberately set to nothing.
-    if (rp !== null && target > 0) row.reorderPoint = rp;
+    if (effRp !== null) row.reorderPoint = effRp;
     rows.push(row);
     changes.push({ sizeKey, from: prevTarget, to: target, kind: prevTarget === null ? "added" : "changed",
-      reorderPointFrom: prevRp, reorderPointTo: rp,
+      reorderPointFrom: prevRp, reorderPointTo: effRp,
       inheritedFrom: inherited ? inherited.source : null,
       inheritedTarget: inherited ? inherited.target : null });
   }

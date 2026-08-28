@@ -205,8 +205,10 @@ describe("re-seat removes the delist fact and nothing else", () => {
     const res = await reseat({ seat: seatOf(ctx), ctx });
     expect(res.ok).toBe(true);
     expect(cleared()).toEqual(["S"]);
-    // L is re-stated at its own number rather than cleared: re-seat undoes this
-    // screen's decisions and nobody else's.
+    // L is not named in the payload at all: re-seat undoes this screen's
+    // decisions and nobody else's, so a foreign row is neither cleared nor
+    // rewritten. (CodeRabbit, PR #497 — the comment claimed a re-statement the
+    // assertion below has always refused.)
     expect(calls[0].rows.map((r) => r.sizeKey)).toEqual([]);
     expect(calls[0].allowRemoveForeign).toBeUndefined();
   });

@@ -33,12 +33,24 @@ import {
 } from "./targetOverride";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, input } from "./ui";
 
-// The identity of the numbers a preview was computed from. Save is enabled only
-// while the preview in hand carries the key of what is currently on screen.
-export function draftKey(draft) {
+// The identity of the numbers a preview was computed from — AND OF THE WORLD IT
+// WAS COMPUTED AGAINST. Save is enabled only while the preview in hand carries
+// the key of what is currently on screen.
+//
+// The context is in the key because the preview's answer depends on it: the
+// inherited numbers, the cells and the existing rows all come from the ctx, and
+// Refresh replaces the whole thing. Without it, a preview taken before a
+// refresh stayed "current" while the world underneath it had moved — a
+// reassurance about a state that no longer exists, which is the one thing this
+// key exists to prevent. (CodeRabbit, PR #497.)
+export function ctxSig(ctx, loc, pid) {
+  return JSON.stringify([ctx?.targets?.[loc]?.[pid] ?? null, ctx?.stock?.[loc]?.[pid] ?? null]);
+}
+
+export function draftKey(draft, sig = "") {
   const sizes = Object.keys(draft?.sizes || {}).sort()
     .map((k) => `${k}=${String(draft.sizes[k]?.target ?? "").trim()}`).join(",");
-  return `${draft?.loc}::${draft?.pid}::${sizes}::rp=${String(draft?.reorderPoint ?? "").trim()}`;
+  return `${draft?.loc}::${draft?.pid}::${sizes}::rp=${String(draft?.reorderPoint ?? "").trim()}::${sig}`;
 }
 
 // `canWrite` is a belt to SeatingActions' braces: the tab does not render this
@@ -54,7 +66,7 @@ export default function ProductTargetEditor({ seat, ctx, label, onDone, onFail, 
 
   const errors = useMemo(() => validateOverrideDraft(draft), [draft]);
   const plan = useMemo(() => overridePlan(ctx, loc, pid, draft), [ctx, loc, pid, draft]);
-  const keyNow = draftKey(draft);
+  const keyNow = draftKey(draft, ctxSig(ctx, loc, pid));
   const stale = preview && preview.key !== keyNow;
   const saveable = canWrite && !busy && !Object.keys(errors).length && plan.dirty && preview && !stale;
 
@@ -128,7 +140,17 @@ export default function ProductTargetEditor({ seat, ctx, label, onDone, onFail, 
     if (busy || !canWrite) return;
     const cleared = clearDraft(ctx, loc, pid);
     const p = overridePlan(ctx, loc, pid, cleared);
-    if (!p.dirty) { onFail("Nothing here is overridden — every size already follows the category."); return; }
+    if (!p.dirty) {
+      // A CLEAR WITH NOTHING TO DO AND A CLEAR THAT CANNOT ACT ARE DIFFERENT
+      // THINGS. When every overridden size carries a captured row the live rule
+      // would refuse, the plan is empty — and saying "nothing here is
+      // overridden" while the rows sit there sends the owner looking for a
+      // screen that does not exist. Name the rows instead. (CodeRabbit, #497.)
+      onFail(p.stuck.length
+        ? `${p.stuck.length} ${p.stuck.length === 1 ? "size has" : "sizes have"} a record this screen cannot restore — clear ${p.stuck.length === 1 ? "it" : "them"} size by size above, or leave ${p.stuck.length === 1 ? "it" : "them"} as ${p.stuck.length === 1 ? "it is" : "they are"}.`
+        : "Nothing here is overridden — every size already follows the category.");
+      return;
+    }
     const foreign = p.foreign.length;
     const ok = typeof window !== "undefined" && window.confirm
       ? window.confirm(`${label} goes back to following the category policy on `

@@ -79,7 +79,6 @@ import {
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
-import { readTargets } from "./seatingStore";
 import { writableRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
@@ -574,19 +573,37 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   };
 
   const revertTargets = async (h) => {
-    const live = await readTargets(h.loc, h.pid).catch(() => null);
-    if (live === null) { flash("bad", "Could not read those rows — try again."); return; }
+    // ── THE EXPECTATION IS THE ENTRY'S OWN AFTER-STATE ──────────────────────
+    // Not the live row. Sampling live would accept exactly the write this check
+    // exists to refuse: entry moves M from 5 to 9, a LATER edit moves it to 7,
+    // and reverting the older entry would send expected 7, be accepted, and put
+    // back 5 — silently discarding the later edit. "Put this entry back" is
+    // only honest while the row still holds what that entry left, so that is
+    // what the server is asked to find. An entry with no after-state (none
+    // exist — it has been recorded since this shipped) is REFUSED rather than
+    // reverted on a guess. (CodeRabbit, PR #497.)
+    const after = Array.isArray(h.after) ? h.after : null;
+    if (!after) {
+      flash("bad", "That entry does not record what it left behind, so it cannot be put back safely.");
+      return;
+    }
+    const afterBySize = Object.fromEntries(after.map((a) => [a?.sizeKey, a]));
     const rows = [], remove = [], expected = {};
     const stuck = [];
     for (const b of (h.before || [])) {
       const k = b?.sizeKey;
       if (typeof k !== "string" || !k) continue;
-      const now = live[k];
-      expected[k] = now && typeof now === "object"
-        ? { target: typeof now.target === "number" ? now.target : null,
-            minQty: typeof now.minQty === "number" ? now.minQty : null,
-            reorderPoint: typeof now.reorderPoint === "number" ? now.reorderPoint : null }
-        : null;
+      const a = afterBySize[k];
+      if (!a) {
+        flash("bad", `That entry does not record what it left on ${sizeLabel(k)}, so it cannot be put back safely.`);
+        return;
+      }
+      // `absent: true` is the flag for "this write left no row"; RTDB deletes a
+      // key written null, so it could not have been recorded as one.
+      expected[k] = a.absent === true || !a.row ? null
+        : { target: typeof a.row.target === "number" ? a.row.target : null,
+            minQty: typeof a.row.minQty === "number" ? a.row.minQty : null,
+            reorderPoint: typeof a.row.reorderPoint === "number" ? a.row.reorderPoint : null };
       if (!b.row || typeof b.row !== "object") { remove.push(k); continue; }
       // A captured row the live rule would refuse is reported, never repaired:
       // coercing a string target to a number nobody wrote, or to 0, would

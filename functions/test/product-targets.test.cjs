@@ -291,7 +291,13 @@ test("the history entry is written BEFORE the mutation and names the product", a
   // `from: null` is written and read back ABSENT — RTDB does not store a null.
   // Asserting the stored shape rather than the in-memory one is the point: this
   // is what a revert six weeks from now actually reads.
-  assert.deepEqual(h.changes, [{ sizeKey: "M", field: "target", to: 4 }]);
+  assert.deepEqual(h.changes, [
+    { sizeKey: "M", field: "target", to: 4 },
+    { sizeKey: "M", field: "minQty", to: 2 },
+  ]);
+  // The state this write PRODUCED, beside the state it replaced — what a revert
+  // drift-checks against.
+  assert.deepEqual(h.after, [{ sizeKey: "M", row: { target: 4, minQty: 2 } }]);
 });
 
 // ── PROVENANCE THE ROW CARRIED IS NOT DROPPED ────────────────────────────────
@@ -379,4 +385,32 @@ test("an explicit row beats an armed group, whatever the number", () => {
     "hub2", "adult", "7").target, 9);
   assert.equal(resolveTarget({ targets: { hub2: { adult: { 7: { target: 0, minQty: 0 } } } }, config, products, stock },
     "hub2", "adult", "7").target, 0);
+});
+
+// ── A minQty-ONLY EDIT IS A REAL EDIT ────────────────────────────────────────
+// `changes` is not only the human-facing list: an empty one returns noChange and
+// never applies the update. A Minimum-only edit therefore reported a successful
+// save and wrote nothing. (CodeRabbit, PR #497.)
+test("changing only the Minimum is written, not reported as no change", async () => {
+  const db = makeFakeDb(world({ stock_targets: { trophy: { j1: {
+    M: { target: 4, minQty: 2, source: OVERRIDE_SOURCE },
+  } } } }));
+  const res = await call(db, base({
+    rows: [{ sizeKey: "M", target: 4, minQty: 4 }],
+    expected: { M: { target: 4, minQty: 2, reorderPoint: null } },
+  }));
+  assert.equal(res.noChange, undefined);
+  assert.equal(rowsAt(db).M.minQty, 4);
+  assert.deepEqual(res.changes, [{ sizeKey: "M", field: "minQty", from: 2, to: 4 }]);
+});
+
+// ── THE AFTER-STATE A REVERT DRIFT-CHECKS AGAINST ────────────────────────────
+test("a removal records that it leaves NO row, as a flag rather than a null", async () => {
+  const db = makeFakeDb(world({ stock_targets: { trophy: { j1: {
+    M: { target: 4, minQty: 2, source: OVERRIDE_SOURCE, prevAbsent: true },
+  } } } }));
+  await call(db, base({ rows: [], remove: ["M"], expected: { M: { target: 4, minQty: 2, reorderPoint: null } } }));
+  // RTDB deletes a key written null, so `row: null` would read back as an entry
+  // that simply forgot to say what it left behind.
+  assert.deepEqual(history(db)[0].after, [{ sizeKey: "M", absent: true }]);
 });

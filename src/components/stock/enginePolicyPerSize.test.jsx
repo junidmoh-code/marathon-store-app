@@ -312,6 +312,7 @@ const CENSUS = {
     { id: "h2", kind: "targets", status: "applied", at: Date.UTC(2026, 7, 20, 8, 0), by: "gunidmoh@gmail.com",
       categoryKey: "caps-beanies", loc: "hub2", pid: "p9", productName: "Black Cap",
       before: [{ sizeKey: "_", row: { target: 6, minQty: 3, source: "hand" } }, { sizeKey: "M", row: null }],
+      after: [{ sizeKey: "_", row: { target: 2, minQty: 1 } }, { sizeKey: "M", row: { target: 4, minQty: 2 } }],
       changes: [{ sizeKey: "_", field: "target", from: 6, to: 2 }] }],
   groups: {
     "footwear-all": {
@@ -385,12 +386,14 @@ const callableMock = vi.fn(async (payload) => {
   }
   // A FRESH object each call, as a real callable returns — the reopen-after-
   // reload effect keys on the census changing identity.
-  return { data: { ...CENSUS } };
+  return { data: { ...(CENSUS_OVERRIDE || CENSUS) } };
 });
+// Set by a test that needs a census shaped differently for one render.
+let CENSUS_OVERRIDE = null;
 vi.mock("firebase/functions", () => ({ httpsCallable: () => (...a) => callableMock(...a) }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: true } }));
-// The card reads the LIVE rows before reverting a product override — the entry
-// says what the numbers WERE, not what they are.
+// The card no longer reads live rows to revert — the entry's own after-state is
+// the expectation — but the module graph still resolves firebase/database.
 let LIVE_ROWS = {};
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
@@ -1105,7 +1108,7 @@ describe("product-target history", () => {
     expect(t).toContain("Hub 2");
   });
 
-  it("reverts through the same action that made it, against the LIVE numbers", async () => {
+  it("reverts through the same action that made it, against what the entry LEFT", async () => {
     LIVE_ROWS = { _: { target: 2, minQty: 1, source: "policy_target", prevRow: { target: 6, minQty: 3, source: "hand" } } };
     const tree = await renderCard();
     await openHistory(tree);
@@ -1119,9 +1122,30 @@ describe("product-target history", () => {
     // the row that existed goes back exactly; the row that did not is removed
     expect(call.rows).toEqual([{ sizeKey: "_", target: 6, minQty: 3 }]);
     expect(call.remove).toEqual(["M"]);
-    // and the expectation is what is LIVE now, not what the entry recorded
+    // ── AND THE EXPECTATION IS WHAT THIS ENTRY LEFT BEHIND ────────────────
+    // Not the live row. Sampling live would accept exactly the write this check
+    // exists to refuse — a later edit, silently discarded by reverting an older
+    // entry on top of it.
     expect(call.expected._).toEqual({ target: 2, minQty: 1, reorderPoint: null });
-    expect(call.expected.M).toBe(null);
+    expect(call.expected.M).toEqual({ target: 4, minQty: 2, reorderPoint: null });
+  });
+
+  it("refuses an entry that does not record what it left behind", async () => {
+    // No entry like this exists — the after-state has been recorded since this
+    // shipped — and a revert that guessed at one would be the worst button on
+    // the card. It says so instead.
+    const stripped = { ...CENSUS, history: CENSUS.history.map((h) => (h.id === "h2" ? { ...h, after: undefined } : h)) };
+    CENSUS_OVERRIDE = stripped;
+    try {
+      const tree = await renderCard();
+      await openHistory(tree);
+      const row = tree.root.findAll((n) => n.type === "div" && instText(n).includes("Black Cap")
+        && instText(n).includes("Revert")).pop();
+      const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
+      await withConfirm(true, async () => { await act(async () => { revert.props.onClick(); }); });
+      expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setProductTargets")).toBe(false);
+      expect(textOf(tree)).toContain("cannot be put back safely");
+    } finally { CENSUS_OVERRIDE = null; }
   });
 
   it("a refused confirm reverts nothing", async () => {

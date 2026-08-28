@@ -17,6 +17,11 @@
 //   M-EXPECT       the drift expectation is sent empty
 //   M-RP-ZERO      an "Ask at" rides on a target-0 row and the save is refused
 //   M-EXPECT-STALE the expectation comes from a context a refresh replaced
+//   M-MINQTY       a Minimum-only edit is dropped from the change list
+//   M-REVERT-EXPECT a revert drift-checks against the live row, not the entry
+//   M-CTX-KEY      the preview key ignores the context it was computed against
+//   M-STUCK-CLEAR  a clear that cannot act claims nothing is overridden
+//   M-EFF-RP       the no-change test compares the typed Ask at, not the landed one
 //   M-PERSIZE      the arming flag is read back from what was saved last time
 //   M-REGISTRY     the registry fallback stretches a GROUP's union
 //
@@ -67,7 +72,7 @@ const MUTATIONS = [
     id: "M-RESTAMP",
     guard: "a row whose numbers did not move is not rewritten under this card's stamp",
     file: OVERRIDE,
-    from: `    if (prev !== null && prevTarget === target && prevRp === rp) continue;`,
+    from: `    if (prev !== null && prevTarget === target && prevRp === effRp) continue;`,
     to: ``,
     tests: [...OVERRIDE_TESTS, ...STORE_TESTS],
   },
@@ -152,8 +157,8 @@ const MUTATIONS = [
     id: "M-RP-ZERO",
     guard: "an \"Ask at\" never rides on a switched-off size — the server refuses the pair",
     file: OVERRIDE,
-    from: `    if (rp !== null && target > 0) row.reorderPoint = rp;`,
-    to: `    if (rp !== null) row.reorderPoint = rp;`,
+    from: `    const effRp = rp !== null && target > 0 ? rp : null;`,
+    to: `    const effRp = rp;`,
     tests: OVERRIDE_TESTS,
   },
   {
@@ -164,6 +169,50 @@ const MUTATIONS = [
       ? draft.sizes[sizeKey].prev
       : live[sizeKey];`,
     to: `    const prev = live[sizeKey];`,
+    tests: OVERRIDE_TESTS,
+  },
+  // ── FIVE REVIEW FINDINGS, PR #497 ────────────────────────────────────────
+  {
+    id: "M-MINQTY",
+    guard: "a Minimum-only edit is a real edit — an empty change list never applies the write",
+    file: WRITE,
+    from: `      if (fromM !== next.minQty) changes.push({ sizeKey, field: "minQty", from: fromM, to: next.minQty });`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-REVERT-EXPECT",
+    guard: "a revert drift-checks against the entry's own after-state, never the live row",
+    file: CARD,
+    from: `      expected[k] = a.absent === true || !a.row ? null
+        : { target: typeof a.row.target === "number" ? a.row.target : null,
+            minQty: typeof a.row.minQty === "number" ? a.row.minQty : null,
+            reorderPoint: typeof a.row.reorderPoint === "number" ? a.row.reorderPoint : null };`,
+    to: `      expected[k] = null;`,
+    tests: CARD_TESTS,
+  },
+  {
+    id: "M-CTX-KEY",
+    guard: "the preview key covers the CONTEXT it was computed against, not only the typed numbers",
+    file: EDITOR,
+    from: `  const keyNow = draftKey(draft, ctxSig(ctx, loc, pid));`,
+    to: `  const keyNow = draftKey(draft);`,
+    tests: EDITOR_TESTS,
+  },
+  {
+    id: "M-STUCK-CLEAR",
+    guard: "a clear that cannot act names the rows rather than claiming nothing is overridden",
+    file: EDITOR,
+    from: `      onFail(p.stuck.length`,
+    to: `      onFail(false`,
+    tests: EDITOR_TESTS,
+  },
+  {
+    id: "M-EFF-RP",
+    guard: "the no-change test compares the Ask at that would LAND, not the one that was typed",
+    file: OVERRIDE,
+    from: `    if (prev !== null && prevTarget === target && prevRp === effRp) continue;`,
+    to: `    if (prev !== null && prevTarget === target && prevRp === rp) continue;`,
     tests: OVERRIDE_TESTS,
   },
   {

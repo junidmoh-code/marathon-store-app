@@ -202,3 +202,49 @@ describe("a viewer who may not write a row", () => {
     expect(button(t, "Save targets").props.disabled).toBe(true);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REVIEW FINDINGS — PR #497
+// ═════════════════════════════════════════════════════════════════════════════
+describe("the preview belongs to the world it was computed against", () => {
+  it("goes stale when the seating context is refreshed underneath it", async () => {
+    const before = ctxOf();
+    let tree;
+    act(() => {
+      tree = TestRenderer.create(
+        <ProductTargetEditor seat={seatingAt(before, "trophy", "j1")} ctx={before} label="Trophy"
+          canWrite onDone={() => {}} onFail={() => {}} />,
+      );
+    });
+    await act(async () => { byLabel(tree, "Trophy M keep").props.onChange({ target: { value: "9" } }); });
+    RESULT = { ok: true, preview: { sizes: [], changedSizes: 1, retracts: 0, unitsWanted: 0 } };
+    await act(async () => { button(tree, "Preview").props.onClick(); });
+    expect(button(tree, "Save targets").props.disabled).toBe(false);
+
+    // Somebody sells the last one, the screen refreshes, and the ctx is
+    // replaced. The typed 9 is unchanged — the WORLD it was previewed against
+    // is not.
+    const after = ctxOf({}, P, { trophy: { j1: { S: { qty: 1 }, M: { qty: 0 }, L: { qty: 0 } } }, hub2: { j1: { M: { qty: 5 } } } });
+    act(() => {
+      tree.update(
+        <ProductTargetEditor seat={seatingAt(after, "trophy", "j1")} ctx={after} label="Trophy"
+          canWrite onDone={() => {}} onFail={() => {}} />,
+      );
+    });
+    expect(button(tree, "Save targets").props.disabled).toBe(true);
+    expect(text(tree)).toContain("Numbers changed");
+  });
+});
+
+describe("a clear that cannot act says so", () => {
+  it("names the rows it cannot restore instead of claiming nothing is overridden", async () => {
+    const fails = [];
+    // Every overridden size carries a captured row the live rule would refuse.
+    const stuckRow = { target: 0, minQty: 0, source: "policy_target", prevRow: { target: "4", minQty: 2 } };
+    const t = render(ctxOf({ trophy: { j1: { S: stuckRow, M: stuckRow, L: stuckRow } } }), true, (m) => fails.push(m));
+    await act(async () => { button(t, "Clear override").props.onClick(); });
+    expect(fails[0]).toContain("3 sizes have a record this screen cannot restore");
+    expect(fails[0]).not.toContain("Nothing here is overridden");
+    expect(saved).toHaveLength(0);
+  });
+});

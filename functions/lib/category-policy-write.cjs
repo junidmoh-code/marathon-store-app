@@ -1117,7 +1117,13 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
     // ── THE UPDATE ───────────────────────────────────────────────────────────
     const nowIso = new Date(nowMs).toISOString();
-    const update = {}, changes = [], before = [];
+    // `after` is the STATE THIS WRITE PRODUCES, per size, recorded beside the
+    // state it replaced. A revert needs it: reverting an entry must be refused
+    // when a LATER edit has moved the row on, and the only honest expectation
+    // for "put this entry back" is "the row still holds what this entry left".
+    // Sampling the live row at revert time instead would accept exactly the
+    // write it must refuse. (CodeRabbit, PR #497.)
+    const update = {}, changes = [], before = [], after = [];
     for (const { sizeKey, next } of wanted) {
       const prev = isPlainObject(live[sizeKey]) ? live[sizeKey] : null;
       // Everything the row carried that is not one of the three numbers is
@@ -1141,10 +1147,19 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       else row.prevAbsent = true;
       update[pathOf(sizeKey)] = row;
       before.push({ sizeKey, row: prev });
+      after.push({ sizeKey, row: { target: next.target, minQty: next.minQty,
+        ...(next.reorderPoint === undefined ? null : { reorderPoint: next.reorderPoint }) } });
+      // ALL THREE FIELDS, because `changes` is not only the human-facing list —
+      // an empty `changes` returns noChange and NEVER APPLIES the update. A
+      // minQty-only edit therefore reported a successful save and wrote
+      // nothing. setRows above has always recorded all three; this did not.
+      // (CodeRabbit, PR #497.)
       const fromT = prev && typeof prev.target === "number" ? prev.target : null;
+      const fromM = prev && typeof prev.minQty === "number" ? prev.minQty : null;
       const fromR = prev && typeof prev.reorderPoint === "number" ? prev.reorderPoint : null;
       const toR = next.reorderPoint === undefined ? null : next.reorderPoint;
       if (fromT !== next.target) changes.push({ sizeKey, field: "target", from: fromT, to: next.target });
+      if (fromM !== next.minQty) changes.push({ sizeKey, field: "minQty", from: fromM, to: next.minQty });
       if (fromR !== toR) changes.push({ sizeKey, field: "reorderPoint", from: fromR, to: toR });
     }
     for (const k of remove) {
@@ -1152,6 +1167,10 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       if (!prev) continue;                       // already inheriting — nothing to do
       update[pathOf(k)] = null;
       before.push({ sizeKey: k, row: prev });
+      // A REMOVAL LEAVES NO ROW, and "no row" has to be recorded as its own
+      // flag: RTDB deletes a key written null, so `row: null` would read back
+      // as an entry that simply forgot to say.
+      after.push({ sizeKey: k, absent: true });
       changes.push({ sizeKey: k, field: "target", from: typeof prev.target === "number" ? prev.target : null, to: null });
     }
     if (!changes.length) {
@@ -1177,7 +1196,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       kind: "targets", loc, pid, productName: preview.name || null, categoryKey: categoryKey || null,
       at: nowMs, by: callerEmail, byUid: callerUid || null,
       rowCount: Object.keys(update).length,
-      before, changes, status: "pending",
+      before, after, changes, status: "pending",
     });
     // Re-verify immediately before the mutation: the preview above issues live
     // reads and takes real time, and a concurrent write landing in that window
