@@ -140,14 +140,24 @@ export async function decodeImageFile(file, maxDim = 1600) {
     // only fail more slowly.
     throw new Error("That file couldn't be opened as a photo. Try taking or picking it again.");
   }
+  // TWO OUTPUT SHAPES, and which one is available depends on the very thing
+  // that just failed. heicTo's "bitmap" mode calls createImageBitmap itself, so
+  // on a browser that HAS NO createImageBitmap it cannot work — and that is
+  // exactly the browser that reached this line by the second route. Asking for
+  // a bitmap there would fail for a reason that has nothing to do with the
+  // file, on the one path this fallback exists to serve (Codex review,
+  // 2026-08-28). So: a bitmap where bitmaps exist, a JPEG blob where they do
+  // not, decoded through the <img> element that already works there.
   try {
-    const bitmap = await heic.heicTo({
-      blob: file,
-      type: "bitmap",
-      // The same resize facility, at the same moment, for the same reason.
-      ...(resizeHint(file, maxDim) ? { options: resizeHint(file, maxDim) } : {}),
-    });
-    return wrap(bitmap);
+    if (typeof createImageBitmap === "function") {
+      const hint = resizeHint(file, maxDim);
+      return wrap(await heic.heicTo({ blob: file, type: "bitmap", ...(hint ? { options: hint } : {}) }));
+    }
+    // No resize-during-decode on this branch — the blob API has no such
+    // option. The canvas step still clamps; only the peak allocation is worse,
+    // and this branch is a browser old enough that correctness beats peak.
+    const jpeg = await heic.heicTo({ blob: file, type: "image/jpeg", quality: 0.9 });
+    return wrap(await decodeViaImgElement(jpeg));
   } catch (e) {
     throw new Error("That Apple photo couldn't be opened on this device. Taking a screenshot of it, or re-saving it, usually works.");
   }

@@ -27,8 +27,12 @@
 //      the cheap early answer, not the guarantee.
 //   2. ZERO INVENTORY. Stock on a product is evidence somebody set it up for
 //      sale. Anything above zero, on any variant, is refused.
-//   3. NOT A PUBLISHED ACTIVE LISTING. Published to the Online Store channel
-//      AND status ACTIVE means customers can see it right now. Refused.
+//   3. ON NO SALES CHANNEL AT ALL. Not "not on OUR channel" — ANY. The first
+//      version of this checked only the Online Store publication, which would
+//      have let a zero-stock ACTIVE product published to a marketplace, a
+//      wholesale catalog or a POS channel be adopted and overwritten in place
+//      (Codex review, 2026-08-28). A product somebody put on a channel is a
+//      product somebody set up.
 //
 // Any one failing refuses. Anything the API cannot answer refuses — an unknown
 // is not a yes.
@@ -50,6 +54,7 @@ export async function adoptionVerdict(graphql, gid, onlineStorePublicationId) {
         product(id: $id) {
           id title handle status totalInventory
           publishedOnPublication(publicationId: $pub)
+          resourcePublicationsCount(onlyPublished: true) { count }
           variants(first: 100) { pageInfo { hasNextPage } nodes { inventoryQuantity } }
         }
       }`,
@@ -70,9 +75,23 @@ export async function adoptionVerdict(graphql, gid, onlineStorePublicationId) {
   if (p.variants?.pageInfo?.hasNextPage) {
     return { ok: false, why: "it has more than 100 sizes and this run cannot see all their stock" };
   }
-  const published = p.publishedOnPublication === true;
+  const onOurChannel = p.publishedOnPublication === true;
+  // EVERY channel, not just ours. A count the API declines to give is an
+  // unknown, and an unknown is a refusal — so an absent field falls back to the
+  // our-channel answer being the whole truth ONLY when it says yes; a missing
+  // count with no channel of ours is treated as unknown and refused.
+  const channelCount = Number(p.resourcePublicationsCount?.count);
+  const anyChannel = Number.isFinite(channelCount) ? channelCount > 0 : null;
+  if (anyChannel === null && !onOurChannel) {
+    return { ok: false, why: "the shop would not say which sales channels it is on" };
+  }
+  const published = anyChannel === true || onOurChannel;
   if (published && p.status === "ACTIVE") {
-    return { ok: false, why: "it is on sale on the storefront right now" };
+    return {
+      ok: false,
+      why: onOurChannel ? "it is on sale on the storefront right now"
+                        : "it is live on another sales channel",
+    };
   }
   const total = Number(p.totalInventory);
   const variantUnits = (p.variants?.nodes ?? [])
@@ -86,10 +105,13 @@ export async function adoptionVerdict(graphql, gid, onlineStorePublicationId) {
   if (units > 0) {
     return { ok: false, why: `it holds ${units} unit${units === 1 ? "" : "s"} of stock` };
   }
+  // The wording has to be TRUE on both branches — it lands verbatim in a
+  // refusal a shop assistant reads. "Unpublished orphan" for a product still
+  // attached to a channel would have been a small lie (architect review).
   return {
     ok: true,
     why: published
-      ? "unpublished orphan with no stock"
+      ? `${String(p.status || "unknown").toLowerCase()} product with no stock, still attached to a sales channel`
       : `${String(p.status || "unknown").toLowerCase()} product with no stock, on no sales channel`,
   };
 }

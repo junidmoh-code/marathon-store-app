@@ -101,22 +101,15 @@ export function offAuditFields(node, record, logKey) {
   const log = { ...existing, [key]: record };
   // Trim oldest-first. Numeric compare — string sort puts a 13-digit stamp
   // beside a 10-digit one in the wrong order once the clock rolls a digit.
+  // SAME-MILLISECOND COLLISION is accepted, not worked around. Two writers
+  // taking the SAME product off inside one millisecond would share a key and
+  // the second would replace the first — but the transaction serialises them,
+  // `lastOff` is correct either way, and the alternative is a key that is not
+  // plain epoch ms, which this repo has already been bitten by once.
   const keys = Object.keys(log).sort((a, b) => Number(a) - Number(b));
   const drop = keys.slice(0, Math.max(0, keys.length - OFF_LOG_KEEP));
   for (const k of drop) delete log[k];
   return { lastOff: record, offLog: log };
-}
-
-/**
- * The multi-path update() form, for the Admin-SDK scripts: they write with
- * update() and must not read the whole node back just to trim a log. The
- * trailing trim is skipped — off events are rare and a script-side off is the
- * minority path; the browser's transaction trims whenever it next writes.
- */
-export function offAuditUpdate(record, logKey) {
-  const key = String(logKey);
-  if (!/^\d+$/.test(key)) throw new Error(`off log key must be plain epoch ms, got ${JSON.stringify(logKey)}`);
-  return { lastOff: record, [`offLog/${key}`]: record };
 }
 
 function shortDate(ms) {

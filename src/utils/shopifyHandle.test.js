@@ -17,10 +17,24 @@ describe("handleFromName", () => {
 });
 
 describe("handleInBlockedReason", () => {
-  const REAL = 'Shopify product gid://shopify/Product/9338746241173 already owns handle "sneaker-black" ' +
-               "(an orphan from a crashed run, or a legacy/twin product)";
-  it("reads the handle out of the reconciler's own sentence", () => {
-    expect(handleInBlockedReason(REAL)).toBe("sneaker-black");
+  // THE SENTENCES THE RECONCILER ACTUALLY WRITES — both builds. The first
+  // version of this work rewrote the refusal wording and left the parser
+  // matching a string the code no longer emitted, with these tests green
+  // against the dead string. So the wordings are asserted against the source of
+  // scripts/shopify/reconcile.mjs below, not typed from memory.
+  const LEGACY = 'Shopify product gid://shopify/Product/9338746241173 already owns handle "sneaker-black" ' +
+                 "(an orphan from a crashed run, or a legacy/twin product)";
+  const CURRENT = 'the web address this name would use ("sneaker-black") already belongs to another ' +
+                  'listing on the shop: "Some other product" — it holds 3 units of stock.';
+  const CURRENT_RACE = 'the web address this name would use ("sneaker-black") is already taken by ' +
+                       'another listing on the shop ("Some other product").';
+
+  it("reads the handle out of the refusal the build LIVE TODAY wrote", () => {
+    expect(handleInBlockedReason(LEGACY)).toBe("sneaker-black");
+  });
+  it("reads the handle out of the refusals THIS build writes", () => {
+    expect(handleInBlockedReason(CURRENT)).toBe("sneaker-black");
+    expect(handleInBlockedReason(CURRENT_RACE)).toBe("sneaker-black");
   });
   it("is null for every other kind of refusal", () => {
     expect(handleInBlockedReason("no photo on the record")).toBe(null);
@@ -29,8 +43,38 @@ describe("handleInBlockedReason", () => {
   });
 });
 
+describe("the parser is pinned to the reconciler's REAL wording", () => {
+  // The guard that would have caught the regression: read the refusal template
+  // out of the reconciler's source and check the parser can read a message
+  // built from it. A future edit to the sentence fails HERE, loudly, instead of
+  // silently switching the stale-block feature off.
+  it("every handle-collision refusal in reconcile.mjs is parseable", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("../../scripts/shopify/reconcile.mjs", import.meta.url), "utf8");
+    const templates = src.match(/the web address this name would use[^`]*/g) || [];
+    expect(templates.length).toBeGreaterThan(0);
+    for (const t of templates) {
+      // Substitute the one interpolation the handle sits in.
+      const message = t.replace("${payload.handle}", "sneaker-black");
+      expect(handleInBlockedReason(message)).toBe("sneaker-black");
+    }
+  });
+});
+
 describe("staleHandleBlock", () => {
   const REASON = 'Shopify product gid://shopify/Product/1 already owns handle "sneaker-black"';
+
+  it("prefers the RECORDED FIELD over anything in the prose", () => {
+    // The field is written by the code that made the refusal. It cannot be
+    // broken by an edit to the sentence, and that is the whole reason it exists.
+    const v = staleHandleBlock("some wording nobody has ever parsed", "A brand new name", "sneaker-black");
+    expect(v.stale).toBe(true);
+    expect(v.recordedHandle).toBe("sneaker-black");
+  });
+
+  it("with the field present and MATCHING, the block still stands", () => {
+    expect(staleHandleBlock("anything", "Sneaker Black", "sneaker-black").stale).toBe(false);
+  });
 
   it("is STALE when the current name produces a different handle", () => {
     // The screen case: blocked under "Sneaker black", now called something else.

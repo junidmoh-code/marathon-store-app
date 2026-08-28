@@ -208,6 +208,27 @@ When a product was taken off for a rename and the rename has since landed
 switched on automatically — that is the owner's call, and this work does not
 move a single live product in either direction.
 
+## Paths that write an off, and what each records
+
+| path | record | notes |
+|---|---|---|
+| the page's On/Off switch | `switched_off` | actor = the signed-in uid |
+| "Take it off the shop to rename" | `off_to_rename` | the round trip that started all this |
+| Cancel on a pending publish | `publish_cancelled` | |
+| reconciler applying an off intent | the page's own record, kept | replaced with `switched_off` when the page's record predates the last go-live — an August reason must not date this week's take-down |
+| reconciler, no Shopify product | `no_shopify_product` | |
+| reconciler, cancelled mid-run | `cancelled_mid_run` | |
+| every `markBlocked` refusal | `reconciler_refused` | `detail` carries the validator's words |
+| `migrate-live-state.mjs` | `script` | one-shot legacy migration, already run |
+| a console edit by hand | **nothing** | the Admin console bypasses all of this. It is the one remaining gap and it is named here rather than papered over. |
+
+## What is NOT recorded, honestly
+
+A direct edit in the Firebase console writes no record. Nothing in the app can
+change that. When the reconciler later applies such an intent it writes
+`switched_off` with `actor: script:reconcile` — truthful about who applied it,
+silent about who asked, which is the best available answer.
+
 ## Products still off from the 22 August rename, at the time of writing
 
 152 nodes sit at `live | off | off`. The 97 identified above are the rename

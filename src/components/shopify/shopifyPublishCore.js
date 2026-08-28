@@ -178,7 +178,7 @@ export function blockStatus(node, effectiveName) {
   if (!reason) return { blocked: false, reason: null, staleNote: null };
   // A condition-unset block is about the condition, not the name.
   if (!CONDITIONS.includes(node?.condition)) return { blocked: true, reason, staleNote: null };
-  const { stale } = staleHandleBlock(reason, effectiveName);
+  const { stale } = staleHandleBlock(reason, effectiveName, node?.blockedHandle);
   if (!stale) return { blocked: true, reason, staleNote: null };
   return {
     blocked: false,

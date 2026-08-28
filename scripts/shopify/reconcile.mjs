@@ -261,8 +261,15 @@ const results = [];
 // BEFORE the intent is consumed. Idempotent — unpublishing an unpublished
 // product is a no-op. userErrors are the normal Shopify failure channel, so
 // they warn just like a thrown error would.
+// RETURNS WHETHER IT ACTUALLY WORKED. It used to swallow both exceptions and
+// userErrors and tell the caller nothing — which was survivable while nothing
+// depended on the answer, and stopped being survivable the moment markBlocked
+// started recording `liveState: "off"` on the strength of it. A throttled or
+// denied unpublish would then have the app stating, durably, that a product
+// nobody can take down is off the shop. False is the honest answer, and the
+// caller leaves the field alone.
 const failSafeUnpublish = async (gid) => {
-  if (!gid) return;
+  if (!gid) return false;
   try {
     const res = await graphql(
       `mutation ($id: ID!, $input: [PublicationInput!]!) {
@@ -272,10 +279,15 @@ const failSafeUnpublish = async (gid) => {
       { mutation: true }
     );
     const errs = res.publishableUnpublish.userErrors;
-    if (errs?.length) console.error(`  ⚠ fail-safe unpublish userErrors: ${JSON.stringify(errs)} — check ${gid} in admin`);
-    else console.log("  fail-safe: unpublished from the Online Store channel");
+    if (errs?.length) {
+      console.error(`  ⚠ fail-safe unpublish userErrors: ${JSON.stringify(errs)} — check ${gid} in admin`);
+      return false;
+    }
+    console.log("  fail-safe: unpublished from the Online Store channel");
+    return true;
   } catch (e) {
     console.error(`  ⚠ fail-safe unpublish failed (${String(e?.message || e)}) — check ${gid} in admin`);
+    return false;
   }
 };
 // `tookDown` — this refusal ran failSafeUnpublish first, so it has PROVED the
@@ -303,9 +315,9 @@ const probeHandleOwner = async (handle) => {
   }
 };
 
-const refuse = async (pid, why, { tookDown = false } = {}) => {
+const refuse = async (pid, why, { tookDown = false, blockedHandle = null } = {}) => {
   console.error(`  🛑 ${pid} REFUSED: ${why}`);
-  await markBlocked(db, pid, why, UPDATED_BY, { wasTakenDown: tookDown });
+  await markBlocked(db, pid, why, UPDATED_BY, { wasTakenDown: tookDown, blockedHandle });
   // A refusal is a take-down: every refusal path either never published or
   // called failSafeUnpublish first. Whatever the reason, this product is not on
   // the storefront, so it must not be answering searches with a link to it.
@@ -338,6 +350,12 @@ const desiredCollectionFor = (pid, product) => {
 for (const { pid, want } of capped) {
   assertSafeSegment(pid, "productId");
   console.log(`\n▶ ${pid} → ${want.toUpperCase()}`);
+  // CONTAINMENT STATE FOR THE OUTER CATCH. `gid` is scoped inside the try, so
+  // a throw AFTER publishablePublish succeeded — a network timeout on the
+  // status update, an RTDB blip on the confirm — used to leave a product
+  // publicly ACTIVE with nothing but a line in the report (Codex review,
+  // 2026-08-28). These two carry the facts the catch needs.
+  let publicGid = null;   // set only once the product is actually on the channel
   try {
     // Re-read at the last moment — the page may have flipped the switch back
     // (or a publish may have been cancelled) since the worklist was read.
@@ -400,7 +418,12 @@ for (const { pid, want } of capped) {
       // (a script, a console edit) gets the generic one.
       await confirmLiveState(db, pid, "off", UPDATED_BY, {
         gid: mapNode.shopifyProductId,
-        ...(fresh?.lastOff
+        // KEEP the page's own record only while it is NEWER than the last time
+        // this product went live. An August "off_to_rename" on a product that
+        // has been republished since describes a DIFFERENT off; keeping it here
+        // would date this week's take-down to August and hide whichever path
+        // actually authored the intent (spec review, 2026-08-28).
+        ...(fresh?.lastOff && Number(fresh.lastOff.at) >= (Number(fresh.liveAt) || 0)
           ? { offReason: KEEP_EXISTING_OFF_REASON }
           : { offReason: "switched_off",
               offDetail: "an off intent was applied — unpublished from the Online Store channel" }),
@@ -523,7 +546,7 @@ for (const { pid, want } of capped) {
             console.log(`  adopted the orphan holding "${payload.handle}": ${handleHit.id} (${verdict.why})`);
           } catch (e) {
             await requestFreshName(db, pid, `the storefront address this name produces is taken by another listing`);
-            await refuse(pid, `the web address this name would use is already taken by another listing on the shop ("${handleHit.title}"). A new name has been requested for this product; it will be suggested for review shortly.`);
+            await refuse(pid, `the web address this name would use ("${payload.handle}") is already taken by another listing on the shop ("${handleHit.title}"). A new name has been asked for automatically; it will appear under Suggested names when it is ready.`, { blockedHandle: payload.handle });
             continue;
           }
         } else {
@@ -531,7 +554,7 @@ for (const { pid, want } of capped) {
           // always "taken by what?" — and get a new name moving without anybody
           // having to ask for one.
           await requestFreshName(db, pid, verdict.why);
-          await refuse(pid, `the web address this name would use ("${payload.handle}") already belongs to another listing on the shop: "${handleHit.title}" — ${verdict.why}. A new name has been requested for this product; it will be suggested for review shortly.`);
+          await refuse(pid, `the web address this name would use ("${payload.handle}") already belongs to another listing on the shop: "${handleHit.title}" — ${verdict.why}. A new name has been asked for automatically; it will appear under Suggested names when it is ready.`, { blockedHandle: payload.handle });
           continue;
         }
       }
@@ -554,7 +577,17 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const uErrs = upd.productUpdate.userErrors;
-      if (uErrs?.length) { await refuse(pid, `reconcile productUpdate userErrors: ${JSON.stringify(uErrs)}`); continue; }
+      if (uErrs?.length) {
+        // A MAPPED product can be publicly visible through drift — republished
+        // by hand in the admin, or left up by a run that crashed between
+        // publishablePublish and its confirm. Refusing consumes the intent, so
+        // leaving it up strands non-compliant content on the storefront with
+        // nothing left to take it down. Every sibling refusal already does
+        // this; these were missed (architect + Codex review, 2026-08-28).
+        const down = await failSafeUnpublish(gid);
+        await refuse(pid, `reconcile productUpdate userErrors: ${JSON.stringify(uErrs)}`, { tookDown: down });
+        continue;
+      }
     } else {
       // CREATE — the old publish-run's draft pipeline, inline: photos answer
       // first, exact-title duplicate guard (a legacy or twin product must be
@@ -572,7 +605,7 @@ for (const { pid, want } of capped) {
         // NO SCRIPT NAME IN A MESSAGE A PERSON READS. The remedy is a new
         // name, and one is already on its way.
         await requestFreshName(db, pid, "another listing on the shop already carries this exact title");
-        await refuse(pid, "another listing on the shop already carries this exact title. A new name has been requested for this product; it will be suggested for review shortly.");
+        await refuse(pid, "another listing on the shop already carries this exact title. A new name has been asked for automatically; it will appear under Suggested names when it is ready.");
         continue;
       }
       const price = Number(product.retailPrice).toFixed(2);
@@ -630,8 +663,12 @@ for (const { pid, want } of capped) {
       { id: gid }
     );
     const bp = back.product;
+    // NO TAKE-DOWN HERE, and that is not an oversight: the read-back found no
+    // product at all, so there is nothing on Shopify to unpublish and the
+    // mutation would only fail. Its siblings below DO take down, because they
+    // found a product and are refusing it.
     if (!bp) { await refuse(pid, "read-back returned no product — the ID map may point at a deleted product"); continue; }
-    if (bp.variants.pageInfo.hasNextPage) { await refuse(pid, ">100 variants unpaginated"); continue; }
+    if (bp.variants.pageInfo.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">100 variants unpaginated", { tookDown: down }); continue; }
     const sizeByDisplay = new Map(sizes.map((s) => [displaySizeName(s), s]));
     const rows = bp.variants.nodes
       .filter((v) => sizeByDisplay.has(v.title) && v.inventoryItem?.id)
@@ -639,14 +676,14 @@ for (const { pid, want } of capped) {
         size: sizeByDisplay.get(v.title), variantId: v.id, inventoryItemId: v.inventoryItem.id,
         tracked: v.inventoryItem.tracked, inventoryPolicy: v.inventoryPolicy,
       }));
-    if (!rows.length) { await refuse(pid, "no read-back variant matches any catalogue size"); continue; }
+    if (!rows.length) { const down = await failSafeUnpublish(gid); await refuse(pid, "no read-back variant matches any catalogue size", { tookDown: down }); continue; }
     // Every catalogue size must have a Shopify variant — a size added while
     // the product sat OFF has none, and shipping without it would silently
     // sell an incomplete run. Structural change needs a human.
     const missingSizes = sizes.filter((sTok) => !rows.some((r) => r.size === sTok));
     if (missingSizes.length) {
-      await failSafeUnpublish(gid);
-      await refuse(pid, `catalogue sizes with no Shopify variant: ${missingSizes.join(", ")} — the size set changed while off; fix the Shopify product (or the record) first`, { tookDown: true });
+      const down = await failSafeUnpublish(gid);
+      await refuse(pid, `catalogue sizes with no Shopify variant: ${missingSizes.join(", ")} — the size set changed while off; fix the Shopify product (or the record) first`, { tookDown: down });
       continue;
     }
     await writeIdMap(db, pid, buildMapping(gid, rows));
@@ -664,10 +701,10 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const priceErrs = priced.productVariantsBulkUpdate.userErrors;
-      if (priceErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`, { tookDown: true }); continue; }
+      if (priceErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`, { tookDown: down }); continue; }
       console.log(`  variant prices set to ${priceNow}`);
     }
-    if (bp.media?.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — cannot verify the photo set"); continue; }
+    if (bp.media?.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">50 media unpaginated — cannot verify the photo set", { tookDown: down }); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
     // Shopify rehosts files, so what it holds can't be compared to the plan
     // by URL — the fingerprint recorded on /shopify_sync at attach time is
@@ -697,7 +734,7 @@ for (const { pid, want } of capped) {
           { mutation: true }
         );
         const delErrs = del.productDeleteMedia.mediaUserErrors;
-        if (delErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `productDeleteMedia userErrors: ${JSON.stringify(delErrs)}`, { tookDown: true }); continue; }
+        if (delErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `productDeleteMedia userErrors: ${JSON.stringify(delErrs)}`, { tookDown: down }); continue; }
         // Deletion is asynchronous on Shopify's side; attachMedia's READY
         // poll counts nodes, so lingering old media could satisfy it
         // spuriously. Wait for zero before attaching.
@@ -708,7 +745,7 @@ for (const { pid, want } of capped) {
           if ((now.product?.media?.nodes?.length ?? 0) === 0) { cleared = true; break; }
           await new Promise((r) => setTimeout(r, 2000));
         }
-        if (!cleared) { await failSafeUnpublish(gid); await refuse(pid, "old media did not clear after productDeleteMedia — re-run to resume the re-sync", { tookDown: true }); continue; }
+        if (!cleared) { const down = await failSafeUnpublish(gid); await refuse(pid, "old media did not clear after productDeleteMedia — re-run to resume the re-sync", { tookDown: down }); continue; }
       }
       // attachMedia throws on userErrors/FAILED/poll-timeout. Letting that
       // land in the outer catch would leave a media-less product with its
@@ -721,8 +758,8 @@ for (const { pid, want } of capped) {
         await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
         console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
       } catch (e) {
-        await failSafeUnpublish(gid);
-        await refuse(pid, `media attach failed: ${String(e?.message || e)} — re-run re-attaches the reviewed set`, { tookDown: true });
+        const down = await failSafeUnpublish(gid);
+        await refuse(pid, `media attach failed: ${String(e?.message || e)} — re-run re-attaches the reviewed set`, { tookDown: down });
         continue;
       }
     }
@@ -744,8 +781,8 @@ for (const { pid, want } of capped) {
       { id: gid }
     );
     const cp = canon.product;
-    if (!cp) { await refuse(pid, `${gid} not found on the shop — deleted in admin mid-run?`); continue; }
-    if (cp.media.pageInfo?.hasNextPage) { await refuse(pid, ">50 media unpaginated — the FULL validator cannot see them all"); continue; }
+    if (!cp) { await refuse(pid, `${gid} not found on the shop — deleted in admin mid-run?`); continue; }  // nothing there to take down
+    if (cp.media.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">50 media unpaginated — the FULL validator cannot see them all", { tookDown: down }); continue; }
     const verdict = validatePayload({
       title: cp.title, handle: cp.handle, vendor: cp.vendor, productType: cp.productType,
       tags: cp.tags, descriptionHtml: cp.descriptionHtml, seo: cp.seo,
@@ -771,9 +808,9 @@ for (const { pid, want } of capped) {
       // non-compliant content on the storefront with no remaining intent to
       // take it down — markBlocked consumes desiredState. Unpublish first;
       // on an unpublished product this is a no-op.
-      await failSafeUnpublish(gid);
+      const down = await failSafeUnpublish(gid);
       await refuse(pid, "canonical Shopify object fails compliance: " +
-        verdict.violations.map((v) => `${v.field}: ${v.problem}`).join("; "), { tookDown: true });
+        verdict.violations.map((v) => `${v.field}: ${v.problem}`).join("; "), { tookDown: down });
       continue;
     }
 
@@ -818,8 +855,8 @@ for (const { pid, want } of capped) {
         await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));
         console.log(`  inventory tracking enabled on ${untracked.length} variant(s) (DENY)`);
       } catch (e) {
-        await failSafeUnpublish(gid);
-        await refuse(pid, `could not enable inventory tracking (${String(e?.message || e)}) — refusing to list a product that would oversell`, { tookDown: true });
+        const down = await failSafeUnpublish(gid);
+        await refuse(pid, `could not enable inventory tracking (${String(e?.message || e)}) — refusing to list a product that would oversell`, { tookDown: down });
         continue;
       }
     }
@@ -899,8 +936,8 @@ for (const { pid, want } of capped) {
         console.log(`  collections: joined ${plan.join.length}, left ${plan.leave.length}`);
       }
     } catch (e) {
-      await failSafeUnpublish(gid);
-      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`, { tookDown: true });
+      const down = await failSafeUnpublish(gid);
+      await refuse(pid, `collection membership failed: ${String(e?.message || e)}`, { tookDown: down });
       continue;
     }
 
@@ -913,9 +950,12 @@ for (const { pid, want } of capped) {
       { mutation: true }
     );
     const pubErrs = pubRes.publishablePublish.userErrors;
+    // From here the product IS on the sales channel. Anything that throws
+    // between here and the end of this iteration must take it down again.
+    if (!pubErrs?.length) publicGid = gid;
     // A partial publish can still have made the product visible, and refuse()
     // consumes the intent — so take it down before recording the refusal.
-    if (pubErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`, { tookDown: true }); continue; }
+    if (pubErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `publishablePublish userErrors: ${JSON.stringify(pubErrs)}`, { tookDown: down }); continue; }
     const act = await graphql(
       `mutation ($input: ProductUpdateInput!) {
         productUpdate(product: $input) { product { id status } userErrors { field message } }
@@ -933,10 +973,10 @@ for (const { pid, want } of capped) {
     // revisits it. Every sibling refusal already unpublishes first; these two
     // were the only ones that did not.
     const actErrs = act.productUpdate.userErrors;
-    if (actErrs?.length) { await failSafeUnpublish(gid); await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`, { tookDown: true }); continue; }
+    if (actErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `productUpdate userErrors: ${JSON.stringify(actErrs)} — NOT confirmed on`, { tookDown: down }); continue; }
     if (act.productUpdate.product?.status !== "ACTIVE") {
-      await failSafeUnpublish(gid);
-      await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`, { tookDown: true });
+      const down = await failSafeUnpublish(gid);
+      await refuse(pid, `productUpdate returned status ${act.productUpdate.product?.status} — NOT confirmed on`, { tookDown: down });
       continue;
     }
     await confirmLiveState(db, pid, "on", UPDATED_BY, { gid });
@@ -958,6 +998,15 @@ for (const { pid, want } of capped) {
       note: `LIVE on the Online Store — "${title}" · https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}`,
     });
   } catch (e) {
+    // DELIBERATELY NOT markBlocked. A throw here is usually transient (a
+    // timeout, a throttle) and blocking would consume the intent, so the next
+    // tick would never retry a publish that only needed retrying. But if the
+    // product reached the channel before the throw, leaving it up is not an
+    // option — take it down and let the intent stand for the next run.
+    if (publicGid) {
+      console.error(`  ⚠ ${pid}: threw AFTER going public — taking it back off the channel`);
+      await failSafeUnpublish(publicGid);
+    }
     results.push({ pid, ok: false, why: String(e?.message || e) });
   }
 }

@@ -10,6 +10,7 @@ const gql = (product) => async () => ({ product });
 const base = {
   id: "gid://shopify/Product/9", title: "Orphan", handle: "sneaker-black",
   status: "DRAFT", totalInventory: 0, publishedOnPublication: false,
+  resourcePublicationsCount: { count: 0 },
   variants: { pageInfo: { hasNextPage: false }, nodes: [{ inventoryQuantity: 0 }] },
 };
 
@@ -21,17 +22,43 @@ describe("adoptionVerdict", () => {
   });
 
   it("adopts an UNPUBLISHED product with no stock even if it is ACTIVE", async () => {
-    // Status ACTIVE alone does not put it in front of a customer — the sales
-    // channel does. An active-but-unpublished, empty product is still litter.
+    // Status ACTIVE alone does not put it in front of a customer — a sales
+    // channel does. An active product on NO channel, with no stock, is litter.
     const v = await adoptionVerdict(gql({ ...base, status: "ACTIVE" }), base.id, PUB);
     expect(v.ok).toBe(true);
   });
 
   it("REFUSES a product that is on sale on the storefront right now", async () => {
     const v = await adoptionVerdict(
-      gql({ ...base, status: "ACTIVE", publishedOnPublication: true }), base.id, PUB);
+      gql({ ...base, status: "ACTIVE", publishedOnPublication: true, resourcePublicationsCount: { count: 1 } }),
+      base.id, PUB);
     expect(v.ok).toBe(false);
     expect(v.why).toMatch(/on sale on the storefront/);
+  });
+
+  it("REFUSES an ACTIVE product live on ANOTHER sales channel — POS, Shop, a marketplace", async () => {
+    // The first version checked only the Online Store publication, so a product
+    // selling through the POS or the Shop app looked like litter and would have
+    // been rewritten in place — title, handle, media, price (Codex review).
+    const v = await adoptionVerdict(
+      gql({ ...base, status: "ACTIVE", publishedOnPublication: false, resourcePublicationsCount: { count: 1 } }),
+      base.id, PUB);
+    expect(v.ok).toBe(false);
+    expect(v.why).toMatch(/another sales channel/);
+  });
+
+  it("adopts a DRAFT product attached to a channel — draft is not visible to anyone", async () => {
+    const v = await adoptionVerdict(
+      gql({ ...base, status: "DRAFT", resourcePublicationsCount: { count: 2 } }), base.id, PUB);
+    expect(v.ok).toBe(true);
+    expect(v.why).toMatch(/still attached to a sales channel/);   // and it SAYS so
+  });
+
+  it("REFUSES when the shop will not say which channels it is on — an unknown is not a yes", async () => {
+    const v = await adoptionVerdict(
+      gql({ ...base, status: "ACTIVE", resourcePublicationsCount: null }), base.id, PUB);
+    expect(v.ok).toBe(false);
+    expect(v.why).toMatch(/would not say which sales channels/);
   });
 
   it("REFUSES anything holding stock", async () => {

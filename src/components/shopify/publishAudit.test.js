@@ -3,7 +3,7 @@
 // two-minute query instead of a day's archaeology.
 import { describe, it, expect } from "vitest";
 import {
-  OFF_REASONS, OFF_LOG_KEEP, buildOffRecord, offAuditFields, offAuditUpdate, describeOff,
+  OFF_REASONS, OFF_LOG_KEEP, buildOffRecord, offAuditFields, describeOff,
 } from "./publishAudit";
 
 describe("buildOffRecord", () => {
@@ -65,14 +65,19 @@ describe("offAuditFields", () => {
     // an RTDB key, and a push-id "-" prefix is the ZERO character. Keys here
     // are digits or nothing.
     expect(() => offAuditFields({}, rec(1), "2026-08-28T00:00:00Z")).toThrow(/plain epoch ms/);
-    expect(() => offAuditUpdate(rec(1), "-Nabc")).toThrow(/plain epoch ms/);
+    expect(() => offAuditFields({}, rec(1), "-Nabc")).toThrow(/plain epoch ms/);
   });
-});
 
-describe("offAuditUpdate", () => {
-  it("is an update()-shaped multi-path write, log entry included", () => {
-    const r = buildOffRecord({ at: 42, actor: "script:reconcile", reasonCode: "reconciler_refused", detail: "no photo" });
-    expect(offAuditUpdate(r, 42)).toEqual({ lastOff: r, "offLog/42": r });
+  it("TRIMS FOR THE SCRIPTS TOO — a product refused on every tick must not grow", () => {
+    // The reconciler ticks every two minutes. A product its validator refuses
+    // every time writes an off record every time, and the first version of this
+    // used an untrimmed update() on the argument that script-side offs are
+    // rare. They are, right up until they are not (Codex review).
+    let node = {};
+    for (let i = 1; i <= OFF_LOG_KEEP + 20; i++) {
+      node = { offLog: offAuditFields(node, rec(1000 + i), 1000 + i).offLog };
+    }
+    expect(Object.keys(node.offLog).length).toBe(OFF_LOG_KEEP);
   });
 });
 

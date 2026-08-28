@@ -9,6 +9,7 @@
 //     liveState:        "on" | "off",            // CONFIRMED channel state, live products only
 //     desiredState:     "on" | "off",            // INTENT written by the page; reconciler applies
 //     blockedReason:    string,                  // reconciler's apply-time refusal, blocked only
+//     blockedHandle:    string,                  // the handle a COLLISION refusal was about
 //     cleanName:        string,                  // the compliant listing title
 //     cleanNameSource:  "lexicon" | "ai" | "manual",
 //     nameApprovedAt:   epoch ms,                // name signed off in the review page
@@ -41,7 +42,7 @@
 // cleanName: a name is generated once and never regenerated (AI is
 // non-deterministic; a re-run must not silently change a reviewed title).
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { buildOffRecord, offAuditUpdate } from "../../src/components/shopify/publishAudit.js";
+import { buildOffRecord, offAuditFields } from "../../src/components/shopify/publishAudit.js";
 
 export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
 
@@ -55,6 +56,19 @@ export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
 // Read ONCE per process and cached: it is a client-side metadata value with no
 // rules and no round trip after the handshake, and an off record's `at` and its
 // log key must be the SAME instant — two calls to a live clock are two numbers.
+// The off-audit fields for a script-side write, log INCLUDED AND TRIMMED.
+// The first version used the untrimmed update() form on the argument that
+// script-side offs are rare — which is true of a healthy shop and false of the
+// case that matters: a product the validator refuses on every tick would grow
+// its log without limit (Codex review, 2026-08-28). One small point read of the
+// log child is cheaper than an unbounded node.
+async function offFields(db, productId, record) {
+  let existing = null;
+  try { existing = (await db.ref(`shopify_publish/${productId}/offLog`).get()).val(); }
+  catch { existing = null; }   // an unreadable log must never block a take-down
+  return offAuditFields({ offLog: existing }, record, record.at);
+}
+
 let offsetMs = null;
 export async function serverNowMs(db) {
   if (offsetMs === null) {
@@ -121,12 +135,12 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
   // the state docs/PUBLISH-AUTO-OFF.md exists because of, so the default names
   // the script rather than leaving the row with nothing to say.
   const audit = liveState === "off" && offReason !== KEEP_EXISTING_OFF_REASON
-    ? offAuditUpdate(buildOffRecord({
+    ? await offFields(db, productId, buildOffRecord({
         at,
         actor: updatedBy,
         reasonCode: offReason,
         detail: offDetail,
-      }), at)
+      }))
     : {};
   await db.ref(`shopify_publish/${productId}`).update({
     state: "live",
@@ -145,24 +159,34 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
 // intent is cleared back to "off" so the refusal doesn't retry forever —
 // after fixing the cause, the page re-expresses it (blocked → awaiting via
 // the condition chips, or Publish again).
-export async function markBlocked(db, productId, reason, updatedBy, { wasTakenDown = false } = {}) {
+// blockedHandle: the storefront address this refusal was ABOUT, when it was a
+// handle collision. Recorded as a FIELD rather than left to be read back out of
+// the sentence — the page has to decide whether a block is still true (a
+// refusal outlives the name that caused it), and parsing prose for that answer
+// means every future edit to the wording silently breaks the feature. It did:
+// the first version of this change rewrote the refusal text and left the reader
+// matching a string the code no longer emitted (architect review, 2026-08-28).
+// ALWAYS written — null on every non-collision refusal, so a stale handle from
+// an earlier life can never make a live block look answered.
+export async function markBlocked(db, productId, reason, updatedBy, { wasTakenDown = false, blockedHandle = null } = {}) {
   assertSafeSegment(productId, "productId");
   const at = await serverNowMs(db);
   await db.ref(`shopify_publish/${productId}`).update({
     state: "blocked",
     blockedReason: String(reason),
+    blockedHandle: blockedHandle ? String(blockedHandle) : null,
     desiredState: "off",
     // A refusal that ran failSafeUnpublish first has PROVED the product is off
     // the channel; recording it stops the node claiming `liveState: "on"` for
     // a product nobody can see. Refusals that never published leave the field
     // alone — they have no new fact about the channel.
     ...(wasTakenDown ? { liveState: "off" } : {}),
-    ...offAuditUpdate(buildOffRecord({
+    ...(await offFields(db, productId, buildOffRecord({
       at,
       actor: updatedBy,
       reasonCode: "reconciler_refused",
       detail: String(reason),
-    }), at),
+    }))),
     updatedAt: at,
     updatedBy,
   });

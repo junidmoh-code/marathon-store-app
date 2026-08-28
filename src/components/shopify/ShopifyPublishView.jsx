@@ -750,12 +750,27 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const [shown, setShown] = useState(PAGE_SIZE);
   useEffect(() => { setShown(PAGE_SIZE); }, [filter, q]);
   const visible = useMemo(() => (fullList ? fullList.slice(0, shown) : null), [fullList, shown]);
+  // Pids whose body read FAILED. They must not count as pending: a read that
+  // errored is never coming back on its own — the effect below is keyed on the
+  // window and the window has not changed — so counting it would hold the tab
+  // on "Loading…" for ever, hiding every row AND the retry, on one transient
+  // network blip (Codex review, 2026-08-28). The banner says what happened and
+  // the button re-arms the read.
+  const [failedBodies, setFailedBodies] = useState(() => new Set());
+  useEffect(() => { setFailedBodies(new Set()); }, [filter]);
+  const retryBodies = useCallback(() => {
+    for (const pid of failedBodies) requestedPids.current.delete(pid);
+    setFailedBodies(new Set());
+    setSectionError(null);
+  }, [failedBodies]);
   // Rows render only once every visible body is in hand — a row that mounted
   // without its node would show "awaiting review" for a product that is live,
   // and then flip.
   const pendingBodies = useMemo(
-    () => (visible && keys ? visible.filter((p) => keys.has(p.id) && nodes[p.id] === undefined).length : 0),
-    [visible, keys, nodes]
+    () => (visible && keys
+      ? visible.filter((p) => keys.has(p.id) && nodes[p.id] === undefined && !failedBodies.has(p.id)).length
+      : 0),
+    [visible, keys, nodes, failedBodies]
   );
 
   // Bodies for exactly the rows on screen, and nothing else. Tracked PER PID so
@@ -766,6 +781,9 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const want = visible
       .filter((p) => keys.has(p.id) && nodes[p.id] === undefined && !requestedPids.current.has(p.id))
       .map((p) => p.id);
+    // NOTE the requestedPids guard above is what stops this effect looping: it
+    // is written synchronously, before the async read, and the read's own
+    // setNodes is what the effect re-runs on.
     if (!want.length) return;
     for (const pid of want) requestedPids.current.add(pid);
     loadNodesFor(want)
@@ -781,14 +799,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           return next;
         });
         if (failed.length) {
-          for (const pid of failed) requestedPids.current.delete(pid); // let a retry through
-          setSectionError(`${failed.length} product record(s) didn't load — scroll away and back, or adjust the search, to retry`);
+          setFailedBodies((prev) => { const next = new Set(prev); for (const pid of failed) next.add(pid); return next; });
+          setSectionError(`${failed.length} product record(s) didn't load.`);
         } else {
           setSectionError(null); // a clean batch clears the stale banner
         }
       })
       .catch((e) => {
-        for (const pid of want) requestedPids.current.delete(pid);
+        setFailedBodies((prev) => { const next = new Set(prev); for (const pid of want) next.add(pid); return next; });
         setSectionError(String(e?.message || e));
       });
   }, [visible, keys, nodes]);
@@ -1264,6 +1282,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         {sectionError && (
           <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
             {sectionError}
+            {failedBodies.size > 0 && (
+              <button onClick={retryBodies}
+                style={{ ...tabOff, padding: "5px 11px", fontSize: "0.68rem", marginLeft: 8 }}>
+                Try again
+              </button>
+            )}
           </div>
         )}
         {!loadError && (!keys || !pipeline) && (
