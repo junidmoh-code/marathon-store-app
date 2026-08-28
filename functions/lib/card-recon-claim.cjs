@@ -65,18 +65,20 @@ function isGranted(flagValue) {
  * On a dry run that is the finding; on a live run the write has already
  * happened by the time it is returned.
  */
+// The account being deleted mid-flight is a COMPLETED revoke, not a failure:
+// deleteStaffUser removes the /users record and the auth user, so there is no
+// claim left to carry. Anything else rethrows and the trigger retries. Applied
+// to BOTH Auth calls — the deletion can land between the read and the write.
+const GONE = { changed: false, missing: true, before: false, otherClaims: [] };
+const isGone = (err) => err && err.code === "auth/user-not-found";
+
 async function reconcileClaim({ auth, uid, granted, dryRun = false }) {
   if (typeof uid !== "string" || !uid) throw new Error("reconcileClaim: uid required");
   let user;
   try {
     user = await auth.getUser(uid);
   } catch (err) {
-    // The account is gone (deleteStaffUser removes the /users record and the
-    // auth user). There is no claim left to carry, so this is a completed
-    // revoke, not a failure — anything else rethrows and the trigger retries.
-    if (err && err.code === "auth/user-not-found") {
-      return { uid, granted: false, changed: false, missing: true, before: false, otherClaims: [] };
-    }
+    if (isGone(err)) return { uid, granted: false, ...GONE };
     throw err;
   }
 
@@ -100,8 +102,53 @@ async function reconcileClaim({ auth, uid, granted, dryRun = false }) {
 
   // `null` is the documented "no custom claims at all"; passing {} would leave
   // an empty claims object behind. Either works, but null is the clean state.
-  await auth.setCustomUserClaims(uid, Object.keys(next).length ? next : null);
+  try {
+    await auth.setCustomUserClaims(uid, Object.keys(next).length ? next : null);
+  } catch (err) {
+    if (isGone(err)) return { uid, granted: false, ...GONE };
+    throw err;
+  }
   return { uid, granted, changed: true, before, otherClaims };
+}
+
+// A claim write may not exceed this many verification passes before the
+// handler gives up and rethrows for the trigger's retry. Two flips while one
+// handler is mid-write is already vanishingly rare; five is a permission being
+// toggled in a loop, which is not a state to chase inside one invocation.
+const MAX_VERIFY_PASSES = 5;
+
+/**
+ * Reconcile, then VERIFY against the flag, and correct if it moved.
+ *
+ * Re-reading the flag instead of trusting the event closes the retry ordering
+ * hole (see syncClaimFromFlag) but not the one inside this function: the read,
+ * the getUser and the setCustomUserClaims are three separate network calls, and
+ * this trigger has no concurrency guard, so two instances woken by two rapid
+ * flag writes can interleave read-read-write-write. The instance that read the
+ * STALE value can be the one whose write lands last:
+ *
+ *   flag: on → off        A wakes on "on", B wakes on "off"
+ *   A reads on, B reads off, B writes off, A writes on   ✘ granted, flag says off
+ *
+ * and nothing corrects it, because no further flag write happens. So whoever
+ * writes re-reads the flag afterwards and, if it disagrees with what they just
+ * wrote, writes again. The LAST write to complete is therefore always the one
+ * that verified against the flag, whatever order the instances ran in.
+ * (Sonnet architect review pass 2, 2026-08-28.)
+ */
+async function reconcileVerified({ auth, readFlag, uid, dryRun = false }) {
+  let result = null;
+  for (let pass = 0; pass < MAX_VERIFY_PASSES; pass++) {
+    const granted = isGranted(await readFlag());
+    const res = await reconcileClaim({ auth, uid, granted, dryRun });
+    result = result ? { ...res, changed: result.changed || res.changed } : res;
+    if (res.missing || dryRun) return result;
+    // Verify: did the flag move under us while we were writing?
+    if (isGranted(await readFlag()) === granted) return { ...result, verifiedPasses: pass + 1 };
+  }
+  // The flag is being toggled faster than a round trip. Rethrow so the trigger
+  // retries rather than leaving a claim nobody verified.
+  throw new Error(`reconcileClaim: ${uid}'s ${CLAIM} flag kept moving across ${MAX_VERIFY_PASSES} passes`);
 }
 
 /**
@@ -128,8 +175,8 @@ async function reconcileClaim({ auth, uid, granted, dryRun = false }) {
  * (Sonnet architect review, 2026-08-28.)
  */
 async function syncClaimFromFlag({ auth, db, uid }) {
-  const live = await db.ref(FLAG_PATH(uid)).once("value");
-  return reconcileClaim({ auth, uid, granted: isGranted(live.val()) });
+  const readFlag = async () => (await db.ref(FLAG_PATH(uid)).once("value")).val();
+  return reconcileVerified({ auth, readFlag, uid });
 }
 
 /**
@@ -160,4 +207,4 @@ async function reconcileAll({ auth, users, execute = false }) {
   return { planned, changed, errors };
 }
 
-module.exports = { CLAIM, FLAG_PATH, isGranted, reconcileClaim, syncClaimFromFlag, reconcileAll };
+module.exports = { CLAIM, FLAG_PATH, MAX_VERIFY_PASSES, isGranted, reconcileClaim, reconcileVerified, syncClaimFromFlag, reconcileAll };

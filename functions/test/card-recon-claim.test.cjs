@@ -9,7 +9,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { CLAIM, isGranted, reconcileClaim, syncClaimFromFlag, reconcileAll } =
+const { CLAIM, MAX_VERIFY_PASSES, isGranted, reconcileClaim, syncClaimFromFlag, reconcileAll } =
   require("../lib/card-recon-claim.cjs");
 
 // ── A fake Auth that behaves like the real one where it matters ─────────────
@@ -305,4 +305,85 @@ test("backfill: one broken account does not abort the pass", async () => {
 // ── The direct entry point, for the backfill's own uid-at-a-time use ────────
 test("reconcileClaim rejects a missing uid rather than reconciling nothing", async () => {
   await assert.rejects(() => reconcileClaim({ auth: fakeAuth({}), uid: "", granted: true }), /uid required/);
+});
+
+
+// ── CONCURRENT INSTANCES ────────────────────────────────────────────────────
+// The trigger has no concurrency guard: two rapid flag writes wake two
+// instances, and the read / getUser / setCustomUserClaims are three separate
+// round trips. The instance that read the STALE value can be the one whose
+// write lands last. Re-reading the flag instead of the event does not close
+// this on its own — writing, then verifying against the flag, does.
+test("CONCURRENT: the instance that read a stale flag does not get the last word", async () => {
+  const auth = fakeAuth({ u1: { customClaims: null } });
+  const db = fakeDb({ u1: true });
+
+  // A wakes on "on" and reads it.
+  // Model the interleave by driving A's write through a gate we hold open
+  // while B runs to completion.
+  let releaseA;
+  const aWriteGate = new Promise((r) => { releaseA = r; });
+  const realSet = auth.setCustomUserClaims.bind(auth);
+  let gated = true;
+  auth.setCustomUserClaims = async (uid, claims) => {
+    if (gated) { gated = false; await aWriteGate; }   // A stalls mid-write
+    return realSet(uid, claims);
+  };
+
+  const a = syncClaimFromFlag({ auth, db, uid: "u1" });      // reads "on", stalls in the write
+  await new Promise((r) => setImmediate(r));
+
+  db.set("u1", null);                                        // the owner revokes
+  await syncClaimFromFlag({ auth, db, uid: "u1" });          // B: reads "off", writes off
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
+
+  releaseA();                                                // A's stale write finally lands
+  await a;
+
+  // A wrote `true` — and then verified against the flag, saw "off", and
+  // corrected itself. Without the verify pass this assertion fails.
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), false,
+    "the stale writer must reconcile against the flag, not leave its own value standing");
+});
+
+test("CONCURRENT: the mirror image — a stale REVOKE does not strip a live grant", async () => {
+  const auth = fakeAuth({ u1: { customClaims: null } });
+  const db = fakeDb({ u1: null });
+  let releaseA;
+  const gate = new Promise((r) => { releaseA = r; });
+  const realSet = auth.setCustomUserClaims.bind(auth);
+  let gated = true;
+  auth.setCustomUserClaims = async (uid, claims) => {
+    if (gated) { gated = false; await gate; }
+    return realSet(uid, claims);
+  };
+  // Seed a claim so the revoke path actually writes.
+  await realSet("u1", { [CLAIM]: true });
+
+  const a = syncClaimFromFlag({ auth, db, uid: "u1" });   // reads "off", stalls
+  await new Promise((r) => setImmediate(r));
+  db.set("u1", true);                                     // re-granted
+  await syncClaimFromFlag({ auth, db, uid: "u1" });        // B: writes the grant
+  releaseA();
+  await a;
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), true);
+});
+
+test("a flag toggling faster than a round trip is rethrown, never left unverified", async () => {
+  const auth = fakeAuth({ u1: { customClaims: null } });
+  // A flag that flips on every single read: no pass can ever verify.
+  let v = true;
+  const flipping = { ref: () => ({ async once() { v = !v; return { val: () => (v ? true : null) }; } }) };
+  await assert.rejects(
+    () => syncClaimFromFlag({ auth, db: flipping, uid: "u1" }),
+    new RegExp(`kept moving across ${MAX_VERIFY_PASSES} passes`),
+  );
+});
+
+test("the account disappearing between the read and the WRITE is a completed revoke", async () => {
+  const auth = fakeAuth({ u1: { customClaims: null } });
+  auth.setCustomUserClaims = async () => { const e = new Error("gone"); e.code = "auth/user-not-found"; throw e; };
+  const res = await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
+  assert.equal(res.missing, true);
+  assert.equal(res.granted, false);
 });
