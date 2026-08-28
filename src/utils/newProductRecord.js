@@ -14,7 +14,8 @@
 // So this writes the legacy triple derived from the chosen category, and only
 // ADDS `categoryKey` alongside. It never removes or rewrites a legacy field.
 
-import { legacyFor, sizesOf, catByKey } from "./productTaxonomy.js";
+import { legacyFor, catByKey } from "./productTaxonomy.js";
+import { sizesForCat } from "./sizeRuns.js";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "./styleCode.js";
 import { normalisePrintedBarcode } from "./eanBarcode.js";
 import { isPerfume } from "./productCategory.js";
@@ -61,7 +62,11 @@ export function buildNewProduct(registry, form, extras = {}) {
   const legacy = legacyFor(registry, form && form.categoryKey);
   if (!cat || !legacy) return null;
 
-  const runSizes = sizesOf(cat);
+  // RUN-AWARE — must resolve sizes EXACTLY like the form's grid (sizesForCat),
+  // not the category's literal list. The form offers run sizes; validating the
+  // selection against the literal list would silently DROP a run-added size
+  // (a chosen 4XL vanishing from the saved product with nothing on screen).
+  const runSizes = sizesForCat(registry, cat);
   if (!runSizes.length) return null;
 
   // ── THE SIZE RUN IS CHOSEN, NOT ASSUMED (owner fix 3, 2026-08-06) ──────────
