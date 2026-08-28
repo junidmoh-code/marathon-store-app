@@ -32,10 +32,11 @@ Seed with `node scripts/seed-card-terminals.mjs --tid 0000HP1X --mid 00000000497
 ### `/pos/card_batches/{storeId}/{tid}/{batchKey}`
 
 Append-only, written **only** by the `cardBatchCapture` callable (Admin SDK).
-There is no client write rule under `/pos` for this child, so no browser can
-create, edit or delete a record. The live `/pos` `.read` already grants
-signed-in staff read access — the record carries masked PANs and till takings,
-the same sensitivity as `/pos/sales` beside it.
+No browser can create, edit or delete a record **once Block 2 below is
+pasted** — until then the live `/pos` `"$other"` child grants signed-in users
+write on this path (see "The rules to paste"). The live `/pos` `.read` already
+grants signed-in staff read access — the record carries masked PANs and till
+takings, the same sensitivity as `/pos/sales` beside it.
 
 - `batchKey` is the batch number (`"494"`); a **duplicate batch number for the
   same TID is rejected** (same slip shot twice, or a re-print).

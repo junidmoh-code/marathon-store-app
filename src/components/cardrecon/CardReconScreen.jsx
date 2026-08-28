@@ -198,6 +198,12 @@ export default function CardReconScreen({ onExit }) {
             {!result.linesCaptured && <div style={{ color: "#FDE9B0", marginTop: 6 }}>Summary-only capture — no transaction lines were recorded, so no line-level match can run for this batch.</div>}
           </div>
         </div>
+        {result.expectedChangedSinceReview && (
+          <div style={S.warn}>
+            The POS card takings for this window changed between the review screen and this
+            record — the figure above is the one computed at the moment of record.
+          </div>
+        )}
         {result.cashiers && result.cashiers.length > 0 && (
           <div style={S.card}>
             <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>On this till during the batch (from POS activity — read-only)</div>

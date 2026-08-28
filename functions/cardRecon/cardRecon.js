@@ -42,7 +42,7 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, normaliseBatchNo, resolveBatchWrite,
+  normaliseTid, normaliseBatchNo, resolveBatchWrite, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
 } = require("../lib/card-recon.cjs");
 const { computeExpectedCard } = require("../lib/card-expected.cjs");
@@ -281,7 +281,9 @@ const reject = (reason) => ({ ok: false, reason });
 async function readBatchKeysFor(db, storeId, tid, batchNo) {
   const base = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
   const keys = [];
-  for (let rev = 1; ; rev++) {
+  // Bounded like resolveBatchWrite's own revision cap (CodeRabbit, PR #494):
+  // an unexpected longer chain stops probing here and the resolver refuses.
+  for (let rev = 1; rev <= MAX_REVISIONS; rev++) {
     const key = rev === 1 ? String(batchNo) : `${batchNo}-r${rev}`;
     const exists = (await db.ref(`${base}/${key}/batchKey`).once("value")).exists();
     if (!exists) break;
