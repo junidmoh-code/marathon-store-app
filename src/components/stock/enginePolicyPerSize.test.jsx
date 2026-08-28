@@ -976,6 +976,15 @@ describe("the banner reports a perSize flip", () => {
     expect(out.some((c) => c.field === "perSize" && c.to === true)).toBe(true);
     expect(out.find((c) => c.field === "perSize").text).toMatch(/every size/);
   });
+  it("says NOTHING on a removal — un-arming has no size mode", () => {
+    // `after: null` deletes the category's policy. A line saying its numbers
+    // now apply to every size describes numbers that apply nowhere.
+    const before = { hub2: { target: 5, minQty: 3 } };
+    expect(changedFields(before, null, { perSize: true }).some((c) => c.field === "perSize")).toBe(false);
+    // …and the removal itself is still reported.
+    expect(changedFields(before, null, { perSize: true }).some((c) => c.to === "removed")).toBe(true);
+  });
+
   it("and says nothing when the flag is unchanged", () => {
     const before = { perSize: true, hub2: { target: 5, minQty: 3 } };
     const after = { perSize: true, hub2: { target: 5, minQty: 3 } };
@@ -1157,5 +1166,50 @@ describe("product-target history", () => {
     const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
     await withConfirm(false, async () => { await act(async () => { revert.props.onClick(); }); });
     expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setProductTargets")).toBe(false);
+  });
+});
+
+// ── THE ARMING CONFIRM CARRIES ONLY A PREVIEW THAT IS STILL TRUE ─────────────
+describe("arming a group quotes a fresh preview or none at all", () => {
+  it("omits the refill count when a preview lands AFTER the numbers changed", async () => {
+    const tree = await renderCard();
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Sneakers"))[0];
+    await act(async () => { row.props.onClick(); });
+    // ── THE RACE THIS GUARD IS FOR ─────────────────────────────────────────
+    // An edit clears the preview outright, so the only way a preview can be
+    // present AND stale is a response that lands after an edit. Held open on a
+    // gate, so that is exactly what happens here.
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    callableMock.mockImplementationOnce(async () => {
+      await gate;
+      return { data: { ok: true, dryRun: true, changes: [],
+        armModel: { totalRequests: 2176, totalUnits: 4000, cap: 75, perMember: [] } } };
+    });
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+
+    const armAndRead = async () => {
+      const had = "confirm" in globalThis.window;
+      const prev = globalThis.window.confirm;
+      const asked = [];
+      globalThis.window.confirm = (m) => { asked.push(m); return false; };
+      try {
+        const arm = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Arm this group")[0];
+        await act(async () => { arm.props.onClick(); });
+      } finally { if (had) globalThis.window.confirm = prev; else delete globalThis.window.confirm; }
+      return asked[0] || "";
+    };
+
+    // The owner types while it is still in flight…
+    const keep = tree.root.findAll((n) => n.type === "input" && /Keep$/.test(n.props["aria-label"] || ""))[0];
+    await act(async () => { keep.props.onChange({ target: { value: "6" } }); });
+    // …and the answer arrives, stamped with the numbers it was computed FROM.
+    await act(async () => { release(); await gate; });
+    const after = await armAndRead();
+    expect(after).toContain("Arm Sneakers?");
+    expect(after).not.toContain("2176");
+    expect(after).not.toMatch(/would ask for at most/);
   });
 });

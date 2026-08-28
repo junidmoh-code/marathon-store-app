@@ -262,3 +262,15 @@ describe("the context signature is canonical", () => {
     expect(ctxSig(c, "trophy", "j1")).not.toBe(ctxSig(a, "trophy", "j1"));
   });
 });
+
+describe("a failed preview speaks English", () => {
+  it("maps the reason through FAILURES rather than printing a raw token", async () => {
+    const fails = [];
+    const t = render(ctxOf(), true, (m) => fails.push(m));
+    await act(async () => { byLabel(t, "Trophy M keep").props.onChange({ target: { value: "9" } }); });
+    RESULT = { ok: false, reason: "unsafe_key" };
+    await act(async () => { button(t, "Preview").props.onClick(); });
+    expect(fails[0]).toBe("a size key could not be written safely");
+    expect(fails[0]).not.toBe("unsafe_key");
+  });
+});

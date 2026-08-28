@@ -23,6 +23,9 @@
 //   M-STUCK-CLEAR  a clear that cannot act claims nothing is overridden
 //   M-EFF-RP       the no-change test compares the typed Ask at, not the landed one
 //   M-SHAPE-MIRROR the expectation normalises differently from the server's shapeOf
+//   M-ARM-STALE    the arming confirm quotes a stale preview's refill count
+//   M-PERSIZE-REMOVAL a size-mode line is reported on a policy removal
+//   M-PREVIEW-WORDS a failed preview prints a raw reason token
 //   M-PERSIZE      the arming flag is read back from what was saved last time
 //   M-REGISTRY     the registry fallback stretches a GROUP's union
 //
@@ -222,6 +225,33 @@ const MUTATIONS = [
     to: `    target: typeof r?.target === "number" ? r.target : null,
     minQty: typeof r?.minQty === "number" ? r.minQty : null,`,
     tests: OVERRIDE_TESTS,
+  },
+  // ── REVIEW 3, PR #497 ────────────────────────────────────────────────────
+  {
+    id: "M-ARM-STALE",
+    guard: "the arming confirm quotes a preview only while it is about the numbers on screen",
+    file: CARD,
+    from: `    const req = preview && preview.key === keyNow ? preview.model?.totalRequests : undefined;`,
+    to: `    const req = preview?.model?.totalRequests;`,
+    tests: CARD_TESTS,
+  },
+  {
+    id: "M-PERSIZE-REMOVAL",
+    guard: "no size-mode line on a removal — un-arming has no size mode",
+    file: CORE,
+    from: `  if (isObj(before) && isObj(after) && perSize !== null && (before.perSize === true) !== (perSize === true)) {`,
+    to: `  if (isObj(before) && perSize !== null && (before.perSize === true) !== (perSize === true)) {`,
+    tests: CARD_TESTS,
+  },
+  {
+    id: "M-PREVIEW-WORDS",
+    guard: "a failed preview says a sentence, not a raw reason token",
+    file: EDITOR,
+    from: `      if (!res.ok) { onFail(res.message || FAILURES[res.reason] || res.reason); return; }
+      setPreview({ key: forKey, model: res.preview });`,
+    to: `      if (!res.ok) { onFail(res.message || res.reason); return; }
+      setPreview({ key: forKey, model: res.preview });`,
+    tests: EDITOR_TESTS,
   },
   {
     id: "M-PERSIZE",

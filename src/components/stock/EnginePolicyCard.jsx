@@ -485,7 +485,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // the confirm is the last thing read before it happens.
   const toggleArmed = () => {
     const next = !open.armed;
-    const req = preview?.model?.totalRequests;
+    // THE PREVIEW ONLY COUNTS WHILE IT IS ABOUT THE NUMBERS ON SCREEN. It is
+    // stamped with the draft key it was computed from, and arming sends the
+    // LIVE group with only `armed` changed — so a preview of an edited, unsaved
+    // draft would put a refill count in the confirm that the write does not
+    // produce. The confirm is the last thing read before a group starts asking
+    // for stock across thousands of products; a number in it that describes
+    // something else is worse than no number. (CodeRabbit, PR #497.)
+    const req = preview && preview.key === keyNow ? preview.model?.totalRequests : undefined;
     saveGroup({ ...(open.group || {}), armed: next }, {
       confirm: next
         ? `Arm ${open.label}?\n\nThe engine starts keeping every product in its `

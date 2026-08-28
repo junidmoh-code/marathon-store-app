@@ -114,7 +114,10 @@ export default function ProductTargetEditor({ seat, ctx, label, onDone, onFail, 
       // permission to proceed, never as a decision that was made.)
       const res = await saveProductTargets({ ctx, loc, pid, draft, dryRun: true, allowRemoveForeign: true });
       if (!res.ok && res.reason === "no_change") { setPreview({ key: forKey, model: null, noChange: true }); return; }
-      if (!res.ok) { onFail(res.message || res.reason); return; }
+      // Through FAILURES, like save and clear: saveProductTargets returns
+      // reasons with no message of their own, so a failed preview otherwise
+      // printed a raw token such as "unsafe_key" at the owner.
+      if (!res.ok) { onFail(res.message || FAILURES[res.reason] || res.reason); return; }
       setPreview({ key: forKey, model: res.preview });
     } catch (e) { onFail(e?.message || String(e)); }
     finally { setBusy(""); }

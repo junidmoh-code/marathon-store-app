@@ -468,7 +468,11 @@ export function changedFields(before, after, { perSize = null } = {}) {
   // of cells, because perSize decides whether they speak for the "_" cell or
   // for the product's declared sizes. A banner that showed "no changes" while
   // silently flipping it would be the worst line on this screen.
-  if (isObj(before) && perSize !== null && (before.perSize === true) !== (perSize === true)) {
+  // …BUT NOT ON A REMOVAL. `after === null` un-arms the category outright, and
+  // a line saying its numbers "now apply to every size" is about numbers that
+  // apply nowhere at all — the banner's last word before the write, and the one
+  // place it must not describe a policy that is being deleted. (CodeRabbit, #497.)
+  if (isObj(before) && isObj(after) && perSize !== null && (before.perSize === true) !== (perSize === true)) {
     out.push({ loc: null, field: "perSize", from: before.perSize === true, to: perSize === true,
       label: "Sizes", text: perSize
         ? "these numbers now apply to every size the product comes in, not to the one-size cell"
