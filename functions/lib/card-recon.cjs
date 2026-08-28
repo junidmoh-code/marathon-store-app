@@ -171,6 +171,38 @@ function checkTsnContiguity(tsns) {
   return { ok: gaps.length === 0 && duplicates.length === 0, gaps, duplicates, first: sorted[0], last: sorted[sorted.length - 1] };
 }
 
+// ── LINE DEDUPE — overlapping detail photos, not slip anomalies ──────────────
+/**
+ * The detail roll is shot in overlapping sections, so the SAME printed line
+ * legitimately appears in two photos. Collapse exact repeats (same TSN with the
+ * same amount, and the same RRN/UTI where both sides carry one); refuse when
+ * one TSN arrives with CONFLICTING readings — that is a misread, and letting
+ * either version through silently is exactly the corruption this feature
+ * exists to catch.
+ * @returns {{ok:true, lines:object[]} | {ok:false, reason:string}}
+ */
+function dedupeLines(lines) {
+  const byTsn = new Map();
+  for (const l of lines || []) {
+    const tsn = Number(l && l.tsn);
+    if (!Number.isInteger(tsn)) return { ok: false, reason: "A transaction line was read without a TSN — reshoot the detail roll." };
+    const prev = byTsn.get(tsn);
+    if (!prev) { byTsn.set(tsn, l); continue; }
+    const conflict =
+      prev.amountCents !== l.amountCents ||
+      (prev.rrn && l.rrn && prev.rrn !== l.rrn) ||
+      (prev.uti && l.uti && prev.uti !== l.uti);
+    if (conflict) {
+      return { ok: false, reason: `TSN ${tsn} was read twice with different details — reshoot the detail roll so each line is sharp.` };
+    }
+    // Same printed line, twice — keep the fuller reading.
+    const fields = ["uti", "rrn", "authCode", "pan", "date", "time", "at"];
+    const fuller = fields.filter((f) => l[f] != null).length > fields.filter((f) => prev[f] != null).length ? l : prev;
+    byTsn.set(tsn, fuller);
+  }
+  return { ok: true, lines: [...byTsn.values()].sort((a, b) => a.tsn - b.tsn) };
+}
+
 // ── EXTRACTION VALIDATION ────────────────────────────────────────────────────
 // The model reports per-field confidence; these fields are load-bearing enough
 // that a shaky read is a retake, not a guess written into evidence.
@@ -331,5 +363,5 @@ module.exports = {
   MIN_KEY_FIELD_CONFIDENCE,
   parseSlipTimestamp, parseRandsToCents, formatCents,
   normaliseTid, normaliseBatchNo, batchKeyFor, resolveBatchWrite,
-  checkTsnContiguity, validateExtraction, buildBatchRecord,
+  checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
 };
