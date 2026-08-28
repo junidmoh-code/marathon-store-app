@@ -1,5 +1,5 @@
 // ─── THE CROSS-REPO RECORD CONTRACT ──────────────────────────────────────────
-// /pos/card_batches is written HERE (buildBatchRecord in lib/card-recon.cjs)
+// /card_batches is written HERE (buildBatchRecord in lib/card-recon.cjs)
 // and read THERE — marathon-pos-app's Card reconciliation tab. The two halves
 // were built by separate sessions, and the POS side read this repo's record
 // shape while it was still uncommitted and moving. A rename on this side that
@@ -86,8 +86,8 @@ test("CONTRACT: the two children the POS queries order by exist at those paths",
   assert.ok(Number.isFinite(r.slip.closedAt), "slip/closedAt must be a number");
   // orderByChild("batchNo") — the revision-completion fetch.
   assert.ok(Number.isFinite(r.batchNo), "batchNo must be a number");
-  // Both are indexed live at /pos/card_batches/$storeId/$tid
-  // (".indexOn": ["slip/closedAt", "batchNo"] — applied 2026-08-28).
+  // Both are indexed live at /card_batches/$storeId/$tid
+  // (".indexOn": ["slip/closedAt", "batchNo"] — moved with the node, 2026-08-28).
 });
 
 // ── The detail roll adaptBatchLines walks ───────────────────────────────────

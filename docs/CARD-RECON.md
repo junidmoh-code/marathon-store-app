@@ -29,15 +29,28 @@ cashier name is ever selected anywhere in the feature.
 
 Seed with `node scripts/seed-card-terminals.mjs --tid 0000HP1X --mid 000000004977890 --store pe --till till-1 --label "PE Till 1" --execute`.
 
-### `/pos/card_batches/{storeId}/{tid}/{batchKey}`
+### `/card_batches/{storeId}/{tid}/{batchKey}`  ·  TOP-LEVEL, owner-only
 
 Append-only: the `cardBatchCapture` callable (Admin SDK) is the only writer,
-and its submit transaction refuses to touch an existing key. No browser can
-create, edit or delete a record — `".write": "false"` was applied to the live
-rules on 2026-08-28 (see "The RTDB rules" below; before that, the `/pos`
-`"$other"` child granted every signed-in user write on this path). The live
-`/pos` `.read` grants signed-in staff read access — the record carries masked PANs and till
-takings, the same sensitivity as `/pos/sales` beside it.
+and its submit transaction refuses to touch an existing key.
+
+**It moved out from under `/pos` on 2026-08-28, and that is the whole point.**
+Under `/pos` it inherited that block's `.read` — *any signed-in, non-anonymous
+staff member*. These records are investigation material about named staff:
+masked PANs, auth codes, RRNs and a per-till variance. Withholding them from
+inside `/pos` would have meant rewriting that block's read grant child by child,
+which is a shop-stopping risk on a path three shops trade through. At the **top
+level no parent grant reaches them at all** — the root carries no `.read`/
+`.write`, which the merge script asserts before it will write, because without
+that the move would achieve nothing.
+
+The live rule is **owner-only read and write**. The Admin SDK bypasses rules, so
+the owner-only `.write` is a belt: the callable is still the only writer.
+
+The old `/pos/card_batches` and `/pos/card_batch_drafts` rules were deliberately
+**left in place**, carrying `".write": "false"`. Nothing under `/pos` changed.
+Anything still running an old bundle is refused rather than quietly creating a
+shadow record under the abandoned path.
 
 - `batchKey` is the batch number (`"494"`); a **duplicate batch number for the
   same TID is rejected** (same slip shot twice, or a re-print).
@@ -59,12 +72,12 @@ takings, the same sensitivity as `/pos/sales` beside it.
   the window, with first/last activity times. It comes from the payment-event
   ledger, not from a picker.
 
-### `/pos/card_batch_drafts/{uid}/{draftId}`
+### `/card_batch_drafts/{uid}/{draftId}`  ·  TOP-LEVEL, owner-only
 
 The two-phase handshake: `extract` OCRs the photos, validates, and parks the
 parsed slip here (2h TTL, server-written, keyed under the submitting uid so
 ownership is structural and the per-user expired-draft sweep stays bounded);
-`submit` promotes the draft verbatim into `/pos/card_batches`. The review step
+`submit` promotes the draft verbatim into `/card_batches`. The review step
 between the two shows what the OCR read — it offers **no way to edit a
 figure**.
 
@@ -107,7 +120,39 @@ read (`auth != null && non-anonymous`): it lets an anonymously-signed-in client
 — no takings, no PANs — but if you want it to match the parent, the one-line
 tightening is `".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"`.
 
-**Inside `"pos"`, as siblings of `"sales"` / `"paymentEvents"` / `"$other"`:**
+**At the TOP LEVEL** (applied 2026-08-28 by
+`scripts/merge-card-recon-top-level-rules.mjs`, which backs up, merges, writes,
+re-fetches, verifies `/pos` came out byte-identical, and restores on any
+surprise):
+
+```json
+"card_batches": {
+  ".read":  "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  "$storeId": { "$tid": { ".indexOn": ["slip/closedAt", "batchNo"] } }
+},
+"card_batch_drafts":    { ".read": "…owner…", ".write": "…owner…" },
+"card_batch_overrides": { ".read": "…owner…", ".write": "…owner…" }
+```
+
+**This is proved, not asserted.** `scripts/verify-card-recon-node-isolation.mjs`
+loads a snapshot of the *live* rules into the real Firebase rules engine and
+asks it, as an ordinary signed-in staff account: read `/card_batches` — refused;
+read a leaf inside it — refused; write it — refused; all three nodes. The same
+token can still read `/pos/sales`, which is what proves the refusals are about
+the node and not about the token, and the owner's token is allowed throughout.
+16/16. (The RTDB emulator treats any `Authorization: Bearer` header as its admin
+bypass and skips rules entirely, so tokens travel as `?auth=` and the script
+refuses to report anything until a known-denied write is denied *and* a
+known-allowed one is allowed.)
+
+Owner-only read is not a downgrade for anyone: the POS Card recon tab already
+sits behind `RequireAdmin`, which is the same single email, so the database rule
+and the UI gate now agree. `card_batch_overrides` has no writer at all — the
+trading-session gate that wrote it was deleted in marathon-pos-app #269.
+
+**Still under `"pos"`, unchanged and deliberately kept** (siblings of `"sales"` /
+`"paymentEvents"` / `"$other"`):
 
 ```json
 "card_batches": {
@@ -119,7 +164,9 @@ tightening is `".read": "auth != null && auth.token.firebase.sign_in_provider !=
 }
 ```
 
-This is the block that mattered. The live `/pos` rules carry a `"$other"` child
+These are now the ABANDONED paths, and they stay because `".write": "false"`
+means an old bundle is refused rather than silently writing a shadow record.
+When they were live they mattered for a different reason: the `/pos` rules carry a `"$other"` child
 granting **every signed-in staff user write on any unmatched `/pos` child** — so
 until these two were named, a cashier could write their own `/pos/card_batches`
 record and zero out their own variance. In RTDB, `$other` matches only children

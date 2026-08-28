@@ -3,7 +3,7 @@
 // this callable OCRs it, refuses anything it could not read soundly, computes
 // what the POS tender ledger says the card takings for that till over the
 // slip's Opened→Closed window should have been, and records slip + expectation
-// + variance append-only at /pos/card_batches. NOBODY TYPES THE CARD TOTAL —
+// + variance append-only at /card_batches. NOBODY TYPES THE CARD TOTAL —
 // there is no input for one, here or in the UI.
 //
 // TWO PHASES, one callable:

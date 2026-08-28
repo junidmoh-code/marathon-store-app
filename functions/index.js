@@ -3585,7 +3585,8 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // expected card takings for the till over the slip's OWN Opened→Closed window
 // from /pos/paymentEvents tender legs (Admin SDK — the browser never reads POS
 // money), and writes slip + expected + variance APPEND-ONLY at
-// /pos/card_batches. Nobody types the card total anywhere. Gated by the
+// /card_batches (top-level, owner-only read). Nobody types the card total
+// anywhere. Gated by the
 // dedicated card_recon permission flag, not stockRole. Cost logged to
 // /aiAssistant/usage. Model + docs: functions/lib/card-recon.cjs,
 // lib/card-expected.cjs, docs/CARD-RECON.md.

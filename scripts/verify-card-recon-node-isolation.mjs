@@ -1,0 +1,121 @@
+// ─── PROVE THE MOVE ACTUALLY WITHHOLDS THE RECORDS ───────────────────────────
+// The point of moving /pos/card_batches to top-level /card_batches was that no
+// parent grant should reach it. "The rule says owner-only" is not the same
+// claim as "a cashier is refused", and only one of them is testable.
+//
+// This loads a SNAPSHOT OF THE LIVE RULES into the real Firebase rules engine
+// (the RTDB emulator) and asks it, as three different callers:
+//   • an ordinary signed-in staff account   → must be REFUSED on all three nodes
+//   • the same account under /pos           → must still be ALLOWED (proving the
+//     token is genuinely a signed-in staff member and the refusals above are
+//     about the node, not about the token)
+//   • the owner                             → must be ALLOWED
+//
+//   node scripts/verify-card-recon-node-isolation.mjs
+//
+// Needs Java (the emulator is a JVM binary); set JAVA_HOME_BIN if it is not on
+// PATH. Fetches the live rules read-only with the Firebase CLI's own
+// credentials — it writes nothing to production.
+//
+// THE TRAP THIS AVOIDS: the RTDB emulator treats ANY `Authorization: Bearer`
+// header as its ADMIN BYPASS and skips rules entirely. Tokens go in the
+// `?auth=` query parameter, and the self-check below refuses to report anything
+// unless a known-denied write is denied AND a known-allowed one is allowed.
+
+import { spawn, execSync } from "node:child_process";
+import { writeFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import process from "node:process";
+
+const DB = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
+const PORT = 9421, NS = "marathon-club-default-rtdb", HOST = `http://127.0.0.1:${PORT}`;
+const OWNER = "gunidmoh@gmail.com";
+
+function accessToken() {
+  const cfg = JSON.parse(readFileSync(`${homedir()}/.config/configstore/firebase-tools.json`, "utf8"));
+  const body = new URLSearchParams({
+    client_id: "563584335869-fgrhgmd47bqnekij5i8b5pr03ho849e6.apps.googleusercontent.com",
+    client_secret: "j9iVZfS8kkCEFUPaAeJV0sAi",
+    refresh_token: cfg.tokens.refresh_token, grant_type: "refresh_token",
+  }).toString();
+  return JSON.parse(execSync("curl -sS -X POST https://oauth2.googleapis.com/token -d @-",
+    { input: body, encoding: "utf8" })).access_token;
+}
+
+const live = await (await fetch(`${DB}/.settings/rules.json?access_token=${accessToken()}`)).text();
+const dir = mkdtempSync(join(tmpdir(), "node-isolation-"));
+writeFileSync(join(dir, "rules.json"), live);
+writeFileSync(join(dir, "firebase.json"), JSON.stringify({
+  database: { rules: "rules.json" },
+  emulators: { database: { port: PORT, host: "127.0.0.1" }, ui: { enabled: false } },
+}));
+
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const tokenFor = (uid, email) => `${b64({ alg: "none", typ: "JWT" })}.${b64({
+  iss: `https://securetoken.google.com/${NS}`, aud: NS, sub: uid, user_id: uid, email,
+  firebase: { sign_in_provider: "password", identities: {} },
+  iat: (Date.now() / 1e3) | 0, exp: ((Date.now() / 1e3) | 0) + 3600,
+})}.`;
+const STAFF = tokenFor("staff-uid-1", "cashier@marathon.internal");
+const OWNER_TOKEN = tokenFor("owner-uid", OWNER);
+
+async function req(method, path, { as, body } = {}) {
+  const auth = as === "owner-admin" ? "" : `&auth=${as}`;
+  const res = await fetch(`${HOST}/${path}.json?ns=${NS}${auth}`, {
+    method,
+    headers: { "Content-Type": "application/json", ...(as === "owner-admin" ? { Authorization: "Bearer owner" } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { ok: res.ok, status: res.status };
+}
+
+let pass = 0, fail = 0;
+const check = (name, expected, got) => {
+  const ok = expected === got;
+  ok ? pass++ : fail++;
+  console.log(`  ${ok ? "ok  " : "FAIL"} ${expected ? "ALLOW" : "DENY "}  ${name}${ok ? "" : `  (got ${got ? "ALLOW" : "DENY"})`}`);
+};
+
+const emu = spawn(process.env.FIREBASE_BIN || "firebase",
+  ["emulators:start", "--only", "database", "--project", "marathon-club"],
+  { cwd: dir, env: { ...process.env, PATH: `${process.env.JAVA_HOME_BIN || "/opt/homebrew/opt/openjdk/bin"}:${process.env.PATH}` },
+    stdio: ["ignore", "ignore", "ignore"] });
+const deadline = Date.now() + 90000; let up = false;
+while (!up && Date.now() < deadline) {
+  await new Promise((r) => setTimeout(r, 500));
+  try { const p = await fetch(`${HOST}/.json?ns=${NS}`); if (p.status < 500) up = true; } catch { /* not up */ }
+}
+if (!up) { emu.kill("SIGTERM"); console.error("emulator did not start"); process.exit(2); }
+
+const NODES = ["card_batches", "card_batch_drafts", "card_batch_overrides"];
+try {
+  // Seed a record at each node with the admin bypass, so a refusal below is
+  // about permission and not about an empty node.
+  for (const n of NODES) await req("PUT", `${n}/pe/TID1/1`, { as: "owner-admin", body: { batchNo: 1, probe: true } });
+  await req("PUT", "pos/sales/_probe", { as: "owner-admin", body: { total: 1, type: "sale" } });
+
+  console.log("\n── SELF-CHECK (a green run means nothing without this) ──────────");
+  const mustAllow = await req("GET", "pos/sales/_probe", { as: STAFF });
+  check("this staff token really is a signed-in staff member: /pos is readable", true, mustAllow.ok);
+  const mustDeny = await req("PUT", "pos/card_batches/pe/T/1", { as: STAFF, body: { x: 1 } });
+  check("and rules ARE being evaluated: a \".write\": false path refuses", false, mustDeny.ok);
+
+  console.log("\n── THE POINT OF THE MOVE ────────────────────────────────────────");
+  for (const n of NODES) check(`staff CANNOT read /${n}`, false, (await req("GET", n, { as: STAFF })).ok);
+  for (const n of NODES) check(`staff CANNOT read a leaf inside /${n}`, false, (await req("GET", `${n}/pe/TID1/1`, { as: STAFF })).ok);
+  for (const n of NODES) check(`staff CANNOT write /${n}`, false, (await req("PUT", `${n}/pe/TID1/2`, { as: STAFF, body: { x: 1 } })).ok);
+
+  console.log("\n── …and the owner still can ─────────────────────────────────────");
+  for (const n of NODES) check(`the owner CAN read /${n}`, true, (await req("GET", n, { as: OWNER_TOKEN })).ok);
+
+  console.log("\n── the old paths stay shut ──────────────────────────────────────");
+  check("staff cannot write the abandoned /pos/card_batches", false,
+    (await req("PUT", "pos/card_batches/pe/T/9", { as: STAFF, body: { x: 1 } })).ok);
+  check("staff cannot write the abandoned /pos/card_batch_drafts", false,
+    (await req("PUT", "pos/card_batch_drafts/u/9", { as: STAFF, body: { x: 1 } })).ok);
+} finally { emu.kill("SIGTERM"); }
+
+console.log(`\n${fail === 0 ? "ALL GREEN" : "FAILURES"} — ${pass} passed, ${fail} failed\n`);
+process.exit(fail ? 1 : 0);

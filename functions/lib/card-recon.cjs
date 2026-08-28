@@ -9,7 +9,7 @@
 //   • the record path / duplicate / correction-revision rules
 //   • extraction validation: confidence gates, slip arithmetic, the line-count
 //     and TSN-contiguity checks that make silent partial capture impossible
-//   • the final /pos/card_batches record builder
+//   • the final /card_batches record builder
 //
 // THE BATCH WINDOW IS NOT A CALENDAR DAY. A batch runs Opened→Closed (roughly
 // 18:50 to 18:50 the next evening), so every consumer of this module reconciles
@@ -33,20 +33,29 @@
 // nobody ever selects a cashier, and a slip shot against the wrong till rejects
 // itself because its TID maps elsewhere.
 const CARD_TERMINALS_PATH = "config/cardTerminals";
-// /pos/card_batches/{storeId}/{tid}/{batchKey} — APPEND-ONLY, written only by
-// the callable (Admin SDK). NOTE: the live /pos rules carry a "$other" child
-// that grants signed-in users write on unmatched children, so Admin-SDK-only
-// HOLDS ONLY once the owner pastes the explicit deny block in
-// docs/CARD-RECON.md (naming a child removes it from $other's coverage).
-// Until then, submit's full re-validation is the working defence. The live
-// /pos ".read" grants signed-in staff read, which is fine: the record holds
-// masked PANs and till takings, the same sensitivity as /pos/sales beside it.
-const CARD_BATCHES_PATH = "pos/card_batches";
+// /card_batches/{storeId}/{tid}/{batchKey} — TOP-LEVEL, APPEND-ONLY, written
+// only by the callable (Admin SDK).
+//
+// IT LIVES AT THE TOP LEVEL ON PURPOSE. It used to sit under /pos, where it
+// inherited that block's `.read` — "any signed-in, non-anonymous staff member".
+// These records are investigation material about named staff: masked PANs, auth
+// codes, RRNs, and a per-till variance. The only way to withhold them from
+// inside /pos was to rewrite that block's read grant child by child, which is a
+// shop-stopping risk on a path three shops trade through. At the top level no
+// parent grant reaches them at all, and the live rule is owner-only read AND
+// write (the root carries no .read/.write — verified by the merge script, or
+// this move would achieve nothing).
+//
+// The Admin SDK bypasses rules, so the owner-only `.write` is a belt: this
+// callable remains the only writer, and its submit transaction still refuses to
+// touch an existing key.
+const CARD_BATCHES_PATH = "card_batches";
 // Two-phase capture: extract parks the parsed slip here, submit promotes it.
 // Server-written, short-lived, keyed {uid}/{pushId} — ownership is structural,
 // and the extract phase sweeps the caller's own expired drafts (bounded by
-// construction: one person holds at most a handful).
-const CARD_BATCH_DRAFTS_PATH = "pos/card_batch_drafts";
+// construction: one person holds at most a handful). Top-level and owner-only
+// for the same reason as the records: a draft holds the whole parsed roll.
+const CARD_BATCH_DRAFTS_PATH = "card_batch_drafts";
 const DRAFT_TTL_MS = 2 * 60 * 60 * 1000; // review happens on the spot; 2h is generous
 
 // Slip photos, stored immutably by the callable (Admin SDK — no client write
@@ -130,7 +139,7 @@ function batchKeyFor(batchNo, revision) {
 }
 
 /**
- * Given the existing children of /pos/card_batches/{storeId}/{tid} and the
+ * Given the existing children of /card_batches/{storeId}/{tid} and the
  * incoming batchNo, decide the write. Pure — the callable supplies the keys.
  * @returns {{ok:true,key:string,revision:number,supersedes:string|null} |
  *           {ok:false,reason:string}}
@@ -324,7 +333,7 @@ function describeField(f) {
 
 // ── RECORD BUILDER ───────────────────────────────────────────────────────────
 /**
- * The final /pos/card_batches record. `expected` comes from the server-side
+ * The final /card_batches record. `expected` comes from the server-side
  * calculator (lib/card-expected.cjs) — the client never supplies it — and
  * variance is DERIVED here, in one place: slip total − expected card takings.
  * `submittedAt` is the caller's serverNowMs; nothing here reads a clock.
