@@ -428,6 +428,74 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     });
   };
 
+  // ── MEMBERSHIP AND ARMING — THE TWO THINGS THE GROUP SCREEN COULD NOT DO ──
+  //
+  // A group existed and could be given numbers, but nothing on this card could
+  // change who is in it or turn it on: both had to be done by a script against
+  // live config. That is why the shipped "Sneakers" group still excludes soccer
+  // boots (whose run is the same 3-13) and still includes kids-shoes (whose run
+  // is 26-33 and shares not one size with the rest — arming it alongside the
+  // adults would silently arm nothing).
+  //
+  // Both go through setGroup, which validates membership, refuses a category
+  // that already belongs to another group, and refuses to arm a group with no
+  // numbers. This screen sends the live group with ONE field changed and the
+  // live group as the expectation, so a change made underneath is refused.
+  const saveGroup = async (next, { confirm: ask, done }) => {
+    if (busy || !open?.isGroup) return;
+    if (ask && !(typeof window !== "undefined" && window.confirm && window.confirm(ask))) return;
+    setBusy("group");
+    try {
+      await setCategoryPolicyFn()({ action: "setGroup", groupKey: open.groupKey, group: next, expectedBefore: open.group ?? null });
+      flash("ok", done);
+      reopenAfterLoad.current = open.key;
+      await load(true);
+    } catch (e) {
+      reopenAfterLoad.current = "";
+      flash("bad", e?.message || String(e));
+    } finally { setBusy(""); }
+  };
+
+  const addMember = (key) => {
+    const members = [...(open?.memberCategoryKeys || []), key];
+    const label = allEntries.find((c) => c.key === key)?.label || key;
+    saveGroup({ ...(open.group || {}), memberCategoryKeys: members }, {
+      confirm: `Add ${label} to ${open.label}?\n\n`
+        + `It follows the group's numbers from the next scan${open.armed ? "" : " — once the group is armed"}. `
+        + `A category with its OWN numbers keeps them and ignores the group.`,
+      done: `${label} joined ${open.label}.`,
+    });
+  };
+
+  const removeMember = (key) => {
+    const members = (open?.memberCategoryKeys || []).filter((k) => k !== key);
+    const label = allEntries.find((c) => c.key === key)?.label || key;
+    if (!members.length) { flash("bad", "A group must keep at least one category — delete the group instead."); return; }
+    saveGroup({ ...(open.group || {}), memberCategoryKeys: members }, {
+      confirm: `Take ${label} out of ${open.label}?\n\n`
+        + `It stops following the group's numbers${open.armed ? " at the next scan" : ""}, and can be given its own.`,
+      done: `${label} left ${open.label}.`,
+    });
+  };
+
+  // ARMING IS THE DANGEROUS HALF and is confirmed with the number that decides
+  // whether it is a good idea: how many refills the next scan would ask for.
+  // The preview panel already has it; this repeats it in the confirm, because
+  // the confirm is the last thing read before it happens.
+  const toggleArmed = () => {
+    const next = !open.armed;
+    const req = preview?.model?.totalRequests;
+    saveGroup({ ...(open.group || {}), armed: next }, {
+      confirm: next
+        ? `Arm ${open.label}?\n\nThe engine starts keeping every product in its `
+          + `${(open.memberCategoryKeys || []).length} categories to these numbers at `
+          + `${(open.armedEffective || []).map(locLabel).join(", ") || "the locations named"}.`
+          + (Number.isFinite(req) ? `\n\nThe next scan would ask for at most ${req} refills.` : "")
+        : `Turn ${open.label} off?\n\nIts categories fall back to their own numbers, or to the engine's rules.`,
+      done: next ? `${open.label} armed. The next scan (${scan.label}) uses these numbers.` : `${open.label} is off.`,
+    });
+  };
+
   // The group object a save or preview sends: the live group with ONLY its
   // policy replaced. label, members and armed go back exactly as they came —
   // this screen edits numbers; arming is a separate deliberate act and is not
@@ -609,6 +677,10 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // Counted over EVERY category, members included — a member with its own
   // armed entry is governed even though the list folds it into its group.
   // (Architecture review, PR #405.)
+  // A category may join a group only if it is not already in one — the server
+  // refuses an overlap, and offering it here would be offering a refusal.
+  const groupable = (census?.categories || []).filter((c) => !c.memberOfGroup)
+    .map((c) => ({ key: c.key, label: c.label, products: c.products, sizeRun: c.sizeRun || [] }));
   const allCats = census?.categories || [];
   const governed = allCats.filter((c) => (c.armedEffective || []).length).length;
   const oldRows = (census?.categories || []).reduce((n, c) => n + (c.ownRowCells || 0), 0);
@@ -659,6 +731,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
             scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
             onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill} onSetAll={setAllSizes}
+            groupable={groupable} onAddMember={addMember} onRemoveMember={removeMember} onToggleArmed={toggleArmed}
             onSwitchShape={switchShape} onScope={setCarriedOnly} onPreview={runPreview} onSave={save} onBack={closeCategory}
             onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
@@ -803,6 +876,7 @@ function CategoryRow({ category: c, onOpen }) {
 function CategoryDetail({
   category: c, parent, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
   saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape,
+  groupable, onAddMember, onRemoveMember, onToggleArmed,
   onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
@@ -836,7 +910,10 @@ function CategoryDetail({
         </div>
       )}
 
-      {c.isGroup && <MemberList group={c} onOpen={onOpenMember} />}
+      {c.isGroup && (
+        <MemberList group={c} onOpen={onOpenMember} groupable={groupable} busy={busy}
+          onAdd={onAddMember} onRemove={onRemoveMember} onToggleArmed={onToggleArmed} />
+      )}
 
       <div className="ep-stats" style={{ marginBottom: "1.2rem" }}>
         <Tile label="On hand" value={c.units} />
@@ -904,12 +981,29 @@ const carriedCount = (c) => Object.values(c.carriage || {}).filter((v) => v?.car
 // ── THE MEMBERS OF A GROUP ───────────────────────────────────────────────────
 // Compact and tappable: any member can still be given numbers of its own, and
 // the one rule that makes grouping safe is stated in ONE line above the list.
-function MemberList({ group: g, onOpen }) {
+function MemberList({ group: g, onOpen, groupable = [], busy, onAdd, onRemove, onToggleArmed }) {
   const members = g.members || [];
+  const [adding, setAdding] = useState(false);
+  // ONLY CATEGORIES WHOSE RUN OVERLAPS THE GROUP'S ARE SUGGESTED FIRST. A group
+  // is one set of numbers keyed by size; a category sharing not one size with
+  // it would be armed by numbers that reach none of its cells. kids-shoes
+  // (26-33) inside a 3-13 footwear group is exactly that, and it is why the
+  // ones that do not overlap are listed second and marked, rather than hidden:
+  // grouping them is legal, occasionally right, and never the default.
+  const run = new Set(g.sizeRun || []);
+  const overlaps = (c) => !run.size || (c.sizeRun || []).some((s) => run.has(s));
+  const candidates = groupable.filter((c) => !(g.memberCategoryKeys || []).includes(c.key));
+  const sorted = [...candidates].sort((a, b) => (overlaps(b) - overlaps(a)) || a.label.localeCompare(b.label));
   return (
     <div style={{ ...GLASS, padding: ".6rem .9rem", marginBottom: "1.2rem" }}>
-      <div style={{ color: GRAY, fontSize: ".78rem", padding: "2px 0 6px" }}>
-        A category's own numbers beat the group's.
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "2px 0 6px" }}>
+        <div style={{ color: GRAY, fontSize: ".78rem", flex: 1, minWidth: 140 }}>
+          A category's own numbers beat the group's.
+        </div>
+        <button onClick={onToggleArmed} disabled={!!busy}
+          style={{ ...(g.armed ? bGray : bGreen), padding: "5px 10px", fontSize: ".73rem", opacity: busy ? .5 : 1 }}>
+          {g.armed ? "Turn off" : "Arm this group"}
+        </button>
       </div>
       {members.map((m) => (
         <button key={m.key} type="button" className="ep-cat" onClick={() => onOpen(m)}
@@ -926,6 +1020,32 @@ function MemberList({ group: g, onOpen }) {
           <div style={{ color: "#4b5563", fontSize: "1.1rem", flex: "0 0 auto" }} aria-hidden="true">›</div>
         </button>
       ))}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", paddingTop: 8 }}>
+        {members.map((m) => (
+          <button key={`x-${m.key}`} onClick={() => onRemove(m.key)} disabled={!!busy}
+            aria-label={`Remove ${m.label} from the group`}
+            style={{ ...bGhost, padding: "4px 9px", fontSize: ".72rem", opacity: busy ? .5 : 1 }}>
+            {m.label} ✕
+          </button>
+        ))}
+        {!adding && sorted.length > 0 && (
+          <button onClick={() => setAdding(true)} disabled={!!busy}
+            style={{ ...bGhost, padding: "4px 9px", fontSize: ".72rem", opacity: busy ? .5 : 1 }}>+ Add a category</button>
+        )}
+      </div>
+      {adding && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingTop: 8 }}>
+          {sorted.map((c) => (
+            <button key={c.key} onClick={() => { setAdding(false); onAdd(c.key); }} disabled={!!busy}
+              title={overlaps(c) ? undefined : "shares no size with this group's run"}
+              style={{ ...(overlaps(c) ? bGray : bGhost), padding: "4px 9px", fontSize: ".72rem",
+                opacity: busy ? .5 : (overlaps(c) ? 1 : .6) }}>
+              {c.label} {c.products}{overlaps(c) ? "" : " · different sizes"}
+            </button>
+          ))}
+          <button onClick={() => setAdding(false)} style={{ ...bGhost, padding: "4px 9px", fontSize: ".72rem" }}>Cancel</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1059,6 +1179,16 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
           </div>
         );
       })}
+
+      {c.sizeRunFromRegistry && (
+        // The catalogue holds no products in this category yet, so the run is
+        // the registered one. Numbers on a size no product declares resolve
+        // nothing until one does — safe to set now, and said out loud rather
+        // than presented as live evidence.
+        <div style={{ color: GRAY, fontSize: ".76rem", padding: "4px 0" }}>
+          No products yet — these are the registered sizes.
+        </div>
+      )}
 
       {!sizeRun.length && !c.sizeRunOneSize && (
         // THE STOP. A category the registry calls sized whose run cannot be

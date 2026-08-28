@@ -31,7 +31,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
 const { computeRefillPlan, resolveTarget, encodeSizeKey } = require("../lib/refill-engine.cjs");
-const { sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("../lib/policy-groups.cjs");
+const { sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("../lib/policy-groups.cjs");
 
 const NOW = Date.parse("2026-08-22T09:00:00.000Z");
 const DESTS = ["hub2", "marathon-pe"];
@@ -293,4 +293,53 @@ test("sizeRunForGroup — members with no products produce an EMPTY run, not a g
     memberCategoryKeys: ["boots"], locations: ["hub2"] });
   assert.equal(r.empty, true);
   assert.deepEqual(r.sizes, []);
+});
+
+// ── A CATEGORY WITH NO PRODUCTS YET STILL HAS A RUN: THE REGISTRY'S ──────────
+// kids-shoes is registered 26-33 and holds ZERO products live (2026-08-28). Its
+// derived run is therefore empty, and an empty run used to be a STOP — so the
+// one category the owner most needs to set up BEFORE the first delivery was the
+// one category that could not be given numbers.
+//
+// Offering the registered sizes is safe by construction, not by hope: a policy
+// resolves nothing for a size no product declares (categoryPolicyTarget's
+// productSizes check), so numbers on a size that does not exist yet cannot
+// raise a single request. They start working the day a product does.
+test("sizeRunForCategory — an empty derived run falls back to the REGISTERED sizes", () => {
+  const taxonomy = { cats: { "kids-shoes": { sizeMode: "list", sizes: ["26", "27", "28"] } } };
+  const r = sizeRunForCategory({ products: {}, stock: {}, targets: {}, taxonomy,
+    categoryKey: "kids-shoes", locations: ["hub2"] });
+  assert.deepEqual(r.sizes, ["26", "27", "28"]);
+  assert.equal(r.fromRegistry, true);
+  assert.equal(r.empty, false);
+  assert.deepEqual(r.derivedSizes, [], "the live answer is still reported honestly");
+  assert.equal(r.derivedEmpty, true);
+});
+
+test("sizeRunForCategory — the fallback NEVER overrides a run the catalogue has", () => {
+  const taxonomy = { cats: { sneakers: { sizeMode: "list", sizes: ["3", "4", "5"] } } };
+  const products = { p: { categoryKey: "sneakers", sizes: ["4"] } };
+  const r = sizeRunForCategory({ products, stock: {}, targets: {}, taxonomy, categoryKey: "sneakers", locations: ["hub2"] });
+  assert.deepEqual(r.sizes, ["4"], "live data wins whenever there is any");
+  assert.equal(r.fromRegistry, false);
+});
+
+test("sizeRunForCategory — a ONE-SIZE category has nothing to fall back to", () => {
+  const taxonomy = { cats: { perfumes: { sizeMode: "one", sizes: ["_"] } } };
+  const r = sizeRunForCategory({ products: {}, stock: {}, targets: {}, taxonomy, categoryKey: "perfumes", locations: ["hub2"] });
+  assert.deepEqual(r.sizes, []);
+  assert.equal(r.oneSize, true);
+  assert.equal(r.fromRegistry, false);
+});
+
+test("sizeRunForGroup — a product-less member does not stretch the union with its registered sizes", () => {
+  const taxonomy = { cats: {
+    "kids-shoes": { sizeMode: "list", sizes: ["26", "27", "28"] },
+    sneakers: { sizeMode: "list", sizes: ["7", "8"] },
+  } };
+  const products = { p: { categoryKey: "sneakers", sizes: ["7", "8"] } };
+  const r = sizeRunForGroup({ products, stock: {}, targets: {}, taxonomy,
+    memberCategoryKeys: ["kids-shoes", "sneakers"], locations: ["hub2"] });
+  assert.deepEqual(r.sizes, ["7", "8"], "the adult run, not eight kids sizes off a category holding nothing");
+  assert.deepEqual(r.membersWithRun, ["sneakers"]);
 });

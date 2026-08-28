@@ -641,6 +641,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       // worked out" are different problems with different fixes, so the card
       // gets both answers rather than one flag it has to guess about.
       sizeRunOneSize: run.oneSize === true,
+      // The run came from the registry because the catalogue is still silent
+      // (no products in this category yet). Said on screen rather than implied,
+      // so nobody reads it as live evidence.
+      sizeRunFromRegistry: run.fromRegistry === true,
       // Explicit rows, counted for EVERY category rather than only armed ones.
       ownRowCells: rows ? rows.cells : 0,
       ownRowProducts: rows ? rows.products.size : 0,

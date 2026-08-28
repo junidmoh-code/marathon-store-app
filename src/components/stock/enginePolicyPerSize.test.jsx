@@ -953,3 +953,94 @@ describe("the banner reports a perSize flip", () => {
     expect(perSizeMode(null)).toBe(false);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GROUPS — MEMBERSHIP AND ARMING, WHICH THE CARD COULD NOT DO
+// ═════════════════════════════════════════════════════════════════════════════
+// The shipped "Sneakers" group excludes soccer boots (same 3-13 run) and
+// includes kids-shoes (26-33, sharing not one size). Both had to be fixed by a
+// script against live config, which is why neither had been.
+describe("the group screen edits its own membership", () => {
+  const openGroup = async (tree) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Sneakers"))[0];
+    await act(async () => { row.props.onClick(); });
+  };
+  const withConfirm = async (answer, fn) => {
+    const had = "confirm" in globalThis.window;
+    const prev = globalThis.window.confirm;
+    const asked = [];
+    globalThis.window.confirm = (m) => { asked.push(m); return answer; };
+    try { await fn(); } finally { if (had) globalThis.window.confirm = prev; else delete globalThis.window.confirm; }
+    return asked;
+  };
+
+  it("offers only categories that are not already in a group", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const add = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Add a category"))[0];
+    await act(async () => { add.props.onClick(); });
+    const offered = tree.root.findAll((n) => n.type === "button").map((n) => instText(n));
+    // caps-beanies is ungrouped; sneakers and slides are members already.
+    expect(offered.some((t) => t.includes("Caps & Beanies"))).toBe(true);
+    expect(offered.filter((t) => /^Slides \d/.test(t.trim()))).toHaveLength(0);
+  });
+
+  it("marks a candidate whose sizes do not overlap the group's run", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const add = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Add a category"))[0];
+    await act(async () => { add.props.onClick(); });
+    // Caps & Beanies is one-size: it shares no size with 5.5 / 7 / 8.
+    const caps = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Caps & Beanies"))[0];
+    expect(instText(caps)).toContain("different sizes");
+  });
+
+  it("adding a member asks first and sends the live group with ONE field changed", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const add = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Add a category"))[0];
+    await act(async () => { add.props.onClick(); });
+    const caps = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Caps & Beanies"))[0];
+    const asked = await withConfirm(true, async () => { await act(async () => { caps.props.onClick(); }); });
+    expect(asked[0]).toContain("Add Caps & Beanies");
+    const call = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.action === "setGroup" && !c.dryRun);
+    expect(call.group.memberCategoryKeys).toContain("caps-beanies");
+    expect(call.group.armed).toBe(false);                       // untouched
+    expect(call.group.policy).toEqual(CENSUS.groups["footwear-all"].policy);
+    expect(call.expectedBefore).toEqual(CENSUS.groupEntries[0].group);
+  });
+
+  it("a refused confirm writes nothing", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const remove = tree.root.findAll((n) => n.type === "button"
+      && n.props["aria-label"] === "Remove Slides from the group")[0];
+    await withConfirm(false, async () => { await act(async () => { remove.props.onClick(); }); });
+    expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setGroup" && !c.dryRun)).toBe(false);
+  });
+
+  it("removing the last member is refused rather than sent", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    // Both members removed one after the other: the second is the last one.
+    for (const label of ["Remove Sneakers from the group", "Remove Slides from the group"]) {
+      const btn = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === label)[0];
+      await withConfirm(true, async () => { await act(async () => { btn.props.onClick(); }); });
+    }
+    const sent = callableMock.mock.calls.map((c) => c[0]).filter((c) => c?.action === "setGroup" && !c.dryRun);
+    expect(sent.every((c) => c.group.memberCategoryKeys.length > 0)).toBe(true);
+  });
+
+  it("arming is confirmed with what the next scan would ask for, and flips only `armed`", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const arm = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Arm this group")[0];
+    const asked = await withConfirm(true, async () => { await act(async () => { arm.props.onClick(); }); });
+    expect(asked[0]).toContain("Arm Sneakers?");
+    const call = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.action === "setGroup" && !c.dryRun);
+    expect(call.group.armed).toBe(true);
+    expect(call.group.memberCategoryKeys).toEqual(CENSUS.groupEntries[0].group.memberCategoryKeys);
+    expect(call.group.policy).toEqual(CENSUS.groups["footwear-all"].policy);
+  });
+});
