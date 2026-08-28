@@ -31,11 +31,7 @@ import {
   sizeRunsOf, runSizes, validateNewSize, appendSizeToRun, SIZE_RUN_SEED,
 } from "../../utils/sizeRuns.js";
 import { labelForKey } from "../../utils/productTaxonomy.js";
-
-// Categories panel lands in the next commit; the switch is wired already.
-const CategoriesPanel = () => (
-  <div style={{ padding: "24px 6px", color: "rgba(233,238,255,.45)", fontSize: 13 }}>Coming next.</div>
-);
+import CategoriesPanel from "./TaxonomyCategoriesPanel.jsx";
 
 const REGISTRY = "settings/productTaxonomy";
 
