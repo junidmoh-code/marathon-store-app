@@ -83,6 +83,40 @@ describe("setDesiredState — the on/off switch writes intent only", () => {
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/Condition not set/);
   });
+  it("EVERY off records who, when and why — the 22 August blind spot", async () => {
+    // Before this, a switch-off left nothing behind but an updatedBy that the
+    // next unrelated write clobbered, and 107 products went off on 22 August
+    // 2026 with no recoverable reason (docs/PUBLISH-AUTO-OFF.md).
+    serverNode = { state: "live", liveState: "on", desiredState: "on", condition: COND };
+    const res = await setDesiredState("p1", serverNode, "off", {
+      reasonCode: "off_to_rename", detail: "renaming it",
+    });
+    expect(res.node.lastOff).toEqual({
+      at: 1755000000000, actor: "u1", reasonCode: "off_to_rename", detail: "renaming it",
+    });
+    // The log key IS the record's instant — two clock reads would disagree.
+    expect(res.node.offLog["1755000000000"]).toEqual(res.node.lastOff);
+  });
+  it("defaults to the plain reason rather than writing nothing", async () => {
+    serverNode = { state: "live", liveState: "on", desiredState: "on", condition: COND };
+    const res = await setDesiredState("p1", serverNode, "off");
+    expect(res.node.lastOff.reasonCode).toBe("switched_off");
+  });
+  it("switching ON writes NO off record and leaves the last one for history", async () => {
+    serverNode = { state: "live", liveState: "off", desiredState: "off", condition: COND,
+                   lastOff: { at: 5, actor: "u0", reasonCode: "off_to_rename" } };
+    const res = await setDesiredState("p1", serverNode, "on");
+    expect(res.node.desiredState).toBe("on");
+    expect(res.node.lastOff).toEqual({ at: 5, actor: "u0", reasonCode: "off_to_rename" });
+  });
+  it("trims the off log against the SERVER's copy, not the caller's snapshot", async () => {
+    // The mutator receives the server value; trimming a stale snapshot would
+    // resurrect entries a concurrent write had already dropped.
+    const stale = { state: "live", liveState: "on", desiredState: "on", condition: COND, offLog: {} };
+    serverNode = { ...stale, offLog: { 111: { at: 111, actor: "x", reasonCode: "switched_off" } } };
+    const res = await setDesiredState("p1", stale, "off");
+    expect(Object.keys(res.node.offLog).sort()).toEqual(["111", "1755000000000"]);
+  });
   it("a write on a LEGACY draft node pins liveState off — never misread as on", async () => {
     serverNode = { state: "draft", condition: COND }; // pre-migration node
     const res = await setDesiredState("p1", serverNode, "on");

@@ -21,6 +21,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
          NAME_PROPOSAL_KEY, PROPOSAL_APPROVED_SOURCE, proposalApplyBlocker } from "./shopifyPublishCore";
 import { MAX_PUBLISH_PHOTOS, normalizePhotoList } from "./publishShared";
+import { buildOffRecord, offAuditFields } from "./publishAudit";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -385,8 +386,20 @@ export async function publishProduct(productId, node, name, source = "manual") {
  * The on/off switch (and the pending-publish cancel): write the INTENT only.
  * "on" re-checks the condition gate; "off" is always allowed — it only
  * reduces exposure. State stays whatever the reconciler last confirmed.
+ *
+ * EVERY off records WHY, right here (publishAudit.js). This is the path that
+ * produced the "products go off by themselves" reports: it is the only way a
+ * live listing's name can be changed — the rename writes all refuse a product
+ * that is on — and until now the switch left no trace of that intent at all,
+ * so the row could never say more than "off". `reason` is the caller's answer
+ * to "why", defaulting to the honest, unadorned one. See
+ * docs/PUBLISH-AUTO-OFF.md.
+ *
+ * The record is built INSIDE the mutator, against the server's node, for the
+ * same reason every gate here is: `offLog` is trimmed from the CURRENT log,
+ * and trimming a stale copy would resurrect entries a concurrent write dropped.
  */
-export async function setDesiredState(productId, node, want) {
+export async function setDesiredState(productId, node, want, { reasonCode = "switched_off", detail = null } = {}) {
   if (want !== "on" && want !== "off") return { ok: false, message: "Switch must be on or off." };
   let refusal = null;
   const res = await writeNode(productId, (cur) => {
@@ -395,8 +408,16 @@ export async function setDesiredState(productId, node, want) {
       refusal = "Condition not set — a product cannot go live without one of the three grades.";
       return undefined;
     }
-    return { ...base, ...normalizedFields(base), desiredState: want,
-             ...(want === "on" ? { blockedReason: null } : {}), ...stamp() };
+    if (want === "on") {
+      return { ...base, ...normalizedFields(base), desiredState: "on", blockedReason: null, ...stamp() };
+    }
+    // serverNowMs() twice would be two different numbers; the record's `at`
+    // and its log key must be the same instant or the row's date and its
+    // history entry disagree.
+    const at = serverNowMs();
+    const record = buildOffRecord({ at, actor: auth.currentUser ? auth.currentUser.uid : "unknown", reasonCode, detail });
+    return { ...base, ...normalizedFields(base), desiredState: "off",
+             ...offAuditFields(base, record, at), ...stamp() };
   });
   if (res.aborted) return { ok: false, message: refusal || "Not saved." };
   return res;

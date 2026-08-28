@@ -18,6 +18,8 @@
 //                                                // photoUrl + gallery". Photos are a publishing
 //                                                // concern: NEVER written to /products.
 //     liveAt:           epoch ms,                // when the product last went ON (reconciler stamp)
+//     lastOff:          { at, actor, reasonCode, detail },  // WHY it last came off
+//     offLog:           { <epoch ms>: <the same record> },  // last 10, oldest trimmed
 //     adminUrl:         string,                  // Shopify admin link (reconciler stamp)
 //     updatedAt:        epoch ms,
 //     updatedBy:        uid or "script:<name>",
@@ -39,8 +41,28 @@
 // cleanName: a name is generated once and never regenerated (AI is
 // non-deterministic; a re-run must not silently change a reviewed title).
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
+import { buildOffRecord, offAuditUpdate } from "../../src/components/shopify/publishAudit.js";
 
 export const PUBLISH_STATES = ["awaiting", "live", "blocked"];
+
+// ── SERVER TIME, NOT THIS MACHINE'S CLOCK ────────────────────────────────────
+// `updatedAt` is a rules-validated field (`newData.val() <= now + 86400000`)
+// and the Admin SDK bypasses rules — so a skewed clock on the Mac mini writes
+// a value the rule would have refused, silently, poisoning every later browser
+// write to that node. `/.info/serverTimeOffset` is the RTDB server clock minus
+// this machine's, exactly as src/utils/serverTime.js uses it in the browser.
+//
+// Read ONCE per process and cached: it is a client-side metadata value with no
+// rules and no round trip after the handshake, and an off record's `at` and its
+// log key must be the SAME instant — two calls to a live clock are two numbers.
+let offsetMs = null;
+export async function serverNowMs(db) {
+  if (offsetMs === null) {
+    try { offsetMs = Number((await db.ref(".info/serverTimeOffset").get()).val()) || 0; }
+    catch { offsetMs = 0; }   // degrades to this machine's clock, never blocks a take-down
+  }
+  return Date.now() + offsetMs;
+}
 
 export async function readPublishNode(db, productId) {
   assertSafeSegment(productId, "productId");
@@ -64,7 +86,7 @@ export async function cachePublishName(db, productId, { cleanName, source, updat
   if (!result.committed) return "kept-existing";
   await db.ref(`shopify_publish/${productId}`).update({
     cleanNameSource: source,
-    updatedAt: Date.now(),
+    updatedAt: await serverNowMs(db),
     updatedBy,
   });
   return "cached";
@@ -83,18 +105,38 @@ export async function cachePublishName(db, productId, { cleanName, source, updat
 // clearAdminUrl: the caller KNOWS no Shopify product exists (e.g. confirming
 // off with no /shopify_sync mapping) — a link stamped in an earlier life
 // would now point at nothing, so it is removed rather than preserved.
-export async function confirmLiveState(db, productId, liveState, updatedBy, { gid = null, clearAdminUrl = false } = {}) {
+// Pass as `offReason` when the node ALREADY carries a truthful off record (the
+// page wrote it when the switch was flipped) and this confirm is only agreeing
+// with it. Overwriting an "off_to_rename" with a generic "script" here would
+// be exactly the information loss the audit exists to stop.
+export const KEEP_EXISTING_OFF_REASON = "__keep__";
+
+export async function confirmLiveState(db, productId, liveState, updatedBy, { gid = null, clearAdminUrl = false, offReason = "script", offDetail = null } = {}) {
   assertSafeSegment(productId, "productId");
   if (liveState !== "on" && liveState !== "off") throw new Error(`invalid liveState: ${liveState}`);
   const numericId = gid ? String(gid).split("/").pop() : null;
+  const at = await serverNowMs(db);
+  // EVERY transition to off carries its reason (publishAudit.js). A caller that
+  // does not name one is a bug, not a shrug: an unexplained off is precisely
+  // the state docs/PUBLISH-AUTO-OFF.md exists because of, so the default names
+  // the script rather than leaving the row with nothing to say.
+  const audit = liveState === "off" && offReason !== KEEP_EXISTING_OFF_REASON
+    ? offAuditUpdate(buildOffRecord({
+        at,
+        actor: updatedBy,
+        reasonCode: offReason,
+        detail: offDetail,
+      }), at)
+    : {};
   await db.ref(`shopify_publish/${productId}`).update({
     state: "live",
     liveState,
     blockedReason: null,
     ...(numericId ? { adminUrl: `https://admin.shopify.com/store/nu3ei8-0p/products/${numericId}` } : {}),
     ...(!numericId && clearAdminUrl ? { adminUrl: null } : {}),
-    ...(liveState === "on" ? { liveAt: Date.now() } : {}),
-    updatedAt: Date.now(),
+    ...(liveState === "on" ? { liveAt: at } : {}),
+    ...audit,
+    updatedAt: at,
     updatedBy,
   });
 }
@@ -103,13 +145,25 @@ export async function confirmLiveState(db, productId, liveState, updatedBy, { gi
 // intent is cleared back to "off" so the refusal doesn't retry forever —
 // after fixing the cause, the page re-expresses it (blocked → awaiting via
 // the condition chips, or Publish again).
-export async function markBlocked(db, productId, reason, updatedBy) {
+export async function markBlocked(db, productId, reason, updatedBy, { wasTakenDown = false } = {}) {
   assertSafeSegment(productId, "productId");
+  const at = await serverNowMs(db);
   await db.ref(`shopify_publish/${productId}`).update({
     state: "blocked",
     blockedReason: String(reason),
     desiredState: "off",
-    updatedAt: Date.now(),
+    // A refusal that ran failSafeUnpublish first has PROVED the product is off
+    // the channel; recording it stops the node claiming `liveState: "on"` for
+    // a product nobody can see. Refusals that never published leave the field
+    // alone — they have no new fact about the channel.
+    ...(wasTakenDown ? { liveState: "off" } : {}),
+    ...offAuditUpdate(buildOffRecord({
+      at,
+      actor: updatedBy,
+      reasonCode: "reconciler_refused",
+      detail: String(reason),
+    }), at),
+    updatedAt: at,
     updatedBy,
   });
 }
