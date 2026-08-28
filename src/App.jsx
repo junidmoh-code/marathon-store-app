@@ -6192,18 +6192,17 @@ function AdminView({ products, orders, onExit }) {
   }
 
   // Section toggle (Products ↔ Categories ↔ Missing Prices) — the AI tabs live in AI Studio now.
+  // NO count badges here (owner call 2026-08-28): on a phone the numbers
+  // spilled outside the chips. The counts still live on the desktop rail.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
       {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
-        const badge = val === "review-categories" ? pendingCategoryCount
-          : val === "assign-categories" ? assignCategoryCount
-          : val === "missing-prices" ? missingPriceCount : 0;
         return (
           <button key={val} onClick={() => setAdminSection(val)}
-            style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-            {label}{badge > 0 && <span style={{ background: val === "missing-prices" ? "#FBBF24" : "#4ACA7A", color: val === "missing-prices" ? "#6b4e00" : "#063", fontSize:11, fontWeight:800, borderRadius:9, padding:"0 7px" }}>{badge}</span>}
+            style={{ flex:"1 1 88px", minWidth:88, background: on ? "#4A7FFF" : "rgba(255,255,255,.05)", color: on ? "#fff" : "rgba(255,255,255,.6)", border:"1px solid "+(on ? "#4A7FFF" : "rgba(255,255,255,.1)"), borderRadius:10, padding:"9px 6px", fontSize:13, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            {label}
           </button>
         );
       })}
