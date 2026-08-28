@@ -135,6 +135,17 @@ surprise):
 "card_batch_overrides": { ".read": "…owner…", ".write": "…owner…" }
 ```
 
+**This is proved, not asserted.** `scripts/verify-card-recon-node-isolation.mjs`
+loads a snapshot of the *live* rules into the real Firebase rules engine and
+asks it, as an ordinary signed-in staff account: read `/card_batches` — refused;
+read a leaf inside it — refused; write it — refused; all three nodes. The same
+token can still read `/pos/sales`, which is what proves the refusals are about
+the node and not about the token, and the owner's token is allowed throughout.
+16/16. (The RTDB emulator treats any `Authorization: Bearer` header as its admin
+bypass and skips rules entirely, so tokens travel as `?auth=` and the script
+refuses to report anything until a known-denied write is denied *and* a
+known-allowed one is allowed.)
+
 Owner-only read is not a downgrade for anyone: the POS Card recon tab already
 sits behind `RequireAdmin`, which is the same single email, so the database rule
 and the UI gate now agree. `card_batch_overrides` has no writer at all — the

@@ -74,9 +74,6 @@ const BLOCKS = {
 };
 
 const before = await getRules("before");
-writeFileSync(BACKUP, before);
-console.log(`live rules backed up to ./${BACKUP} (${before.length} bytes)`);
-
 const doc = JSON.parse(before);
 const rules = doc.rules;
 
@@ -84,6 +81,14 @@ const rules = doc.rules;
 // 1. A TOP-LEVEL node only escapes a parent grant if the ROOT has none.
 if (".read" in rules || ".write" in rules) {
   throw new Error("The ROOT carries a .read/.write — a top-level node would inherit it. Aborting: this move would not achieve anything.");
+}
+// 1b. …and if no root-level $wildcard could claim it. In RTDB a $wildcard only
+// matches children with NO explicit sibling rule, so a named node is outside
+// its reach — but a wildcard at the root is worth refusing to work beside
+// blind, because the next person adding a node here may not name it.
+const rootWildcards = Object.keys(rules).filter((k) => k.startsWith("$"));
+if (rootWildcards.length) {
+  throw new Error(`The ROOT carries wildcard(s) ${rootWildcards.join(", ")}. Naming these nodes puts them outside that reach, but check it deliberately before proceeding.`);
 }
 // 2. Never clobber something already there.
 for (const name of Object.keys(BLOCKS)) {
@@ -107,9 +112,15 @@ console.log(`\nroot children: ${Object.keys(JSON.parse(before).rules).length} be
 console.log(`/pos unchanged in the proposed document: ${JSON.stringify(rules.pos) === posBefore}`);
 
 if (!APPLY) {
-  console.log("\nDRY RUN — nothing written. Re-run with --apply.");
+  console.log("\nDRY RUN — nothing written, and no backup file left behind. Re-run with --apply.");
   process.exit(0);
 }
+
+// The backup is written HERE — after every guard has passed and immediately
+// before the only write. Writing it on entry left a stray snapshot of the live
+// rules behind on every dry run and every refusal.
+writeFileSync(BACKUP, before);
+console.log(`\nlive rules backed up to ./${BACKUP} (${before.length} bytes)`);
 
 const put = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: after });
 if (!put.ok) throw new Error(`PUT failed: HTTP ${put.status} ${await put.text()}`);
@@ -138,6 +149,7 @@ if (problems.length) {
 }
 
 console.log("\nVERIFIED:");
+console.log("  • the root carries no .read/.write and no wildcard — a top-level node is unreachable from above");
 console.log(`  • /card_batches, /card_batch_drafts, /card_batch_overrides landed verbatim, owner-only`);
 console.log(`  • /pos byte-identical — untouched`);
 console.log(`  • root children: ${expected.length}, exactly the ones expected`);
