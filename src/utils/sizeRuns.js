@@ -36,20 +36,23 @@ import {
 
 const BASE_LETTER_RANK = { S: 1, M: 2, L: 3 };
 
-// "XL" → 1, "XXL" → 2, "XXXL" → 3, "4XL" → 4, "XXXXL" → 4 … null if not XL-family.
+// "XL" → 1, "XXL" → 2, "XXXL" → 3, "4XL" → 4, "XXXXL" → 4, "1XL" → 1 …
+// null if not XL-family. "1XL" MUST fold to XL's rank: runs are add-only, so
+// letting "1XL" in beside an existing "XL" would mint an unremovable second
+// stock-cell spelling for one physical size. (CodeRabbit, PR #491.)
 export function xlCount(s) {
   const m1 = /^(X+)L$/.exec(s);
   if (m1) return m1[1].length;
-  const m2 = /^([2-9]\d*)XL$/.exec(s);
+  const m2 = /^([1-9]\d*)XL$/.exec(s);
   if (m2) return parseInt(m2[1], 10);
   return null;
 }
 
-// "XS" → 1, "XXS" → 2, "2XS" → 2 … null if not XS-family.
+// "XS" → 1, "XXS" → 2, "2XS" → 2, "1XS" → 1 … null if not XS-family.
 export function xsCount(s) {
   const m1 = /^(X+)S$/.exec(s);
   if (m1) return m1[1].length;
-  const m2 = /^([2-9]\d*)XS$/.exec(s);
+  const m2 = /^([1-9]\d*)XS$/.exec(s);
   if (m2) return parseInt(m2[1], 10);
   return null;
 }
@@ -69,6 +72,20 @@ function numericValue(s) {
   const t = String(s).trim();
   if (!/^\d+(\.\d+)?$/.test(t)) return null;
   return parseFloat(t);
+}
+
+/**
+ * Which size family a list belongs to: "numeric" (footwear/kids/fitted-cap),
+ * "letters" (apparel/gloves), or "mixed". Used to stop a category being
+ * repointed at a nonsensical run (a UK-sized shoe category offered the
+ * apparel letters) — reassignment stays within the family.
+ */
+export function sizeFamily(sizes) {
+  const list = (sizes || []).map(String).filter((s) => s !== ONE_SIZE_SENTINEL);
+  if (!list.length) return "mixed";
+  if (list.every((s) => numericValue(s) != null)) return "numeric";
+  if (list.every((s) => letterRank(s.toUpperCase()) != null)) return "letters";
+  return "mixed";
 }
 
 export function compareSizes(a, b) {

@@ -24,7 +24,7 @@
 //   node scripts/seed-size-runs.mjs             # apply
 
 import { createRequire } from "module";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import path from "path";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -32,14 +32,17 @@ const require = createRequire(path.join(HERE, "..", "functions", "package.json")
 const admin = require("firebase-admin");
 
 const { SIZE_RUN_SEED, runSizes, appendSizeToRun, canonicalSizeKey } =
-  await import(path.join(HERE, "..", "src", "utils", "sizeRuns.js"));
+  await import(pathToFileURL(path.join(HERE, "..", "src", "utils", "sizeRuns.js")).href);
 const { SIZES_APPAREL, SIZES_FOOTWEAR, SIZES_KIDS, SIZES_FITTED_CAP, SIZES_GLOVES } =
-  await import(path.join(HERE, "..", "src", "utils", "productTaxonomy.js"));
+  await import(pathToFileURL(path.join(HERE, "..", "src", "utils", "productTaxonomy.js")).href);
 
 const DRY = process.argv.includes("--dry-run");
 const NODE = "settings/productTaxonomy";
 
-admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
+admin.initializeApp({
+  databaseURL: process.env.FIREBASE_DATABASE_URL
+    || "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app",
+});
 const db = admin.database();
 
 const reg = await db.ref(NODE).once("value").then((s) => s.val());

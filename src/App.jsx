@@ -120,7 +120,7 @@ import { printOrderSlips } from "./print/orderSlip";
 // category later is a data edit — no code change, no deploy. `legacyFor` is the
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
-import { sizesForCat, sizeRunsOf, runSizes, compareSizes } from "./utils/sizeRuns";
+import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -727,10 +727,10 @@ const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 // family is inferable from its stored sizes (see clothingChoicesFor).
 const BOTTOMS_SIZES = ["28", "30", "32", "34", "36", "38", "40"];
 // True when every stored size is a waist size → this clothing product is bottoms.
+// (The letters-vs-bottoms choice itself lives in AdminProductDetail, which
+// resolves the letter list through the taxonomy registry's apparel run.)
 const isWaistSizeSet = (sizes) =>
   Array.isArray(sizes) && sizes.length > 0 && sizes.every(s => BOTTOMS_SIZES.includes(String(s)));
-// The size choices for a CLOTHING product: waist set for bottoms, letters otherwise.
-const clothingChoicesFor = (sizes) => (isWaistSizeSet(sizes) ? BOTTOMS_SIZES : CLOTHING_SIZES);
 // Kids sneaker breakdown — EU kids sizes. A sneaker-type product (same routing/
 // hubs/shoebox as adult sneakers) that uses this set instead of 3–11. Adult
 // sneakers top out at 11, so a sneaker whose sizes are ≥20 is a kids product.
@@ -6599,7 +6599,18 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const detailRuns = sizeRunsOf(detailTaxonomy.registry);
   const apparelRun = runSizes(detailRuns.apparel);
   const footwearRun = runSizes(detailRuns.footwear);
-  const sizeChoices = isClothing
+  // A product that carries a categoryKey resolves its choice list through ITS
+  // OWN category's run (sizesForCat — the same resolution the Add form and the
+  // save path use), so a category on a custom run offers the right sizes here
+  // too. Guarded by size FAMILY: a jeans product stored with waist sizes must
+  // keep the waist buttons even though its category's run is letters —
+  // otherwise its real sizes would become un-offerable. (CodeRabbit, PR #491.)
+  const detailCat = catByKey(detailTaxonomy.registry, product.categoryKey);
+  const detailCatSizes = detailCat ? sizesForCat(detailTaxonomy.registry, detailCat) : [];
+  const familyMatches = detailCatSizes.length > 0 &&
+    (productSizes.length === 0 || sizeFamily(detailCatSizes) === sizeFamily(productSizes));
+  const sizeChoices = familyMatches ? detailCatSizes
+    : isClothing
     ? (isWaistSizeSet(productSizes) ? BOTTOMS_SIZES : (apparelRun.length ? apparelRun : CLOTHING_SIZES))
     : isKidsSizeSet(productSizes) ? KIDS_SIZES
     : (footwearRun.length ? footwearRun : SNEAKER_SIZES);

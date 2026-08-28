@@ -109,12 +109,19 @@ export function deriveNewCategory(input, registry) {
   };
 
   // Plain-English preview — what saving will actually do, before it does it.
-  const letterSized = !oneSize && sizes.some((s) => /[A-Za-z]/.test(s));
+  // The caveat names ONLY the sizes the engine's ACTUAL fallback heuristic
+  // matches (refill-engine.cjs isClothing: /^(XS|S|M|L|XL|XXL|XXXL)$/i) — 4XL
+  // and beyond do NOT match it, so claiming "letter sizes" wholesale would
+  // overstate the pickup for exactly the sizes this feature adds.
+  const heuristicSizes = oneSize ? [] : sizes.filter((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s)));
+  // Grouped explicitly: the caveat belongs to the no-lane line ONLY — the two
+  // managed lanes make it meaningless.
+  const noLaneLine = "Refill: no lane — the engine does not manage these products."
+    + (heuristicSizes.length ? ` CAVEAT: sizes ${heuristicSizes.join("/")} still match the engine's letter-size heuristic, so products carrying them may be picked up anyway.` : "");
   const preview = [
     lane === "clothing" ? "Refill: products enter the CLOTHING refill lane (the engine manages them)."
       : lane === "sneaker" ? "Refill: products enter the SNEAKER refill lane (refills are created from sales only)."
-      : "Refill: no lane — the engine does not manage these products."
-      + (letterSized ? " CAVEAT: letter sizes (S/M/L…) still match the engine's size heuristic, so letter-sized products may be picked up anyway." : ""),
+      : noLaneLine,
     checks ? "Display Checks: YES — every sale asks the floor to check the display."
       : "Display Checks: NO — sales pass silently.",
     `Legacy fields written on every product: category "${legacy.category}", subcategory "${legacy.subcategory}"` +

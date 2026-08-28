@@ -28,7 +28,7 @@ import { ref, runTransaction, update, serverTimestamp } from "firebase/database"
 import { database } from "../../firebase.js";
 import { usePermissions } from "../PermissionsContext.jsx";
 import {
-  sizeRunsOf, runSizes, validateNewSize, appendSizeToRun, SIZE_RUN_SEED,
+  sizeRunsOf, validateNewSize, appendSizeToRun,
 } from "../../utils/sizeRuns.js";
 import { labelForKey } from "../../utils/productTaxonomy.js";
 import CategoriesPanel from "./TaxonomyCategoriesPanel.jsx";
@@ -144,20 +144,22 @@ function RunCard({ runKey, run, runs, usedBy, live }) {
     setBusy(true); setError(null);
     try {
       const size = verdict.size;
-      const runRef = ref(database, `${REGISTRY}/sizeRuns/${runKey}`);
-      // Transaction so two devices adding at once both land (RTDB retries with
-      // the fresh value). In-run duplicate checks re-run against the CURRENT
-      // server value inside the transaction; the cross-run spelling check ran
-      // above against the live registry snapshot.
-      const res = await runTransaction(runRef, (cur) => {
-        const curSizes = cur ? runSizes(cur) : runSizes(SIZE_RUN_SEED[runKey]);
-        if (!cur && !SIZE_RUN_SEED[runKey]) return undefined; // unknown run vanished — abort
-        const v = validateNewSize({ [runKey]: { sizes: curSizes } }, runKey, size);
+      // Transaction on the PARENT sizeRuns node, not the single run — so the
+      // FULL validation (in-run duplicates AND the cross-run spelling check)
+      // re-runs against the fresh server value on every retry. A child-level
+      // transaction could only re-check its own run, leaving a race where two
+      // devices land "4XL" and "XXXXL" in two different runs at once — exactly
+      // the two-spellings split this screen exists to block.
+      const res = await runTransaction(ref(database, `${REGISTRY}/sizeRuns`), (cur) => {
+        // Resolve exactly like the UI does (seed fallback for absent runs).
+        const resolved = sizeRunsOf({ sizeRuns: cur && typeof cur === "object" ? cur : {} });
+        const target = resolved[runKey];
+        if (!target) return undefined;                        // unknown run vanished — abort
+        const v = validateNewSize(resolved, runKey, size);
         if (!v.ok) return undefined;                          // raced duplicate — abort
         return {
-          key: runKey,
-          label: (cur && cur.label) || run.label || runKey,
-          sizes: appendSizeToRun(curSizes, v.size),
+          ...Object.fromEntries(Object.entries(resolved).map(([k, r]) => [k, { key: k, label: r.label || k, sizes: r.sizes }])),
+          [runKey]: { key: runKey, label: target.label || runKey, sizes: appendSizeToRun(target.sizes, v.size) },
         };
       });
       if (!res.committed) {

@@ -16,7 +16,7 @@ import { useMemo, useState } from "react";
 import { ref, runTransaction, update, serverTimestamp } from "firebase/database";
 import { database } from "../../firebase.js";
 import { TAXONOMY_TOPS } from "../../utils/productTaxonomy.js";
-import { sizeRunsOf, runSizes } from "../../utils/sizeRuns.js";
+import { sizeRunsOf, runSizes, sizeFamily, sizesForCat } from "../../utils/sizeRuns.js";
 import { deriveNewCategory, checksChoiceForLane, REFILL_LANES } from "../../utils/taxonomyCategoryCreate.js";
 
 const REGISTRY = "settings/productTaxonomy";
@@ -191,6 +191,14 @@ function CatRow({ cat, runs, live }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const oneSize = cat.sizeMode === "one";
+  // Reassignment stays WITHIN the size family: offering the apparel letters to
+  // a UK-sized shoe category would let one tap change what every future
+  // product of that category can be received in — nonsensically. The current
+  // run is always offerable (so Save with no change never blocks).
+  const family = sizeFamily(sizesForCat({ sizeRuns: runs }, cat));
+  const offerableRuns = Object.values(runs).filter(
+    (r) => r.key === cat.sizeRunKey || sizeFamily(r.sizes) === family,
+  );
 
   const save = async () => {
     if (!live || busy) return;
@@ -199,7 +207,8 @@ function CatRow({ cat, runs, live }) {
     setBusy(true); setErr(null);
     try {
       const updates = { [`cats/${cat.key}/label`]: nextLabel, updatedAt: serverTimestamp(), updatedBy: "taxonomy-tab" };
-      if (!oneSize && runKey && runKey !== cat.sizeRunKey && runs[runKey]) {
+      if (!oneSize && runKey && runKey !== cat.sizeRunKey && runs[runKey]
+          && offerableRuns.some((r) => r.key === runKey)) {
         updates[`cats/${cat.key}/sizeRunKey`] = runKey;
         // Keep the literal fallback snapshot coherent with the newly chosen run
         // — it is only ever read when the run itself cannot be resolved.
@@ -232,7 +241,7 @@ function CatRow({ cat, runs, live }) {
           <select value={runKey} onChange={(e) => setRunKey(e.target.value)} disabled={busy}
                   style={{ background: "#08090C", color: "#fff", border: "1px solid rgba(74,127,255,.4)", borderRadius: 8, padding: "6px 8px", fontSize: 12.5, fontWeight: 700 }}>
             {!cat.sizeRunKey && <option value="">custom sizes (no run)</option>}
-            {Object.values(runs).map((r) => <option key={r.key} value={r.key}>{r.label || r.key}</option>)}
+            {offerableRuns.map((r) => <option key={r.key} value={r.key}>{r.label || r.key}</option>)}
           </select>
         )}
         {!editing && (

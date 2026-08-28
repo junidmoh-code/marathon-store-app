@@ -13,7 +13,7 @@ import { describe, it, expect } from "vitest";
 import {
   compareSizes, normalizeSizeInput, canonicalSizeKey, validateNewSize,
   appendSizeToRun, addSizeToRun, SIZE_RUN_SEED, runSizes, sizeRunsOf, sizesForCat,
-  xlCount, xsCount,
+  xlCount, xsCount, sizeFamily,
 } from "./sizeRuns.js";
 import {
   TAXONOMY_SEED, SIZES_APPAREL, SIZES_FOOTWEAR, SIZES_KIDS, SIZES_FITTED_CAP,
@@ -51,6 +51,29 @@ describe("compareSizes", () => {
     expect(xlCount("M")).toBe(null);
     expect(xsCount("XS")).toBe(1);
     expect(xsCount("2XS")).toBe(2);
+  });
+  it("1XL and 1XS fold onto XL and XS — an add-only run must never gain a second spelling (CodeRabbit, PR #491)", () => {
+    expect(xlCount("1XL")).toBe(1);
+    expect(xsCount("1XS")).toBe(1);
+    expect(canonicalSizeKey("1XL")).toBe(canonicalSizeKey("XL"));
+    const v = validateNewSize({ apparel: { sizes: ["S", "M", "L", "XL"] } }, "apparel", "1XL");
+    expect(v.ok).toBe(false);
+    expect(v.existing).toBe("XL");
+  });
+});
+
+describe("sizeFamily", () => {
+  it("classifies the seeded runs", () => {
+    expect(sizeFamily(SIZE_RUN_SEED.apparel.sizes)).toBe("letters");
+    expect(sizeFamily(SIZE_RUN_SEED.gloves.sizes)).toBe("letters");
+    expect(sizeFamily(SIZE_RUN_SEED.footwear.sizes)).toBe("numeric");
+    expect(sizeFamily(SIZE_RUN_SEED.kids.sizes)).toBe("numeric");
+    expect(sizeFamily(SIZE_RUN_SEED["fitted-cap"].sizes)).toBe("numeric");
+  });
+  it("mixed or empty lists are 'mixed' (never silently claimed by a family)", () => {
+    expect(sizeFamily(["S", "8"])).toBe("mixed");
+    expect(sizeFamily([])).toBe("mixed");
+    expect(sizeFamily(["_"])).toBe("mixed");
   });
 });
 
@@ -298,7 +321,7 @@ describe("the module exports no removal path", () => {
     const fns = Object.keys(mod).filter((k) => typeof mod[k] === "function").sort();
     expect(fns).toEqual([
       "addSizeToRun", "appendSizeToRun", "canonicalSizeKey", "compareSizes",
-      "normalizeSizeInput", "runSizes", "sizeRunsOf", "sizesForCat",
+      "normalizeSizeInput", "runSizes", "sizeFamily", "sizeRunsOf", "sizesForCat",
       "validateNewSize", "xlCount", "xsCount",
     ]);
   });
