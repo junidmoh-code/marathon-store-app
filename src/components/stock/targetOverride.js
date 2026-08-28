@@ -311,6 +311,13 @@ export function targetPayload(ctx, loc, pid, draft, { allowRemoveForeign = false
     payload: {
       action: "setProductTargets",
       loc, pid,
+      // The product's category travels with the write so the history entry
+      // files itself under that category — the card's history panel filters by
+      // categoryKey, and an entry with none would show up under every category
+      // on the screen. The server takes it as a label, never as authority: it
+      // reads the product record for itself.
+      ...(typeof ctx?.products?.[pid]?.categoryKey === "string" && ctx.products[pid].categoryKey
+        ? { categoryKey: ctx.products[pid].categoryKey } : null),
       rows,
       remove: plan.remove.map((r) => r.sizeKey),
       expected: expectationFor(ctx, loc, pid, plan),

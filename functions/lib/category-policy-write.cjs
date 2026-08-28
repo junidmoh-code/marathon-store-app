@@ -1171,7 +1171,10 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // ── HISTORY FIRST, holding every `before` in full ─────────────────────────
     const historyRef = db.ref(HISTORY_PATH).push();
     await historyRef.set({
-      kind: "targets", loc, pid, categoryKey: categoryKey || null,
+      // The NAME as it was at the time. A history entry read six weeks later
+      // must be legible without a second read of a product record that may have
+      // been renamed, merged or deactivated since.
+      kind: "targets", loc, pid, productName: preview.name || null, categoryKey: categoryKey || null,
       at: nowMs, by: callerEmail, byUid: callerUid || null,
       rowCount: Object.keys(update).length,
       before, changes, status: "pending",

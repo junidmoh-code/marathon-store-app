@@ -307,7 +307,12 @@ const CENSUS = {
   cap: 75,
   // 2026-08-22 10:24 UTC = 12:24 SAST — the stamp reads "22 Aug at 12:24".
   history: [{ id: "h1", status: "applied", at: Date.UTC(2026, 7, 22, 10, 24), by: "gunidmoh@gmail.com",
-    categoryKey: "caps-beanies", changes: [{ loc: "hub2", field: "target", from: 8, to: 10 }] }],
+    categoryKey: "caps-beanies", changes: [{ loc: "hub2", field: "target", from: 8, to: 10 }] },
+    // A PRODUCT OVERRIDE, in the same history, revertable from the same button.
+    { id: "h2", kind: "targets", status: "applied", at: Date.UTC(2026, 7, 20, 8, 0), by: "gunidmoh@gmail.com",
+      categoryKey: "caps-beanies", loc: "hub2", pid: "p9", productName: "Black Cap",
+      before: [{ sizeKey: "_", row: { target: 6, minQty: 3, source: "hand" } }, { sizeKey: "M", row: null }],
+      changes: [{ sizeKey: "_", field: "target", from: 6, to: 2 }] }],
   groups: {
     "footwear-all": {
       label: "Sneakers", armed: false,
@@ -384,6 +389,13 @@ const callableMock = vi.fn(async (payload) => {
 });
 vi.mock("firebase/functions", () => ({ httpsCallable: () => (...a) => callableMock(...a) }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: true } }));
+// The card reads the LIVE rows before reverting a product override — the entry
+// says what the numbers WERE, not what they are.
+let LIVE_ROWS = {};
+vi.mock("firebase/database", () => ({
+  ref: (_db, path) => ({ path }),
+  get: async () => ({ exists: () => true, val: () => LIVE_ROWS }),
+}));
 
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 const OWNER = { email: "gunidmoh@gmail.com" };
@@ -1042,5 +1054,65 @@ describe("the group screen edits its own membership", () => {
     expect(call.group.armed).toBe(true);
     expect(call.group.memberCategoryKeys).toEqual(CENSUS.groupEntries[0].group.memberCategoryKeys);
     expect(call.group.policy).toEqual(CENSUS.groups["footwear-all"].policy);
+  });
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A PRODUCT OVERRIDE LANDS IN THE SAME HISTORY, WITH THE SAME ONE-TAP REVERT
+// ═════════════════════════════════════════════════════════════════════════════
+describe("product-target history", () => {
+  const openHistory = async (tree) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Caps & Beanies"))[0];
+    await act(async () => { row.props.onClick(); });
+    const btn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Policy history")[0];
+    await act(async () => { btn.props.onClick(); });
+  };
+  const withConfirm = async (answer, fn) => {
+    const had = "confirm" in globalThis.window;
+    const prev = globalThis.window.confirm;
+    const asked = [];
+    globalThis.window.confirm = (m) => { asked.push(m); return answer; };
+    try { await fn(); } finally { if (had) globalThis.window.confirm = prev; else delete globalThis.window.confirm; }
+    return asked;
+  };
+
+  it("shows the product and the shop it was overridden at", async () => {
+    const tree = await renderCard();
+    await openHistory(tree);
+    const t = textOf(tree);
+    expect(t).toContain("Black Cap");
+    expect(t).toContain("Hub 2");
+  });
+
+  it("reverts through the same action that made it, against the LIVE numbers", async () => {
+    LIVE_ROWS = { _: { target: 2, minQty: 1, source: "policy_target", prevRow: { target: 6, minQty: 3, source: "hand" } } };
+    const tree = await renderCard();
+    await openHistory(tree);
+    const row = tree.root.findAll((n) => n.type === "div" && instText(n).includes("Black Cap")
+      && instText(n).includes("Revert")).pop();
+    const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
+    await withConfirm(true, async () => { await act(async () => { revert.props.onClick(); }); });
+    const call = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.action === "setProductTargets");
+    expect(call.loc).toBe("hub2");
+    expect(call.pid).toBe("p9");
+    // the row that existed goes back exactly; the row that did not is removed
+    expect(call.rows).toEqual([{ sizeKey: "_", target: 6, minQty: 3 }]);
+    expect(call.remove).toEqual(["M"]);
+    // and the expectation is what is LIVE now, not what the entry recorded
+    expect(call.expected._).toEqual({ target: 2, minQty: 1, reorderPoint: null });
+    expect(call.expected.M).toBe(null);
+  });
+
+  it("a refused confirm reverts nothing", async () => {
+    LIVE_ROWS = {};
+    const tree = await renderCard();
+    await openHistory(tree);
+    const row = tree.root.findAll((n) => n.type === "div" && instText(n).includes("Black Cap")
+      && instText(n).includes("Revert")).pop();
+    const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
+    await withConfirm(false, async () => { await act(async () => { revert.props.onClick(); }); });
+    expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setProductTargets")).toBe(false);
   });
 });

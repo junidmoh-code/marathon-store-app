@@ -79,6 +79,8 @@ import {
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
+import { readTargets } from "./seatingStore";
+import { writableRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
@@ -571,12 +573,64 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     }
   };
 
+  const revertTargets = async (h) => {
+    const live = await readTargets(h.loc, h.pid).catch(() => null);
+    if (live === null) { flash("bad", "Could not read those rows — try again."); return; }
+    const rows = [], remove = [], expected = {};
+    const stuck = [];
+    for (const b of (h.before || [])) {
+      const k = b?.sizeKey;
+      if (typeof k !== "string" || !k) continue;
+      const now = live[k];
+      expected[k] = now && typeof now === "object"
+        ? { target: typeof now.target === "number" ? now.target : null,
+            minQty: typeof now.minQty === "number" ? now.minQty : null,
+            reorderPoint: typeof now.reorderPoint === "number" ? now.reorderPoint : null }
+        : null;
+      if (!b.row || typeof b.row !== "object") { remove.push(k); continue; }
+      // A captured row the live rule would refuse is reported, never repaired:
+      // coercing a string target to a number nobody wrote, or to 0, would
+      // switch a shop off in the name of an undo.
+      if (!writableRow(b.row)) { stuck.push(k); continue; }
+      const row = { sizeKey: k, target: b.row.target, minQty: b.row.minQty };
+      if (typeof b.row.reorderPoint === "number" && b.row.reorderPoint < b.row.target) row.reorderPoint = b.row.reorderPoint;
+      rows.push(row);
+    }
+    for (const k of stuck) delete expected[k];
+    if (!rows.length && !remove.length) { flash("bad", "There is nothing in that entry to put back."); return; }
+    const ok = window.confirm(
+      `Put ${h.productName || h.pid} back to how it was at ${locLabel(h.loc)} on ${fmtWhen(h.at)}?\n\n`
+      + `${rows.length + remove.length} ${rows.length + remove.length === 1 ? "size" : "sizes"}.`
+      + (stuck.length ? `\n\n${stuck.length} cannot be put back — the record is a shape the rule refuses.` : ""));
+    if (!ok) return;
+    setBusy("revert");
+    try {
+      await setCategoryPolicyFn()({ action: "setProductTargets", loc: h.loc, pid: h.pid,
+        rows, remove, expected, allowRemoveForeign: true });
+      flash("ok", `${h.productName || h.pid} put back to how it was on ${fmtWhen(h.at)}.`);
+      await load(true);
+    } catch (e) {
+      flash("bad", e?.message || String(e));
+    } finally { setBusy(""); }
+  };
+
   const revert = async (h) => {
     if (busy) return;
     if (h.kind === "rows") {
       flash("bad", "Row edits are not reverted from here — the entry records exactly what they were.");
       return;
     }
+    // ── A PRODUCT OVERRIDE REVERTS THROUGH THE SAME ACTION THAT MADE IT ──────
+    // The entry holds every row it replaced, in full, including the fact that
+    // there was no row (`row: null`). Putting it back is therefore the same
+    // complete-set write in the other direction: rows that existed go back as
+    // they were, rows that did not are removed.
+    //
+    // THE EXPECTATION IS READ LIVE, not taken from the entry. An entry from six
+    // weeks ago says what the numbers WERE, not what they are, and reverting
+    // onto somebody's later change without noticing is the one outcome a
+    // history with a revert button must never produce.
+    if (h.kind === "targets") return revertTargets(h);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -1457,9 +1511,13 @@ function History({ entries, onRevert, busy }) {
         <div key={h.id} style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: ".86rem", fontWeight: 600 }}>
-              {h.categoryKey || h.groupKey || "rows"}
+              {h.kind === "targets" ? (h.productName || h.pid) : (h.categoryKey || h.groupKey || "rows")}
               {h.kind === "group" && <Chip tone="blue">group</Chip>}
               {h.kind === "rows" && <Chip tone="amber">{h.rowCount} rows</Chip>}
+              {/* A product override names the shop it was made at: the same
+                  product can carry different numbers at four of them, and an
+                  entry that did not say which is unrevertable in practice. */}
+              {h.kind === "targets" && <Chip tone="green">{locLabel(h.loc)}</Chip>}
               {h.status !== "applied" && (
                 <span style={{ color: h.status === "aborted_on_drift" ? AMBER : RED, fontWeight: 700, fontSize: ".72rem", marginLeft: 8 }}>
                   {h.status === "aborted_on_drift" ? "not applied — changed underneath" : h.status}
@@ -1475,7 +1533,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
