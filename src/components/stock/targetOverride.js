@@ -269,7 +269,13 @@ export function overridePlan(ctx, loc, pid, draft) {
     // changed nothing.
     if (prev !== null && prevTarget === target && prevRp === rp) continue;
     const row = { sizeKey, target, minQty: derivedMinQty(target) };
-    if (rp !== null) row.reorderPoint = rp;
+    // AN "ASK AT" NEVER RIDES ON A 0. The gate is "have > reorderPoint → stay
+    // silent", and a target of 0 has no room below it — the server refuses the
+    // pair outright (reorderPoint must be below Keep). Attaching it anyway made
+    // a perfectly ordinary mixed save — three sizes kept, two switched off,
+    // one Ask at for the location — fail with a message about a size the owner
+    // had deliberately set to nothing.
+    if (rp !== null && target > 0) row.reorderPoint = rp;
     rows.push(row);
     changes.push({ sizeKey, from: prevTarget, to: target, kind: prevTarget === null ? "added" : "changed",
       reorderPointFrom: prevRp, reorderPointTo: rp,
@@ -283,12 +289,22 @@ export function overridePlan(ctx, loc, pid, draft) {
 // every size the plan touches. `null` is a real value here — "there was no row"
 // — and the server checks it, so a row created underneath is refused rather
 // than blind-overwritten.
-export function expectationFor(ctx, loc, pid, plan) {
+export function expectationFor(ctx, loc, pid, plan, draft = null) {
   const live = ctx?.targets?.[loc]?.[pid] || {};
   const out = {};
   const touched = [...plan.rows.map((r) => r.sizeKey), ...plan.remove.map((r) => r.sizeKey), ...plan.restore.map((r) => r.sizeKey)];
   for (const sizeKey of touched) {
-    const prev = live[sizeKey];
+    // ── THE NUMBERS THE EDITOR WAS OPENED ON, NOT THE ONES IT HOLDS NOW ─────
+    // The draft captured each size's row when it was built. The ctx can be
+    // REPLACED underneath it — the Refresh button does exactly that, and so
+    // does any re-read — and taking the expectation from the fresh ctx would
+    // make the drift check agree with a change the owner never saw: somebody
+    // else's edit, silently overwritten by a save of numbers typed before it.
+    // The captured row is what the owner decided against, so it is what the
+    // server is asked to still find there.
+    const prev = draft?.sizes?.[sizeKey] && "prev" in draft.sizes[sizeKey]
+      ? draft.sizes[sizeKey].prev
+      : live[sizeKey];
     out[sizeKey] = prev && typeof prev === "object"
       ? { target: typeof prev.target === "number" ? prev.target : null,
           minQty: typeof prev.minQty === "number" ? prev.minQty : null,
@@ -320,7 +336,7 @@ export function targetPayload(ctx, loc, pid, draft, { allowRemoveForeign = false
         ? { categoryKey: ctx.products[pid].categoryKey } : null),
       rows,
       remove: plan.remove.map((r) => r.sizeKey),
-      expected: expectationFor(ctx, loc, pid, plan),
+      expected: expectationFor(ctx, loc, pid, plan, draft),
       ...(allowRemoveForeign ? { allowRemoveForeign: true } : null),
       ...(dryRun ? { dryRun: true } : null),
     },

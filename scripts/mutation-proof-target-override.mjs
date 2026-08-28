@@ -15,6 +15,8 @@
 //   M-FOREIGN      a row this card did not write is removed with no confirm
 //   M-NEST         the row a row replaced is nested instead of carried through
 //   M-EXPECT       the drift expectation is sent empty
+//   M-RP-ZERO      an "Ask at" rides on a target-0 row and the save is refused
+//   M-EXPECT-STALE the expectation comes from a context a refresh replaced
 //   M-PERSIZE      the arming flag is read back from what was saved last time
 //   M-REGISTRY     the registry fallback stretches a GROUP's union
 //
@@ -146,6 +148,24 @@ const MUTATIONS = [
     nodeTests: SERVER_TESTS,
   },
   // ── THE ARMING FLAG ───────────────────────────────────────────────────────
+  {
+    id: "M-RP-ZERO",
+    guard: "an \"Ask at\" never rides on a switched-off size — the server refuses the pair",
+    file: OVERRIDE,
+    from: `    if (rp !== null && target > 0) row.reorderPoint = rp;`,
+    to: `    if (rp !== null) row.reorderPoint = rp;`,
+    tests: OVERRIDE_TESTS,
+  },
+  {
+    id: "M-EXPECT-STALE",
+    guard: "the expectation is the row the editor was OPENED on, not one a refresh replaced",
+    file: OVERRIDE,
+    from: `    const prev = draft?.sizes?.[sizeKey] && "prev" in draft.sizes[sizeKey]
+      ? draft.sizes[sizeKey].prev
+      : live[sizeKey];`,
+    to: `    const prev = live[sizeKey];`,
+    tests: OVERRIDE_TESTS,
+  },
   {
     id: "M-PERSIZE",
     guard: "per-size is the CATEGORY's run, not what was saved last time",

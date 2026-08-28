@@ -275,3 +275,42 @@ describe("the expectation covers every size the plan touches", () => {
     expect(Object.keys(exp).sort()).toEqual(["M", "S"]);
   });
 });
+
+// ── TWO DEFECTS FOUND IN SELF-REVIEW BEFORE MERGE ────────────────────────────
+describe("an Ask at never rides on a switched-off size", () => {
+  it("is attached to the sizes that keep stock and to no others", () => {
+    const plan = overridePlan(ctx(), "trophy", "p1", draftOf(ctx(), { S: "3", M: "0" }, "1"));
+    expect(plan.rows).toEqual([
+      { sizeKey: "S", target: 3, minQty: 2, reorderPoint: 1 },
+      { sizeKey: "M", target: 0, minQty: 0 },
+    ]);
+    // The server refuses reorderPoint >= target outright, so attaching it to
+    // the 0 would fail an ordinary mixed save — three sizes kept, two off, one
+    // Ask at — with a message about a size deliberately set to nothing.
+    expect("reorderPoint" in plan.rows[1]).toBe(false);
+  });
+});
+
+describe("the drift expectation is what the editor was OPENED on", () => {
+  it("uses the draft's captured row, not a context replaced underneath it", () => {
+    const opened = ctx({ trophy: { p1: { M: { target: 2, minQty: 1, source: "hand" } } } });
+    const draft = draftOf(opened, { M: "5" });
+    // Somebody else edits that row; the screen re-reads (Refresh) and the ctx
+    // is replaced. The typed 5 is still on screen and still the owner's
+    // decision — taken against a 2, not against a 9.
+    const refreshed = ctx({ trophy: { p1: { M: { target: 9, minQty: 5, source: "hand" } } } });
+    const plan = overridePlan(refreshed, "trophy", "p1", draft);
+    const exp = expectationFor(refreshed, "trophy", "p1", plan, draft);
+    expect(exp.M).toEqual({ target: 2, minQty: 1, reorderPoint: null });
+    // …so the server refuses it rather than silently overwriting the 9.
+    const { payload } = targetPayload(refreshed, "trophy", "p1", draft);
+    expect(payload.expected.M.target).toBe(2);
+  });
+
+  it("and a size the draft never captured still falls back to what is live", () => {
+    const c = ctx({ trophy: { p1: { M: { target: 2, minQty: 1 } } } });
+    const plan = overridePlan(c, "trophy", "p1", draftOf(c, { M: "5" }));
+    expect(expectationFor(c, "trophy", "p1", plan, { sizes: {} }).M)
+      .toEqual({ target: 2, minQty: 1, reorderPoint: null });
+  });
+});
