@@ -19,7 +19,7 @@ import TestRenderer, { act } from "react-test-renderer";
 import {
   policyFromDraft, validateDraft, previewKey, changedFields, armedLocations,
   draftFromEntry, editorRows, fillAllSizes, seedPerSizeLocation, isPerSizeRow,
-  sizeLabel, sizeRank, bySizeRank, canSave, mainListEntries, previewFromArmModel,
+  sizeLabel, sizeRank, bySizeRank, canSave, mainListEntries, previewFromArmModel, perSizeMode,
 } from "./enginePolicyCore";
 
 // ═══ THE MAIN LIST — a group is one entry, its members are inside it ════════
@@ -346,6 +346,7 @@ const CENSUS = {
       carriage: { hub2: { carries: true, products: 94, units: 400 }, "marathon-pe": { carries: true, products: 40, units: 112 },
         trophy: { carries: false, products: 0, units: 0 } },
       ownRowCells: 188, ownRowProducts: 94, sizeRun: [], sizeRunExtra: ["S", "M"], sizeRunEmpty: true,
+      sizeRunOneSize: true,
       imageUrl: null,
     },
     // A MEMBER of the (disarmed) group: no entry of its own, nothing in force,
@@ -670,8 +671,10 @@ describe("the category detail screen", () => {
     // arm hub2 (carried) so there is something to save
     const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
     await act(async () => { stockHere.props.onClick(); });
-    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
-    await act(async () => { keep.props.onChange({ target: { value: "3" } }); });
+    // A SIZED CATEGORY NOW ARMS SIZE BY SIZE — arming seeds the run rather than
+    // one general number, so the field to fill is a size's, not the location's.
+    const everySize = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "3" } }); });
     callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
       preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
     const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
@@ -827,5 +830,126 @@ describe("the stripped screen", () => {
     const chip = tree.root.findAll((n) => n.type === "button" && instText(n).includes("old rows"))[0];
     await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
     check("rows");
+  });
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE REPORTED DEFECT — ARMING OFFERED ONE GENERAL QUANTITY AND NOTHING ELSE
+// ═════════════════════════════════════════════════════════════════════════════
+// Reproduced first, in docs/POLICY-PER-PRODUCT-TARGETS.md §5: the "Size by
+// size" control was gated on the STORED perSize flag, so a category that had
+// never been armed per-size could only ever be given one number — and for a
+// sized category one number without perSize arms NOTHING, because a uniform leg
+// then speaks for the "_" cell alone. Soccer jerseys need S/M/L/XL/XXL, and
+// this is what stopped them.
+describe("arming a sized category offers its OWN size run", () => {
+  const openMember = async (tree) => {
+    await openFirstIn(tree, "Sneakers");
+    const member = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Open member Sneakers")[0];
+    await act(async () => { member.props.onClick(); });
+  };
+  const openFirstIn = async (tree, label) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes(label))[0];
+    await act(async () => { row.props.onClick(); });
+  };
+
+  it("arming seeds ONE FIELD PER SIZE, not one general quantity", async () => {
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const labels = tree.root.findAll((n) => n.type === "input" && /^Hub 2 /.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    // the run is 5.5 / 7 / 8 for this category, three fields each
+    expect(labels).toContain("Hub 2 5.5 Keep");
+    expect(labels).toContain("Hub 2 7 Keep");
+    expect(labels).toContain("Hub 2 8 Keep");
+    // and NOT the single general quantity that was the only thing on offer
+    expect(labels).not.toContain("Hub 2 Keep");
+  });
+
+  it("and the saved policy carries perSize:true with a row per size", async () => {
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const everySize = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "2" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.dryRun && c?.categoryKey === "sneakers");
+    expect(dry.policy.perSize).toBe(true);
+    expect(Object.keys(dry.policy.hub2.sizes).sort()).toEqual(["5_5", "7", "8"]);
+    expect(Object.values(dry.policy.hub2.sizes).every((r) => r.target === 2)).toBe(true);
+  });
+
+  it("a ONE-SIZE category keeps ONE field and never grows a fake size grid", async () => {
+    const tree = await renderCard();
+    await openFirstIn(tree, "Caps & Beanies");
+    const labels = tree.root.findAll((n) => n.type === "input" && /^Hub 2/.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    expect(labels).toEqual(["Hub 2 Keep", "Hub 2 Minimum", "Hub 2 Ask at"]);
+    expect(labels.some((l) => l === "Hub 2 — set every size")).toBe(false);
+    // and it is not offered the size-by-size switch either
+    expect(tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Size by size")).toHaveLength(0);
+    // nor told its run is broken — a one-size category is not broken
+    expect(textOf(tree)).not.toContain("No size run can be worked out");
+  });
+
+  it("the one-size category's policy is still saved WITHOUT perSize", async () => {
+    const tree = await renderCard();
+    await openFirstIn(tree, "Caps & Beanies");
+    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
+    await act(async () => { keep.props.onChange({ target: { value: "12" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.dryRun && c?.categoryKey === "caps-beanies");
+    expect("perSize" in dry.policy).toBe(false);
+    expect(dry.policy.hub2.target).toBe(12);
+  });
+
+  it("apply-to-all fills every size field and touches nothing else", async () => {
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const everySize = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "4" } }); });
+    const val = (label) => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === label)[0].props.value;
+    for (const sz of ["5.5", "7", "8"]) {
+      expect(val(`Hub 2 ${sz} Keep`)).toBe("4");
+      expect(val(`Hub 2 ${sz} Minimum`)).toBe("2");     // ceil(4/2), the same default a typed Keep gets
+      expect(val(`Hub 2 ${sz} Ask at`)).toBe("");        // a separate decision, left alone
+    }
+    // clearing it puts every size back to blank — "every size" in both directions
+    await act(async () => { everySize.props.onChange({ target: { value: "" } }); });
+    for (const sz of ["5.5", "7", "8"]) expect(val(`Hub 2 ${sz} Keep`)).toBe("");
+  });
+});
+
+// ── THE FLAG THAT CHANGES WHAT EVERY NUMBER MEANS ────────────────────────────
+describe("the banner reports a perSize flip", () => {
+  it("says so even when no number changed", () => {
+    const before = { hub2: { target: 5, minQty: 3 } };
+    const after = { perSize: true, hub2: { target: 5, minQty: 3 } };
+    const out = changedFields(before, after, { perSize: true });
+    expect(out.some((c) => c.field === "perSize" && c.to === true)).toBe(true);
+    expect(out.find((c) => c.field === "perSize").text).toMatch(/every size/);
+  });
+  it("and says nothing when the flag is unchanged", () => {
+    const before = { perSize: true, hub2: { target: 5, minQty: 3 } };
+    const after = { perSize: true, hub2: { target: 5, minQty: 3 } };
+    expect(changedFields(before, after, { perSize: true })).toEqual([]);
+  });
+  it("perSizeMode is the category's run, not what was saved last time", () => {
+    expect(perSizeMode({ sizeRun: ["S", "M"], perSize: false })).toBe(true);
+    expect(perSizeMode({ sizeRun: [], perSize: true })).toBe(false);
+    expect(perSizeMode(null)).toBe(false);
   });
 });

@@ -74,6 +74,7 @@ import {
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, bySizeRank, sizeLabel,
+  perSizeMode, setEverySize,
   mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
@@ -279,9 +280,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   const parent = parentKey ? allEntries.find((c) => c.key === parentKey) || null : null;
   const destinations = census?.destinations || [];
   const errors = useMemo(() => validateDraft(draft), [draft]);
-  const keyNow = useMemo(() => previewKey(openKey, draft, { perSize: open?.perSize }), [openKey, draft, open]);
-  const proposed = useMemo(() => policyFromDraft(draft, { perSize: open?.perSize }), [draft, open]);
-  const banner = useMemo(() => changedFields(open?.entry || null, proposed), [open, proposed]);
+  // DERIVED, not read back from what was saved last time — see perSizeMode.
+  const perSize = perSizeMode(open);
+  const keyNow = useMemo(() => previewKey(openKey, draft, { perSize }), [openKey, draft, perSize]);
+  const proposed = useMemo(() => policyFromDraft(draft, { perSize }), [draft, perSize]);
+  const banner = useMemo(() => changedFields(open?.entry || null, proposed, { perSize }), [open, proposed, perSize]);
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());
   const stamp = lastChange(census?.history);
@@ -348,6 +351,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     });
   };
 
+  // The apply-to-all input. One number into every size field at once — the
+  // typing aid the per-size grid needed: six sizes at one number was six
+  // entries, which is how a flat run gets typed wrong.
+  const setAllSizes = (loc, value, sizeRun) => {
+    setPreview(null);
+    setDraft((d) => ({ ...d, [loc]: setEverySize(d[loc], value, sizeRun) }));
+  };
+
   // Arming a store that does not carry the category is its own deliberate act,
   // with its own confirmation, because it invents demand rather than adjusting
   // it. See the header note.
@@ -367,9 +378,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       if (!ok) return;
     }
     setPreview(null);
+    // A SIZED CATEGORY ARMS SIZE BY SIZE. The gate used to be the STORED
+    // perSize flag, so a category that had never been armed per-size could only
+    // ever be given one number — which, for a sized category, arms nothing at
+    // all. The run is the condition now: it comes from live data, and where
+    // there is none (a one-size category) the single field is still correct.
     const run = open?.sizeRun || [];
     setDraft((d) => ({ ...d,
-      [loc]: open?.perSize && run.length
+      [loc]: run.length
         ? seedPerSizeLocation(run)
         : seedLocation(open?.effectiveEntry?.[loc]?.target ?? null) }));
   };
@@ -642,7 +658,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             category={open} parent={parent} destinations={destinations} draft={draft} errors={errors}
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
             scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
-            onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
+            onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill} onSetAll={setAllSizes}
             onSwitchShape={switchShape} onScope={setCarriedOnly} onPreview={runPreview} onSave={save} onBack={closeCategory}
             onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
@@ -786,7 +802,7 @@ function CategoryRow({ category: c, onOpen }) {
 // ═════════════════════════════════════════════════════════════════════════════
 function CategoryDetail({
   category: c, parent, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
-  saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
+  saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape,
   onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
@@ -845,7 +861,7 @@ function CategoryDetail({
           <LocationBoxes
             category={c} rows={locRows} draft={draft} errors={errors}
             onField={onField} onArm={onArm} onDrop={onDrop}
-            onQuickFill={onQuickFill} onSwitchShape={onSwitchShape} onScope={onScope}
+            onQuickFill={onQuickFill} onSetAll={onSetAll} onSwitchShape={onSwitchShape} onScope={onScope}
           />
 
           {banner.length > 0 && (
@@ -962,9 +978,12 @@ function NumInputs({ row, err, onChange, ariaPrefix, small = false }) {
   );
 }
 
-function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSwitchShape, onScope }) {
+function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape, onScope }) {
   const sizeRun = c.sizeRun || [];
-  const canPerSize = c.perSize && sizeRun.length > 0;
+  // NOT `c.perSize && …`. The stored flag is what made this screen unable to
+  // arm soccer jerseys per size at all; the category's own run is the condition
+  // that means what it says. See perSizeMode in enginePolicyCore.
+  const canPerSize = sizeRun.length > 0;
   const smallBtn = { padding: "5px 10px", fontSize: ".73rem" };
   return (
     <div>
@@ -1022,7 +1041,7 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
             {inDraft && perSize && (
               <SizeRows loc={r.loc} row={row} sizeRun={sizeRun} partial={c.sizeRunPartial || []} extra={c.sizeRunExtra || []}
                 memberCount={c.sizeRunMembersWithRun ?? (c.memberCategoryKeys || []).length} errors={errors}
-                onField={onField} onQuickFill={onQuickFill} />
+                onField={onField} onQuickFill={onQuickFill} onSetAll={onSetAll} />
             )}
 
             {!inDraft && (
@@ -1041,11 +1060,12 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
         );
       })}
 
-      {c.perSize && !sizeRun.length && (
+      {!sizeRun.length && !c.sizeRunOneSize && (
         // THE STOP. A category the registry calls sized whose run cannot be
-        // worked out from live data does not get a guessed list of sizes.
+        // worked out from live data — nor from the registry — does not get a
+        // guessed list of sizes.
         <div style={{ color: AMBER, fontSize: ".8rem", padding: "4px 0" }}>
-          No size run can be worked out from live data — size by size is not offered.
+          No size run can be worked out — size by size is not offered.
         </div>
       )}
     </div>
@@ -1057,11 +1077,15 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
 // their inputs. A size only SOME of a group's members carry is marked ◐. The
 // quick-fill copies the first size that has a number into every size — as its
 // own row, which is the point.
-function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onField, onQuickFill }) {
+function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onField, onQuickFill, onSetAll }) {
   const keys = [...new Set([...(sizeRun || []), ...Object.keys(row.sizes || {})])].sort(bySizeRank);
   const anyFilled = Object.values(row.sizes || {}).some((r) => String(r?.target ?? "").trim() !== "");
   const partialSet = new Set(partial || []);
   const anyPartial = keys.some((k) => partialSet.has(k));
+  // Held locally: it is a control, not a value the policy carries. Emptying it
+  // clears every size back to blank, which is what "every size" has to mean in
+  // both directions.
+  const [allValue, setAllValue] = useState("");
   return (
     <>
       <div className="ep-size">
@@ -1086,6 +1110,16 @@ function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onFi
       })}
       {errors[loc] && <div className="ep-err">{errors[loc]}</div>}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        {/* ONE NUMBER INTO EVERY SIZE. Typing a flat run six times is how a
+            flat run gets typed wrong, and "Same for every size" only helps once
+            a size already has a number in it. This is the entry point. */}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: ".73rem", color: GRAY }}>
+          Every size
+          <input inputMode="numeric" value={allValue}
+            onChange={(e) => { setAllValue(e.target.value); onSetAll(loc, e.target.value, sizeRun); }}
+            aria-label={`${locLabel(loc)} — set every size`}
+            style={{ ...input, width: 58, textAlign: "center", padding: "5px 4px", fontSize: ".8rem" }} />
+        </label>
         {anyFilled && (
           <button onClick={() => onQuickFill(loc, sizeRun)} style={{ ...bGhost, padding: "5px 10px", fontSize: ".73rem" }}>
             Same for every size

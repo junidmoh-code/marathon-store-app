@@ -637,6 +637,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       sizeRun: run.sizes,
       sizeRunExtra: run.extra,
       sizeRunEmpty: run.empty,
+      // "This category has no sizes" and "this category's sizes cannot be
+      // worked out" are different problems with different fixes, so the card
+      // gets both answers rather than one flag it has to guess about.
+      sizeRunOneSize: run.oneSize === true,
       // Explicit rows, counted for EVERY category rather than only armed ones.
       ownRowCells: rows ? rows.cells : 0,
       ownRowProducts: rows ? rows.products.size : 0,
@@ -728,6 +732,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       sizeRun: run.sizes,
       sizeRunExtra: [],
       sizeRunEmpty: run.empty,
+      // A group is one-size only if every member with a run is; the run itself
+      // is the union, so an empty union on a group of one-size members is the
+      // same "no sizes" answer a category gives.
+      sizeRunOneSize: run.membersWithRun.length === 0,
       sizeRunPartial: run.partial,
       sizeRunCarriedBy: run.carriedBy,
       sizeRunByMember: run.byMember,
