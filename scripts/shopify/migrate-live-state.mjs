@@ -24,6 +24,8 @@
 import { createRequire } from "module";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { planMigration } from "./migrateLiveStatePlan.mjs";
+import { serverNowMs } from "./publishNode.mjs";
+import { buildOffRecord, offAuditFields } from "../../src/components/shopify/publishAudit.js";
 
 const COMMIT = process.argv.includes("--commit");
 
@@ -84,10 +86,26 @@ if (!COMMIT) {
 // the operator just set) must never be clobbered by a stale merge.
 let applied = 0;
 for (const { pid } of plans) {
+  // EVERY path to off writes a record, and this is a path to off: a legacy
+  // "draft" node becomes live+off here. It is a one-shot migration that has
+  // already run, so this is belt and braces — but "no exceptions" is the rule,
+  // and an exception nobody could name is how the last audit gap happened
+  // (spec review, 2026-08-28).
+  const at = await serverNowMs(db);
   const result = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
     const merge = planMigration(cur);
     if (!merge) return cur; // already migrated by the time we got here
-    return { ...cur, ...merge, updatedAt: Date.now(), updatedBy: "script:migrate-live-state" };
+    // A transaction returns the WHOLE node, so offAuditFields (which merges and
+    // trims a map) is right here — unlike the update() paths, which add a child.
+    const audit = merge.liveState === "off"
+      ? offAuditFields(cur, buildOffRecord({
+          at,
+          actor: "script:migrate-live-state",
+          reasonCode: "script",
+          detail: `migrated from the legacy state "${cur?.state}" — a draft existed on Shopify but was never published`,
+        }), at)
+      : {};
+    return { ...cur, ...merge, ...audit, updatedAt: at, updatedBy: "script:migrate-live-state" };
   });
   if (!result.committed) { console.error(`✗ ${pid}: transaction did not commit`); continue; }
   applied += 1;

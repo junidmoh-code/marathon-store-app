@@ -23,10 +23,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
-  CONDITIONS, checkCleanName, blockedReason, reviewStateFor, effectiveNameFor,
+  CONDITIONS, checkCleanName, blockStatus, reviewStateFor, effectiveNameFor,
   isOn, isPendingSwitch, canGoLive, effectivePhotoList, normalizedState,
   pendingProposal, proposalApplyBlocker,
 } from "./shopifyPublishCore";
+import { describeOff } from "./publishAudit";
 import { MAX_PUBLISH_PHOTOS, buildDescriptionHtml } from "./publishShared";
 import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos,
          applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
@@ -288,7 +289,12 @@ export function PhotoStrip({ product, node, locked, onChanged }) {
         ))}
         {!locked && (
           <>
-            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp"
+            {/* PLAIN image/*, not a list. A narrow accept list is what the
+                phone picker greys the camera roll out with — an iPhone whose
+                photos are HEIC would show them all unselectable, so the person
+                never even reaches the upload to be refused by it. The real
+                gate is uploadFileProblem, which runs on whatever comes back. */}
+            <input ref={fileRef} type="file" accept="image/*"
               onChange={handleFile} style={{ display: "none" }} />
             <button disabled={busy || uploading} onClick={() => fileRef.current?.click()}
               style={{ width: 84, height: 84, borderRadius: 9, cursor: "pointer", fontFamily: FONT,
@@ -347,8 +353,12 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
   const pending = isPendingSwitch(node);
   const photoList = useMemo(() => effectivePhotoList(product, node), [product, node]);
   const verdict = checkCleanName(draft); // the LIVE trigger check
-  const blocked = blockedReason(node);
+  const { blocked, staleNote } = blockStatus(node, effectiveNameFor(product, node).name);
   const isLive = state === "live";
+  // Why it came off the shop, in one sentence — null while it is on. DECLARED
+  // AFTER isLive, not beside `on`: a const read before its declaration is in
+  // the temporal dead zone and throws at render.
+  const offStory = isLive && !on ? describeOff(node) : null;
   // An edit after approval un-approves in the UI: saving returns to approving
   // until the new text is signed off, so Publish can never ship a name the
   // reviewer hasn't actually confirmed (the dialog shows the draft verbatim).
@@ -529,8 +539,27 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
               <div style={{ fontSize: 10.5, color: RED, marginTop: 4 }}>{verdict.problems.join(" · ")}</div>
             )}
             {nameLocked ? (
-              <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
-                Listing is ON — switch it off to rename. The reconciler re-syncs the name at the next turn-on.
+              // NOT a dead sentence any more. "Switch it off to rename" was the
+              // instruction that produced the whole "products go off by
+              // themselves" report (docs/PUBLISH-AUTO-OFF.md): people followed
+              // it, the switch recorded nothing, and the row afterwards could
+              // only say "off". The action is here, it records off_to_rename,
+              // and the row then says so and offers Publish once the new name
+              // is saved.
+              <div style={{ marginTop: 5 }}>
+                <div style={{ fontSize: 10, color: GRAY }}>
+                  Listing is ON — it has to come off the shop to be renamed. The reconciler
+                  re-syncs the name at the next turn-on.
+                </div>
+                <button disabled={busy} onClick={() => run(
+                  () => setDesiredState(product.id, node, "off", {
+                    reasonCode: "off_to_rename",
+                    detail: "switched off from the product page so its listing name could be changed",
+                  }),
+                  (res) => onChanged(product.id, res.node))}
+                  style={{ ...bGray, padding: "7px 12px", fontSize: "0.72rem", marginTop: 7 }}>
+                  Take it off the shop to rename
+                </button>
               </div>
             ) : needsSave && verdict.ok ? (
               <button disabled={busy} onClick={approve}
@@ -600,11 +629,14 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
               </div>
             </div>
           )}
+          {staleNote && (
+            <div style={{ fontSize: 11, color: GRAY, lineHeight: 1.5, marginBottom: 8 }}>{staleNote}</div>
+          )}
           {isLive && (
             <div style={{ fontSize: 11, color: GRAY, marginBottom: 8 }}>
               {on
                 ? (node?.liveAt ? `Went live ${new Date(node.liveAt).toLocaleDateString()}` : "Live")
-                : "On Shopify, not published"}
+                : (offStory?.text || "On Shopify, not published")}
               {node?.adminUrl && (
                 <>
                   {" · "}
@@ -613,6 +645,16 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
                   </a>
                 </>
               )}
+            </div>
+          )}
+          {/* THE RETURN LEG, SAID OUT LOUD. A product taken off to be renamed,
+              whose new name has since been saved, is finished waiting — and
+              nothing in the app ever said so, which is why 97 of them have sat
+              off since 22 August. This is a SENTENCE, not an action: nothing
+              here switches a product on. */}
+          {isLive && !on && offStory?.renamedSince && (
+            <div style={{ fontSize: 11.5, color: GREEN, fontWeight: 700, marginBottom: 8, lineHeight: 1.5 }}>
+              The new name is saved — this is ready to go back on the shop.
             </div>
           )}
 
@@ -631,7 +673,10 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
                 On
               </button>
               <button disabled={busy || pending || !on}
-                onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
+                onClick={() => run(() => setDesiredState(product.id, node, "off", {
+                  reasonCode: "switched_off",
+                  detail: "switched off with the On/Off control on the product page",
+                }), (res) => onChanged(product.id, res.node))}
                 style={{ ...(!on ? tabOn : tabOff), padding: "8px 16px", fontSize: "0.76rem" }}>
                 Off
               </button>
@@ -644,7 +689,10 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
                 Saved — waiting for the reconciler run to send it to Shopify.
               </span>
               <button disabled={busy}
-                onClick={() => run(() => setDesiredState(product.id, node, "off"), (res) => onChanged(product.id, res.node))}
+                onClick={() => run(() => setDesiredState(product.id, node, "off", {
+                  reasonCode: "publish_cancelled",
+                  detail: "the pending publish was cancelled from the product page",
+                }), (res) => onChanged(product.id, res.node))}
                 style={{ background: "none", border: "none", cursor: "pointer", fontFamily: FONT,
                          fontSize: "0.76rem", fontWeight: 700, color: GRAY, padding: "8px 4px" }}>
                 Cancel

@@ -5,8 +5,8 @@
 import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
-  normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason,
-  STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker, effectivePhotoList,
+  normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason, blockStatus,
+  STATE_FILTERS, reviewStateFor, publishTabFor, batchSelectBlocker, effectivePhotoList,
   isPublishableProduct, PRICE_RECORD_BLOCKER,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY, normalizePhotoList } from "./publishShared";
@@ -189,13 +189,21 @@ describe("reviewStateFor — the page's row/filter state", () => {
     // vision run's output to be reachable at all.
     expect(STATE_FILTERS.some((f) => f.key === "proposed")).toBe(true);
   });
-  it("matchesStateFilter — all matches everything, others match exactly", () => {
-    expect(matchesStateFilter("all", "awaiting")).toBe(true);
-    expect(matchesStateFilter("all", "live")).toBe(true);
-    expect(matchesStateFilter("awaiting", "awaiting")).toBe(true);
-    expect(matchesStateFilter("awaiting", "approved")).toBe(false);
-    expect(matchesStateFilter("blocked", "blocked")).toBe(true);
-    expect(matchesStateFilter("live", "awaiting")).toBe(false);
+  it("publishTabFor — Live is what a customer can SEE, everything else awaits", () => {
+    expect(publishTabFor({ state: "live", liveState: "on" })).toBe("live");
+    // A live product that is switched OFF is not on the shop and is not
+    // finished. It used to sit behind a second collapsed heading inside the
+    // Live tab, which is where 152 of them went unnoticed.
+    expect(publishTabFor({ state: "live", liveState: "off" })).toBe("awaiting");
+    expect(publishTabFor({ state: "blocked" })).toBe("awaiting");
+    expect(publishTabFor({ state: "awaiting" })).toBe("awaiting");
+    // No node at all is the purest form of awaiting: never reviewed.
+    expect(publishTabFor(null)).toBe("awaiting");
+    expect(publishTabFor(undefined)).toBe("awaiting");
+    // A LEGACY live node with no liveState reads as ON (isOn's fallback) — it
+    // was published under the old model, and it is on the shop.
+    expect(publishTabFor({ state: "live" })).toBe("live");
+    expect(publishTabFor({ state: "draft" })).toBe("awaiting");
   });
 });
 
@@ -231,5 +239,52 @@ describe("isPublishableProduct — price records never reach the storefront", ()
   it("callers that pass no product keep the old three-argument behaviour", () => {
     expect(batchSelectBlocker(READY, "Slide brown", 1)).toBeNull();
     expect(batchSelectBlocker({ state: "awaiting" }, "Slide brown", 1)).toBe("set a condition grade first");
+  });
+});
+
+
+// ─── A BLOCK IS ONLY TRUE WHILE THE NAME IT WAS ABOUT IS ─────────────────────
+describe("blockStatus — a refusal recorded under a name the product no longer has", () => {
+  const HANDLE_REASON =
+    'Shopify product gid://shopify/Product/9338746241173 already owns handle "sneaker-black" ' +
+    "(an orphan from a crashed run, or a legacy/twin product)";
+  const COND = CONDITIONS[0];
+
+  it("stands down when the current name produces a different handle", () => {
+    const v = blockStatus({ state: "blocked", condition: COND, blockedReason: HANDLE_REASON },
+                          "Metal lace-charm triple black leather low-top");
+    expect(v.blocked).toBe(false);
+    expect(v.reason).toBe(null);
+    expect(v.staleNote).toMatch(/earlier attempt under a different name/);
+  });
+
+  it("STANDS when the name still produces the handle that collided", () => {
+    const v = blockStatus({ state: "blocked", condition: COND, blockedReason: HANDLE_REASON }, "Sneaker black");
+    expect(v.blocked).toBe(true);
+    expect(v.reason).toBe(HANDLE_REASON);
+    expect(v.staleNote).toBe(null);
+  });
+
+  it("STANDS for every refusal a rename does not answer", () => {
+    for (const reason of [
+      "needs at least one photo",
+      "canonical Shopify object fails compliance: title: trigger \"nike\"",
+      "catalogue sizes with no Shopify variant: 9, 10",
+    ]) {
+      const v = blockStatus({ state: "blocked", condition: COND, blockedReason: reason }, "A brand new name");
+      expect(v.blocked).toBe(true);
+      expect(v.reason).toBe(reason);
+    }
+  });
+
+  it("a condition-unset block is about the condition, whatever the name did", () => {
+    const v = blockStatus({ state: "blocked", blockedReason: HANDLE_REASON }, "A brand new name");
+    expect(v.blocked).toBe(true);
+    expect(v.reason).toMatch(/Condition not set/);
+  });
+
+  it("an unblocked node is not blocked and has nothing to note", () => {
+    expect(blockStatus({ state: "awaiting" }, "x")).toEqual({ blocked: false, reason: null, staleNote: null });
+    expect(blockStatus(null, "x")).toEqual({ blocked: false, reason: null, staleNote: null });
   });
 });

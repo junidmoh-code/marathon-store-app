@@ -1,7 +1,23 @@
 // ─── SHOPIFY PUBLISHING — THE FULL-PAGE TAB ──────────────────────────────────
 // Junid's review surface for the one-way Shopify push. A home-row entry opens
-// THIS page: a sticky header (search + state filter) over the catalogue
-// grouped into collapsible category sections, all collapsed until opened.
+// THIS page: a sticky header (search + tabs) over ONE FLAT LIST.
+//
+// ── NO CATEGORIES (owner instruction 2026-08-28) ─────────────────────────────
+// This page used to group the catalogue into thirty-odd collapsible category
+// sections, all collapsed until opened. Categories are a fact about what a
+// product IS; publishing only ever asks where it is in the pipeline — so the
+// grouping put a heading between the reviewer and every answer, and on a phone
+// "what is on the shop" took thirty taps. Now there are two tabs and a lane:
+//
+//   Live            — published and ON. What a customer can see right now.
+//   Awaiting review — everything else, in one list: never reviewed, reviewed
+//                     and unpublished, refused, and ON SHOPIFY BUT OFF. That
+//                     last group had been filed behind a second collapsed
+//                     heading inside the old Live tab, which is where 152
+//                     products have been sitting unnoticed — 97 of them
+//                     switched off in August to be renamed and never put back
+//                     (docs/PUBLISH-AUTO-OFF.md).
+//   Suggested names — the vision-naming review lane, unchanged.
 //
 // The list is NAVIGATION (owner spec 2026-08-14): tapping a row opens that
 // product's own full page (ShopifyProductPage, hash route #shopify/{pid} —
@@ -11,25 +27,24 @@
 // the condition chips (batch selection needs a grade settable in place — a
 // condition-unset row is unselectable) and the batch checkboxes with Publish
 // Selected. Back from a product returns here at the same scroll position
-// (UserManagement.jsx's listScrollRef treatment) with the same categories
-// open (this component stays mounted under the detail, so section state
-// survives).
+// (UserManagement.jsx's listScrollRef treatment) with the same tab, search and
+// selection (this component stays mounted under the detail).
 //
 // Publishing writes desiredState INTENT only. The reconciler
 // (scripts/shopify/reconcile.mjs) is what actually talks to Shopify — the
 // browser cannot hold the client secret and NEVER calls Shopify — and the row
-// shows pending until it confirms. The Live filter splits into On and Off
-// groups.
+// shows pending until it confirms.
 //
 // LOAD DISCIPLINE (hard requirement — this is the read pattern that keeps the
-// Firebase bill flat): nothing whole-node, nothing eager.
+// Firebase bill flat): nothing whole-node, nothing eager. Losing the sections
+// did NOT loosen it; the WINDOW took over their job.
 //   · The catalogue itself arrives via the app-wide /products subscription in
 //     App.jsx (the `products` prop) — this page adds NO catalogue read.
 //   · /shopify_publish is read in three partial slices (see the store):
 //     indexed per-state queries for the pipeline, a REST shallow KEY list for
-//     the awaiting-review counts, and per-pid bodies fetched only when a
-//     category section expands (or a product page opens). Thumbnails carry
-//     loading="lazy".
+//     the awaiting-review counts, and per-pid bodies fetched only for the rows
+//     actually on screen. Live costs nothing extra at all — every live node
+//     arrives in the mount query. Thumbnails carry loading="lazy".
 //
 // Structure and styling match the existing full-page views: the top bar and
 // Thumb follow LabelPrintView.jsx, rows use the home list's separator
@@ -38,11 +53,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
-  CONDITIONS, STATE_FILTERS, checkCleanName, blockedReason, reviewStateFor, matchesStateFilter,
+  CONDITIONS, STATE_FILTERS, checkCleanName, blockStatus, reviewStateFor, publishTabFor,
   pendingProposal, proposalApplyBlocker,
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
   isPublishableProduct,
 } from "./shopifyPublishCore";
+import { describeOff } from "./publishAudit";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
@@ -57,6 +73,13 @@ const UNCAT = "Uncategorised";
 // refresh below. 20s is the reconciler's own granularity: a run takes tens of
 // seconds per product, so anything faster just re-reads the same answer.
 const PENDING_POLL_MS = 20000;
+
+// How many rows of a flat list render at once. Every visible row costs one
+// point read of its publishing node, so this is a bandwidth number as much as
+// a rendering one: it is the size of the fetch a tab change makes. A screenful
+// on a phone is about a dozen rows, so 60 is several scrolls' worth in hand
+// without ever approaching the whole-node read this page refuses to make.
+const PAGE_SIZE = 60;
 
 // `#shopify/{pid}` is the product-page route — the publishing twin of the
 // admin catalogue's #product/{id}. Returns null when the hash is anything
@@ -257,8 +280,12 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
   const on = isOn(node);
   const pending = isPendingSwitch(node);
   const photoCount = effectivePhotoList(product, node).photos.length;
-  const blocked = blockedReason(node);
+  // The block is judged against the name the product has NOW — a refusal
+  // recorded under a name it no longer carries is not a block (blockStatus).
+  const { blocked, staleNote } = blockStatus(node, effective.name);
   const nameVerdict = checkCleanName(effective.name);
+  // Why this product came off the shop, in one sentence — null while it is on.
+  const offStory = state === "live" && !on ? describeOff(node) : null;
 
   const setGrade = async (c) => {
     setBusy(true); setError(null);
@@ -372,10 +399,18 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           {state === "live" && (
             // The live row's provenance line: when it went ON (the
             // reconciler's liveAt stamp) and the direct Shopify admin link.
+            //
+            // OFF ROWS SAY WHY, AND WHEN. "On Shopify, not published" was all
+            // this line ever said, and it is the sentence 97 products have
+            // been sitting behind since 22 August — switched off so their
+            // brand-leaking names could be changed, renamed, and never put
+            // back (docs/PUBLISH-AUTO-OFF.md). describeOff is the one builder
+            // for that sentence; it degrades honestly for a node that went off
+            // before the audit shipped.
             <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
               {on
                 ? (node?.liveAt ? `Went live ${new Date(node.liveAt).toLocaleDateString()}` : "Live")
-                : "On Shopify, not published"}
+                : (offStory?.text || "On Shopify, not published")}
               {node?.adminUrl && (
                 <>
                   {" · "}
@@ -388,6 +423,9 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           )}
           {blocked && (
             <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>⛔ {blocked}</div>
+          )}
+          {staleNote && (
+            <div style={{ fontSize: 10.5, color: GRAY, marginTop: 5 }}>{staleNote}</div>
           )}
           {error && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{error}</div>}
         </div>
@@ -423,7 +461,11 @@ export function useShopifyAwaitingCount(products, enabled) {
 export default function ShopifyPublishView({ products = [], onExit }) {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [filter, setFilter] = useState("all");
+  // Opens on Awaiting review — the work. "All" is gone with the categories,
+  // and the home badge this page is reached from counts exactly this tab, so
+  // landing anywhere else would answer a different question than the one that
+  // was tapped.
+  const [filter, setFilter] = useState("awaiting");
 
   // The search drives section matching (and, when narrow enough, section
   // auto-open + body fetches) — debounce it so a fast typist doesn't fan out
@@ -441,7 +483,6 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const [batchConfirm, setBatchConfirm] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const [nodes, setNodes] = useState({});          // every node body this session has loaded
-  const [open, setOpen] = useState(() => new Set());
   const [loadError, setLoadError] = useState(null);       // mount reads failed — page unusable
   const [sectionError, setSectionError] = useState(null); // a body batch failed — clears on the next good batch
   const requestedPids = useRef(new Set());         // in-flight/done per-pid body fetches
@@ -522,97 +563,83 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return m;
   }, [products]);
 
-  // The catalogue grouped by its existing category field, subcategory kept for
-  // the in-section subheaders. Categories and their products sort by name.
-  const sections = useMemo(() => {
-    const byCat = new Map();
-    for (const p of products) {
-      if (!p?.id || !p?.name) continue;
-      // NOT MERCHANDISE — dropped before grouping, so the "Price Products"
-      // heading Junid saw on this page does not exist at all. Nothing here can
-      // be opened, named, graded, selected or nominated, because there is no
-      // row. The reconciler refuses them independently (see reconcile.mjs).
-      if (!isPublishableProduct(p)) continue;
-      const cat = String(p.category || UNCAT);
-      if (!byCat.has(cat)) byCat.set(cat, []);
-      byCat.get(cat).push(p);
-    }
-    const cmp = (a, b) => String(a).localeCompare(String(b), undefined, { sensitivity: "base" });
-    return [...byCat.entries()]
-      .sort(([a], [b]) => cmp(a, b))
-      .map(([cat, list]) => ({
-        cat,
-        list: list.sort((a, b) =>
-          cmp(a.subcategory || "", b.subcategory || "") || cmp(a.name, b.name)),
-      }));
-  }, [products]);
-
-  // Per-section view data under the current search + filter. Counts come from
-  // cheap sources only: key ABSENCE prices "awaiting", the pipeline queries
-  // price live/blocked, "all" is the catalogue itself. (A node holding only a
-  // condition counts as seen here even though its row still says "awaiting"
-  // once its body loads — the honest number needs bodies, and bodies are
-  // strictly on-expand. The count is an approximation; the ROWS are always
-  // judged from real fields.)
-  // `pending` = displayed pids whose body is still unfetched — the section
-  // renders rows only once it hits zero, so a row never mounts with a node it
-  // doesn't have yet.
+  // ─── ONE FLAT LIST PER TAB ────────────────────────────────────────────────
+  // Categories are gone (owner instruction 2026-08-28). They grouped the
+  // catalogue by a fact the publishing job never asks about, and thirty
+  // collapsible headings on a phone meant "what is on the shop" took thirty
+  // taps to answer. Each tab is now one list, sorted by the name the listing
+  // ships under — the string the reviewer is actually reading.
+  //
+  // READ ECONOMY IS UNCHANGED, and it had to be: this page's whole discipline
+  // is never pulling /shopify_publish whole.
+  //   · Live reads NOTHING extra. The pipeline query already loaded every
+  //     live node at mount, and a live product is on-the-shop by its node.
+  //   · Awaiting is WINDOWED. Bodies are fetched for the rows on screen and
+  //     nothing else (the effect below), so a 2,700-row list costs the same
+  //     as one screen of it until somebody asks for more.
   const q = debouncedQuery.trim().toLowerCase();
-  const viewSections = useMemo(() => {
-    return sections.map(({ cat, list }) => {
-      const matched = q
-        ? list.filter((p) =>
-            String(p.name || "").toLowerCase().includes(q) ||
-            String(nodes[p.id]?.cleanName || "").toLowerCase().includes(q))
-        : list;
-      let count;
-      if (filter === "all") count = matched.length;
-      else if (filter === "awaiting") {
-        // Key absence, refined by any bodies already loaded: a node that
-        // exists but was never name-approved (condition-only) still awaits
-        // review, and pricing it from keys alone would hide its whole
-        // section under this filter.
-        count = keys ? matched.filter((p) =>
-          !keys.has(p.id) ||
-          (nodes[p.id] !== undefined && reviewStateFor(nodes[p.id]) === "awaiting")).length : null;
-      }
-      else count = pipeline ? matched.filter((p) => pipeline[p.id] && reviewStateFor(pipeline[p.id]) === filter).length : null;
-      const pending = keys ? matched.filter((p) => keys.has(p.id) && nodes[p.id] === undefined).length : 0;
-      return { cat, list, matched, count, pending };
-    }).filter((s) => (q ? s.matched.length > 0 : true))
-      .filter((s) => (filter === "all" ? true : s.count !== 0));
-  }, [sections, q, filter, keys, pipeline, nodes]);
+  const matchesQuery = useCallback((p, node) => {
+    if (!q) return true;
+    return String(p.name || "").toLowerCase().includes(q) ||
+           String(node?.cleanName || "").toLowerCase().includes(q);
+  }, [q]);
 
-  // The Live filter abandons category sections for the owner's real question
-  // — what is ON the storefront and what is OFF — as two collapsible groups
-  // (same header treatment as the category sections). Bodies are already in
-  // hand: the pipeline query loads every live node at mount. Pending rows
-  // group under their CONFIRMED side — the truthful one until the reconciler
-  // says otherwise.
-  const liveGroups = useMemo(() => {
+  // ── THE SORT KEY MUST NOT BE SOMETHING THE WINDOW FETCHES ─────────────────
+  // This sorted on the LISTING name, which comes from the node — and the nodes
+  // are exactly what the window goes and fetches for the rows it is showing. So
+  // every batch of bodies re-sorted the list, changed which products fell
+  // inside the window, and sent the effect after a fresh set: a feedback loop
+  // that terminates only because a pid is never fetched twice, having walked an
+  // unbounded slice of a 3,600-product catalogue to get there. On this page, of
+  // all pages (CodeRabbit review, 2026-08-28).
+  //
+  // The catalogue name is already in hand for every product, costs nothing, and
+  // never moves under us — so the window is settled from the first render and
+  // fetches exactly the rows it shows. It is also the name staff know and the
+  // one the row's top line carries.
+  const byCatalogueName = useCallback((a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }) ||
+    String(a.id).localeCompare(String(b.id)), []);
+
+  // LIVE — published and on. Built from NODES, not from a catalogue walk: the
+  // question "what can a customer see" is answered by the node, and every one
+  // of them is already in hand from the mount query.
+  const liveList = useMemo(() => {
     if (filter !== "live") return null;
-    // productById, NOT a fresh walk of `products` — this view is built from
-    // NODES rather than from `sections`, so its own map would be the one place
-    // on the page a price record could still surface (with a live node written
-    // before the exclusion shipped). Sharing the filtered map closes that.
-    const byId = productById;
-    const on = [];
-    const off = [];
+    const out = [];
     for (const [pid, n] of Object.entries(nodes)) {
-      if (!n || normalizedState(n) !== "live") continue;
-      const p = byId.get(pid);
-      if (!p) continue;
-      if (q && !(String(p.name || "").toLowerCase().includes(q) ||
-                 String(n.cleanName || "").toLowerCase().includes(q))) continue;
-      (isOn(n) ? on : off).push(p);
+      if (!isOn(n)) continue;
+      // productById, never a fresh walk — it is the one index that keeps a
+      // price record out of every list on this page.
+      const p = productById.get(pid);
+      if (!p || !matchesQuery(p, n)) continue;
+      out.push(p);
     }
-    const cmp = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" });
-    on.sort(cmp); off.sort(cmp);
-    return [
-      { key: "__liveOn",  label: "On — visible to customers", list: on },
-      { key: "__liveOff", label: "Off — on Shopify, not published", list: off },
-    ];
-  }, [filter, productById, nodes, q]);
+    return out.sort(byCatalogueName);
+  }, [filter, nodes, productById, matchesQuery, byCatalogueName]);
+
+  // AWAITING REVIEW — everything that is not on the shop. Never reviewed,
+  // reviewed and unpublished, refused, and ON SHOPIFY BUT OFF: that last group
+  // is the 152 nodes the old Live tab filed under a second collapsed heading,
+  // including the 97 switched off in August to be renamed and never put back.
+  // They are not live and they are not finished, so they belong here.
+  //
+  // A product whose body has not loaded yet is INCLUDED. Its tab is decided by
+  // publishTabFor(undefined) → "awaiting", which is right: a node we have not
+  // read cannot be on the storefront, because every on node arrived at mount.
+  const awaitingList = useMemo(() => {
+    if (filter !== "awaiting") return null;
+    const out = [];
+    for (const p of productById.values()) {
+      const n = nodes[p.id];
+      if (publishTabFor(n) !== "awaiting") continue;
+      if (!matchesQuery(p, n)) continue;
+      out.push(p);
+    }
+    return out.sort(byCatalogueName);
+  }, [filter, productById, nodes, matchesQuery, byCatalogueName]);
+
+  const fullList = liveList || awaitingList;
 
   // ─── THE PROPOSED-NAMES LANE: ITS OWN READ, ON DEMAND AND BOUNDED ──────────
   // Selecting the lane is what fetches it, and it fetches in pages. Awaiting
@@ -722,55 +749,86 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     return out;
   }, [filter, productById, nodes, q, proposalsLoaded]);
 
-  // A section is effectively open when toggled open, or when a search has
-  // narrowed the page far enough that showing the matches outright is cheap.
-  // A broad search (a one-letter query can match most of the catalogue)
-  // leaves sections collapsed — auto-opening them all would fan out a body
-  // fetch per reviewed match, exactly the eager load this page must not do.
-  const totalMatches = q ? viewSections.reduce((n, s) => n + s.matched.length, 0) : 0;
-  const searchExpands = q !== "" && totalMatches <= 60;
-  const isOpen = (cat) => searchExpands || open.has(cat);
+  // ─── THE WINDOW ───────────────────────────────────────────────────────────
+  // A flat Awaiting list is ~2,700 rows. Rendering them all would be slow on a
+  // phone and, far worse, would fetch a node body for every one — the eager
+  // whole-node read this page exists to avoid. So the list is windowed: a
+  // screenful at a time, extended by a tap.
+  //
+  // Reset on a tab change and on a new search, because "show 60 more" means
+  // nothing against a list you are no longer looking at.
+  const [shown, setShown] = useState(PAGE_SIZE);
+  useEffect(() => { setShown(PAGE_SIZE); }, [filter, q]);
+  const visible = useMemo(() => (fullList ? fullList.slice(0, shown) : null), [fullList, shown]);
+  // Pids whose body read FAILED. They must not count as pending: a read that
+  // errored is never coming back on its own — the effect below is keyed on the
+  // window and the window has not changed — so counting it would hold the tab
+  // on "Loading…" for ever, hiding every row AND the retry, on one transient
+  // network blip (Codex review, 2026-08-28). The banner says what happened and
+  // the button re-arms the read.
+  const [failedBodies, setFailedBodies] = useState(() => new Set());
+  // Cleared on a tab change AND on a new search: both rebuild the window, and a
+  // pid carried over as "failed" would render its row from a null node — saying
+  // "awaiting review" about a product whose body simply did not arrive.
+  useEffect(() => { setFailedBodies(new Set()); }, [filter, q]);
+  const retryBodies = useCallback(() => {
+    for (const pid of failedBodies) requestedPids.current.delete(pid);
+    setFailedBodies(new Set());
+    setSectionError(null);
+  }, [failedBodies]);
+  // Rows render only once every visible body is in hand — a row that mounted
+  // without its node would show "awaiting review" for a product that is live,
+  // and then flip.
+  const pendingBodies = useMemo(
+    () => (visible && keys
+      ? visible.filter((p) => keys.has(p.id) && nodes[p.id] === undefined && !failedBodies.has(p.id)).length
+      : 0),
+    [visible, keys, nodes, failedBodies]
+  );
 
-  // On-expand fetch: bodies for exactly the pids a section is about to
-  // display that we don't hold yet. Tracked PER PID (not per category) so a
-  // search-narrowed fetch never masks the rest of the category, and a later
-  // full expand fetches only what's still missing. Missing bodies (deleted
-  // between the shallow read and the get) are recorded as null so `pending`
-  // can settle.
+  // Bodies for exactly the rows on screen, and nothing else. Tracked PER PID so
+  // extending the window fetches only the new slice, and a missing body is
+  // recorded as null so `pendingBodies` can settle.
   useEffect(() => {
-    if (!keys) return;
-    for (const { cat, matched } of viewSections) {
-      if (!isOpen(cat)) continue;
-      const want = matched
-        .filter((p) => keys.has(p.id) && nodes[p.id] === undefined && !requestedPids.current.has(p.id))
-        .map((p) => p.id);
-      if (!want.length) continue;
-      for (const pid of want) requestedPids.current.add(pid);
-      loadNodesFor(want)
-        .then(({ nodes: got, failed }) => {
-          setNodes((prev) => {
-            const next = { ...prev };
-            for (const pid of want) {
-              // FILL, never overwrite: a write committed while this batch was
-              // in flight holds the NEWER node (the store returns it), and a
-              // late read would silently roll it back.
-              if (!failed.includes(pid) && prev[pid] === undefined) next[pid] = got[pid] || null;
-            }
-            return next;
-          });
-          if (failed.length) {
-            for (const pid of failed) requestedPids.current.delete(pid); // let a re-open retry
-            setSectionError(`${failed.length} product record(s) didn't load — reopen the section or adjust the search to retry`);
-          } else {
-            setSectionError(null); // a clean batch clears the stale banner
+    if (!keys || !visible) return;
+    const want = visible
+      .filter((p) => keys.has(p.id) && nodes[p.id] === undefined && !requestedPids.current.has(p.id))
+      .map((p) => p.id);
+    // NOTE the requestedPids guard above is what stops this effect looping: it
+    // is written synchronously, before the async read, and the read's own
+    // setNodes is what the effect re-runs on.
+    if (!want.length) return;
+    for (const pid of want) requestedPids.current.add(pid);
+    loadNodesFor(want)
+      .then(({ nodes: got, failed }) => {
+        setNodes((prev) => {
+          const next = { ...prev };
+          for (const pid of want) {
+            // FILL, never overwrite: a write committed while this batch was
+            // in flight holds the NEWER node (the store returns it), and a
+            // late read would silently roll it back.
+            if (!failed.includes(pid) && prev[pid] === undefined) next[pid] = got[pid] || null;
           }
-        })
-        .catch((e) => {
-          for (const pid of want) requestedPids.current.delete(pid);
-          setSectionError(String(e?.message || e));
+          return next;
         });
-    }
-  }, [viewSections, keys, open, q]); // eslint-disable-line react-hooks/exhaustive-deps
+        if (failed.length) {
+          setFailedBodies((prev) => { const next = new Set(prev); for (const pid of failed) next.add(pid); return next; });
+          setSectionError(`${failed.length} product record(s) didn't load.`);
+        } else {
+          setSectionError(null); // a clean batch clears the stale banner
+        }
+      })
+      .catch((e) => {
+        setFailedBodies((prev) => { const next = new Set(prev); for (const pid of want) next.add(pid); return next; });
+        setSectionError(String(e?.message || e));
+      });
+    // failedBodies IS a dependency, and it is the one that makes Try again
+    // work: clearing the set is the ONLY state that changes on a retry — the
+    // window, the keys and the nodes are all identical — so without it here
+    // the button would clear the flags and re-fire nothing at all. (Caught
+    // checking my own fix for the wedge Codex found; the mutation proof for
+    // it is the "failed body read" render test.)
+  }, [visible, keys, nodes, failedBodies]);
 
   // The product page needs ITS body even when no section fetched it — a
   // direct landing on #shopify/{pid} (reload, shared link) skips the
@@ -978,9 +1036,17 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // view. A row that fails the same gates the publish write enforces
   // (condition unset, no valid name) gets a disabled checkbox with the reason
   // inline — never a silent skip.
-  const selectionEligible = (node) => {
+  // A STALE BLOCK IS NOT A BLOCK. reviewStateFor reads the stored `state`,
+  // which still says "blocked" for a product whose recorded refusal was about
+  // a handle its current name no longer produces — so without this it would
+  // stay unselectable for ever, behind a sentence the row itself no longer
+  // shows. The name is what settles it, so the product comes in too.
+  const selectionEligible = (node, product) => {
+    if (isPendingSwitch(node)) return false;
     const st = reviewStateFor(node);
-    return (st === "awaiting" || st === "approved") && !isPendingSwitch(node);
+    if (st === "awaiting" || st === "approved") return true;
+    if (st !== "blocked" || !product) return false;
+    return !blockStatus(node, effectiveNameFor(product, node).name).blocked;
   };
   // Prune the selection whenever ANY node update disqualifies a selected row
   // — local writes and external ones alike (the window-focus refetch can pull
@@ -1006,7 +1072,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       for (const pid of prev) {
         if (!productById.has(pid)) { next.delete(pid); continue; }
         const node = nodes[pid];
-        if (node !== undefined && !selectionEligible(node)) next.delete(pid);
+        if (node !== undefined && !selectionEligible(node, productById.get(pid))) next.delete(pid);
       }
       return next.size === prev.size ? prev : next;
     });
@@ -1041,7 +1107,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const selectionFor = (p) => {
     if (filter === "live") return undefined;
     const node = nodes[p.id] || null;
-    if (!selectionEligible(node)) return undefined;
+    if (!selectionEligible(node, p)) return undefined;
     const blocker = blockerFor(p);
     return {
       selected: selected.has(p.id),
@@ -1050,9 +1116,11 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       onToggle: () => toggleSelect(p.id, blocker),
     };
   };
-  // The per-category select-all: adds this section's currently-selectable
-  // rows (blocked/ineligible ones stay out and keep their inline reason)
-  // until the cap says stop.
+  // Select-all over the rows ON SCREEN — the category select-all's replacement.
+  // Deliberately the WINDOW and not the whole list: the batch is capped at the
+  // reconciler's per-run cap anyway, and "select all" over 2,700 invisible
+  // products would be a button whose effect nobody could see.
+  // Ineligible rows stay out and keep their inline reason.
   const selectAllIn = (pids) => {
     const next = new Set(selected);
     let capped = false;
@@ -1075,6 +1143,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       window.location.hash = "";
     }
   }, [detailPid, products.length, productById]);
+
+  // The rows on screen that a batch could actually take. Computed here, below
+  // blockerFor, so the Select-all button and each row's checkbox agree by
+  // construction rather than by two similar-looking filters.
+  const selectableShown = (filter === "live" || !visible)
+    ? []
+    : visible.filter((p) => selectionEligible(nodes[p.id] || null, p) &&
+                            !blockerFor(p) && !selected.has(p.id));
 
   // What the batch dialog states, per product: the cleaned name that will
   // ship (saved name or lexicon — never an unsaved page draft), condition,
@@ -1109,7 +1185,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         // opened must be skipped, not silently re-queued with its refusal
         // reason wiped.
         const freshest = nodesRef.current[it.pid] === undefined ? it.node : nodesRef.current[it.pid];
-        if (!selectionEligible(freshest)) {
+        if (!selectionEligible(freshest, productById.get(it.pid))) {
           failures.push(`${it.name || it.pid} — its state changed since selection, skipped`);
           continue;
         }
@@ -1135,35 +1211,6 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       ].filter(Boolean).join(" ")
     );
   };
-
-  const toggle = (cat) => setOpen((prev) => {
-    const next = new Set(prev);
-    if (next.has(cat)) next.delete(cat); else next.add(cat);
-    return next;
-  });
-
-  // One section/group header row — the home list's row treatment (RoleCard):
-  // name, right-aligned count badge, chevron. Shared by the category sections
-  // and the Live view's On/Off groups.
-  const sectionHeader = (key, label, count, opened, extra = null) => (
-    <div onClick={() => toggle(key)}
-      style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 2px",
-               cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
-      <div style={{ flex: 1, fontSize: 15, fontWeight: 500, color: "rgba(255,255,255,.9)" }}>{label}</div>
-      {extra}
-      {count != null && count !== 0 && (
-        <div style={{ minWidth: 28, height: 28, padding: "0 8px", boxSizing: "border-box", borderRadius: 999,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 11, fontWeight: 600, fontVariantNumeric: "tabular-nums",
-                      background: "rgba(60,110,255,.18)", color: "#6A9FFF",
-                      boxShadow: "0 0 8px rgba(60,110,255,.3),inset 0 0 6px rgba(60,110,255,.15)" }}>
-          {count}
-        </div>
-      )}
-      <span style={{ color: "rgba(255,255,255,.18)", fontSize: 14,
-                     transform: opened ? "rotate(90deg)" : "none", transition: "transform .15s" }}>›</span>
-    </div>
-  );
 
   // ── THE PRODUCT PAGE — renders INSTEAD of the list while the hash points at
   // a product. All list state (open sections, filter, search, selection)
@@ -1254,6 +1301,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         {sectionError && (
           <div style={{ fontSize: 12, color: RED, fontWeight: 700, padding: "12px 2px" }}>
             {sectionError}
+            {failedBodies.size > 0 && (
+              <button onClick={retryBodies}
+                style={{ ...tabOff, padding: "5px 11px", fontSize: "0.68rem", marginLeft: 8 }}>
+                Try again
+              </button>
+            )}
           </div>
         )}
         {!loadError && (!keys || !pipeline) && (
@@ -1367,101 +1420,56 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           )
         )}
 
-        {/* LIVE FILTER — the On / Off groups replace the category sections */}
-        {keys && pipeline && liveGroups && (
-          liveGroups.every((g) => g.list.length === 0) ? (
-            <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>
-              {q ? "No live products match." : "Nothing on Shopify yet."}
+        {/* ─── ONE FLAT LIST ─────────────────────────────────────────────────
+            No category headings, no collapsed sections, no per-section
+            select-all. Two tabs and a lane; the tab decides the membership and
+            the window decides how much of it is on screen. */}
+        {keys && pipeline && !proposedList && visible && (
+          fullList.length === 0 ? (
+            <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px", lineHeight: 1.6 }}>
+              {q ? "Nothing matches that search."
+                 : filter === "live" ? "Nothing is on the shop yet."
+                 : "Nothing is waiting — every product is on the shop."}
             </div>
+          ) : pendingBodies !== 0 ? (
+            <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>Loading…</div>
           ) : (
-            liveGroups.map(({ key, label, list }) => {
-              const opened = isOpen(key);
-              return (
-                <div key={key}>
-                  {sectionHeader(key, label, list.length, opened)}
-                  {opened && list.length === 0 && (
-                    <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Nothing here.</div>
-                  )}
-                  {opened && list.map((p) => (
-                    <ProductListRow
-                      key={p.id}
-                      product={p}
-                      node={nodes[p.id] || null}
-                      onOpen={openProduct}
-                      onChanged={applyWrite}
-                    />
-                  ))}
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 2px 2px" }}>
+                <div style={{ flex: 1, fontSize: 11.5, color: GRAY }}>
+                  {/* The count is the WHOLE list, not the window — "60" under a
+                      Show more button would read as the answer to "how many
+                      are waiting", which is the question this page exists to
+                      answer. */}
+                  {fullList.length} product{fullList.length === 1 ? "" : "s"}
+                  {visible.length < fullList.length ? ` · showing ${visible.length}` : ""}
                 </div>
-              );
-            })
+                {selectableShown.length > 0 && (
+                  <button onClick={() => selectAllIn(selectableShown.map((p) => p.id))}
+                    style={{ ...tabOff, padding: "5px 11px", fontSize: "0.68rem" }}>
+                    Select all shown
+                  </button>
+                )}
+              </div>
+              {visible.map((p) => (
+                <ProductListRow
+                  key={p.id}
+                  product={p}
+                  node={nodes[p.id] || null}
+                  onOpen={openProduct}
+                  onChanged={applyWrite}
+                  selection={selectionFor(p)}
+                />
+              ))}
+              {visible.length < fullList.length && (
+                <button onClick={() => setShown((n) => n + PAGE_SIZE)}
+                  style={{ ...tabOff, padding: "9px 14px", fontSize: "0.74rem", marginTop: 12 }}>
+                  Show {Math.min(PAGE_SIZE, fullList.length - visible.length)} more
+                </button>
+              )}
+            </>
           )
         )}
-
-        {keys && pipeline && !liveGroups && !proposedList && viewSections.length === 0 && (
-          <div style={{ fontSize: 12, color: GRAY, padding: "12px 2px" }}>
-            {q ? "No products match." : "Nothing to show under this filter."}
-          </div>
-        )}
-
-        {keys && pipeline && !liveGroups && !proposedList && viewSections.map(({ cat, matched, count, pending }) => {
-          const opened = isOpen(cat);
-          // The category's select-all: only rows that would render under the
-          // current filter, are awaiting review, and pass the batch gates.
-          // Appears once the section's bodies are in — eligibility needs them.
-          const selectable = opened && pending === 0
-            ? matched.filter((p) => {
-                const node = nodes[p.id] || null;
-                return matchesStateFilter(filter, reviewStateFor(node)) &&
-                       selectionEligible(node) &&
-                       !blockerFor(p);
-              })
-            : [];
-          const unselected = selectable.filter((p) => !selected.has(p.id));
-          const selectAllBtn = unselected.length > 0 ? (
-            <button onClick={(e) => { e.stopPropagation(); selectAllIn(unselected.map((p) => p.id)); }}
-              style={{ ...tabOff, padding: "4px 10px", fontSize: "0.66rem" }}>
-              Select all
-            </button>
-          ) : null;
-          return (
-            <div key={cat}>
-              {sectionHeader(cat, cat, count, opened, selectAllBtn)}
-
-              {opened && pending !== 0 && (
-                <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Loading section…</div>
-              )}
-              {opened && pending === 0 && (() => {
-                const rows = matched.filter((p) => matchesStateFilter(filter, reviewStateFor(nodes[p.id])));
-                if (rows.length === 0) {
-                  return <div style={{ fontSize: 11.5, color: GRAY, padding: "10px 2px" }}>Nothing here under this filter.</div>;
-                }
-                let lastSub = null;
-                return rows.map((p) => {
-                  const sub = String(p.subcategory || "");
-                  const showSub = sub !== lastSub && sub !== "";
-                  lastSub = sub;
-                  return (
-                    <React.Fragment key={p.id}>
-                      {showSub && (
-                        <div style={{ fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase",
-                                      color: "rgba(233,238,255,.3)", fontWeight: 700, padding: "12px 2px 2px" }}>
-                          {sub}
-                        </div>
-                      )}
-                      <ProductListRow
-                        product={p}
-                        node={nodes[p.id] || null}
-                        onOpen={openProduct}
-                        onChanged={applyWrite}
-                        selection={selectionFor(p)}
-                      />
-                    </React.Fragment>
-                  );
-                });
-              })()}
-            </div>
-          );
-        })}
 
         {batchNotice && (
           <div style={{ fontSize: 12, color: BLUE_L, fontWeight: 700, padding: "12px 2px", overflowWrap: "break-word" }}>
