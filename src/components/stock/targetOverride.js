@@ -385,7 +385,7 @@ export function previewRows(ctx, loc, pid, draft) {
       afterSource: after ? after.source : null,
       changed: (before ? before.target : null) !== (after ? after.target : null),
       // A size whose target drops to 0 or to nothing retracts its open refill
-      // on the next scan — needGone reads resolveTarget (refill-engine.cjs:774)
+      // on the next scan — needGone reads resolveTarget (refill-engine.cjs:805)
       // and closes the request as no_longer_needed with nobody rejecting it.
       retracts: !!before && before.target > 0 && (!after || after.target <= 0),
     });
