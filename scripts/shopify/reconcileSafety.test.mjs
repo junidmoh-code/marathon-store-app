@@ -92,3 +92,47 @@ describe("no message a person reads names a script", () => {
     }
   });
 });
+
+
+// ─── THE OFF WRITE IS A MULTI-PATH ADD, NOT A MAP REPLACEMENT ────────────────
+// RTDB REJECTS an update() containing both an ancestor and a descendant of the
+// same path — this repo has hit that before. `lastOff` and `offLog/<n>` are
+// disjoint first segments so they are safe together, and mixing a child-path
+// key with plain sibling keys in one update() is the pattern
+// approve-name-proposals.mjs already runs in production. Both facts are worth
+// pinning, because the alternative shape (writing the whole `offLog` map) is
+// the one that deleted history.
+describe("the script-side off write", () => {
+  it("adds ONE child and never writes the offLog map", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("./publishNode.mjs", import.meta.url), "utf8");
+    const body = src.slice(src.indexOf("function offFields"), src.indexOf("async function trimOffLog"));
+    expect(body).toContain("[`offLog/${record.at}`]: record");
+    // The map form would be `offLog: <something>` — that is what wiped history.
+    expect(body).not.toMatch(/\boffLog:\s/);
+  });
+
+  it("never puts an ancestor and its descendant in the same update", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("./publishNode.mjs", import.meta.url), "utf8");
+    // The only path-shaped keys written are under offLog/, and `offLog` itself
+    // is never a key alongside them.
+    const pathKeys = src.match(/\[`([a-zA-Z]+\/[^`]*)`\]:/g) || [];
+    for (const k of pathKeys) expect(k).toContain("offLog/");
+    expect(src).not.toMatch(/^\s*offLog:\s/m);
+  });
+
+  it("trims AFTER the state write, so a slow trim cannot cost the record", async () => {
+    const { readFileSync } = await import("fs");
+    const src = readFileSync(new URL("./publishNode.mjs", import.meta.url), "utf8");
+    for (const fn of ["confirmLiveState", "markBlocked"]) {
+      const body = src.slice(src.indexOf(`export async function ${fn}`));
+      const end = body.indexOf("\n}\n");
+      const scoped = body.slice(0, end);
+      const update = scoped.indexOf(".update(");
+      const trim = scoped.indexOf("trimOffLog(");
+      expect(update).toBeGreaterThan(-1);
+      expect(trim).toBeGreaterThan(update);
+    }
+  });
+});

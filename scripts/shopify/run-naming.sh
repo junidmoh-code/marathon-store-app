@@ -81,13 +81,17 @@ REQ_CAP="${REQ_CAP:-50}"
 # A NON-NUMERIC CAP IS NOT NO CAP. `[ "$N" -gt "$REQ_CAP" ]` on a non-numeric
 # value fails, evaluates false, and the batch is served UNCAPPED — the opposite
 # of what setting a cap means (CodeRabbit review, 2026-08-28). Refuse instead.
+# SKIP the requested pass, do NOT abort the run: this script's job is the
+# backlog, and a malformed cap on the side-pass is no reason to cancel it.
+REQ_CAP_OK=1
 case "$REQ_CAP" in
   ''|*[!0-9]*)
-    echo "$(date '+%F %T') ⚠ REQ_CAP=\"$REQ_CAP\" is not a number — refusing to run the new-name pass uncapped" >> "$LOG"
-    exit 2
+    echo "$(date '+%F %T') ⚠ REQ_CAP=\"$REQ_CAP\" is not a number — skipping the new-name pass rather than running it uncapped" >> "$LOG"
+    REQ_CAP_OK=0
     ;;
 esac
-REQ_QUOTE=$(caffeinate -i -m node scripts/shopify/vision-name.mjs --requested 2>&1)
+REQ_QUOTE=""
+[ "$REQ_CAP_OK" -eq 1 ] && REQ_QUOTE=$(caffeinate -i -m node scripts/shopify/vision-name.mjs --requested 2>&1)
 REQ_N=$(printf '%s\n' "$REQ_QUOTE" | sed -n 's/^scope: \([0-9][0-9]*\) product.*/\1/p' | head -1)
 if [ -n "${REQ_N:-}" ] && [ "$REQ_N" -gt 0 ] 2>/dev/null; then
   if [ "$REQ_N" -gt "$REQ_CAP" ]; then
