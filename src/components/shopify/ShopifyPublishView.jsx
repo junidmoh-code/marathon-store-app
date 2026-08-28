@@ -586,8 +586,10 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   const q = debouncedQuery.trim().toLowerCase();
   const matchesQuery = useCallback((p) => {
     if (!q) return true;
+    // typeof-guarded: a malformed non-string styleCode would coerce to
+    // "[object Object]" and false-match any search containing "object".
     return String(p.name || "").toLowerCase().includes(q) ||
-           String(p.styleCode || "").toLowerCase().includes(q);
+           (typeof p.styleCode === "string" && p.styleCode.toLowerCase().includes(q));
   }, [q]);
 
   // ── THE SORT KEY MUST NOT BE SOMETHING THE WINDOW FETCHES ─────────────────
