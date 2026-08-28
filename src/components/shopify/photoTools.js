@@ -55,8 +55,10 @@ export function uploadFileProblem(file) {
     return `That doesn't look like a photo (${describePickedFile(file)}). Pick an image from the camera roll.`;
   }
   if (file.size > MAX_UPLOAD_BYTES) {
-    // Same discipline as the type refusal: name the evidence.
-    return `That file is ${Math.round(file.size / (1024 * 1024))} MB — over the 150 MB ceiling, too big to be a photo. Pick another one.`;
+    // Same discipline as the type refusal: name the evidence. ceil, not round:
+    // a 150.4 MB file must not read "150 MB — over the 150 MB ceiling"
+    // (CodeRabbit, PR #503).
+    return `That file is ${Math.ceil(file.size / (1024 * 1024))} MB — over the 150 MB ceiling, too big to be a photo. Pick another one.`;
   }
   return null;
 }
