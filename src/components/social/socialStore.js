@@ -115,6 +115,7 @@ export const POLICY_PATH = "social_policy";
 // is already public-read / super-admin-write in storage.rules, which is
 // exactly the access these files need. Writing to a new top-level `social/`
 // prefix would have been tidier to look at and dead on arrival.
+export const ALBUM_PATH = "social_library";
 export const REF_STORAGE_PREFIX = "aiStudio/social/style-refs";
 export const POST_STORAGE_PREFIX = "aiStudio/social/posts";
 
@@ -672,5 +673,21 @@ export async function uploadPostMedia(file) {
     return { ok: true, media: { url: await getDownloadURL(r), path, type: isVideo ? "video" : "image" } };
   } catch (err) {
     return writeError(err);
+  }
+}
+
+
+// ── READING THE PERMANENT ALBUM ──────────────────────────────────────────────
+// /social_library is append-only: the generator writes an entry as it writes
+// the post, and nothing in this app ever deletes one. So this is a plain read
+// with no subscription — the album does not change while you are looking at
+// it, and a live listener on a node that only ever grows is a bill, not a
+// feature.
+export async function loadAlbum() {
+  try {
+    const snap = await get(ref(database, ALBUM_PATH));
+    return { ok: true, raw: snap.val() || {} };
+  } catch (err) {
+    return { ...writeError(err), raw: {} };
   }
 }
