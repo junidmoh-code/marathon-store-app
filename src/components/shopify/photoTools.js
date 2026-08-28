@@ -22,18 +22,30 @@
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
+import { decodeImageFile, isAcceptedImageFile } from "./imageDecode";
 
-const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
-const MAX_UPLOAD_BYTES = 12 * 1024 * 1024; // pre-compression ceiling — phone originals fit, junk doesn't
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // pre-compression ceiling — phone originals fit, junk doesn't
 
 // Why a picked file can't become a publishing photo, or null when it can.
+//
+// The type test moved to imageDecode.js and got much wider on purpose. This
+// used to accept JPEG, PNG and WebP only, which meant an iPhone — whose camera
+// writes HEIC by default — was told "That file isn't a JPEG, PNG or WebP
+// image" about a photo it had just taken, with nothing the person holding it
+// could do. Staff photograph stock on their phones; whatever the picker hands
+// over has to be uploadable.
+//
+// The ceiling went up with it. 12 MB refused nothing suspicious and did refuse
+// real 48-megapixel captures; the decode path is now bounded by a resize
+// during decode rather than by the file size, so the ceiling is only here to
+// stop somebody uploading a video by mistake.
 export function uploadFileProblem(file) {
   if (!file) return "No file picked.";
-  if (!ACCEPTED_TYPES.includes(file.type)) {
-    return "That file isn't a JPEG, PNG or WebP image.";
+  if (!isAcceptedImageFile(file)) {
+    return "That doesn't look like a photo. Pick an image from the camera roll.";
   }
   if (file.size > MAX_UPLOAD_BYTES) {
-    return "That image is over 12 MB — export a smaller copy and try again.";
+    return "That file is over 25 MB — it's too big to be a photo. Pick another one.";
   }
   return null;
 }
@@ -47,36 +59,43 @@ function dataURLToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
-export function compressImageFile(file, maxDim = 1600, maxBytes = 800 * 1024) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read that file."));
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("That file isn't an image."));
-      img.onload = () => {
-        const scale = Math.min(1, maxDim / img.width, maxDim / img.height);
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        const ctx = canvas.getContext("2d");
-        // JPEG has no alpha — without this, a transparent PNG/WebP cutout
-        // gains a BLACK backdrop (the canvas default) on re-encode. White is
-        // the truthful stand-in for "no background".
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        let dataUrl = canvas.toDataURL("image/jpeg", 0.05); // worst-case fallback
-        for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
-          const candidate = canvas.toDataURL("image/jpeg", q);
-          if (candidate.length * 0.75 <= maxBytes) { dataUrl = candidate; break; }
-        }
-        resolve(dataURLToBlob(dataUrl));
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
+// Scale then step the quality down — the app's existing pipeline, unchanged in
+// what it produces. What changed is where the pixels come from: decodeImageFile
+// (native first, the wasm HEIC reader only on failure and only then) instead of
+// FileReader → base64 data: URL → <img>. That old first step held a second full
+// copy of the file in the JS heap as a string, ~33% larger than the file, at the
+// same moment as the decoded bitmap — on a cheap handset with a 12 MP photo,
+// that is the pair of allocations that kills the tab.
+export async function compressImageFile(file, maxDim = 1600, maxBytes = 800 * 1024) {
+  const decoded = await decodeImageFile(file, maxDim);
+  try {
+    const { source, width, height } = decoded;
+    if (!(width > 0 && height > 0)) throw new Error("That photo came out empty. Try picking it again.");
+    // NEVER upscales — the decode may have come back larger than maxDim on its
+    // short side (the resize hint sets a width, not a maximum), and it may have
+    // come back smaller than maxDim entirely.
+    const scale = Math.min(1, maxDim / width, maxDim / height);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    const ctx = canvas.getContext("2d");
+    // JPEG has no alpha — without this, a transparent PNG/WebP cutout
+    // gains a BLACK backdrop (the canvas default) on re-encode. White is
+    // the truthful stand-in for "no background".
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+    let dataUrl = canvas.toDataURL("image/jpeg", 0.05); // worst-case fallback
+    for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
+      const candidate = canvas.toDataURL("image/jpeg", q);
+      if (candidate.length * 0.75 <= maxBytes) { dataUrl = candidate; break; }
+    }
+    return dataURLToBlob(dataUrl);
+  } finally {
+    // An ImageBitmap's pixels live outside the JS heap, so the collector is in
+    // no hurry. Released whether the encode succeeded or threw.
+    decoded.release();
+  }
 }
 
 /**

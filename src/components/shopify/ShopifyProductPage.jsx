@@ -289,7 +289,12 @@ export function PhotoStrip({ product, node, locked, onChanged }) {
         ))}
         {!locked && (
           <>
-            <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp"
+            {/* PLAIN image/*, not a list. A narrow accept list is what the
+                phone picker greys the camera roll out with — an iPhone whose
+                photos are HEIC would show them all unselectable, so the person
+                never even reaches the upload to be refused by it. The real
+                gate is uploadFileProblem, which runs on whatever comes back. */}
+            <input ref={fileRef} type="file" accept="image/*"
               onChange={handleFile} style={{ display: "none" }} />
             <button disabled={busy || uploading} onClick={() => fileRef.current?.click()}
               style={{ width: 84, height: 84, borderRadius: 9, cursor: "pointer", fontFamily: FONT,
