@@ -1,0 +1,898 @@
+{
+  "rules": {
+    "orders": {
+      ".read": "auth != null && (!root.child('users').child(auth.uid).child('destShop').exists() || (query.orderByChild === 'destShop' && query.equalTo === root.child('users').child(auth.uid).child('destShop').val()))",
+      ".indexOn": [
+        "destShop",
+        "readyNotifyPending"
+      ],
+      "$id": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      }
+    },
+    "laybys": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$laybyId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['invoiceNo','status'])",
+        "laybyId": {
+          ".validate": "newData.isString() && newData.val() === $laybyId"
+        },
+        "invoiceNo": {
+          ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())"
+        },
+        "saleId": {
+          ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())"
+        },
+        "status": {
+          ".validate": "newData.isString() && newData.val().matches(/^(created|labelPrinted|inTransitToStorage|storedAtHub|pullRequested|sentToStore|collected|expired|rejected|returned)$/)"
+        },
+        "balanceRemaining": {
+          ".validate": "newData.isNumber()"
+        },
+        "itemCount": {
+          ".validate": "newData.isNumber()"
+        },
+        "storageHub": {
+          ".validate": "newData.isString()"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "laybyPulls": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$pullId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['invoiceNo','laybyId','status'])",
+        "pullId": {
+          ".validate": "newData.isString() && newData.val() === $pullId"
+        },
+        "laybyId": {
+          ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())"
+        },
+        "invoiceNo": {
+          ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())"
+        },
+        "saleId": {
+          ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())"
+        },
+        "status": {
+          ".validate": "newData.isString() && newData.val().matches(/^(pending|sentToStore|rejected|returnedToStock)$/)"
+        },
+        "balanceRemaining": {
+          ".validate": "newData.isNumber()"
+        },
+        "itemCount": {
+          ".validate": "newData.isNumber()"
+        },
+        "storageHub": {
+          ".validate": "newData.isString()"
+        },
+        "rejectionReason": {
+          ".validate": "newData.isString()"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "restock_log": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$date": {
+        "$entryId": {
+          ".write": "auth != null && (auth.token.firebase.sign_in_provider != 'anonymous' || !data.exists())"
+        }
+      }
+    },
+    "broadcastHistory": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "broadcasts": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "customers": {
+      ".read": "auth != null && (root.child('users').child(auth.uid).exists() || auth.token.email === 'gunidmoh@gmail.com')",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$customerId": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "storeCredit": {
+          "$creditId": {
+            "remainingAmount": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())"
+            }
+          }
+        }
+      }
+    },
+    "customers_meta": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "insights_log": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "insights": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "inventory": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "inventory_meta": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "marketing": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "orderCounter": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "refillCounter": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "pos": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "sales": {
+        ".indexOn": "createdAt",
+        "$saleId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['total','type'])",
+          "status": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isString()"
+          },
+          "updatedAt": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          },
+          "laybyCompletionSaleId": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isString()"
+          },
+          "markerPublished": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isBoolean()"
+          },
+          "returnedTransactions": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          },
+          "refund": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          },
+          "layby": {
+            ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          },
+          "payments": {
+            "$paymentId": {
+              ".write": "!data.exists() && root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+            }
+          },
+          "lineItems": {
+            "$lineId": {
+              "refundedQty": {
+                ".write": "root.child('pos').child('sales').child($saleId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+                ".validate": "newData.isNumber()"
+              }
+            }
+          }
+        }
+      },
+      "storeCredits": {
+        "$creditId": {
+          "remainingAmount": {
+            ".write": "root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || newData.val() <= data.val())"
+          },
+          "status": {
+            ".write": "root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.isString()"
+          },
+          "redemptions": {
+            "$saleId": {
+              ".write": "!data.exists() && root.child('pos').child('storeCredits').child($creditId).exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+            }
+          }
+        }
+      },
+      "storeCreditQueue": {
+        "$creditId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['creditId','customerId','amount','source'])",
+          "amount": {
+            ".validate": "newData.isNumber() && newData.val() > 0"
+          },
+          "creditId": {
+            ".validate": "newData.isString() && newData.val() === $creditId"
+          }
+        }
+      },
+      "audit": {
+        "store_credit_issued": {
+          "$customerId": {
+            "$eventId": {
+              ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+            }
+          }
+        },
+        "store_credit_removed": {
+          "$customerId": {
+            "$eventId": {
+              ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+            }
+          }
+        },
+        "on_account": {
+          "$customerId": {
+            "$eventId": {
+              ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+            }
+          }
+        },
+        "on_account_config": {
+          "$customerId": {
+            "$eventId": {
+              ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+            }
+          }
+        },
+        "$logId": {
+          ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          ".validate": "newData.hasChildren(['action','actingUserUid','timestamp'])"
+        }
+      },
+      "paymentEvents": {
+        ".indexOn": [
+          "at"
+        ],
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      },
+      "cash_sessions": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "$terminalDeviceId": {
+          "$sessionId": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+            ".validate": "newData.hasChildren(['sessionId','state','amountDueCents']) && newData.child('sessionId').val() === $sessionId",
+            "amountDueCents": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            },
+            "paidCents": {
+              ".validate": "newData.isNumber() && newData.val() >= 0"
+            },
+            "state": {
+              ".validate": "newData.isString() && newData.val().matches(/^(open|collecting|banking|dispensing|awaiting_sale|completed|aborted|needs_review)$/)"
+            },
+            "seq": {
+              ".validate": "newData.isNumber() && (!data.exists() || newData.val() > data.val())"
+            },
+            "saleId": {
+              ".validate": "newData.isString() && (!data.exists() || newData.val() === data.val())"
+            },
+            "$other": {
+              ".validate": true
+            }
+          }
+        }
+      },
+      "$other": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      },
+      "devices": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        "$deviceId": {
+          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || (root.child('users').child(auth.uid).child('posAccess').child('role').val() === 'manager' && root.child('users').child(auth.uid).child('posAccess').child('isActive').val() === true))",
+          "name": {
+            ".validate": "newData.isString() && newData.val().length <= 80"
+          },
+          "storeId": {
+            ".validate": "newData.isString()"
+          }
+        }
+      },
+      "noReceiptReturns": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || (root.child('users').child(auth.uid).child('posAccess').child('role').val() === 'manager' && root.child('users').child(auth.uid).child('posAccess').child('isActive').val() === true))",
+        "$saleId": {
+          ".write": "!data.exists() && (auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || (root.child('users').child(auth.uid).child('posAccess').child('role').val() === 'manager' && root.child('users').child(auth.uid).child('posAccess').child('isActive').val() === true)))",
+          ".validate": "newData.hasChildren(['saleId','creditId','authorizedBy','totalCents']) && newData.child('saleId').val() === $saleId && newData.child('totalCents').isNumber() && newData.child('totalCents').val() > 0 && newData.child('authorizedBy').val() === auth.uid"
+        }
+      }
+    },
+    "pos_meta": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "specials": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "price_history": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "price_history_index": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "shopify_sync": {
+      ".read": false,
+      ".write": false
+    },
+    "shopify_publish": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "state"
+      ],
+      "$pid": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin' || root.child('users').child(auth.uid).child('permFlags').child('shopify_publish').val() === true)",
+        ".validate": "!newData.exists() || (newData.hasChildren(['state']) && root.child('products').child($pid).exists())",
+        "state": {
+          ".validate": "newData.isString() && newData.val().matches(/^(awaiting|live|blocked|none|nominated|draft)$/)"
+        },
+        "liveState": {
+          ".validate": "newData.isString() && newData.val().matches(/^(on|off)$/)"
+        },
+        "desiredState": {
+          ".validate": "newData.isString() && newData.val().matches(/^(on|off)$/)"
+        },
+        "blockedReason": {
+          ".validate": "newData.isString() && newData.val().length <= 1000"
+        },
+        "cleanName": {
+          ".validate": "newData.isString() && newData.val().length >= 3 && newData.val().length <= 255"
+        },
+        "cleanNameSource": {
+          ".validate": "newData.isString() && newData.val().matches(/^(lexicon|ai|manual)$/)"
+        },
+        "updatedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "updatedBy": {
+          ".validate": "newData.isString() && newData.val() === auth.uid"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "social_posts": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "status"
+      ],
+      "$postId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')",
+        ".validate": "!newData.exists() || newData.hasChildren(['status'])",
+        "status": {
+          ".validate": "newData.isString() && newData.val().matches(/^(draft|approved|posting|posted|failed|discarded)$/)"
+        },
+        "caption": {
+          ".validate": "newData.isString() && newData.val().length <= 2200"
+        },
+        "link": {
+          ".validate": "newData.isString() && newData.val().length <= 500"
+        },
+        "scheduledAt": {
+          ".validate": "!newData.exists() || (newData.isNumber() && newData.val() > 0)"
+        },
+        "updatedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "social_style_refs": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "addedAt"
+      ],
+      "$refId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')",
+        ".validate": "!newData.exists() || newData.hasChildren(['url', 'addedAt'])",
+        "url": {
+          ".validate": "newData.isString() && newData.val().beginsWith('https://')"
+        },
+        "type": {
+          ".validate": "newData.isString() && newData.val().matches(/^(image|video)$/)"
+        },
+        "note": {
+          ".validate": "newData.isString() && newData.val().length <= 400"
+        },
+        "addedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "products": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "styleCodeNormalised"
+      ],
+      "$pid": {
+        "styleCode": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
+        },
+        "styleCodeNormalised": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32 && newData.val() === newData.val().toUpperCase() && (!data.exists() || newData.val() === data.val() || auth.token.email === 'gunidmoh@gmail.com')"
+        },
+        "styleCodeConfirmedBy": {
+          ".validate": "newData.isString() && newData.val().length > 0"
+        },
+        "styleCodeConfirmedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "styleCodeSource": {
+          ".validate": "newData.isString() && newData.val().matches(/^(cache|api|websearch|manual)$/)"
+        }
+      }
+    },
+    "products_meta": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "style_code_index": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "productId"
+      ],
+      "$code": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && (!data.exists() || root.child('users').child(auth.uid).child('stockRole').val() === 'admin' || auth.token.email === 'gunidmoh@gmail.com')",
+        ".validate": "!newData.exists() || (newData.hasChildren(['productId','claimedAt']) && root.child('products').child(newData.child('productId').val()).exists())",
+        "productId": {
+          ".validate": "newData.isString() && newData.val().length > 0"
+        },
+        "claimedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "claimedBy": {
+          ".validate": "newData.isString() && newData.val() === auth.uid"
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
+    "sneaker_models": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$code": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && (!data.exists() || root.child('users').child(auth.uid).child('stockRole').val() === 'admin' || auth.token.email === 'gunidmoh@gmail.com')",
+        ".validate": "!newData.exists() || newData.hasChildren(['styleCode','source','fetchedAt'])",
+        "styleCode": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
+        },
+        "brand": {
+          ".validate": "newData.isString()"
+        },
+        "model": {
+          ".validate": "newData.isString()"
+        },
+        "colorwayName": {
+          ".validate": "newData.isString()"
+        },
+        "productType": {
+          ".validate": "newData.isString()"
+        },
+        "imageUrl": {
+          ".validate": "newData.isString() && newData.val().beginsWith('https://')"
+        },
+        "source": {
+          ".validate": "newData.isString() && newData.val().matches(/^(api|websearch|manual)$/)"
+        },
+        "fetchedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "fetchedBy": {
+          ".validate": "newData.isString()"
+        },
+        "raw": {
+          ".validate": true
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "style_code_captures": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "status",
+        "productId"
+      ],
+      "$captureId": {
+        ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
+        ".validate": "newData.hasChildren(['styleCodeNormalised','capturedBy','capturedAt','origin']) && newData.child('capturedBy').val() === auth.uid",
+        "productId": {
+          ".validate": "newData.isString() && root.child('products').child(newData.val()).exists()"
+        },
+        "styleCodeNormalised": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32 && newData.val() === newData.val().toUpperCase()"
+        },
+        "styleCodeRaw": {
+          ".validate": "newData.isString() && newData.val().length <= 32"
+        },
+        "labelPhotoUrl": {
+          ".validate": "newData.isString() && newData.val().beginsWith('https://')"
+        },
+        "origin": {
+          ".validate": "newData.isString() && newData.val().matches(/^(addSneaker|displayCheck|receiving|admin)$/)"
+        },
+        "storeId": {
+          ".validate": "newData.isString()"
+        },
+        "capturedBy": {
+          ".validate": "newData.isString() && newData.val() === auth.uid"
+        },
+        "capturedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "status": {
+          ".write": "data.exists() && auth != null && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')",
+          ".validate": "newData.isString() && newData.val().matches(/^(pending|autoConfirmed|needsReview|applied|rejected)$/)"
+        },
+        "review": {
+          ".write": "data.exists() && auth != null && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "duplicate_candidates": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "status"
+      ],
+      "$pairId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && (!data.exists() || auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('stockRole').val() === 'admin')",
+        ".validate": "!newData.exists() || (newData.hasChildren(['productIdA','productIdB','reason','detectedAt']) && root.child('products').child(newData.child('productIdA').val()).exists() && root.child('products').child(newData.child('productIdB').val()).exists() && newData.child('productIdA').val() !== newData.child('productIdB').val())",
+        "productIdA": {
+          ".validate": "newData.isString() && newData.val().length > 0"
+        },
+        "productIdB": {
+          ".validate": "newData.isString() && newData.val().length > 0"
+        },
+        "reason": {
+          ".validate": "newData.isString() && newData.val().matches(/^(styleCodeCollision|manual|heuristic)$/)"
+        },
+        "styleCodeNormalised": {
+          ".validate": "newData.isString() && newData.val().length <= 32"
+        },
+        "detectedAt": {
+          ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+        },
+        "detectedBy": {
+          ".validate": "newData.isString()"
+        },
+        "status": {
+          ".validate": "newData.isString() && newData.val().matches(/^(open|merged|dismissed)$/)"
+        },
+        "$other": {
+          ".validate": true
+        }
+      }
+    },
+    "settings": {
+      ".read": "auth != null",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "barcodes": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$code": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && !data.exists()",
+        ".validate": "newData.hasChildren(['productId']) && root.child('products').child(newData.child('productId').val()).exists()",
+        "size": {
+          ".validate": "newData.isString() && newData.val().length > 0"
+        }
+      }
+    },
+    "restock_requests": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "returns_log": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "source_onhold_responses": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "printer_diag": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "aiAssistant": {
+      "nameProposals": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      },
+      "photoProposals": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (root.child('users').child(auth.uid).child('stockRole').exists() || auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('permFlags').child('photo_generation').val() === true)"
+      },
+      "styleKit": {
+        ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+        ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'"
+      },
+      "usage": {
+        ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'"
+      }
+    },
+    "users": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth.token.email === 'gunidmoh@gmail.com'"
+    },
+    "locations": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+    },
+    "stock": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$loc": {
+        "$pid": {
+          "$size": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
+            ".validate": "(newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() % 1 === 0 && newData.child('v').isNumber() && (!data.exists() ? newData.child('v').val() === 0 : newData.child('v').val() === data.child('v').val() + 1) && newData.child('mv').val() !== data.child('mv').val() && newData.child('lastType').val().matches(/^(received|opening|sold|transfer_in|transfer_out|adjustment|return)$/) && (newData.child('qty').val() >= 0 || newData.child('lastType').val().matches(/^(sold|return|transfer_out|transfer_in)$/))) || (!data.exists() && newData.hasChildren(['qty','v','mv','lastType']) && newData.child('qty').isNumber() && newData.child('qty').val() === 0 && newData.child('v').isNumber() && newData.child('v').val() === 0 && newData.child('lastType').val() === 'count' && newData.child('mv').val() === 'seed') || (data.exists() && newData.child('qty').val() === data.child('qty').val() && newData.child('v').val() === data.child('v').val() && newData.child('mv').val() === data.child('mv').val() && newData.child('lastType').val() === data.child('lastType').val() && newData.child('state').val().matches(/^(untracked|counting|live)$/))",
+            "qty": {
+              ".validate": "newData.isNumber()"
+            },
+            "v": {
+              ".validate": "newData.isNumber()"
+            },
+            "mv": {
+              ".validate": "newData.isString()"
+            },
+            "lastType": {
+              ".validate": "newData.isString()"
+            },
+            "state": {
+              ".validate": "newData.val().matches(/^(untracked|counting|live)$/)"
+            },
+            "$other": {
+              ".validate": "newData.parent().child('qty').exists()"
+            }
+          }
+        }
+      }
+    },
+    "stock_provenance": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "_meta": {
+        ".write": false
+      },
+      "$loc": {
+        "$pid": {
+          "s": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && newData.exists()",
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() >= (data.exists() ? data.val() : 0)"
+          },
+          "k": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && newData.exists()",
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() >= (data.exists() ? data.val() : 0)"
+          },
+          "u": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && newData.exists()",
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() >= (data.exists() ? data.val() : 0)"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    },
+    "stock_movements": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$mvId": {
+        ".write": "!data.exists() && newData.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+        ".validate": "newData.hasChildren(['type','productId','size','qty','actor','ts']) && newData.child('qty').isNumber() && newData.child('qty').val() > 0 && newData.child('actor').val() === auth.uid && root.child('products').child(newData.child('productId').val()).exists() && (!newData.child('from').exists() || newData.child('from').val() === null || root.child('locations').child(newData.child('from').val()).exists()) && (!newData.child('to').exists() || newData.child('to').val() === null || root.child('locations').child(newData.child('to').val()).exists())",
+        "type": {
+          ".validate": "(newData.val() === 'received' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/)) || (newData.val() === 'opening' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/)) || (newData.val() === 'transfer_out' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)) || (newData.val() === 'transfer_in' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)) || (newData.val() === 'sold' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)) || (newData.val() === 'return' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)) || (newData.val() === 'adjustment' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin')"
+        },
+        "reason": {
+          ".validate": "newData.parent().child('type').val() !== 'adjustment' || (newData.isString() && newData.val().length > 0)"
+        }
+      },
+      ".indexOn": [
+        "ts"
+      ]
+    },
+    "transfers": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$transferId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|store|admin)$/)",
+        "status": {
+          ".validate": "newData.val().matches(/^(dispatched|partially_received|received|discrepancy)$/)"
+        },
+        "from": {
+          ".validate": "(!data.exists() || data.val() === newData.val()) && root.child('locations').child(newData.val()).exists()"
+        },
+        "to": {
+          ".validate": "(!data.exists() || data.val() === newData.val()) && root.child('locations').child(newData.val()).exists()"
+        },
+        "createdAt": {
+          ".validate": "!data.exists() || data.val() === newData.val()"
+        },
+        "lines": {
+          "$pid": {
+            "$sizeKey": {
+              ".validate": "newData.isNumber() && newData.val() > 0"
+            }
+          }
+        },
+        "received": {
+          "$pid": {
+            "$sizeKey": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() || data.val() === newData.val())"
+            }
+          }
+        }
+      }
+    },
+    "refill_requests": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".indexOn": [
+        "createdAt",
+        "resolvedAt"
+      ],
+      "$refillId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()",
+        "status": {
+          ".validate": "newData.val().matches(/^(open|fulfilled|cancelled)$/)"
+        },
+        "earlyRelease": {
+          ".validate": "(root.child('users').child(auth.uid).child('stockRole').val() === 'admin' || auth.token.email === 'gunidmoh@gmail.com') && newData.hasChildren(['at','reason']) && newData.child('reason').isString() && newData.child('reason').val().length > 0"
+        }
+      }
+    },
+    "sales": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$saleId": {
+        ".write": "!data.exists() && auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val().matches(/^(pos|store|admin)$/)",
+        ".validate": "newData.hasChildren(['ts','lines'])"
+      }
+    },
+    "stock_alerts": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$alertId": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()"
+      }
+    },
+    "reports": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+    },
+    "config": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "posCutover": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      },
+      "refillEngine": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      },
+      "transit": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      },
+      "styleCode": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      },
+      "shopify": {
+        ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'"
+      }
+    },
+    "clothing_sold_refills": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    },
+    "stock_targets": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$loc": {
+        "$pid": {
+          "$size": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'",
+            ".validate": "newData.hasChildren(['target','minQty']) && newData.child('target').isNumber() && newData.child('minQty').isNumber()"
+          }
+        }
+      }
+    },
+    "refill_engine": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "false",
+      "rejectStreak": {
+        "$loc": {
+          "$pid": {
+            "$sizeKey": {
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && !newData.exists() && (root.child('users').child(auth.uid).child('stockRole').val().matches(/^(warehouse|admin)$/) || auth.token.email === 'gunidmoh@gmail.com')"
+            }
+          }
+        }
+      }
+    },
+    "stock_exceptions": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "false"
+    },
+    "stock_confidence": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "false"
+    },
+    "stock_targets_decisions": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$loc": {
+        "$pid": {
+          ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()"
+        }
+      }
+    },
+    "receiving_session": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists()"
+    },
+    "displayChecks": {
+      "$store": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('destShop').val() === $store)"
+      }
+    },
+    "displayChecks_active": {
+      "$store": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('destShop').val() === $store)"
+      }
+    },
+    "displayChecks_settings": {
+      "$store": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('destShop').val() === $store)",
+        ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'"
+      }
+    },
+    "displayChecks_stats": {
+      "$store": {
+        ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('destShop').val() === $store)"
+      }
+    },
+    "customer_index": {
+      "sales": {
+        "$customerId": {
+          ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+          "$saleId": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+          }
+        }
+      }
+    },
+    "attention_lists": {
+      ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      "$listId": {
+        ".validate": "$listId === 'marketing' || $listId === 'display'",
+        "items": {
+          "$productId": {
+            ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && root.child('users').child(auth.uid).child('stockRole').exists() && ($listId === 'marketing' || $listId === 'display')",
+            ".validate": "!newData.exists() || ((data.exists() || root.child('products').child($productId).exists()) && newData.hasChildren(['addedAt']) && newData.child('addedAt').isNumber())",
+            "addedAt": {
+              ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= now + 86400000"
+            },
+            "addedBy": {
+              ".validate": "newData.val() === null || (newData.isString() && newData.val() === auth.uid)"
+            },
+            "$other": {
+              ".validate": "false"
+            }
+          }
+        },
+        "$other": {
+          ".validate": "false"
+        }
+      }
+    }
+  }
+}

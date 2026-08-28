@@ -3592,6 +3592,16 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 //   firebase deploy --only functions:cardBatchCapture
 exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 
+// ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
+// Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
+// for every transaction in a batch. Storage rules cannot read RTDB, so the
+// card_recon permission is mirrored into a Firebase Auth custom claim and
+// storage.rules reads that. Hung off the permFlags LEAF so every grant path —
+// UserManagement, createStaffUser, a script — mirrors by construction, and
+// retried because a dropped REVOKE is the failure that matters.
+//   firebase deploy --only functions:syncCardReconClaim
+exports.syncCardReconClaim = require("./cardRecon/cardReconClaim.js").syncCardReconClaim;
+
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the
 // owner-armed map that says what each category keeps at each location, and when

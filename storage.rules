@@ -28,6 +28,40 @@ service firebase.storage {
                    && request.auth.token.email == "gunidmoh@gmail.com";
     }
 
+    // Card-recon slip photos: cardRecon/{draftId}/photo-{i}.jpg — the
+    // photographed FNB batch report. Its detail roll carries a masked PAN, an
+    // auth code and an RRN for EVERY transaction in a batch, alongside the
+    // till's takings: investigation material about named staff, not product
+    // photography. So read is limited to holders of the existing `card_recon`
+    // permission rather than to every signed-in staff member (which is what a
+    // plain `request.auth != null` would mean here, and what the rest of this
+    // file's public-read blocks deliberately are).
+    //
+    // Storage rules cannot read the Realtime Database, so the permission
+    // cannot be checked where it lives (/users/{uid}/permFlags/card_recon).
+    // It is mirrored into a Firebase Auth custom claim by syncCardReconClaim
+    // (functions/cardRecon/cardReconClaim.js), which is that claim's ONLY
+    // writer and which REMOVES the claim on revoke — a claim left standing
+    // after a permission is taken away is worse than no gate at all, because
+    // the app then says the person cannot see these and the bucket still hands
+    // them over. `== true` deliberately: an absent claim is undefined, and a
+    // legacy `false` must not read as presence.
+    //
+    // The super-admin clause mirrors the aiStudio / broadcast-media blocks
+    // below and the callable's own ADMIN_EMAIL bypass, so the owner is never
+    // locked out of their own evidence by a lagging token refresh.
+    //
+    // WRITE STAYS FALSE, for everyone. The cardBatchCapture callable writes
+    // these with the Admin SDK, which bypasses rules entirely; no client ever
+    // writes, overwrites or deletes here. That is what makes a slip photo
+    // evidence rather than a file someone could replace.
+    match /cardRecon/{allPaths=**} {
+      allow read: if request.auth != null
+                  && (request.auth.token.card_recon == true
+                      || request.auth.token.email == "gunidmoh@gmail.com");
+      allow write: if false;
+    }
+
     // Broadcast media. Public read so the broadcast VM can fetch
     // unauthenticated; write restricted to the admin email (tightened in
     // Phase 1.5 once Google Sign-In was live).

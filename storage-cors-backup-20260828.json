@@ -1,0 +1,20 @@
+{
+  "cors": [
+    {
+      "origin": [
+        "https://marathon-club.web.app",
+        "https://marathon-club-ai.web.app",
+        "http://localhost:5173",
+        "http://localhost:5174"
+      ],
+      "method": [
+        "GET",
+        "HEAD"
+      ],
+      "responseHeader": [
+        "Content-Type"
+      ],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}
