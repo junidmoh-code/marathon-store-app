@@ -118,6 +118,10 @@ function runVitest(files) {
   } catch (err) {
     const out = `${err.stdout || ""}${err.stderr || ""}`;
     if (/Tests\s+\d+\s+failed/.test(out)) return "FAIL";
+    // The add-only invariant firing at module load (SIZE_RUN_SEED is itself
+    // built through the append) is the guard tripping BY NAME — count it as
+    // the failure it is. Every other load error stays an ERROR, not a proof.
+    if (out.includes("add-only invariant violated")) return "FAIL";
     return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 140)})`;
   }
 }
