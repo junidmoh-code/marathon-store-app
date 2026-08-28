@@ -452,3 +452,39 @@ describe("isSetSafe", () => {
     expect(isSetSafe({ a: { b: [1, undefined] } })).toBe(false);
   });
 });
+
+// ─── RUN-AWARE SIZES AT SAVE TIME ────────────────────────────────────────────
+// The save must validate the operator's selection against the SAME size list
+// the form's grid rendered (sizesForCat), not the category's literal `sizes`.
+// Before this pin, a size added to a run in the Taxonomy tab (4XL) rendered on
+// the grid, was selectable, and then SILENTLY VANISHED from the saved product
+// because the save filtered against the stale literal list.
+describe("run-added sizes survive the save", () => {
+  const regWithRun = {
+    ...TAXONOMY_SEED,
+    sizeRuns: { apparel: { key: "apparel", sizes: ["S", "M", "L", "XL", "XXL", "XXXL", "4XL"] } },
+    cats: {
+      ...TAXONOMY_SEED.cats,
+      "t-shirts": { ...TAXONOMY_SEED.cats["t-shirts"], sizeRunKey: "apparel" },
+    },
+  };
+  const form = (sizeRun) => ({
+    name: "Run Aware Tee", categoryKey: "t-shirts", photo: "🧢", hubs: ["hub2"], sizeRun,
+  });
+
+  it("a chosen 4XL lands on the saved product, in run order", () => {
+    const p = buildNewProduct(regWithRun, form(["M", "4XL"]), { id: "p1" });
+    expect(p).not.toBe(null);
+    expect(p.sizes).toEqual(["M", "4XL"]);
+  });
+  it("a selection of ONLY the run-added size still saves (would have been refused as empty before)", () => {
+    const p = buildNewProduct(regWithRun, form(["4XL"]), { id: "p1" });
+    expect(p).not.toBe(null);
+    expect(p.sizes).toEqual(["4XL"]);
+  });
+  it("without the run mapping, behaviour is exactly as before (literal sizes)", () => {
+    const p = buildNewProduct(TAXONOMY_SEED, form(["M", "XXXL"]), { id: "p1" });
+    expect(p.sizes).toEqual(["M", "XXXL"]);
+    expect(buildNewProduct(TAXONOMY_SEED, form(["4XL"]), { id: "p1" })).toBe(null);
+  });
+});

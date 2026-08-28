@@ -119,7 +119,8 @@ import { printOrderSlips } from "./print/orderSlip";
 // The registry lives at /settings/productTaxonomy and is read LIVE, so adding a
 // category later is a data edit — no code change, no deploy. `legacyFor` is the
 // derivation that keeps newly-created products inside every existing automation.
-import { catByKey, sizesOf, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
+import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
+import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -135,6 +136,7 @@ import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
+import TaxonomyTab from "./components/admin/TaxonomyTab";
 // ── SNEAKER INTAKE — style code first ────────────────────────────────────────
 // Sneakers arrive without boxes, so there is no barcode. The inside-tongue style
 // code is the identity, and it is now the FIRST question intake asks — which is
@@ -725,10 +727,10 @@ const CLOTHING_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL", "4XL"];
 // family is inferable from its stored sizes (see clothingChoicesFor).
 const BOTTOMS_SIZES = ["28", "30", "32", "34", "36", "38", "40"];
 // True when every stored size is a waist size → this clothing product is bottoms.
+// (The letters-vs-bottoms choice itself lives in AdminProductDetail, which
+// resolves the letter list through the taxonomy registry's apparel run.)
 const isWaistSizeSet = (sizes) =>
   Array.isArray(sizes) && sizes.length > 0 && sizes.every(s => BOTTOMS_SIZES.includes(String(s)));
-// The size choices for a CLOTHING product: waist set for bottoms, letters otherwise.
-const clothingChoicesFor = (sizes) => (isWaistSizeSet(sizes) ? BOTTOMS_SIZES : CLOTHING_SIZES);
 // Kids sneaker breakdown — EU kids sizes. A sneaker-type product (same routing/
 // hubs/shoebox as adult sneakers) that uses this set instead of 3–11. Adult
 // sneakers top out at 11, so a sneaker whose sizes are ≥20 is a kids product.
@@ -5590,7 +5592,10 @@ function AdminView({ products, orders, onExit }) {
     () => (isAssignable(taxonomy, form.categoryKey) ? catByKey(taxonomy, form.categoryKey) : null),
     [taxonomy, form.categoryKey],
   );
-  const formSizes = useMemo(() => (selectedCat ? sizesOf(selectedCat) : []), [selectedCat]);
+  // Run-aware: the grid resolves through the category's sizeRunKey (live run →
+  // seeded run → the category's own literal sizes), so a size added to a run in
+  // the Taxonomy tab appears here immediately — no code change, no deploy.
+  const formSizes = useMemo(() => (selectedCat ? sizesForCat(taxonomy, selectedCat) : []), [taxonomy, selectedCat]);
   const formOneSize = !!selectedCat && isOneSize(selectedCat);
   // Legacy values this category will write. Derived here (not at save time) so
   // the form can apply the SAME hub / shoebox rules the old productType chips
@@ -6189,7 +6194,7 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Categories ↔ Missing Prices) — the AI tabs live in AI Studio now.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"]]
+      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         const badge = val === "review-categories" ? pendingCategoryCount
@@ -6410,7 +6415,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0]];
+    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -6442,7 +6447,8 @@ function AdminView({ products, orders, onExit }) {
       : adminSection === "review-categories" ? "Categories"
       : adminSection === "missing-prices" ? "Missing Prices"
       : adminSection === "bulk-pricing" ? "Bulk Pricing"
-      : adminSection === "specials" ? "Specials" : "Products";
+      : adminSection === "specials" ? "Specials"
+      : adminSection === "taxonomy" ? "Taxonomy" : "Products";
     const subtitle = adminSection === "assign-categories"
       ? "Give every product its real category. Nothing else changes."
       : adminSection === "review-categories"
@@ -6453,6 +6459,8 @@ function AdminView({ products, orders, onExit }) {
       ? "Reprice many products at once — fixed values or a percentage, previewed and undoable."
       : adminSection === "specials"
       ? "Run specials: the till charges the sale price; the normal price comes back exactly when you end it."
+      : adminSection === "taxonomy"
+      ? "Add sizes to a size run, and add categories — no code change, live everywhere at once."
       : "Add products, set sizes & pricing, and manage the catalogue.";
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
@@ -6495,6 +6503,7 @@ function AdminView({ products, orders, onExit }) {
                 : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
                 : adminSection === "bulk-pricing" ? <BulkPricingTab products={products} />
                 : adminSection === "specials" ? <SpecialsTab products={products} />
+                : adminSection === "taxonomy" ? <TaxonomyTab registry={taxonomy} source={taxonomySource} />
                 : productsBody}
             </div>
           </div>
@@ -6508,6 +6517,7 @@ function AdminView({ products, orders, onExit }) {
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
   if (adminSection === "bulk-pricing") return reviewShell(<BulkPricingTab products={products} />);
   if (adminSection === "specials") return reviewShell(<SpecialsTab products={products} />);
+  if (adminSection === "taxonomy") return reviewShell(<TaxonomyTab registry={taxonomy} source={taxonomySource} />);
 
   return (
     <div style={ADMIN_WRAP}>
@@ -6577,8 +6587,33 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // Clothing products may use letters (tops) or the waist set (bottoms); a
   // sneaker whose sizes are ≥20 is a Kids product (26–35). Infer the breakdown
   // from the product's own sizes so editing shows the right buttons.
-  const sizeChoices = isClothing ? clothingChoicesFor(productSizes)
-    : isKidsSizeSet(productSizes) ? KIDS_SIZES : SNEAKER_SIZES;
+  //
+  // RUN-AWARE: the letter and adult-sneaker choice lists resolve through the
+  // taxonomy registry's size runs (apparel / footwear), so a size added in the
+  // admin Taxonomy tab is offerable here too — the seeded runs are
+  // byte-identical to the old CLOTHING_SIZES / SNEAKER_SIZES constants, which
+  // remain the hard fallback. Kids (26–35) and waist sets stay constants: they
+  // are edit-surface supersets with no matching run, and pointing them at a
+  // run would REMOVE options.
+  const detailTaxonomy = useTaxonomy();
+  const detailRuns = sizeRunsOf(detailTaxonomy.registry);
+  const apparelRun = runSizes(detailRuns.apparel);
+  const footwearRun = runSizes(detailRuns.footwear);
+  // A product that carries a categoryKey resolves its choice list through ITS
+  // OWN category's run (sizesForCat — the same resolution the Add form and the
+  // save path use), so a category on a custom run offers the right sizes here
+  // too. Guarded by size FAMILY: a jeans product stored with waist sizes must
+  // keep the waist buttons even though its category's run is letters —
+  // otherwise its real sizes would become un-offerable. (CodeRabbit, PR #491.)
+  const detailCat = catByKey(detailTaxonomy.registry, product.categoryKey);
+  const detailCatSizes = detailCat ? sizesForCat(detailTaxonomy.registry, detailCat) : [];
+  const familyMatches = detailCatSizes.length > 0 &&
+    (productSizes.length === 0 || sizeFamily(detailCatSizes) === sizeFamily(productSizes));
+  const sizeChoices = familyMatches ? detailCatSizes
+    : isClothing
+    ? (isWaistSizeSet(productSizes) ? BOTTOMS_SIZES : (apparelRun.length ? apparelRun : CLOTHING_SIZES))
+    : isKidsSizeSet(productSizes) ? KIDS_SIZES
+    : (footwearRun.length ? footwearRun : SNEAKER_SIZES);
 
   const [galleryView, setGalleryView] = useState(null); // open the photo gallery viewer
   const photos = productPhotos(product);
@@ -15570,7 +15605,10 @@ function InsightSizePopularityTab({ log, filterStart, filterEnd, filterLabel, ca
   }, [subset]);
   const clothingSizes = useMemo(() => {
     const grouped = groupCount(subset.filter(e => inferProductType(e) === "clothing"), e => e.size);
-    return grouped.sort((a, b) => CLOTHING_SIZES.indexOf(a.label) - CLOTHING_SIZES.indexOf(b.label));
+    // compareSizes, not CLOTHING_SIZES.indexOf: a size added later in the
+    // Taxonomy tab (5XL, …) sorts into place instead of jumping to the front
+    // on indexOf's -1.
+    return grouped.sort((a, b) => compareSizes(a.label, b.label));
   }, [subset]);
 
   const showSneaker  = (category === "sneaker"  || category === "both") && sneakerSizes.length > 0;
