@@ -908,10 +908,30 @@
    toggle button's own position every time it opens, which is what `fixed`
    positioning requires anyway (it has no relationship to `.mc-nav__group`
    any more) and is what makes it escape the clipping in the first place. */
+/* PHONE-SAFE WIDTH AND HEIGHT (second half of the fix, 2026-08-28 — the owner
+   reported Footwear/Clothing still not working AFTER the `fixed` change above,
+   and this is why). The panel is 24-27rem wide and used to open flush with the
+   LEFT edge of the button that opened it, with no clamp of any kind. Measured
+   on the live shop: the nav strip's content is 858px wide, so on a ~390px
+   phone a shopper has to scroll the strip most of the way right before
+   Footwear and Clothing are even reachable — at which point those buttons sit
+   near the right edge, and a panel hung off the button's left edge starts at
+   ~300px and runs to ~568px. On a 390px screen that is a sliver, or nothing.
+   Same class of failure as the clipping above: the click worked, the panel was
+   just not where anyone could see it.
+
+   So: never wider than the screen, and never taller than the space below the
+   button (a long category list on a short phone in landscape scrolls inside
+   the panel rather than running off the bottom). The horizontal clamp itself
+   is in marathon-storefront.js, which is the only place that knows where the
+   button actually is. */
 .mc-nav__panel {
   position: fixed;
   z-index: 20;
-  min-width: 22rem;
+  min-width: min(22rem, calc(100vw - 2.4rem));
+  max-width: calc(100vw - 2.4rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: grid;
   gap: 0.2rem;
   padding: 1rem;

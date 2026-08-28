@@ -580,10 +580,44 @@
   // containing block for it), computed here from the toggle's own
   // `getBoundingClientRect()` so it still visually anchors under the
   // button it opened from.
+  //
+  // CLAMPED INTO THE VIEWPORT (added 2026-08-28, after the owner reported
+  // Footwear/Clothing STILL not working once the `fixed` change above was
+  // live — so the clipping was one of two bugs, not the whole of it).
+  // `left` used to be the toggle's own left edge, unclamped. Measured on the
+  // live shop: the nav strip's content is 858px wide, so on a ~390px phone
+  // Footwear and Clothing can only be reached by scrolling the strip most of
+  // the way right — which puts those buttons near the right edge, and a
+  // 242-265px panel hung off the button's left edge then starts at ~300px and
+  // ends at ~568px. Off the screen. The click worked and the panel opened,
+  // exactly as before; it simply opened where a phone cannot show it.
+  //
+  // So the panel is pushed back inside the viewport horizontally, and given a
+  // height budget of whatever is left below the button (the CSS sets
+  // `overflow-y: auto`, so Clothing's ten rows scroll inside the panel on a
+  // short screen instead of running off the bottom). Both are computed from
+  // real measurements at open time rather than assumed, because the strip's
+  // scroll position means the same button is at a different place every time.
+  var NAV_PANEL_MARGIN = 12;
   function positionNavPanel(toggle, panel) {
     var r = toggle.getBoundingClientRect();
-    panel.style.top = (r.bottom + 8) + "px";
-    panel.style.left = r.left + "px";
+    var top = r.bottom + 8;
+    // Clear any previous clamp before measuring, or the panel's width would be
+    // read back through the last open's max-height/left and drift each time.
+    panel.style.maxHeight = "";
+    var w = panel.getBoundingClientRect().width;
+    var maxLeft = window.innerWidth - w - NAV_PANEL_MARGIN;
+    var left = Math.max(NAV_PANEL_MARGIN, Math.min(r.left, maxLeft));
+    panel.style.top = top + "px";
+    panel.style.left = left + "px";
+    panel.style.maxHeight = Math.max(120, window.innerHeight - top - NAV_PANEL_MARGIN) + "px";
+  }
+  function closeNavGroup(g) {
+    g.classList.remove("is-open");
+    var p = $("[data-mc-navpanel]", g);
+    if (p) p.hidden = true;
+    var t = $("[data-mc-navtoggle]", g);
+    if (t) t.setAttribute("aria-expanded", "false");
   }
   document.addEventListener("click", function (ev) {
     var toggle = ev.target.closest && ev.target.closest("[data-mc-navtoggle]");
@@ -591,11 +625,7 @@
 
     openGroups.forEach(function (g) {
       if (toggle && g.contains(toggle)) return;
-      g.classList.remove("is-open");
-      var p = $("[data-mc-navpanel]", g);
-      if (p) p.hidden = true;
-      var t = $("[data-mc-navtoggle]", g);
-      if (t) t.setAttribute("aria-expanded", "false");
+      closeNavGroup(g);
     });
 
     if (!toggle) return;
@@ -610,19 +640,43 @@
     }
     toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
   });
-  // A fixed-position panel does not follow the page when it scrolls (unlike
-  // the old absolute one, which at least tried to, even though it was
-  // invisible) — closing it on scroll is simpler and more honest than
-  // letting it drift away from the button that opened it.
-  window.addEventListener("scroll", function () {
+  // A fixed-position panel does not follow the page when it scrolls, so it has
+  // to be re-placed rather than left to drift away from its button.
+  //
+  // This used to CLOSE the panel on any scroll event instead, which is a
+  // liability on a phone for two reasons. The nav strip is horizontally
+  // scrollable and, on a narrow screen, scrolling it is how a shopper reaches
+  // Footwear and Clothing in the first place — a nudge of that strip while the
+  // panel is open would shut it. And on iOS the address bar collapsing fires a
+  // window scroll of its own, unprompted, which could shut the panel a moment
+  // after it opened and read exactly like "clicking does nothing". Repositioning
+  // is both the friendlier behaviour and the one with no false triggers; the
+  // panel only closes if the button it belongs to has actually left the screen.
+  function reflowOpenNavPanels() {
     $$("[data-mc-navgroup].is-open").forEach(function (g) {
-      g.classList.remove("is-open");
-      var p = $("[data-mc-navpanel]", g);
-      if (p) p.hidden = true;
       var t = $("[data-mc-navtoggle]", g);
-      if (t) t.setAttribute("aria-expanded", "false");
+      var p = $("[data-mc-navpanel]", g);
+      if (!t || !p) return;
+      var r = t.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) {
+        closeNavGroup(g);
+        return;
+      }
+      positionNavPanel(t, p);
     });
-  }, { passive: true });
+  }
+  var navReflowQueued = false;
+  function queueNavReflow() {
+    if (navReflowQueued) return;
+    navReflowQueued = true;
+    window.requestAnimationFrame(function () {
+      navReflowQueued = false;
+      reflowOpenNavPanels();
+    });
+  }
+  window.addEventListener("scroll", queueNavReflow, { passive: true, capture: true });
+  window.addEventListener("resize", queueNavReflow, { passive: true });
+  window.addEventListener("orientationchange", queueNavReflow, { passive: true });
 
   // ─── BACK (snippets/marathon-back.liquid) ───────────────────────────────────
   // The control's `href` is always a real, working link — a collection page
