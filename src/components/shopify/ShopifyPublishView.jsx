@@ -641,9 +641,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // One tap to a department instead of thirty to an answer, and the read
   // discipline is untouched: chips only filter what membership already
   // computed from fields in hand — no node body is fetched for a count.
+  // catSub resets IN THE SAME STATE UPDATE as the department change (pickTop
+  // below), never in an effect: an effect fires after the commit that used the
+  // stale pair, so Clothing→Tees → tap Footwear would paint one frame filtered
+  // on "Footwear AND Tees" — an empty list lying "nothing matches" — before
+  // correcting itself (reviewer finding, 2026-08-28).
   const [catTop, setCatTop] = useState("all");
   const [catSub, setCatSub] = useState("all");
-  useEffect(() => { setCatSub("all"); }, [catTop]);
+  const pickTop = useCallback((top) => { setCatTop(top); setCatSub("all"); }, []);
 
   // Membership first (tab logic only), then the chips are counted from it,
   // then search + catalogue narrow it. Counting after the query would make
@@ -1352,12 +1357,12 @@ export default function ShopifyPublishView({ products = [], onExit }) {
           <>
             <div style={{ display: "flex", gap: 6, marginTop: 10, overflowX: "auto",
                           WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
-              <button onClick={() => setCatTop("all")}
+              <button onClick={() => pickTop("all")}
                 style={{ ...(catTop === "all" ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.72rem", flexShrink: 0 }}>
                 All departments
               </button>
               {catalogueTops.map(([top, n]) => (
-                <button key={top} onClick={() => setCatTop(top)}
+                <button key={top} onClick={() => pickTop(top)}
                   style={{ ...(catTop === top ? tabOn : tabOff), padding: "6px 12px", fontSize: "0.72rem",
                            flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
                   {top}

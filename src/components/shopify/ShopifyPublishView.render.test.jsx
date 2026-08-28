@@ -10,6 +10,9 @@
 // Store fully mocked — no live data, no network, no DOM (minimal window stub,
 // same pattern as UserManagement.gate.test.jsx).
 import { test, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { NAME_PROPOSAL_KEY } from "../../utils/visionNaming";
 import React from "react";
 import { create, act } from "react-test-renderer";
@@ -1667,4 +1670,39 @@ test("catalogue chips and search compose — and the chips never fetch a node bo
     expect(out).not.toContain("Court sneaker grey");
     expect(calls.nodesFor.length).toBe(0);   // no keys in this fixture — chips cost no reads
   });
+});
+
+test("jumping department→department with a shelf chip active never paints a false empty frame", async () => {
+  // catSub must reset IN THE SAME state update as the department change. With
+  // an effect-based reset, Clothing→Tees then tapping Footwear commits one
+  // frame filtered on "Footwear AND Tees" — an empty list reading "nothing
+  // matches" before self-correcting (reviewer finding, 2026-08-28).
+  const EXT = [...PRODUCTS,
+    { id: "p4", name: "Zip hoodie navy", category: "Clothing", subcategory: "Hoodies", photoUrl: "https://x/p4.jpg" }];
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={EXT} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush(); await flush();
+  await act(() => { button(tree, "Clothing").props.onClick(); });
+  await flush();
+  await act(() => { button(tree, "Tees").props.onClick(); });   // shelf chip (Clothing has 2 shelves here)
+  await flush();
+  expect(texts(tree)).toContain("Plain tee black");
+  expect(texts(tree)).not.toContain("Zip hoodie navy");
+  // Direct jump to another department shows that department's rows.
+  await act(() => { button(tree, "Footwear").props.onClick(); });
+  const out = texts(tree);
+  expect(out).toContain("Court sneaker grey");
+  expect(out).not.toContain("Nothing matches");
+});
+
+test("catSub resets IN THE SAME state update as the department pick — never via an effect", () => {
+  // act() flushes effects before the behavioural test above can look, so the
+  // one-frame false-empty state an effect-based reset paints is invisible to
+  // it (verified by mutation: the effect version passes that test). The
+  // mechanism is pinned at the source instead: the pick handler sets BOTH
+  // states, and no effect anywhere resets catSub.
+  const src = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "ShopifyPublishView.jsx"), "utf8");
+  expect(src).toMatch(/setCatTop\(top\); setCatSub\("all"\)/);
+  expect(src).not.toMatch(/useEffect\([^;]*setCatSub/s);
 });
