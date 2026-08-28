@@ -907,7 +907,15 @@ function Chip({ tone = "gray", children, onClick, title }) {
 
 function categoryChips(c) {
   const out = [];
-  out.push({ tone: "gray", text: c.perSize ? "per size" : "one size" });
+  // ── THE CHIP READS THE CATEGORY'S RUN, NOT WHAT WAS SAVED LAST TIME ───────
+  // It used to read the STORED perSize flag, so Soccer Jerseys — 189 products,
+  // every one of them S to XXXL — wore a "one size" chip because nobody had
+  // armed it per-size yet. The chip is the first thing read on the screen, and
+  // it was telling the owner the opposite of the truth about the category he
+  // had come to arm. Same root cause as the defect this branch exists for, one
+  // control along: the stored flag describes the last policy, not the category.
+  // (Owner screenshot, 2026-08-28.)
+  out.push({ tone: "gray", text: perSizeMode(c) ? "per size" : "one size" });
   // A GROUP is one entry with a small count of what it holds. Its armed state
   // is the group's flag: a disarmed group with numbers in it is "not armed",
   // never "armed at N" — the numbers are not in the engine's resolution.

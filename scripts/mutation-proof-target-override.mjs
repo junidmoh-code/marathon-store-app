@@ -26,6 +26,8 @@
 //   M-ARM-STALE    the arming confirm quotes a stale preview's refill count
 //   M-PERSIZE-REMOVAL a size-mode line is reported on a policy removal
 //   M-PREVIEW-WORDS a failed preview prints a raw reason token
+//   M-CHIP         the size-mode chip reads the stored flag and calls a sized
+//                  category "one size" (the owner's screenshot, 2026-08-28)
 //   M-PERSIZE      the arming flag is read back from what was saved last time
 //   M-REGISTRY     the registry fallback stretches a GROUP's union
 //
@@ -252,6 +254,14 @@ const MUTATIONS = [
     to: `      if (!res.ok) { onFail(res.message || res.reason); return; }
       setPreview({ key: forKey, model: res.preview });`,
     tests: EDITOR_TESTS,
+  },
+  {
+    id: "M-CHIP",
+    guard: "the size-mode chip reads the category's run, not the last policy saved",
+    file: CARD,
+    from: `  out.push({ tone: "gray", text: perSizeMode(c) ? "per size" : "one size" });`,
+    to: `  out.push({ tone: "gray", text: c.perSize ? "per size" : "one size" });`,
+    tests: CARD_TESTS,
   },
   {
     id: "M-PERSIZE",

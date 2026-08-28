@@ -13,7 +13,7 @@
 // described in a comment, because a layout fix nobody can see break is a layout
 // fix that comes back.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import {
@@ -1211,5 +1211,99 @@ describe("arming a group quotes a fresh preview or none at all", () => {
     expect(after).toContain("Arm Sneakers?");
     expect(after).not.toContain("2176");
     expect(after).not.toMatch(/would ask for at most/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SOCCER JERSEYS — THE SCREEN IN THE OWNER'S SCREENSHOT, END TO END
+// ═════════════════════════════════════════════════════════════════════════════
+// 189 products, every one S to XXXL, no policy, 1,149 legacy rows. The shipped
+// screen chipped it "one size" and offered one general quantity per location;
+// that quantity, saved, would have armed NOTHING. Every claim this branch makes
+// about the defect is asserted here against that exact shape.
+describe("Soccer Jerseys", () => {
+  // ITS OWN CENSUS, not an extra row in the shared one: a fixture that reorders
+  // the main list changes which entry every other test opens, and a test that
+  // breaks its neighbours is a test nobody keeps.
+  const SOCCER_JERSEYS = {
+    key: "soccer-jerseys", label: "Soccer Jerseys", products: 189, units: 2025, perSize: false,
+    entry: null, effectiveEntry: null,
+    armed: [], armedEffective: [], policySource: null, groupKey: null, memberOfGroup: null,
+    carriage: { hub1: { carries: true, products: 1, units: 1 }, hub2: { carries: true, products: 126, units: 615 },
+      "marathon-pe": { carries: true, products: 60, units: 1409 }, trophy: { carries: false, products: 0, units: 0 } },
+    ownRowCells: 1149, ownRowProducts: 189,
+    sizeRun: ["S", "M", "L", "XL", "XXL", "XXXL"], sizeRunExtra: ["4XL"], sizeRunEmpty: false,
+    sizeRunOneSize: false, sizeRunFromRegistry: false,
+    imageUrl: null,
+  };
+
+  // The four live destinations, in the live order — Hub 1 included, because the
+  // screenshot shows it and because the first "Stock here" on that screen is
+  // its button.
+  beforeEach(() => {
+    CENSUS_OVERRIDE = { ...CENSUS, destinations: ["hub1", "hub2", "marathon-pe", "trophy"],
+      categories: [SOCCER_JERSEYS], groupEntries: [] };
+  });
+  afterEach(() => { CENSUS_OVERRIDE = null; });
+
+  const open = async (tree) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Soccer Jerseys"))[0];
+    expect(row, "Soccer Jerseys must be on the list").toBeTruthy();
+    await act(async () => { row.props.onClick(); });
+  };
+
+  it("is chipped PER SIZE, not 'one size' — the chip reads the category, not the last policy", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const t = textOf(tree);
+    expect(t).toContain("per size");
+    expect(t).not.toContain("one size");
+  });
+
+  it("arming a location offers SIX size fields, not one general quantity", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const labels = tree.root.findAll((n) => n.type === "input")
+      .map((n) => n.props["aria-label"]).filter((l) => /Keep$/.test(l || ""));
+    expect(labels).toEqual([
+      "Hub 1 S Keep", "Hub 1 M Keep", "Hub 1 L Keep", "Hub 1 XL Keep", "Hub 1 XXL Keep", "Hub 1 XXXL Keep",
+    ]);
+    // …and the single general quantity that was the only thing on offer is gone
+    expect(labels).not.toContain("Hub 1 Keep");
+  });
+
+  it("and the saved policy carries perSize:true with a row per size — without it the entry arms NOTHING", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const everySize = tree.root.findAll((n) => n.type === "input"
+      && n.props["aria-label"] === "Hub 1 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "2" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 3, totalUnits: 6, centralOnHand: 99, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.dryRun && c?.categoryKey === "soccer-jerseys");
+    expect(dry.policy.perSize).toBe(true);
+    expect(Object.keys(dry.policy.hub1.sizes)).toEqual(["S", "M", "L", "XL", "XXL", "XXXL"]);
+    expect(Object.values(dry.policy.hub1.sizes).every((r) => r.target === 2)).toBe(true);
+  });
+
+  it("says 4XL is outside the run rather than pretending it is not there", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    expect(textOf(tree)).toContain("outside the run");
+  });
+
+  it("never tells the owner its run is broken — it has one", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    expect(textOf(tree)).not.toContain("No size run can be worked out");
   });
 });
