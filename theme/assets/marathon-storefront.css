@@ -897,11 +897,20 @@
   cursor: pointer; white-space: nowrap;
 }
 .mc-nav__toggle:hover, .mc-nav__group.is-open .mc-nav__toggle { color: var(--mc-fg); }
+/* `position: fixed`, NOT `absolute` (fixed 2026-08-28 — real bug, found
+   live: clicking Footwear/Clothing genuinely did nothing visible on every
+   browser). `.mc-nav__group` sits inside `.mc-nav__scroll`, which carries
+   `overflow-x: auto` for the row's own horizontal scroll — per spec, that
+   makes the OTHER axis compute to `auto` too rather than staying `visible`,
+   so an `absolute` panel positioned relative to `.mc-nav__group` was being
+   silently clipped to the scroll row's own height. `top`/`left` are no
+   longer set here at all — marathon-storefront.js computes them from the
+   toggle button's own position every time it opens, which is what `fixed`
+   positioning requires anyway (it has no relationship to `.mc-nav__group`
+   any more) and is what makes it escape the clipping in the first place. */
 .mc-nav__panel {
-  position: absolute;
+  position: fixed;
   z-index: 20;
-  inset-block-start: calc(100% + 0.8rem);
-  inset-inline-start: 0;
   min-width: 22rem;
   display: grid;
   gap: 0.2rem;
