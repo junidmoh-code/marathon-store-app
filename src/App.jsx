@@ -135,6 +135,7 @@ import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
+import TaxonomyTab from "./components/admin/TaxonomyTab";
 // ── SNEAKER INTAKE — style code first ────────────────────────────────────────
 // Sneakers arrive without boxes, so there is no barcode. The inside-tongue style
 // code is the identity, and it is now the FIRST question intake asks — which is
@@ -6189,7 +6190,7 @@ function AdminView({ products, orders, onExit }) {
   // Section toggle (Products ↔ Categories ↔ Missing Prices) — the AI tabs live in AI Studio now.
   const sectionToggle = (
     <div style={{ display:"flex", flexWrap:"wrap", gap:8, padding:"0 14px 4px" }}>
-      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"]]
+      {[["products","Products"],["assign-categories","Assign"],["review-categories","Categories"],["missing-prices","Missing Prices"],["bulk-pricing","Pricing"],["specials","Specials"],["taxonomy","Taxonomy"]]
         .map(([val, label]) => {
         const on = adminSection === val;
         const badge = val === "review-categories" ? pendingCategoryCount
@@ -6410,7 +6411,7 @@ function AdminView({ products, orders, onExit }) {
   // ── DESKTOP WORKSPACE (>=1024px) — rail of sections + titled main pane.
   //    Handles both admin sections; mobile keeps the single column below. ──
   if (isWide) {
-    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0]];
+    const NAV = [["products", "Products", products.length], ["assign-categories", "Assign Categories", assignCategoryCount], ["review-categories", "Categories", pendingCategoryCount], ["missing-prices", "Missing Prices", missingPriceCount], ["bulk-pricing", "Bulk Pricing", 0], ["specials", "Specials", 0], ["taxonomy", "Taxonomy", 0]];
     const navItem = ([key, label, count]) => {
       const on = adminSection === key;
       return (
@@ -6442,7 +6443,8 @@ function AdminView({ products, orders, onExit }) {
       : adminSection === "review-categories" ? "Categories"
       : adminSection === "missing-prices" ? "Missing Prices"
       : adminSection === "bulk-pricing" ? "Bulk Pricing"
-      : adminSection === "specials" ? "Specials" : "Products";
+      : adminSection === "specials" ? "Specials"
+      : adminSection === "taxonomy" ? "Taxonomy" : "Products";
     const subtitle = adminSection === "assign-categories"
       ? "Give every product its real category. Nothing else changes."
       : adminSection === "review-categories"
@@ -6453,6 +6455,8 @@ function AdminView({ products, orders, onExit }) {
       ? "Reprice many products at once — fixed values or a percentage, previewed and undoable."
       : adminSection === "specials"
       ? "Run specials: the till charges the sale price; the normal price comes back exactly when you end it."
+      : adminSection === "taxonomy"
+      ? "Add sizes to a size run, and add categories — no code change, live everywhere at once."
       : "Add products, set sizes & pricing, and manage the catalogue.";
     return (
       <div style={{ height:"100vh", maxHeight:"100dvh", background:"#000", color:"#f3f6ff", fontFamily:FONT, display:"grid", gridTemplateColumns:"236px minmax(0,1fr)", overflow:"hidden" }}>
@@ -6495,6 +6499,7 @@ function AdminView({ products, orders, onExit }) {
                 : adminSection === "missing-prices" ? <MissingPricesTab products={products} />
                 : adminSection === "bulk-pricing" ? <BulkPricingTab products={products} />
                 : adminSection === "specials" ? <SpecialsTab products={products} />
+                : adminSection === "taxonomy" ? <TaxonomyTab registry={taxonomy} source={taxonomySource} />
                 : productsBody}
             </div>
           </div>
@@ -6508,6 +6513,7 @@ function AdminView({ products, orders, onExit }) {
   if (adminSection === "missing-prices") return reviewShell(<MissingPricesTab products={products} />);
   if (adminSection === "bulk-pricing") return reviewShell(<BulkPricingTab products={products} />);
   if (adminSection === "specials") return reviewShell(<SpecialsTab products={products} />);
+  if (adminSection === "taxonomy") return reviewShell(<TaxonomyTab registry={taxonomy} source={taxonomySource} />);
 
   return (
     <div style={ADMIN_WRAP}>
