@@ -57,12 +57,14 @@ the same sensitivity as `/pos/sales` beside it.
   the window, with first/last activity times. It comes from the payment-event
   ledger, not from a picker.
 
-### `/pos/card_batch_drafts/{draftId}`
+### `/pos/card_batch_drafts/{uid}/{draftId}`
 
 The two-phase handshake: `extract` OCRs the photos, validates, and parks the
-parsed slip here (2h TTL, server-written); `submit` promotes the draft verbatim
-into `/pos/card_batches`. The review step between the two shows what the OCR
-read — it offers **no way to edit a figure**.
+parsed slip here (2h TTL, server-written, keyed under the submitting uid so
+ownership is structural and the per-user expired-draft sweep stays bounded);
+`submit` promotes the draft verbatim into `/pos/card_batches`. The review step
+between the two shows what the OCR read — it offers **no way to edit a
+figure**.
 
 ### Photos
 

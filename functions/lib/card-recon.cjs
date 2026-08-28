@@ -39,7 +39,9 @@ const CARD_TERMINALS_PATH = "config/cardTerminals";
 // masked PANs and till takings, the same sensitivity as /pos/sales beside it.
 const CARD_BATCHES_PATH = "pos/card_batches";
 // Two-phase capture: extract parks the parsed slip here, submit promotes it.
-// Server-written, short-lived, keyed by a push id the client cannot forge.
+// Server-written, short-lived, keyed {uid}/{pushId} — ownership is structural,
+// and the extract phase sweeps the caller's own expired drafts (bounded by
+// construction: one person holds at most a handful).
 const CARD_BATCH_DRAFTS_PATH = "pos/card_batch_drafts";
 const DRAFT_TTL_MS = 2 * 60 * 60 * 1000; // review happens on the spot; 2h is generous
 

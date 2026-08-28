@@ -263,6 +263,28 @@ function toExtraction(parsed) {
 // exception, so the screen renders it as copy instead of a red toast.
 const reject = (reason) => ({ ok: false, reason });
 
+// The keys already holding this batch number for a TID. NEVER "read the TID
+// node and look at its keys": each record carries a full transaction roll and
+// they accumulate for years, so that is the bandwidth mistake this repo keeps
+// a rule against — and an orderByKey range is a trap here too (RTDB sorts
+// integer-like keys numerically BEFORE string keys, so a range from "494"
+// would sweep every later batch). Instead: probe the only keys that can
+// exist — "494", "494-r2", "494-r3", … — by reading ONE tiny child field
+// each, and stop at the first gap. Revisions are created strictly in sequence
+// (submit's transaction refuses anything else), so the first absent key ends
+// the chain.
+async function readBatchKeysFor(db, storeId, tid, batchNo) {
+  const base = `${CARD_BATCHES_PATH}/${storeId}/${tid}`;
+  const keys = [];
+  for (let rev = 1; ; rev++) {
+    const key = rev === 1 ? String(batchNo) : `${batchNo}-r${rev}`;
+    const exists = (await db.ref(`${base}/${key}/batchKey`).once("value")).exists();
+    if (!exists) break;
+    keys.push(key);
+  }
+  return keys;
+}
+
 async function handleExtract(db, request) {
   const { photos, pickedTid, summaryOnly } = request.data || {};
   if (!Array.isArray(photos) || !photos.length) {
@@ -327,8 +349,7 @@ async function handleExtract(db, request) {
   // The submit transaction re-checks — this one is for the message, that one
   // is the guarantee.
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const existingSnap = await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`).once("value");
-  const existingKeys = Object.keys(existingSnap.val() || {});
+  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
   const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
   if (!write.ok) return reject(write.reason);
 
@@ -338,8 +359,17 @@ async function handleExtract(db, request) {
     startMs: extraction.openedAt, endMs: extraction.closedAt,
   });
 
+  // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
+  // drafts is bounded by construction — one person holds at most a handful.
+  const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
+  try {
+    const stale = (await userDraftsRef.once("value")).val() || {};
+    const gone = Object.entries(stale).filter(([, d]) => d && Date.now() > d.expiresAt).map(([k]) => k);
+    if (gone.length) await userDraftsRef.update(Object.fromEntries(gone.map((k) => [k, null])));
+  } catch (err) { console.warn("cardBatchCapture: draft sweep failed:", err.message); }
+
   // ── PHOTOS, IMMUTABLY — a fresh draft id IS the never-overwrite guarantee ──
-  const draftRef = db.ref(CARD_BATCH_DRAFTS_PATH).push();
+  const draftRef = userDraftsRef.push();
   const draftId = draftRef.key;
   const bucket = admin.storage().bucket(STORAGE_BUCKET);
   const photoPaths = [];
@@ -402,7 +432,9 @@ async function handleSubmit(db, request) {
   if (typeof draftId !== "string" || !/^[A-Za-z0-9_-]{10,40}$/.test(draftId)) {
     throw new HttpsError("invalid-argument", "draftId is required.");
   }
-  const draftRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${draftId}`);
+  // Drafts are keyed under the caller's uid, so another user's draftId simply
+  // does not resolve — ownership is structural; the `by` check is belt.
+  const draftRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}/${draftId}`);
   const draft = (await draftRef.once("value")).val();
   if (!draft) throw new HttpsError("not-found", "That capture has expired — extract the slip again.");
   if (draft.by !== request.auth.uid) throw new HttpsError("permission-denied", "This capture belongs to another session.");
@@ -426,7 +458,7 @@ async function handleSubmit(db, request) {
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
   const tidRef = db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`);
-  const existingKeys = Object.keys((await tidRef.once("value")).val() || {});
+  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
   const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!draft.correction });
   if (!write.ok) return reject(write.reason);
 
