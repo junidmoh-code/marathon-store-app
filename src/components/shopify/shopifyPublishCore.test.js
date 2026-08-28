@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
   normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason, blockStatus,
-  STATE_FILTERS, reviewStateFor, matchesStateFilter, batchSelectBlocker, effectivePhotoList,
+  STATE_FILTERS, reviewStateFor, publishTabFor, batchSelectBlocker, effectivePhotoList,
   isPublishableProduct, PRICE_RECORD_BLOCKER,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY, normalizePhotoList } from "./publishShared";
@@ -189,13 +189,21 @@ describe("reviewStateFor — the page's row/filter state", () => {
     // vision run's output to be reachable at all.
     expect(STATE_FILTERS.some((f) => f.key === "proposed")).toBe(true);
   });
-  it("matchesStateFilter — all matches everything, others match exactly", () => {
-    expect(matchesStateFilter("all", "awaiting")).toBe(true);
-    expect(matchesStateFilter("all", "live")).toBe(true);
-    expect(matchesStateFilter("awaiting", "awaiting")).toBe(true);
-    expect(matchesStateFilter("awaiting", "approved")).toBe(false);
-    expect(matchesStateFilter("blocked", "blocked")).toBe(true);
-    expect(matchesStateFilter("live", "awaiting")).toBe(false);
+  it("publishTabFor — Live is what a customer can SEE, everything else awaits", () => {
+    expect(publishTabFor({ state: "live", liveState: "on" })).toBe("live");
+    // A live product that is switched OFF is not on the shop and is not
+    // finished. It used to sit behind a second collapsed heading inside the
+    // Live tab, which is where 152 of them went unnoticed.
+    expect(publishTabFor({ state: "live", liveState: "off" })).toBe("awaiting");
+    expect(publishTabFor({ state: "blocked" })).toBe("awaiting");
+    expect(publishTabFor({ state: "awaiting" })).toBe("awaiting");
+    // No node at all is the purest form of awaiting: never reviewed.
+    expect(publishTabFor(null)).toBe("awaiting");
+    expect(publishTabFor(undefined)).toBe("awaiting");
+    // A LEGACY live node with no liveState reads as ON (isOn's fallback) — it
+    // was published under the old model, and it is on the shop.
+    expect(publishTabFor({ state: "live" })).toBe("live");
+    expect(publishTabFor({ state: "draft" })).toBe("awaiting");
   });
 });
 

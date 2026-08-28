@@ -212,13 +212,43 @@ export function effectivePhotoList(product, node) {
 // published stays state "awaiting" with `nameApprovedAt` stamped on the node
 // (the console rules' $other clause admits the extra field).
 
+// TWO TABS AND A LANE (owner instruction 2026-08-28). Categories are gone from
+// this page entirely — they grouped the catalogue by a fact the publishing job
+// never asks about, and the collapsible sections meant the answer to "what is
+// on the shop" was spread across thirty headings you had to open one at a time
+// on a phone.
+//
+//   live     — published AND on. What a customer can see right now.
+//   awaiting — everything else that is waiting for a decision: never reviewed,
+//              reviewed and not published, refused, and ON SHOPIFY BUT OFF.
+//              That last group is the one this page has been hiding: 152 nodes
+//              sit at live+off, 97 of them switched off in August so their
+//              names could be changed and never put back
+//              (docs/PUBLISH-AUTO-OFF.md). They are not live and they are not
+//              finished, so this is where they belong.
+//   proposed — the vision-naming review lane, unchanged. Not a state; a queue.
+//
+// "All" and "Blocked" are gone with the sections. All was the catalogue, which
+// is what the admin catalogue is for; Blocked was a subset of awaiting that a
+// row already announces in red, and pulling it out into its own tab hid those
+// products from the list where the work happens.
 export const STATE_FILTERS = [
-  { key: "all",      label: "All" },
-  { key: "awaiting", label: "Awaiting review" },
-  { key: "proposed", label: "Proposed names" },
   { key: "live",     label: "Live" },
-  { key: "blocked",  label: "Blocked" },
+  { key: "awaiting", label: "Awaiting review" },
+  { key: "proposed", label: "Suggested names" },
 ];
+
+// Which tab does this product belong under? The node is the whole answer: a
+// product with no node at all has never been reviewed, which is the purest
+// form of awaiting.
+//
+// Deliberately NOT reviewStateFor: that speaks in review states (awaiting /
+// approved / live / blocked) and the tabs speak in "can a customer see it".
+// A live+off product is "live" by state and awaiting by every practical
+// measure, and the old Live tab put it behind a second collapsed heading.
+export function publishTabFor(node) {
+  return isOn(node) ? "live" : "awaiting";
+}
 
 // Where a product sits in the review flow. An awaiting node with no approval
 // stamp (a grade set before any name decision) still reads "awaiting" — the
@@ -229,21 +259,6 @@ export function reviewStateFor(node) {
   const s = normalizedState(node);
   if (s === "awaiting") return node.nameApprovedAt ? "approved" : "awaiting";
   return s; // live | blocked
-}
-
-// Does a review state pass the header filter? "approved" products appear
-// under All only — their names are done and they are not yet on Shopify.
-//
-// "proposed" is the one filter that is NOT a review state: a vision proposal
-// can sit on an awaiting product, a blocked one, or one already live and
-// switched off. It is therefore answered from the NODE, not from the review
-// state — the third argument. Callers that pass two arguments (every caller
-// that predates the vision lane, and the tests that pin them) get `undefined`
-// and the lane simply never matches, which is correct for them.
-export function matchesStateFilter(filterKey, reviewState, node) {
-  if (filterKey === "all") return true;
-  if (filterKey === "proposed") return isPendingProposal(node);
-  return reviewState === filterKey;
 }
 
 // ─── VISION NAME PROPOSALS — the review lane ─────────────────────────────────
