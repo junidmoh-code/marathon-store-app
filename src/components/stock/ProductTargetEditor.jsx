@@ -84,6 +84,11 @@ export default function ProductTargetEditor({ seat, ctx, label, onDone, onFail, 
     const forKey = keyNow;
     setBusy("preview");
     try {
+      // allowRemoveForeign on a DRY RUN only. A preview is a question, and
+      // refusing to answer it until the owner has confirmed a removal would
+      // mean asking for the confirmation before showing what it does. The SAVE
+      // asks for itself, with the numbers named. (The server treats the flag as
+      // permission to proceed, never as a decision that was made.)
       const res = await saveProductTargets({ ctx, loc, pid, draft, dryRun: true, allowRemoveForeign: true });
       if (!res.ok && res.reason === "no_change") { setPreview({ key: forKey, model: null, noChange: true }); return; }
       if (!res.ok) { onFail(res.message || res.reason); return; }
