@@ -132,3 +132,40 @@ describe("decodeImageFile", () => {
     delete globalThis.Image;
   });
 });
+
+// ─── THE GATE NO LONGER ENUMERATES (owner report 2026-08-28) ─────────────────
+// A camera-roll photo was refused with "That doesn't look like a photo" —
+// the third time a named format list met a format it did not name (HEIC was
+// the first two). Any image/* type is now attempted; SVG alone stays out.
+describe("isAcceptedImageFile — any image/* is attempted", () => {
+  const fileOf = (type, name, size = 100) => ({ type, name, size });
+  it("accepts the formats Apple added after the list was written", () => {
+    expect(isAcceptedImageFile(fileOf("image/jxl", "IMG_8001.JXL"))).toBe(true);   // iPhone 16 Pro JPEG-XL
+    expect(isAcceptedImageFile(fileOf("image/x-adobe-dng", "IMG_8001.DNG"))).toBe(true); // ProRAW
+    expect(isAcceptedImageFile(fileOf("image/whatever-comes-next", "x"))).toBe(true);
+  });
+  it("accepts them by extension too when the type is blank (Files-app picks)", () => {
+    expect(isAcceptedImageFile(fileOf("", "IMG_8001.DNG"))).toBe(true);
+    expect(isAcceptedImageFile(fileOf("", "IMG_8001.jxl"))).toBe(true);
+  });
+  it("SVG stays refused under every spelling — it is a scriptable document, not a photo", () => {
+    expect(isAcceptedImageFile(fileOf("image/svg+xml", "logo.svg"))).toBe(false);
+    expect(isAcceptedImageFile(fileOf("image/svg", "logo.svg"))).toBe(false);
+    expect(isAcceptedImageFile(fileOf("", "logo.svg"))).toBe(false);
+  });
+  it("still refuses what genuinely is not an image on both counts", () => {
+    expect(isAcceptedImageFile(fileOf("video/quicktime", "IMG_1.MOV"))).toBe(false);
+    expect(isAcceptedImageFile(fileOf("application/pdf", "scan.pdf"))).toBe(false);
+  });
+});
+
+describe("the refusal carries its own diagnosis", () => {
+  it("names the reported type and file name, so the next phone report answers itself", async () => {
+    const { uploadFileProblem } = await import("./photoTools.js");
+    const msg = uploadFileProblem({ type: "video/quicktime", name: "IMG_1234.MOV", size: 100 });
+    expect(msg).toContain("video/quicktime");
+    expect(msg).toContain("IMG_1234.MOV");
+    const blank = uploadFileProblem({ type: "", name: "", size: 100 });
+    expect(blank).toContain("no type");
+  });
+});
