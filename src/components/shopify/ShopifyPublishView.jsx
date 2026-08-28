@@ -43,6 +43,7 @@ import {
   normalizedState, isOn, isPendingSwitch, batchSelectBlocker, effectivePhotoList, effectiveNameFor,
   isPublishableProduct,
 } from "./shopifyPublishCore";
+import { describeOff } from "./publishAudit";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import {
   loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
@@ -259,6 +260,8 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
   const photoCount = effectivePhotoList(product, node).photos.length;
   const blocked = blockedReason(node);
   const nameVerdict = checkCleanName(effective.name);
+  // Why this product came off the shop, in one sentence — null while it is on.
+  const offStory = state === "live" && !on ? describeOff(node) : null;
 
   const setGrade = async (c) => {
     setBusy(true); setError(null);
@@ -372,10 +375,18 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
           {state === "live" && (
             // The live row's provenance line: when it went ON (the
             // reconciler's liveAt stamp) and the direct Shopify admin link.
+            //
+            // OFF ROWS SAY WHY, AND WHEN. "On Shopify, not published" was all
+            // this line ever said, and it is the sentence 97 products have
+            // been sitting behind since 22 August — switched off so their
+            // brand-leaking names could be changed, renamed, and never put
+            // back (docs/PUBLISH-AUTO-OFF.md). describeOff is the one builder
+            // for that sentence; it degrades honestly for a node that went off
+            // before the audit shipped.
             <div style={{ fontSize: 10, color: GRAY, marginTop: 4 }}>
               {on
                 ? (node?.liveAt ? `Went live ${new Date(node.liveAt).toLocaleDateString()}` : "Live")
-                : "On Shopify, not published"}
+                : (offStory?.text || "On Shopify, not published")}
               {node?.adminUrl && (
                 <>
                   {" · "}

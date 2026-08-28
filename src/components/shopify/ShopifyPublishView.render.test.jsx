@@ -538,7 +538,11 @@ test("page: an ON product locks its name; a dirty live-off page refuses the swit
   }
   await openProductPage(tree, "Plain tee black");
   expect(pageNameInput(tree).props.disabled).toBe(true); // ON — customers see this name; locked
-  expect(texts(tree)).toContain("switch it off to rename");
+  // The rename lock is no longer a dead sentence: it carries the action that
+  // does the thing it tells you to do, and that action is what records
+  // reasonCode "off_to_rename" (docs/PUBLISH-AUTO-OFF.md).
+  expect(texts(tree)).toContain("it has to come off the shop to be renamed");
+  expect(texts(tree)).toContain("Take it off the shop to rename");
   await goBack();
   await openProductPage(tree, "Court sneaker grey");
   const offInput = pageNameInput(tree);
