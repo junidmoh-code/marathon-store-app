@@ -102,7 +102,7 @@ const canPerSize = c.perSize && sizeRun.length > 0;   // c.perSize = the STORED 
 ```
 
 `c.perSize` comes from the census as `effEntry?.perSize === true`
-(category-policy-write.cjs:546). A category that has never been armed per-size
+(category-policy-write.cjs:619). A category that has never been armed per-size
 has no entry, so `c.perSize` is `false`, so the "Size by size" button is never
 rendered — **the reported defect, reproduced.**
 

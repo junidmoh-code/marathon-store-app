@@ -414,3 +414,34 @@ test("a removal records that it leaves NO row, as a flag rather than a null", as
   // that simply forgot to say what it left behind.
   assert.deepEqual(history(db)[0].after, [{ sizeKey: "M", absent: true }]);
 });
+
+// ── A ROW A SCRIPT WROTE CAN STILL BE CLEARED ────────────────────────────────
+// Admin-SDK scripts bypass the rule that requires numbers, so a stored
+// `target: "4"` exists on the live node. The drift check compares the caller's
+// expectation against shapeOf(live), and shapeOf passes a string through — so
+// the caller must too, or clearing such a row fails with a bare
+// failed-precondition and no way forward. (CodeRabbit, PR #497.)
+test("a string target drift-checks as itself, and the row can be cleared", async () => {
+  const db = makeFakeDb(world({ stock_targets: { trophy: { j1: {
+    M: { target: "4", minQty: 2, source: "script" },
+  } } } }));
+  const res = await call(db, base({
+    rows: [], remove: ["M"],
+    expected: { M: { target: "4", minQty: 2, reorderPoint: null } },
+    allowRemoveForeign: true,
+  }));
+  assert.equal(res.ok, true);
+  assert.equal(rowsAt(db).M, undefined);
+});
+
+test("…and coercing it to a number in the expectation is refused, not silently accepted", async () => {
+  const db = makeFakeDb(world({ stock_targets: { trophy: { j1: {
+    M: { target: "4", minQty: 2, source: "script" },
+  } } } }));
+  await rejects(() => call(db, base({
+    rows: [], remove: ["M"],
+    expected: { M: { target: 4, minQty: 2, reorderPoint: null } },   // claims a number the row does not hold
+    allowRemoveForeign: true,
+  })), "failed-precondition");
+  assert.equal(rowsAt(db).M.target, "4");
+});

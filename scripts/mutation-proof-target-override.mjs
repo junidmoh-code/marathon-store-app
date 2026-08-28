@@ -22,6 +22,7 @@
 //   M-CTX-KEY      the preview key ignores the context it was computed against
 //   M-STUCK-CLEAR  a clear that cannot act claims nothing is overridden
 //   M-EFF-RP       the no-change test compares the typed Ask at, not the landed one
+//   M-SHAPE-MIRROR the expectation normalises differently from the server's shapeOf
 //   M-PERSIZE      the arming flag is read back from what was saved last time
 //   M-REGISTRY     the registry fallback stretches a GROUP's union
 //
@@ -184,10 +185,7 @@ const MUTATIONS = [
     id: "M-REVERT-EXPECT",
     guard: "a revert drift-checks against the entry's own after-state, never the live row",
     file: CARD,
-    from: `      expected[k] = a.absent === true || !a.row ? null
-        : { target: typeof a.row.target === "number" ? a.row.target : null,
-            minQty: typeof a.row.minQty === "number" ? a.row.minQty : null,
-            reorderPoint: typeof a.row.reorderPoint === "number" ? a.row.reorderPoint : null };`,
+    from: `      expected[k] = a.absent === true || !a.row ? null : shapeOfRow(a.row);`,
     to: `      expected[k] = null;`,
     tests: CARD_TESTS,
   },
@@ -213,6 +211,16 @@ const MUTATIONS = [
     file: OVERRIDE,
     from: `    if (prev !== null && prevTarget === target && prevRp === effRp) continue;`,
     to: `    if (prev !== null && prevTarget === target && prevRp === rp) continue;`,
+    tests: OVERRIDE_TESTS,
+  },
+  {
+    id: "M-SHAPE-MIRROR",
+    guard: "the drift expectation normalises exactly as the server's shapeOf does",
+    file: OVERRIDE,
+    from: `    target: r?.target ?? null,
+    minQty: r?.minQty ?? null,`,
+    to: `    target: typeof r?.target === "number" ? r.target : null,
+    minQty: typeof r?.minQty === "number" ? r.minQty : null,`,
     tests: OVERRIDE_TESTS,
   },
   {

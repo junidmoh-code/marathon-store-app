@@ -79,7 +79,7 @@ import {
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
-import { writableRow } from "./targetOverride";
+import { writableRow, shapeOfRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
@@ -600,10 +600,10 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       }
       // `absent: true` is the flag for "this write left no row"; RTDB deletes a
       // key written null, so it could not have been recorded as one.
-      expected[k] = a.absent === true || !a.row ? null
-        : { target: typeof a.row.target === "number" ? a.row.target : null,
-            minQty: typeof a.row.minQty === "number" ? a.row.minQty : null,
-            reorderPoint: typeof a.row.reorderPoint === "number" ? a.row.reorderPoint : null };
+      // shapeOfRow, the SAME normalisation the server's shapeOf uses and the
+      // editor's expectation uses — one function, so a drift check can never
+      // fire on a difference that is only in how the two sides read a value.
+      expected[k] = a.absent === true || !a.row ? null : shapeOfRow(a.row);
       if (!b.row || typeof b.row !== "object") { remove.push(k); continue; }
       // A captured row the live rule would refuse is reported, never repaired:
       // coercing a string target to a number nobody wrote, or to 0, would

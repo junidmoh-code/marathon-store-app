@@ -298,6 +298,30 @@ export function overridePlan(ctx, loc, pid, draft) {
 // every size the plan touches. `null` is a real value here — "there was no row"
 // — and the server checks it, so a row created underneath is refused rather
 // than blind-overwritten.
+// ── THE SERVER'S shapeOf, MIRRORED EXACTLY ───────────────────────────────────
+// The drift check compares this against `shapeOf(live)` in
+// category-policy-write.cjs, and the two must normalise IDENTICALLY or the
+// check fires on rows that never changed.
+//
+// target and minQty pass through RAW — a stored `target: "4"` stays "4". That
+// looks careless and is the opposite: Admin-SDK scripts write /stock_targets
+// directly and bypass the rule that requires numbers, so string targets exist
+// on the live node. Coercing one to `null` here (the old behaviour) made its
+// expectation disagree with the server's for a row nobody had touched, so
+// CLEARING a script-written row failed with a bare failed-precondition and no
+// way forward. Coercing it to `4` instead would be worse — it would claim the
+// row holds a number it does not. Passed through, the two sides agree about
+// exactly what is there. Only reorderPoint is numeric-or-null, because absent
+// and 0 are different policies and the server draws that line too.
+// (CodeRabbit, PR #497.)
+export function shapeOfRow(r) {
+  return {
+    target: r?.target ?? null,
+    minQty: r?.minQty ?? null,
+    reorderPoint: typeof r?.reorderPoint === "number" ? r.reorderPoint : null,
+  };
+}
+
 export function expectationFor(ctx, loc, pid, plan, draft = null) {
   const live = ctx?.targets?.[loc]?.[pid] || {};
   const out = {};
@@ -314,11 +338,7 @@ export function expectationFor(ctx, loc, pid, plan, draft = null) {
     const prev = draft?.sizes?.[sizeKey] && "prev" in draft.sizes[sizeKey]
       ? draft.sizes[sizeKey].prev
       : live[sizeKey];
-    out[sizeKey] = prev && typeof prev === "object"
-      ? { target: typeof prev.target === "number" ? prev.target : null,
-          minQty: typeof prev.minQty === "number" ? prev.minQty : null,
-          reorderPoint: typeof prev.reorderPoint === "number" ? prev.reorderPoint : null }
-      : null;
+    out[sizeKey] = prev && typeof prev === "object" ? shapeOfRow(prev) : null;
   }
   return out;
 }

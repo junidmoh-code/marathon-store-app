@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   overrideDraft, overridePlan, switchOffDraft, clearDraft, applyToAll,
   validateOverrideDraft, inheritedAt, previewRows, targetPayload, expectationFor,
-  derivedMinQty, numOrNull, isOurs, OVERRIDE_SOURCE,
+  derivedMinQty, numOrNull, isOurs, shapeOfRow, OVERRIDE_SOURCE,
 } from "./targetOverride";
 import { resolveTarget } from "./seatingCore";
 
@@ -328,5 +328,42 @@ describe("the drift expectation is what the editor was OPENED on", () => {
     const plan = overridePlan(c, "trophy", "p1", draftOf(c, { M: "5" }));
     expect(expectationFor(c, "trophy", "p1", plan, { sizes: {} }).M)
       .toEqual({ target: 2, minQty: 1, reorderPoint: null });
+  });
+});
+
+// ── THE TWO SIDES OF THE DRIFT CHECK NORMALISE IDENTICALLY ───────────────────
+// Admin-SDK scripts bypass the rule that requires numbers, so string targets
+// exist on the live node. The expectation used to coerce one to null while the
+// server's shapeOf passed it through — so CLEARING a script-written row failed
+// with a bare failed-precondition and no way forward. (CodeRabbit, PR #497.)
+describe("expectationFor mirrors the server's shapeOf", () => {
+  it("passes a string target through rather than nulling it", () => {
+    const c = ctx({ trophy: { p1: { M: { target: "4", minQty: 2, source: "script" } } } });
+    const plan = overridePlan(c, "trophy", "p1", draftOf(c, { M: "" }));
+    expect(expectationFor(c, "trophy", "p1", plan).M).toEqual({ target: "4", minQty: 2, reorderPoint: null });
+  });
+
+  it("keeps reorderPoint numeric-or-null, because absent and 0 are different policies", () => {
+    expect(shapeOfRow({ target: 4, minQty: 2 }).reorderPoint).toBe(null);
+    expect(shapeOfRow({ target: 4, minQty: 2, reorderPoint: 0 }).reorderPoint).toBe(0);
+    expect(shapeOfRow({ target: 4, minQty: 2, reorderPoint: "1" }).reorderPoint).toBe(null);
+  });
+
+  it("is byte-identical to the server's own normalisation over a shape table", async () => {
+    // The mirror is pinned by comparison, not by hope: the server module is
+    // CommonJS and cannot be imported into the bundle, so the shapes it must
+    // agree on are enumerated here and checked against a local copy of its
+    // implementation, which the functions suite asserts is the real one.
+    const serverShapeOf = (r) => ({
+      target: r?.target ?? null,
+      minQty: r?.minQty ?? null,
+      reorderPoint: typeof r?.reorderPoint === "number" ? r.reorderPoint : null,
+    });
+    const table = [
+      { target: 4, minQty: 2 }, { target: 0, minQty: 0 }, { target: "4", minQty: 2 },
+      { target: 4, minQty: "2" }, { target: 4, minQty: 2, reorderPoint: 0 },
+      { target: 4, minQty: 2, reorderPoint: "1" }, { target: 4 }, {}, { source: "hand" },
+    ];
+    for (const row of table) expect(shapeOfRow(row), JSON.stringify(row)).toEqual(serverShapeOf(row));
   });
 });
