@@ -563,6 +563,28 @@
   }
 
   // ── category dropdowns ─────────────────────────────────────────────────────
+  // POSITIONED IN JS, `position: fixed` (owner report 2026-08-28: "footwear
+  // and clothing aren't working" — real bug, found live, not a phantom).
+  // `.mc-nav__panel` used to be `position: absolute`, placed via CSS relative
+  // to `.mc-nav__group`. That group sits inside `.mc-nav__scroll`, which
+  // carries `overflow-x: auto` for the row's own horizontal scroll — and per
+  // the CSS spec, setting only ONE overflow axis to a non-`visible` value
+  // makes the OTHER axis compute to `auto` too, not stay `visible`. So the
+  // panel was being silently clipped to `.mc-nav__scroll`'s own height (the
+  // nav bar's height, nowhere near the panel's) on every browser, every
+  // time — clicking the toggle DID work (verified: the class toggled, the
+  // `hidden` attribute came off), the panel was just invisible, clipped to
+  // nothing. `position: fixed` escapes that clipping entirely (fixed
+  // positioning is relative to the viewport, not the nearest positioned
+  // ancestor, and nothing between here and the viewport creates a
+  // containing block for it), computed here from the toggle's own
+  // `getBoundingClientRect()` so it still visually anchors under the
+  // button it opened from.
+  function positionNavPanel(toggle, panel) {
+    var r = toggle.getBoundingClientRect();
+    panel.style.top = (r.bottom + 8) + "px";
+    panel.style.left = r.left + "px";
+  }
   document.addEventListener("click", function (ev) {
     var toggle = ev.target.closest && ev.target.closest("[data-mc-navtoggle]");
     var openGroups = $$("[data-mc-navgroup].is-open");
@@ -582,9 +604,25 @@
     var panel = $("[data-mc-navpanel]", group);
     var nowOpen = !group.classList.contains("is-open");
     group.classList.toggle("is-open", nowOpen);
-    if (panel) panel.hidden = !nowOpen;
+    if (panel) {
+      panel.hidden = !nowOpen;
+      if (nowOpen) positionNavPanel(toggle, panel);
+    }
     toggle.setAttribute("aria-expanded", nowOpen ? "true" : "false");
   });
+  // A fixed-position panel does not follow the page when it scrolls (unlike
+  // the old absolute one, which at least tried to, even though it was
+  // invisible) — closing it on scroll is simpler and more honest than
+  // letting it drift away from the button that opened it.
+  window.addEventListener("scroll", function () {
+    $$("[data-mc-navgroup].is-open").forEach(function (g) {
+      g.classList.remove("is-open");
+      var p = $("[data-mc-navpanel]", g);
+      if (p) p.hidden = true;
+      var t = $("[data-mc-navtoggle]", g);
+      if (t) t.setAttribute("aria-expanded", "false");
+    });
+  }, { passive: true });
 
   // ─── BACK (snippets/marathon-back.liquid) ───────────────────────────────────
   // The control's `href` is always a real, working link — a collection page
