@@ -757,7 +757,10 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // network blip (Codex review, 2026-08-28). The banner says what happened and
   // the button re-arms the read.
   const [failedBodies, setFailedBodies] = useState(() => new Set());
-  useEffect(() => { setFailedBodies(new Set()); }, [filter]);
+  // Cleared on a tab change AND on a new search: both rebuild the window, and a
+  // pid carried over as "failed" would render its row from a null node — saying
+  // "awaiting review" about a product whose body simply did not arrive.
+  useEffect(() => { setFailedBodies(new Set()); }, [filter, q]);
   const retryBodies = useCallback(() => {
     for (const pid of failedBodies) requestedPids.current.delete(pid);
     setFailedBodies(new Set());
@@ -809,7 +812,13 @@ export default function ShopifyPublishView({ products = [], onExit }) {
         setFailedBodies((prev) => { const next = new Set(prev); for (const pid of want) next.add(pid); return next; });
         setSectionError(String(e?.message || e));
       });
-  }, [visible, keys, nodes]);
+    // failedBodies IS a dependency, and it is the one that makes Try again
+    // work: clearing the set is the ONLY state that changes on a retry — the
+    // window, the keys and the nodes are all identical — so without it here
+    // the button would clear the flags and re-fire nothing at all. (Caught
+    // checking my own fix for the wedge Codex found; the mutation proof for
+    // it is the "failed body read" render test.)
+  }, [visible, keys, nodes, failedBodies]);
 
   // The product page needs ITS body even when no section fetched it — a
   // direct landing on #shopify/{pid} (reload, shared link) skips the

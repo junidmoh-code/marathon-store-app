@@ -52,6 +52,9 @@ let proposalWriteResult = { ok: true };
 let proposalPages = [];
 // Read-in-flight control — see loadNodesFor below.
 let holdNodesFor = false;
+// One-shot: the next loadNodesFor answers "failed" for everything it was asked
+// for, then clears itself. Models a transient network blip on ONE batch.
+let failNodesFor = false;
 const heldReads = [];
 
 vi.mock("./shopifyPublishStore", () => ({
@@ -89,6 +92,7 @@ vi.mock("./shopifyPublishStore", () => ({
     // fixture declares would model a database that contradicts itself, and the
     // page (which reads bodies for the rows on screen and then FILLS, never
     // overwrites) would faithfully cache the contradiction.
+    if (failNodesFor) { const f = [...pids]; failNodesFor = false; return Promise.resolve({ nodes: {}, failed: f }); }
     const held = (pid) =>
       bodies[pid] ?? pipeline?.[pid] ?? proposalPages.map((p) => p?.nodes?.[pid]).find(Boolean) ?? null;
     const nodes = {};
@@ -225,6 +229,7 @@ beforeEach(() => {
   calls.dismissProposal.length = 0;
   calls.proposalPages.length = 0;
   holdNodesFor = false;
+  failNodesFor = false;
   heldReads.length = 0;
 });
 
@@ -1553,4 +1558,41 @@ test("proposals: Check again re-walks from the TOP, not from where the last pass
   await act(() => { button(tree, "Check again").props.onClick(); });
   await flush();
   expect(calls.proposalPages).toEqual([null, "p3", null]);
+});
+
+
+// ─── A FAILED BODY READ MUST NOT WEDGE THE TAB ───────────────────────────────
+// The window fetches bodies for the rows on screen and holds the list on
+// "Loading…" until they land. A read that ERRORS is never coming back on its
+// own — the window has not changed, so the effect has no reason to re-run —
+// and counting it as still-pending hid every row AND the retry behind a
+// spinner, for ever, on one transient blip (Codex review, 2026-08-28).
+test("a failed body read shows the rows, says so, and the retry actually re-reads", async () => {
+  keys = new Set(["p1"]);
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
+  failNodesFor = true;
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await flush();
+
+  // NOT stuck on Loading. The rows are there, the banner says what happened.
+  const out = texts(tree);
+  expect(out).not.toContain("Loading…");
+  expect(out).toContain("Plain tee black");
+  expect(out).toContain("didn't load");
+  expect(button(tree, "Try again")).toBeTruthy();
+
+  // THE RETRY MUST ACTUALLY RE-READ. Clearing the failed set is the only state
+  // that changes, so it has to be a dependency of the fetch effect — it was
+  // not, and the button cleared the flags and re-fired nothing.
+  const before = calls.nodesFor.length;
+  await act(() => { button(tree, "Try again").props.onClick(); });
+  await flush();
+  await flush();
+  expect(calls.nodesFor.length).toBeGreaterThan(before);
+  expect(calls.nodesFor[calls.nodesFor.length - 1]).toEqual(["p1"]);
+  // …and the real body landed, so the row now shows its cleaned name.
+  expect(texts(tree)).toContain("Basic tee black");
+  expect(texts(tree)).not.toContain("didn't load");
 });
