@@ -33,10 +33,15 @@
 // NEVER a regex lookbehind in this file (or any file in src/): a parse-time
 // SyntaxError blanks the whole app on Safari below 16.4.
 
-// What the picker may hand over. Deliberately wide — the point is that a
-// person is never told their own camera's output is not an image — but still
-// an ALLOW-LIST: an SVG is a document with script and fetch semantics, not a
-// photograph, and it has no business in a decode path.
+// What the picker may hand over. Kept as documentation of the common cases,
+// and exported for the tests — but the GATE below no longer enumerates: any
+// `image/*` type is attempted (the phone's own picker already filtered to
+// images), because every named list eventually meets the format it did not
+// name. That is exactly what happened twice: HEIC ("isn't a JPEG, PNG or
+// WebP"), then a camera-roll photo outside THIS list too — Apple keeps adding
+// formats (JPEG-XL on the 16 Pro, ProRAW DNG) and each one re-created the
+// refusal this file exists to remove. The one exception stays absolute: SVG
+// is a document with script and fetch semantics, not a photograph.
 export const ACCEPTED_TYPES = [
   "image/jpeg", "image/jpg", "image/png", "image/webp",
   "image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence",
@@ -46,26 +51,43 @@ export const ACCEPTED_TYPES = [
 // iOS hands over an EMPTY type more often than anyone would like — a file
 // picked from a shared album, from Files, or from an app that did not set one.
 // Rejecting on a blank type would reject exactly the phones this exists for, so
-// the extension answers instead.
-const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|heics?|heifs?|avif|gif|bmp|tiff?)$/i;
+// the extension answers instead. dng (ProRAW) and jxl (JPEG-XL) are here for
+// the same reason the type test went wide: they are what a current iPhone's
+// camera roll actually contains.
+const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|heics?|heifs?|avif|gif|bmp|tiff?|dng|jxl)$/i;
 
 /**
  * Is this something we are willing to try to decode?
  *
- * EITHER the reported type or the file name may vouch for it, and a rejection
- * needs both to fail. The type alone is not enough to refuse on: a picker that
- * hands over a HEIC labelled `application/octet-stream` — which they do — was
- * being turned away by exactly the refusal this work exists to remove, just
- * with a different cause (CodeRabbit review, 2026-08-28).
+ * ANY `image/*` type except SVG is attempted — the decode path has its own
+ * honest failure message if the browser truly cannot open it, and "we tried
+ * and this device can't open it" is actionable where "that doesn't look like
+ * a photo" (about a photo) is not. EITHER the type or the file name may vouch
+ * for a file, and a rejection needs both to fail: pickers hand over HEICs
+ * labelled `application/octet-stream` and files with no type at all
+ * (CodeRabbit review, 2026-08-28).
  *
- * SVG is still refused on both counts: it is in neither list. It is a document
- * with script and fetch semantics, not a photograph.
+ * SVG is refused on both counts: not an accepted type, not a listed
+ * extension. It is a document with script and fetch semantics, not a
+ * photograph.
  */
 export function isAcceptedImageFile(file) {
   if (!file) return false;
   const type = String(file.type || "").toLowerCase();
-  if (type && ACCEPTED_TYPES.includes(type)) return true;
+  if (type.startsWith("image/") && !type.includes("svg")) return true;
   return ACCEPTED_EXTENSIONS.test(String(file.name || ""));
+}
+
+/**
+ * What the file told us about itself — for refusal messages, so the next
+ * "it says it doesn't look like a photo" report arrives with the evidence
+ * attached instead of needing the phone in hand.
+ */
+export function describePickedFile(file) {
+  const type = String(file?.type || "").trim();
+  const name = String(file?.name || "").trim();
+  const bits = [type || "no type", name || "no name"].filter(Boolean);
+  return bits.join(" — ");
 }
 
 // Under this, a file is small enough that decoding it at full size costs

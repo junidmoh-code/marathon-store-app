@@ -22,7 +22,7 @@
 import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import { storage } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { decodeImageFile, isAcceptedImageFile } from "./imageDecode";
+import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "./imageDecode";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // pre-compression ceiling — phone originals fit, junk doesn't
 
@@ -42,7 +42,9 @@ const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // pre-compression ceiling — phone 
 export function uploadFileProblem(file) {
   if (!file) return "No file picked.";
   if (!isAcceptedImageFile(file)) {
-    return "That doesn't look like a photo. Pick an image from the camera roll.";
+    // The parenthesis is the diagnosis: with it, "it refused my photo" arrives
+    // as "it refused video/quicktime — IMG_1234.MOV" and answers itself.
+    return `That doesn't look like a photo (${describePickedFile(file)}). Pick an image from the camera roll.`;
   }
   if (file.size > MAX_UPLOAD_BYTES) {
     return "That file is over 25 MB — it's too big to be a photo. Pick another one.";
