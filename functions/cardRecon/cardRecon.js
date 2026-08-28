@@ -426,13 +426,16 @@ async function handleExtract(db, request) {
       reconLine: extraction.reconLine,
       confidence: extraction.confidence,
       lineCount: extraction.lines.length,
-      lines: extraction.lines,
       summaryOnly: !!summaryOnly,
       warnings: verdict.warnings,
-      expectedCardCents: expected.cardCents,
-      expectedByKind: expected.byKind,
-      varianceCents: extraction.totalCents - expected.cardCents,
-      cashiers: expected.cashiers,
+      // CAPTURE ONLY. The manager confirms the OCR read the SLIP IN THEIR HAND
+      // correctly and that is the end of their involvement. Deliberately NOT
+      // returned: expectedCardCents / varianceCents / expectedByKind (the
+      // comparison and its verdict), `cashiers` (who was on the till — derived
+      // POS data, not on the slip), and `lines` (the detail roll carries a
+      // masked PAN per transaction; card numbers are never sent to a client).
+      // All of it is still computed and still STORED on the record — the owner
+      // reviews it in marathon-pos-app, which is super-admin only.
     },
   };
 }
@@ -513,20 +516,18 @@ async function handleSubmit(db, request) {
   }
   await draftRef.remove().catch(() => {});
 
+  // CAPTURE ONLY — an acknowledgement, not a verdict. The manager learns that
+  // the slip is recorded and whether the detail roll made it in (the only fact
+  // that changes what they should DO next: reshoot, or walk away). No variance,
+  // no expected figure, no comparison, no cashier list. `expected` and
+  // `varianceCents` are computed above and written to the record; they are for
+  // the owner's review screen, not for the phone that captured the slip.
   return {
     ok: true,
     batchKey: write.key,
     revision: write.revision,
-    slipTotalCents: extraction.totalCents,
-    expectedCardCents: expected.cardCents,
-    varianceCents: record.varianceCents,
+    slipTotalCents: extraction.totalCents, // read off the slip in their hand
     linesCaptured: record.linesCaptured,
-    cashiers: expected.cashiers,
-    // The recorded expected is recomputed at the moment of record; if the
-    // ledger moved since the review screen, say so rather than letting the
-    // operator believe they approved the figure that landed.
-    expectedChangedSinceReview: Number.isInteger(draft.reviewedExpectedCents)
-      && draft.reviewedExpectedCents !== expected.cardCents,
     warnings: draft.warnings || [],
   };
 }

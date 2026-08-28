@@ -1,7 +1,18 @@
 // ─── CARD RECON — the phone submit screen for the FNB batch slip ─────────────
 // A manager settles the till's card machine, tears off the Batch Report, and
 // captures it here: pick the TILL, shoot the detail roll (the default ask) and
-// the summary, review what the OCR read, submit, see the variance immediately.
+// the summary, confirm the OCR read the slip correctly, submit. Done.
+//
+// CAPTURE ONLY — THE MANAGER SEES NOTHING BACK. No variance, no expected
+// figure, no comparison, no verdict on whether the till balanced. That is
+// deliberate: the owner reviews reconciliation on his own account
+// (marathon-pos-app → Reports → Card reconciliation, super-admin only) and
+// takes it up with whoever it concerns. A manager who can see the variance
+// their own till produced is a manager who can be tempted to manage it.
+//
+// The server enforces this, not this screen: the callable simply does not
+// return expected/variance/cashiers/lines any more. Every figure IS still
+// computed and stored on the record — it just never travels to the phone.
 //
 // KEYED BY TILL, NEVER BY A NAME. The slip prints a TID and no cashier, so the
 // picker offers the registered terminals (/config/cardTerminals) and the
@@ -12,9 +23,14 @@
 // feature.
 //
 // NOBODY TYPES THE CARD TOTAL. Every figure on this screen is rendered from
-// the server's OCR of the terminal's own printout; there is no editable money
-// field, and the submit phase takes the server-parked draft verbatim. A bad
-// read is a retake, never a correction by keyboard.
+// the server's OCR of the terminal's own printout — and every one of them is
+// something the manager can check against the paper in their hand, which is
+// the entire purpose of the review step. There is no editable money field, and
+// the submit phase takes the server-parked draft verbatim. A bad read is a
+// retake, never a correction by keyboard.
+//
+// NO CARD NUMBERS. The detail roll's per-transaction masked PAN is parsed and
+// stored for the matcher's line identity, and is never sent to this client.
 //
 // Gate: the dedicated `card_recon` permission (permFlags pattern) — checked by
 // the tile, by the route, and independently by the callable. Everything
@@ -178,40 +194,33 @@ export default function CardReconScreen({ onExit }) {
 
   const term = terminalList.find((t) => t.tid === tid) || null;
 
-  // ── RESULT — the variance, immediately ──
+  // ── RESULT — recorded. Not a verdict. ──
+  // CAPTURE ONLY: the manager's job ends when the slip is in. Whether the till
+  // balanced is not shown here — the owner reviews that on his own account and
+  // takes it up with whoever it concerns. The only thing said back is the one
+  // fact that changes what the manager should DO: is the slip recorded, and did
+  // the detail roll make it in.
   if (result) {
-    const v = result.varianceCents;
-    const balanced = v === 0;
     return (
       <div style={S.page}>
         <button onClick={onExit} style={{ ...S.btnGhost, width: "auto", padding: "0 16px", minHeight: 40 }}>← Home</button>
-        <div style={{ ...S.card, textAlign: "center", padding: "26px 16px" }}>
-          <div style={{ fontSize: 15, color: "rgba(233,238,255,.6)" }}>Batch {result.batchKey}{result.revision > 1 ? ` (correction, rev ${result.revision})` : ""} recorded</div>
-          <div style={{ fontSize: 40, fontWeight: 900, margin: "14px 0 4px", color: balanced ? "#4ADE80" : "#FF6B6B", fontVariantNumeric: "tabular-nums" }}>
-            {balanced ? "R0.00" : fmtR(v)}
+        <div style={{ ...S.card, textAlign: "center", padding: "28px 16px" }}>
+          <div style={{ fontSize: 44, lineHeight: 1 }}>✅</div>
+          <div style={{ fontSize: 20, fontWeight: 900, margin: "14px 0 6px", color: "#B7F0CC" }}>
+            Slip recorded
           </div>
-          <div style={{ fontSize: 14, color: balanced ? "#B7F0CC" : "#FFB3B3", fontWeight: 700 }}>
-            {balanced ? "Slip matches the POS card takings." : v > 0 ? "The machine settled MORE than the POS card takings." : "The machine settled LESS than the POS card takings."}
+          <div style={{ fontSize: 14, color: "rgba(233,238,255,.65)", lineHeight: 1.6 }}>
+            Batch {result.batchKey}{result.revision > 1 ? ` (correction, rev ${result.revision})` : ""} for{" "}
+            {term?.label || term?.tid}. Nothing else to do.
           </div>
-          <div style={{ marginTop: 16, fontSize: 13.5, color: "rgba(233,238,255,.6)", lineHeight: 1.6 }}>
-            Slip total {fmtR(result.slipTotalCents)} · POS expected {fmtR(result.expectedCardCents)}
-            {!result.linesCaptured && <div style={{ color: "#FDE9B0", marginTop: 6 }}>Summary-only capture — no transaction lines were recorded, so no line-level match can run for this batch.</div>}
-          </div>
+          {!result.linesCaptured && (
+            <div style={{ ...S.warn, textAlign: "left", marginTop: 14 }}>
+              Summary only — the transaction lines were not captured. If you can still get
+              the detail roll, shoot it and resubmit as a correction.
+            </div>
+          )}
         </div>
-        {result.expectedChangedSinceReview && (
-          <div style={S.warn}>
-            The POS card takings for this window changed between the review screen and this
-            record — the figure above is the one computed at the moment of record.
-          </div>
-        )}
-        {result.cashiers && result.cashiers.length > 0 && (
-          <div style={S.card}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>On this till during the batch (from POS activity — read-only)</div>
-            {result.cashiers.map((c, i) => (
-              <Row key={i} k={c.name || c.uid || "unknown"} v={`${fmtTime(c.firstAt)} → ${fmtTime(c.lastAt)}`} />
-            ))}
-          </div>
-        )}
+        {(result.warnings || []).map((w, i) => <div key={i} style={S.warn}>{w}</div>)}
         <div style={{ marginTop: 16 }}><button style={S.btn} onClick={reset}>Capture another slip</button></div>
       </div>
     );
@@ -238,18 +247,6 @@ export default function CardReconScreen({ onExit }) {
           {r.reconLine && <Row k="Reconciliation" v={r.reconLine} />}
           <Row k="Lines captured" v={r.summaryOnly ? "none (summary only)" : `${r.lineCount} · TSN contiguous ✓`} tone={r.summaryOnly ? "#FDE9B0" : "#B7F0CC"} />
         </div>
-        <div style={S.card}>
-          <Row k="POS expected (card)" v={fmtR(r.expectedCardCents)} />
-          <Row k="Variance" v={fmtR(r.varianceCents)} tone={r.varianceCents === 0 ? "#4ADE80" : "#FF6B6B"} />
-        </div>
-        {r.cashiers && r.cashiers.length > 0 && (
-          <div style={S.card}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>On this till during the batch (from POS activity — read-only)</div>
-            {r.cashiers.map((c, i) => (
-              <Row key={i} k={c.name || c.uid || "unknown"} v={`${fmtTime(c.firstAt)} → ${fmtTime(c.lastAt)}`} />
-            ))}
-          </div>
-        )}
         {(r.warnings || []).map((w, i) => <div key={i} style={S.warn}>{w}</div>)}
         {reject && <div style={S.err}>{reject}</div>}
         {error && <div style={S.err}>Something went wrong: {error}</div>}

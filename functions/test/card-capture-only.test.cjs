@@ -1,0 +1,96 @@
+// CAPTURE ONLY — the manager's phone must learn nothing about how the till did.
+//
+// The rule: a manager photographs the slip and that is the end of their
+// involvement. No variance, no expected figure, no comparison, no verdict, no
+// cashier list — and no card numbers. The owner reviews reconciliation on his
+// own account (marathon-pos-app → Reports, super-admin only).
+//
+// This is enforced at the SERVER, not by hiding things in the UI: the callable
+// simply never returns them, so no amount of poking at the phone client — or
+// calling the callable directly — surfaces a figure. These tests read the
+// response payloads out of the source, because that is where the guarantee
+// actually lives; a UI test could only prove the current screen doesn't render
+// something it was handed.
+
+"use strict";
+
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
+
+const SRC = readFileSync(join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
+
+// These assertions are about CODE. The payloads carry comments explaining what
+// is deliberately absent — prose that names the very things being checked for —
+// so it is stripped before matching, or the explanation would fail the test.
+const stripComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+
+/** The object literals the callable hands back to the client. */
+function responsePayloads() {
+  const out = [];
+  const re = /return\s*\{\s*\n\s*ok:\s*true,/g;
+  let m;
+  while ((m = re.exec(SRC))) {
+    // Walk braces from the `{` of the return literal to its match.
+    const start = SRC.indexOf("{", m.index);
+    let depth = 0;
+    for (let i = start; i < SRC.length; i++) {
+      if (SRC[i] === "{") depth++;
+      else if (SRC[i] === "}") {
+        depth--;
+        if (depth === 0) { out.push(stripComments(SRC.slice(start, i + 1))); break; }
+      }
+    }
+  }
+  return out;
+}
+
+// Anything that tells a manager how their till did, or identifies a card.
+const FORBIDDEN = [
+  ["varianceCents", /\bvarianceCents\s*:/],
+  ["expectedCardCents", /\bexpectedCardCents\s*:/],
+  ["expectedByKind", /\bexpectedByKind\s*:/],
+  ["expectedChangedSinceReview", /\bexpectedChangedSinceReview\s*:/],
+  ["cashiers", /\bcashiers\s*:/],
+  ["lines (they carry a masked PAN each)", /\blines\s*:/],
+];
+
+test("the callable returns BOTH an extract and a submit payload (else these tests prove nothing)", () => {
+  assert.equal(responsePayloads().length, 2, "expected exactly the extract + submit responses");
+});
+
+for (const [what, pattern] of FORBIDDEN) {
+  test(`no client response carries ${what}`, () => {
+    for (const payload of responsePayloads()) {
+      assert.ok(!pattern.test(payload), `a client response still returns ${what}:\n${payload}`);
+    }
+  });
+}
+
+test("no client response carries a pan under any spelling", () => {
+  for (const payload of responsePayloads()) {
+    assert.ok(!/\bpan\b/i.test(payload), `a client response mentions a PAN:\n${payload}`);
+  }
+});
+
+test("the manager still gets what they need to act: the slip total they can check, and whether lines landed", () => {
+  const submit = responsePayloads().find((p) => /batchKey:/.test(p));
+  assert.ok(submit, "no submit payload found");
+  // The slip total is on the paper in their hand — echoing it is a read check,
+  // not a disclosure — and linesCaptured is the one fact that changes what
+  // they do next (reshoot the roll, or walk away).
+  assert.match(submit, /slipTotalCents:/);
+  assert.match(submit, /linesCaptured:/);
+});
+
+test("the figures are still COMPUTED and STORED — withheld from the phone, not discarded", () => {
+  // The owner's review depends on every one of these being on the record.
+  assert.match(SRC, /expected\s*=\s*await/, "expected card takings are no longer computed");
+  assert.match(SRC, /buildBatchRecord\(/, "the record builder is gone");
+  // buildBatchRecord is handed the expected figures and the cashier list.
+  const call = SRC.slice(SRC.indexOf("buildBatchRecord("));
+  const block = call.slice(0, call.indexOf("});") + 3);
+  assert.match(block, /expected/, "the record no longer stores the expected figures");
+  assert.match(block, /cashiers/, "the record no longer stores the cashier trail");
+});
