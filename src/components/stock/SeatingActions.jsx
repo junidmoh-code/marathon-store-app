@@ -332,7 +332,6 @@ export default function SeatingActions({ seat, product, label, registry, locatio
           seat={seat}
           ctx={ctx}
           label={label}
-          locations={locations}
           canWrite={canSwitchOff}
           onDone={onDone}
           onFail={onFail}

@@ -45,7 +45,7 @@ export function draftKey(draft) {
 // editor at all for a viewer who may not write a target row (an editor whose
 // every field is dead is worse than no editor). The prop keeps the refusal true
 // of this component on its own, so a second mount site cannot lose it.
-export default function ProductTargetEditor({ seat, ctx, label, locations, onDone, onFail, canWrite = false }) {
+export default function ProductTargetEditor({ seat, ctx, label, onDone, onFail, canWrite = false }) {
   const { loc, pid } = seat;
   const [draft, setDraft] = useState(() => overrideDraft(ctx, loc, pid));
   const [everySize, setEverySize] = useState("");
