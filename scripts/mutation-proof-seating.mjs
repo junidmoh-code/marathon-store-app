@@ -65,6 +65,12 @@ const STORE = "src/components/stock/seatingStore.js";
 const ACTIONS = "src/components/stock/SeatingActions.jsx";
 const TAB = "src/components/stock/SeatingTab.jsx";
 const WIDGETS = "src/components/stock/healthWidgets.jsx";
+// The ROW SHAPE moved server-side when every explicit-row write in this card
+// became one action (seatingStore.js "THE ONE WRITE"): the stamp, the actor and
+// the prevRow capture are written by setProductTargets now. The guards moved
+// with it rather than being retired — a guard deleted because its code moved is
+// a guard nobody notices is gone.
+const WRITE = "functions/lib/category-policy-write.cjs";
 
 const CORE_TESTS = ["src/components/stock/seatingCore.test.js"];
 const STORE_TESTS = ["src/components/stock/seatingStore.test.js"];
@@ -72,6 +78,7 @@ const MOVE_TESTS = ["src/components/stock/seatingMove.test.js"];
 const TAB_TESTS = ["src/components/stock/seatingTab.render.test.jsx"];
 const WIDGET_TESTS = ["src/components/stock/photoWidgets.render.test.jsx"];
 const ALL_TESTS = [...CORE_TESTS, ...STORE_TESTS, ...MOVE_TESTS, ...TAB_TESTS];
+const SERVER_TESTS = ["test/product-targets.test.cjs"];
 
 const MUTATIONS = [
   // ── THE UNITS-HELD REFUSAL ────────────────────────────────────────────────
@@ -106,18 +113,18 @@ const MUTATIONS = [
   {
     id: "M-ATTRIB-WHO",
     guard: "every row carries the actor uid",
-    file: STORE,
-    from: `    offBy: actor.uid,`,
-    to: ``,
-    tests: STORE_TESTS,
+    file: WRITE,
+    from: `source: OVERRIDE_SOURCE, setAt: nowIso, setBy: callerEmail || callerUid || null };`,
+    to: `source: OVERRIDE_SOURCE, setAt: nowIso };`,
+    nodeTests: SERVER_TESTS,
   },
   {
     id: "M-ATTRIB-WHEN",
     guard: "the stamp is serverNowMs(), never the browser clock",
-    file: STORE,
-    from: `  const at = serverNowMs();                       // never Date.now() — the tills`,
-    to: `  const at = Date.now();                          // never Date.now() — the tills`,
-    tests: [...STORE_TESTS, ...MOVE_TESTS],
+    file: WRITE,
+    from: `    const nowIso = new Date(nowMs).toISOString();`,
+    to: `    const nowIso = new Date(Date.now()).toISOString();`,
+    nodeTests: SERVER_TESTS,
   },
   {
     id: "M-ATTRIB-AUTH",
@@ -132,7 +139,7 @@ const MUTATIONS = [
     id: "M-RESEAT-ANY",
     guard: "Re-seat never removes a row this screen did not write",
     file: STORE,
-    from: `    if (r?.source !== SEATING_OFF_SOURCE) continue;`,
+    from: `    if (!isOurs(r)) continue;`,
     to: ``,
     tests: STORE_TESTS,
   },
@@ -147,12 +154,12 @@ const MUTATIONS = [
   {
     id: "M-PREV-NULL",
     guard: "\"there was no row\" is a flag — RTDB deletes a key written null",
-    file: STORE,
-    from: `  } else row.prevRow = prev;
-  } else row.prevAbsent = true;`,
-    to: `  } else row.prevRow = prev;
-  } else row.prevRow = null;`,
-    tests: STORE_TESTS,
+    file: WRITE,
+    from: `      } else if (prev) row.prevRow = prev;
+      else row.prevAbsent = true;`,
+    to: `      } else if (prev) row.prevRow = prev;
+      else row.prevRow = null;`,
+    nodeTests: SERVER_TESTS,
   },
   // ── THE PRECEDENCE ORDER ──────────────────────────────────────────────────
   {
@@ -214,10 +221,10 @@ const MUTATIONS = [
     guard: "the switch-off re-reads — a sale landing mid-move is not buried",
     file: STORE,
     from: `  const fresh = await readSeatingContext(locations, seat.pid);
-  liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
-  liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);
-  seat = liveSeat; ctx = liveCtx;`,
-    to: ``,
+  const liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  const liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);`,
+    to: `  const liveCtx = ctx;
+  const liveSeat = seat;`,
     tests: [...MOVE_TESTS, ...STORE_TESTS],
   },
   {
@@ -257,33 +264,33 @@ const MUTATIONS = [
     id: "M-GATE-ROUTE",
     guard: "GATE 2 — the route refuses to mount the card, products and all",
     file: APP,
-    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email })
-    ? <EnginePolicyCard viewer={{ email: authUser?.email }} products={products} onExit={() => setRole(null)} />
+    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })
+    ? <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />
     : <AdminSignInScreen onCancel={() => setRole(null)} />;`,
-    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email }} products={products} onExit={() => setRole(null)} />;`,
+    to: `  else if (role === ROLES.ENGINE_POLICY) view = <EnginePolicyCard viewer={{ email: authUser?.email, permFlags: permRecord?.permFlags, stockRole: permRecord?.stockRole }} products={products} onExit={() => setRole(null)} />;`,
     tests: ["src/components/stock/enginePolicyGates.test.jsx"],
   },
   // ── REVIEW FIXES, PR #429 ─────────────────────────────────────────────────
   {
     id: "M-NEST",
     guard: "a second switch-off does not nest its own row — Re-seat still reaches the original",
-    file: STORE,
-    from: `    if (prev.source === SEATING_OFF_SOURCE) {
-      if (prev.prevRow && typeof prev.prevRow === "object") row.prevRow = prev.prevRow;
-      else row.prevAbsent = true;
-    } else row.prevRow = prev;`,
-    to: `    row.prevRow = prev;`,
-    tests: STORE_TESTS,
+    file: WRITE,
+    from: `      if (prev && OUR_ROW_SOURCES.has(prev.source)) {
+        if (isPlainObject(prev.prevRow)) row.prevRow = prev.prevRow;
+        else row.prevAbsent = true;
+      } else if (prev) row.prevRow = prev;`,
+    to: `      if (prev) row.prevRow = prev;`,
+    nodeTests: SERVER_TESTS,
   },
   {
     id: "M-OFF-REREAD",
     guard: "the units refusal is decided against LIVE data on the button path too",
     file: STORE,
     from: `  const fresh = await readSeatingContext(locations, seat.pid);
-  liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
-  liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);
-  seat = liveSeat; ctx = liveCtx;`,
-    to: ``,
+  const liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  const liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);`,
+    to: `  const liveCtx = ctx;
+  const liveSeat = seat;`,
     tests: STORE_TESTS,
   },
   {
@@ -331,7 +338,7 @@ const MUTATIONS = [
     id: "M-ONESIZE-COVER",
     guard: "a one-size category policy's \"_\" cell is covered by the switch-off",
     file: CORE,
-    from: `  const cat = categoryPolicyEntry(config, products, pid, loc);
+    from: `  const cat = categoryPolicyEntry(config, products, stock, pid, loc);
   if (cat && !cat.sizes && !cat.perSize) out.add("_");`,
     to: ``,
     tests: CORE_TESTS,

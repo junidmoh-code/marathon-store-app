@@ -35,6 +35,7 @@ import { searchProducts } from "../../utils/productSearch";
 import { transferTargets, labelFor, DEFAULT_LOCATIONS, IN_TRANSIT } from "./locations";
 import { useLocations, useEngineConfig } from "./useStock";
 import { seatingRows, seatingAt, lastTouch, SEAT_REASON } from "./seatingCore";
+import { whyLine } from "./targetOverride";
 import { ProductCard, Badge, SizeFactChip, CHIP_GRID, PhotoThumb, PhotoLightbox } from "./healthWidgets";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import CameraScanner from "./CameraScanner";
@@ -341,7 +342,16 @@ function SeatRow({ seat, product, label, registry, locations, destinations, ctx,
         </button>
       </div>
 
+      {/* WHY THIS NUMBER. The badge says what governs the location as a whole;
+          this says which sources answer for its sizes, in the engine's own
+          precedence order. A location with one size overridden and the rest on
+          the category policy is the normal state once this screen is used, and
+          naming only the strongest source would hide the others. */}
       <div style={{ marginTop: 6, fontSize: 11, color: GRAY }}>
+        {whyLine(seat)}
+      </div>
+
+      <div style={{ marginTop: 2, fontSize: 11, color: GRAY }}>
         {touch
           ? `${touch.sold ? "Last sold" : `Last ${String(touch.type || "moved")}`} ${fmtDay(touch.at)}`
           : "No movement recorded here"}

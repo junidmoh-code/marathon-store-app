@@ -74,10 +74,12 @@ import {
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
   isPerSizeRow, fillAllSizes, seedPerSizeLocation, bySizeRank, sizeLabel,
+  perSizeMode, setEverySize,
   mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
+import { writableRow, shapeOfRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
@@ -279,9 +281,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   const parent = parentKey ? allEntries.find((c) => c.key === parentKey) || null : null;
   const destinations = census?.destinations || [];
   const errors = useMemo(() => validateDraft(draft), [draft]);
-  const keyNow = useMemo(() => previewKey(openKey, draft, { perSize: open?.perSize }), [openKey, draft, open]);
-  const proposed = useMemo(() => policyFromDraft(draft, { perSize: open?.perSize }), [draft, open]);
-  const banner = useMemo(() => changedFields(open?.entry || null, proposed), [open, proposed]);
+  // DERIVED, not read back from what was saved last time — see perSizeMode.
+  const perSize = perSizeMode(open);
+  const keyNow = useMemo(() => previewKey(openKey, draft, { perSize }), [openKey, draft, perSize]);
+  const proposed = useMemo(() => policyFromDraft(draft, { perSize }), [draft, perSize]);
+  const banner = useMemo(() => changedFields(open?.entry || null, proposed, { perSize }), [open, proposed, perSize]);
   const saveable = canSave({ preview, previewKeyNow: keyNow, errors, busy: !!busy });
   const scan = nextScanAt(serverNowMs());
   const stamp = lastChange(census?.history);
@@ -348,6 +352,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     });
   };
 
+  // The apply-to-all input. One number into every size field at once — the
+  // typing aid the per-size grid needed: six sizes at one number was six
+  // entries, which is how a flat run gets typed wrong.
+  const setAllSizes = (loc, value, sizeRun) => {
+    setPreview(null);
+    setDraft((d) => ({ ...d, [loc]: setEverySize(d[loc], value, sizeRun) }));
+  };
+
   // Arming a store that does not carry the category is its own deliberate act,
   // with its own confirmation, because it invents demand rather than adjusting
   // it. See the header note.
@@ -367,9 +379,14 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       if (!ok) return;
     }
     setPreview(null);
+    // A SIZED CATEGORY ARMS SIZE BY SIZE. The gate used to be the STORED
+    // perSize flag, so a category that had never been armed per-size could only
+    // ever be given one number — which, for a sized category, arms nothing at
+    // all. The run is the condition now: it comes from live data, and where
+    // there is none (a one-size category) the single field is still correct.
     const run = open?.sizeRun || [];
     setDraft((d) => ({ ...d,
-      [loc]: open?.perSize && run.length
+      [loc]: run.length
         ? seedPerSizeLocation(run)
         : seedLocation(open?.effectiveEntry?.[loc]?.target ?? null) }));
   };
@@ -409,6 +426,81 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       const first = Object.keys(sizes).sort(bySizeRank).map((k) => sizes[k])
         .find((r) => String(r?.target ?? "").trim() !== "") || { target: "", minQty: "", reorderPoint: "" };
       return { ...d, [loc]: { ...first } };
+    });
+  };
+
+  // ── MEMBERSHIP AND ARMING — THE TWO THINGS THE GROUP SCREEN COULD NOT DO ──
+  //
+  // A group existed and could be given numbers, but nothing on this card could
+  // change who is in it or turn it on: both had to be done by a script against
+  // live config. That is why the shipped "Sneakers" group still excludes soccer
+  // boots (whose run is the same 3-13) and still includes kids-shoes (whose run
+  // is 26-33 and shares not one size with the rest — arming it alongside the
+  // adults would silently arm nothing).
+  //
+  // Both go through setGroup, which validates membership, refuses a category
+  // that already belongs to another group, and refuses to arm a group with no
+  // numbers. This screen sends the live group with ONE field changed and the
+  // live group as the expectation, so a change made underneath is refused.
+  const saveGroup = async (next, { confirm: ask, done }) => {
+    if (busy || !open?.isGroup) return;
+    if (ask && !(typeof window !== "undefined" && window.confirm && window.confirm(ask))) return;
+    setBusy("group");
+    try {
+      await setCategoryPolicyFn()({ action: "setGroup", groupKey: open.groupKey, group: next, expectedBefore: open.group ?? null });
+      flash("ok", done);
+      reopenAfterLoad.current = open.key;
+      await load(true);
+    } catch (e) {
+      reopenAfterLoad.current = "";
+      flash("bad", e?.message || String(e));
+    } finally { setBusy(""); }
+  };
+
+  const addMember = (key) => {
+    const members = [...(open?.memberCategoryKeys || []), key];
+    const label = allEntries.find((c) => c.key === key)?.label || key;
+    saveGroup({ ...(open.group || {}), memberCategoryKeys: members }, {
+      confirm: `Add ${label} to ${open.label}?\n\n`
+        + `It follows the group's numbers from the next scan${open.armed ? "" : " — once the group is armed"}. `
+        + `A category with its OWN numbers keeps them and ignores the group.`,
+      done: `${label} joined ${open.label}.`,
+    });
+  };
+
+  const removeMember = (key) => {
+    const members = (open?.memberCategoryKeys || []).filter((k) => k !== key);
+    const label = allEntries.find((c) => c.key === key)?.label || key;
+    if (!members.length) { flash("bad", "A group must keep at least one category — delete the group instead."); return; }
+    saveGroup({ ...(open.group || {}), memberCategoryKeys: members }, {
+      confirm: `Take ${label} out of ${open.label}?\n\n`
+        + `It stops following the group's numbers${open.armed ? " at the next scan" : ""}, and can be given its own.`,
+      done: `${label} left ${open.label}.`,
+    });
+  };
+
+  // ARMING IS THE DANGEROUS HALF and is confirmed with the number that decides
+  // whether it is a good idea: how many refills the next scan would ask for.
+  // The preview panel already has it; this repeats it in the confirm, because
+  // the confirm is the last thing read before it happens.
+  const toggleArmed = () => {
+    const next = !open.armed;
+    // THE PREVIEW ONLY COUNTS WHILE IT IS ABOUT THE NUMBERS ON SCREEN. It is
+    // stamped with the draft key it was computed from, and arming sends the
+    // LIVE group with only `armed` changed — so a preview of an edited, unsaved
+    // draft would put a refill count in the confirm that the write does not
+    // produce. The confirm is the last thing read before a group starts asking
+    // for stock across thousands of products; a number in it that describes
+    // something else is worse than no number. (CodeRabbit, PR #497.)
+    const req = preview && preview.key === keyNow ? preview.model?.totalRequests : undefined;
+    saveGroup({ ...(open.group || {}), armed: next }, {
+      confirm: next
+        ? `Arm ${open.label}?\n\nThe engine starts keeping every product in its `
+          + `${(open.memberCategoryKeys || []).length} categories to these numbers at `
+          + `${(open.armedEffective || []).map(locLabel).join(", ") || "the locations named"}.`
+          + (Number.isFinite(req) ? `\n\nThe next scan would ask for at most ${req} refills.` : "")
+        : `Turn ${open.label} off?\n\nIts categories fall back to their own numbers, or to the engine's rules.`,
+      done: next ? `${open.label} armed. The next scan (${scan.label}) uses these numbers.` : `${open.label} is off.`,
     });
   };
 
@@ -487,12 +579,88 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     }
   };
 
+  const revertTargets = async (h) => {
+    // ── THE EXPECTATION IS THE ENTRY'S OWN AFTER-STATE ──────────────────────
+    // Not the live row. Sampling live would accept exactly the write this check
+    // exists to refuse: entry moves M from 5 to 9, a LATER edit moves it to 7,
+    // and reverting the older entry would send expected 7, be accepted, and put
+    // back 5 — silently discarding the later edit. "Put this entry back" is
+    // only honest while the row still holds what that entry left, so that is
+    // what the server is asked to find. An entry with no after-state (none
+    // exist — it has been recorded since this shipped) is REFUSED rather than
+    // reverted on a guess. (CodeRabbit, PR #497.)
+    const after = Array.isArray(h.after) ? h.after : null;
+    if (!after) {
+      flash("bad", "That entry does not record what it left behind, so it cannot be put back safely.");
+      return;
+    }
+    const afterBySize = Object.fromEntries(after.map((a) => [a?.sizeKey, a]));
+    const rows = [], remove = [], expected = {};
+    const stuck = [];
+    for (const b of (h.before || [])) {
+      const k = b?.sizeKey;
+      if (typeof k !== "string" || !k) continue;
+      const a = afterBySize[k];
+      if (!a) {
+        flash("bad", `That entry does not record what it left on ${sizeLabel(k)}, so it cannot be put back safely.`);
+        return;
+      }
+      // `absent: true` is the flag for "this write left no row"; RTDB deletes a
+      // key written null, so it could not have been recorded as one.
+      // shapeOfRow, the SAME normalisation the server's shapeOf uses and the
+      // editor's expectation uses — one function, so a drift check can never
+      // fire on a difference that is only in how the two sides read a value.
+      expected[k] = a.absent === true || !a.row ? null : shapeOfRow(a.row);
+      if (!b.row || typeof b.row !== "object") { remove.push(k); continue; }
+      // A captured row the live rule would refuse is reported, never repaired:
+      // coercing a string target to a number nobody wrote, or to 0, would
+      // switch a shop off in the name of an undo.
+      if (!writableRow(b.row)) { stuck.push(k); continue; }
+      const row = { sizeKey: k, target: b.row.target, minQty: b.row.minQty };
+      if (typeof b.row.reorderPoint === "number" && b.row.reorderPoint < b.row.target) row.reorderPoint = b.row.reorderPoint;
+      rows.push(row);
+    }
+    for (const k of stuck) delete expected[k];
+    if (!rows.length && !remove.length) { flash("bad", "There is nothing in that entry to put back."); return; }
+    const ok = window.confirm(
+      `Put ${h.productName || h.pid} back to how it was at ${locLabel(h.loc)} on ${fmtWhen(h.at)}?\n\n`
+      + `${rows.length + remove.length} ${rows.length + remove.length === 1 ? "size" : "sizes"}.`
+      + (stuck.length ? `\n\n${stuck.length} cannot be put back — the record is a shape the rule refuses.` : ""));
+    if (!ok) return;
+    setBusy("revert");
+    try {
+      // allowRemoveForeign, and the drift check is what makes it safe rather
+      // than a loophole: every size the revert touches is expected to still
+      // hold what THIS entry left, so a row somebody else has since replaced
+      // fails the check before the flag is ever consulted. Without it a revert
+      // would break on a row a script had merely re-stamped with the same
+      // numbers under a different source.
+      await setCategoryPolicyFn()({ action: "setProductTargets", loc: h.loc, pid: h.pid,
+        rows, remove, expected, allowRemoveForeign: true });
+      flash("ok", `${h.productName || h.pid} put back to how it was on ${fmtWhen(h.at)}.`);
+      await load(true);
+    } catch (e) {
+      flash("bad", e?.message || String(e));
+    } finally { setBusy(""); }
+  };
+
   const revert = async (h) => {
     if (busy) return;
     if (h.kind === "rows") {
       flash("bad", "Row edits are not reverted from here — the entry records exactly what they were.");
       return;
     }
+    // ── A PRODUCT OVERRIDE REVERTS THROUGH THE SAME ACTION THAT MADE IT ──────
+    // The entry holds every row it replaced, in full, including the fact that
+    // there was no row (`row: null`). Putting it back is therefore the same
+    // complete-set write in the other direction: rows that existed go back as
+    // they were, rows that did not are removed.
+    //
+    // THE EXPECTATION IS READ LIVE, not taken from the entry. An entry from six
+    // weeks ago says what the numbers WERE, not what they are, and reverting
+    // onto somebody's later change without noticing is the one outcome a
+    // history with a revert button must never produce.
+    if (h.kind === "targets") return revertTargets(h);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -593,6 +761,10 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // Counted over EVERY category, members included — a member with its own
   // armed entry is governed even though the list folds it into its group.
   // (Architecture review, PR #405.)
+  // A category may join a group only if it is not already in one — the server
+  // refuses an overlap, and offering it here would be offering a refusal.
+  const groupable = (census?.categories || []).filter((c) => !c.memberOfGroup)
+    .map((c) => ({ key: c.key, label: c.label, products: c.products, sizeRun: c.sizeRun || [] }));
   const allCats = census?.categories || [];
   const governed = allCats.filter((c) => (c.armedEffective || []).length).length;
   const oldRows = (census?.categories || []).reduce((n, c) => n + (c.ownRowCells || 0), 0);
@@ -642,7 +814,8 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             category={open} parent={parent} destinations={destinations} draft={draft} errors={errors}
             census={census} banner={banner} preview={preview} keyNow={keyNow} busy={busy}
             scan={scan} saveable={saveable} panel={panel} rows={rows} rowsMeta={rowsMeta} rowDraft={rowDraft}
-            onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill}
+            onField={setField} onArm={armStore} onDrop={dropStore} onQuickFill={quickFill} onSetAll={setAllSizes}
+            groupable={groupable} onAddMember={addMember} onRemoveMember={removeMember} onToggleArmed={toggleArmed}
             onSwitchShape={switchShape} onScope={setCarriedOnly} onPreview={runPreview} onSave={save} onBack={closeCategory}
             onPanel={setPanel} onOpenRows={(loc) => openRows(open.key, loc || null)} onRowField={(id, f, v) =>
               setRowDraft((d) => ({ ...d, [id]: { ...(d[id] || rowSeed(rows, id)), [f]: v } }))}
@@ -734,7 +907,15 @@ function Chip({ tone = "gray", children, onClick, title }) {
 
 function categoryChips(c) {
   const out = [];
-  out.push({ tone: "gray", text: c.perSize ? "per size" : "one size" });
+  // ── THE CHIP READS THE CATEGORY'S RUN, NOT WHAT WAS SAVED LAST TIME ───────
+  // It used to read the STORED perSize flag, so Soccer Jerseys — 189 products,
+  // every one of them S to XXXL — wore a "one size" chip because nobody had
+  // armed it per-size yet. The chip is the first thing read on the screen, and
+  // it was telling the owner the opposite of the truth about the category he
+  // had come to arm. Same root cause as the defect this branch exists for, one
+  // control along: the stored flag describes the last policy, not the category.
+  // (Owner screenshot, 2026-08-28.)
+  out.push({ tone: "gray", text: perSizeMode(c) ? "per size" : "one size" });
   // A GROUP is one entry with a small count of what it holds. Its armed state
   // is the group's flag: a disarmed group with numbers in it is "not armed",
   // never "armed at N" — the numbers are not in the engine's resolution.
@@ -786,7 +967,8 @@ function CategoryRow({ category: c, onOpen }) {
 // ═════════════════════════════════════════════════════════════════════════════
 function CategoryDetail({
   category: c, parent, destinations, draft, errors, census, banner, preview, keyNow, busy, scan,
-  saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSwitchShape,
+  saveable, panel, rows, rowsMeta, rowDraft, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape,
+  groupable, onAddMember, onRemoveMember, onToggleArmed,
   onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
@@ -820,7 +1002,10 @@ function CategoryDetail({
         </div>
       )}
 
-      {c.isGroup && <MemberList group={c} onOpen={onOpenMember} />}
+      {c.isGroup && (
+        <MemberList group={c} onOpen={onOpenMember} groupable={groupable} busy={busy}
+          onAdd={onAddMember} onRemove={onRemoveMember} onToggleArmed={onToggleArmed} />
+      )}
 
       <div className="ep-stats" style={{ marginBottom: "1.2rem" }}>
         <Tile label="On hand" value={c.units} />
@@ -845,7 +1030,7 @@ function CategoryDetail({
           <LocationBoxes
             category={c} rows={locRows} draft={draft} errors={errors}
             onField={onField} onArm={onArm} onDrop={onDrop}
-            onQuickFill={onQuickFill} onSwitchShape={onSwitchShape} onScope={onScope}
+            onQuickFill={onQuickFill} onSetAll={onSetAll} onSwitchShape={onSwitchShape} onScope={onScope}
           />
 
           {banner.length > 0 && (
@@ -888,12 +1073,29 @@ const carriedCount = (c) => Object.values(c.carriage || {}).filter((v) => v?.car
 // ── THE MEMBERS OF A GROUP ───────────────────────────────────────────────────
 // Compact and tappable: any member can still be given numbers of its own, and
 // the one rule that makes grouping safe is stated in ONE line above the list.
-function MemberList({ group: g, onOpen }) {
+function MemberList({ group: g, onOpen, groupable = [], busy, onAdd, onRemove, onToggleArmed }) {
   const members = g.members || [];
+  const [adding, setAdding] = useState(false);
+  // ONLY CATEGORIES WHOSE RUN OVERLAPS THE GROUP'S ARE SUGGESTED FIRST. A group
+  // is one set of numbers keyed by size; a category sharing not one size with
+  // it would be armed by numbers that reach none of its cells. kids-shoes
+  // (26-33) inside a 3-13 footwear group is exactly that, and it is why the
+  // ones that do not overlap are listed second and marked, rather than hidden:
+  // grouping them is legal, occasionally right, and never the default.
+  const run = new Set(g.sizeRun || []);
+  const overlaps = (c) => !run.size || (c.sizeRun || []).some((s) => run.has(s));
+  const candidates = groupable.filter((c) => !(g.memberCategoryKeys || []).includes(c.key));
+  const sorted = [...candidates].sort((a, b) => (overlaps(b) - overlaps(a)) || a.label.localeCompare(b.label));
   return (
     <div style={{ ...GLASS, padding: ".6rem .9rem", marginBottom: "1.2rem" }}>
-      <div style={{ color: GRAY, fontSize: ".78rem", padding: "2px 0 6px" }}>
-        A category's own numbers beat the group's.
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "2px 0 6px" }}>
+        <div style={{ color: GRAY, fontSize: ".78rem", flex: 1, minWidth: 140 }}>
+          A category's own numbers beat the group's.
+        </div>
+        <button onClick={onToggleArmed} disabled={!!busy}
+          style={{ ...(g.armed ? bGray : bGreen), padding: "5px 10px", fontSize: ".73rem", opacity: busy ? .5 : 1 }}>
+          {g.armed ? "Turn off" : "Arm this group"}
+        </button>
       </div>
       {members.map((m) => (
         <button key={m.key} type="button" className="ep-cat" onClick={() => onOpen(m)}
@@ -910,6 +1112,32 @@ function MemberList({ group: g, onOpen }) {
           <div style={{ color: "#4b5563", fontSize: "1.1rem", flex: "0 0 auto" }} aria-hidden="true">›</div>
         </button>
       ))}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", paddingTop: 8 }}>
+        {members.map((m) => (
+          <button key={`x-${m.key}`} onClick={() => onRemove(m.key)} disabled={!!busy}
+            aria-label={`Remove ${m.label} from the group`}
+            style={{ ...bGhost, padding: "4px 9px", fontSize: ".72rem", opacity: busy ? .5 : 1 }}>
+            {m.label} ✕
+          </button>
+        ))}
+        {!adding && sorted.length > 0 && (
+          <button onClick={() => setAdding(true)} disabled={!!busy}
+            style={{ ...bGhost, padding: "4px 9px", fontSize: ".72rem", opacity: busy ? .5 : 1 }}>+ Add a category</button>
+        )}
+      </div>
+      {adding && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingTop: 8 }}>
+          {sorted.map((c) => (
+            <button key={c.key} onClick={() => { setAdding(false); onAdd(c.key); }} disabled={!!busy}
+              title={overlaps(c) ? undefined : "shares no size with this group's run"}
+              style={{ ...(overlaps(c) ? bGray : bGhost), padding: "4px 9px", fontSize: ".72rem",
+                opacity: busy ? .5 : (overlaps(c) ? 1 : .6) }}>
+              {c.label} {c.products}{overlaps(c) ? "" : " · different sizes"}
+            </button>
+          ))}
+          <button onClick={() => setAdding(false)} style={{ ...bGhost, padding: "4px 9px", fontSize: ".72rem" }}>Cancel</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -962,9 +1190,12 @@ function NumInputs({ row, err, onChange, ariaPrefix, small = false }) {
   );
 }
 
-function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSwitchShape, onScope }) {
+function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDrop, onQuickFill, onSetAll, onSwitchShape, onScope }) {
   const sizeRun = c.sizeRun || [];
-  const canPerSize = c.perSize && sizeRun.length > 0;
+  // NOT `c.perSize && …`. The stored flag is what made this screen unable to
+  // arm soccer jerseys per size at all; the category's own run is the condition
+  // that means what it says. See perSizeMode in enginePolicyCore.
+  const canPerSize = sizeRun.length > 0;
   const smallBtn = { padding: "5px 10px", fontSize: ".73rem" };
   return (
     <div>
@@ -1022,7 +1253,7 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
             {inDraft && perSize && (
               <SizeRows loc={r.loc} row={row} sizeRun={sizeRun} partial={c.sizeRunPartial || []} extra={c.sizeRunExtra || []}
                 memberCount={c.sizeRunMembersWithRun ?? (c.memberCategoryKeys || []).length} errors={errors}
-                onField={onField} onQuickFill={onQuickFill} />
+                onField={onField} onQuickFill={onQuickFill} onSetAll={onSetAll} />
             )}
 
             {!inDraft && (
@@ -1041,11 +1272,22 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
         );
       })}
 
-      {c.perSize && !sizeRun.length && (
+      {c.sizeRunFromRegistry && (
+        // The catalogue holds no products in this category yet, so the run is
+        // the registered one. Numbers on a size no product declares resolve
+        // nothing until one does — safe to set now, and said out loud rather
+        // than presented as live evidence.
+        <div style={{ color: GRAY, fontSize: ".76rem", padding: "4px 0" }}>
+          No products yet — these are the registered sizes.
+        </div>
+      )}
+
+      {!sizeRun.length && !c.sizeRunOneSize && (
         // THE STOP. A category the registry calls sized whose run cannot be
-        // worked out from live data does not get a guessed list of sizes.
+        // worked out from live data — nor from the registry — does not get a
+        // guessed list of sizes.
         <div style={{ color: AMBER, fontSize: ".8rem", padding: "4px 0" }}>
-          No size run can be worked out from live data — size by size is not offered.
+          No size run can be worked out — size by size is not offered.
         </div>
       )}
     </div>
@@ -1057,11 +1299,15 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
 // their inputs. A size only SOME of a group's members carry is marked ◐. The
 // quick-fill copies the first size that has a number into every size — as its
 // own row, which is the point.
-function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onField, onQuickFill }) {
+function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onField, onQuickFill, onSetAll }) {
   const keys = [...new Set([...(sizeRun || []), ...Object.keys(row.sizes || {})])].sort(bySizeRank);
   const anyFilled = Object.values(row.sizes || {}).some((r) => String(r?.target ?? "").trim() !== "");
   const partialSet = new Set(partial || []);
   const anyPartial = keys.some((k) => partialSet.has(k));
+  // Held locally: it is a control, not a value the policy carries. Emptying it
+  // clears every size back to blank, which is what "every size" has to mean in
+  // both directions.
+  const [allValue, setAllValue] = useState("");
   return (
     <>
       <div className="ep-size">
@@ -1086,6 +1332,16 @@ function SizeRows({ loc, row, sizeRun, partial, extra, memberCount, errors, onFi
       })}
       {errors[loc] && <div className="ep-err">{errors[loc]}</div>}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        {/* ONE NUMBER INTO EVERY SIZE. Typing a flat run six times is how a
+            flat run gets typed wrong, and "Same for every size" only helps once
+            a size already has a number in it. This is the entry point. */}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: ".73rem", color: GRAY }}>
+          Every size
+          <input inputMode="numeric" value={allValue}
+            onChange={(e) => { setAllValue(e.target.value); onSetAll(loc, e.target.value, sizeRun); }}
+            aria-label={`${locLabel(loc)} — set every size`}
+            style={{ ...input, width: 58, textAlign: "center", padding: "5px 4px", fontSize: ".8rem" }} />
+        </label>
         {anyFilled && (
           <button onClick={() => onQuickFill(loc, sizeRun)} style={{ ...bGhost, padding: "5px 10px", fontSize: ".73rem" }}>
             Same for every size
@@ -1293,9 +1549,13 @@ function History({ entries, onRevert, busy }) {
         <div key={h.id} style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: ".86rem", fontWeight: 600 }}>
-              {h.categoryKey || h.groupKey || "rows"}
+              {h.kind === "targets" ? (h.productName || h.pid) : (h.categoryKey || h.groupKey || "rows")}
               {h.kind === "group" && <Chip tone="blue">group</Chip>}
               {h.kind === "rows" && <Chip tone="amber">{h.rowCount} rows</Chip>}
+              {/* A product override names the shop it was made at: the same
+                  product can carry different numbers at four of them, and an
+                  entry that did not say which is unrevertable in practice. */}
+              {h.kind === "targets" && <Chip tone="green">{locLabel(h.loc)}</Chip>}
               {h.status !== "applied" && (
                 <span style={{ color: h.status === "aborted_on_drift" ? AMBER : RED, fontWeight: 700, fontSize: ".72rem", marginLeft: 8 }}>
                   {h.status === "aborted_on_drift" ? "not applied — changed underneath" : h.status}
@@ -1311,7 +1571,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>

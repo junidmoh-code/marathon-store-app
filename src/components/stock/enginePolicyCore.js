@@ -80,6 +80,26 @@ export const bySizeRank = (a, b) => sizeRank(a) - sizeRank(b) || String(a).local
 // screen is for a person. Only the display changes — nothing writes this back.
 export const sizeLabel = (k) => (/^\d+_\d+$/.test(String(k)) ? String(k).replace("_", ".") : String(k));
 
+// ── PER-SIZE IS A PROPERTY OF THE CATEGORY, NOT OF WHAT WAS SAVED LAST TIME ──
+//
+// `perSize` is NOT a shape marker. For a UNIFORM leg it decides WHICH CELLS the
+// one number governs (refill-engine.cjs categoryPolicyTarget):
+//
+//   perSize absent  → the leg speaks for the "_" one-size cell and NOTHING else
+//   perSize true    → the leg speaks for every size the product declares
+//
+// The card used to send back whatever the STORED entry carried. For a category
+// that had never been armed per-size that was `false`, so arming soccer jerseys
+// wrote `{trophy:{target:3}}` — an entry that resolves NOTHING for S, M, L, XL
+// or XXL. Not coarse: inert. Measured against the real engine and written up in
+// docs/POLICY-PER-PRODUCT-TARGETS.md §5.
+//
+// So the flag is DERIVED from the category instead: a category with a size run
+// is per-size, a one-size category is not. The run itself is derived from live
+// data server-side (sizeRunForCategory), so this answer changes when the
+// catalogue does and never because of what somebody saved in June.
+export const perSizeMode = (category) => ((category?.sizeRun || []).length > 0);
+
 // ── ROW STATE ────────────────────────────────────────────────────────────────
 // One of three, and the third is the one people get wrong:
 //
@@ -409,6 +429,21 @@ export function fillAllSizes(sizeRun, row) {
   return { sizes };
 }
 
+// The apply-to-all input: one number into every size field at once, so a flat
+// target is one entry rather than six. Minimum follows the same default a typed
+// Keep gets; "Ask at" is left alone, because it is a separate decision and the
+// owner may have already made it.
+export function setEverySize(row, value, sizeRun) {
+  const keys = [...new Set([...(sizeRun || []), ...Object.keys(row?.sizes || {})])].sort(bySizeRank);
+  const sizes = {};
+  const t = String(value ?? "").trim();
+  for (const k of keys) {
+    const prev = row?.sizes?.[k] || { target: "", minQty: "", reorderPoint: "" };
+    sizes[k] = { ...prev, target: t, minQty: /^\d+$/.test(t) && Number(t) > 0 ? String(defaultMinQty(Number(t))) : "" };
+  }
+  return { ...(row || {}), sizes };
+}
+
 // Seed a per-size leg from the category's derived run, every size blank. The
 // owner then types once and quick-fills, or fills the sizes they care about.
 export function seedPerSizeLocation(sizeRun) {
@@ -426,8 +461,23 @@ export function canSave({ preview, previewKeyNow, errors, busy }) {
 // "old -> new" for every edit, in the owner's words. Absent renders as "not
 // set", never as 0 — the two are different policies and the banner is the last
 // place the difference is visible before it is saved.
-export function changedFields(before, after) {
+export function changedFields(before, after, { perSize = null } = {}) {
   const out = [];
+  // ── THE FLAG THAT CHANGES WHAT EVERY NUMBER MEANS ──────────────────────────
+  // A leg's numbers can be byte-identical and govern a completely different set
+  // of cells, because perSize decides whether they speak for the "_" cell or
+  // for the product's declared sizes. A banner that showed "no changes" while
+  // silently flipping it would be the worst line on this screen.
+  // …BUT NOT ON A REMOVAL. `after === null` un-arms the category outright, and
+  // a line saying its numbers "now apply to every size" is about numbers that
+  // apply nowhere at all — the banner's last word before the write, and the one
+  // place it must not describe a policy that is being deleted. (CodeRabbit, #497.)
+  if (isObj(before) && isObj(after) && perSize !== null && (before.perSize === true) !== (perSize === true)) {
+    out.push({ loc: null, field: "perSize", from: before.perSize === true, to: perSize === true,
+      label: "Sizes", text: perSize
+        ? "these numbers now apply to every size the product comes in, not to the one-size cell"
+        : "these numbers now apply to the one-size cell only" });
+  }
   const b = isObj(before) ? before : {};
   const a = after === null ? {} : (isObj(after) ? after : {});
   const locs = [...new Set([...Object.keys(b), ...Object.keys(a)])].filter((k) => k !== "perSize").sort();

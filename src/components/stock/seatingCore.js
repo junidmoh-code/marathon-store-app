@@ -295,7 +295,7 @@ export const SEAT_REASON = {
 // One short line each. No paragraph reaches this screen (Engine Policy's
 // standing rule); the explanation lives in these comments instead.
 export const SEAT_LABEL = {
-  [SEAT_REASON.EXPLICIT_ROW]: "Target row",
+  [SEAT_REASON.EXPLICIT_ROW]: "Product target",
   [SEAT_REASON.CATEGORY_POLICY]: "Category policy",
   [SEAT_REASON.FOOTWEAR_RULE]: "Footwear rule",
   [SEAT_REASON.SUBCATEGORY_RULE]: "Subcategory rule",

@@ -56,10 +56,11 @@
 const {
   validateCategoryPolicy, diffCategoryPolicy, modelCategoryPolicy, defaultMinQty,
   carriageForCategory, validateLocationEntry, REFUSED_CATEGORY_KEYS,
+  MAX_TARGET, MAX_REORDER_POINT,
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory } = require("./policy-resolve.cjs");
-const { encodeSizeKey } = require("./refill-engine.cjs");
+const { encodeSizeKey, resolveTarget } = require("./refill-engine.cjs");
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -67,6 +68,13 @@ const HISTORY_PATH = "engine_policy_history";
 const POLICY_PATH = "config/refillEngine/categoryPolicy";
 const GROUPS_PATH = "config/refillEngine/policyGroups";
 const TARGETS_PATH = "stock_targets";
+
+// The `source` stamp this card puts on an explicit row, and every stamp that
+// counts as "written by this card" — SEATING_OFF_SOURCE is the older name for
+// the same act and rows carrying it must stay clearable. Mirrored in
+// src/components/stock/targetOverride.js and pinned equal by test.
+const OVERRIDE_SOURCE = "policy_target";
+const OUR_ROW_SOURCES = new Set([OVERRIDE_SOURCE, "seating_off"]);
 
 // ── EDITING AN EXPLICIT ROW: WHAT IS AND IS NOT ALLOWED ──────────────────────
 // Junid has armed clothing by hand over months — 7,797 rows on 1,666 products,
@@ -304,6 +312,71 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
 // The locations that can hold an explicit row worth reading: every configured
 // destination, plus any location the map or a group already arms. Central is a
 // source, not a destination, and has no rows.
+// ── THE PER-PRODUCT PREVIEW ──────────────────────────────────────────────────
+// What the next scan resolves for ONE product at ONE location, size by size,
+// before and after the proposed rows — through the engine's own resolveTarget,
+// so the sentence on screen and the number the scan uses come from one
+// implementation.
+//
+// SCOPED READS ONLY. This product's cells and rows at every location, and
+// nothing else: /stock is 5.36MB and /stock_targets is bigger. Every location
+// is read, not just the one being edited, because the dead-size rule counts
+// units ANYWHERE (refill-engine.cjs sizeUnitsAnywhere) — feeding it the edited
+// location alone makes a size whose stock sits in transit read as dead.
+async function previewProductTargets(db, { config, loc, pid, update, knownLocations }) {
+  const product = await val(db, `products/${pid}`);
+  if (!isPlainObject(product)) {
+    throw httpsError("failed-precondition", `No product record for ${pid}.`);
+  }
+  const locs = knownLocations.length ? knownLocations : [loc];
+  const stock = {}, targets = {};
+  await Promise.all(locs.map(async (l) => {
+    const [cells, rows] = await Promise.all([val(db, `stock/${l}/${pid}`), val(db, `${TARGETS_PATH}/${l}/${pid}`)]);
+    if (isPlainObject(cells)) stock[l] = { [pid]: cells };
+    if (isPlainObject(rows)) targets[l] = { [pid]: rows };
+  }));
+  const products = { [pid]: product };
+  const after = JSON.parse(JSON.stringify(targets));
+  after[loc] = after[loc] || {};
+  after[loc][pid] = { ...(after[loc][pid] || {}) };
+  const prefix = `${TARGETS_PATH}/${loc}/${pid}/`;
+  for (const [path, row] of Object.entries(update)) {
+    if (!path.startsWith(prefix)) continue;
+    const k = path.slice(prefix.length);
+    if (row === null) delete after[loc][pid][k];
+    else after[loc][pid][k] = row;
+  }
+  // EVERY size the engine would ask about here: declared, celled, rowed, plus
+  // the "_" cell. Same union the client's seatingSizes returns, derived here
+  // from the same three sources.
+  const keys = new Set(Object.keys(targets[loc]?.[pid] || {}));
+  for (const k of Object.keys(after[loc][pid])) keys.add(k);
+  for (const k of Object.keys(stock[loc]?.[pid] || {})) keys.add(k);
+  for (const s of (product.sizes || [])) keys.add(encodeSizeKey(s));
+  const sizes = [];
+  let retracts = 0, unitsWanted = 0;
+  for (const sizeKey of [...keys].sort()) {
+    const size = (product.sizes || []).map(String).find((s) => encodeSizeKey(s) === sizeKey)
+      ?? (sizeKey === "_" ? "" : sizeKey.replace(/(\d)_(\d)/g, "$1.$2"));
+    const b = resolveTarget({ targets, config, products, stock }, loc, pid, size);
+    const a = resolveTarget({ targets: after, config, products, stock }, loc, pid, size);
+    const onHand = Math.max(typeof stock[loc]?.[pid]?.[sizeKey]?.qty === "number" ? stock[loc][pid][sizeKey].qty : 0, 0);
+    // A target that falls to 0 or to nothing retracts its open refill on the
+    // next scan: needGone reads resolveTarget and closes the request as
+    // no_longer_needed, with nobody rejecting anything.
+    if (b && b.target > 0 && (!a || a.target <= 0)) retracts += 1;
+    if (a && a.target > onHand) unitsWanted += a.target - onHand;
+    sizes.push({
+      sizeKey, onHand,
+      before: b ? b.target : null, beforeSource: b ? b.source : null,
+      after: a ? a.target : null, afterSource: a ? a.source : null,
+      changed: (b ? b.target : null) !== (a ? a.target : null),
+    });
+  }
+  return { loc, pid, name: product.name || "", sizes, retracts, unitsWanted,
+    changedSizes: sizes.filter((s) => s.changed).length };
+}
+
 function rowLocationsFor(config) {
   const out = new Set(Object.keys(config?.mode || {}));
   const collect = (entry) => {
@@ -564,6 +637,14 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       sizeRun: run.sizes,
       sizeRunExtra: run.extra,
       sizeRunEmpty: run.empty,
+      // "This category has no sizes" and "this category's sizes cannot be
+      // worked out" are different problems with different fixes, so the card
+      // gets both answers rather than one flag it has to guess about.
+      sizeRunOneSize: run.oneSize === true,
+      // The run came from the registry because the catalogue is still silent
+      // (no products in this category yet). Said on screen rather than implied,
+      // so nobody reads it as live evidence.
+      sizeRunFromRegistry: run.fromRegistry === true,
       // Explicit rows, counted for EVERY category rather than only armed ones.
       ownRowCells: rows ? rows.cells : 0,
       ownRowProducts: rows ? rows.products.size : 0,
@@ -655,6 +736,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       sizeRun: run.sizes,
       sizeRunExtra: [],
       sizeRunEmpty: run.empty,
+      // A group is one-size only if every member with a run is; the run itself
+      // is the union, so an empty union on a group of one-size members is the
+      // same "no sizes" answer a category gives.
+      sizeRunOneSize: run.membersWithRun.length === 0,
       sizeRunPartial: run.partial,
       sizeRunCarriedBy: run.carriedBy,
       sizeRunByMember: run.byMember,
@@ -907,6 +992,231 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     await historyRef.update({ status: "applied", verifiedAt: nowMs });
     return { ok: true, action: "setRows", categoryKey: categoryKey || null, changes,
       rowCount: applied.length, historyId: historyRef.key, history: await readHistory(db) };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PER-PRODUCT TARGETS — ONE ACTION FOR EVERY EXPLICIT-ROW WRITE THE CARD MAKES
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Arming a product, overriding one size, switching a location off, clearing
+  // an override, re-seating: five buttons, one action, one history entry, one
+  // drift discipline. See src/components/stock/targetOverride.js for the client
+  // half and docs/POLICY-PER-PRODUCT-TARGETS.md for why the row is the whole
+  // mechanism.
+  //
+  // ── HOW THIS DIFFERS FROM setRows ABOVE, AND WHY BOTH EXIST ────────────────
+  // setRows edits rows that already exist, in bulk, across a category, and
+  // CANNOT create or delete one. That is right for the "N old rows" list, which
+  // is a spreadsheet over somebody else's decisions. This action is the
+  // opposite: ONE (location, product), every size at once, and creating and
+  // removing are the whole point — "keep 4 of M here" and "M follows the
+  // category again" are the two things the card could not say before.
+  //
+  // ── target 0 IS LEGAL HERE AND IS NOT LEGAL IN A CATEGORY POLICY ───────────
+  // A 0 in the map is a typo (validatePolicyEntry refuses it); a 0 on a product
+  // row is a decision — "not at this shop" — and is the off switch the Decision
+  // Queue and the Seating tab have always written. So this path validates the
+  // fields itself rather than borrowing validatePolicyEntry, which would refuse
+  // the one value the off switch depends on.
+  //
+  // ── REMOVAL IS AUDITED, NOT SILENT ────────────────────────────────────────
+  // A blank field means inherit, and inheriting means the row goes. The row's
+  // full previous value is written into the history entry BEFORE the mutation,
+  // so one tap puts it back; and a row this card did not write cannot be
+  // removed at all unless the caller says `allowRemoveForeign`, which the screen
+  // only sends after naming the numbers and asking.
+  if (d.action === "setProductTargets") {
+    const loc = d.loc, pid = d.pid;
+    for (const [name, v] of [["loc", loc], ["pid", pid]]) {
+      if (typeof v !== "string" || !v || !/^[A-Za-z0-9_-]+$/.test(v)) {
+        throw httpsError("invalid-argument", `${name} ${JSON.stringify(v)} is not a single key segment.`);
+      }
+    }
+    if (knownLocations.length && !knownLocations.includes(loc)) {
+      throw httpsError("invalid-argument", `unknown location "${loc}"`);
+    }
+    const rows = Array.isArray(d.rows) ? d.rows : [];
+    const remove = Array.isArray(d.remove) ? d.remove : [];
+    if (!rows.length && !remove.length) {
+      throw httpsError("invalid-argument", "Nothing to do — send at least one row to write or one size to clear.");
+    }
+    if (rows.length + remove.length > MAX_ROW_EDITS_PER_CALL) {
+      throw httpsError("invalid-argument", `at most ${MAX_ROW_EDITS_PER_CALL} sizes per save — split the change.`);
+    }
+    const expected = isPlainObject(d.expected) ? d.expected : null;
+    if (!expected) {
+      throw httpsError("invalid-argument",
+        "expected is required — send the numbers the editor was opened on, so a change made underneath is refused rather than overwritten.");
+    }
+
+    // ── SHAPE ────────────────────────────────────────────────────────────────
+    const seen = new Set();
+    const okKey = (k) => typeof k === "string" && /^[A-Za-z0-9_-]+$/.test(k) && encodeSizeKey(k) === k;
+    const wanted = [];
+    for (const r of rows) {
+      if (!isPlainObject(r)) throw httpsError("invalid-argument", "each row must be an object.");
+      const k = r.sizeKey;
+      if (!okKey(k)) throw httpsError("invalid-argument", `size key ${JSON.stringify(k)} is not in its stored form (5.5 is stored as 5_5).`);
+      if (seen.has(k)) throw httpsError("invalid-argument", `${k} is named twice.`);
+      seen.add(k);
+      const isCount = (v, max) => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= max;
+      // 0 IS LEGAL. It is the off switch, and it is the one value a category
+      // policy may not carry — see the note above.
+      if (!isCount(r.target, MAX_TARGET)) {
+        throw httpsError("invalid-argument", `${k}: Keep must be a whole number from 0 to ${MAX_TARGET} (0 means "not at this shop").`);
+      }
+      if (!isCount(r.minQty, MAX_TARGET) || r.minQty > r.target) {
+        throw httpsError("invalid-argument", `${k}: Minimum must be a whole number no higher than Keep (${r.target}).`);
+      }
+      const next = { target: r.target, minQty: r.minQty };
+      if (r.reorderPoint !== undefined && r.reorderPoint !== null) {
+        if (!isCount(r.reorderPoint, MAX_REORDER_POINT)) {
+          throw httpsError("invalid-argument", `${k}: "Ask at" must be a whole number from 0 to ${MAX_REORDER_POINT}, or blank.`);
+        }
+        // At or above Keep the gate never fires — identical rule to the map's,
+        // one level down. A target of 0 has no room below it for one at all.
+        if (r.reorderPoint >= r.target) {
+          throw httpsError("invalid-argument",
+            `${k}: "Ask at" (${r.reorderPoint}) must be below "Keep" (${r.target}) — at or above it the setting does nothing.`);
+        }
+        next.reorderPoint = r.reorderPoint;
+      }
+      wanted.push({ sizeKey: k, next });
+    }
+    for (const k of remove) {
+      if (!okKey(k)) throw httpsError("invalid-argument", `size key ${JSON.stringify(k)} is not in its stored form.`);
+      if (seen.has(k)) throw httpsError("invalid-argument", `${k} is both written and cleared — pick one.`);
+      seen.add(k);
+    }
+
+    // ── LIVE, DRIFT, AND WHOSE ROW IT IS ─────────────────────────────────────
+    const pathOf = (k) => `${TARGETS_PATH}/${loc}/${pid}/${k}`;
+    const live = {};
+    for (const k of seen) live[k] = await val(db, pathOf(k));
+    for (const k of seen) {
+      if (!(k in expected)) {
+        throw httpsError("invalid-argument", `${k}: expected is missing for this size.`);
+      }
+      const was = isPlainObject(live[k]) ? shapeOf(live[k]) : null;
+      const want = isPlainObject(expected[k]) ? shapeOf(expected[k]) : null;
+      if (!sameValue(was, want)) {
+        throw httpsError("failed-precondition",
+          `${loc} / ${pid} / ${k} changed while this was open. Close and re-open the product.`,
+          { drift: true, sizeKey: k, live: was });
+      }
+    }
+    // A row this card did not write is somebody's decision. It may be retired —
+    // that is what an owner-facing editor is for — but never by a payload that
+    // did not say so, and never without the screen having named the numbers.
+    const foreign = remove.filter((k) => isPlainObject(live[k]) && !OUR_ROW_SOURCES.has(live[k].source));
+    if (foreign.length && d.allowRemoveForeign !== true) {
+      throw httpsError("failed-precondition",
+        `${foreign.length} of these rows were not written by this screen. Confirm on screen before clearing them.`,
+        { foreign, needsConfirm: true });
+    }
+
+    // ── THE UPDATE ───────────────────────────────────────────────────────────
+    const nowIso = new Date(nowMs).toISOString();
+    // `after` is the STATE THIS WRITE PRODUCES, per size, recorded beside the
+    // state it replaced. A revert needs it: reverting an entry must be refused
+    // when a LATER edit has moved the row on, and the only honest expectation
+    // for "put this entry back" is "the row still holds what this entry left".
+    // Sampling the live row at revert time instead would accept exactly the
+    // write it must refuse. (CodeRabbit, PR #497.)
+    const update = {}, changes = [], before = [], after = [];
+    for (const { sizeKey, next } of wanted) {
+      const prev = isPlainObject(live[sizeKey]) ? live[sizeKey] : null;
+      // Everything the row carried that is not one of the three numbers is
+      // kept: a row may hold provenance the scan wrote, and this screen has no
+      // business dropping it. reorderPoint is deleted rather than left behind
+      // when the field is blank — absent is not zero, and a stale one would
+      // quietly keep gating.
+      const preserved = { ...(prev || {}) };
+      delete preserved.target; delete preserved.minQty; delete preserved.reorderPoint;
+      delete preserved.prevRow; delete preserved.prevAbsent;
+      const row = { ...preserved, ...next, source: OVERRIDE_SOURCE, setAt: nowIso, setBy: callerEmail || callerUid || null };
+      // ── THE ROW THIS ONE REPLACED, CARRIED THROUGH UNNESTED ────────────────
+      // Clearing an override restores what was there before it. A second
+      // override must NOT capture the first one's row as the thing to restore,
+      // or the original is buried one level deeper every time — the exact bug
+      // fixed in seatingStore.offRow, and the same fix.
+      if (prev && OUR_ROW_SOURCES.has(prev.source)) {
+        if (isPlainObject(prev.prevRow)) row.prevRow = prev.prevRow;
+        else row.prevAbsent = true;
+      } else if (prev) row.prevRow = prev;
+      else row.prevAbsent = true;
+      update[pathOf(sizeKey)] = row;
+      before.push({ sizeKey, row: prev });
+      after.push({ sizeKey, row: { target: next.target, minQty: next.minQty,
+        ...(next.reorderPoint === undefined ? null : { reorderPoint: next.reorderPoint }) } });
+      // ALL THREE FIELDS, because `changes` is not only the human-facing list —
+      // an empty `changes` returns noChange and NEVER APPLIES the update. A
+      // minQty-only edit therefore reported a successful save and wrote
+      // nothing. setRows above has always recorded all three; this did not.
+      // (CodeRabbit, PR #497.)
+      const fromT = prev && typeof prev.target === "number" ? prev.target : null;
+      const fromM = prev && typeof prev.minQty === "number" ? prev.minQty : null;
+      const fromR = prev && typeof prev.reorderPoint === "number" ? prev.reorderPoint : null;
+      const toR = next.reorderPoint === undefined ? null : next.reorderPoint;
+      if (fromT !== next.target) changes.push({ sizeKey, field: "target", from: fromT, to: next.target });
+      if (fromM !== next.minQty) changes.push({ sizeKey, field: "minQty", from: fromM, to: next.minQty });
+      if (fromR !== toR) changes.push({ sizeKey, field: "reorderPoint", from: fromR, to: toR });
+    }
+    for (const k of remove) {
+      const prev = isPlainObject(live[k]) ? live[k] : null;
+      if (!prev) continue;                       // already inheriting — nothing to do
+      update[pathOf(k)] = null;
+      before.push({ sizeKey: k, row: prev });
+      // A REMOVAL LEAVES NO ROW, and "no row" has to be recorded as its own
+      // flag: RTDB deletes a key written null, so `row: null` would read back
+      // as an entry that simply forgot to say.
+      after.push({ sizeKey: k, absent: true });
+      changes.push({ sizeKey: k, field: "target", from: typeof prev.target === "number" ? prev.target : null, to: null });
+    }
+    if (!changes.length) {
+      return { ok: true, action: "setProductTargets", loc, pid, noChange: true, changes: [] };
+    }
+
+    // ── THE PREVIEW ──────────────────────────────────────────────────────────
+    // The engine's own resolveTarget, per size, before and after — against live
+    // data rather than the browser's snapshot. Scoped reads only: this product's
+    // cells and rows at every location, never a node.
+    const preview = await previewProductTargets(db, { config: cfg, loc, pid, update, knownLocations });
+    if (dryRun) {
+      return { ok: true, action: "setProductTargets", dryRun: true, loc, pid, changes, preview,
+        before, foreign, serverNowMs: nowMs };
+    }
+
+    // ── HISTORY FIRST, holding every `before` in full ─────────────────────────
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({
+      // The NAME as it was at the time. A history entry read six weeks later
+      // must be legible without a second read of a product record that may have
+      // been renamed, merged or deactivated since.
+      kind: "targets", loc, pid, productName: preview.name || null, categoryKey: categoryKey || null,
+      at: nowMs, by: callerEmail, byUid: callerUid || null,
+      rowCount: Object.keys(update).length,
+      before, after, changes, status: "pending",
+    });
+    // Re-verify immediately before the mutation: the preview above issues live
+    // reads and takes real time, and a concurrent write landing in that window
+    // would otherwise be reverted with no error and no trace.
+    for (const k of seen) {
+      const nowLive = await val(db, pathOf(k));
+      const was = isPlainObject(nowLive) ? shapeOf(nowLive) : null;
+      const want = isPlainObject(expected[k]) ? shapeOf(expected[k]) : null;
+      if (!sameValue(was, want)) {
+        await historyRef.update({ status: "aborted_on_drift", driftedSize: k, liveAtAbort: nowLive ?? null });
+        throw httpsError("failed-precondition",
+          `${loc} / ${pid} / ${k} changed while this was being saved. Nothing was written.`,
+          { drift: true, sizeKey: k, historyId: historyRef.key });
+      }
+    }
+    await db.ref().update(update);
+    invalidateCensusCache();
+    await historyRef.update({ status: "applied", verifiedAt: nowMs });
+    return { ok: true, action: "setProductTargets", loc, pid, changes, preview,
+      rowCount: Object.keys(update).length, historyId: historyRef.key, history: await readHistory(db) };
   }
 
   // ── GROUPS ────────────────────────────────────────────────────────────────
@@ -1169,7 +1479,8 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
 module.exports = {
   applyCategoryPolicy, assertEnginePolicyCaller, buildCensus, readHistory, invalidateCensusCache, normalizePolicy, canonical, sameValue,
-  modelGroupArming, rowLocationsFor, deriveSizeRun, deriveGroupSizeRun,
+  modelGroupArming, rowLocationsFor, deriveSizeRun, deriveGroupSizeRun, previewProductTargets,
+  OVERRIDE_SOURCE, OUR_ROW_SOURCES,
   HISTORY_PATH, POLICY_PATH, GROUPS_PATH, TARGETS_PATH,
   MAX_ROW_EDITS_PER_CALL, MAX_ROWS_PER_READ, httpsError, readMapPaged,
 };

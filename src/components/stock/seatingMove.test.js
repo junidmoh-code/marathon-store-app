@@ -20,9 +20,13 @@ vi.mock("firebase/database", () => ({
     const v = src?.[loc]?.[pid];
     return { exists: () => v !== undefined, val: () => v };
   },
-  update: async (_r, upd) => { writes.push(upd); },
 }));
-vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u-owner" } } }));
+// The explicit-row write is the CALLABLE now — one action for every row change
+// the card makes (seatingStore.js "THE ONE WRITE"). `writes` holds its payloads.
+vi.mock("firebase/functions", () => ({
+  httpsCallable: () => async (payload) => { writes.push(payload); return { data: { ok: true, rowCount: payload.rows.length + payload.remove.length } }; },
+}));
+vi.mock("../../firebase", () => ({ database: {}, functions: {}, auth: { currentUser: { uid: "u-owner" } } }));
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => 1756000000000 }));
 
 const { moveAndSwitchOff, movePlan, moveBlockers } = await import("./seatingStore.js");
@@ -105,8 +109,11 @@ describe("all stock writes go through applyMovement", () => {
   it("no /stock path is ever written directly", async () => {
     const ctx = ctxOf({ trophy: { p1: { M: { qty: 4 } } } });
     await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
+    // Every payload names one (location, product) and a size list. Nothing it
+    // sends can reach a /stock cell: the server writes /stock_targets only.
     for (const upd of writes) {
-      for (const path of Object.keys(upd)) expect(path.startsWith("stock_targets/")).toBe(true);
+      expect(upd.action).toBe("setProductTargets");
+      expect(JSON.stringify(upd)).not.toMatch(/"stock\//);
     }
   });
 });
@@ -147,9 +154,9 @@ describe("switch off the source", () => {
     LIVE = { stock: { trophy: { p1: { M: { qty: 0 } } } }, targets: {} };
     const res = await moveAndSwitchOff({ seat: seatOf(ctx), ctx, viewer: {}, dest: "hub2", locations: LOCS });
     expect(res.switchedOff).toBe(true);
-    expect(Object.keys(writes[0]).sort()).toEqual([
-      "stock_targets/trophy/p1/L", "stock_targets/trophy/p1/M", "stock_targets/trophy/p1/S",
-    ]);
+    expect(writes[0].loc).toBe("trophy");
+    expect(writes[0].rows.map((r) => r.sizeKey).sort()).toEqual(["L", "M", "S"]);
+    expect(writes[0].rows.every((r) => r.target === 0)).toBe(true);
   });
 
   it("un-ticked, the stock moves and the seat stays on", async () => {
@@ -386,6 +393,8 @@ describe("re-seat decides from live data", () => {
     LIVE = { stock: {}, targets: { trophy: { p1: { M: offRowFor(current) } } } };
     writes.length = 0;
     await reseat({ seat: seatingAt(ctx, "trophy", "p1"), ctx, locations: LOCS });
-    expect(writes[0]["stock_targets/trophy/p1/M"]).toEqual(current);
+    // The numbers put back are the LIVE row's, not the stale one the screen had.
+    expect(writes[0].rows).toEqual([{ sizeKey: "M", target: 3, minQty: 1 }]);
+    expect(writes[0].expected.M).toEqual({ target: 0, minQty: 0, reorderPoint: null });
   });
 });

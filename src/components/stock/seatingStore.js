@@ -41,10 +41,11 @@
 // (the cell-existence one, verified by source zip 2026-08-24), not only of the
 // reverted provenance build. Nobody is sent to the queue to tidy up.
 
-import { ref, get, update } from "firebase/database";
-import { database, auth } from "../../firebase";
-import { serverNowMs } from "../../utils/serverTime";
-import { seatingSizes, seatingAt, SEATING_OFF_SOURCE } from "./seatingCore";
+import { ref, get } from "firebase/database";
+import { httpsCallable } from "firebase/functions";
+import { database, functions, auth } from "../../firebase";
+import { seatingSizes, seatingAt } from "./seatingCore";
+import { switchOffDraft, clearDraft, targetPayload, isOurs, writableRow } from "./targetOverride";
 import { applyMovement } from "./applyMovement";
 import { isTransitLane } from "./transitLanes";
 import { ADMIN_EMAIL } from "../../config/enginePolicy";
@@ -84,39 +85,6 @@ export function switchOffPlan(ctx, loc, pid) {
   }));
 }
 
-// The row that goes on the node. Kept separate from the write so a test can
-// read it without a database.
-export function offRow({ prev, actor, at, batchId }) {
-  const row = {
-    target: 0,
-    minQty: 0,
-    source: SEATING_OFF_SOURCE,
-    batchId,
-    offAt: at,
-    offBy: actor.uid,
-  };
-  if (actor.email) row.offByEmail = actor.email;
-  // RTDB deletes a key written null, so "there was no row" cannot be recorded
-  // as `prevRow: null` — it has to be its own flag, or Re-seat could not tell
-  // "restore nothing" from "restore a row I failed to capture".
-  //
-  // A SECOND SWITCH-OFF MUST NOT NEST THE FIRST. Switching off again — which
-  // happens the moment the catalogue gains a size, because the location goes
-  // back to seated on that one size and the button re-enables — used to capture
-  // this screen's OWN off-row as `prevRow`. Re-seat then "restored" a target-0
-  // row and the location stayed off, with the real row buried one level deeper
-  // every time. The ORIGINAL provenance is carried through unchanged, so any
-  // number of switch-offs still undo to the row a human actually wrote.
-  // (CodeRabbit, PR #429.)
-  if (prev && typeof prev === "object") {
-    if (prev.source === SEATING_OFF_SOURCE) {
-      if (prev.prevRow && typeof prev.prevRow === "object") row.prevRow = prev.prevRow;
-      else row.prevAbsent = true;
-    } else row.prevRow = prev;
-  } else row.prevAbsent = true;
-  return row;
-}
-
 function actorOf(viewer) {
   const uid = auth?.currentUser?.uid;
   if (!uid) throw new Error("Not signed in.");
@@ -140,81 +108,117 @@ function actorRoleOf(viewer) {
   return viewer?.email && viewer.email === ADMIN_EMAIL ? "admin" : null;
 }
 
-// ── SWITCH OFF ───────────────────────────────────────────────────────────────
-// One location. One multi-path update, so the row set lands whole or not at all
-// — a half-written switch-off would leave the shop armed for the sizes that
-// missed, which is the failure this feature exists to end.
+// ═════════════════════════════════════════════════════════════════════════════
+// THE ONE WRITE — every explicit-row change this card makes goes through here
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ── WHY IT IS A CALLABLE AND NOT A BROWSER WRITE ANY MORE ────────────────────
+// It used to be a multi-path `update()` straight from the tab. That worked, and
+// it could not do three things the owner asked for: preview what the next scan
+// would resolve BEFORE committing, land in the policy history with one-tap
+// revert, and refuse a write whose numbers moved underneath. All three already
+// existed on the category side, server-side, and duplicating them in the
+// browser would have been a second implementation of the card's most careful
+// code.
+//
+// The gate does not widen. The server re-checks `engine_policy` for itself
+// (assertEnginePolicyCaller), and the tab still asks `enginePolicySeatingWritable`
+// before rendering the buttons — so the same people can do the same things, and
+// the write is now audited.
+//
+// ── ATOMICITY IS UNCHANGED ───────────────────────────────────────────────────
+// The server writes one multi-path update, so the row set still lands whole or
+// not at all. A half-written switch-off would leave the shop armed for the sizes
+// that missed, which is the failure this feature exists to end.
+const CALLABLE_TIMEOUT_MS = 300000;
+const setCategoryPolicyFn = () => httpsCallable(functions, "setCategoryPolicy", { timeout: CALLABLE_TIMEOUT_MS });
+
+// RTDB path segments: a junk key must fail loudly here rather than write
+// somewhere else. The server checks the same thing; this one turns it into a
+// refusal before the round trip.
+function unsafeIn(payload) {
+  if (UNSAFE.test(payload.loc) || UNSAFE.test(payload.pid)) return payload.loc;
+  for (const r of payload.rows) if (UNSAFE.test(r.sizeKey)) return r.sizeKey;
+  for (const k of payload.remove) if (UNSAFE.test(k)) return k;
+  return null;
+}
+
+// `draft` is a targetOverride draft: one entry per size, "" meaning INHERIT and
+// a number (0 included) meaning EXPLICIT. Returns the plan it sent alongside
+// the server's answer, so the caller can report what actually changed.
+export async function saveProductTargets({ ctx, loc, pid, draft, allowRemoveForeign = false, dryRun = false }) {
+  const { payload, plan } = targetPayload(ctx, loc, pid, draft, { allowRemoveForeign, dryRun });
+  const bad = unsafeIn(payload);
+  if (bad) return { ok: false, reason: "unsafe_key", sizeKey: bad };
+  if (!plan.dirty) return { ok: false, reason: "no_change", plan };
+  try {
+    const res = await setCategoryPolicyFn()(payload);
+    return { ok: true, plan, ...res.data };
+  } catch (e) {
+    // A removal the server refused for want of a confirmation is not a failure
+    // — it is a question, and the screen has the words to ask it.
+    if (e?.details?.needsConfirm) return { ok: false, reason: "confirm_foreign", foreign: e.details.foreign, plan };
+    if (e?.details?.drift) return { ok: false, reason: "drift", message: e?.message || String(e), plan };
+    return { ok: false, reason: "error", message: e?.message || String(e), plan };
+  }
+}
+
+// ── SWITCH OFF — AN OVERRIDE OF 0, NOT A MECHANISM OF ITS OWN ────────────────
+// Every size the engine would arm here, set to 0. That is what it has always
+// written; it is now expressed as the draft the editor would produce, sent
+// through the write above, so the off switch, an arming and a per-size override
+// are one code path with one audit trail.
 export async function switchOff({ seat, ctx, viewer, locations }) {
   // RE-READ BEFORE REFUSING, ALWAYS. The cells behind `seat` were fetched when
   // the screen loaded and a sale can land at any moment after that. The
   // units-held refusal is this feature's one hard guarantee, so it must be
-  // decided against live data on EVERY path — the button and the move alike —
-  // not only on the one that happened to be written second.
+  // decided against live data on EVERY path — the button and the move alike.
   //
   // AND THE VERIFICATION MUST BE REAL. `locations` has to name this location:
   // readSeatingContext returns a map keyed only by the locations it was asked
   // about, so an empty or wrong list yields no cells, which reads exactly like
   // an empty shelf — a failed check that looks like a passed one, over live
   // stock. Refuse rather than guess. (CodeRabbit, PR #429.)
-  let liveSeat = seat, liveCtx = ctx;
   if (!Array.isArray(locations) || !locations.includes(seat.loc)) {
     return { ok: false, reason: "unverified" };
   }
+  actorOf(viewer);                                   // refuse before any read if not signed in
   const fresh = await readSeatingContext(locations, seat.pid);
-  liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
-  liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);
-  seat = liveSeat; ctx = liveCtx;
+  const liveCtx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
+  const liveSeat = seatingAt(liveCtx, seat.loc, seat.pid);
 
-  const blockers = switchOffBlockers(seat);
+  const blockers = switchOffBlockers(liveSeat);
   if (blockers) return { ok: false, reason: "holds_units", blockers };
 
-  const actor = actorOf(viewer);
-  const at = serverNowMs();                       // never Date.now() — the tills
-  const batchId = `seating_${at.toString(36)}`;   // and this browser disagree
-  const plan = switchOffPlan(ctx, seat.loc, seat.pid);
-  if (!plan.length) return { ok: false, reason: "no_sizes" };
-
-  const upd = {};
-  for (const { sizeKey, prev } of plan) {
-    if (UNSAFE.test(sizeKey) || UNSAFE.test(seat.loc) || UNSAFE.test(seat.pid)) {
-      return { ok: false, reason: "unsafe_key", sizeKey };
-    }
-    upd[`stock_targets/${seat.loc}/${seat.pid}/${sizeKey}`] = offRow({ prev, actor, at, batchId });
-  }
-  await update(ref(database), upd);
-  return { ok: true, batchId, rowCount: plan.length };
+  const draft = switchOffDraft(liveCtx, seat.loc, seat.pid);
+  if (!Object.keys(draft.sizes).length) return { ok: false, reason: "no_sizes" };
+  const res = await saveProductTargets({ ctx: liveCtx, loc: seat.loc, pid: seat.pid, draft });
+  // Already at 0 on every size is not an error — it is the state the button was
+  // pressed to reach.
+  if (!res.ok && res.reason === "no_change") return { ok: true, rowCount: 0, noChange: true };
+  if (!res.ok) return res;
+  return { ok: true, rowCount: res.rowCount ?? res.plan.rows.length, historyId: res.historyId };
 }
 
-// ── RE-SEAT ──────────────────────────────────────────────────────────────────
-// Removes the delist fact and NOTHING else. Only rows this screen wrote are
-// touched (`source === "seating_off"`); a hand-made row, or one the Decision
-// Queue wrote, is somebody else's decision and is left exactly as it is.
-//
-// A row stamped by this screen but missing its provenance is NOT guessed at —
-// it is reported and left, because inventing a target is the one outcome worse
-// than doing nothing.
-// The shape /stock_targets/$loc/$pid/$size accepts from a client: target and
-// minQty present and numeric (live rules, checked 2026-08-24).
-const writableRow = (row) =>
-  typeof row?.target === "number" && Number.isFinite(row.target) &&
-  typeof row?.minQty === "number" && Number.isFinite(row.minQty);
-
+// ── CLEAR THE OVERRIDE / RE-SEAT — ONE ACTION ────────────────────────────────
+// Every size back to blank, which means back to whatever the category policy,
+// the footwear rule or the size run says. A row this card wrote that carries
+// the row it replaced restores THAT row rather than vanishing — clearing our
+// own decision must not also delete somebody else's. A row this card did not
+// write is left alone here entirely: retiring one is a deliberate act done in
+// the editor, where the numbers are on screen and the confirmation names them.
 export function reseatPlan(ctx, loc, pid) {
   const rows = ctx.targets?.[loc]?.[pid] || {};
   const restore = [];
   const stuck = [];
   for (const sizeKey of Object.keys(rows).sort()) {
     const r = rows[sizeKey];
-    if (r?.source !== SEATING_OFF_SOURCE) continue;
+    if (!isOurs(r)) continue;
     if (r.prevAbsent === true) { restore.push({ sizeKey, to: null }); continue; }
     if (!r.prevRow || typeof r.prevRow !== "object") { stuck.push(sizeKey); continue; }
     // A ROW THE RULE WOULD REFUSE MUST NOT POISON THE WHOLE UNDO. The restore
-    // is one multi-path update, and the live rule requires target and minQty to
-    // be present and numeric. Admin-SDK scripts write /stock_targets directly
-    // and bypass that rule, so a captured prevRow of { target: 0 } or
-    // { target: "4" } is a shape that exists on the live node — and including
-    // one made the ENTIRE update fail with a bare PERMISSION_DENIED, restoring
-    // nothing and leaving no way forward. Such a row is reported instead, and
+    // is one multi-path update, and one shape the rule refuses used to fail all
+    // of it with a bare PERMISSION_DENIED. Such a row is reported instead, and
     // every other size still comes back. (Adversarial review, PR #429.)
     if (!writableRow(r.prevRow)) { stuck.push(sizeKey); continue; }
     restore.push({ sizeKey, to: r.prevRow });
@@ -223,22 +227,31 @@ export function reseatPlan(ctx, loc, pid) {
 }
 
 export async function reseat({ seat, ctx, locations }) {
-  // RE-READ, like switchOff does. This was the only write left on this screen
-  // deciding from the render-time snapshot: a row edited elsewhere since the
-  // screen loaded was blind-overwritten with the prevRow captured back then.
-  // (Adversarial re-review, PR #429.)
+  // RE-READ, like switchOff does. A row edited elsewhere since the screen
+  // loaded must not be blind-overwritten with the prevRow captured back then.
   if (Array.isArray(locations) && locations.includes(seat.loc)) {
     const fresh = await readSeatingContext(locations, seat.pid);
     ctx = { ...ctx, stock: fresh.stock, targets: fresh.targets };
   }
   const { restore, stuck } = reseatPlan(ctx, seat.loc, seat.pid);
   if (!restore.length) return { ok: false, reason: "nothing_to_undo", stuck };
-  const upd = {};
-  for (const { sizeKey, to } of restore) {
-    upd[`stock_targets/${seat.loc}/${seat.pid}/${sizeKey}`] = to;
+  // The clear draft blanks every size; the plan turns a blank over one of our
+  // rows into a restore or a delete, exactly as reseatPlan describes. Sizes
+  // carrying somebody else's row are blanked in the draft but the plan leaves
+  // them alone unless the caller confirms — which this action never does.
+  const draft = clearDraft(ctx, seat.loc, seat.pid);
+  // A SIZE THIS CARD DID NOT WRITE IS NOT IN THE DRAFT AT ALL. The plan acts
+  // only on sizes the draft names, so dropping them here is what makes "re-seat
+  // undoes this screen's decisions and nobody else's" true of the payload and
+  // not merely of the sentence above it. Retiring a foreign row is a deliberate
+  // act done in the editor, where its numbers are on screen.
+  for (const k of Object.keys(draft.sizes)) {
+    if (!isOurs(ctx.targets?.[seat.loc]?.[seat.pid]?.[k])) delete draft.sizes[k];
   }
-  await update(ref(database), upd);
-  return { ok: true, rowCount: restore.length, stuck };
+  const res = await saveProductTargets({ ctx, loc: seat.loc, pid: seat.pid, draft });
+  if (!res.ok && res.reason === "no_change") return { ok: false, reason: "nothing_to_undo", stuck };
+  if (!res.ok) return res;
+  return { ok: true, rowCount: res.rowCount ?? restore.length, stuck, historyId: res.historyId };
 }
 
 // A live re-read of one (location, product) target row set — used after a write

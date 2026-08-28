@@ -13,13 +13,13 @@
 // described in a comment, because a layout fix nobody can see break is a layout
 // fix that comes back.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import {
   policyFromDraft, validateDraft, previewKey, changedFields, armedLocations,
   draftFromEntry, editorRows, fillAllSizes, seedPerSizeLocation, isPerSizeRow,
-  sizeLabel, sizeRank, bySizeRank, canSave, mainListEntries, previewFromArmModel,
+  sizeLabel, sizeRank, bySizeRank, canSave, mainListEntries, previewFromArmModel, perSizeMode,
 } from "./enginePolicyCore";
 
 // ═══ THE MAIN LIST — a group is one entry, its members are inside it ════════
@@ -307,7 +307,13 @@ const CENSUS = {
   cap: 75,
   // 2026-08-22 10:24 UTC = 12:24 SAST — the stamp reads "22 Aug at 12:24".
   history: [{ id: "h1", status: "applied", at: Date.UTC(2026, 7, 22, 10, 24), by: "gunidmoh@gmail.com",
-    categoryKey: "caps-beanies", changes: [{ loc: "hub2", field: "target", from: 8, to: 10 }] }],
+    categoryKey: "caps-beanies", changes: [{ loc: "hub2", field: "target", from: 8, to: 10 }] },
+    // A PRODUCT OVERRIDE, in the same history, revertable from the same button.
+    { id: "h2", kind: "targets", status: "applied", at: Date.UTC(2026, 7, 20, 8, 0), by: "gunidmoh@gmail.com",
+      categoryKey: "caps-beanies", loc: "hub2", pid: "p9", productName: "Black Cap",
+      before: [{ sizeKey: "_", row: { target: 6, minQty: 3, source: "hand" } }, { sizeKey: "M", row: null }],
+      after: [{ sizeKey: "_", row: { target: 2, minQty: 1 } }, { sizeKey: "M", row: { target: 4, minQty: 2 } }],
+      changes: [{ sizeKey: "_", field: "target", from: 6, to: 2 }] }],
   groups: {
     "footwear-all": {
       label: "Sneakers", armed: false,
@@ -346,6 +352,7 @@ const CENSUS = {
       carriage: { hub2: { carries: true, products: 94, units: 400 }, "marathon-pe": { carries: true, products: 40, units: 112 },
         trophy: { carries: false, products: 0, units: 0 } },
       ownRowCells: 188, ownRowProducts: 94, sizeRun: [], sizeRunExtra: ["S", "M"], sizeRunEmpty: true,
+      sizeRunOneSize: true,
       imageUrl: null,
     },
     // A MEMBER of the (disarmed) group: no entry of its own, nothing in force,
@@ -379,10 +386,19 @@ const callableMock = vi.fn(async (payload) => {
   }
   // A FRESH object each call, as a real callable returns — the reopen-after-
   // reload effect keys on the census changing identity.
-  return { data: { ...CENSUS } };
+  return { data: { ...(CENSUS_OVERRIDE || CENSUS) } };
 });
+// Set by a test that needs a census shaped differently for one render.
+let CENSUS_OVERRIDE = null;
 vi.mock("firebase/functions", () => ({ httpsCallable: () => (...a) => callableMock(...a) }));
 vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: true } }));
+// The card no longer reads live rows to revert — the entry's own after-state is
+// the expectation — but the module graph still resolves firebase/database.
+let LIVE_ROWS = {};
+vi.mock("firebase/database", () => ({
+  ref: (_db, path) => ({ path }),
+  get: async () => ({ exists: () => true, val: () => LIVE_ROWS }),
+}));
 
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 const OWNER = { email: "gunidmoh@gmail.com" };
@@ -670,8 +686,10 @@ describe("the category detail screen", () => {
     // arm hub2 (carried) so there is something to save
     const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
     await act(async () => { stockHere.props.onClick(); });
-    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
-    await act(async () => { keep.props.onChange({ target: { value: "3" } }); });
+    // A SIZED CATEGORY NOW ARMS SIZE BY SIZE — arming seeds the run rather than
+    // one general number, so the field to fill is a size's, not the location's.
+    const everySize = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "3" } }); });
     callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
       preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
     const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
@@ -827,5 +845,465 @@ describe("the stripped screen", () => {
     const chip = tree.root.findAll((n) => n.type === "button" && instText(n).includes("old rows"))[0];
     await act(async () => { chip.props.onClick({ stopPropagation() {} }); });
     check("rows");
+  });
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE REPORTED DEFECT — ARMING OFFERED ONE GENERAL QUANTITY AND NOTHING ELSE
+// ═════════════════════════════════════════════════════════════════════════════
+// Reproduced first, in docs/POLICY-PER-PRODUCT-TARGETS.md §5: the "Size by
+// size" control was gated on the STORED perSize flag, so a category that had
+// never been armed per-size could only ever be given one number — and for a
+// sized category one number without perSize arms NOTHING, because a uniform leg
+// then speaks for the "_" cell alone. Soccer jerseys need S/M/L/XL/XXL, and
+// this is what stopped them.
+describe("arming a sized category offers its OWN size run", () => {
+  const openMember = async (tree) => {
+    await openFirstIn(tree, "Sneakers");
+    const member = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Open member Sneakers")[0];
+    await act(async () => { member.props.onClick(); });
+  };
+  const openFirstIn = async (tree, label) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes(label))[0];
+    await act(async () => { row.props.onClick(); });
+  };
+
+  it("arming seeds ONE FIELD PER SIZE, not one general quantity", async () => {
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const labels = tree.root.findAll((n) => n.type === "input" && /^Hub 2 /.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    // the run is 5.5 / 7 / 8 for this category, three fields each
+    expect(labels).toContain("Hub 2 5.5 Keep");
+    expect(labels).toContain("Hub 2 7 Keep");
+    expect(labels).toContain("Hub 2 8 Keep");
+    // and NOT the single general quantity that was the only thing on offer
+    expect(labels).not.toContain("Hub 2 Keep");
+  });
+
+  it("and the saved policy carries perSize:true with a row per size", async () => {
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const everySize = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "2" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.dryRun && c?.categoryKey === "sneakers");
+    expect(dry.policy.perSize).toBe(true);
+    expect(Object.keys(dry.policy.hub2.sizes).sort()).toEqual(["5_5", "7", "8"]);
+    expect(Object.values(dry.policy.hub2.sizes).every((r) => r.target === 2)).toBe(true);
+  });
+
+  it("offers the size-by-size switch on the RUN, not on what was saved last time", async () => {
+    // sneakers has a run and NO stored entry at all (perSize is false on the
+    // census row). The control has to be there anyway — that gate was the
+    // defect. (M-PERSIZE-GATE.)
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const toggle = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "One number")[0];
+    expect(toggle, "a sized category must be able to switch shape").toBeTruthy();
+    // …and back again, from one number to size by size.
+    await act(async () => { toggle.props.onClick(); });
+    expect(tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")).toHaveLength(1);
+    const back = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Size by size")[0];
+    expect(back, "and back to size by size").toBeTruthy();
+    await act(async () => { back.props.onClick(); });
+    expect(tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 7 Keep")).toHaveLength(1);
+  });
+
+  it("a ONE-SIZE category keeps ONE field and never grows a fake size grid", async () => {
+    const tree = await renderCard();
+    await openFirstIn(tree, "Caps & Beanies");
+    const labels = tree.root.findAll((n) => n.type === "input" && /^Hub 2/.test(n.props["aria-label"] || ""))
+      .map((n) => n.props["aria-label"]);
+    expect(labels).toEqual(["Hub 2 Keep", "Hub 2 Minimum", "Hub 2 Ask at"]);
+    expect(labels.some((l) => l === "Hub 2 — set every size")).toBe(false);
+    // and it is not offered the size-by-size switch either
+    expect(tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Size by size")).toHaveLength(0);
+    // nor told its run is broken — a one-size category is not broken
+    expect(textOf(tree)).not.toContain("No size run can be worked out");
+  });
+
+  it("the one-size category's policy is still saved WITHOUT perSize", async () => {
+    const tree = await renderCard();
+    await openFirstIn(tree, "Caps & Beanies");
+    const keep = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")[0];
+    await act(async () => { keep.props.onChange({ target: { value: "12" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 1, totalUnits: 2, centralOnHand: 9, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.dryRun && c?.categoryKey === "caps-beanies");
+    expect("perSize" in dry.policy).toBe(false);
+    expect(dry.policy.hub2.target).toBe(12);
+  });
+
+  it("apply-to-all fills every size field and touches nothing else", async () => {
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const everySize = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "4" } }); });
+    const val = (label) => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === label)[0].props.value;
+    for (const sz of ["5.5", "7", "8"]) {
+      expect(val(`Hub 2 ${sz} Keep`)).toBe("4");
+      expect(val(`Hub 2 ${sz} Minimum`)).toBe("2");     // ceil(4/2), the same default a typed Keep gets
+      expect(val(`Hub 2 ${sz} Ask at`)).toBe("");        // a separate decision, left alone
+    }
+    // clearing it puts every size back to blank — "every size" in both directions
+    await act(async () => { everySize.props.onChange({ target: { value: "" } }); });
+    for (const sz of ["5.5", "7", "8"]) expect(val(`Hub 2 ${sz} Keep`)).toBe("");
+  });
+});
+
+// ── THE FLAG THAT CHANGES WHAT EVERY NUMBER MEANS ────────────────────────────
+describe("the banner reports a perSize flip", () => {
+  it("says so even when no number changed", () => {
+    const before = { hub2: { target: 5, minQty: 3 } };
+    const after = { perSize: true, hub2: { target: 5, minQty: 3 } };
+    const out = changedFields(before, after, { perSize: true });
+    expect(out.some((c) => c.field === "perSize" && c.to === true)).toBe(true);
+    expect(out.find((c) => c.field === "perSize").text).toMatch(/every size/);
+  });
+  it("says NOTHING on a removal — un-arming has no size mode", () => {
+    // `after: null` deletes the category's policy. A line saying its numbers
+    // now apply to every size describes numbers that apply nowhere.
+    const before = { hub2: { target: 5, minQty: 3 } };
+    expect(changedFields(before, null, { perSize: true }).some((c) => c.field === "perSize")).toBe(false);
+    // …and the removal itself is still reported.
+    expect(changedFields(before, null, { perSize: true }).some((c) => c.to === "removed")).toBe(true);
+  });
+
+  it("and says nothing when the flag is unchanged", () => {
+    const before = { perSize: true, hub2: { target: 5, minQty: 3 } };
+    const after = { perSize: true, hub2: { target: 5, minQty: 3 } };
+    expect(changedFields(before, after, { perSize: true })).toEqual([]);
+  });
+  it("perSizeMode is the category's run, not what was saved last time", () => {
+    expect(perSizeMode({ sizeRun: ["S", "M"], perSize: false })).toBe(true);
+    expect(perSizeMode({ sizeRun: [], perSize: true })).toBe(false);
+    expect(perSizeMode(null)).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GROUPS — MEMBERSHIP AND ARMING, WHICH THE CARD COULD NOT DO
+// ═════════════════════════════════════════════════════════════════════════════
+// The shipped "Sneakers" group excludes soccer boots (same 3-13 run) and
+// includes kids-shoes (26-33, sharing not one size). Both had to be fixed by a
+// script against live config, which is why neither had been.
+describe("the group screen edits its own membership", () => {
+  const openGroup = async (tree) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Sneakers"))[0];
+    await act(async () => { row.props.onClick(); });
+  };
+  const withConfirm = async (answer, fn) => {
+    const had = "confirm" in globalThis.window;
+    const prev = globalThis.window.confirm;
+    const asked = [];
+    globalThis.window.confirm = (m) => { asked.push(m); return answer; };
+    try { await fn(); } finally { if (had) globalThis.window.confirm = prev; else delete globalThis.window.confirm; }
+    return asked;
+  };
+
+  it("offers only categories that are not already in a group", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const add = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Add a category"))[0];
+    await act(async () => { add.props.onClick(); });
+    const offered = tree.root.findAll((n) => n.type === "button").map((n) => instText(n));
+    // caps-beanies is ungrouped; sneakers and slides are members already.
+    expect(offered.some((t) => t.includes("Caps & Beanies"))).toBe(true);
+    expect(offered.filter((t) => /^Slides \d/.test(t.trim()))).toHaveLength(0);
+  });
+
+  it("marks a candidate whose sizes do not overlap the group's run", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const add = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Add a category"))[0];
+    await act(async () => { add.props.onClick(); });
+    // Caps & Beanies is one-size: it shares no size with 5.5 / 7 / 8.
+    const caps = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Caps & Beanies"))[0];
+    expect(instText(caps)).toContain("different sizes");
+  });
+
+  it("adding a member asks first and sends the live group with ONE field changed", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const add = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Add a category"))[0];
+    await act(async () => { add.props.onClick(); });
+    const caps = tree.root.findAll((n) => n.type === "button" && instText(n).includes("Caps & Beanies"))[0];
+    const asked = await withConfirm(true, async () => { await act(async () => { caps.props.onClick(); }); });
+    expect(asked[0]).toContain("Add Caps & Beanies");
+    const call = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.action === "setGroup" && !c.dryRun);
+    expect(call.group.memberCategoryKeys).toContain("caps-beanies");
+    expect(call.group.armed).toBe(false);                       // untouched
+    expect(call.group.policy).toEqual(CENSUS.groups["footwear-all"].policy);
+    expect(call.expectedBefore).toEqual(CENSUS.groupEntries[0].group);
+  });
+
+  it("a refused confirm writes nothing", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const remove = tree.root.findAll((n) => n.type === "button"
+      && n.props["aria-label"] === "Remove Slides from the group")[0];
+    await withConfirm(false, async () => { await act(async () => { remove.props.onClick(); }); });
+    expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setGroup" && !c.dryRun)).toBe(false);
+  });
+
+  it("removing the last member is refused rather than sent", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    // Both members removed one after the other: the second is the last one.
+    for (const label of ["Remove Sneakers from the group", "Remove Slides from the group"]) {
+      const btn = tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === label)[0];
+      await withConfirm(true, async () => { await act(async () => { btn.props.onClick(); }); });
+    }
+    const sent = callableMock.mock.calls.map((c) => c[0]).filter((c) => c?.action === "setGroup" && !c.dryRun);
+    expect(sent.every((c) => c.group.memberCategoryKeys.length > 0)).toBe(true);
+  });
+
+  it("arming is confirmed with what the next scan would ask for, and flips only `armed`", async () => {
+    const tree = await renderCard();
+    await openGroup(tree);
+    const arm = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Arm this group")[0];
+    const asked = await withConfirm(true, async () => { await act(async () => { arm.props.onClick(); }); });
+    expect(asked[0]).toContain("Arm Sneakers?");
+    const call = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.action === "setGroup" && !c.dryRun);
+    expect(call.group.armed).toBe(true);
+    expect(call.group.memberCategoryKeys).toEqual(CENSUS.groupEntries[0].group.memberCategoryKeys);
+    expect(call.group.policy).toEqual(CENSUS.groups["footwear-all"].policy);
+  });
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A PRODUCT OVERRIDE LANDS IN THE SAME HISTORY, WITH THE SAME ONE-TAP REVERT
+// ═════════════════════════════════════════════════════════════════════════════
+describe("product-target history", () => {
+  const openHistory = async (tree) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Caps & Beanies"))[0];
+    await act(async () => { row.props.onClick(); });
+    const btn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Policy history")[0];
+    await act(async () => { btn.props.onClick(); });
+  };
+  const withConfirm = async (answer, fn) => {
+    const had = "confirm" in globalThis.window;
+    const prev = globalThis.window.confirm;
+    const asked = [];
+    globalThis.window.confirm = (m) => { asked.push(m); return answer; };
+    try { await fn(); } finally { if (had) globalThis.window.confirm = prev; else delete globalThis.window.confirm; }
+    return asked;
+  };
+
+  it("shows the product and the shop it was overridden at", async () => {
+    const tree = await renderCard();
+    await openHistory(tree);
+    const t = textOf(tree);
+    expect(t).toContain("Black Cap");
+    expect(t).toContain("Hub 2");
+  });
+
+  it("reverts through the same action that made it, against what the entry LEFT", async () => {
+    LIVE_ROWS = { _: { target: 2, minQty: 1, source: "policy_target", prevRow: { target: 6, minQty: 3, source: "hand" } } };
+    const tree = await renderCard();
+    await openHistory(tree);
+    const row = tree.root.findAll((n) => n.type === "div" && instText(n).includes("Black Cap")
+      && instText(n).includes("Revert")).pop();
+    const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
+    await withConfirm(true, async () => { await act(async () => { revert.props.onClick(); }); });
+    const call = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.action === "setProductTargets");
+    expect(call.loc).toBe("hub2");
+    expect(call.pid).toBe("p9");
+    // the row that existed goes back exactly; the row that did not is removed
+    expect(call.rows).toEqual([{ sizeKey: "_", target: 6, minQty: 3 }]);
+    expect(call.remove).toEqual(["M"]);
+    // ── AND THE EXPECTATION IS WHAT THIS ENTRY LEFT BEHIND ────────────────
+    // Not the live row. Sampling live would accept exactly the write this check
+    // exists to refuse — a later edit, silently discarded by reverting an older
+    // entry on top of it.
+    expect(call.expected._).toEqual({ target: 2, minQty: 1, reorderPoint: null });
+    expect(call.expected.M).toEqual({ target: 4, minQty: 2, reorderPoint: null });
+  });
+
+  it("refuses an entry that does not record what it left behind", async () => {
+    // No entry like this exists — the after-state has been recorded since this
+    // shipped — and a revert that guessed at one would be the worst button on
+    // the card. It says so instead.
+    const stripped = { ...CENSUS, history: CENSUS.history.map((h) => (h.id === "h2" ? { ...h, after: undefined } : h)) };
+    CENSUS_OVERRIDE = stripped;
+    try {
+      const tree = await renderCard();
+      await openHistory(tree);
+      const row = tree.root.findAll((n) => n.type === "div" && instText(n).includes("Black Cap")
+        && instText(n).includes("Revert")).pop();
+      const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
+      await withConfirm(true, async () => { await act(async () => { revert.props.onClick(); }); });
+      expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setProductTargets")).toBe(false);
+      expect(textOf(tree)).toContain("cannot be put back safely");
+    } finally { CENSUS_OVERRIDE = null; }
+  });
+
+  it("a refused confirm reverts nothing", async () => {
+    LIVE_ROWS = {};
+    const tree = await renderCard();
+    await openHistory(tree);
+    const row = tree.root.findAll((n) => n.type === "div" && instText(n).includes("Black Cap")
+      && instText(n).includes("Revert")).pop();
+    const revert = row.findAll((n) => n.type === "button" && instText(n).trim() === "Revert")[0];
+    await withConfirm(false, async () => { await act(async () => { revert.props.onClick(); }); });
+    expect(callableMock.mock.calls.map((c) => c[0]).some((c) => c?.action === "setProductTargets")).toBe(false);
+  });
+});
+
+// ── THE ARMING CONFIRM CARRIES ONLY A PREVIEW THAT IS STILL TRUE ─────────────
+describe("arming a group quotes a fresh preview or none at all", () => {
+  it("omits the refill count when a preview lands AFTER the numbers changed", async () => {
+    const tree = await renderCard();
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Sneakers"))[0];
+    await act(async () => { row.props.onClick(); });
+    // ── THE RACE THIS GUARD IS FOR ─────────────────────────────────────────
+    // An edit clears the preview outright, so the only way a preview can be
+    // present AND stale is a response that lands after an edit. Held open on a
+    // gate, so that is exactly what happens here.
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    callableMock.mockImplementationOnce(async () => {
+      await gate;
+      return { data: { ok: true, dryRun: true, changes: [],
+        armModel: { totalRequests: 2176, totalUnits: 4000, cap: 75, perMember: [] } } };
+    });
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+
+    const armAndRead = async () => {
+      const had = "confirm" in globalThis.window;
+      const prev = globalThis.window.confirm;
+      const asked = [];
+      globalThis.window.confirm = (m) => { asked.push(m); return false; };
+      try {
+        const arm = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Arm this group")[0];
+        await act(async () => { arm.props.onClick(); });
+      } finally { if (had) globalThis.window.confirm = prev; else delete globalThis.window.confirm; }
+      return asked[0] || "";
+    };
+
+    // The owner types while it is still in flight…
+    const keep = tree.root.findAll((n) => n.type === "input" && /Keep$/.test(n.props["aria-label"] || ""))[0];
+    await act(async () => { keep.props.onChange({ target: { value: "6" } }); });
+    // …and the answer arrives, stamped with the numbers it was computed FROM.
+    await act(async () => { release(); await gate; });
+    const after = await armAndRead();
+    expect(after).toContain("Arm Sneakers?");
+    expect(after).not.toContain("2176");
+    expect(after).not.toMatch(/would ask for at most/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SOCCER JERSEYS — THE SCREEN IN THE OWNER'S SCREENSHOT, END TO END
+// ═════════════════════════════════════════════════════════════════════════════
+// 189 products, every one S to XXXL, no policy, 1,149 legacy rows. The shipped
+// screen chipped it "one size" and offered one general quantity per location;
+// that quantity, saved, would have armed NOTHING. Every claim this branch makes
+// about the defect is asserted here against that exact shape.
+describe("Soccer Jerseys", () => {
+  // ITS OWN CENSUS, not an extra row in the shared one: a fixture that reorders
+  // the main list changes which entry every other test opens, and a test that
+  // breaks its neighbours is a test nobody keeps.
+  const SOCCER_JERSEYS = {
+    key: "soccer-jerseys", label: "Soccer Jerseys", products: 189, units: 2025, perSize: false,
+    entry: null, effectiveEntry: null,
+    armed: [], armedEffective: [], policySource: null, groupKey: null, memberOfGroup: null,
+    carriage: { hub1: { carries: true, products: 1, units: 1 }, hub2: { carries: true, products: 126, units: 615 },
+      "marathon-pe": { carries: true, products: 60, units: 1409 }, trophy: { carries: false, products: 0, units: 0 } },
+    ownRowCells: 1149, ownRowProducts: 189,
+    sizeRun: ["S", "M", "L", "XL", "XXL", "XXXL"], sizeRunExtra: ["4XL"], sizeRunEmpty: false,
+    sizeRunOneSize: false, sizeRunFromRegistry: false,
+    imageUrl: null,
+  };
+
+  // The four live destinations, in the live order — Hub 1 included, because the
+  // screenshot shows it and because the first "Stock here" on that screen is
+  // its button.
+  beforeEach(() => {
+    CENSUS_OVERRIDE = { ...CENSUS, destinations: ["hub1", "hub2", "marathon-pe", "trophy"],
+      categories: [SOCCER_JERSEYS], groupEntries: [] };
+  });
+  afterEach(() => { CENSUS_OVERRIDE = null; });
+
+  const open = async (tree) => {
+    const row = tree.root.findAll((n) => n.type === "button" && n.props.className === "ep-cat"
+      && instText(n).includes("Soccer Jerseys"))[0];
+    expect(row, "Soccer Jerseys must be on the list").toBeTruthy();
+    await act(async () => { row.props.onClick(); });
+  };
+
+  it("is chipped PER SIZE, not 'one size' — the chip reads the category, not the last policy", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const t = textOf(tree);
+    expect(t).toContain("per size");
+    expect(t).not.toContain("one size");
+  });
+
+  it("arming a location offers SIX size fields, not one general quantity", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const labels = tree.root.findAll((n) => n.type === "input")
+      .map((n) => n.props["aria-label"]).filter((l) => /Keep$/.test(l || ""));
+    expect(labels).toEqual([
+      "Hub 1 S Keep", "Hub 1 M Keep", "Hub 1 L Keep", "Hub 1 XL Keep", "Hub 1 XXL Keep", "Hub 1 XXXL Keep",
+    ]);
+    // …and the single general quantity that was the only thing on offer is gone
+    expect(labels).not.toContain("Hub 1 Keep");
+  });
+
+  it("and the saved policy carries perSize:true with a row per size — without it the entry arms NOTHING", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const everySize = tree.root.findAll((n) => n.type === "input"
+      && n.props["aria-label"] === "Hub 1 — set every size")[0];
+    await act(async () => { everySize.props.onChange({ target: { value: "2" } }); });
+    callableMock.mockImplementationOnce(async () => ({ data: { ok: true, dryRun: true, changes: [],
+      preview: { before: {}, after: { totalRequests: 3, totalUnits: 6, centralOnHand: 99, legs: [], overriddenProducts: 0, cap: 75 } } } }));
+    const previewBtn = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Preview")[0];
+    await act(async () => { previewBtn.props.onClick(); });
+    const dry = callableMock.mock.calls.map((c) => c[0]).find((c) => c?.dryRun && c?.categoryKey === "soccer-jerseys");
+    expect(dry.policy.perSize).toBe(true);
+    expect(Object.keys(dry.policy.hub1.sizes)).toEqual(["S", "M", "L", "XL", "XXL", "XXXL"]);
+    expect(Object.values(dry.policy.hub1.sizes).every((r) => r.target === 2)).toBe(true);
+  });
+
+  it("says 4XL is outside the run rather than pretending it is not there", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    expect(textOf(tree)).toContain("outside the run");
+  });
+
+  it("never tells the owner its run is broken — it has one", async () => {
+    const tree = await renderCard();
+    await open(tree);
+    expect(textOf(tree)).not.toContain("No size run can be worked out");
   });
 });

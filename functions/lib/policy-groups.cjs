@@ -237,10 +237,34 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
   // EMPTY offered run, and every real cell goes to `extra` where it belongs: a
   // legacy row, visible, edited through the explicit-rows path.
   const oneSize = !!registered && (registered.sizeMode === "one" || taxSizes.length === 0);
-  const offered = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);
+  const derived = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);
   const extra = oneSize ? union : (taxSizes.length ? union.filter((s) => !taxSizes.includes(s)) : []);
+  // ── A CATEGORY WITH NO PRODUCTS YET STILL HAS A RUN: THE REGISTRY'S ───────
+  // kids-shoes is registered 26-33 and holds ZERO products live (measured
+  // 2026-08-28), so the union is empty and the derived run is empty with it.
+  // Under the old answer that was a STOP, and the category could never be given
+  // numbers — including the numbers somebody would want in place BEFORE the
+  // first delivery lands. Four more categories are in the same position (boots,
+  // loafers, running-shoes, jeans).
+  //
+  // It is safe to offer, and safe is not an assumption here: a per-size policy
+  // resolves nothing for a size no product declares (categoryPolicyTarget's
+  // productSizes check), so numbers on a size that does not exist yet cannot
+  // raise a single request. They start working the day a product does.
+  //
+  // The fallback applies ONLY where live data is silent — never to narrow or
+  // widen a run the catalogue actually has, and never to a one-size category
+  // (its taxSizes are empty, so there is nothing to fall back to).
+  const fromRegistry = derived.length === 0 && !oneSize && taxSizes.length > 0;
+  const offered = fromRegistry ? taxSizes : derived;
   return {
     sizes: offered,
+    // Which of the two the run came from, so the editor can say "no products
+    // yet — these are the registered sizes" instead of implying live evidence
+    // it does not have.
+    fromRegistry,
+    registrySizes: taxSizes,
+    derivedSizes: derived,
     // The registry calls this category one-size. Reported rather than folded
     // into `empty`, because the two need different sentences: "this category has
     // no sizes" and "this category's sizes cannot be worked out" are different
@@ -252,6 +276,8 @@ function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, l
     extra,
     union,
     empty: offered.length === 0,
+    // The old meaning, kept for anything that needs "live data says nothing".
+    derivedEmpty: derived.length === 0,
     products: pids.length,
     sources: {
       declared: [...declared].sort(bySizeRank),
@@ -294,8 +320,21 @@ function sizeRunForGroup({ products, stock, targets, taxonomy, memberCategoryKey
   const carriedBy = {};
   for (const m of members) {
     const run = sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey: m, locations });
-    byMember[m] = { sizes: run.sizes, empty: run.empty, oneSize: run.oneSize, products: run.products };
-    for (const s of run.sizes) (carriedBy[s] = carriedBy[s] || []).push(m);
+    // ── A GROUP TAKES THE DERIVED RUN, NEVER THE REGISTRY FALLBACK ───────────
+    // A category's OWN editor may offer its registered sizes when the catalogue
+    // is still silent — the owner is deliberately arming that one category and
+    // a size no product declares resolves nothing anyway. A GROUP is different:
+    // pulling a product-less member's registered run into the union widens what
+    // every OTHER member's numbers speak for, on the strength of a category
+    // holding nothing. kids-shoes (registered 26-33, zero products) would drag
+    // eight sizes into a footwear group whose real run is 3-13.
+    //
+    // That is the "empty members do not shrink the union, and do not stretch it
+    // either" rule, and it is why kids-shoes is armed as its own category
+    // rather than inside the adult group.
+    const sizes = run.derivedSizes;
+    byMember[m] = { sizes, empty: sizes.length === 0, oneSize: run.oneSize, products: run.products };
+    for (const s of sizes) (carriedBy[s] = carriedBy[s] || []).push(m);
   }
   const membersWithRun = members.filter((m) => byMember[m].sizes.length);
   const sizes = Object.keys(carriedBy).sort(bySizeRank);

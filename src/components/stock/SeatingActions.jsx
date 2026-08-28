@@ -23,6 +23,7 @@ import { nextScanAt } from "./enginePolicyCore";
 import { labelFor } from "./locations";
 import { serverNowMs } from "../../utils/serverTime";
 import { SizeFactChip, CHIP_GRID } from "./healthWidgets";
+import ProductTargetEditor from "./ProductTargetEditor";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGray, bRed, bGreen, bGhost } from "./ui";
 
 // `locations` is the CARRIAGE CONTEXT — every location that can hold a cell,
@@ -315,6 +316,26 @@ export default function SeatingActions({ seat, product, label, registry, locatio
         <div style={{ fontSize: ".75rem", color: AMBER, marginTop: ".6rem" }}>
           {undo.stuck.length} {undo.stuck.length === 1 ? "row has" : "rows have"} no record to restore — left as they are.
         </div>
+      )}
+
+      {/* ── THE TARGETS THEMSELVES ────────────────────────────────────────────
+          Switch off and Move answer "does this shop carry this line". This
+          answers "how many, of which size" — the question the card could not
+          ask before, and the reason a soccer jersey needed five separate
+          decisions and had nowhere to record them. It is hidden while a
+          confirm is up: two questions on screen at once is how the wrong one
+          gets answered, and it is not rendered at all for a viewer who may not
+          write a target row — an editor whose every field is dead is worse than
+          no editor, and the bar above has already said why. */}
+      {!confirm && canSwitchOff && (
+        <ProductTargetEditor
+          seat={seat}
+          ctx={ctx}
+          label={label}
+          canWrite={canSwitchOff}
+          onDone={onDone}
+          onFail={onFail}
+        />
       )}
     </div>
   );
