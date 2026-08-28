@@ -83,6 +83,9 @@ test("writes one row per size, each with its own numbers", async () => {
   assert.equal(rows.M.source, OVERRIDE_SOURCE);
   assert.equal(rows.M.prevAbsent, true);
   assert.equal(rows.M.setBy, OWNER);
+  // THE SERVER'S CLOCK, never the caller's. Every till and every browser on
+  // this estate disagrees with the database about the time.
+  assert.equal(rows.M.setAt, new Date(NOW).toISOString());
 });
 
 // ── target 0 IS THE OFF SWITCH AND MUST BE ACCEPTED (M-ZERO) ──────────────────
@@ -209,6 +212,46 @@ test("a row that changed underneath is refused, per size, and nothing is written
   assert.equal(rowsAt(db).M.target, 6);
 });
 
+// The EARLY check is what makes a drift refusal cost nothing: it fires before
+// the history entry, before the preview's reads, before anything is written
+// anywhere. Asserting only that the call is refused proves nothing about it —
+// the late check would refuse it too, one history entry later. (M-DRIFT-ROW.)
+test("the drift refusal fires BEFORE any history entry is written", async () => {
+  const db = makeFakeDb(world({ stock_targets: { trophy: { j1: { M: { target: 6, minQty: 3, source: "hand" } } } } }));
+  await rejects(() => call(db, base({
+    rows: [{ sizeKey: "M", target: 4, minQty: 2 }],
+    expected: { M: { target: 2, minQty: 1, reorderPoint: null } },
+  })), "failed-precondition");
+  assert.equal(history(db).length, 0, "a refusal this cheap must leave no trace at all");
+});
+
+// And the LATE one is what actually protects the write: the preview above
+// issues live reads and takes real time, and a concurrent write landing in that
+// window would otherwise be reverted with no error and no trace. Proven by
+// changing the row AFTER the early check has read it. (M-DRIFT-LATE.)
+test("a row that changes between the check and the write aborts, and says so in the history", async () => {
+  const db = makeFakeDb(world({ stock_targets: { trophy: { j1: { M: { target: 6, minQty: 3, source: "hand" } } } } }));
+  const path = "stock_targets/trophy/j1/M";
+  const realRef = db.ref.bind(db);
+  let reads = 0;
+  db.ref = (p) => {
+    if (p === path) {
+      reads += 1;
+      // The second read of this row is the re-check immediately before the
+      // mutation. Somebody else's write lands in that window.
+      if (reads === 2) db.state.root.stock_targets.trophy.j1.M = { target: 99, minQty: 9, source: "someone-else" };
+    }
+    return realRef(p);
+  };
+  await rejects(() => call(db, base({
+    rows: [{ sizeKey: "M", target: 4, minQty: 2 }],
+    expected: { M: { target: 6, minQty: 3, reorderPoint: null } },
+  })), "failed-precondition");
+  assert.equal(readAt(db.state.root, path).target, 99, "nothing was written over it");
+  assert.equal(history(db)[0].status, "aborted_on_drift");
+  assert.equal(history(db)[0].driftedSize, "M");
+});
+
 test("expected is required, and must name every size the call touches", async () => {
   const db = makeFakeDb(world());
   await rejects(() => call(db, base({ rows: [{ sizeKey: "S", target: 1, minQty: 1 }] })), "invalid-argument");
@@ -276,4 +319,64 @@ test("a caller without engine_policy is refused before anything is read", async 
   await rejects(() => call(db, base({ rows: [{ sizeKey: "S", target: 1, minQty: 1 }], expected: { S: null } }),
     { callerEmail: "someone@else.com", callerUid: "u2" }), "permission-denied");
   assert.deepEqual(rowsAt(db), {});
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ARMING KIDS SHOES WITH ADULT NUMBERS ARMS NOTHING — PROVEN AGAINST THE ENGINE
+// ═════════════════════════════════════════════════════════════════════════════
+// This is the reason kids-shoes is armed as its own category and never inside
+// the adult footwear group. The adult run is 3-13; the kids run is 26-33; they
+// share not one size. A group is ONE set of numbers keyed by size, so a kids
+// product under adult numbers resolves nothing at all — silently, with an armed
+// chip on the screen saying it is managed.
+const { resolveTarget } = require("../lib/refill-engine.cjs");
+
+test("adult numbers on a kids-shoes product resolve NOTHING, size by size", () => {
+  const products = {
+    kid: { name: "Kids Runner", categoryKey: "kids-shoes", category: "Footwear", sizes: ["26", "27", "28"] },
+    adult: { name: "Runner", categoryKey: "sneakers", category: "Footwear", sizes: ["7", "8"] },
+  };
+  const stock = { hub2: { kid: { 26: { qty: 1 }, 27: { qty: 1 } }, adult: { 7: { qty: 1 } } } };
+  const adultRun = { 3: { target: 2, minQty: 1 }, 7: { target: 3, minQty: 2 }, 8: { target: 3, minQty: 2 },
+    11: { target: 2, minQty: 1 } };
+  const config = {
+    mode: { hub2: "live" },
+    policyGroups: { "footwear-all": {
+      label: "Sneakers", armed: true,
+      memberCategoryKeys: ["kids-shoes", "sneakers"],
+      policy: { perSize: true, hub2: { sizes: adultRun } },
+    } },
+  };
+  const ctx = { targets: {}, config, products, stock };
+  // The adult member is armed…
+  assert.equal(resolveTarget(ctx, "hub2", "adult", "7").target, 3);
+  // …and every kids size resolves nothing, from the same armed group.
+  for (const size of ["26", "27", "28"]) {
+    assert.equal(resolveTarget(ctx, "hub2", "kid", size), null, `size ${size} must resolve nothing`);
+  }
+});
+
+test("its OWN numbers, on its OWN run, arm it", () => {
+  const products = { kid: { name: "Kids Runner", categoryKey: "kids-shoes", category: "Footwear", sizes: ["26", "27"] } };
+  const stock = { hub2: { kid: { 26: { qty: 1 }, 27: { qty: 0 } } } };
+  const config = { mode: { hub2: "live" }, categoryPolicy: { "kids-shoes": { perSize: true, hub2: { sizes: {
+    26: { target: 2, minQty: 1 }, 27: { target: 2, minQty: 1 },
+  } } } } };
+  const ctx = { targets: {}, config, products, stock };
+  assert.equal(resolveTarget(ctx, "hub2", "kid", "26").target, 2);
+  // 27 has no units anywhere: the dead-size rule resolves an explicit stop, and
+  // arms itself the day real units arrive. Not "nothing" — a decision.
+  assert.equal(resolveTarget(ctx, "hub2", "kid", "27").target, 0);
+});
+
+// ── AND A PER-PRODUCT ROW STILL BEATS THE GROUP ──────────────────────────────
+test("an explicit row beats an armed group, whatever the number", () => {
+  const products = { adult: { name: "Runner", categoryKey: "sneakers", category: "Footwear", sizes: ["7"] } };
+  const stock = { hub2: { adult: { 7: { qty: 1 } } } };
+  const config = { mode: { hub2: "live" }, policyGroups: { g: { label: "F", armed: true,
+    memberCategoryKeys: ["sneakers"], policy: { perSize: true, hub2: { sizes: { 7: { target: 3, minQty: 2 } } } } } } };
+  assert.equal(resolveTarget({ targets: { hub2: { adult: { 7: { target: 9, minQty: 5 } } } }, config, products, stock },
+    "hub2", "adult", "7").target, 9);
+  assert.equal(resolveTarget({ targets: { hub2: { adult: { 7: { target: 0, minQty: 0 } } } }, config, products, stock },
+    "hub2", "adult", "7").target, 0);
 });

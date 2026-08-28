@@ -245,17 +245,33 @@ test("a per-size map on a one-size category is refused", async () => {
   "invalid-argument", /one-size category/);
 });
 
-test("a sized category with no derivable run is a STOP, not a guessed list", () => {
-  // Distinct from the one-size case above, and deliberately a different error
-  // class: one-size is a fact about the category, an underivable run is a fault.
+test("a sized category with no run ANYWHERE is a STOP, not a guessed list", () => {
+  // Three different answers, and conflating any two of them is a bug:
+  //   one-size            a fact about the category — no sizes to set
+  //   registered-only     the catalogue is silent, the REGISTRY is not: offer
+  //                       its sizes (a policy on a size no product declares
+  //                       resolves nothing, so it cannot misfire, and it means
+  //                       kids-shoes can be set up before its first delivery)
+  //   nothing at all      a fault — no registry, no products, no cells, no rows
   const { sizeRunForCategory } = require("../lib/policy-groups.cjs");
-  const r = sizeRunForCategory({
+  const registered = sizeRunForCategory({
     products: { x: { categoryKey: "ghosts", sizes: [] } }, stock: {}, targets: {},
     taxonomy: { cats: { ghosts: { sizeMode: "list", sizes: ["S", "M"] } } },
     categoryKey: "ghosts", locations: ["hub2"],
   });
-  assert.equal(r.empty, true);
-  assert.equal(r.oneSize, false);
+  assert.deepEqual(registered.sizes, ["S", "M"]);
+  assert.equal(registered.fromRegistry, true);
+  assert.equal(registered.derivedEmpty, true, "the live answer is still reported honestly");
+  assert.equal(registered.empty, false);
+  assert.equal(registered.oneSize, false);
+
+  const nothing = sizeRunForCategory({
+    products: { x: { categoryKey: "ghosts", sizes: [] } }, stock: {}, targets: {},
+    taxonomy: { cats: {} }, categoryKey: "ghosts", locations: ["hub2"],
+  });
+  assert.equal(nothing.empty, true, "no registry either — there is nothing to offer");
+  assert.equal(nothing.oneSize, false);
+  assert.equal(nothing.fromRegistry, false);
 });
 
 test("the uniform shape still writes exactly as it did", async () => {

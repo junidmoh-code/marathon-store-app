@@ -203,8 +203,8 @@ const MUTATIONS = [
     id: "M-SIZE-RUN",
     guard: "The offered size run is registry ∩ live data — the raw union puts garment letters on sneakers",
     file: GROUPS,
-    from: `  const offered = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);`,
-    to: `  const offered = union;`,
+    from: `  const derived = oneSize ? [] : (taxSizes.length ? union.filter((s) => taxSizes.includes(s)) : union);`,
+    to: `  const derived = union;`,
     nodeTests: CORE_TESTS,
   },
 

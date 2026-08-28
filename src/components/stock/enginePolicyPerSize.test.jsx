@@ -899,6 +899,25 @@ describe("arming a sized category offers its OWN size run", () => {
     expect(Object.values(dry.policy.hub2.sizes).every((r) => r.target === 2)).toBe(true);
   });
 
+  it("offers the size-by-size switch on the RUN, not on what was saved last time", async () => {
+    // sneakers has a run and NO stored entry at all (perSize is false on the
+    // census row). The control has to be there anyway — that gate was the
+    // defect. (M-PERSIZE-GATE.)
+    const tree = await renderCard();
+    await openMember(tree);
+    const stockHere = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Stock here")[0];
+    await act(async () => { stockHere.props.onClick(); });
+    const toggle = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "One number")[0];
+    expect(toggle, "a sized category must be able to switch shape").toBeTruthy();
+    // …and back again, from one number to size by size.
+    await act(async () => { toggle.props.onClick(); });
+    expect(tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 Keep")).toHaveLength(1);
+    const back = tree.root.findAll((n) => n.type === "button" && instText(n).trim() === "Size by size")[0];
+    expect(back, "and back to size by size").toBeTruthy();
+    await act(async () => { back.props.onClick(); });
+    expect(tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Hub 2 7 Keep")).toHaveLength(1);
+  });
+
   it("a ONE-SIZE category keeps ONE field and never grows a fake size grid", async () => {
     const tree = await renderCard();
     await openFirstIn(tree, "Caps & Beanies");
