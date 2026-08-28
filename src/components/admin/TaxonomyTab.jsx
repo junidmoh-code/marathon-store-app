@@ -157,7 +157,11 @@ function RunCard({ runKey, run, runs, usedBy, live }) {
         if (!target) return undefined;                        // unknown run vanished — abort
         const v = validateNewSize(resolved, runKey, size);
         if (!v.ok) return undefined;                          // raced duplicate — abort
+        // Start from the RAW current value, then overlay the resolved runs —
+        // so a half-written or blanked console child under /sizeRuns survives
+        // the write instead of being silently deleted by the node replace.
         return {
+          ...(cur && typeof cur === "object" ? cur : {}),
           ...Object.fromEntries(Object.entries(resolved).map(([k, r]) => [k, { key: k, label: r.label || k, sizes: r.sizes }])),
           [runKey]: { key: runKey, label: target.label || runKey, sizes: appendSizeToRun(target.sizes, v.size) },
         };

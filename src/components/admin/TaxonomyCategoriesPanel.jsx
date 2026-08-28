@@ -194,10 +194,13 @@ function CatRow({ cat, runs, live }) {
   // Reassignment stays WITHIN the size family: offering the apparel letters to
   // a UK-sized shoe category would let one tap change what every future
   // product of that category can be received in — nonsensically. The current
-  // run is always offerable (so Save with no change never blocks).
+  // run is always offerable (so Save with no change never blocks), and a
+  // category whose own sizes are MIXED or empty (a custom console shape with
+  // no family) gets every run offered — otherwise it could never be brought
+  // onto a run through this screen at all.
   const family = sizeFamily(sizesForCat({ sizeRuns: runs }, cat));
   const offerableRuns = Object.values(runs).filter(
-    (r) => r.key === cat.sizeRunKey || sizeFamily(r.sizes) === family,
+    (r) => r.key === cat.sizeRunKey || family === "mixed" || sizeFamily(r.sizes) === family,
   );
 
   const save = async () => {
