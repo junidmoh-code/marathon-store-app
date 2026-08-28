@@ -36,6 +36,20 @@ function fakeAuth(accounts) {
   };
 }
 
+// A fake RTDB whose permFlags leaf can be moved between calls — the trigger
+// re-reads it rather than trusting its event, so the tests drive the DATABASE,
+// not the payload.
+function fakeDb(flags = {}) {
+  const state = new Map(Object.entries(flags));
+  return {
+    set(uid, v) { state.set(uid, v); },
+    ref(path) {
+      const uid = path.split("/")[1];
+      return { async once() { const v = state.get(uid); return { val: () => (v === undefined ? null : v) }; } };
+    },
+  };
+}
+
 // EXACTLY what storage.rules asks of the token: `request.auth.token.card_recon == true`.
 const storageWouldAllow = (claims) => (claims || {})[CLAIM] === true;
 
@@ -50,7 +64,7 @@ test("only the boolean true is a grant", () => {
 // ── GRANTED READS ───────────────────────────────────────────────────────────
 test("granted: the claim lands and Storage would allow the read", async () => {
   const auth = fakeAuth({ u1: { customClaims: null } });
-  const res = await syncClaimFromFlag({ auth, uid: "u1", after: true });
+  const res = await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
   assert.equal(res.changed, true);
   assert.equal(res.granted, true);
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), true);
@@ -58,8 +72,8 @@ test("granted: the claim lands and Storage would allow the read", async () => {
 
 test("granted twice is granted once — no pointless token churn", async () => {
   const auth = fakeAuth({ u1: { customClaims: null } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: true });
-  const again = await syncClaimFromFlag({ auth, uid: "u1", after: true });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
+  const again = await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
   assert.equal(again.changed, false);
   assert.equal(auth.writes(), 1);
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), true);
@@ -68,7 +82,7 @@ test("granted twice is granted once — no pointless token churn", async () => {
 // ── REVOKED DOES NOT ────────────────────────────────────────────────────────
 test("revoked: the claim KEY is removed, not set to false", async () => {
   const auth = fakeAuth({ u1: { customClaims: { [CLAIM]: true } } });
-  const res = await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  const res = await syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" });
   assert.equal(res.changed, true);
   assert.equal(res.granted, false);
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
@@ -79,37 +93,75 @@ test("revoked: the claim KEY is removed, not set to false", async () => {
 
 test("revoked by writing false, not by deleting the flag", async () => {
   const auth = fakeAuth({ u1: { customClaims: { [CLAIM]: true } } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: false });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: false }), uid: "u1" });
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
 });
 
 test("REVOKE-THEN-IMMEDIATE-READ: nothing in between can leave the claim standing", async () => {
   const auth = fakeAuth({ u1: { customClaims: null } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: true });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), true);
-  await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" });
   // The very next question the storage rule asks — no refresh window on the
   // SERVER side; the account's claim is already gone.
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
   // And a retried/replayed revoke stays revoked rather than toggling.
-  const replay = await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  const replay = await syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" });
   assert.equal(replay.changed, false);
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
 });
 
-test("an out-of-order replay of the OLD grant event still converges on the flag it carries", async () => {
-  // The reconciler writes the state the event carries; the trigger is scoped to
-  // the leaf and the last write wins, exactly as the flag does.
+test("A RETRIED GRANT LANDING AFTER A REVOKE DOES NOT RE-GRANT — the race retry makes likelier", async () => {
+  // The sequence that mattered enough to change the design (Sonnet architect
+  // review, 2026-08-28). retry:true exists so a revoke is never dropped, and it
+  // is exactly what makes a stale grant arrive late:
+  //   grant fires → the Auth call fails transiently → queued for retry
+  //   revoke fires → succeeds → claim removed
+  //   the retried GRANT finally runs → and must NOT put the claim back.
+  // Only re-reading the flag makes that true; an implementation that mirrored
+  // the event's own `after` value would re-grant here and nothing would ever
+  // correct it, because no further write to the flag happens.
+  const auth = fakeAuth({ u1: { customClaims: null } });
+  const db = fakeDb({ u1: true });          // granted
+
+  // The grant's first attempt dies inside Auth, after reading the flag.
+  const realSet = auth.setCustomUserClaims.bind(auth);
+  auth.setCustomUserClaims = async () => { throw Object.assign(new Error("transient"), { code: "auth/internal-error" }); };
+  await assert.rejects(() => syncClaimFromFlag({ auth, db, uid: "u1" }), /transient/);
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
+
+  // The owner revokes; that write's own handler runs and succeeds.
+  auth.setCustomUserClaims = realSet;
+  db.set("u1", null);
+  await syncClaimFromFlag({ auth, db, uid: "u1" });
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
+
+  // NOW the retried grant runs. It carries `after: true`; the flag says null.
+  const retried = await syncClaimFromFlag({ auth, db, uid: "u1" });
+  assert.equal(retried.granted, false, "the retried grant must mirror the FLAG, not its own event");
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
+});
+
+test("a handler that wakes on a stale revoke still mirrors a flag that says granted", async () => {
+  // The mirror image, and the reason this is convergence rather than
+  // last-writer-wins: a late REVOKE event must not remove a claim the owner has
+  // since re-granted. Whoever wakes last reads the truth.
+  const auth = fakeAuth({ u1: { customClaims: null } });
+  const db = fakeDb({ u1: true });
+  await syncClaimFromFlag({ auth, db, uid: "u1" });         // stale revoke event, flag says granted
+  assert.equal(storageWouldAllow(auth.claimsOf("u1")), true);
+});
+
+test("a missing flag node reads as revoked, never as absent-so-leave-alone", async () => {
   const auth = fakeAuth({ u1: { customClaims: { [CLAIM]: true } } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: null });
-  await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  await syncClaimFromFlag({ auth, db: fakeDb({}), uid: "u1" }); // no node at all
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
 });
 
 // ── NEVER-GRANTED DOES NOT ──────────────────────────────────────────────────
 test("never granted: no claim is ever written and Storage refuses", async () => {
   const auth = fakeAuth({ u2: { customClaims: null } });
-  const res = await syncClaimFromFlag({ auth, uid: "u2", after: null });
+  const res = await syncClaimFromFlag({ auth, db: fakeDb({ u2: null }), uid: "u2" });
   assert.equal(res.changed, false);
   assert.equal(auth.writes(), 0);
   assert.equal(storageWouldAllow(auth.claimsOf("u2")), false);
@@ -117,7 +169,7 @@ test("never granted: no claim is ever written and Storage refuses", async () => 
 
 test("a staff account with OTHER claims and no card_recon is left completely alone", async () => {
   const auth = fakeAuth({ u3: { customClaims: { someOtherThing: true } } });
-  await syncClaimFromFlag({ auth, uid: "u3", after: null });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u3: null }), uid: "u3" });
   assert.equal(auth.writes(), 0);
   assert.deepEqual(auth.claimsOf("u3"), { someOtherThing: true });
 });
@@ -125,25 +177,25 @@ test("a staff account with OTHER claims and no card_recon is left completely alo
 // ── OTHER CLAIMS SURVIVE ────────────────────────────────────────────────────
 test("granting preserves every other claim on the account", async () => {
   const auth = fakeAuth({ u1: { customClaims: { posRole: "cashier", admin: true } } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: true });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
   assert.deepEqual(auth.claimsOf("u1"), { posRole: "cashier", admin: true, [CLAIM]: true });
 });
 
 test("revoking removes ONLY card_recon", async () => {
   const auth = fakeAuth({ u1: { customClaims: { posRole: "cashier", [CLAIM]: true } } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" });
   assert.deepEqual(auth.claimsOf("u1"), { posRole: "cashier" });
 });
 
 test("revoking the LAST claim clears the claims object rather than leaving an empty one", async () => {
   const auth = fakeAuth({ u1: { customClaims: { [CLAIM]: true } } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" });
   assert.equal(auth.claimsOf("u1"), null);
 });
 
 test("a legacy card_recon:false claim is cleaned up, not mistaken for a grant", async () => {
   const auth = fakeAuth({ u1: { customClaims: { [CLAIM]: false, posRole: "x" } } });
-  const res = await syncClaimFromFlag({ auth, uid: "u1", after: null });
+  const res = await syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" });
   assert.equal(res.changed, true);          // the key was present; it is now gone
   assert.deepEqual(auth.claimsOf("u1"), { posRole: "x" });
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), false);
@@ -151,14 +203,14 @@ test("a legacy card_recon:false claim is cleaned up, not mistaken for a grant", 
 
 test("a legacy card_recon:false claim is REPAIRED to true when the flag says granted", async () => {
   const auth = fakeAuth({ u1: { customClaims: { [CLAIM]: false } } });
-  await syncClaimFromFlag({ auth, uid: "u1", after: true });
+  await syncClaimFromFlag({ auth, db: fakeDb({ u1: true }), uid: "u1" });
   assert.equal(storageWouldAllow(auth.claimsOf("u1")), true);
 });
 
 // ── A DELETED ACCOUNT ───────────────────────────────────────────────────────
 test("a deleted account is a completed revoke, not a crash", async () => {
   const auth = fakeAuth({});
-  const res = await syncClaimFromFlag({ auth, uid: "gone", after: null });
+  const res = await syncClaimFromFlag({ auth, db: fakeDb({ gone: null }), uid: "gone" });
   assert.equal(res.missing, true);
   assert.equal(res.changed, false);
 });
@@ -169,7 +221,7 @@ test("any OTHER auth error propagates, so the trigger retries instead of losing 
     async setCustomUserClaims() { throw new Error("must not be reached"); },
   };
   await assert.rejects(
-    () => syncClaimFromFlag({ auth, uid: "u1", after: null }),
+    () => syncClaimFromFlag({ auth, db: fakeDb({ u1: null }), uid: "u1" }),
     /backend down/,
   );
 });

@@ -193,3 +193,56 @@ Firebase Auth custom claim** and the Storage rule reads that claim.
   ID token for up to an hour. `admin.auth().revokeRefreshTokens(uid)` closes
   that too, at the cost of signing the account out of every device mid-shift;
   it is deliberately not done automatically.
+
+### The trigger re-reads the flag; it never trusts its own event
+
+The obvious handler mirrors `event.data.after.val()`, and it is wrong in the
+one direction that matters. RTDB triggers carry no ordering guarantee between
+write events, and `retry: true` — which exists so a revoke is never dropped —
+makes late delivery *more* likely:
+
+```
+grant fires  → the Auth call fails transiently → queued for retry
+revoke fires → succeeds immediately → claim removed        ✔
+the retried GRANT finally runs → re-writes card_recon:true ✘   and nothing corrects it
+```
+
+So the handler reads `users/{uid}/permFlags/card_recon` at execution time. The
+event is a wake-up, not a payload. Every delivery order then converges, because
+the last write to the flag always fires a handler that reads the final value.
+
+### No bearer links: the photos are FETCHED, never linked
+
+`getDownloadURL()` is the obvious way to show these and it quietly undoes the
+whole gate. It returns a `…?alt=media&token=…` URL, and that token is a **bearer
+credential**: every later fetch of it is served *without consulting Security
+Rules at all*. Once a permitted viewer opens a batch's evidence panel the URLs
+are in their history, their cache and anywhere they paste them — and revoking
+the permission, refreshing the token, even `revokeRefreshTokens`, none of it
+invalidates a URL already issued. Only deleting the object or rotating its
+download-token metadata does, and nothing does that on revoke.
+
+The failure that buys: an investigator opens the batch that implicates them,
+keeps the URL, has their permission pulled that afternoon, and reads the masked
+PANs and auth codes that evening anyway.
+
+So the POS half uses `getBlob()` — an authenticated GET with rules evaluated on
+**every** request — and renders the result as an object URL, which is local to
+that document and dies with it. A test refuses `getDownloadURL` anywhere under
+`src/reports/cardrecon/`. This needs the bucket's CORS to allow the POS origin;
+the config was widened on 2026-08-28 (additively — every previous origin kept)
+and backed up to `storage-cors-backup-20260828.json`. Without CORS the fetch
+fails and is reported like any other refusal, which is fail-closed.
+
+### Known limits
+
+- The cross-repo contract test is a **point-in-time audit** pinned as a comment
+  (`36bd1df`). It catches renames on *this* side. It cannot catch the POS half
+  starting to read a field this side does not write — re-audit when that half
+  changes.
+- `reconcileClaim` is a read-modify-write on custom claims with no
+  compare-and-swap. `syncCardReconClaim` is currently the ONLY writer of custom
+  claims in either app, which is what makes it safe. A second claim-mirroring
+  feature must coordinate through this module or add a CAS.
+- The backfill script is therefore also the standing drift check, not only a
+  one-time bootstrap.

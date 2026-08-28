@@ -153,6 +153,49 @@ test("CONTRACT: the record carries the store+tid pair the outstanding sweep keys
   assert.ok(Number.isFinite(r.slip.closedAt));
 });
 
+// ── Corrections: the revision suffix records, end to end ───────────────────
+test("CONTRACT: a correction record carries what latestRevisions picks the winner by", () => {
+  // A correction lands BESIDE the original at {batchNo}-r2 carrying `supersedes`;
+  // POS's latestRevisions groups by batchNo and takes the highest `revision`.
+  // The pieces that decision needs are batchNo (same on both), revision (higher
+  // on the correction) and batchKey — and crucially the correction may carry a
+  // DIFFERENT slip.closedAt, since a misread date is exactly what a correction
+  // exists to fix. That is why useCardRecon completes the revision set with a
+  // separate equalTo(batchNo) fetch instead of trusting the closedAt range.
+  const original = record();
+  const corrected = record({
+    batchKey: "494-r2", revision: 2, supersedes: "494",
+    extraction: { ...EXTRACTION, closedAt: EXTRACTION.closedAt + 24 * 60 * 60 * 1000 },
+  });
+
+  assert.equal(original.batchNo, corrected.batchNo, "both revisions must group under one batchNo");
+  assert.equal(typeof corrected.batchNo, "number");
+  assert.equal(corrected.revision, 2);
+  assert.ok(corrected.revision > original.revision, "the correction must win on revision, not on order");
+  assert.equal(corrected.batchKey, "494-r2");
+  assert.equal(corrected.supersedes, "494");
+  assert.equal(original.supersedes, null);      // RTDB drops it; POS reads absent fine
+  // The moved window is the whole reason for the second fetch.
+  assert.notEqual(corrected.slip.closedAt, original.slip.closedAt);
+
+  // Run POS's own winner rule over the pair, verbatim (batchData.latestRevisions):
+  // group by batchNo, keep the highest revision, default a missing revision to 1.
+  const node = { "494": original, "494-r2": corrected };
+  const byBatchNo = new Map();
+  for (const [batchKey, rec] of Object.entries(node)) {
+    const batchNo = Number(rec.batchNo);
+    const revision = Number.isInteger(rec.revision) ? rec.revision : 1;
+    const entry = byBatchNo.get(batchNo) ?? { best: null, count: 0 };
+    entry.count += 1;
+    if (!entry.best || revision > entry.best.revision) entry.best = { ...rec, batchKey, revision };
+    byBatchNo.set(batchNo, entry);
+  }
+  const [{ best, count }] = [...byBatchNo.values()];
+  assert.equal(count, 2);
+  assert.equal(best.batchKey, "494-r2", "the correction, not the record it supersedes, is current");
+  assert.equal(best.slip.closedAt, corrected.slip.closedAt);
+});
+
 // ── The evidence the POS half does NOT read, but must keep ──────────────────
 test("CONTRACT: the recorded expectation stays on the record even though POS recomputes", () => {
   const r = record();

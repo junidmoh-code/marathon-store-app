@@ -24,9 +24,14 @@
 //
 // RETRY IS ON. A dropped grant is an inconvenience; a dropped REVOKE leaves a
 // stale claim keeping someone's access after their permission was removed,
-// which is the exact failure this build exists to prevent. The handler is a
-// reconciler (it reads the account's real claims and converges), so a retry, a
-// replay and an out-of-order delivery all land in the same place.
+// which is the exact failure this build exists to prevent.
+//
+// Retry is also why the handler NEVER reads the event's own `after` value. RTDB
+// triggers carry no ordering guarantee between write events, and a retried
+// GRANT that lands after a REVOKE has already been applied would re-grant the
+// claim with nothing left to correct it. The handler re-reads the flag at
+// execution time — the event is a wake-up, not a payload — so every delivery
+// order converges. See syncClaimFromFlag in lib/card-recon-claim.cjs.
 //
 // DEPLOY BY NAME (functions/ is shared with marathon-pos-app):
 //   firebase deploy --only functions:syncCardReconClaim
@@ -55,8 +60,9 @@ exports.syncCardReconClaim = onValueWritten(
   },
   async (event) => {
     const uid = event.params.uid;
-    const after = event.data.after.val();
-    const res = await syncClaimFromFlag({ auth: admin.auth(), uid, after });
+    const res = await syncClaimFromFlag({
+      auth: admin.auth(), db: admin.database(), uid,
+    });
     if (res.missing) {
       console.log(`syncCardReconClaim: ${uid} has no auth account — nothing to clear.`);
       return;

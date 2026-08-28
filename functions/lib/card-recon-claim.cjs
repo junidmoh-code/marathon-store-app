@@ -105,12 +105,31 @@ async function reconcileClaim({ auth, uid, granted, dryRun = false }) {
 }
 
 /**
- * The trigger's whole decision: a permFlags/card_recon leaf write in, a
- * reconciled claim out. `after` is the leaf's new value (null on revoke or on
- * the account's deletion).
+ * The trigger's whole decision.
+ *
+ * IT RE-READS THE FLAG; IT DOES NOT TRUST THE EVENT. The obvious implementation
+ * takes `event.data.after.val()` and mirrors that — and it is wrong, in the one
+ * direction that matters. RTDB triggers carry no ordering guarantee between
+ * separate write events, and `retry: true` (which exists precisely so a revoke
+ * is never dropped) makes late delivery MORE likely, not less:
+ *
+ *   grant fires → the Auth call fails transiently → queued for retry
+ *   revoke fires → succeeds immediately → claim removed          ✔
+ *   the retried GRANT finally runs → re-writes card_recon: true  ✘
+ *
+ * and nothing ever corrects it, because no further write to the flag happens.
+ * A revoked person silently keeps access. Reading `users/{uid}/permFlags/
+ * card_recon` at execution time instead makes every delivery order converge:
+ * a handler may read a value newer than its own event (harmless — it writes the
+ * truth), and the last write to the flag always fires a handler that reads the
+ * final value. The event becomes a wake-up, not a payload.
+ *
+ * `db` is injected, like `auth`, so the ordering behaviour is testable.
+ * (Sonnet architect review, 2026-08-28.)
  */
-async function syncClaimFromFlag({ auth, uid, after }) {
-  return reconcileClaim({ auth, uid, granted: isGranted(after) });
+async function syncClaimFromFlag({ auth, db, uid }) {
+  const live = await db.ref(FLAG_PATH(uid)).once("value");
+  return reconcileClaim({ auth, uid, granted: isGranted(live.val()) });
 }
 
 /**
