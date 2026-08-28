@@ -25,6 +25,7 @@
 "use strict";
 
 const PAYMENT_EVENTS_PATH = "pos/paymentEvents";
+const { MAX_WINDOW_MS } = require("./card-recon.cjs");
 
 /**
  * Pure: fold payment-event rows into the expected-card summary for one till.
@@ -97,6 +98,11 @@ function cashiersFromEvents(events, { storeId, tillId, startMs, endMs }) {
 async function computeExpectedCard(db, { storeId, tillId, startMs, endMs }) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     throw new Error("computeExpectedCard: bad window");
+  }
+  // Defence in depth beside validateExtraction's own cap: no FNB batch runs a
+  // week, and a misread year must never become the bounds of a ledger query.
+  if (endMs - startMs > MAX_WINDOW_MS) {
+    throw new Error("computeExpectedCard: window exceeds the 7-day cap");
   }
   const snap = await db.ref(PAYMENT_EVENTS_PATH)
     .orderByChild("at").startAt(startMs).endAt(endMs)

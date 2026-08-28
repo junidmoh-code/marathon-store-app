@@ -33,8 +33,12 @@
 // nobody ever selects a cashier, and a slip shot against the wrong till rejects
 // itself because its TID maps elsewhere.
 const CARD_TERMINALS_PATH = "config/cardTerminals";
-// /pos/card_batches/{storeId}/{tid}/{batchKey} — APPEND-ONLY, Admin-SDK-only
-// (no client write rule exists anywhere under /pos for this child). The live
+// /pos/card_batches/{storeId}/{tid}/{batchKey} — APPEND-ONLY, written only by
+// the callable (Admin SDK). NOTE: the live /pos rules carry a "$other" child
+// that grants signed-in users write on unmatched children, so Admin-SDK-only
+// HOLDS ONLY once the owner pastes the explicit deny block in
+// docs/CARD-RECON.md (naming a child removes it from $other's coverage).
+// Until then, submit's full re-validation is the working defence. The live
 // /pos ".read" grants signed-in staff read, which is fine: the record holds
 // masked PANs and till takings, the same sensitivity as /pos/sales beside it.
 const CARD_BATCHES_PATH = "pos/card_batches";
@@ -151,6 +155,9 @@ function resolveBatchWrite({ existingKeys, batchNo, correction }) {
     return { ok: false, reason: `Batch #${batchNo} for this terminal is already captured. If the earlier capture was wrong, resubmit as a correction — both records are kept.` };
   }
   const revision = highest + 1;
+  if (revision > MAX_REVISIONS) {
+    return { ok: false, reason: `Batch #${batchNo} already has ${highest} captures — this is not a correction chain any more. Talk to the owner.` };
+  }
   return { ok: true, key: batchKeyFor(batchNo, revision), revision, supersedes: batchKeyFor(batchNo, highest) };
 }
 
@@ -209,7 +216,18 @@ function dedupeLines(lines) {
 // The model reports per-field confidence; these fields are load-bearing enough
 // that a shaky read is a retake, not a guess written into evidence.
 const MIN_KEY_FIELD_CONFIDENCE = 0.75;
-const KEY_FIELDS = ["tid", "batchNo", "totalCents", "openedAt", "closedAt"];
+// purchases and the transaction count are load-bearing (they gate the
+// arithmetic and the line-count refusal), so they are confidence-gated like
+// the total. refunds/cash are NOT in this list — a slip with no refunds line
+// legitimately reads as absent with confidence 0 — their protection is the
+// strict parse (a garbled figure stays null and is refused below) plus the
+// slip arithmetic.
+const KEY_FIELDS = ["tid", "batchNo", "totalCents", "openedAt", "closedAt", "purchasesCents", "txnCount"];
+// No FNB batch runs a week: a window wider than this is a misread date (or a
+// forged draft) and must never become the bounds of a ledger query.
+const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// Corrections are rare, deliberate acts; a chain this long is something else.
+const MAX_REVISIONS = 20;
 
 /**
  * Validate one parsed extraction (already through parseSlipTimestamp /
@@ -230,7 +248,7 @@ function validateExtraction(ex, { summaryOnly = false } = {}) {
   }
   if (!normaliseTid(ex.tid)) return { ok: false, reason: `"${ex.tid}" does not look like a terminal ID — retake the header photo.` };
   if (normaliseBatchNo(ex.batchNo) === null) return { ok: false, reason: `"${ex.batchNo}" does not look like a batch number — retake the header photo.` };
-  for (const f of ["totalCents", "purchasesCents", "refundsCents"]) {
+  for (const f of ["totalCents", "purchasesCents", "refundsCents", "cashCents"]) {
     if (!Number.isInteger(ex[f])) return { ok: false, reason: `The slip's ${describeField(f)} did not read as an amount — retake the totals photo.` };
   }
   if (!Number.isInteger(ex.openedAt) || !Number.isInteger(ex.closedAt)) {
@@ -239,10 +257,15 @@ function validateExtraction(ex, { summaryOnly = false } = {}) {
   if (ex.closedAt <= ex.openedAt) {
     return { ok: false, reason: "The slip's Closed time is not after its Opened time — check the header photo." };
   }
+  if (ex.closedAt - ex.openedAt > MAX_WINDOW_MS) {
+    return { ok: false, reason: "The slip's Opened→Closed window is longer than 7 days — one of the dates was misread. Retake the header photo." };
+  }
   // Slip arithmetic: purchases + cash − refunds must equal TOTAL. refundsCents
-  // is a POSITIVE magnitude by contract (the slip prints it bracketed). A slip
-  // whose own figures disagree was misread — refuse, never reconcile a misread.
-  const cash = Number.isInteger(ex.cashCents) ? ex.cashCents : 0;
+  // is a POSITIVE magnitude by contract (the slip prints it bracketed); both it
+  // and cashCents arrive 0 when the slip prints no such line and NULL when the
+  // printed figure would not parse — and null was refused by the loop above,
+  // so a garbled figure can never be silently treated as zero.
+  const cash = ex.cashCents;
   if (ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
     return {
       ok: false,
@@ -294,6 +317,7 @@ function describeField(f) {
   return {
     tid: "terminal ID", batchNo: "batch number", totalCents: "card TOTAL",
     purchasesCents: "purchases figure", refundsCents: "refunds figure",
+    cashCents: "cash figure", txnCount: "Transactions count",
     openedAt: "Opened time", closedAt: "Closed time",
   }[f] || f;
 }
@@ -362,7 +386,7 @@ function buildBatchRecord({
 module.exports = {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
-  MIN_KEY_FIELD_CONFIDENCE,
+  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
   normaliseTid, normaliseBatchNo, batchKeyFor, resolveBatchWrite,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,

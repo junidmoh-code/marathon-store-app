@@ -244,8 +244,13 @@ function toExtraction(parsed) {
     openedText: parsed.opened || null, closedText: parsed.closed || null,
     txnCount: Number(parsed.txnCount),
     purchasesCents: parseRandsToCents(parsed.purchases),
-    cashCents: parsed.cash ? parseRandsToCents(parsed.cash) : 0,
-    refundsCents: parsed.refunds != null && parsed.refunds !== "" ? Math.abs(parseRandsToCents(parsed.refunds) ?? NaN) || 0 : 0,
+    // ABSENCE is zero (many slips print no cash/refunds line); a GARBLED
+    // printed figure stays null and validateExtraction refuses it — the
+    // "mangled figure is refused, never coerced" contract (Codex + architect
+    // review finding, 2026-08-28).
+    cashCents: parsed.cash == null || String(parsed.cash).trim() === "" ? 0 : parseRandsToCents(parsed.cash),
+    refundsCents: parsed.refunds == null || String(parsed.refunds).trim() === "" ? 0
+      : (() => { const c = parseRandsToCents(parsed.refunds); return c === null ? null : Math.abs(c); })(),
     totalCents: parseRandsToCents(parsed.total),
     reconLine: typeof parsed.reconLine === "string" && parsed.reconLine.trim() ? parsed.reconLine.trim() : null,
     confidence: {
@@ -396,6 +401,9 @@ async function handleExtract(db, request) {
     // JSON round-trip strips the undefined values RTDB refuses.
     extraction: JSON.parse(JSON.stringify(extraction)),
     terminal: { storeId: terminal.storeId, tillId: terminal.tillId, label: terminal.label ?? null },
+    // What the REVIEW screen showed — kept so submit can say out loud when the
+    // ledger moved between review and record (architect review, 2026-08-28).
+    reviewedExpectedCents: expected.cardCents,
     ocr: { model: OCR_MODEL, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD },
   };
   await draftRef.set(draft);
@@ -449,6 +457,24 @@ async function handleSubmit(db, request) {
   const terminal = draft.terminal;
   const batchNo = normaliseBatchNo(extraction.batchNo);
 
+  // ── RE-VALIDATE THE DRAFT, IN FULL ──────────────────────────────────────
+  // The draft was written by this function — but the live /pos rules carry a
+  // `$other` write grant, so until the owner pastes the explicit deny block
+  // (docs/CARD-RECON.md) a client could write its own "draft" under its uid.
+  // Submit therefore trusts NOTHING it did not just recompute: the same
+  // validation extract ran, the same terminal-registry check, the same
+  // window bound. A draft that fails any of it is refused and removed.
+  const terminalsNow = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
+  const mapped = terminalsNow[extraction.tid];
+  const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
+    || mapped.storeId !== terminal.storeId || mapped.tillId !== terminal.tillId
+    ? { ok: false, reason: "This capture no longer matches a registered terminal — extract the slip again." }
+    : validateExtraction(extraction, { summaryOnly: !!draft.summaryOnly });
+  if (!revalid.ok) {
+    await draftRef.remove().catch(() => {});
+    return reject(revalid.reason);
+  }
+
   // Recompute expected at the moment of record — the authoritative figure.
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
@@ -494,6 +520,11 @@ async function handleSubmit(db, request) {
     varianceCents: record.varianceCents,
     linesCaptured: record.linesCaptured,
     cashiers: expected.cashiers,
+    // The recorded expected is recomputed at the moment of record; if the
+    // ledger moved since the review screen, say so rather than letting the
+    // operator believe they approved the figure that landed.
+    expectedChangedSinceReview: Number.isInteger(draft.reviewedExpectedCents)
+      && draft.reviewedExpectedCents !== expected.cardCents,
     warnings: draft.warnings || [],
   };
 }

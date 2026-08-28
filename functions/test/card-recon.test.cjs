@@ -88,7 +88,7 @@ test("contiguous TSNs pass; gaps and duplicates are named", () => {
 });
 
 // ── extraction validation ────────────────────────────────────────────────────
-const CONF = { tid: 0.99, batchNo: 0.98, totalCents: 0.97, openedAt: 0.95, closedAt: 0.95 };
+const CONF = { tid: 0.99, batchNo: 0.98, totalCents: 0.97, openedAt: 0.95, closedAt: 0.95, purchasesCents: 0.95, txnCount: 0.95 };
 function goodExtraction(overrides = {}) {
   return {
     tid: "0000HP1X", mid: "000000004977890", batchNo: "494",
@@ -150,6 +150,28 @@ test("Closed must be after Opened", () => {
   const v = validateExtraction(goodExtraction({ closedAt: parseSlipTimestamp("2026/08/26 18:00:00") }));
   assert.equal(v.ok, false);
   assert.match(v.reason, /Closed time/);
+});
+
+test("a garbled cash or refunds figure (null) is refused, never treated as zero", () => {
+  const vCash = validateExtraction(goodExtraction({ cashCents: null }));
+  assert.equal(vCash.ok, false);
+  assert.match(vCash.reason, /cash figure/);
+  const vRef = validateExtraction(goodExtraction({ refundsCents: null }));
+  assert.equal(vRef.ok, false);
+  assert.match(vRef.reason, /refunds figure/);
+});
+
+test("a window longer than 7 days is a misread date, refused before any ledger query", () => {
+  const v = validateExtraction(goodExtraction({ openedAt: parseSlipTimestamp("2020/08/26 18:50:04") }));
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /longer than 7 days/);
+});
+
+test("the correction chain caps at MAX_REVISIONS", () => {
+  const keys = ["494", ...Array.from({ length: 19 }, (_, i) => `494-r${i + 2}`)];
+  const r = resolveBatchWrite({ existingKeys: keys, batchNo: "494", correction: true });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /not a correction chain/);
 });
 
 test("summary-only skips line checks but carries the flag warning", () => {

@@ -73,11 +73,13 @@ the callable with the Admin SDK. A fresh `draftId` per extract means no path is
 ever written twice; `storage.rules` has no match for `cardRecon/`, so no client
 can write or delete there.
 
-## The rule to paste (console)
+## The rules to paste (console) — TWO blocks, both required
 
 `database.rules.json` in this repo is NOT deployed and must not be edited (live
-rules drift — see project memory). Paste this in the Firebase console's RTDB
-rules editor, **inside the existing `"config"` block**, as a sibling of
+rules drift — see project memory). Both blocks go in the Firebase console's
+RTDB rules editor.
+
+**Block 1 — inside the existing `"config"` block**, as a sibling of
 `"shopify"` / `"styleCode"` (order inside the block does not matter):
 
 ```json
@@ -96,9 +98,30 @@ rules editor, **inside the existing `"config"` block**, as a sibling of
 Who may write it: any account whose `stockRole` is `admin` (the same gate as
 every other `/config/*` child). Reads need no new rule — `/config` already
 grants authenticated, non-anonymous read, which is what the phone screen's till
-picker uses. `/pos/card_batches` and `/pos/card_batch_drafts` need **no rule at
-all**: with no `.write` anywhere on those children, clients cannot write them,
-and the callable writes with the Admin SDK.
+picker uses.
+
+**Block 2 — inside the existing `"pos"` block**, as siblings of `"sales"` /
+`"paymentEvents"` / `"$other"` (Codex review finding, 2026-08-28). The live
+`/pos` rules carry a `"$other"` child granting every signed-in user write on
+any unmatched `/pos` child — which would include these two paths. In RTDB,
+`$other` only matches children with **no explicit sibling rule**, so naming
+them with `".write": "false"` removes them from that grant and makes them
+Admin-SDK-only, which is what append-only evidence requires:
+
+```json
+"card_batches": {
+  ".write": "false"
+},
+"card_batch_drafts": {
+  ".write": "false"
+}
+```
+
+**Until Block 2 is pasted, a signed-in user could write these paths directly
+through the SDK.** The callable defends what it can server-side (submit
+re-validates every draft in full — a forged draft cannot pass), but a direct
+SDK write to `/pos/card_batches` itself is only stopped by this rule. Paste it
+before granting anyone the `card_recon` permission.
 
 ## Permission
 

@@ -41,6 +41,19 @@ test("toExtraction leaves unparseable figures null so validation refuses them", 
   assert.equal(validateExtraction(ex).ok, false);
 });
 
+test("a garbled non-empty refunds or cash string stays null — refused downstream, never zero", () => {
+  const exR = toExtraction({ ...MODEL_OUTPUT, refunds: "R14O.00" }); // letter O
+  assert.equal(exR.refundsCents, null);
+  assert.equal(validateExtraction(exR).ok, false);
+  const exC = toExtraction({ ...MODEL_OUTPUT, cash: "Rl0.00" }); // letter l
+  assert.equal(exC.cashCents, null);
+  assert.equal(validateExtraction(exC).ok, false);
+  // Absence stays zero: slips without those lines must not be refused.
+  const exAbsent = toExtraction({ ...MODEL_OUTPUT, cash: "", refunds: "" });
+  assert.equal(exAbsent.cashCents, 0);
+  assert.equal(exAbsent.refundsCents, 0);
+});
+
 test("a refund line already printed negative is not double-negated", () => {
   const ex = toExtraction({
     ...MODEL_OUTPUT,
