@@ -44,7 +44,14 @@ function fakeDb(flags = {}) {
   return {
     set(uid, v) { state.set(uid, v); },
     ref(path) {
-      const uid = path.split("/")[1];
+      // The PATH is part of the contract, not an implementation detail: the
+      // rules-readable mirror is permFlags, and reading `permissions` instead
+      // would silently answer null for every account (the array reaches a
+      // read keyed by POSITION, which is why permFlags exists at all). A fake
+      // that shrugs at the path lets that mutation live.
+      const m = /^users\/([^/]+)\/permFlags\/card_recon$/.exec(path);
+      if (!m) throw new Error(`fakeDb: unexpected path "${path}" — expected users/{uid}/permFlags/card_recon`);
+      const uid = m[1];
       return { async once() { const v = state.get(uid); return { val: () => (v === undefined ? null : v) }; } };
     },
   };
