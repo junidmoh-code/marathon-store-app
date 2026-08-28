@@ -55,6 +55,14 @@ export const PERMISSION_GROUPS = [
     { key: "insights",      label: "Insights",          desc: "Business analytics" },
     { key: "broadcast",     label: "Group Broadcast",   desc: "Send WhatsApp broadcasts", sensitive: true },
     { key: "customer_data", label: "Customer Database", desc: "View customer records", sensitive: true },
+    // ── CARD RECON (added 2026-08-28, owner request) ────────────────────────
+    // Opens the batch-slip capture screen and the cardBatchCapture callable:
+    // photograph the FNB terminal's own Batch Report, OCR it server-side, see
+    // the variance against the POS tender ledger. `sensitive` because it is
+    // financial-reconciliation evidence AND each capture spends a Gemini OCR
+    // call. Per-user only, in no role preset; NO `stock: true` — it gates no
+    // stock write and the flag would auto-link a stockRole (invariant 1 above).
+    { key: "card_recon", label: "Card Recon", desc: "Capture card-machine batch slips — variance vs POS", sensitive: true },
   ] },
   // ── ONLINE & CONTENT ───────────────────────────────────────────────────────
   // Two surfaces that were never wired to this permissions system and so ended
