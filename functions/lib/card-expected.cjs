@@ -156,8 +156,31 @@ async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs
   };
 }
 
+/**
+ * Every card leg in the window, on ANY till.
+ *
+ * The expected-card sum above is scoped to the till the terminal is mapped to,
+ * which is right for a subtraction and wrong for a match: a speedpoint that
+ * spent the morning at another shop had its sales rung on that shop's till.
+ * The matcher needs to see those, so this returns the unscoped set and leaves
+ * the judgement to lib/card-match.cjs.
+ *
+ * Same query, same index, same bounds — only the store/till filter is dropped.
+ */
+async function cardLegsInWindow(db, { startMs, endMs, edgeMs = 0 }) {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    throw new Error("cardLegsInWindow: bad window");
+  }
+  if (endMs - startMs > MAX_WINDOW_MS) throw new Error("cardLegsInWindow: window exceeds the 7-day cap");
+  const snap = await db.ref(PAYMENT_EVENTS_PATH)
+    .orderByChild("at").startAt(startMs - edgeMs).endAt(endMs + edgeMs)
+    .once("value");
+  return Object.values(snap.val() || {})
+    .filter((e) => e && e.method === "card" && Number.isInteger(e.amount) && Number.isFinite(Number(e.at)));
+}
+
 module.exports = {
-  PAYMENT_EVENTS_PATH,
+  PAYMENT_EVENTS_PATH, cardLegsInWindow,
   expectedCardFromEvents,
   cashiersFromEvents,
   computeExpectedCard,

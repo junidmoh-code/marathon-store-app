@@ -245,3 +245,74 @@ test("summary-only record nulls lines and flags itself", () => {
   assert.equal(rec.lineCount, 0);
   assert.equal(rec.varianceCents, 0);
 });
+
+// ─── THE VARIANCE IS WHAT THE MATCH COULD NOT ACCOUNT FOR ────────────────────
+// Not the till-scoped subtraction. A card machine that spent the morning at
+// another shop had its sales rung on that shop's till, and the subtraction
+// called R3,500 of good takings missing while saying nothing about which.
+test("buildBatchRecord takes its variance from the MATCH, not the till subtraction", () => {
+  const ex = goodExtraction();                       // slip total 95000
+  const base = {
+    extraction: ex,
+    terminal: { storeId: "pe", tillId: "till-1", label: "PE Till 1" },
+    tid: "0000HP1X", batchKey: "494", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: false, warnings: [],
+    // The till itself only saw 60000 of it — the rest was rung elsewhere.
+    expected: { cardCents: 60000, legs: 2, byKind: {} },
+    cashiers: [], submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d1", ocr: null,
+  };
+  const rec = buildBatchRecord({
+    ...base,
+    match: {
+      matches: [{}, {}, {}], matchedCents: 95000,
+      onTillCents: 60000, offTillCents: 35000,
+      offTill: { "trophy/till-1": { legs: 1, cents: 35000 } },
+      unmatchedTxns: [], unmatchedTxnCents: 0,
+      unmatchedLegsOnTill: [], unmatchedLegCents: 0,
+    },
+  });
+  assert.equal(rec.varianceCents, 0, "everything was accounted for, so nothing is missing");
+  assert.equal(rec.varianceOnTillCents, 95000 - 60000,
+    "…and the old subtraction is kept, so batches stay comparable");
+  assert.equal(rec.match.offTillCents, 35000);
+  assert.deepEqual(rec.match.offTill, { "trophy/till-1": { legs: 1, cents: 35000 } },
+    "the record says WHERE, so a moved machine reads as information");
+});
+
+test("…and the variance IS the unmatched transactions", () => {
+  const ex = goodExtraction();                       // slip total 95000
+  const rec = buildBatchRecord({
+    extraction: ex,
+    terminal: { storeId: "pe", tillId: "till-1" },
+    tid: "0000HP1X", batchKey: "494", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: false, warnings: [],
+    expected: { cardCents: 88000, legs: 3, byKind: {} },
+    match: {
+      matches: [{}, {}], matchedCents: 88000, onTillCents: 88000, offTillCents: 0, offTill: {},
+      unmatchedTxns: [{ tsn: 7 }], unmatchedTxnCents: 7000,
+      // A card sale the machine has no record of. A DIFFERENT question, and it
+      // must not cancel against the 7000.
+      unmatchedLegsOnTill: [{}], unmatchedLegCents: 5000,
+    },
+    cashiers: [], submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d1", ocr: null,
+  });
+  assert.equal(rec.varianceCents, 7000, "money on the machine that no sale accounts for");
+  assert.equal(rec.match.unmatchedLegCents, 5000, "…reported apart from the sale with no machine record");
+  assert.notEqual(rec.varianceCents, 2000, "the two findings must never be netted together");
+});
+
+test("with no match at all the old subtraction still stands", () => {
+  // A summary-only capture has no transactions to match, so there is nothing
+  // better than the till-scoped figure.
+  const rec = buildBatchRecord({
+    extraction: goodExtraction({ lines: [] }),
+    terminal: { storeId: "pe", tillId: "till-2" },
+    tid: "0000HP2X", batchKey: "12", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: true, warnings: [],
+    expected: { cardCents: 90000, legs: 1, byKind: {} },
+    cashiers: [], submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d2", ocr: null,
+  });
+  assert.equal(rec.match, null);
+  assert.equal(rec.varianceCents, 95000 - 90000);
+  assert.equal(rec.varianceOnTillCents, 95000 - 90000);
+});
