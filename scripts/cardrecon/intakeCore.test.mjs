@@ -241,3 +241,21 @@ describe("parseEnvText", () => {
     expect(missingEnvKeys({ A: "x", B: "" }, ["A", "B", "C"])).toEqual(["B", "C"]);
   });
 });
+
+describe("parseEnvText — a stray carriage return is not a line ending", () => {
+  it("leaves a mid-line CR to poison the line, exactly as it always did", () => {
+    // THE FIFTH DRIFT, PINNED. `split(/\r?\n/)` only consumes a CR that
+    // precedes a newline; a lone one stays inside the line, where `.` cannot
+    // match it and an unanchored `$` is the end of the STRING — so the line
+    // matches nothing and the key is simply absent.
+    //
+    // That is the contract, and it is the safe direction: the poller refuses a
+    // key it cannot read. What must never come back is a reader that is more
+    // forgiving than this one — the installer used `tr -d '\r'`, saw a value,
+    // and armed the schedule over a file the poller could not read. It runs
+    // THIS function now, so the two cannot differ; this test is what stops a
+    // future "tidy-up" of the regex silently reintroducing the gap.
+    expect(parseEnvText("A=x\ry\nB=2\n")).toEqual({ B: "2" });
+    expect(parseEnvText("A=1\r\nB=2\n")).toEqual({ A: "1", B: "2" });
+  });
+});

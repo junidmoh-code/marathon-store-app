@@ -154,6 +154,10 @@ const MUTATIONS = [
     "  const basis = clip(messageId, 400)\n    || `no-id|${uidValidity || \"\"}|${uid ?? \"\"}|${clip(from, 200) || \"\"}|${clip(subject, 200) || \"\"}|${date || \"\"}|${size || 0}`;",
     '  const basis = clip(messageId, 400) || "no-id";'],
 
+  ["intake", "a stray carriage return stops poisoning its line, so a reader can be more forgiving than the poller",
+    '  for (const line of String(text ?? "").split(/\\r?\\n/)) {',
+    '  for (const line of String(text ?? "").replace(/\\r/g, "").split("\\n")) {'],
+
   ["intake", "a CRLF-saved .env parses to nothing, and every credential goes missing",
     '  for (const line of String(text ?? "").split(/\\r?\\n/)) {',
     '  for (const line of String(text ?? "").split("\\n")) {'],

@@ -186,7 +186,13 @@ function config() {
     // The identity the callable sees. It holds `card_recon` and
     // `card_recon_intake` in permFlags and nothing else — granted once by
     // scripts/cardrecon/grant-poller-identity.mjs.
-    uid: String(env.CARD_RECON_POLLER_UID || "card-recon-email-poller").trim(),
+    // TRIMMED BEFORE THE FALLBACK, not after. A whitespace-only value is
+    // truthy, so `|| default` never applied and the uid became "" — which
+    // createCustomToken rejects, every five minutes, while the installer
+    // (which trims first, then falls back) had validated the DEFAULT
+    // identity and reported everything fine. The installer must not be able
+    // to disagree with the program it is checking. (Independent review, #510.)
+    uid: String(env.CARD_RECON_POLLER_UID ?? "").trim() || "card-recon-email-poller",
     lookbackDays: number("CARD_RECON_LOOKBACK_DAYS", DEFAULT_LOOKBACK_DAYS, { min: 1, max: 365, what: "a number of days between 1 and 365" }),
     dryRun: process.argv.includes("--dry-run"),
   };
