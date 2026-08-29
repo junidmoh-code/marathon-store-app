@@ -411,6 +411,43 @@ just outside as `expected.nearEdgeLegs` / `nearEdgeCents` plus a warning. They
 are never counted in `cardCents`; the reconciled figure is identical whether or
 not edge reporting is on, which is pinned by test.
 
+#### Page furniture, and the totals region
+
+The real emailed report (`Till2FNB-Txn-Notification.pdf` — batch 59, terminal
+67365901, 40 items, ZAR 30 120.00) is **seven pages**, with FNB's address block
+and page footers interleaved *between* the transactions rather than confined to
+the top and bottom. That furniture is full of money labels followed by digits,
+and it broke the first version of this reader in two separate ways:
+
+1. **The figure search used to widen to the whole document** when a field was
+   not in the totals block. A footer reading `Refunds enquiries 0860 12 34 56`
+   was then read as the refunds *figure*, failed to parse, and refused the whole
+   report. The search is now confined to the **totals region** — from whichever
+   of `TOTALS SUMMARY` / `CARD TOTALS` comes first, to the end — and does not
+   widen. Absent from that region means absent. Starting at the *first* block
+   puts both in scope, so if the two ever disagree the report is refused rather
+   than one being silently preferred.
+
+2. **"A remainder containing a digit is a figure row"** was right about headings
+   and wrong about prose. `Total pages 7` is not a mangled total. The rule is
+   now whether the remainder *begins* like an amount — optional sign or bracket,
+   optional currency mark, then a digit (`looksLikeAmount`). A figure so mangled
+   it starts with a letter is skipped as prose and the field ends up missing,
+   which is still a refusal — just a differently worded one. `R5O,307.00` and
+   `ZAR 5O0.00` both still begin like amounts, so both still refuse.
+
+There is **no purchases figure distinct from the total** on this report: both
+blocks print `Purchase` and `Total` as the same value and there is no Payment
+Type Summary, so the arithmetic holds with refunds and cash absent.
+
+> ⚠️ **The PDF itself is not in this repository.** A refused capture is never
+> stored (the callable rejects before the Storage write), so the file could not
+> be recovered from the failure. `realReportLines()` in
+> `functions/test/fixtures/makeSlipPdf.cjs` reconstructs its structure from the
+> owner's description plus the figures above, and `makeSlipPdfPaged()` renders
+> it as a genuine seven-page PDF. **Replace it with the real bytes when they
+> arrive** — the assertions should not need to change.
+
 #### The Batch column trap
 
 The emailed row order is `… TSN, Batch, PAN …`. The printed reader takes "the

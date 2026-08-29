@@ -7,10 +7,13 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  parseSlipPdf, detectReportFormat, tidy,
+  parseSlipPdf, detectReportFormat, tidy, TXN_RE,
 } = require("../lib/card-recon-pdf.cjs");
-const { validateExtraction, checkTsnContiguity } = require("../lib/card-recon.cjs");
-const { emailedLines, slipLines, REAL_TSNS, makeSlipPdf, makeSlipPdfFragmented } = require("./fixtures/makeSlipPdf.cjs");
+const { validateExtraction, checkTsnContiguity, parseRandsToCents } = require("../lib/card-recon.cjs");
+const {
+  emailedLines, slipLines, REAL_TSNS, makeSlipPdf, makeSlipPdfFragmented,
+  realReportLines, REAL_REPORT, FNB_FURNITURE, makeSlipPdfPaged,
+} = require("./fixtures/makeSlipPdf.cjs");
 const { pdfToLines } = require("../cardRecon/pdfText.js");
 
 const rowsOf = (lines) => lines.map(tidy).filter(Boolean);
@@ -389,4 +392,371 @@ test("…but the same count printed twice is not a disagreement", () => {
   const out = parse(emailedLines().lines);
   assert.equal(out.ok, true, out.reason);
   assert.equal(out.extraction.txnCount, 40);
+});
+
+// ═══ THE REAL REPORT ═════════════════════════════════════════════════════════
+// Till2FNB-Txn-Notification.pdf: batch 59, terminal 67365901, 40 items,
+// ZAR 30120.00, first 09:07:23 / ZAR 900.00 / TSN 2, last 16:09:09 /
+// ZAR 350.00 / TSN 51 — the owner's figures, read off the file.
+//
+// SEVEN PAGES, with FNB's address block and page footers interleaved BETWEEN
+// the transactions. That furniture carries money labels followed by digits
+// ("Total pages 7", "Refunds enquiries 0860 12 34 56"), and it is what broke
+// the first version of this reader: the figure search fell back to the whole
+// document and read a footer as the refunds total, refusing the report.
+
+test("the real report's own figures, end to end", () => {
+  const { lines } = realReportLines();
+  const out = parse(lines);
+  assert.equal(out.ok, true, `the real report was REFUSED: ${out.reason}`);
+  const ex = out.extraction;
+
+  assert.equal(ex.format, "emailed");
+  assert.equal(ex.tid, REAL_REPORT.tid, "terminal");
+  assert.equal(ex.batchNo, String(REAL_REPORT.batchNo), "batch");
+  assert.equal(ex.txnCount, REAL_REPORT.items, "the printed Items count");
+  assert.equal(ex.lines.length, REAL_REPORT.items, "…and the rows actually read");
+  assert.equal(ex.totalCents, REAL_REPORT.totalCents, "ZAR 30120.00");
+  assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), REAL_REPORT.totalCents,
+    "the rows must sum to the printed total");
+
+  const first = ex.lines[0], last = ex.lines.at(-1);
+  assert.equal(first.tsn, REAL_REPORT.firstTsn);
+  assert.equal(first.time, REAL_REPORT.firstTime);
+  assert.equal(first.amountCents, REAL_REPORT.firstCents);
+  assert.equal(last.tsn, REAL_REPORT.lastTsn);
+  assert.equal(last.time, REAL_REPORT.lastTime);
+  assert.equal(last.amountCents, REAL_REPORT.lastCents);
+
+  const v = validateExtraction(ex, { source: "pdf" });
+  assert.equal(v.ok, true, `the real report failed validation: ${v.reason}`);
+});
+
+test("the real report has NO purchases figure distinct from its total", () => {
+  // Both blocks print Purchase and Total as the same figure, and there is no
+  // Payment Type Summary. The arithmetic (purchases + cash − refunds = total)
+  // therefore holds with refunds and cash absent, which is what makes this
+  // shape acceptable rather than a special case.
+  const { lines } = realReportLines();
+  const ex = parse(lines).extraction;
+  assert.equal(ex.purchasesCents, ex.totalCents, "purchase equals total on this report");
+  assert.equal(ex.refundsCents, 0, "no refunds line, so zero — not a refusal");
+  assert.equal(ex.cashCents, 0, "no cash line either");
+  assert.equal(ex.purchasesCents + ex.cashCents - ex.refundsCents, ex.totalCents);
+  assert.ok(!lines.some((l) => /payment type summary/i.test(l)), "this format has no PTS block");
+});
+
+test("page furniture between transactions is not read as a figure", () => {
+  // Each of these sat mid-roll in the real document. Every one carries a money
+  // label followed by digits, and every one must be walked past.
+  const { lines } = realReportLines();
+  const furniture = FNB_FURNITURE(3);
+  assert.ok(furniture.some((l) => /^Total pages/.test(l)), "the fixture must carry the poisonous lines");
+  assert.ok(furniture.some((l) => /^Refunds enquiries/.test(l)));
+
+  const ex = parse(lines).extraction;
+  assert.equal(ex.refundsCents, 0, '"Refunds enquiries 0860 12 34 56" is not a refunds figure');
+  assert.equal(ex.totalCents, REAL_REPORT.totalCents, '"Total pages 7" is not a total');
+
+  // …and none of it became a transaction row.
+  assert.equal(ex.lines.length, REAL_REPORT.items);
+  const furnitureCount = lines.filter((l) => furniture.includes(l)).length;
+  assert.ok(furnitureCount > 20, `only ${furnitureCount} furniture lines — the fixture is not interleaved`);
+});
+
+test("furniture is survived wherever it lands, including inside the totals blocks", () => {
+  const { lines } = realReportLines();
+  const spots = [
+    0,
+    lines.findIndex((l) => /^2026\//.test(l)) + 1,
+    lines.findIndex((l) => /^TOTALS SUMMARY/.test(l)) + 1,
+    lines.findIndex((l) => /^CARD TOTALS/.test(l)) + 1,
+    lines.length,
+  ];
+  for (const spot of spots) {
+    for (const junk of ["Total pages 7", "Refunds enquiries 0860 12 34 56", "Cash enquiries 0860 12 34 56", "Purchase queries 0860 12 34 56", "Page 4 of 7"]) {
+      const poisoned = lines.slice();
+      poisoned.splice(spot, 0, junk);
+      const out = parse(poisoned);
+      assert.equal(out.ok, true, `"${junk}" at ${spot} refused the report: ${out.reason}`);
+      assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents, `"${junk}" at ${spot} moved the total`);
+      assert.equal(out.extraction.refundsCents, 0, `"${junk}" at ${spot} invented a refund`);
+      assert.equal(out.extraction.lines.length, REAL_REPORT.items, `"${junk}" at ${spot} changed the row count`);
+    }
+  }
+});
+
+test("…but a real conflicting figure in the totals blocks is still refused", () => {
+  // The furniture tolerance must not become tolerance for a second, DIFFERENT
+  // total — that is the ambiguity this path refuses rather than choosing.
+  const { lines } = realReportLines();
+  const poisoned = lines.slice();
+  poisoned.splice(lines.findIndex((l) => /^CARD TOTALS/.test(l)) + 1, 0, "Total   ZAR 0.00");
+  const out = parse(poisoned);
+  assert.equal(out.ok, false, "two different totals must not be chosen between");
+  assert.match(out.reason, /appears twice/);
+});
+
+test("the real report survives a genuine SEVEN-PAGE PDF round trip", async () => {
+  // Really seven pages, not one long one. The single-page writer silently loses
+  // everything past about line sixty-six — it runs off the bottom of the
+  // MediaBox — so a 112-line document came back as 67 and this test would have
+  // been checking a truncated report. It also means pdfToLines' per-page
+  // grouping is exercised: identical Y coordinates on different pages must not
+  // collapse into one row.
+  const { lines } = realReportLines();
+  const t = await pdfToLines(makeSlipPdfPaged(lines, { perPage: 18 }));
+  assert.equal(t.ok, true, t.reason);
+  assert.equal(t.pages, 7, "the fixture must actually be seven pages");
+  assert.equal(t.lines.length, lines.length, "no page may be dropped or merged");
+  assert.equal(t.lines[0], lines[0], "…and the pages must come back in order");
+  assert.equal(t.lines.at(-1), lines.at(-1));
+
+  const out = parseSlipPdf(t.lines);
+  assert.equal(out.ok, true, out.reason);
+  const ex = out.extraction;
+  assert.equal(ex.tid, REAL_REPORT.tid);
+  assert.equal(ex.batchNo, String(REAL_REPORT.batchNo));
+  assert.equal(ex.txnCount, REAL_REPORT.items);
+  assert.equal(ex.totalCents, REAL_REPORT.totalCents);
+  assert.equal(ex.refundsCents, 0);
+  assert.equal(ex.lines.length, REAL_REPORT.items);
+  assert.deepEqual(ex.lines.map((l) => l.tsn), REAL_TSNS);
+  assert.equal(ex.lines[0].time, REAL_REPORT.firstTime);
+  assert.equal(ex.lines.at(-1).time, REAL_REPORT.lastTime);
+  assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), REAL_REPORT.totalCents);
+  assert.equal(validateExtraction(ex, { source: "pdf" }).ok, true);
+});
+
+test("a per-page subtotal mid-document is not the batch total", () => {
+  // A seven-page report can carry running figures in its furniture. These are
+  // well-formed amounts, so `looksLikeAmount` cannot reject them — only the
+  // totals region can, by not looking there at all. Without it these become a
+  // second, different TOTAL and the whole report is refused as ambiguous.
+  const { lines } = realReportLines();
+  const at = lines.findIndex((l) => /^2026\//.test(l)) + 3;
+  for (const junk of ["Total   ZAR 5,400.00", "Refunds   ZAR 0.00", "Purchase   ZAR 5,400.00", "Cash   ZAR 12.00"]) {
+    const poisoned = lines.slice();
+    poisoned.splice(at, 0, junk);
+    const out = parse(poisoned);
+    assert.equal(out.ok, true, `"${junk}" mid-roll refused the report: ${out.reason}`);
+    assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents, `"${junk}" moved the total`);
+    assert.equal(out.extraction.refundsCents, 0, `"${junk}" invented a refund`);
+    assert.equal(out.extraction.cashCents, 0, `"${junk}" invented a cash figure`);
+  }
+});
+
+test("TOTALS SUMMARY and CARD TOTALS disagreeing is refused, not resolved", () => {
+  // The two blocks state the same figures. If they ever disagree, something is
+  // wrong with the report and choosing one is a guess — so the region begins at
+  // whichever block comes FIRST, putting both in scope of the ambiguity rule.
+  // Anchoring it to CARD TOTALS alone would silently prefer the later block.
+  const { lines } = realReportLines();
+  const summaryIdx = lines.findIndex((l) => /^TOTALS SUMMARY/.test(l));
+  const cardIdx = lines.findIndex((l) => /^CARD TOTALS/.test(l));
+  assert.ok(summaryIdx >= 0 && cardIdx > summaryIdx, "the fixture must print both blocks, summary first");
+
+  const disagreeing = lines.slice();
+  // Change the SUMMARY block's total only.
+  disagreeing[summaryIdx + 2] = "Total   ZAR 29,000.00";
+  const out = parse(disagreeing);
+  assert.equal(out.ok, false, "two blocks disagreeing about the total must refuse");
+  assert.match(out.reason, /appears twice/);
+  assert.match(out.reason, /R29,000\.00/);
+});
+
+// ─── LABEL AND AMOUNT VARIATIONS THE REAL FILE MAY CARRY ─────────────────────
+// The PDF is not in the repository, so these are the shapes it plausibly uses.
+// Each must read the same figure — or, for the prose cases, no figure at all.
+const TOTALS_SHAPES = {
+  "as described":            (l) => l,
+  "plural Purchases":        (l) => l.map((x) => x.replace(/^Purchase {3}/, "Purchases   ")),
+  "a suffixed label":        (l) => l.map((x) => x.replace(/^(Purchase|Total) {3}/, "$1 Amount   ")),
+  "colons after labels":     (l) => l.map((x) => x.replace(/^(Purchase|Total) {3}/, "$1: ")),
+  "no space after ZAR":      (l) => l.map((x) => x.replace(/ZAR /g, "ZAR")),
+  "R instead of ZAR":        (l) => l.map((x) => x.replace(/ZAR /g, "R")),
+  "no currency mark at all": (l) => l.map((x) => x.replace(/ZAR /g, "")),
+};
+for (const [name, shape] of Object.entries(TOTALS_SHAPES)) {
+  test(`the real report reads the same with ${name}`, () => {
+    const out = parse(shape(realReportLines().lines));
+    assert.equal(out.ok, true, `refused: ${out.reason}`);
+    assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents);
+    assert.equal(out.extraction.purchasesCents, REAL_REPORT.totalCents);
+    assert.equal(out.extraction.lines.length, REAL_REPORT.items, "the ROWS must still read too");
+    assert.equal(out.extraction.lines[0].amountCents, REAL_REPORT.firstCents);
+    assert.equal(out.extraction.lines.reduce((a, l) => a + l.amountCents, 0), REAL_REPORT.totalCents);
+  });
+}
+
+test("a label suffix does not let prose back in", () => {
+  // Accepting "Purchase Amount   ZAR 30120.00" must not also accept "Total
+  // pages 7". The second attempt requires a STRICT amount — one carrying a
+  // currency mark or its cents — with nothing but label words before it.
+  const { lines } = realReportLines();
+  for (const junk of ["Total pages 7", "Total for 7 pages ZAR 100.00", "Refunds enquiries 0860 12 34 56", "Purchase queries 0860 12 34 56"]) {
+    const poisoned = lines.slice();
+    poisoned.splice(lines.findIndex((l) => /^TOTALS SUMMARY/.test(l)) + 1, 0, junk);
+    const out = parse(poisoned);
+    assert.equal(out.ok, true, `"${junk}" refused the report: ${out.reason}`);
+    assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents, `"${junk}" moved the total`);
+    assert.equal(out.extraction.refundsCents, 0, `"${junk}" invented a refund`);
+  }
+});
+
+test("…and a mangled figure is still refused by name, not skipped", () => {
+  const { lines } = realReportLines();
+  const mangled = lines.map((l) => l.replace(/^Total {3}ZAR 30,?120\.00$/, "Total   ZAR 3O120.00"));
+  assert.ok(mangled.some((l, i) => l !== lines[i]), "the fixture edit did nothing");
+  const out = parse(mangled);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /not an amount this understands/);
+});
+
+test("a trailing number with ONE decimal is not an amount", () => {
+  // The strict amount requires a currency mark or exactly two decimals. One
+  // decimal is not a rand figure, but parseRandsToCents would happily read
+  // "3.5" as R3.50 — so without the two-digit requirement a footer sentence
+  // ending in a single-decimal number becomes a recorded figure.
+  const { lines } = realReportLines();
+  const at = lines.findIndex((l) => /^TOTALS SUMMARY/.test(l)) + 1;
+  for (const junk of ["Refunds take up to 3.5", "Cash discount 2.5", "Purchase limit 9.9"]) {
+    const poisoned = lines.slice();
+    poisoned.splice(at, 0, junk);
+    const out = parse(poisoned);
+    assert.equal(out.ok, true, `"${junk}" refused the report: ${out.reason}`);
+    assert.equal(out.extraction.refundsCents, 0, `"${junk}" became a refunds figure`);
+    assert.equal(out.extraction.cashCents, 0, `"${junk}" became a cash figure`);
+    assert.equal(out.extraction.purchasesCents, REAL_REPORT.totalCents, `"${junk}" moved purchases`);
+    assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents);
+  }
+});
+
+test("an ambiguous row refuses rather than guessing where the amount starts", () => {
+  // The row pattern anchors the amount at the END of the line, and the masked
+  // PAN is what stops the capture reaching back into the identifier columns.
+  // Strip the PAN and make every identifier numeric and the boundary genuinely
+  // is ambiguous — "789012 345678 2 59 900.00" is as valid a reading as
+  // "900.00". The amount then fails the thousand-separator grouping check and
+  // the row is refused. That is the correct outcome: no reading is preferred,
+  // and no figure is recorded.
+  const ambiguous = "2026/08/27 09:07:23 123456 789012 345678 2 59 900.00 Purchase";
+  const m = TXN_RE.exec(ambiguous);
+  assert.ok(m, "the row still matches the pattern");
+  assert.equal(parseRandsToCents(m[4]), null, "…but its amount must not resolve to a figure");
+
+  // A currency mark removes the ambiguity, and then it reads exactly.
+  const marked = "2026/08/27 09:07:23 123456 789012 345678 2 59 ZAR 900.00 Purchase";
+  assert.equal(parseRandsToCents(TXN_RE.exec(marked)[4]), 90000);
+});
+
+// ─── PROSE THAT MENTIONS MONEY IS NOT A FIGURE ───────────────────────────────
+// The label-suffix attempt was added so "Purchase Amount   ZAR 30120.00" reads.
+// Guarded only by "no digits between the label and the number", it also read
+// ordinary boilerplate: a fee schedule sentence became a cash figure, and a
+// bracketed aside became a NEGATIVE total. Prose has no digits either — the
+// word count is what separates a label from a sentence.
+const PROSE = [
+  "Total surcharge rate is 12.00",
+  "Cash advance fees are subject to a service charge of 2.50",
+  "Purchases made after hours incur a surcharge of 5.00",
+  "Total excludes certain bank charges (25.00)",
+  "Refunds are credited at the prevailing rate of 1.00",
+  "Cash withdrawals are limited per transaction to 3000.00",
+];
+
+test("boilerplate mentioning a money label is not read as that figure", () => {
+  const { lines } = realReportLines();
+  const spots = [
+    lines.findIndex((l) => /^2026\//.test(l)) + 2,          // mid-roll
+    lines.findIndex((l) => /^TOTALS SUMMARY/.test(l)) + 1,  // inside the totals
+    lines.length,                                           // the last footer
+  ];
+  for (const sentence of PROSE) {
+    for (const spot of spots) {
+      const poisoned = lines.slice();
+      poisoned.splice(spot, 0, sentence);
+      const out = parse(poisoned);
+      assert.equal(out.ok, true, `"${sentence}" at ${spot} refused the report: ${out.reason}`);
+      const ex = out.extraction;
+      assert.equal(ex.totalCents, REAL_REPORT.totalCents, `"${sentence}" moved the total`);
+      assert.equal(ex.purchasesCents, REAL_REPORT.totalCents, `"${sentence}" moved purchases`);
+      assert.equal(ex.cashCents, 0, `"${sentence}" became a cash figure`);
+      assert.equal(ex.refundsCents, 0, `"${sentence}" became a refunds figure`);
+    }
+  }
+});
+
+test("the printed slip does not get the label-suffix rule at all", () => {
+  // It searches its WHOLE document rather than a totals region, so a looser
+  // rule there would apply to every line of the slip. The emailed reader turns
+  // the suffix attempt on for the handful of rows in its totals block; nothing
+  // else does.
+  const lines = slipLines();
+  lines.splice(3, 0, "Cash advance fees are subject to a service charge of 2.50");
+  const out = parse(lines);
+  assert.equal(out.ok, true, out.reason);
+  assert.equal(out.extraction.format, "printed");
+  assert.equal(out.extraction.cashCents, 0, "prose became a cash figure on the printed path");
+});
+
+test("a label suffix of one or two words still reads", () => {
+  // The cap must not be so tight that the thing it was added for stops working.
+  const { lines } = realReportLines();
+  for (const rewrite of [
+    (l) => l.replace(/^(Purchase|Total) {3}/, "$1 Amount   "),
+    (l) => l.replace(/^(Purchase|Total) {3}/, "$1 Total Amount   "),
+  ]) {
+    const out = parse(lines.map(rewrite));
+    assert.equal(out.ok, true, `a suffixed label was refused: ${out.reason}`);
+    assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents);
+    assert.equal(out.extraction.purchasesCents, REAL_REPORT.totalCents);
+  }
+});
+
+test("a two-word prefix containing a digit is still prose", () => {
+  // The word cap alone would admit these: "on 3" and "over 24" are two words.
+  // The digit check is what rejects them — a duration is not a money label.
+  const { lines } = realReportLines();
+  for (const junk of ["Refunds on 3 ZAR 50.00", "Cash over 24 ZAR 10.00", "Total via 2 ZAR 100.00"]) {
+    const poisoned = lines.slice();
+    poisoned.splice(lines.findIndex((l) => /^TOTALS SUMMARY/.test(l)) + 1, 0, junk);
+    const out = parse(poisoned);
+    assert.equal(out.ok, true, `"${junk}" refused the report: ${out.reason}`);
+    assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents, `"${junk}" moved the total`);
+    assert.equal(out.extraction.refundsCents, 0, `"${junk}" became a refunds figure`);
+    assert.equal(out.extraction.cashCents, 0, `"${junk}" became a cash figure`);
+  }
+});
+
+test("a line whose figure position holds something unparseable is REFUSED, not skipped", () => {
+  // "Total 7 pages ZAR 100.00" begins, right after its label, with a digit —
+  // so the FIRST attempt claims it as a figure row, and the whole-remainder
+  // rule then refuses because "7 pages ZAR 100.00" is not an amount.
+  //
+  // That is the deliberate trade-off and it is the safe side of it: the strict
+  // first attempt is what turns "R5O,307.00" into a refusal instead of R5.00,
+  // and softening it so this footer could be skipped would soften that too.
+  // The refusal names exactly what it choked on, so the manager can see why.
+  const { lines } = realReportLines();
+  const poisoned = lines.slice();
+  poisoned.splice(lines.findIndex((l) => /^TOTALS SUMMARY/.test(l)) + 1, 0, "Total 7 pages ZAR 100.00");
+  const out = parse(poisoned);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /not an amount this understands/);
+  assert.match(out.reason, /7 pages ZAR 100\.00/, "the refusal must quote what it read");
+});
+
+test("the printed slip ignores a short labelled-looking line the emailed one would take", () => {
+  // The clearest statement of why the attempt is gated rather than global. On
+  // the emailed path this shape sits in a three-line totals block and is a
+  // figure; on the printed slip it is one line among a whole document and must
+  // be left alone. Ungated, it becomes a second, different TOTAL and refuses a
+  // perfectly good slip.
+  const lines = slipLines();
+  lines.splice(3, 0, "Total charges 25.00");
+  const out = parse(lines);
+  assert.equal(out.ok, true, `the printed slip was refused: ${out.reason}`);
+  assert.equal(out.extraction.format, "printed");
+  assert.equal(out.extraction.totalCents, 5030700, "the slip's own TOTAL, not the boilerplate");
 });
