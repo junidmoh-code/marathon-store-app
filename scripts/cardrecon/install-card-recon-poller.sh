@@ -46,7 +46,7 @@ say "node: $NODE ($("$NODE" --version))"
 #     never read, printed or echoed here — only whether the keys exist.
 [ -f "$REPO/.env" ] || { echo "✗ no $REPO/.env — the poller reads CARD_RECON_IMAP_USER and CARD_RECON_IMAP_PASSWORD from it. Create it first; it is gitignored."; exit 1; }
 for key in CARD_RECON_IMAP_USER CARD_RECON_IMAP_PASSWORD; do
-  grep -qE "^[[:space:]]*$key[[:space:]]*=[[:space:]]*[^[:space:]]" "$REPO/.env" \
+  grep -qE "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]]" "$REPO/.env" \
     || { echo "✗ $key is missing or empty in $REPO/.env"; exit 1; }
   say "$key: present"
 done

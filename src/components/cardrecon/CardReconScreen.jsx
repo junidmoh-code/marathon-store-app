@@ -162,15 +162,27 @@ const INTAKE_FEED_SIZE = 25;
 
 function EmailedSlips() {
   const [node, setNode] = useState(undefined);   // undefined = loading
-  const [denied, setDenied] = useState(false);
+  const [denied, setDenied] = useState(false);   // the rule is not published
+  const [broken, setBroken] = useState(null);    // anything else went wrong
   const [open, setOpen] = useState(null);
 
   useEffect(() => {
     const off = onValue(
       // The TAIL, never the node. This grows by a row per message for ever.
       query(dbRef(database, "card_batch_intake"), orderByChild("at"), limitToLast(INTAKE_FEED_SIZE)),
-      (snap) => { setNode(snap.val() || {}); setDenied(false); },
-      (err) => { setDenied(true); setNode(null); console.warn("emailed slips: read failed", err?.code || err); },
+      (snap) => { setNode(snap.val() || {}); setDenied(false); setBroken(null); },
+      // TWO DIFFERENT FAILURES, AND ONLY ONE OF THEM IS ABOUT THE RULE.
+      // "The rule has not been published" is precise, actionable advice — and
+      // completely wrong for a dropped connection or a missing index, which is
+      // what every non-permission error here is. Sending someone to Junid about
+      // a rule that is already live is its own kind of lie.
+      (err) => {
+        const code = err?.code || "";
+        setNode(null);
+        setDenied(code === "PERMISSION_DENIED" || code === "permission-denied" || code === "permission_denied");
+        setBroken(code === "PERMISSION_DENIED" || code === "permission-denied" || code === "permission_denied" ? null : (code || "the feed could not be read"));
+        console.warn("emailed slips: read failed", code || err);
+      },
     );
     return () => off();
   }, []);
@@ -188,6 +200,17 @@ function EmailedSlips() {
           This account cannot read the emailed-slip feed yet — the rule for /card_batch_intake has not been
           published. Nothing is wrong with the slips themselves; ask Junid to paste it
           (scripts/cardrecon/print-card-intake-rule.mjs).
+        </div>
+      </div>
+    );
+  }
+  if (broken) {
+    return (
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 6 }}>Emailed slips</div>
+        <div style={S.warn}>
+          The emailed-slip feed could not be read just now ({broken}). This says nothing about the slips
+          themselves — try again in a moment.
         </div>
       </div>
     );

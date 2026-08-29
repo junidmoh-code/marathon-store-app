@@ -359,7 +359,13 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
   };
   message.key = messageKey({
     messageId: parsed.messageId, from: message.from, subject: message.subject,
-    date: message.receivedAt, size: downloaded.meta?.size || 0,
+    // imapflow's DownloadObject.meta names it expectedSize; `size` is always
+    // undefined, which quietly took a distinguishing part out of the fallback
+    // key below. (CodeRabbit, PR #510.)
+    date: message.receivedAt, size: downloaded.meta?.expectedSize || 0,
+    // The mailbox's own identity for this message, which is what makes two
+    // genuinely different no-Message-ID mails distinguishable — see messageKey.
+    uid, uidValidity: String(client.mailbox?.uidValidity ?? ""),
   });
 
   const { take, refused: badAttachments, skipped } = planMessage(parsed.attachments);
@@ -370,7 +376,11 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
     return empty;
   }
 
-  const claim = await claimMessage(db, message.key);
+  // A DRY RUN CHANGES NOTHING, AND THE CLAIM IS A CHANGE. Taking one here left
+  // a "claimed" row behind that the real schedule then stood down from for
+  // thirty minutes — so the one command documented as safe to run by hand was
+  // the one that stopped the poller capturing. (CodeRabbit, PR #510.)
+  const claim = cfg.dryRun ? { taken: true, done: false, why: "dry run" } : await claimMessage(db, message.key);
   if (!claim.taken) {
     console.log(`  · "${message.subject || "(no subject)"}" — ${claim.why}`);
     // WHETHER TO MARK IT READ DEPENDS ENTIRELY ON WHY WE STOOD DOWN, and

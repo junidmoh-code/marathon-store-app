@@ -55,13 +55,25 @@ describe("pixelSizeFromHeader", () => {
     expect(pixelSizeFromHeader(png(1024, 768))).toEqual({ width: 1024, height: 768 });
     expect(pixelSizeFromHeader(bytes(chars("GIF89a"), le16(320), le16(240), zeros(8))))
       .toEqual({ width: 320, height: 240 });
-    expect(pixelSizeFromHeader(bytes(chars("BM"), zeros(16), le32(1920), le32(-1080 >>> 0), zeros(8))))
+    // BITMAPINFOHEADER (40 bytes) — 32-bit dimensions, height signed.
+    expect(pixelSizeFromHeader(bytes(chars("BM"), zeros(12), le32(40), le32(1920), le32(-1080 >>> 0), zeros(8))))
       .toEqual({ width: 1920, height: 1080 });   // negative height = top-down, same size
     const vp8x = bytes(
       chars("RIFF"), le32(30), chars("WEBP"), chars("VP8X"), le32(10), zeros(4),
       [(2560 - 1) & 0xFF, ((2560 - 1) >> 8) & 0xFF, 0], [(1440 - 1) & 0xFF, ((1440 - 1) >> 8) & 0xFF, 0],
     );
     expect(pixelSizeFromHeader(vp8x)).toEqual({ width: 2560, height: 1440 });
+  });
+
+  it("reads an OS/2 BMP by its DIB header size, not by hoping", () => {
+    // A 12-byte BITMAPCOREHEADER carries 16-BIT dimensions at the same offsets
+    // where a modern header carries 32-bit ones. Reading one as the other takes
+    // both values plus whatever follows and yields one enormous number — a
+    // WRONG size, which is the one answer this file may never give.
+    expect(pixelSizeFromHeader(bytes(chars("BM"), zeros(12), le32(12), le16(640), le16(480), zeros(8))))
+      .toEqual({ width: 640, height: 480 });
+    // A header size this file does not know is null, not a guess.
+    expect(pixelSizeFromHeader(bytes(chars("BM"), zeros(12), le32(16), le32(100), le32(100), zeros(8)))).toBe(null);
   });
 
   it("takes a HEIC's LARGEST ispe — the thumbnail must not be mistaken for the photo", () => {

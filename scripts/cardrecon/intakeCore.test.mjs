@@ -22,10 +22,22 @@ describe("messageKey", () => {
   });
 
   it("still identifies a message that carries no Message-ID", () => {
-    const a = messageKey({ from: "t@x", subject: "Batch", date: 111, size: 900 });
-    expect(a).toMatch(/^[0-9a-f]{40}$/);
-    expect(messageKey({ from: "t@x", subject: "Batch", date: 111, size: 900 })).toBe(a);
-    expect(messageKey({ from: "t@x", subject: "Batch", date: 222, size: 900 })).not.toBe(a);
+    const m = { from: "t@x", subject: "Batch", date: 111, size: 900, uid: 42, uidValidity: "9" };
+    expect(messageKey(m)).toMatch(/^[0-9a-f]{40}$/);
+    expect(messageKey({ ...m })).toBe(messageKey(m));
+    expect(messageKey({ ...m, date: 222 })).not.toBe(messageKey(m));
+  });
+
+  it("two DIFFERENT no-Message-ID messages never collide, however alike they look", () => {
+    // Two batch reports from the same terminal on the same evening share the
+    // sender, the subject, the date and very nearly the size. A collision does
+    // not look like a bug: the second reads as "already processed", is marked
+    // read, and a real slip is gone with nothing recorded about it. The
+    // mailbox's own uid is the only field that cannot be shared.
+    const same = { from: "terminal@fnb.co.za", subject: "Batch Report", date: 111, size: 900, uidValidity: "9" };
+    expect(messageKey({ ...same, uid: 41 })).not.toBe(messageKey({ ...same, uid: 42 }));
+    // …and the SAME message re-downloaded keeps its key, or nothing would dedupe.
+    expect(messageKey({ ...same, uid: 41 })).toBe(messageKey({ ...same, uid: 41 }));
   });
 });
 

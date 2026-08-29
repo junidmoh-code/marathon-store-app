@@ -134,9 +134,14 @@ const MUTATIONS = [
     "    if (take.length >= MAX_ATTACHMENTS_PER_MESSAGE) {",
     "    if (false) {"],
 
-  ["intake", "a message with no id is treated as the same message as every other",
-    "  const basis = clip(messageId, 400)",
-    "  const basis = clip(messageId, 400) || \"no-id\" || "],
+  // The whole two-line expression, not just its first line: replacing only the
+  // first left the `|| \`no-id|...\`` line dangling after a complete statement,
+  // which is a SyntaxError — and a suite that fails to parse "kills" every
+  // mutation for a reason that has nothing to do with what it tests.
+  // (CodeRabbit, PR #510.)
+  ["intake", "two different messages with no id collide, and the second is lost",
+    "  const basis = clip(messageId, 400)\n    || `no-id|${uidValidity || \"\"}|${uid ?? \"\"}|${clip(from, 200) || \"\"}|${clip(subject, 200) || \"\"}|${date || \"\"}|${size || 0}`;",
+    '  const basis = clip(messageId, 400) || "no-id";'],
 
   ["intake", "a subject line is stored unbounded — attacker text in a record people read",
     "  return s.length > max ? `${s.slice(0, max - 1)}…` : s;",

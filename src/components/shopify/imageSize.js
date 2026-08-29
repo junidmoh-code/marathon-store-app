@@ -100,6 +100,24 @@ function webpSize(b) {
   return null;
 }
 
+// ── BMP ──────────────────────────────────────────────────────────────────────
+// THE DIB HEADER'S OWN SIZE SAYS WHICH SHAPE FOLLOWS IT, and reading it is not
+// optional: the original OS/2 BITMAPCOREHEADER is 12 bytes with 16-BIT
+// dimensions, while everything since (BITMAPINFOHEADER, 40 bytes, and its
+// successors) uses 32-bit ones at the same offsets. Reading a core-header BMP
+// as if it were the modern one takes two 16-bit values plus whatever pixel data
+// follows and reads them as one enormous number — a WRONG size, which is the
+// one answer this file may never give. An unrecognised header size returns
+// null and the caller falls back.
+function bmpSize(b) {
+  const dib = u32le(b, 14);
+  if (dib === 12) return pair(u16le(b, 18), Math.abs((u16le(b, 20) << 16) >> 16));
+  // Height is signed in every 40+ byte header: negative means a top-down
+  // bitmap, which is the same size the other way up.
+  if (dib >= 40) return pair(u32le(b, 18), Math.abs(u32le(b, 22) | 0));
+  return null;
+}
+
 // ── TIFF (and the DNG an iPhone's ProRAW produces) ───────────────────────────
 function tiffSize(b) {
   const little = b[0] === 0x49;
@@ -154,10 +172,7 @@ export function pixelSizeFromHeader(bytes) {
     if (b[0] === 0xFF && b[1] === 0xD8) return jpegSize(b);
     if (b[0] === 0x89 && ascii(b, 1, 3) === "PNG") return pair(u32be(b, 16), u32be(b, 20));
     if (ascii(b, 0, 3) === "GIF") return pair(u16le(b, 6), u16le(b, 8));
-    if (b[0] === 0x42 && b[1] === 0x4D && b.length >= 26) {
-      // Height is signed: a negative value means a top-down bitmap, same size.
-      return pair(u32le(b, 18), Math.abs(u32le(b, 22) | 0));
-    }
+    if (b[0] === 0x42 && b[1] === 0x4D && b.length >= 26) return bmpSize(b);
     if (ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 4) === "WEBP" && b.length >= 30) return webpSize(b);
     if ((ascii(b, 0, 2) === "II" && b[2] === 0x2A) || (ascii(b, 0, 2) === "MM" && b[3] === 0x2A)) return tiffSize(b);
     // ISO-BMFF is identified by its `ftyp` box, which is always first.

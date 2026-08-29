@@ -60,10 +60,24 @@ export function clip(value, max = 200) {
  * identify it. That is weaker, and it is deliberately not "just process it":
  * an id we made up from stable parts still stops the same message being
  * submitted twice, which is the point.
+ *
+ * THE FALLBACK INCLUDES THE MAILBOX'S OWN UID, and it has to. Sender, subject,
+ * date and size are exactly the fields two DIFFERENT slips from the same
+ * terminal on the same evening would share — and a collision there does not
+ * look like a bug: the second message reads as "already processed" and is
+ * marked read, and a real batch report is gone with nothing recorded about it.
+ * A uid is unique within a mailbox, which is the guarantee the other fields
+ * cannot give. (CodeRabbit, PR #510.)
+ *
+ * uidValidity travels with it because a uid only means anything inside one
+ * incarnation of a mailbox; if a mailbox is ever recreated, keys change and
+ * previously-seen mail is re-read — which the downstream duplicate-batch
+ * refusal handles, and which is the right way round: re-reading is recoverable,
+ * a lost slip is not.
  */
-export function messageKey({ messageId, from, subject, date, size }) {
+export function messageKey({ messageId, from, subject, date, size, uid, uidValidity }) {
   const basis = clip(messageId, 400)
-    || `no-id|${clip(from, 200) || ""}|${clip(subject, 200) || ""}|${date || ""}|${size || 0}`;
+    || `no-id|${uidValidity || ""}|${uid ?? ""}|${clip(from, 200) || ""}|${clip(subject, 200) || ""}|${date || ""}|${size || 0}`;
   return createHash("sha256").update(basis).digest("hex").slice(0, 40);
 }
 
