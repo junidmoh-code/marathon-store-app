@@ -77,11 +77,19 @@ say "dependencies: ready"
 #     is marked read on the way past. Checked here, and it fails CLOSED with the
 #     one command that fixes it. (CodeRabbit, PR #510.)
 POLLER_UID="$(sed -n 's/^[[:space:]]*CARD_RECON_POLLER_UID[[:space:]]*=[[:space:]]*//p' "$REPO/.env" | tail -1)"
-# Quotes stripped exactly as the poller's loadEnv() strips them, or a quoted uid
-# would be checked as "\"card-recon-email-poller\"" — a uid that has no flags,
-# so the installer would refuse an identity that is correctly granted.
-POLLER_UID="${POLLER_UID%\"}"; POLLER_UID="${POLLER_UID#\"}"
-POLLER_UID="${POLLER_UID%\'}"; POLLER_UID="${POLLER_UID#\'}"
+# NORMALISED EXACTLY AS THE POLLER'S loadEnv() DOES IT — trim first, then strip
+# one MATCHED pair of quotes — because the installer's whole job here is to
+# check the identity the poller will actually run as. The first attempt stripped
+# each quote character independently on an untrimmed value, which differs in
+# both directions: a trailing space (or a CRLF-saved .env) left the closing
+# quote in place, so the installer refused an identity that was correctly
+# granted; and `"'"'"'x'"'"'"` was stripped twice, so it validated a uid the poller
+# would never use. (Independent review, PR #510.)
+POLLER_UID="$(printf %s "$POLLER_UID" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+case "$POLLER_UID" in
+  \"*\") POLLER_UID="${POLLER_UID#\"}"; POLLER_UID="${POLLER_UID%\"}" ;;
+  \'*\') POLLER_UID="${POLLER_UID#\'}"; POLLER_UID="${POLLER_UID%\'}" ;;
+esac
 POLLER_UID="${POLLER_UID:-card-recon-email-poller}"
 say "checking the poller identity ($POLLER_UID)…"
 GOOGLE_APPLICATION_CREDENTIALS="$SA" "$NODE" -e '

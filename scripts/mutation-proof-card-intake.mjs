@@ -59,14 +59,6 @@ const MUTATIONS = [
     "  if (!terminal || !terminal.storeId || !terminal.tillId) {",
     "  if (!terminal) {"],
 
-  ["routing", "a contradicting merchant ID stops being a refusal",
-    "  if (registered && printed && registered !== printed) {",
-    "  if (false) {"],
-
-  ["routing", "the MID comparison is made case of nothing — every MID matches",
-    "  if (registered && printed && registered !== printed) {",
-    "  if (registered && printed && false) {"],
-
   ["routing", "an unreadable TID routes to whatever the registry's first row is",
     "  if (!tid) {",
     "  if (false && !tid) {"],
@@ -88,9 +80,17 @@ const MUTATIONS = [
     "  if (allTids.length > 1) {",
     "  if (false) {"],
 
-  ["parser", "a PDF naming two merchants takes the first and records it anyway",
-    "  if (allMids.length > 1) {",
+  ["routing", "a terminal with no registered merchant is treated as if it had one",
+    "  if (registered && printed && !printedAll.includes(registered)) {",
+    "  if (printed && !printedAll.includes(registered)) {"],
+
+  ["routing", "a slip from another merchant passes because ONE reading matched",
+    "  if (registered && printed && !printedAll.includes(registered)) {",
     "  if (false) {"],
+
+  ["routing", "only the first merchant id printed is compared, so a section order decides it",
+    "  const printedAll = Array.isArray(extraction.mids) && extraction.mids.length\n    ? extraction.mids.map(normaliseMid).filter(Boolean)\n    : [normaliseMid(extraction.mid)].filter(Boolean);",
+    "  const printedAll = [normaliseMid(extraction.mid)].filter(Boolean);"],
 
   ["parser", "only the first TID row is ever looked at",
     "  const allTids = [...new Set(fieldAll(rows, RE.tid).map(normaliseTid).filter(Boolean))];",

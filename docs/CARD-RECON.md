@@ -762,13 +762,17 @@ script on the mini borrows it.
 CARD_RECON_IMAP_USER=marathon6631@gmail.com
 CARD_RECON_IMAP_PASSWORD=<16-character Gmail APP password, not the account password>
 # optional: CARD_RECON_IMAP_MAILBOX, CARD_RECON_LOOKBACK_DAYS, CARD_RECON_POLLER_UID
+#   (if you set CARD_RECON_POLLER_UID, pass the SAME value to --uid in step 2 —
+#    the grant script does not read .env, so granting the default while the
+#    poller runs as a custom uid produces an identity with no permissions and a
+#    poller refused on every message)
 
 # 2 · The poller's identity (once). This one writes to /users, so it needs
 #     ADMIN credentials — it does NOT read .env. Either run it on the Mac mini
 #     with GOOGLE_APPLICATION_CREDENTIALS pointing at the service-account key,
 #     or on a machine with an owner gcloud ADC login.
 GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json \
-  node scripts/cardrecon/grant-poller-identity.mjs --execute
+  node scripts/cardrecon/grant-poller-identity.mjs --execute   # add --uid <uid> if you set one
 
 # 3 · The rules for the THREE new nodes — printed, then pasted in the console
 node scripts/cardrecon/print-card-intake-rule.mjs

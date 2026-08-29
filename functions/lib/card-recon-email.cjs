@@ -80,11 +80,21 @@ function routeEmailSlip({ extraction, terminals }) {
 
   const warnings = [];
   const registered = normaliseMid(terminal.mid);
-  const printed = normaliseMid(extraction.mid);
-  if (registered && printed && registered !== printed) {
+  // EVERY merchant id the file printed, not just the first. A settlement report
+  // can carry a second, honest one — Amex or Diners under its own merchant
+  // agreement, printed as its own section — and comparing a single reading
+  // would refuse that file or, worse, pass or fail depending on which section
+  // printed first. The question is whether the registered merchant appears at
+  // all. The OCR path reports one reading; both shapes are accepted here.
+  const printedAll = Array.isArray(extraction.mids) && extraction.mids.length
+    ? extraction.mids.map(normaliseMid).filter(Boolean)
+    : [normaliseMid(extraction.mid)].filter(Boolean);
+  const printed = printedAll.length > 0;
+  if (registered && printed && !printedAll.includes(registered)) {
+    const named = printedAll.length === 1 ? `merchant ID ${extraction.mid}` : `merchant IDs ${printedAll.join(", ")}`;
     return {
       ok: false, tid,
-      reason: `That PDF prints merchant ID ${extraction.mid} but terminal ${tid} is registered to merchant ${terminal.mid}. The file is not from this terminal, or the registry is out of date — nothing was recorded.`,
+      reason: `That PDF prints ${named}, and none of them is the merchant terminal ${tid} is registered to (${terminal.mid}). The file is not from this terminal, or the registry is out of date — nothing was recorded.`,
     };
   }
   if (registered && !printed) {

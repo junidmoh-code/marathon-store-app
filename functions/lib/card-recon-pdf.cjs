@@ -277,18 +277,23 @@ function parseSlipPdf(lines) {
     return { ok: false, reason: `That PDF prints more than one terminal ID (${allTids.join(" and ")}), so which till it belongs to cannot be decided. Nothing was recorded — photograph the slip instead.` };
   }
 
-  // ── ONE FILE, ONE MERCHANT ───────────────────────────────────────────────
-  // The same rule as the TID above, for the same reason. On the email path the
-  // MID is the SECOND identifier the router checks the slip against the
-  // registry with — it is what makes "this file is not from this terminal"
-  // detectable at all — so a file that states two different merchant ids is a
-  // file whose second check means nothing, whichever reading happens to win.
-  // Repeated MATCHING readings are the normal case (a slip printing its header
-  // twice) and pass. (CodeRabbit, PR #510.)
+  // ── EVERY MERCHANT ID THE FILE PRINTS, REPORTED AND NOT JUDGED ───────────
+  // The TID rule above refuses a file naming two terminals, because two
+  // terminals make the routing key ambiguous and nothing downstream can
+  // recover from that. A file naming two MERCHANTS is a different shape of
+  // problem and was briefly given the same answer, wrongly: the slip is still
+  // routable (its TID is unique), and a multi-scheme settlement report —
+  // Amex or Diners under a separate merchant agreement, printed as its own
+  // section with its own Merchant No — is an HONEST file with two correct
+  // merchant ids. Refusing it would have refused every emailed slip from that
+  // terminal, for ever, over a check that is not what decides the till.
+  //
+  // So all of them travel, and the router decides: the registry's merchant
+  // must be AMONG the ones printed. That is a stronger check than comparing
+  // one reading (it cannot be defeated by which section printed first) and it
+  // cannot refuse a file that does name the right merchant somewhere.
+  // (CodeRabbit raised the check; independent review found the false refusal.)
   const allMids = [...new Set(fieldAll(rows, RE.mid).map(normaliseMid).filter(Boolean))];
-  if (allMids.length > 1) {
-    return { ok: false, reason: `That PDF prints more than one merchant ID, so which merchant it belongs to cannot be decided. Nothing was recorded — photograph the slip instead.` };
-  }
 
   const rawBatch = field(rows, RE.batchNo);
   bad = need(rawBatch, "a batch number"); if (bad) return bad;
@@ -359,6 +364,10 @@ function parseSlipPdf(lines) {
     ok: true,
     extraction: {
       mid: field(rows, RE.mid),
+      // Normalised, deduped, in print order — what the ROUTER checks the
+      // registry against. `mid` above stays the first as printed, because that
+      // is what belongs on the record.
+      mids: allMids,
       tid, batchNo: String(batchNo),
       openedAt, closedAt, printedAt,
       openedText, closedText,

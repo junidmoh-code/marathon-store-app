@@ -438,26 +438,24 @@ test("a slip that prints its own TID twice, agreeing, is the normal case", async
   assert.equal(p.extraction.tid, "0000HP1X");
 });
 
-// ── ONE FILE, ONE MERCHANT ───────────────────────────────────────────────────
-// The MID is the second identifier the email path checks a slip against its
-// registry row with — the one that makes "this file is not from this terminal"
-// detectable. A file stating two different merchants is a file whose second
-// check means nothing, whichever reading wins.
-test("a PDF printing two different merchant IDs is refused", async () => {
+// ── EVERY MERCHANT THE FILE NAMES, REPORTED AND NOT JUDGED ───────────────────
+// A second merchant id in one file is not the ambiguity two TIDs are: the slip
+// is still routable, and a multi-scheme settlement report (Amex or Diners under
+// its own merchant agreement, printed as its own section) is an HONEST file
+// with two correct ones. The parser therefore carries all of them and the
+// ROUTER asks the question that matters — is the registered merchant among
+// them — which is stronger than comparing one reading and cannot refuse a file
+// that does name the right merchant somewhere.
+test("every merchant ID printed is carried, deduped and normalised", async () => {
   const p = await parseOf([...slipLines(), "MERCHANT ID  100000001178101"]);
-  assert.equal(p.ok, false);
-  assert.match(p.reason, /more than one merchant ID/i);
+  assert.equal(p.ok, true, p.reason);
+  assert.deepEqual(p.extraction.mids, ["4977890", "100000001178101"]);
+  assert.equal(p.extraction.mid, "000000004977890", "the record keeps the first as printed");
 });
 
-test("the same merchant printed twice, agreeing, is the normal case", async () => {
-  const p = await parseOf([...slipLines(), "MERCHANT ID  000000004977890"]);
-  assert.equal(p.ok, true, p.reason);
-  assert.equal(p.extraction.mid, "000000004977890");
-});
-
-test("leading zeros are not a merchant disagreement", async () => {
-  // The registry and the slip carry the same number written two ways; that is
-  // not two merchants, and refusing it would refuse a good file.
-  const p = await parseOf([...slipLines(), "MERCHANT ID  4977890"]);
-  assert.equal(p.ok, true, p.reason);
+test("the same merchant printed twice, or with different leading zeros, is ONE merchant", async () => {
+  const twice = await parseOf([...slipLines(), "MERCHANT ID  000000004977890"]);
+  assert.deepEqual(twice.extraction.mids, ["4977890"]);
+  const zeros = await parseOf([...slipLines(), "MERCHANT ID  4977890"]);
+  assert.deepEqual(zeros.extraction.mids, ["4977890"]);
 });

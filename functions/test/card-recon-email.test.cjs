@@ -38,6 +38,28 @@ test("a MID that contradicts the registry is refused — the file is from elsewh
   assert.ok(!r.unmapped);
 });
 
+test("the registered merchant need only be AMONG the ones the file prints", () => {
+  // A multi-scheme settlement report carries a second, honest merchant id —
+  // Amex or Diners under its own agreement, printed as its own section.
+  // Refusing that would refuse every emailed slip from that terminal for ever,
+  // over a check that is not what decides the till.
+  const ok = routeEmailSlip({
+    extraction: { tid: "0000HP1X", mid: "000000004977890", mids: ["4977890", "377777777777777"] },
+    terminals: TERMINALS,
+  });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.deepEqual(ok.warnings, []);
+
+  // …and NONE of them being the registered merchant is still a refusal, which
+  // is what stops one reading being defeated by whichever section printed first.
+  const bad = routeEmailSlip({
+    extraction: { tid: "0000HP1X", mid: "100000001178101", mids: ["100000001178101", "377777777777777"] },
+    terminals: TERMINALS,
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /merchant IDs/i);
+});
+
 test("leading zeros are not a merchant difference", () => {
   const r = routeEmailSlip({ extraction: { tid: "0000HP1X", mid: "4977890" }, terminals: TERMINALS });
   assert.equal(r.ok, true);
