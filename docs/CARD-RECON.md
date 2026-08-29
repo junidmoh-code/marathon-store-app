@@ -340,17 +340,86 @@ written down as an option rather than done.
 
 ### `/card_batch_drafts/{uid}/{draftId}`  ·  TOP-LEVEL, owner-only
 
-The two-phase handshake: `extract` OCRs the photos, validates, and parks the
+The two-phase handshake: `extract` reads the slip (OCR on the photo path,
+direct text extraction on the PDF path), validates, and parks the
 parsed slip here (2h TTL, server-written, keyed under the submitting uid so
 ownership is structural and the per-user expired-draft sweep stays bounded);
 `submit` promotes the draft verbatim into `/card_batches`. The review step
 between the two shows what the OCR read — it offers **no way to edit a
 figure**.
 
+## Two ways in: the PDF and the photos
+
+An FNB terminal can email its batch report as a **PDF**, and that is the fast
+path. Photographing the printed slip remains for terminals that cannot email.
+A submission is **one or the other, never both** — the callable refuses a
+request carrying a PDF and photos together, and the screen enforces the same
+rule by disabling whichever input the other has claimed.
+
+`chooseCaptureSource()` in `lib/card-recon.cjs` makes that decision once. Its
+answer routes the extract **and** stamps `capturedVia` on the batch record, so
+the field the owner reads to tell a PDF batch from a photographed one cannot
+drift from the path that actually ran.
+
+### Why the PDF is read as text and never OCR'd
+
+The text in a PDF is exact. There is nothing to be confident *about*, so the
+confidence gate — the only check the photo path applies that this one does not
+— is skipped, and `confidence` is recorded as `null` rather than a fabricated
+1.0.
+
+**A parse failure is a hard reject with a reason, never a fuzzy second
+attempt.** `parseSlipPdf()` refuses by name: it says which field it could not
+find, or that a figure "reads `R5O,307.00`, which is not an amount this
+understands". Falling back to OCR here would be the one thing worse than
+refusing — a figure nobody can vouch for, recorded as a variance against a
+named person's till. The refusal tells the manager to photograph the slip
+instead, and the photo path is right there below.
+
+Money is parsed from the **whole remainder of the line**, which must parse
+entirely or the line is refused. An earlier version captured digits up to the
+first bad character and read `R5O,307.00` (letter O) as **R5.00** — silently,
+with no warning. That is precisely the failure this design exists to prevent.
+
+### Known limit: two fields on one printed row
+
+`pdfToLines` merges every text fragment sharing a Y coordinate into one line,
+and the header patterns anchor each label to the **start** of its row. A slip
+that printed two labelled fields side by side —
+`MERCHANT ID 000000004977890   TERMINAL ID 0000HP1X` — would therefore be
+refused for a missing terminal ID.
+
+Allowing a label after a column gap instead does not work: `tidy` collapses
+every run of whitespace to a single space before any pattern runs, and it must,
+because `splitTxnMiddle` and `TXN_RE` read a transaction row as single-space
+columns. Preserving gaps for the header would break the detail roll.
+
+No slip on file uses that layout. If one turns up, the fix belongs in
+`pdfToLines` — split a row at a wide X gap, for header lines only — not in the
+patterns. Until then it is a refusal that names the missing field and sends the
+manager to the photo path, which reads any layout.
+
+### What is the same on both paths
+
+Every existing refusal, unchanged: unmapped TID, the TID on the slip
+disagreeing with the picked till, a duplicate batch number, arithmetic that
+does not hold, the line count against the printed Transactions figure, a
+window over 7 days, and TSN contiguity where present. A PDF with lines
+extracted is **never** `linesCaptured: false` — one file is the whole slip, so
+there is no detail/summary split and no summary-only fallback on this path.
+
+`readPdfPayload()` decides whether the file is a PDF at all, on its **magic
+bytes** (`%PDF-`) rather than its name, so a renamed photo is refused with a
+sentence instead of failing deep inside a parser. Size (10 MB) and base64
+integrity are checked in the same seam; the client applies its own payload
+pre-flight before the call so an oversized file gets a clean message rather
+than a transport error.
+
 ### Photos
 
-`cardRecon/{draftId}/photo-{i}.jpg` in the default Storage bucket, written by
-the callable with the Admin SDK. A fresh `draftId` per extract means no path is
+`cardRecon/{draftId}/photo-{i}.jpg` in the default Storage bucket — and on
+the PDF path, `cardRecon/{draftId}/slip.pdf`, the file itself as the evidence.
+Both are written by the callable with the Admin SDK. A fresh `draftId` per extract means no path is
 ever written twice; `storage.rules` has no match for `cardRecon/`, so no client
 can write or delete there.
 

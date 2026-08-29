@@ -56,8 +56,13 @@ const FORBIDDEN = [
   ["lines (they carry a masked PAN each)", /\blines\s*:/],
 ];
 
-test("the callable returns BOTH an extract and a submit payload (else these tests prove nothing)", () => {
-  assert.equal(responsePayloads().length, 2, "expected exactly the extract + submit responses");
+test("every client response the callable makes is scanned (else these tests prove nothing)", () => {
+  // THREE now: the photo extract, the PDF extract, and submit. This count is
+  // the thing that makes the checks below meaningful — a new response path
+  // that nobody added here would return whatever it liked, unscanned. It
+  // caught exactly that when the PDF path was added.
+  assert.equal(responsePayloads().length, 3,
+    "a response path was added or removed — scan it, then update this count");
 });
 
 for (const [what, pattern] of FORBIDDEN) {

@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { planPhotoIntake, mergeIntake, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
+import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_PAYLOAD_BYTES, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SOURCE = readFileSync(resolve(here, "CardReconScreen.jsx"), "utf8");
@@ -60,14 +60,15 @@ describe("where the frames may come from", () => {
     // The guard for the bug above: if comment-stripping ever mangles the source
     // again, every other assertion here goes quietly green.
     expect(code).toContain('type="file"');
-    expect(fileInputs(), "both file inputs must survive stripping").toHaveLength(2);
+    expect(fileInputs(), "all three file inputs must survive stripping — PDF, roll, summary")
+      .toHaveLength(3);
     expect(code, "a real comment must still be gone").not.toContain("the OS opens the camera");
   });
 
-  it("but both still accept images only", () => {
-    const inputs = fileInputs();
-    expect(inputs).toHaveLength(2);
-    for (const tag of inputs) expect(tag).toMatch(/accept="image\/\*"/);
+  it("but the two PHOTO uploads still accept images only", () => {
+    const photoInputs = fileInputs().filter((t) => /setDetailPhotos|setSummaryPhotos/.test(t));
+    expect(photoInputs).toHaveLength(2);
+    for (const tag of photoInputs) expect(tag).toMatch(/accept="image\/\*"/);
   });
 
   it("the detail roll takes several frames; the summary takes one", () => {
@@ -97,9 +98,15 @@ describe("the ~2000px downscale reaches library photos too", () => {
     // FileReader + `new Image()` cannot decode HEIC anywhere but Safari, and an
     // iPhone's library stores HEIC. Removing `capture` without this would have
     // broken gallery selection on exactly the phones it is for.
-    expect(code).toMatch(/decodeImageFile\(/);
-    expect(code, "the naive decode path must be gone").not.toMatch(/new Image\(\)/);
-    expect(code).not.toMatch(/readAsDataURL/);
+    // Scoped to downscalePhoto: the PDF path legitimately uses readAsDataURL to
+    // turn a file into base64, which is not image decoding and must not be
+    // confused with it.
+    const body = code.slice(code.indexOf("async function downscalePhoto"),
+                            code.indexOf("const S = {"));
+    expect(body.length, "the slice must actually cover the function").toBeGreaterThan(200);
+    expect(body).toMatch(/decodeImageFile\(/);
+    expect(body, "the naive decode path must be gone").not.toMatch(/new Image\(\)/);
+    expect(body, "…and the image path must not read files as data URLs").not.toMatch(/readAsDataURL/);
   });
 
   it("and releases the decoded bitmap — six frames on a phone is where that shows", () => {
@@ -231,8 +238,11 @@ describe("two picks at once must not lose photos", () => {
     // guarded, this passed while the detail roll — the one that takes six
     // frames and so is by far the likeliest to be re-tapped mid-decode — was
     // wide open. A mutation proved it.
-    expect([...code.matchAll(/disabled=\{preparing > 0/g)],
-      "both the detail and summary pickers must be disabled").toHaveLength(2);
+    // Both photo pickers gate on `preparing`, and both also gate on a PDF
+    // being attached — the predicates differ, so match the shared prefix.
+    expect([...code.matchAll(/disabled=\{!!pdfFile \|\| preparing > 0/g)],
+      "both the detail and summary pickers must be disabled while decoding").toHaveLength(2);
+    expect(code, "and the file line while reading").toMatch(/disabled=\{hasPhotos \|\| preparing > 0\}/);
     expect(code).toMatch(/Preparing photos/);
   });
 });
@@ -245,7 +255,11 @@ describe("the copy matches what the buttons now do", () => {
     // Per SENTENCE, not per word: "Shoot it here or pick it from your photos"
     // is fine, "Shoot the detail roll" is not. A bare word-match flagged the
     // correct copy and had to be replaced.
-    const sentences = code.split(/(?<=[.!?])\s+|\n/);
+    // Split on sentence ends WITHOUT a lookbehind — a lookbehind is a
+    // parse-time SyntaxError on Safari below 16.4 and the repo-wide guard
+    // (noLookbehind.test.js) refuses one anywhere under src/, test files
+    // included. Matching whole sentences does the same job.
+    const sentences = code.match(/[^.!?\n]+[.!?]?/g) || [];
     const cameraOnly = sentences
       .filter((t) => /\bShoot\b/.test(t))
       .filter((t) => !/\b(choose|pick)\b/i.test(t))
@@ -254,6 +268,82 @@ describe("the copy matches what the buttons now do", () => {
     // …and the alternative is actually offered somewhere, so this cannot pass
     // by the copy having been deleted rather than fixed.
     expect(code).toMatch(/Shoot or choose/);
+  });
+});
+
+describe("the PDF path", () => {
+  it("is the FIRST input, above both photo uploads", () => {
+    const order = ["2 · The PDF", "3 · The detail roll", "4 · The summary"]
+      .map((label) => code.indexOf(label));
+    expect(order.every((i) => i > -1), "all three sections must exist").toBe(true);
+    expect(order, "the PDF line comes first").toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it("is one compact line, not a drop area like the photo uploads", () => {
+    // The photo uploads use the full-width primary button (S.btn); the file
+    // line uses the small ghost one with an auto width. If it ever grows into
+    // a third drop area it stops being the quick path it exists to be.
+    const pdfBlock = code.slice(code.indexOf("2 · The PDF"), code.indexOf("3 · The detail roll"));
+    expect(pdfBlock).toMatch(/S\.btnGhost/);
+    expect(pdfBlock, "the big primary button belongs to the photo uploads").not.toMatch(/\.\.\.S\.btn,/);
+    expect(pdfBlock).toMatch(/Add file/);
+  });
+
+  it("accepts PDFs only", () => {
+    const pdfInput = [...code.matchAll(/<input\b[\s\S]*?\/>/g)].map((m) => m[0]).find((t) => /addPdf/.test(t));
+    expect(pdfInput).toBeTruthy();
+    expect(pdfInput).toMatch(/accept="application\/pdf,\.pdf"/);
+    expect(pdfInput, "one file — a PDF is the whole slip").not.toMatch(/\bmultiple\b/);
+  });
+
+  it("ONE PATH: a PDF clears the photos, and photos disable the file line", () => {
+    // Enforced here AND in the callable, which refuses a request carrying both.
+    expect(code, "attaching a PDF clears anything photographed").toMatch(/setDetailPhotos\(\[\]\); setSummaryPhotos\(\[\]\)/);
+    expect(code, "the file button is disabled once photos exist").toMatch(/disabled=\{hasPhotos \|\| preparing > 0\}/);
+    expect(code, "the detail picker is disabled once a PDF exists").toMatch(/disabled=\{!!pdfFile \|\| preparing > 0 \|\| detailPhotos\.length/);
+    expect(code, "the summary picker too").toMatch(/disabled=\{!!pdfFile \|\| preparing > 0\}/);
+  });
+
+  it("a PDF needs no summary photo to proceed", () => {
+    // The photo path requires a summary and either a roll or the summary-only
+    // tick. A PDF is the whole slip and requires neither.
+    expect(code).toMatch(/pdfFile\s*\?\s*false/);
+  });
+
+  it("summary-only is not offered on the PDF path", () => {
+    // A PDF with lines is never linesCaptured:false, so the tick would be a
+    // way to record a worse capture than the file actually contains.
+    expect(code).toMatch(/detailPhotos\.length === 0 && !pdfFile &&/);
+  });
+});
+
+describe("the payload pre-flight", () => {
+  it("lets a normal capture through", () => {
+    const photos = Array.from({ length: 7 }, () => ({ base64: "x".repeat(600 * 1024) }));
+    expect(payloadRefusal(photos)).toBeNull();
+  });
+
+  it("refuses an oversized one with a sentence, not a transport error", () => {
+    const photos = Array.from({ length: 7 }, () => ({ base64: "x".repeat(1_400_000) }));
+    const refusal = payloadRefusal(photos);
+    expect(refusal).toMatch(/too much to send/i);
+    expect(refusal, "it must say what to do").toMatch(/Remove a section/);
+    expect(refusal, "and how big it actually was").toMatch(/9\.[0-9]MB/);
+  });
+
+  it("sits under the callable's own 10MB ceiling, with room for the rest of the request", () => {
+    expect(MAX_PAYLOAD_BYTES).toBeLessThan(10 * 1024 * 1024);
+  });
+
+  it("is applied to BOTH paths, before the call", () => {
+    expect(code).toMatch(/payloadRefusal\(pdfFile \? \[pdfFile\] : photos\)/);
+    expect(code, "and to the PDF as it is read, so an oversized file is caught at pick time")
+      .toMatch(/payloadRefusal\(\[\{ base64 \}\]\)/);
+  });
+
+  it("counts nothing as nothing", () => {
+    expect(payloadRefusal([])).toBeNull();
+    expect(payloadRefusal(null)).toBeNull();
   });
 });
 
@@ -268,5 +358,38 @@ describe("what must NOT have changed", () => {
     // The server records linesCaptured:false from this; the client must keep
     // telling it the truth about whether a roll was shot.
     expect(code).toMatch(/summaryOnly: summaryOnly \|\| detailPhotos\.length === 0/);
+  });
+});
+
+describe("starting over leaves nothing of the last slip behind", () => {
+  // The comment-STRIPPED source: the explanatory comment above reset names
+  // every setter, and matching that would pass with the code removed.
+  const screen = code;
+
+  it("reset clears the PDF as well as the photos", () => {
+    // A retained pdfFile meant "Capture another slip" would re-submit the
+    // PREVIOUS terminal's report against a freshly picked till — the wrong
+    // figures, against the wrong person's name.
+    const body = screen.slice(screen.indexOf("const reset ="), screen.indexOf("const reset =") + 400);
+    expect(body, "reset must clear the picked till").toMatch(/setTid\(null\)/);
+    expect(body, "reset must clear the detail roll").toMatch(/setDetailPhotos\(\[\]\)/);
+    expect(body, "reset must clear the summary").toMatch(/setSummaryPhotos\(\[\]\)/);
+    expect(body, "reset must clear the PDF").toMatch(/setPdfFile\(null\)/);
+  });
+
+  it("every piece of capture state reset holds is cleared by it", () => {
+    // Named individually above; counted here so the NEXT input added to this
+    // screen cannot quietly skip reset the way the PDF one did.
+    const setters = new Set(
+      (screen.match(/const \[[a-zA-Z]+, (set[A-Za-z]+)\]/g) || [])
+        .map((m) => m.replace(/.*(set[A-Za-z]+).*/, "$1")),
+    );
+    const captureState = ["setTid", "setDetailPhotos", "setSummaryPhotos", "setSummaryOnly", "setPdfFile"];
+    for (const s of captureState) {
+      expect(setters.has(s), `${s} is no longer a state setter on this screen — update this list`).toBe(true);
+    }
+    const body = screen.slice(screen.indexOf("const reset ="), screen.indexOf("const reset =") + 400);
+    const missed = captureState.filter((s) => !body.includes(s));
+    expect(missed, `reset does not clear: ${missed.join(", ")}`).toEqual([]);
   });
 });

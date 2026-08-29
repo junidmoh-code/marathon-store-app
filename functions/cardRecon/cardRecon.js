@@ -44,7 +44,10 @@ const {
   parseSlipTimestamp, parseRandsToCents,
   normaliseTid, normaliseBatchNo, resolveBatchWrite, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
+  chooseCaptureSource, readPdfPayload,
 } = require("../lib/card-recon.cjs");
+const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
+const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard } = require("../lib/card-expected.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 
@@ -72,6 +75,11 @@ const OUT_PER_MTOK_USD = 2.50;
 // abuse ceiling, not the expectation. Client downscales to ≤2000px JPEG.
 const MAX_PHOTOS = 14;
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+// A terminal's emailed batch report is tens of kilobytes. 10MB is the abuse
+// ceiling, not the expectation, and it sits under the callable's own request
+// limit so an oversized file is refused with a sentence rather than failing as
+// a transport error the manager cannot read.
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
 
 const EXTRACTION_PROMPT = [
   "These photographs show ONE printed card-terminal Batch Report from an FNB",
@@ -293,15 +301,16 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
 }
 
 async function handleExtract(db, request) {
-  const { photos, pickedTid, summaryOnly } = request.data || {};
-  if (!Array.isArray(photos) || !photos.length) {
-    throw new HttpsError("invalid-argument", "At least one photo is required.");
-  }
-  if (photos.length > MAX_PHOTOS) {
-    throw new HttpsError("invalid-argument", `Too many photos — ${MAX_PHOTOS} at most.`);
-  }
+  const { photos, pdf, pickedTid, summaryOnly } = request.data || {};
+
+  // ONE PATH PER SUBMISSION — decided once, in chooseCaptureSource, because the
+  // same answer stamps `capturedVia` on the record further down.
+  const chosen = chooseCaptureSource({ photos, pdf, maxPhotos: MAX_PHOTOS });
+  if (chosen.err) throw new HttpsError("invalid-argument", chosen.err);
   const picked = normaliseTid(pickedTid);
   if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
+
+  if (chosen.source === "pdf") return handleExtractPdf(db, request, { picked, pdf, source: chosen.source });
   const decoded = photos.map(decodePhoto);
 
   // The terminal registry FIRST: an unmapped picked TID means setup, not OCR.
@@ -440,6 +449,130 @@ async function handleExtract(db, request) {
   };
 }
 
+// ─── THE PDF PATH ────────────────────────────────────────────────────────────
+// The terminal's own emailed batch report. One file covers the whole slip —
+// header, totals and detail roll — so there is no detail/summary split here and
+// a PDF with lines is never recorded as summary-only.
+//
+// NO OCR AND NO FALLBACK TO ONE. The text is read exactly or this refuses with
+// a reason naming what it could not find. A fuzzy second attempt would be the
+// one thing worse than refusing: a figure nobody can vouch for, recorded as a
+// variance against a named person's till. Photos remain, and the refusal says so.
+async function handleExtractPdf(db, request, { picked, pdf, source }) {
+  // Intactness, size and the magic bytes, all in one pure seam — see
+  // readPdfPayload. A malformed upload is a sentence, never a transport error.
+  const payload = readPdfPayload(pdf.base64, MAX_PDF_BYTES);
+  if (payload.err) {
+    // `reject` is a refusal the screen shows with the slip still attached; the
+    // throw is for a payload that never was a submission.
+    if (payload.reject) return reject(payload.err);
+    throw new HttpsError("invalid-argument", payload.err);
+  }
+  const buffer = payload.buffer;
+
+  // The terminal registry FIRST — an unmapped TID is setup, not a bad file.
+  const terminals = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
+  const terminal = terminals[picked];
+  if (!terminal || !terminal.storeId || !terminal.tillId) {
+    return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
+  }
+
+  const text = await pdfToLines(buffer);
+  if (!text.ok) return reject(text.reason);
+  const parsed = parseSlipPdf(text.lines);
+  if (!parsed.ok) return reject(parsed.reason);
+  const extraction = parsed.extraction;
+
+  // ── THE TID DECIDES, NOT THE PICKER — identical to the photo path ──
+  if (extraction.tid !== picked) {
+    const mapped = terminals[extraction.tid];
+    const where = mapped && mapped.label ? ` (that file belongs to ${mapped.label})` : mapped ? ` (that file belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
+    return reject(`This PDF is for TID ${extraction.tid}, not the till you picked${where}. Capture it on its own till.`);
+  }
+
+  // Overlapping sections cannot happen in a single file, but a terminal that
+  // prints a line twice still must not be averaged away.
+  const dedup = dedupeLines(extraction.lines);
+  if (!dedup.ok) return reject(dedup.reason);
+  extraction.lines = dedup.lines;
+
+  // EVERY existing refusal, unchanged — only the confidence gate is skipped,
+  // because exact text has nothing to be confident about.
+  const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
+  if (!verdict.ok) return reject(verdict.reason);
+
+  const batchNo = normaliseBatchNo(extraction.batchNo);
+  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
+  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
+  if (!write.ok) return reject(write.reason);
+
+  const expected = await computeExpectedCard(db, {
+    storeId: terminal.storeId, tillId: terminal.tillId,
+    startMs: extraction.openedAt, endMs: extraction.closedAt,
+  });
+
+  const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
+  try {
+    const stale = (await userDraftsRef.once("value")).val() || {};
+    const gone = Object.entries(stale).filter(([, d]) => d && Date.now() > d.expiresAt).map(([k]) => k);
+    if (gone.length) await userDraftsRef.update(Object.fromEntries(gone.map((k) => [k, null])));
+  } catch (err) { console.warn("cardBatchCapture: draft sweep failed:", err.message); }
+
+  // The FILE is the evidence, stored exactly as the photos are: a fresh draft
+  // id per extract, so no path is ever written twice.
+  const draftRef = userDraftsRef.push();
+  const draftId = draftRef.key;
+  const pdfPath = `${PHOTO_STORAGE_PREFIX}/${draftId}/slip.pdf`;
+  await admin.storage().bucket(STORAGE_BUCKET).file(pdfPath).save(buffer, {
+    resumable: false,
+    contentType: "application/pdf",
+    metadata: { cacheControl: "private, max-age=31536000, immutable" },
+  });
+
+  const draft = {
+    by: request.auth.uid,
+    byEmail: request.auth.token?.email || null,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + DRAFT_TTL_MS,
+    pickedTid: picked,
+    summaryOnly: false,
+    correction: !!request.data.correction,
+    warnings: verdict.warnings.length ? verdict.warnings : null,
+    photoPaths: [],
+    pdfPath,
+    capturedVia: source,   // the routing decision, not a second literal
+    extraction: JSON.parse(JSON.stringify(extraction)),
+    terminal: { storeId: terminal.storeId, tillId: terminal.tillId, label: terminal.label ?? null },
+    reviewedExpectedCents: expected.cardCents,
+    ocr: null,                       // nothing was OCR'd, and nothing was billed
+    pdfPages: text.pages,
+  };
+  await draftRef.set(draft);
+
+  // Same capture-only response as the photo path: what the FILE said, and
+  // nothing about how the till did.
+  return {
+    ok: true,
+    draftId,
+    review: {
+      tid: extraction.tid, mid: extraction.mid, batchNo: Number(batchNo),
+      revision: write.revision, supersedes: write.supersedes,
+      terminal: draft.terminal,
+      openedAt: extraction.openedAt, closedAt: extraction.closedAt, printedAt: extraction.printedAt,
+      openedText: extraction.openedText, closedText: extraction.closedText,
+      txnCount: extraction.txnCount,
+      purchasesCents: extraction.purchasesCents, cashCents: extraction.cashCents,
+      refundsCents: extraction.refundsCents, totalCents: extraction.totalCents,
+      reconLine: extraction.reconLine,
+      confidence: null,
+      lineCount: extraction.lines.length,
+      summaryOnly: false,
+      capturedVia: "pdf",
+      warnings: verdict.warnings,
+    },
+  };
+}
+
 async function handleSubmit(db, request) {
   const { draftId } = request.data || {};
   if (typeof draftId !== "string" || !/^[A-Za-z0-9_-]{10,40}$/.test(draftId)) {
@@ -474,7 +607,10 @@ async function handleSubmit(db, request) {
   const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
     || mapped.storeId !== terminal.storeId || mapped.tillId !== terminal.tillId
     ? { ok: false, reason: "This capture no longer matches a registered terminal — extract the slip again." }
-    : validateExtraction(extraction, { summaryOnly: !!draft.summaryOnly });
+    : validateExtraction(extraction, {
+        summaryOnly: !!draft.summaryOnly,
+        source: draft.capturedVia === "pdf" ? "pdf" : "photo",
+      });
   if (!revalid.ok) {
     await draftRef.remove().catch(() => {});
     return reject(revalid.reason);
@@ -505,6 +641,8 @@ async function handleSubmit(db, request) {
     submittedAt: Date.now(),
     draftId,
     ocr: draft.ocr || null,
+    capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
+    pdfPath: draft.pdfPath || null,
   });
 
   const txn = await tidRef.child(write.key).transaction((cur) => {

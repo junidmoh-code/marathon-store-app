@@ -11,6 +11,22 @@ const {
 } = require("../lib/card-recon.cjs");
 
 // ── slip timestamps (SAST, no DST) ───────────────────────────────────────────
+test("thousand separators must GROUP correctly — a mis-grouped figure is refused", () => {
+  // "R50,307,00.5" used to parse as R5,030,700.50: every comma was stripped
+  // before the shape was tested, so the grouping was never checked and a
+  // mangled figure became a large, wrong one. This function's contract is that
+  // a mangled figure is refused and never coerced — the grouping is part of
+  // what must parse. Found while building the PDF path, and it applies to the
+  // photo path just as much.
+  for (const good of ["R50,355.00", "R50 355.00", "R1,234,567.89", "50355", "R0.50", "R48"]) {
+    assert.notEqual(parseRandsToCents(good), null, `${good} must still parse`);
+  }
+  for (const bad of ["R50,307,00.5", "R50,30,700.00", "R50,3070.00", "R5O,307.00", "R50,307.000"]) {
+    assert.equal(parseRandsToCents(bad), null, `${bad} must be refused, not coerced`);
+  }
+  assert.equal(parseRandsToCents("R1,234,567.89"), 123456789);
+});
+
 test("parseSlipTimestamp reads SA local time as UTC+2", () => {
   const ms = parseSlipTimestamp("2026/08/26 18:50:04");
   assert.equal(ms, Date.UTC(2026, 7, 26, 18, 50, 4) - SAST_OFFSET_MS);

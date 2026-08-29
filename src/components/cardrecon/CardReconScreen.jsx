@@ -40,7 +40,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref as dbRef, onValue } from "firebase/database";
 import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
-import { planPhotoIntake, mergeIntake, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
+import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
 
@@ -152,6 +152,12 @@ export default function CardReconScreen({ onExit }) {
   const [summaryOnly, setSummaryOnly] = useState(false);
   const [busy, setBusy] = useState(null);                  // "extract" | "submit" | null
   const [preparing, setPreparing] = useState(0);           // decodes in flight
+  // THE PDF PATH. One file is the whole slip — header, totals and detail roll —
+  // so it never coexists with photos: adding one clears and disables them, and
+  // adding photos disables it. One path per submission, decided here and
+  // enforced again in the callable.
+  const [pdfFile, setPdfFile] = useState(null);            // { name, size, base64 }
+  const pdfRef = useRef(null);
   const [reject, setReject] = useState(null);              // plain server reason
   const [error, setError] = useState(null);                // transport/unexpected
   const [draft, setDraft] = useState(null);                // { draftId, review }
@@ -192,16 +198,56 @@ export default function CardReconScreen({ onExit }) {
     }
   };
 
+  // The terminal's emailed batch report. Read as base64 and sent whole — the
+  // TEXT is extracted server-side, so the figures never depend on this device
+  // and the file itself is what gets stored as evidence.
+  const hasPhotos = detailPhotos.length > 0 || summaryPhotos.length > 0;
+
+  const addPdf = async (e) => {
+    const file = (e.target.files || [])[0];
+    e.target.value = "";
+    if (!file) return;
+    setError(null);
+    if (file.type && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name || "")) {
+      setError(`${file.name || "That file"} is not a PDF. Attach the terminal's emailed batch report.`);
+      return;
+    }
+    setPreparing((n) => n + 1);
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(",")[1] || "");
+        r.onerror = () => reject(new Error("could not read the file"));
+        r.readAsDataURL(file);
+      });
+      const tooBig = payloadRefusal([{ base64 }]);
+      if (tooBig) { setError(tooBig); return; }
+      setPdfFile({ name: file.name || "batch report.pdf", size: file.size, base64 });
+      // ONE PATH: a PDF covers the whole slip, so anything already photographed
+      // is cleared rather than left to look as though it will be sent too.
+      setDetailPhotos([]); setSummaryPhotos([]); setSummaryOnly(false);
+    } catch (err) {
+      setError(`Could not read that file (${err?.message || err}).`);
+    } finally {
+      setPreparing((n) => n - 1);
+    }
+  };
+
   const extract = async (correction = false) => {
     setBusy("extract");
     setReject(null); setError(null); setOfferCorrection(false);
     try {
       const photos = [...detailPhotos, ...summaryPhotos].map((p) => ({ base64: p.base64 }));
-      const { data } = await cardBatchCaptureFn({
-        action: "extract", pickedTid: tid, photos,
-        summaryOnly: summaryOnly || detailPhotos.length === 0,
-        correction,
-      });
+      // Refused HERE rather than as a transport error the manager cannot read.
+      const tooBig = payloadRefusal(pdfFile ? [pdfFile] : photos);
+      if (tooBig) { setError(tooBig); setBusy(null); return; }
+      const { data } = await cardBatchCaptureFn(pdfFile
+        ? { action: "extract", pickedTid: tid, pdf: { base64: pdfFile.base64 }, correction }
+        : {
+            action: "extract", pickedTid: tid, photos,
+            summaryOnly: summaryOnly || detailPhotos.length === 0,
+            correction,
+          });
       if (!data.ok) {
         setReject(data.reason);
         if (/already captured/i.test(data.reason || "")) setOfferCorrection(true);
@@ -226,8 +272,13 @@ export default function CardReconScreen({ onExit }) {
     } finally { setBusy(null); }
   };
 
+  // "Capture another slip" must leave NOTHING of the last one behind — the PDF
+  // included. It was missed when the file input was added, and a retained
+  // pdfFile meant the next capture would silently re-submit the PREVIOUS
+  // terminal's report against a freshly picked till. (CodeRabbit, PR #509.)
   const reset = () => {
     setTid(null); setDetailPhotos([]); setSummaryPhotos([]); setSummaryOnly(false);
+    setPdfFile(null);
     setReject(null); setError(null); setDraft(null); setResult(null); setOfferCorrection(false);
   };
 
@@ -330,8 +381,39 @@ export default function CardReconScreen({ onExit }) {
 
       {tid && (
         <>
-          <div style={S.card}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>2 · The detail roll</div>
+          {/* THE FAST PATH, FIRST AND SMALL. FNB terminals can email their batch
+              report; that file is the whole slip, so it needs neither the
+              detail/summary split nor a large drop area. One line. The photo
+              uploads below are the fallback for terminals that cannot email. */}
+          <div style={{ ...S.card, padding: "10px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", flex: "0 0 auto" }}>2 · The PDF</div>
+              <div style={{ ...S.sub, flex: "1 1 140px", fontSize: 12 }}>
+                {pdfFile ? pdfFile.name : "If the terminal emailed its batch report, this is the whole slip in one file."}
+              </div>
+              <input ref={pdfRef} type="file" accept="application/pdf,.pdf"
+                     onChange={addPdf} style={{ display: "none" }} />
+              {pdfFile ? (
+                <button style={{ ...S.btnGhost, width: "auto", minHeight: 34, padding: "0 12px", flex: "0 0 auto" }}
+                        onClick={() => setPdfFile(null)}>Remove</button>
+              ) : (
+                <button style={{ ...S.btnGhost, width: "auto", minHeight: 34, padding: "0 14px", flex: "0 0 auto",
+                                 opacity: hasPhotos || preparing ? 0.45 : 1 }}
+                        disabled={hasPhotos || preparing > 0}
+                        onClick={() => pdfRef.current?.click()}>
+                  {preparing > 0 ? "Reading…" : "Add file"}
+                </button>
+              )}
+            </div>
+            {hasPhotos && !pdfFile && (
+              <div style={{ ...S.sub, fontSize: 11.5, marginTop: 6 }}>
+                Remove the photos below to attach a PDF instead — one or the other, never both.
+              </div>
+            )}
+          </div>
+
+          <div style={{ ...S.card, opacity: pdfFile ? 0.45 : 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>3 · The detail roll</div>
             <div style={S.sub}>The printed transaction list, in overlapping sections — every line, sharp. Shoot it here or pick it from your photos. This is the point of the capture.</div>
             {/* No `capture` attribute: with it, the OS opens the camera and
                 nothing else. Without it the manager gets the normal picker and
@@ -341,7 +423,7 @@ export default function CardReconScreen({ onExit }) {
                    onChange={addPhotos(setDetailPhotos, detailPhotos, MAX_DETAIL_PHOTOS)}
                    style={{ display: "none" }} />
             <button style={{ ...S.btn, marginTop: 10, opacity: preparing ? 0.6 : 1 }}
-                    disabled={preparing > 0 || detailPhotos.length >= MAX_DETAIL_PHOTOS}
+                    disabled={!!pdfFile || preparing > 0 || detailPhotos.length >= MAX_DETAIL_PHOTOS}
                     onClick={() => detailRef.current?.click()}>
               {preparing > 0 ? "Preparing photos…" : `📷 ${detailPhotos.length
                     ? `Add another section (${detailPhotos.length} of ${MAX_DETAIL_PHOTOS})`
@@ -357,7 +439,7 @@ export default function CardReconScreen({ onExit }) {
                 <div style={{ ...S.sub, alignSelf: "center", fontSize: 11.5 }}>tap a photo to remove it</div>
               </div>
             )}
-            {detailPhotos.length === 0 && (
+            {detailPhotos.length === 0 && !pdfFile && (
               <label style={{ ...S.sub, display: "flex", gap: 8, alignItems: "center", marginTop: 12, fontSize: 12.5 }}>
                 <input type="checkbox" checked={summaryOnly} onChange={(e) => setSummaryOnly(e.target.checked)} />
                 Summary only (fallback) — the record will be flagged: no line-level match can ever run for this batch.
@@ -365,8 +447,8 @@ export default function CardReconScreen({ onExit }) {
             )}
           </div>
 
-          <div style={S.card}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>3 · The summary</div>
+          <div style={{ ...S.card, opacity: pdfFile ? 0.45 : 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>4 · The summary</div>
             <div style={S.sub}>The header + totals section: MID, TID, batch number, Opened/Closed, Payment Type Summary, CARD TOTALS.</div>
             {/* One slot, and no `capture` here either — same reason. Picking
                 again replaces the shot rather than being refused. */}
@@ -374,7 +456,7 @@ export default function CardReconScreen({ onExit }) {
                    onChange={addPhotos(setSummaryPhotos, summaryPhotos, MAX_SUMMARY_PHOTOS, { replace: true })}
                    style={{ display: "none" }} />
             <button style={{ ...S.btn, marginTop: 10, opacity: preparing ? 0.6 : 1 }}
-                    disabled={preparing > 0}
+                    disabled={!!pdfFile || preparing > 0}
                     onClick={() => summaryRef.current?.click()}>
               {preparing > 0 ? "Preparing photos…" : `📷 ${summaryPhotos.length ? "Replace the summary shot" : "Shoot or choose the summary"}`}
             </button>
@@ -399,12 +481,18 @@ export default function CardReconScreen({ onExit }) {
 
           <div style={{ marginTop: 16 }}>
             <button style={S.btn}
-              disabled={busy === "extract" || summaryPhotos.length === 0 || (detailPhotos.length === 0 && !summaryOnly)}
+              // Either path may proceed. A PDF is the whole slip, so it needs
+              // no summary photo and no detail roll; the photo path still
+              // requires a summary and either a roll or the summary-only tick.
+              disabled={busy === "extract" || preparing > 0 || (pdfFile
+                ? false
+                : summaryPhotos.length === 0 || (detailPhotos.length === 0 && !summaryOnly))}
               onClick={() => extract(false)}>
               {busy === "extract" ? "Reading the slip…" : "Read the slip"}
             </button>
-            {summaryPhotos.length === 0 && <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>The summary photo is required.</div>}
-            {summaryPhotos.length > 0 && detailPhotos.length === 0 && !summaryOnly && (
+            {pdfFile && <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>Reading {pdfFile.name} — the file covers the whole slip, so no photos are needed.</div>}
+            {!pdfFile && summaryPhotos.length === 0 && <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>The summary photo is required.</div>}
+            {!pdfFile && summaryPhotos.length > 0 && detailPhotos.length === 0 && !summaryOnly && (
               <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>Add the detail roll, or tick summary-only.</div>
             )}
           </div>
