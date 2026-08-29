@@ -4,7 +4,7 @@
 // add-all button offered on a look that cannot be bought.
 import { describe, it, expect } from "vitest";
 import {
-  albumList, normaliseAlbumEntry, isFit, resolveFit, formatRand, slotRank,
+  albumList, normaliseAlbumEntry, isFit, resolveFit, formatRand, slotRank, albumEmptyState,
 } from "./socialAlbum.js";
 
 const img = (u = "https://s/x.jpg") => [{ type: "image", url: u }];
@@ -128,5 +128,36 @@ describe("slot order and formatting", () => {
   it("shows a dash rather than R0 when there is no number", () => {
     expect(formatRand(null)).toBe("—");
     expect(formatRand(NaN)).toBe("—");
+  });
+});
+
+describe("an empty album and an unreadable one are different claims", () => {
+  // The read is denied until the /social_library console rule is pasted, which
+  // on day one it will not be. Saying "nothing here yet" then would tell the
+  // owner his pictures were never archived, when they are all there.
+  it("says nothing at all while it is still loading", () => {
+    expect(albumEmptyState({ busy: true, error: null, count: 0 }).show).toBe(false);
+  });
+
+  it("reports the error rather than claiming the album is empty", () => {
+    const st = albumEmptyState({ busy: false, error: "Permission denied", count: 0 });
+    expect(st.show).toBe(true);
+    expect(st.tone).toBe("error");
+    expect(st.text).toBe("Permission denied");
+    expect(st.text).not.toMatch(/empty/i);
+  });
+
+  it("an error wins even if some entries were already on screen", () => {
+    expect(albumEmptyState({ busy: false, error: "boom", count: 5 }).tone).toBe("error");
+  });
+
+  it("only calls it empty when the read succeeded and found nothing", () => {
+    const st = albumEmptyState({ busy: false, error: null, count: 0 });
+    expect(st.tone).toBe("empty");
+    expect(st.text).toMatch(/empty/i);
+  });
+
+  it("says nothing when there are pictures to show", () => {
+    expect(albumEmptyState({ busy: false, error: null, count: 3 }).show).toBe(false);
   });
 });

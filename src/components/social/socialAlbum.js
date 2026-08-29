@@ -110,6 +110,27 @@ export function resolveFit(entry, lookup) {
 // NON-BREAKING space, and which separator you get at all depends on the ICU
 // data compiled into the runtime. A price is not the place for output that
 // differs between two machines running the same code.
+// ── AN EMPTY ALBUM AND AN UNREADABLE ONE ARE DIFFERENT CLAIMS ────────────────
+// The album's read is denied until the /social_library console rule is pasted,
+// which on day one it will not be. Rendering the cheerful "nothing here yet"
+// copy in that case tells the owner his pictures were never archived, when in
+// fact they are all there and the browser simply cannot see them. He would go
+// looking for a bug in the generator.
+//
+// Pure and separate from the component so the distinction is pinned by a test
+// rather than by whoever edits the JSX next.
+export function albumEmptyState({ busy, error, count }) {
+  if (busy) return { show: false };
+  if (error) return { show: true, tone: "error", text: error };
+  if (!count) {
+    return {
+      show: true, tone: "empty",
+      text: "The album is empty. Every picture the generator makes from now on lands here automatically; anything made before that is added by running the backfill script.",
+    };
+  }
+  return { show: false };
+}
+
 export function formatRand(n) {
   if (!Number.isFinite(n)) return "—";
   const whole = String(Math.abs(Math.round(n)));

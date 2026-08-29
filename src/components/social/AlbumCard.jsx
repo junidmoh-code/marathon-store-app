@@ -21,10 +21,10 @@
 // no longer be resolved it is named as missing and left OUT of the total — a
 // sum that quietly drops a line is worse than one that admits it is partial.
 import React, { useEffect, useMemo, useState } from "react";
-import { FONT, GRAY, GREEN, AMBER, BLUE_L, GLASS, tabOn, tabOff, bGray } from "../stock/ui";
+import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, GLASS, tabOn, tabOff, bGray } from "../stock/ui";
 import RowBoundary from "./RowBoundary";
 import { loadAlbum } from "./socialStore";
-import { albumList, isFit, resolveFit, formatRand } from "./socialAlbum";
+import { albumList, isFit, resolveFit, formatRand, albumEmptyState } from "./socialAlbum";
 
 const FILTERS = [
   { key: "all", label: "Everything" },
@@ -35,6 +35,9 @@ const FILTERS = [
 export default function AlbumCard({ products = [], onNotice }) {
   const [raw, setRaw] = useState(null);
   const [busy, setBusy] = useState(true);
+  // Held locally as well as pushed to the parent: the notice banner lives
+  // inside Queue, so a notice raised from this tab has nowhere to appear.
+  const [error, setError] = useState(null);
   const [filter, setFilter] = useState("all");
   const [openId, setOpenId] = useState(null);
 
@@ -43,7 +46,13 @@ export default function AlbumCard({ products = [], onNotice }) {
     (async () => {
       const res = await loadAlbum();
       if (!alive) return;
-      if (!res.ok && onNotice) onNotice({ tone: "bad", text: res.message || "Could not read the album." });
+      if (!res.ok) {
+        // `kind`, not `tone` — that is the shape every other notice in this
+        // screen uses, and the banner colours off notice.kind === "err".
+        const text = res.message || "Could not read the album. If the /social_library rule has not been added in the Firebase console yet, that is why.";
+        setError(text);
+        onNotice?.({ kind: "err", text });
+      }
       setRaw(res.raw || {});
       setBusy(false);
     })();
@@ -72,9 +81,9 @@ export default function AlbumCard({ products = [], onNotice }) {
   const copy = async (text, what) => {
     try {
       await navigator.clipboard.writeText(text);
-      onNotice?.({ tone: "good", text: `${what} copied.` });
+      onNotice?.({ kind: "ok", text: `${what} copied.` });
     } catch {
-      onNotice?.({ tone: "bad", text: "Could not copy — long-press the image instead." });
+      onNotice?.({ kind: "err", text: "Could not copy — long-press the image instead." });
     }
   };
 
@@ -93,13 +102,21 @@ export default function AlbumCard({ products = [], onNotice }) {
           </span>
         </div>
 
-        {!busy && !all.length && (
-          <p style={{ color: GRAY, fontSize: ".8rem", lineHeight: 1.55 }}>
-            The album is empty. Every picture the generator makes from now on lands here
-            automatically; anything made before that is added by running{" "}
-            <code style={{ color: BLUE_L }}>scripts/social/backfill-social-library.mjs --commit</code>.
-          </p>
-        )}
+        {(() => {
+          const st = albumEmptyState({ busy, error, count: all.length });
+          if (!st.show) return null;
+          return (
+            <p style={{ color: st.tone === "error" ? RED : GRAY, fontSize: ".8rem", lineHeight: 1.55 }}>
+              {st.text}
+              {st.tone === "empty" && (
+                <>
+                  {" "}Backfill with{" "}
+                  <code style={{ color: BLUE_L }}>scripts/social/backfill-social-library.mjs --commit</code>.
+                </>
+              )}
+            </p>
+          );
+        })()}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))", gap: 8 }}>
           {shown.map((e) => {

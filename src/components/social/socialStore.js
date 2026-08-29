@@ -47,6 +47,10 @@ import {
 } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../../firebase";
+// The album path lives with the album reader, which has no firebase import and
+// can therefore be unit-tested on its own. Two copies of an RTDB path is two
+// things to keep in step.
+import { ALBUM_PATH } from "./socialAlbum";
 import { serverNowMs } from "../../utils/serverTime";
 import { asList, storedList } from "../../utils/rtdbList";
 import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./socialCore";
@@ -115,7 +119,6 @@ export const POLICY_PATH = "social_policy";
 // is already public-read / super-admin-write in storage.rules, which is
 // exactly the access these files need. Writing to a new top-level `social/`
 // prefix would have been tidier to look at and dead on arrival.
-export const ALBUM_PATH = "social_library";
 export const REF_STORAGE_PREFIX = "aiStudio/social/style-refs";
 export const POST_STORAGE_PREFIX = "aiStudio/social/posts";
 
@@ -683,6 +686,8 @@ export async function uploadPostMedia(file) {
 // with no subscription — the album does not change while you are looking at
 // it, and a live listener on a node that only ever grows is a bill, not a
 // feature.
+export { ALBUM_PATH };
+
 export async function loadAlbum() {
   try {
     const snap = await get(ref(database, ALBUM_PATH));
