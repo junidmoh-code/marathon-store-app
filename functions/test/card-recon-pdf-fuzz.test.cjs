@@ -18,7 +18,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { validateExtraction } = require("../lib/card-recon.cjs");
-const { slipLines, emailedLines } = require("./fixtures/makeSlipPdf.cjs");
+const { slipLines, emailedLines, realReportLines, REAL_REPORT, FNB_FURNITURE } = require("./fixtures/makeSlipPdf.cjs");
 
 // THE PIPELINE AS THE CALLABLE RUNS IT. parseSlipPdf only READS; the slip's own
 // arithmetic is validateExtraction's job. Fuzzing the reader alone would call a
@@ -237,4 +237,47 @@ test("a report is never read as a slip, nor a slip as a report", () => {
     const printed = readSlip(slipLines());
     if (printed.ok) assert.equal(printed.extraction.format, "printed");
   }
+});
+
+// ═══ THE REAL REPORT, WITH ITS FURNITURE SCATTERED ═══════════════════════════
+// The clean fuzz above proves the reader exact on a tidy document. The real one
+// is seven pages with FNB's address block and page footers interleaved between
+// the transactions — money labels followed by digits, sitting wherever the page
+// happened to break. Scattering that furniture at random is the property test
+// for "page furniture is never a figure".
+test("4000 real-shaped reports with furniture scattered through them", () => {
+  const r = rng(590712);
+  const { lines: clean } = realReportLines();
+  // Every distinct furniture line the real document carries, plus the shapes
+  // that actually broke the first reader.
+  const JUNK = [
+    ...FNB_FURNITURE(3),
+    "Total pages 7", "Refunds enquiries 0860 12 34 56", "Cash enquiries 0860 12 34 56",
+    "Purchase queries 0860 12 34 56", "This is not a tax invoice",
+    "Settlement reference 998877", "Items dispatched 0",
+  ];
+  let parsed = 0;
+  for (let i = 0; i < 4000; i++) {
+    const lines = clean.slice();
+    const howMany = 1 + pick(r, 5);
+    for (let k = 0; k < howMany; k++) {
+      lines.splice(pick(r, lines.length + 1), 0, JUNK[pick(r, JUNK.length)]);
+    }
+    const out = readSlip(lines);
+    assert.equal(out.ok, true,
+      `furniture refused a good report (seed 590712, iteration ${i}): ${out.reason}`);
+    parsed++;
+    const ex = out.extraction;
+    // Not merely "it parsed" — every figure must be the report's own.
+    assert.equal(ex.tid, REAL_REPORT.tid, `iteration ${i}: terminal`);
+    assert.equal(ex.batchNo, String(REAL_REPORT.batchNo), `iteration ${i}: batch`);
+    assert.equal(ex.txnCount, REAL_REPORT.items, `iteration ${i}: items`);
+    assert.equal(ex.lines.length, REAL_REPORT.items, `iteration ${i}: rows read`);
+    assert.equal(ex.totalCents, REAL_REPORT.totalCents, `iteration ${i}: total`);
+    assert.equal(ex.refundsCents, 0, `iteration ${i}: furniture invented a refund`);
+    assert.equal(ex.cashCents, 0, `iteration ${i}: furniture invented a cash figure`);
+    assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), REAL_REPORT.totalCents,
+      `iteration ${i}: rows no longer sum to the total`);
+  }
+  assert.equal(parsed, 4000);
 });

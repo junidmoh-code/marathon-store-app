@@ -237,4 +237,162 @@ function emailedLines({
   };
 }
 
-module.exports = { makeSlipPdf, makeSlipPdfFragmented, slipLines, emailedLines, REAL_TSNS };
+/**
+ * THE REAL REPORT'S SHAPE — Till2FNB-Txn-Notification.pdf.
+ *
+ * Batch 59, terminal 67365901, 40 approved items, ZAR 30120.00, first
+ * transaction 09:07:23 for ZAR 900.00 at TSN 2, last 16:09:09 for ZAR 350.00 at
+ * TSN 51. Those figures are the owner's, read off the file itself.
+ *
+ * WHAT MAKES THIS DIFFERENT FROM `emailedLines`, and why it earns its own
+ * fixture: the real file is SEVEN PAGES, and FNB's address block and page
+ * footers are interleaved through the text BETWEEN transactions rather than
+ * sitting neatly at the top and bottom. That furniture is full of money labels
+ * followed by digits — "Total pages 7", "Refunds enquiries 0860 …" — and it is
+ * what broke the first version of this reader.
+ *
+ * Its totals blocks also print PURCHASE and TOTAL as the same figure: there is
+ * no purchases subtotal distinct from the total, and no Payment Type Summary.
+ *
+ * NOT THE FILE ITSELF. The PDF has not reached this repository; the structure
+ * here is reconstructed from the owner's description of it plus the figures
+ * above. Replace this with the real bytes when it arrives — see
+ * docs/CARD-RECON.md.
+ */
+const REAL_REPORT = {
+  tid: "67365901", batchNo: 59, items: 40, totalCents: 3012000,
+  firstTime: "09:07:23", firstCents: 90000, firstTsn: 2,
+  lastTime: "16:09:09", lastCents: 35000, lastTsn: 51,
+};
+
+// The page furniture, as it interleaves. Every one of these lines sat between
+// transactions in the real file.
+const FNB_FURNITURE = (page) => ([
+  "First National Bank",
+  "a division of FirstRand Bank Limited",
+  "Merchant Services, PO Box 1153, Johannesburg, 2000",
+  "Reg No. 1929/001225/06    VAT Reg No 4500178018",
+  "Refunds enquiries 0860 12 34 56",
+  "Total pages 7",
+  `Page ${page} of 7`,
+]);
+
+function realReportLines() {
+  const { tid, batchNo, items, totalCents, firstTime, firstCents, lastTime, lastCents } = REAL_REPORT;
+  // The first and last rows are the owner's actual figures; the 38 between them
+  // are spread evenly so the roll sums to the printed total exactly.
+  const middleTotal = totalCents - firstCents - lastCents;
+  const each = Math.floor(middleTotal / 38);
+  const amounts = [firstCents, ...Array(38).fill(each), lastCents];
+  amounts[19] += middleTotal - each * 38;          // the remainder, on one row
+  const times = REAL_TSNS.map((_, i) => {
+    if (i === 0) return firstTime;
+    if (i === 39) return lastTime;
+    const mins = 9 * 60 + 7 + Math.round((i / 39) * ((16 * 60 + 9) - (9 * 60 + 7)));
+    return `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}:${String((i * 13) % 60).padStart(2, "0")}`;
+  });
+
+  const body = [];
+  REAL_TSNS.forEach((tsn, i) => {
+    body.push([
+      "2026/08/27", times[i],
+      `UTI${String(1000000 + i)}`, String(223344550000 + i), `K9Q${String(i).padStart(3, "0")}`,
+      String(tsn), String(batchNo),
+      `************${String(1000 + i)}`,
+      zar(amounts[i]), "Purchase",
+    ].join(" "));
+    // …and the page break, mid-roll, every six rows.
+    if ((i + 1) % 6 === 0) body.push(...FNB_FURNITURE(Math.floor((i + 1) / 6) + 1));
+  });
+
+  return {
+    truth: { ...REAL_REPORT, amounts, times },
+    lines: [
+      `Banking Report for Batch ${batchNo} of Terminal ${tid}`,
+      "THE MARATHON SPORTS",
+      "2026/08/27 16:15:02",
+      "Version 4.2.1",
+      ...FNB_FURNITURE(1),
+      "Merchant: 000000004977890",
+      `Terminal: ${tid}`,
+      `Batch: ${batchNo}`,
+      "APPROVED TRANSACTIONS",
+      `Items: ${items}`,
+      ...body,
+      "TOTALS SUMMARY",
+      `Purchase   ${zar(totalCents)}`,
+      `Total   ${zar(totalCents)}`,
+      "CARD TOTALS",
+      "FNBSettleSTG",
+      `Purchase   ${zar(totalCents)}`,
+      `Total   ${zar(totalCents)}`,
+      ...FNB_FURNITURE(7),
+    ],
+  };
+}
+
+/**
+ * The same text, across SEVERAL REAL PAGES.
+ *
+ * makeSlipPdf lays every line on one page from y=800 down at 12pt leading, so
+ * past about sixty-six lines it simply runs off the bottom of the MediaBox and
+ * pdfjs never reports them — a 112-line document came back as 67. The real
+ * banking report is seven pages, so testing it through a single-page writer
+ * would have been testing something the reader never sees.
+ *
+ * This builds one page object and one content stream per page, which is also
+ * the only way to exercise pdfToLines' page loop: it groups fragments by Y
+ * WITHIN a page, and identical Y coordinates on different pages must not
+ * collapse into one row.
+ */
+function makeSlipPdfPaged(lines, { fontSize = 9, leading = 12, top = 800, perPage = 18 } = {}) {
+  const pages = [];
+  for (let i = 0; i < lines.length; i += perPage) pages.push(lines.slice(i, i + perPage));
+  if (!pages.length) pages.push([]);
+
+  const streams = pages.map((pageLines) => zlib.deflateSync(Buffer.from(
+    ["BT", `/F1 ${fontSize} Tf`, `${leading} TL`, `1 0 0 1 40 ${top} Tm`]
+      .concat(pageLines.map((l) => `(${escText(l)}) Tj T*`))
+      .concat(["ET"]).join("\n"), "latin1")));
+
+  const n = pages.length;
+  const pageIds = pages.map((_, i) => 3 + i);            // 3 … 2+n
+  const streamIds = pages.map((_, i) => 3 + n + i);      // 3+n … 2+2n
+  const fontId = 3 + 2 * n;
+
+  const objs = [];
+  objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objs[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${n} >>`;
+  pages.forEach((_, i) => {
+    objs[pageIds[i]] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] `
+      + `/Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${streamIds[i]} 0 R >>`;
+  });
+  objs[fontId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>";
+
+  const chunks = [Buffer.from("%PDF-1.4\n", "latin1")];
+  const at = () => chunks.reduce((t, b) => t + b.length, 0);
+  const offsets = [];
+  const total = fontId;
+  for (let id = 1; id <= total; id++) {
+    offsets.push(at());
+    const streamIdx = streamIds.indexOf(id);
+    if (streamIdx >= 0) {
+      const st = streams[streamIdx];
+      chunks.push(Buffer.from(`${id} 0 obj\n<< /Length ${st.length} /Filter /FlateDecode >>\nstream\n`, "latin1"));
+      chunks.push(st);
+      chunks.push(Buffer.from("\nendstream\nendobj\n", "latin1"));
+    } else {
+      chunks.push(Buffer.from(`${id} 0 obj\n${objs[id]}\nendobj\n`, "latin1"));
+    }
+  }
+  const xrefAt = at();
+  let xref = `xref\n0 ${total + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) xref += `${String(off).padStart(10, "0")} 00000 n \n`;
+  chunks.push(Buffer.from(`${xref}trailer\n<< /Size ${total + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`, "latin1"));
+  return Buffer.concat(chunks);
+}
+
+module.exports = {
+  makeSlipPdf, makeSlipPdfFragmented, makeSlipPdfPaged, slipLines,
+  emailedLines, REAL_TSNS, realReportLines, REAL_REPORT, FNB_FURNITURE,
+};

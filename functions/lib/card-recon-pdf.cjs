@@ -118,6 +118,51 @@ const MONEY = {
   total:     /\btotals?\b\s*[:.]?\s*(.*)$/i,
 };
 
+// A STRICT amount: one that carries a currency mark, or states its cents. This
+// is what lets a label be followed by an extra word without the search falling
+// back into prose — see moneyField's second attempt. "ZAR 30120.00" and
+// "30,120.00" qualify; the "7" of "Total pages 7" and the "56" of "Refunds
+// enquiries 0860 12 34 56" do not, which is exactly the distinction that keeps
+// page furniture out of the figures.
+// How many words may sit between a money label and its figure before the line
+// stops being a label and starts being a sentence. Two covers "Total Amount";
+// three already reaches "surcharge rate is".
+const MAX_LABEL_SUFFIX_WORDS = 2;
+
+const STRICT_AMOUNT = /(?:^|\s)((?:ZAR|R)\s*[-(]?\s*[0-9][0-9,. ]*\)?|[-(]?\s*[0-9][0-9,. ]*\.[0-9]{2}\)?)\s*$/i;
+
+// ─── IS THIS REMAINDER A FIGURE AT ALL? ──────────────────────────────────────
+// After a money label, three quite different things can follow, and telling
+// them apart is what keeps this path both usable and honest:
+//
+//   "CARD TOTALS"                 → nothing follows. A section heading.
+//   "TOTALS SUMMARY"              → a word follows. Also a heading.
+//   "Total pages 7"               → prose that happens to contain a digit.
+//   "Refunds enquiries 0860 1234" → a page footer, on a seven-page report.
+//   "Total   ZAR 30,120.00"       → the figure row.
+//   "Total   ZAR 3O,120.00"       → the figure row, MANGLED. Must refuse.
+//
+// The test is whether the remainder BEGINS like an amount: an optional sign or
+// bracket, an optional currency mark, then a digit. Anything starting with a
+// word is prose and the search moves on; anything starting like an amount must
+// parse in full or the report is refused.
+//
+// An earlier rule — "a remainder containing a digit anywhere is a figure row" —
+// was right about headings and wrong about everything else. The real report is
+// SEVEN PAGES with FNB's address block and page footers interleaved between the
+// transactions, and a footer reading "Total pages 7" was therefore read as a
+// broken TOTAL and refused the whole report. Prose is not a mangled figure.
+//
+// The mangled case is untouched: "R5O,307.00" and "ZAR 5O0.00" both begin with
+// a currency mark and a digit, so both are still figure rows, and still refuse.
+// A figure so mangled that it begins with a letter is skipped as prose and the
+// field ends up missing — which is a refusal too, just a differently worded
+// one. There is no reading in which a wrong number is recorded.
+function looksLikeAmount(rest) {
+  if (!rest) return false;
+  return /^[-(]?\s*(?:ZAR|R)?\s*[-(]?\s*\d/i.test(rest);
+}
+
 /**
  * Read one money figure off its label line.
  *
@@ -135,7 +180,7 @@ const MONEY = {
  *
  * @returns {{cents:number} | {err:string} | {missing:true}}
  */
-function moneyField(rows, re, what) {
+function moneyField(rows, re, what, { allowLabelSuffix = false } = {}) {
   // EVERY matching row, not the first. A money label cannot be anchored to the
   // start of its line the way a header label can — the slip prints
   // "MasterCard/Visa Purchases   R50,355.00" — so an unanchored match can land
@@ -148,24 +193,36 @@ function moneyField(rows, re, what) {
     const m = re.exec(line);
     if (!m) continue;
     const rest = tidy(m[1]);
-    // A LABEL, OR A BROKEN FIGURE? The difference is whether there are digits.
+    // A LABEL, A LINE OF PROSE, OR A BROKEN FIGURE? — see looksLikeAmount.
     //
-    // "CARD TOTALS" leaves nothing after the label, and "TOTALS SUMMARY" leaves
-    // the word SUMMARY — both are section headings the slip prints ABOVE the
-    // row that carries the number, and both must be walked past rather than
-    // refused. (FNB prints all three of "Payment Type Summary", "TOTALS
-    // SUMMARY" and "CARD TOTALS"; the second one refused every such slip until
-    // CodeRabbit caught it on PR #509.)
-    //
-    // A remainder WITH digits is a different thing entirely: it is the figure
-    // row, and if it will not parse then the figure is unreadable and the slip
-    // is refused. That is what keeps "R5O,307.00" (letter O) a refusal instead
-    // of a quiet R5.00 — the distinction is digits, not a list of known
-    // headings, because a list would only meet the heading it did not name.
-    if (!rest || !/\d/.test(rest)) continue;
-    const cents = parseRandsToCents(rest);
+    // (The rule itself lives in looksLikeAmount, above.)
+    let figure = rest;
+    if (!looksLikeAmount(rest)) {
+      if (!allowLabelSuffix) continue;
+      // NOT a figure where one was expected — but the label may simply carry an
+      // extra word: "Purchase Amount   ZAR 30120.00" rather than "Purchase
+      // ZAR 30120.00". So look for a STRICT amount at the end of the line and
+      // accept it only when what sits between the label and it is plainly a
+      // LABEL and not a SENTENCE.
+      //
+      // TWO CONDITIONS, and the word cap is the one that matters. "No digits in
+      // between" is nearly useless on its own, because prose has no digits
+      // either: it let "Cash advance fees are subject to a service charge of
+      // 2.50" through as a R2.50 cash figure, and "Total excludes certain bank
+      // charges (25.00)" through as a NEGATIVE total. A label suffix is one or
+      // two words ("Amount", "Total Amount"); nine words is a sentence about
+      // fees. Found by review of PR #512 — this second attempt was the thing
+      // that introduced the very failure this module exists to prevent.
+      const m2 = STRICT_AMOUNT.exec(rest);
+      if (!m2) continue;
+      const prefix = rest.slice(0, m2.index).trim();
+      const words = prefix ? prefix.split(/\s+/) : [];
+      if (words.length > MAX_LABEL_SUFFIX_WORDS || /\d/.test(prefix)) continue;
+      figure = m2[1];
+    }
+    const cents = parseRandsToCents(figure);
     if (cents === null) {
-      return { err: `The ${what} reads "${rest}", which is not an amount this understands. Nothing was recorded — photograph the slip instead.` };
+      return { err: `The ${what} reads "${figure}", which is not an amount this understands. Nothing was recorded — photograph the slip instead.` };
     }
     if (found !== null && found !== cents) {
       return { err: `The ${what} appears twice on that PDF with different figures (${formatCents(found)} and ${formatCents(cents)}). Nothing was recorded — photograph the slip instead.` };
@@ -190,7 +247,7 @@ const TXN_RE = new RegExp(
   "^(\\d{4}[/-]\\d{2}[/-]\\d{2})\\s+" +           // date
   "(\\d{2}:\\d{2}(?::\\d{2})?)\\s+" +             // time
   "(.+?)\\s+" +                                   // uti / rrn / auth / tsn / pan, positional
-  "([-(]?\\s*R?\\s*[0-9][0-9,. ]*\\)?)" +          // amount
+  "([-(]?\\s*(?:ZAR|R)?\\s*[0-9][0-9,. ]*\\)?)" +   // amount, in rand or ZAR
   "(?:\\s+(REFUND|PURCHASE|VOID|REVERSAL))?$",    // optional trailing type marker
   "i",
 );
@@ -384,6 +441,7 @@ const EMAILED = {
   items:    /^\s*items\b[^0-9A-Za-z]*([0-9]{1,5})\b/i,
   approved: /^\s*approved transactions\b/i,
   cardTotals: /^\s*card totals\b/i,
+  totalsSummary: /^\s*totals summary\b/i,
   printed:  /^\s*(?:date|printed)\b[^0-9A-Za-z]*([0-9]{4}[/-][0-9]{2}[/-][0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2})/i,
   bareStamp: /^\s*([0-9]{4}[/-][0-9]{2}[/-][0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2})\s*$/,
 };
@@ -546,18 +604,29 @@ function parseEmailedReport(rows) {
   }
   const txnCount = itemCounts[0];
 
-  // ── the figures: the CARD TOTALS block first ──
-  // A banking report closes with TOTALS SUMMARY and then CARD TOTALS, and it is
-  // the CARD figures this reconciles against the till's card legs. Searching
-  // the card block first keeps a same-named line in the earlier block from
-  // being read instead; if a figure is not in that block the search widens to
-  // the whole report, and moneyField's own ambiguity rule still refuses two
-  // rows that disagree.
-  const cardIdx = rows.findIndex((r) => EMAILED.cardTotals.test(r));
-  const cardRows = cardIdx >= 0 ? rows.slice(cardIdx) : rows;
+  // ── the figures live in the TOTALS REGION, and nowhere else ──
+  // A banking report closes with TOTALS SUMMARY and then CARD TOTALS. Both
+  // blocks state the same figures, so the region runs from whichever heading
+  // comes first to the end of the document, and moneyField's ambiguity rule
+  // refuses them if they ever disagree rather than preferring one.
+  //
+  // THE SEARCH DOES NOT WIDEN BEYOND IT, and that is the whole point. This is a
+  // SEVEN-PAGE document with FNB's address block and page footers interleaved
+  // between the transactions, and that furniture is full of money labels
+  // followed by digits. An earlier version fell back to searching the whole
+  // report for any figure it could not find in the totals block, and a footer
+  // reading "Refunds enquiries 0860 12 34 56" was then read as the refunds
+  // FIGURE — "enquiries 0860 12 34 56" will not parse, so the entire report was
+  // refused. A refunds line printed halfway through page 3 is not this batch's
+  // refunds total; absent from the totals region means absent.
+  const totalsIdx = rows.findIndex((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+  const totalsRows = totalsIdx >= 0 ? rows.slice(totalsIdx) : rows;
   const money = (re, what, { required }) => {
-    let found = moneyField(cardRows, re, what);
-    if (found.missing && cardIdx >= 0) found = moneyField(rows, re, what);
+    // The label-suffix attempt is enabled HERE and nowhere else. These are the
+    // few rows of the totals region, where a labelled figure is the only thing
+    // that belongs; the printed slip searches its whole document and must not
+    // have a looser rule applied to every line of it.
+    const found = moneyField(totalsRows, re, what, { allowLabelSuffix: true });
     if (found.missing) {
       return required ? { err: `That banking report does not print a ${what}.` } : { cents: 0 };
     }
@@ -651,7 +720,7 @@ function parseEmailedReport(rows) {
   const closedAt = Math.max(...times) + 1;
 
   const printedText = field(rows, EMAILED.printed)
-    ?? (rows.slice(0, cardIdx >= 0 ? cardIdx : rows.length).map((r) => EMAILED.bareStamp.exec(r)).find(Boolean) || [])[1]
+    ?? (rows.slice(0, totalsIdx >= 0 ? totalsIdx : rows.length).map((r) => EMAILED.bareStamp.exec(r)).find(Boolean) || [])[1]
     ?? null;
   const printedAt = printedText ? parseSlipTimestamp(printedText) : null;
 
@@ -698,5 +767,5 @@ function parseSlipPdf(lines) {
 
 module.exports = {
   parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
-  moneyField, TXN_RE, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
+  moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
 };
