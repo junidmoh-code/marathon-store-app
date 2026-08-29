@@ -88,3 +88,67 @@ test("the fuller of two consistent readings wins", () => {
 test("a line without a TSN refuses", () => {
   assert.equal(dedupeLines([{ amountCents: 100 }]).ok, false);
 });
+
+// ─── ONE PATH PER SUBMISSION, AND WHICH ONE ──────────────────────────────────
+// chooseCaptureSource answers both questions the callable asks of the input:
+// which handler runs, and what `capturedVia` records. They are the same answer
+// by construction, which is the point of testing it here rather than trusting
+// two literals to stay in step.
+const { chooseCaptureSource, readPdfPayload } = require("../lib/card-recon.cjs");
+
+test("a PDF and photos together is refused — never merged into one record", () => {
+  const r = chooseCaptureSource({ photos: [{ base64: "x" }], pdf: { base64: "y" }, maxPhotos: 6 });
+  assert.equal(r.source, undefined);
+  assert.match(r.err, /not both/);
+});
+
+test("neither a PDF nor photos is refused", () => {
+  assert.match(chooseCaptureSource({ photos: [], pdf: null, maxPhotos: 6 }).err, /photograph the slip/);
+  assert.match(chooseCaptureSource({ photos: undefined, pdf: { base64: "" }, maxPhotos: 6 }).err, /photograph the slip/);
+});
+
+test("a PDF routes to the pdf source; photos route to photo — this IS capturedVia", () => {
+  assert.equal(chooseCaptureSource({ photos: [], pdf: { base64: "y" }, maxPhotos: 6 }).source, "pdf");
+  assert.equal(chooseCaptureSource({ photos: [{}], pdf: null, maxPhotos: 6 }).source, "photo");
+});
+
+test("more photos than the cap is refused, and the cap is the one passed in", () => {
+  const r = chooseCaptureSource({ photos: [1, 2, 3], pdf: null, maxPhotos: 2 });
+  assert.equal(r.source, undefined);
+  assert.match(r.err, /2 at most/);
+});
+
+// ── readPdfPayload: the file is what it claims, or it is refused by name ─────
+const b64 = (s) => Buffer.from(s, "latin1").toString("base64");
+
+test("a real PDF header passes and the bytes come back whole", () => {
+  const r = readPdfPayload(b64("%PDF-1.4 body"), 1000);
+  assert.equal(r.err, undefined);
+  assert.equal(r.buffer.toString("latin1"), "%PDF-1.4 body");
+});
+
+test("a renamed photo is refused on its bytes, not its name", () => {
+  const jpeg = readPdfPayload(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]).toString("base64"), 1000);
+  assert.match(jpeg.err, /not a PDF/);
+  assert.equal(jpeg.reject, true, "a wrong file is a refusal on screen, not a transport error");
+  assert.equal(jpeg.buffer, undefined);
+});
+
+test("a data: URL prefix and stray whitespace are tolerated", () => {
+  const r = readPdfPayload("data:application/pdf;base64," + b64("%PDF-1.7 x").replace(/(.)/g, "$1 "), 1000);
+  assert.equal(r.err, undefined);
+  assert.equal(r.buffer.toString("latin1"), "%PDF-1.7 x");
+});
+
+test("a truncated or non-base64 payload is refused as not intact", () => {
+  assert.match(readPdfPayload("!!!!not base64!!!!", 1000).err, /did not arrive intact/);
+  assert.match(readPdfPayload("QUJD", 1000).err ? readPdfPayload("QUJDR", 1000).err : "", /did not arrive intact/);
+  assert.match(readPdfPayload("", 1000).err, /did not arrive intact/);
+});
+
+test("a file larger than the cap is refused with its own size, in MB", () => {
+  const big = Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(3 * 1048576)]);
+  const r = readPdfPayload(big.toString("base64"), 2 * 1048576);
+  assert.match(r.err, /3\.0MB — too large/);
+  assert.equal(r.buffer, undefined);
+});

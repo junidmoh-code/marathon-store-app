@@ -98,8 +98,15 @@ function parseRandsToCents(str) {
   let negative = false;
   if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1).trim(); }
   if (s.startsWith("-")) { negative = !negative; s = s.slice(1).trim(); }
-  s = s.replace(/^R\s?/i, "").replace(/[,\s]/g, "");
-  if (!/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  s = s.replace(/^R\s?/i, "").trim();
+  // THOUSAND SEPARATORS MUST GROUP CORRECTLY. Stripping every comma and space
+  // before testing accepted "R50,307,00.5" — mis-grouped, and read as
+  // R5,030,700.50 rather than refused. This function's whole contract is that a
+  // mangled figure is refused and never coerced, so the grouping is part of
+  // what must parse: either no separators at all, or 1-3 digits followed by
+  // groups of exactly 3. Both "R50,355.00" and "R50 355.00" still pass.
+  if (!/^\d+(\.\d{1,2})?$/.test(s) && !/^\d{1,3}([,\s]\d{3})+(\.\d{1,2})?$/.test(s)) return null;
+  s = s.replace(/[,\s]/g, "");
   const [rands, cents = "0"] = s.split(".");
   const value = Number(rands) * 100 + Number(cents.padEnd(2, "0"));
   return negative ? -value : value;
@@ -247,12 +254,23 @@ const MAX_REVISIONS = 20;
  *
  * @returns {{ok:true, warnings:string[]} | {ok:false, reason:string}}
  */
-function validateExtraction(ex, { summaryOnly = false } = {}) {
-  const conf = ex.confidence || {};
-  for (const f of KEY_FIELDS) {
-    const c = Number(conf[f]);
-    if (!Number.isFinite(c) || c < MIN_KEY_FIELD_CONFIDENCE) {
-      return { ok: false, reason: `Could not read the slip's ${describeField(f)} confidently — retake that photo in better light.` };
+function validateExtraction(ex, { summaryOnly = false, source = "photo" } = {}) {
+  // THE CONFIDENCE GATE IS ABOUT OCR, AND ONLY OCR. A PDF carries the slip's
+  // own text, so there is no reading to be uncertain about: either the parser
+  // found a field exactly or it refused by name before reaching here. Handing
+  // this a fabricated confidence of 1.0 would put a number in the record that
+  // no model ever produced, and would sit there for ever looking like evidence.
+  //
+  // EVERY OTHER CHECK BELOW APPLIES UNCHANGED to both sources — the shape of
+  // each figure, the slip's own arithmetic, the 7-day window cap, the line
+  // count against the printed Transactions figure, and TSN contiguity.
+  if (source !== "pdf") {
+    const conf = ex.confidence || {};
+    for (const f of KEY_FIELDS) {
+      const c = Number(conf[f]);
+      if (!Number.isFinite(c) || c < MIN_KEY_FIELD_CONFIDENCE) {
+        return { ok: false, reason: `Could not read the slip's ${describeField(f)} confidently — retake that photo in better light.` };
+      }
     }
   }
   if (!normaliseTid(ex.tid)) return { ok: false, reason: `"${ex.tid}" does not look like a terminal ID — retake the header photo.` };
@@ -313,10 +331,28 @@ function validateExtraction(ex, { summaryOnly = false } = {}) {
     }
   }
   // The lines' sum SHOULD equal the slip total; a mismatch on a slip whose own
-  // totals add up usually means one amount was misread. Recorded as a warning
-  // (some slips carry reversal artefacts), never silently.
+  // totals add up usually means one amount was misread.
+  //
+  // WHAT HAPPENS NEXT DEPENDS ON WHERE THE FIGURES CAME FROM, and this is the
+  // only place the two sources are judged differently besides the confidence
+  // gate. On the PHOTO path a mismatch is a warning: a camera genuinely does
+  // miss a line, some slips carry reversal artefacts, and refusing would send
+  // a manager back to re-shoot a roll that is already correct.
+  //
+  // On the PDF path there is no such excuse. The text is exact, so lines that
+  // do not sum to the printed total mean the PARSER misread one — the fuzzy
+  // read the owner's rule forbids. It is refused, and the manager is told to
+  // photograph the slip instead. Found by the corruption fuzz in
+  // card-recon-pdf-fuzz.test.cjs, which asserts the whole pipeline is exact or
+  // refusing and has no third outcome.
   const lineSum = lines.reduce((s, l) => s + l.amountCents, 0);
   if (lineSum !== ex.totalCents) {
+    if (source === "pdf") {
+      return {
+        ok: false,
+        reason: `The transaction lines in that PDF add up to ${formatCents(lineSum)}, but the slip's own total is ${formatCents(ex.totalCents)}. A PDF is read exactly, so this means a line was misread rather than mis-photographed — nothing was recorded. Photograph the slip instead.`,
+      };
+    }
     warnings.push(`The captured lines sum to ${formatCents(lineSum)} but the slip total is ${formatCents(ex.totalCents)} — check the detail photos against the record.`);
   }
   return { ok: true, warnings };
@@ -342,6 +378,12 @@ function buildBatchRecord({
   extraction, terminal, tid, batchKey, revision, supersedes,
   photoPaths, summaryOnly, warnings, expected, cashiers,
   submittedBy, submittedAt, draftId, ocr,
+  // "pdf"  — read from the terminal's own emailed file, text extracted exactly
+  // "photo" — photographed and OCR'd
+  // Recorded so a batch's provenance is visible without inferring it from
+  // whether `ocr` happens to be null.
+  capturedVia = "photo",
+  pdfPath = null,
 }) {
   const lines = summaryOnly ? null : Object.fromEntries(
     (extraction.lines || []).map((l) => [String(l.tsn), {
@@ -388,8 +430,51 @@ function buildBatchRecord({
     cashiers: cashiers && cashiers.length ? cashiers : null,
     submittedBy, submittedAt, draftId,
     ocr: ocr ?? null, // { model, tokensIn, tokensOut, costUSD } — provenance
-    capturedVia: "ocr",
+    capturedVia,
+    pdfPath: pdfPath ?? null,
   };
+}
+
+// ─── WHICH SOURCE IS THIS SUBMISSION? ────────────────────────────────────────
+// ONE PATH PER SUBMISSION. A PDF is the whole slip in one file — header, totals
+// and detail roll together — so there is no detail/summary split on that path
+// and no sense in mixing two sources into one record.
+//
+// This is a PURE decision and it lives here, alone, for one reason: the answer
+// is used twice — once to route the extract, and again to stamp `capturedVia`
+// on the record the owner reads to tell a PDF batch from a photographed one.
+// Two literals in two places drift; one function does not.
+function chooseCaptureSource({ photos, pdf, maxPhotos }) {
+  const hasPdf = !!(pdf && typeof pdf.base64 === "string" && pdf.base64);
+  const hasPhotos = Array.isArray(photos) && photos.length > 0;
+  if (hasPdf && hasPhotos) return { err: "Send the PDF or the photos, not both." };
+  if (!hasPdf && !hasPhotos) return { err: "Add the terminal's PDF, or photograph the slip." };
+  if (hasPhotos && photos.length > maxPhotos) return { err: `Too many photos — ${maxPhotos} at most.` };
+  return { source: hasPdf ? "pdf" : "photo" };
+}
+
+// ─── IS THIS ACTUALLY A PDF, AND DID IT ARRIVE INTACT? ───────────────────────
+// Pure so it can be attacked with the payloads that matter: a renamed photo, a
+// truncated upload, an empty file, one too large to be a batch report. Every
+// refusal is a sentence; none is a transport error.
+//
+// The magic bytes decide, not the file name. "%PDF-" is the header every PDF
+// carries, so a JPEG renamed .pdf is refused HERE rather than deep inside a
+// parser where the reason would be unreadable.
+function readPdfPayload(base64, maxBytes) {
+  const cleaned = String(base64 || "").replace(/^data:application\/pdf;base64,/i, "").replace(/\s/g, "");
+  if (!cleaned || !/^[A-Za-z0-9+/]+={0,2}$/.test(cleaned) || cleaned.length % 4 !== 0) {
+    return { err: "That file did not arrive intact — try again." };
+  }
+  const buffer = Buffer.from(cleaned, "base64");
+  if (!buffer.length) return { err: "That file is empty." };
+  if (buffer.length > maxBytes) {
+    return { err: `That file is ${(buffer.length / 1048576).toFixed(1)}MB — too large for a batch report. Check it is the right file.` };
+  }
+  if (buffer.subarray(0, 5).toString("latin1") !== "%PDF-") {
+    return { err: "That file is not a PDF. Attach the terminal's emailed batch report, or photograph the slip.", reject: true };
+  }
+  return { buffer };
 }
 
 module.exports = {
@@ -399,4 +484,5 @@ module.exports = {
   parseSlipTimestamp, parseRandsToCents, formatCents,
   normaliseTid, normaliseBatchNo, batchKeyFor, resolveBatchWrite,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
+  chooseCaptureSource, readPdfPayload,
 };

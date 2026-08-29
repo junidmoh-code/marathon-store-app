@@ -85,3 +85,29 @@ export function mergeIntake({ prepared, cap, replace = false }) {
     return [...base, ...prepared].slice(0, cap);
   };
 }
+
+
+// ── PAYLOAD SIZE ─────────────────────────────────────────────────────────────
+/**
+ * The callable's request ceiling is 10MB. Six ~2000px roll sections plus a
+ * summary, base64'd, can approach it on a dense slip — and going over it fails
+ * as a TRANSPORT error, which reaches a manager as an unreadable stack rather
+ * than as anything they can act on.
+ *
+ * So the size is checked before the call and refused with a sentence. The
+ * margin below the real limit is for the rest of the request: the action, the
+ * TID, and base64's own overhead already counted in these strings.
+ */
+export const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+
+/**
+ * @param {{base64:string}[]} parts  everything about to be sent
+ * @returns {string|null} a refusal, or null if it will fit
+ */
+export function payloadRefusal(parts) {
+  const bytes = (Array.isArray(parts) ? parts : [])
+    .reduce((n, p) => n + (typeof p?.base64 === "string" ? p.base64.length : 0), 0);
+  if (bytes <= MAX_PAYLOAD_BYTES) return null;
+  const mb = (bytes / 1048576).toFixed(1);
+  return `That is ${mb}MB of photos — too much to send in one go. Remove a section and try again; the roll can be shot in fewer, wider frames.`;
+}
