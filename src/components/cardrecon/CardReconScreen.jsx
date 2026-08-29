@@ -247,7 +247,8 @@ function EmailedSlips() {
         {rows.map((r) => {
           const bad = (r.refused || 0) > 0;
           return (
-            // A BUTTON, not a div with a click handler. It is the only
+            // A BUTTON, not a div with a click handler — and phrasing content
+            // inside it, because a <button> may not legally contain a <div>. It is the only
             // interactive thing in this panel, and a div gets no keyboard, no
             // focus ring and nothing to announce — on a screen whose whole
             // purpose is that a refusal is noticed. (CodeRabbit, PR #510.)
@@ -258,13 +259,13 @@ function EmailedSlips() {
                           border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
                           background: bad ? "rgba(255,107,107,.07)" : "rgba(255,255,255,.03)",
                           borderRadius: 11, padding: "9px 11px", cursor: "pointer" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
+              <span style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
                 <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#E9EEFF", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {r.subject || "(no subject)"}
                 </span>
                 <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
-              </div>
-              <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
+              </span>
+              <span style={{ display: "block", fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
                 {r.from || "unknown sender"}
                 {" · "}
                 {[
@@ -272,22 +273,22 @@ function EmailedSlips() {
                   r.refused ? `${r.refused} REFUSED` : null,
                   r.unrelated ? `${r.unrelated} not a slip` : null,
                 ].filter(Boolean).join(" · ") || "nothing to capture"}
-              </div>
+              </span>
               {open === r.id && (
-                <div style={{ marginTop: 8, display: "grid", gap: 5 }}>
+                <span style={{ marginTop: 8, display: "grid", gap: 5 }}>
                   {attachmentRows(r).map((a, i) => (
-                    <div key={i} style={{ fontSize: 12, lineHeight: 1.45,
+                    <span key={i} style={{ display: "block", fontSize: 12, lineHeight: 1.45,
                                           color: a.outcome === "refused" ? "#FFB3B3" : a.outcome === "recorded" ? "#B7F0CC" : "rgba(233,238,255,.5)" }}>
                       <span style={{ fontWeight: 700 }}>{a.filename}</span>
                       {a.outcome === "recorded"
                         ? ` — batch ${a.batchKey}${a.tid ? ` · TID ${a.tid}` : ""}${a.linesCaptured ? "" : " (summary only)"}`
                         : ` — ${a.reason}`}
                       {(a.warnings || []).map((w, j) => (
-                        <div key={j} style={{ color: "#FDE9B0", fontSize: 11.5 }}>{w}</div>
+                        <span key={j} style={{ display: "block", color: "#FDE9B0", fontSize: 11.5 }}>{w}</span>
                       ))}
-                    </div>
+                    </span>
                   ))}
-                </div>
+                </span>
               )}
             </button>
           );
