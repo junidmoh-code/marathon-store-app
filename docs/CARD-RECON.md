@@ -27,7 +27,44 @@ cashier name is ever selected anywhere in the feature.
 { "mid": "000000004977890", "storeId": "pe", "tillId": "till-1", "label": "PE Till 1" }
 ```
 
-Seed with `node scripts/seed-card-terminals.mjs --tid 0000HP1X --mid 000000004977890 --store pe --till till-1 --label "PE Till 1" --execute`.
+Seed with `node scripts/seed-card-terminals.mjs --tid <TID> [--mid <MID>] --store <pe|pine|trophy> --till <till-N> --label "<label>" --execute`.
+
+**All four terminals, live as of 2026-08-29:**
+
+| TID | MID | store · till | prints |
+|---|---|---|---|
+| `0000HP1X` | `000000004977890` | pe · till-1 | THE MARATHON |
+| `67365901` | `100000001178101` | pe · till-2 | OMARS FASHION |
+| `67364485` | `100000001178101` | pine · till-1 | OMARS FASHION |
+| `67377843` | *(none printed)* | trophy · till-1 | Marathon Club |
+
+**Three things that table makes unsafe, and one more beside it.** Each is the
+kind of assumption a later change makes by accident, so each is pinned by
+`functions/test/card-terminal-identity.test.cjs` (6 tests, 5/5 mutations killed):
+
+- **A MID is not unique to a store.** `pe/till-2` and `pine/till-1` share
+  `100000001178101` — two different *stores* on one merchant account. Resolving
+  a store from a MID would put Pine's takings on a PE till.
+- **A MID may not exist.** `trophy/till-1` prints no Merchant line, and is
+  registered with **no `mid` key** — not an empty string, not a placeholder.
+  Anything that required one would refuse that shop's slips outright. `mid` is
+  absent from `KEY_FIELDS`, so an unreadable MID cannot fail a capture either.
+- **The trading name identifies nothing.** Three names across four terminals in
+  three stores, one of them shared by two stores. It is not in the OCR schema at
+  all, and the test refuses to let it in.
+- **The TID format is not one thing.** One alphanumeric (`0000HP1X`), three
+  8-digit numeric. `normaliseTid` accepts `[A-Z0-9]{4,16}`; nothing narrower.
+
+**Store identity comes from the TID→store map and from nowhere else.** The test
+asserts the registry is only ever indexed by a TID, and that no code reads a MID
+*off the registry* — which is what any comparison against a slip's MID would
+need.
+
+`mid` was already optional in the live rule (`.validate` requires only
+`storeId` + `tillId`), so no rule change was needed — verified against the real
+rules engine rather than by reading: a MID-less terminal is accepted, a numeric
+TID is accepted, a terminal missing `storeId` is still refused, and a non-admin
+still cannot write the registry at all.
 
 ### `/card_batches/{storeId}/{tid}/{batchKey}`  ·  TOP-LEVEL, owner-only
 
