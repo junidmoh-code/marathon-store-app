@@ -39,6 +39,8 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref as dbRef, onValue } from "firebase/database";
+import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
+import { planPhotoIntake, mergeIntake, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
 
@@ -50,6 +52,8 @@ const FONT = "'Inter','SF Pro Display',-apple-system,BlinkMacSystemFont,sans-ser
 // than the label reader's 1024px. ~2000px keeps a full receipt column sharp
 // and a JPEG comfortably under the callable's per-photo ceiling.
 const MAX_PHOTO_DIM = 2000;
+
+
 
 function fmtR(cents) {
   if (!Number.isInteger(cents)) return "—";
@@ -66,26 +70,42 @@ function fmtTime(ms) {
   });
 }
 
+/**
+ * A picked file → a ~2000px JPEG, whatever the phone handed over.
+ *
+ * THE DOWNSCALE IS THE POINT, and it applies to every source equally: this runs
+ * on the File objects the input produces, and the input does not record whether
+ * they came from the camera or the library. A 12-megapixel library photo of a
+ * long roll is reduced here, before it is ever base64'd or sent, which is what
+ * keeps a capture uploadable on shop wifi.
+ *
+ * DECODING GOES THROUGH THE SHARED DECODER, not FileReader + `new Image()`.
+ * That mattered the moment gallery selection became a first-class path: an
+ * iPhone's library stores HEIC, and while the camera hands back a JPEG through
+ * a file input, the library hands back what it has. `new Image()` cannot decode
+ * HEIC anywhere but Safari, so the old path would have failed on exactly the
+ * phones this change is for. decodeImageFile falls back to a lazily-imported
+ * wasm decoder, and resizes DURING decode where the browser supports it — which
+ * on a phone is the difference between one upload and three.
+ */
 async function downscalePhoto(file) {
-  const dataUrl = await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(new Error("could not read the photo"));
-    r.readAsDataURL(file);
-  });
-  const img = await new Promise((resolve, reject) => {
-    const i = new Image();
-    i.onload = () => resolve(i);
-    i.onerror = () => reject(new Error("could not decode the photo"));
-    i.src = dataUrl;
-  });
-  const scale = Math.min(1, MAX_PHOTO_DIM / Math.max(img.width, img.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(img.width * scale);
-  canvas.height = Math.round(img.height * scale);
-  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-  const jpeg = canvas.toDataURL("image/jpeg", 0.88);
-  return { dataUrl: jpeg, base64: jpeg.split(",")[1] || "" };
+  const decoded = await decodeImageFile(file, MAX_PHOTO_DIM);
+  try {
+    const { source, width, height } = decoded;
+    // decodeImageFile may already have resized during decode; scale from what
+    // it actually returned rather than assuming it did or did not.
+    const scale = Math.min(1, MAX_PHOTO_DIM / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+    const jpeg = canvas.toDataURL("image/jpeg", 0.88);
+    return { dataUrl: jpeg, base64: jpeg.split(",")[1] || "" };
+  } finally {
+    // An ImageBitmap holds its pixels outside the JS heap; the collector is in
+    // no hurry. Six roll sections on a phone is where that shows.
+    decoded.release();
+  }
 }
 
 const S = {
@@ -131,6 +151,7 @@ export default function CardReconScreen({ onExit }) {
   const [summaryPhotos, setSummaryPhotos] = useState([]);
   const [summaryOnly, setSummaryOnly] = useState(false);
   const [busy, setBusy] = useState(null);                  // "extract" | "submit" | null
+  const [preparing, setPreparing] = useState(0);           // decodes in flight
   const [reject, setReject] = useState(null);              // plain server reason
   const [error, setError] = useState(null);                // transport/unexpected
   const [draft, setDraft] = useState(null);                // { draftId, review }
@@ -139,17 +160,35 @@ export default function CardReconScreen({ onExit }) {
   const detailRef = useRef(null);
   const summaryRef = useRef(null);
 
-  const addPhotos = (setter) => async (e) => {
+  // The DECISION is planPhotoIntake (pure, tested on its own). This owns only
+  // the parts that need the browser: decoding and state.
+  const addPhotos = (setter, current, cap, { replace = false } = {}) => async (e) => {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
     setError(null);
+
+    const { keep, take, refusal, notice } = planPhotoIntake({
+      current, files, cap, replace,
+      isImage: isAcceptedImageFile, describe: describePickedFile,
+    });
+    if (refusal) { setError(refusal); return; }
+
+    setPreparing((n) => n + 1);
     try {
       const prepared = [];
-      for (const f of files) prepared.push(await downscalePhoto(f));
-      setter((prev) => [...prev, ...prepared]);
+      for (const f of take) prepared.push(await downscalePhoto(f));
+      // FUNCTIONAL, against live state — never `setter([...keep, ...prepared])`.
+      // Decoding takes real time (a HEIC goes through a wasm decoder), the
+      // picker can be reopened while it runs, and two overlapping picks that
+      // each wrote their own stale copy would leave only the second one's
+      // photos with nothing said about it.
+      setter(mergeIntake({ prepared, cap, replace }));
+      if (notice) setError(notice);
     } catch (err) {
       setError(`Could not read that photo (${err?.message || err}).`);
+    } finally {
+      setPreparing((n) => n - 1);
     }
   };
 
@@ -294,10 +333,19 @@ export default function CardReconScreen({ onExit }) {
           <div style={S.card}>
             <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>2 · The detail roll</div>
             <div style={S.sub}>Shoot the printed transaction list in overlapping sections — every line, sharp. This is the point of the capture.</div>
-            <input ref={detailRef} type="file" accept="image/*" capture="environment" multiple
-                   onChange={addPhotos(setDetailPhotos)} style={{ display: "none" }} />
-            <button style={{ ...S.btn, marginTop: 10 }} onClick={() => detailRef.current?.click()}>
-              📷 {detailPhotos.length ? `Add another section (${detailPhotos.length} shot)` : "Shoot the detail roll"}
+            {/* No `capture` attribute: with it, the OS opens the camera and
+                nothing else. Without it the manager gets the normal picker and
+                can shoot the whole roll in the Photos app first, then pick the
+                frames — which is how a long roll actually gets photographed. */}
+            <input ref={detailRef} type="file" accept="image/*" multiple
+                   onChange={addPhotos(setDetailPhotos, detailPhotos, MAX_DETAIL_PHOTOS)}
+                   style={{ display: "none" }} />
+            <button style={{ ...S.btn, marginTop: 10, opacity: preparing ? 0.6 : 1 }}
+                    disabled={preparing > 0 || detailPhotos.length >= MAX_DETAIL_PHOTOS}
+                    onClick={() => detailRef.current?.click()}>
+              {preparing > 0 ? "Preparing photos…" : `📷 ${detailPhotos.length
+                    ? `Add another section (${detailPhotos.length} of ${MAX_DETAIL_PHOTOS})`
+                    : "Shoot or choose the detail roll"}`}
             </button>
             {detailPhotos.length > 0 && (
               <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
@@ -320,10 +368,15 @@ export default function CardReconScreen({ onExit }) {
           <div style={S.card}>
             <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>3 · The summary</div>
             <div style={S.sub}>The header + totals section: MID, TID, batch number, Opened/Closed, Payment Type Summary, CARD TOTALS.</div>
-            <input ref={summaryRef} type="file" accept="image/*" capture="environment" multiple
-                   onChange={addPhotos(setSummaryPhotos)} style={{ display: "none" }} />
-            <button style={{ ...S.btn, marginTop: 10 }} onClick={() => summaryRef.current?.click()}>
-              📷 {summaryPhotos.length ? `Add another (${summaryPhotos.length} shot)` : "Shoot the summary"}
+            {/* One slot, and no `capture` here either — same reason. Picking
+                again replaces the shot rather than being refused. */}
+            <input ref={summaryRef} type="file" accept="image/*"
+                   onChange={addPhotos(setSummaryPhotos, summaryPhotos, MAX_SUMMARY_PHOTOS, { replace: true })}
+                   style={{ display: "none" }} />
+            <button style={{ ...S.btn, marginTop: 10, opacity: preparing ? 0.6 : 1 }}
+                    disabled={preparing > 0}
+                    onClick={() => summaryRef.current?.click()}>
+              {preparing > 0 ? "Preparing photos…" : `📷 ${summaryPhotos.length ? "Replace the summary shot" : "Shoot or choose the summary"}`}
             </button>
             {summaryPhotos.length > 0 && (
               <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>

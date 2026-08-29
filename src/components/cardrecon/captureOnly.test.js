@@ -42,10 +42,44 @@ const FORBIDDEN = [
 ];
 
 // Comments may EXPLAIN the nodes; code may not name them.
+//
+// STRIPPED LINE-WISE, deliberately. The obvious
+// `src.replace(/\/\*[\s\S]*?\*\//g, "")` treats the `/*` inside
+// `accept="image/*"` as a block-comment opener and deletes everything up to the
+// next `*/`. Ten files under src/ contain that string — App.jsx among them — so
+// this scan was reading wreckage, and a scan that has deleted half a file finds
+// nothing very convincingly. A block comment always OPENS a line; an
+// `accept="image/*"` never does.
 const stripComments = (src) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  src.split("\n").reduce(({ out, inBlock }, line) => {
+    if (inBlock) return { out, inBlock: !/\*\//.test(line) };
+    if (/^\s*\{?\/\*/.test(line)) return { out, inBlock: !/\*\//.test(line) };
+    if (/^\s*\/\//.test(line)) return { out, inBlock: false };
+    return { out: [...out, line], inBlock: false };
+  }, { out: [], inBlock: false }).out.join("\n");
 
 describe("the store app is capture-only", () => {
+  it("the comment stripper has not eaten the files this scan reads", () => {
+    // Without this, the scan below can pass because the source it searched was
+    // blanked rather than because the reference is absent.
+    //
+    // COUNT, do not merely look. The naive stripper eats from the FIRST
+    // `accept="image/*"` to the next `*/`, which leaves later ones intact — so
+    // "the string is still in there somewhere" is satisfied by a file with half
+    // its inputs deleted. Ten files under src/ carry that string.
+    const count = (t, needle) => t.split(needle).length - 1;
+    for (const file of ["src/components/cardrecon/CardReconScreen.jsx", "src/App.jsx"]) {
+      const raw = readFileSync(resolve(root, file), "utf8");
+      expect(count(stripComments(raw), 'accept="image/*"'),
+        `${file}: stripping must not consume an accept="image/*"`).toBe(count(raw, 'accept="image/*"'));
+      expect(stripComments(raw).length / raw.length,
+        `${file} must not be largely deleted by stripping`).toBeGreaterThan(0.5);
+    }
+    // …and a real comment must still go.
+    expect(stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8")))
+      .not.toContain("the OS opens the camera");
+  });
+
   it("reads none of the card-recon nodes, anywhere in src/", () => {
     const offenders = [];
     for (const file of CLIENT_FILES) {
