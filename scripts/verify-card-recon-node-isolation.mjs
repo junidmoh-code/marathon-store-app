@@ -12,8 +12,8 @@
 //   • the owner                             → must be ALLOWED
 //
 // It also pins what is TRUE of the abandoned /pos/card_* paths: no client can
-// write them, and their read CANNOT be closed from there, because RTDB read
-// grants cascade down from /pos and no deeper rule can revoke one.
+// write them, and — since /pos's blanket read was pushed down to its children
+// on 2026-08-29 — no client can read them either.
 //
 //   node scripts/verify-card-recon-node-isolation.mjs
 //
@@ -55,22 +55,18 @@ function accessToken() {
 
 const live = await (await fetch(`${DB}/.settings/rules.json?access_token=${accessToken()}`)).text();
 
-// ── THE COUNTERFACTUAL, SPLICED IN ──────────────────────────────────────────
-// The claim this script makes about the abandoned /pos paths is not "they have
-// no .read" — it is the stronger and less obvious "adding `.read`: `false` to
-// them would not help". Running the LIVE rules verbatim cannot test that: with
-// no .read on those nodes at all, staff read them by inheritance and the
-// assertions pass trivially, proving a much weaker thing while looking green.
-// (A review caught exactly that; the original proof was a throwaway probe that
-// was never committed, so the quoted evidence could not be reproduced by
-// running this file.)
+// ── HISTORY, KEPT SHORT ─────────────────────────────────────────────────────
+// This script used to splice `".read": "false"` onto the two abandoned /pos
+// card nodes and assert it did NOTHING — because RTDB read grants cascade down
+// from /pos and cannot be revoked by a deeper rule. That was the finding, and
+// it is why the obvious one-line fix was never applied.
 //
-// So the candidate rule is applied here, in memory, and the assertions below
-// run against it. If RTDB ever gained deeper-revocation semantics, they would
-// start failing — which is the point.
+// It is now moot: /pos's blanket `.read` was removed on 2026-08-29 (pushed down
+// to each child that needs it, `$other` included), so those nodes have no read
+// grant to inherit and are denied outright. The assertions below say that
+// plainly. Do not re-add a `".read": "false"` there expecting it to be what
+// denies — it would be decoration.
 const doc = JSON.parse(live);
-doc.rules.pos.card_batches[".read"] = "false";
-doc.rules.pos.card_batch_drafts[".read"] = "false";
 const candidate = JSON.stringify(doc, null, 2);
 
 const dir = mkdtempSync(join(tmpdir(), "node-isolation-"));
@@ -150,76 +146,52 @@ try {
   check("staff cannot write the abandoned /pos/card_batch_drafts", false,
     (await req("PUT", "pos/card_batch_drafts/u/9", { as: STAFF, body: { x: 1 } })).ok);
 
-  // …BUT THE THIRD ONE IS STILL WRITABLE, and this asserts that rather than
-  // letting the doc imply otherwise. /pos/card_batch_overrides has no `.write`
-  // of its own; its $storeId/$dayYmd/$tillId rule grants create to any
-  // signed-in staff member. The trading-session gate that used to write it was
-  // deleted (marathon-pos-app #269), so nothing reads or writes it — but the
-  // path is live and takes data. (CodeRabbit, PR #504.)
+  // THE THIRD ONE IS CLOSED TOO. It used to have no `.write` of its own; its
+  // $storeId/$dayYmd/$tillId rule granted create to any signed-in staff member,
+  // gated only by naming an ACTIVE MANAGER as authoriser — so a cashier could
+  // attribute an authorisation to a manager who never gave one. The deep rule
+  // was removed on 2026-08-29 and the node left NAMED with `.write`: `false`,
+  // which matters: deleting it outright would drop it back under /pos/$other,
+  // and that grants write.
   //
-  // Note the fix is NOT a `.write`: `false` on the parent: write grants cascade
-  // downward exactly like read grants, so a shallower `false` cannot revoke the
-  // deeper grant. The deep rule has to be REMOVED and the node left named with
-  // `.write`: `false` so /pos/$other does not pick it up. Not applied here —
-  // this task's brief was that nothing else under /pos changes.
-  // tillId must EQUAL the path segment — the rule pins it, so a fixture whose
-  // body and path disagree is refused for the wrong reason.
+  // Note the fix could NOT have been a `.write`: `false` layered above the deep
+  // rule — write grants cascade downward exactly like read grants, so a
+  // shallower `false` cannot revoke a deeper grant. The deep rule had to go.
   const override = (authorizedByUid, tillId) => ({
     reason: "a reason long enough to pass validation", storeId: "pe", tillId,
     dayYmd: "2026-08-29", byUid: "staff-uid-1", authorizedByUid, at: Date.now(),
   });
-  // Naming THEMSELVES as the authorizer is refused — the validate requires the
-  // authorizer to be an active manager.
+  // ASSERT THE SEED. The next check claims a write is refused even when it names
+  // a REAL active manager — a claim that only means something if the manager
+  // actually exists. Discarding this result would let the check pass because the
+  // seed silently failed, proving only that an unknown uid is refused.
+  // (CodeRabbit, PR #506.)
+  const seeded = await req("PUT", "users/mgr-uid/posAccess", { as: "owner-admin", body: { role: "manager", isActive: true } });
+  check("the manager fixture actually seeded (else the next check proves nothing)", true, seeded.ok);
   check("a cashier cannot self-authorise an override", false,
     (await req("PUT", "pos/card_batch_overrides/pe/2026-08-29/till-1", { as: STAFF, body: override("staff-uid-1", "till-1") })).ok);
-
-  // But naming a REAL active manager is accepted, with no evidence that manager
-  // agreed to anything. That is the residual: the write grant is open to any
-  // signed-in staff member and only the NAME of an approver is checked.
-  await req("PUT", "users/mgr-uid/posAccess", { as: "owner-admin", body: { role: "manager", isActive: true } });
-  check("…but naming a real active manager IS accepted (no approval required from them)", true,
+  check("…nor by naming a REAL active manager, which used to be accepted", false,
     (await req("PUT", "pos/card_batch_overrides/pe/2026-08-29/till-2", { as: STAFF, body: override("mgr-uid", "till-2") })).ok);
+  check("staff cannot read /pos/card_batch_overrides either", false,
+    (await req("GET", "pos/card_batch_overrides", { as: STAFF })).ok);
 
-  // AND THE READ CANNOT BE CLOSED FROM THERE — asserted deliberately, as a
-  // fact about RTDB rather than an oversight.
-  //
-  // Adding `".read": "false"` beside those `".write": "false"` entries looks
-  // like the obvious way to finish the job. It does nothing. RTDB read and
-  // write grants CASCADE DOWNWARD and cannot be revoked by a deeper rule:
-  // /pos grants `.read` to every signed-in non-anonymous staff member, so no
-  // child of /pos can take that away. (`.write: false` works only because /pos
-  // has no `.write` of its own for it to override.) Verified against this same
-  // engine with the candidate rules applied — staff still read straight through
-  // it.
-  //
-  // These assertions expect ALLOWED. If one ever fails, it means somebody
-  // narrowed /pos's own `.read` and the residual is genuinely closed — at which
-  // point flip these two to `false` and delete this comment. A test that fails
-  // is the right way to find that out; a rule that silently does nothing is not.
-  // POSITIVE CONTROL FIRST. The behavioural assertions below cannot, on their
-  // own, tell "the `.read`:`false` is inert" from "there is no `.read` here at
-  // all" — both read ALLOWED, which is exactly the finding and exactly what
-  // makes it easy to prove nothing by accident. (Confirmed the hard way:
-  // commenting out the splice left the suite green at 20/20.) So assert the
-  // rule really is in the document the emulator loaded, before asserting that
-  // it does nothing.
-  const loaded = JSON.parse(readFileSync(join(dir, "rules.json"), "utf8"));
-  check("the rules under test DO carry `.read`:`false` on /pos/card_batches", true,
-    loaded.rules.pos.card_batches[".read"] === "false");
-  check("…and on /pos/card_batch_drafts", true,
-    loaded.rules.pos.card_batch_drafts[".read"] === "false");
-
-  // These run against those rules. They still expect ALLOWED, and that is the
-  // whole finding.
-  check("`.read`:`false` on /pos/card_batches does NOT deny staff", true,
+  // THE RESIDUAL IS CLOSED. These used to expect ALLOWED, with a long comment
+  // explaining that a deeper `.read`:`false` could not deny them. /pos's
+  // blanket read is gone, so there is nothing to inherit and they are denied
+  // because NO rule grants them — which is the only way it could ever have
+  // worked.
+  check("staff cannot read the abandoned /pos/card_batches", false,
     (await req("GET", "pos/card_batches", { as: STAFF })).ok);
-  check("`.read`:`false` on /pos/card_batch_drafts does NOT deny staff either", true,
+  check("staff cannot read the abandoned /pos/card_batch_drafts", false,
     (await req("GET", "pos/card_batch_drafts", { as: STAFF })).ok);
-  check("…nor does it deny a leaf inside one", true,
+  check("…nor a leaf inside one", false,
     (await req("GET", "pos/card_batches/pe/TID1/1", { as: STAFF })).ok);
-  // …while the sibling `.write`:`false` on the SAME node does work, because
-  // /pos has no `.write` of its own for it to override. One line of the pair
-  // bites and the other cannot, in the same rule object.
+  // …while everything a till actually uses is still readable, from the child
+  // grants that replaced the parent's.
+  check("but /pos/sales is still readable — the grant moved, it did not vanish", true,
+    (await req("GET", "pos/sales", { as: STAFF })).ok);
+  check("and so is an UNNAMED /pos child, via $other", true,
+    (await req("GET", "pos/some_future_node", { as: STAFF })).ok);
   check("the `.write`:`false` beside it DOES deny", false,
     (await req("PUT", "pos/card_batches/pe/TID1/9", { as: STAFF, body: { x: 1 } })).ok);
 
