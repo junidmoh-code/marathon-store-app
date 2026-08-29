@@ -99,3 +99,67 @@ describe("readPixelSize", () => {
     expect(await readPixelSize(null)).toBe(null);
   });
 });
+
+// ─── FUZZ: THE SNIFFER READS BYTES IT DID NOT WRITE ──────────────────────────
+// This is a header parser pointed at files a phone picker handed over — a
+// truncated download, a file that is half one format and half another, and
+// (since anyone can attach anything) bytes chosen to be awkward. Two properties
+// hold for EVERY input, and neither is provable by example:
+//
+//   IT NEVER THROWS. A throw here happens mid-upload, inside the decode the
+//   whole path depends on, and would surface as "couldn't open that photo"
+//   about a photo that is fine.
+//
+//   IT NEVER RETURNS A NONSENSE SIZE. null is a supported answer — the caller
+//   falls back to the byte heuristic. A WRONG number is not: it silently
+//   resizes every upload by the wrong factor, which is exactly the class of bug
+//   this file was written to remove.
+describe("pixelSizeFromHeader — fuzz", () => {
+  // Deterministic: a failing seed is reproducible, and a run that finds
+  // something today finds it again tomorrow.
+  const rng = (seed) => () => (seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF) / 0x7FFFFFFF;
+
+  const MAGICS = [
+    [0xFF, 0xD8],                                     // JPEG
+    [0x89, 0x50, 0x4E, 0x47],                         // PNG
+    [...[..."GIF89a"].map((c) => c.charCodeAt(0))],   // GIF
+    [0x42, 0x4D],                                     // BMP
+    [...[..."RIFF"].map((c) => c.charCodeAt(0))],     // WebP-ish
+    [0x49, 0x49, 0x2A, 0x00],                         // TIFF LE
+    [0x4D, 0x4D, 0x00, 0x2A],                         // TIFF BE
+    [0, 0, 0, 24, ...[..."ftyp"].map((c) => c.charCodeAt(0))],  // ISO-BMFF
+    [],                                               // no magic at all
+  ];
+
+  it("never throws and never invents a size, over 4000 hostile inputs", () => {
+    const rand = rng(20260829);
+    let sizes = 0, nulls = 0;
+    for (let n = 0; n < 4000; n++) {
+      const magic = MAGICS[Math.floor(rand() * MAGICS.length)];
+      const len = 4 + Math.floor(rand() * 400);
+      const buf = new Uint8Array(magic.length + len);
+      buf.set(magic, 0);
+      for (let i = magic.length; i < buf.length; i++) buf[i] = Math.floor(rand() * 256);
+
+      let out;
+      expect(() => { out = pixelSizeFromHeader(buf); }).not.toThrow();
+      if (out === null) { nulls++; continue; }
+      sizes++;
+      // Whatever it claims to have found must be a size a picture could have.
+      expect(Number.isInteger(out.width) && out.width > 0 && out.width <= 1e6).toBe(true);
+      expect(Number.isInteger(out.height) && out.height > 0 && out.height <= 1e6).toBe(true);
+    }
+    // The corpus must actually reach both answers, or this proves nothing about
+    // either — random bytes behind a real magic DO parse sometimes.
+    expect(nulls).toBeGreaterThan(0);
+    expect(sizes).toBeGreaterThan(0);
+  });
+
+  it("never throws on a header cut off mid-field", () => {
+    // A truncated download, at every possible truncation point.
+    const full = bytes([0x89], chars("PNG"), [0x0D, 0x0A, 0x1A, 0x0A], be32(13), chars("IHDR"), be32(800), be32(600), zeros(8));
+    for (let cut = 0; cut <= full.length; cut++) {
+      expect(() => pixelSizeFromHeader(full.subarray(0, cut))).not.toThrow();
+    }
+  });
+});

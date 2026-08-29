@@ -193,6 +193,11 @@ async function assertCardRecon(request) {
 async function assertEmailIntake(request) {
   if (request.auth?.token?.email === ADMIN_EMAIL) return;
   const uid = request.auth?.uid;
+  // assertCardRecon has already refused an unauthenticated call, so this cannot
+  // be reached without a uid — and it does not depend on that being true, since
+  // `users/undefined/permFlags/...` is a path that reads as granted the moment
+  // somebody writes it.
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let granted = false;
   try {
     const snap = await admin.database().ref(`users/${uid}/permFlags/${EMAIL_INTAKE_FLAG}`).once("value");

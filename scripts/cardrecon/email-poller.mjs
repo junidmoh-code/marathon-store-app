@@ -219,7 +219,13 @@ async function captureOne(idToken, { attachment, message }) {
     channel: "email",
     pdf: { base64: attachment.content.toString("base64") },
     intake: {
-      messageId: message.messageId,
+      // NEVER null. The callable refuses an emailed capture that cannot name
+      // its source message — rightly, because provenance is the whole point of
+      // recording a figure nobody vouched for. Some mail genuinely arrives with
+      // no Message-ID, and `key` is what identifies it in that case (a hash of
+      // its stable parts — see messageKey). Sending null here would turn a
+      // legitimate slip into a refusal about plumbing.
+      messageId: message.messageId || `key:${message.key}`,
       from: message.from,
       subject: message.subject,
       filename: attachment.filename || null,
@@ -335,7 +341,11 @@ async function run() {
 
 async function handleMessage({ client, uid, db, idToken, cfg }) {
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
-  const downloaded = await client.download(uid, undefined, { uid: true });
+  // imapflow takes a RANGE, and a range is a string ("12", "1:5") — not the
+  // number. Passing the raw uid works by coercion in some paths and silently
+  // addresses the wrong message in others; the documented form is the string.
+  const range = String(uid);
+  const downloaded = await client.download(range, undefined, { uid: true });
   if (!downloaded?.content) return empty;
   const parsed = await simpleParser(downloaded.content);
 
@@ -354,14 +364,14 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
   if (!take.length && !badAttachments.length) {
     // Ordinary mail. Marked read so it is not looked at again, and nothing is
     // written — a record per newsletter would bury the thing this feed is for.
-    if (!cfg.dryRun) await client.messageFlagsAdd({ uid }, ["\\Seen"], { uid: true });
+    if (!cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true });
     return empty;
   }
 
   const claim = await claimMessage(db, message.key);
   if (!claim.taken) {
     console.log(`  · "${message.subject || "(no subject)"}" — ${claim.why}`);
-    if (!cfg.dryRun) await client.messageFlagsAdd({ uid }, ["\\Seen"], { uid: true }).catch(() => {});
+    if (!cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
     return empty;
   }
 
@@ -393,7 +403,7 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
   // in the database. Crash before this and the next tick sees it again, which
   // the claim and the duplicate-batch refusal both handle; crash after marking
   // it read with nothing recorded and the slip is gone.
-  await client.messageFlagsAdd({ uid }, ["\\Seen"], { uid: true }).catch((err) => {
+  await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
     console.warn(`  ⚠ could not mark "${message.subject}" read (${err.message}) — the claim still stops it being submitted twice`);
   });
 
