@@ -92,7 +92,8 @@ const WINDOW_EDGE_MS = 2 * 60 * 1000;
 
 // The reconciliation window either came off the slip or was worked out from the
 // transactions; only the second kind has an edge worth reporting.
-const edgeMsFor = (extraction) => (extraction.windowSource === "transactions" ? WINDOW_EDGE_MS : 0);
+const edgeMsFor = (extraction) => (
+  extraction.windowSource && extraction.windowSource !== "printed" ? WINDOW_EDGE_MS : 0);
 
 const EXTRACTION_PROMPT = [
   "These photographs show ONE printed card-terminal Batch Report from an FNB",
@@ -387,6 +388,11 @@ async function handleExtract(db, request) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    // Only a window that runs past its last transaction has a tail worth
+    // reporting — see the tail note in lib/card-expected.cjs.
+    tailFromMs: extraction.windowSource === "transactions-to-print"
+      ? extraction.lastTxnAt ?? null
+      : null,
   });
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
@@ -524,6 +530,11 @@ async function handleExtractPdf(db, request, { picked, pdf, source }) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    // Only a window that runs past its last transaction has a tail worth
+    // reporting — see the tail note in lib/card-expected.cjs.
+    tailFromMs: extraction.windowSource === "transactions-to-print"
+      ? extraction.lastTxnAt ?? null
+      : null,
   });
 
   // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
@@ -531,6 +542,14 @@ async function handleExtractPdf(db, request, { picked, pdf, source }) {
   // refusal: the figures are exact, and whether those legs belong to this batch
   // is a judgement for the person reviewing it.
   const warnings = verdict.warnings.slice();
+  if (expected.tailLegs > 0) {
+    warnings.push(
+      `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(expected.tailCents)}) fall after the report's last transaction and before it was printed. ` +
+      "They ARE counted: a till leg is always written a minute or two after the terminal approves the card, " +
+      "so the last sales of a batch land in that gap. Check them if this batch's variance looks wrong.",
+    );
+  }
   if (expected.nearEdgeLegs > 0) {
     warnings.push(
       `${expected.nearEdgeLegs} card leg${expected.nearEdgeLegs === 1 ? "" : "s"} on this till ` +
@@ -660,6 +679,11 @@ async function handleSubmit(db, request) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    // Only a window that runs past its last transaction has a tail worth
+    // reporting — see the tail note in lib/card-expected.cjs.
+    tailFromMs: extraction.windowSource === "transactions-to-print"
+      ? extraction.lastTxnAt ?? null
+      : null,
   });
 
   // Re-resolve the key against NOW's children, then guarantee append-only with

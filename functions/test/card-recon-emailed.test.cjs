@@ -95,7 +95,7 @@ test("the report's own header timestamp is not read as a transaction", () => {
   const ex = real();
   assert.equal(ex.lines.length, 40);
   assert.equal(ex.printedAt, Date.UTC(2026, 7, 29, 14, 26, 31), "printed 16:26:31 SAST");
-  assert.ok(ex.printedAt > ex.closedAt, "the report was printed after the batch closed");
+  assert.ok(ex.printedAt > ex.lastTxnAt, "the report was printed after the batch's last sale");
 });
 
 test("dates are DD-MM-YYYY on this format, and are read as such", () => {
@@ -242,16 +242,39 @@ test("a DUPLICATE TSN is refused in both formats — a repeat is never expected"
 
 // ═══ CHECK 2: THE WINDOW IS DERIVED, AND SAYS SO ═════════════════════════════
 
-test("the window is derived from the real transactions", () => {
+test("the window opens at the first sale and closes when the report was printed", () => {
+  // NOT at the last transaction. A till leg is always written after the
+  // terminal's own stamp — measured across the real report against the live
+  // ledger: minimum 118 seconds, median 134, never negative — so a window
+  // ending at the last sale excludes that sale's own leg, every time. On this
+  // file that overstated the variance by exactly R350.
   const ex = real();
-  assert.equal(ex.windowSource, "transactions");
-  assert.equal(ex.openedAt, Date.UTC(2026, 7, 29, 7, 7, 23), "09:07:23 SAST");
-  assert.equal(ex.closedAt, Date.UTC(2026, 7, 29, 14, 9, 9) + 1, "16:09:09 SAST, plus the millisecond");
+  assert.equal(ex.windowSource, "transactions-to-print");
+  assert.equal(ex.openedAt, Date.UTC(2026, 7, 29, 7, 7, 23), "09:07:23 SAST, the first sale");
+  assert.equal(ex.lastTxnAt, Date.UTC(2026, 7, 29, 14, 9, 9), "16:09:09 SAST, the last sale");
+  assert.equal(ex.closedAt, Date.UTC(2026, 7, 29, 14, 26, 31), "16:26:31 SAST, when it was printed");
+  assert.ok(ex.closedAt > ex.lastTxnAt, "the window must outlast the last sale");
   assert.equal(ex.openedText, null, "this format prints no Opened line");
   assert.equal(ex.closedText, null, "…and no Closed line");
   const times = ex.lines.map((l) => l.at);
   assert.ok(Math.min(...times) >= ex.openedAt && Math.max(...times) < ex.closedAt,
-    "every transaction must fall inside the window derived from it");
+    "every transaction must fall inside the window");
+});
+
+test("with no usable print time the window falls back to the last sale", () => {
+  // A report that prints no time, or whose print time precedes its last
+  // transaction (a reprint of an old batch), has nothing better to close on.
+  const lines = realReportLines().filter((l) => l !== "29-08-2026 16:26:31");
+  const ex = parse(lines).extraction;
+  assert.equal(ex.printedAt, null);
+  assert.equal(ex.windowSource, "transactions");
+  assert.equal(ex.closedAt, ex.lastTxnAt + 1, "…plus the millisecond that puts the last sale inside");
+
+  // A print time BEFORE the last transaction is not a closing time either.
+  const reprint = realReportLines().map((l) => (l === "29-08-2026 16:26:31" ? "29-08-2026 09:00:00" : l));
+  const ex2 = parse(reprint).extraction;
+  assert.equal(ex2.windowSource, "transactions");
+  assert.equal(ex2.closedAt, ex2.lastTxnAt + 1);
 });
 
 test("a printed slip keeps its declared window and is marked as such", () => {
@@ -262,7 +285,7 @@ test("a printed slip keeps its declared window and is marked as such", () => {
 
 test("a single-transaction report still yields a usable window", () => {
   const ex = parse(emailedLines({ tsns: [7] }).lines).extraction;
-  assert.equal(ex.closedAt, ex.openedAt + 1, "one transaction is still a window, not a zero-width one");
+  assert.ok(ex.closedAt > ex.openedAt, "one transaction is still a window, not a zero-width one");
   assert.equal(validateExtraction(ex, { source: "pdf" }).ok, true);
 });
 
@@ -571,7 +594,7 @@ test("a line that merely STARTS with a timestamp does not open a block", () => {
   // through the time, the derived window.
   const tsn3 = ex.lines.find((l) => l.tsn === 3);
   assert.equal(tsn3.time, "09:33:49", "the transaction kept its own time, not the footer's");
-  assert.equal(ex.closedAt, Date.UTC(2026, 7, 29, 14, 9, 9) + 1, "…so the window is unchanged");
+  assert.equal(ex.lastTxnAt, Date.UTC(2026, 7, 29, 14, 9, 9), "…so the batch's last sale is unchanged");
 });
 
 test("a report with no transactions at all is refused", () => {

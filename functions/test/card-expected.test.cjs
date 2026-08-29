@@ -239,3 +239,67 @@ test("the query WIDENS by edgeMs, or the near-edge legs are never fetched", () =
     assert.equal(r.nearEdgeCents, 7700);
   })();
 });
+
+// ─── THE TAIL ────────────────────────────────────────────────────────────────
+// A banking report states no closing time, so its window runs to the moment the
+// report was printed — minutes after its last transaction, because a till leg
+// is always written after the terminal approves the card (measured on the real
+// report against the live ledger: minimum 118 seconds, median 134, never
+// negative). Legs in that gap are counted, and rightly. But a sale rung up in
+// the gap and settled into the NEXT batch would land there too and be counted
+// twice, so the tail is measured and reported rather than hidden inside the
+// figure it contributes to.
+test("legs after the last transaction are counted AND reported", () => {
+  const events = {
+    a: leg(OPEN + 1000, 10000),
+    b: leg(OPEN + 5000, 35000),
+    c: leg(OPEN + 9000, 20000),
+  };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000, tailFromMs: OPEN + 4000 });
+  assert.equal(r.cardCents, 65000, "the tail IS part of the expected figure");
+  assert.equal(r.legs, 3);
+  assert.equal(r.tailLegs, 2, "…and is reported as its own number");
+  assert.equal(r.tailCents, 55000);
+});
+
+test("a leg exactly at the last transaction's instant is not tail", () => {
+  // The boundary is the last transaction's own timestamp, and the tail is what
+  // comes AFTER it. A leg at that very instant belongs to the transaction, not
+  // to the gap that follows.
+  const events = { at: leg(OPEN + 4000, 5000), after: leg(OPEN + 4001, 6000) };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000, tailFromMs: OPEN + 4000 });
+  assert.equal(r.cardCents, 11000, "both are inside the window either way");
+  assert.equal(r.tailLegs, 1, "only the one after the boundary");
+  assert.equal(r.tailCents, 6000);
+});
+
+test("with no tail boundary nothing is reported as tail", () => {
+  // A printed slip declares its own window, so it has no tail to speak of.
+  const events = { a: leg(OPEN + 1000, 10000), b: leg(OPEN + 9000, 20000) };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000 });
+  assert.equal(r.cardCents, 30000);
+  assert.equal(r.tailLegs, 0);
+  assert.equal(r.tailCents, 0);
+});
+
+test("the tail never changes the expected figure it is measured from", () => {
+  const events = { a: leg(OPEN + 1000, 10000), b: leg(OPEN + 9000, 20000) };
+  const base = { ...EDGE, startMs: OPEN, endMs: OPEN + 20000 };
+  const off = expectedCardFromEvents(events, base);
+  const on = expectedCardFromEvents(events, { ...base, tailFromMs: OPEN + 4000 });
+  assert.equal(on.cardCents, off.cardCents);
+  assert.equal(on.legs, off.legs);
+  assert.deepEqual(on.byKind, off.byKind);
+  assert.equal(on.tailLegs, 1);
+});
+
+test("only this till's card legs count as tail", () => {
+  const events = {
+    other: leg(OPEN + 9000, 30000, { tillId: "till-2" }),
+    cash: leg(OPEN + 9000, 30000, { method: "cash" }),
+    mine: leg(OPEN + 9000, 12300),
+  };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000, tailFromMs: OPEN + 4000 });
+  assert.equal(r.tailLegs, 1);
+  assert.equal(r.tailCents, 12300);
+});
