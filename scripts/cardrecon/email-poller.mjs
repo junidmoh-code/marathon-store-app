@@ -241,6 +241,25 @@ async function mintIdToken(uid) {
   return body.idToken;
 }
 
+// ── THE TOKEN IS REFRESHED, NOT REASONED ABOUT ───────────────────────────────
+// An ID token lasts an hour and a tick is bounded at twelve minutes, so today
+// one cannot expire mid-run. That is an argument, not a guarantee: it depends on
+// TICK_BUDGET_MS, on the runner's maxRunMs, and on nobody raising either — and
+// the failure it protects is every remaining capture in the tick returning 401
+// while the log says the mailbox is fine. A closure that re-mints on age costs
+// one line and removes the dependency. (CodeRabbit, PR #510.)
+const TOKEN_MAX_AGE_MS = 30 * 60 * 1000;
+function tokenProvider(uid) {
+  let token = null, mintedAt = 0;
+  return async () => {
+    if (!token || Date.now() - mintedAt > TOKEN_MAX_AGE_MS) {
+      token = await mintIdToken(uid);
+      mintedAt = Date.now();
+    }
+    return token;
+  };
+}
+
 async function callCapture(idToken, data) {
   const res = await fetch(CALLABLE_URL, {
     method: "POST",
@@ -266,8 +285,8 @@ async function callCapture(idToken, data) {
  * attachmentOutcome() expects — never throws for a REFUSAL (that is an answer),
  * only for a transport failure the caller records as one.
  */
-async function captureOne(idToken, { attachment, message }) {
-  const extract = await callCapture(idToken, {
+async function captureOne(getToken, { attachment, message }) {
+  const extract = await callCapture(await getToken(), {
     action: "extract",
     channel: "email",
     pdf: { base64: attachment.content.toString("base64") },
@@ -287,7 +306,7 @@ async function captureOne(idToken, { attachment, message }) {
   });
   if (!extract.ok) return { ok: false, reason: extract.reason };
 
-  const submit = await callCapture(idToken, { action: "submit", draftId: extract.draftId });
+  const submit = await callCapture(await getToken(), { action: "submit", draftId: extract.draftId });
   if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid };
   return {
     recorded: true,
@@ -325,9 +344,11 @@ async function run() {
   const db = admin.database();
   await syncServerClock(db);
 
-  let idToken;
+  // Minted once here so a broken identity stops the tick before it touches the
+  // mailbox, then re-minted on age by the provider.
+  const getToken = tokenProvider(cfg.uid);
   try {
-    idToken = await mintIdToken(cfg.uid);
+    await getToken();
   } catch (err) {
     fail(err.message);
   }
@@ -381,7 +402,7 @@ async function run() {
           // an attachment that will not decode, a capture call that times out —
           // each is recorded against that message and the next one still runs.
           try {
-            const result = await handleMessage({ client, uid, db, idToken, cfg });
+            const result = await handleMessage({ client, uid, db, getToken, cfg });
             if (result.processed) processed++;
             recorded += result.recorded;
             refused += result.refused;
@@ -415,7 +436,7 @@ async function run() {
   return 0;
 }
 
-async function handleMessage({ client, uid, db, idToken, cfg }) {
+async function handleMessage({ client, uid, db, getToken, cfg }) {
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
   // imapflow takes a RANGE, and a range is a string ("12", "1:5") — not the
   // number. Passing the raw uid works by coercion in some paths and silently
@@ -423,7 +444,18 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
   const range = String(uid);
   const downloaded = await client.download(range, undefined, { uid: true });
   if (!downloaded?.content) return empty;
-  const parsed = await simpleParser(downloaded.content);
+  // A MIME TREE FROM OUTSIDE CAN FAIL TO PARSE, and a stream left half-read
+  // holds the IMAP connection's fetch open — the next command on it hangs until
+  // the socket times out, so ONE malformed message would stall the rest of the
+  // tick. Destroyed on the way out, and the failure is this message's alone.
+  // (CodeRabbit, PR #510.)
+  let parsed;
+  try {
+    parsed = await simpleParser(downloaded.content);
+  } catch (err) {
+    try { downloaded.content.destroy?.(); } catch { /* already gone */ }
+    throw new Error(`could not be read as an email (${err.message})`);
+  }
 
   const message = {
     messageId: clip(parsed.messageId, 200),
@@ -481,7 +513,7 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
     }
     let capture = null, error = null;
     try {
-      capture = await captureOne(idToken, { attachment, message });
+      capture = await captureOne(getToken, { attachment, message });
     } catch (err) {
       error = err.message;
     }

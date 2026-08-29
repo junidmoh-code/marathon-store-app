@@ -29,6 +29,13 @@ const TARGETS = {
     src: new URL("../functions/lib/card-recon-pdf.cjs", import.meta.url),
     run: () => execFileSync("node", ["--test", "test/card-recon-pdf.test.cjs"], { cwd: FUNCTIONS_DIR, stdio: "pipe" }),
   },
+  // normaliseMid moved here when the PDF parser started asking the same
+  // question of a file about ITSELF. Both suites run against it, because both
+  // now depend on it agreeing with itself.
+  base: {
+    src: new URL("../functions/lib/card-recon.cjs", import.meta.url),
+    run: () => execFileSync("node", ["--test", "test/card-recon-email.test.cjs", "test/card-recon-pdf.test.cjs", "test/card-recon.test.cjs"], { cwd: FUNCTIONS_DIR, stdio: "pipe" }),
+  },
   intake: {
     src: new URL("../scripts/cardrecon/intakeCore.mjs", import.meta.url),
     run: () => execFileSync("npx", ["vitest", "run", "scripts/cardrecon/intakeCore.test.mjs"], { cwd: REPO, stdio: "pipe" }),
@@ -72,13 +79,17 @@ const MUTATIONS = [
     "  if (!registered) {",
     "  if (false) {"],
 
-  ["routing", "leading zeros make two identical merchants differ",
+  ["base", "leading zeros make two identical merchants differ",
     '  const digits = String(raw ?? "").replace(/\\D/g, "").replace(/^0+/, "");',
     '  const digits = String(raw ?? "").replace(/\\D/g, "");'],
 
   // ── The parser: one file, one terminal ────────────────────────────────────
   ["parser", "a PDF naming two terminals takes the first and records it anyway",
     "  if (allTids.length > 1) {",
+    "  if (false) {"],
+
+  ["parser", "a PDF naming two merchants takes the first and records it anyway",
+    "  if (allMids.length > 1) {",
     "  if (false) {"],
 
   ["parser", "only the first TID row is ever looked at",

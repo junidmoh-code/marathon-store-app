@@ -153,7 +153,12 @@ function tiffSize(b) {
 // exactly the 12-megapixel file the resize exists for.
 function bmffSize(b) {
   let best = null;
-  for (let i = 0; i + 12 <= b.length; i++) {
+  // SIXTEEN bytes from the candidate offset, not twelve: "ispe" takes four,
+  // version+flags four, then width and height four each — so the height ends at
+  // i+15. The old bound let the height read past the end of the slice, which
+  // failed SAFE (undefined → NaN → null) but was reading bytes it did not have.
+  // (CodeRabbit, PR #510.)
+  for (let i = 0; i + 16 <= b.length; i++) {
     if (b[i] !== 0x69 || b[i + 1] !== 0x73 || b[i + 2] !== 0x70 || b[i + 3] !== 0x65) continue; // "ispe"
     const found = pair(u32be(b, i + 8), u32be(b, i + 12));
     if (!found) continue;

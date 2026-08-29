@@ -77,6 +77,11 @@ say "dependencies: ready"
 #     is marked read on the way past. Checked here, and it fails CLOSED with the
 #     one command that fixes it. (CodeRabbit, PR #510.)
 POLLER_UID="$(sed -n 's/^[[:space:]]*CARD_RECON_POLLER_UID[[:space:]]*=[[:space:]]*//p' "$REPO/.env" | tail -1)"
+# Quotes stripped exactly as the poller's loadEnv() strips them, or a quoted uid
+# would be checked as "\"card-recon-email-poller\"" — a uid that has no flags,
+# so the installer would refuse an identity that is correctly granted.
+POLLER_UID="${POLLER_UID%\"}"; POLLER_UID="${POLLER_UID#\"}"
+POLLER_UID="${POLLER_UID%\'}"; POLLER_UID="${POLLER_UID#\'}"
 POLLER_UID="${POLLER_UID:-card-recon-email-poller}"
 say "checking the poller identity ($POLLER_UID)…"
 GOOGLE_APPLICATION_CREDENTIALS="$SA" "$NODE" -e '

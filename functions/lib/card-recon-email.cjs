@@ -45,7 +45,7 @@
 
 "use strict";
 
-const { normaliseTid } = require("./card-recon.cjs");
+const { normaliseTid, normaliseMid } = require("./card-recon.cjs");
 
 // The permission that opens the email channel, checked on the CALLER — a
 // second flag beside `card_recon` rather than a wider grant, so the identity
@@ -53,17 +53,8 @@ const { normaliseTid } = require("./card-recon.cjs");
 // path that skips the till pick.
 const EMAIL_INTAKE_FLAG = "card_recon_intake";
 
-/**
- * Merchant ids print with leading zeros and are stored the same way, but a
- * terminal re-registered by hand may carry one form and the slip the other.
- * Compared as NUMBERS-ONLY with leading zeros dropped, so "000000004977890"
- * and "4977890" are the same merchant — and anything with no digits at all is
- * not a MID and compares as absent.
- */
-function normaliseMid(raw) {
-  const digits = String(raw ?? "").replace(/\D/g, "").replace(/^0+/, "");
-  return digits || null;
-}
+// normaliseMid lives in card-recon.cjs: the PDF parser asks the same question
+// of a file about ITSELF, and two normalisations would eventually disagree.
 
 /**
  * Decide which till an emailed slip belongs to.

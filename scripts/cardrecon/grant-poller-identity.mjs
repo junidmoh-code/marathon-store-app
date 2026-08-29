@@ -25,6 +25,12 @@
 // (admin.auth().createCustomToken → Identity Toolkit), so there is no
 // credential to store anywhere for it.
 //
+// IT WRITES TO /users, SO IT NEEDS ADMIN CREDENTIALS and does not read .env:
+// applicationDefault() means GOOGLE_APPLICATION_CREDENTIALS (the Mac mini's
+// service-account key) or an owner gcloud ADC login. Without either, the first
+// database call fails with a credentials error rather than anything about
+// permissions. (CodeRabbit, PR #510.)
+//
 //   node scripts/cardrecon/grant-poller-identity.mjs            # says what it would do
 //   node scripts/cardrecon/grant-poller-identity.mjs --execute
 //   node scripts/cardrecon/grant-poller-identity.mjs --revoke --execute

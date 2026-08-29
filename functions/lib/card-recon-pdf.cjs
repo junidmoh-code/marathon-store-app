@@ -20,7 +20,7 @@
 
 "use strict";
 
-const { parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, formatCents } = require("./card-recon.cjs");
+const { parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents } = require("./card-recon.cjs");
 
 /** Collapse runs of whitespace; a PDF's text layer is full of them. */
 const tidy = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
@@ -275,6 +275,19 @@ function parseSlipPdf(lines) {
   const allTids = [...new Set(fieldAll(rows, RE.tid).map(normaliseTid).filter(Boolean))];
   if (allTids.length > 1) {
     return { ok: false, reason: `That PDF prints more than one terminal ID (${allTids.join(" and ")}), so which till it belongs to cannot be decided. Nothing was recorded — photograph the slip instead.` };
+  }
+
+  // ── ONE FILE, ONE MERCHANT ───────────────────────────────────────────────
+  // The same rule as the TID above, for the same reason. On the email path the
+  // MID is the SECOND identifier the router checks the slip against the
+  // registry with — it is what makes "this file is not from this terminal"
+  // detectable at all — so a file that states two different merchant ids is a
+  // file whose second check means nothing, whichever reading happens to win.
+  // Repeated MATCHING readings are the normal case (a slip printing its header
+  // twice) and pass. (CodeRabbit, PR #510.)
+  const allMids = [...new Set(fieldAll(rows, RE.mid).map(normaliseMid).filter(Boolean))];
+  if (allMids.length > 1) {
+    return { ok: false, reason: `That PDF prints more than one merchant ID, so which merchant it belongs to cannot be decided. Nothing was recorded — photograph the slip instead.` };
   }
 
   const rawBatch = field(rows, RE.batchNo);

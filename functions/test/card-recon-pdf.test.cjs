@@ -437,3 +437,27 @@ test("a slip that prints its own TID twice, agreeing, is the normal case", async
   assert.equal(p.ok, true, p.reason);
   assert.equal(p.extraction.tid, "0000HP1X");
 });
+
+// ── ONE FILE, ONE MERCHANT ───────────────────────────────────────────────────
+// The MID is the second identifier the email path checks a slip against its
+// registry row with — the one that makes "this file is not from this terminal"
+// detectable. A file stating two different merchants is a file whose second
+// check means nothing, whichever reading wins.
+test("a PDF printing two different merchant IDs is refused", async () => {
+  const p = await parseOf([...slipLines(), "MERCHANT ID  100000001178101"]);
+  assert.equal(p.ok, false);
+  assert.match(p.reason, /more than one merchant ID/i);
+});
+
+test("the same merchant printed twice, agreeing, is the normal case", async () => {
+  const p = await parseOf([...slipLines(), "MERCHANT ID  000000004977890"]);
+  assert.equal(p.ok, true, p.reason);
+  assert.equal(p.extraction.mid, "000000004977890");
+});
+
+test("leading zeros are not a merchant disagreement", async () => {
+  // The registry and the slip carry the same number written two ways; that is
+  // not two merchants, and refusing it would refuse a good file.
+  const p = await parseOf([...slipLines(), "MERCHANT ID  4977890"]);
+  assert.equal(p.ok, true, p.reason);
+});

@@ -175,3 +175,19 @@ describe("pixelSizeFromHeader — fuzz", () => {
     }
   });
 });
+
+describe("pixelSizeFromHeader — a truncated ispe", () => {
+  it("reads no dimensions from an ispe box that is cut off mid-height", () => {
+    // "ispe" + version/flags + width + height is sixteen bytes, and the height
+    // ends at i+15. A slice that stops earlier must not be read at all.
+    const be32 = (n) => [(n >>> 24) & 0xFF, (n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF];
+    const chars = (s) => [...s].map((c) => c.charCodeAt(0));
+    const full = bytes(be32(24), chars("ftyp"), chars("heic"), zeros(12),
+                       be32(20), chars("ispe"), be32(0), be32(4032), be32(3024));
+    expect(pixelSizeFromHeader(full)).toEqual({ width: 4032, height: 3024 });
+    for (let cut = 1; cut <= 4; cut++) {
+      expect(pixelSizeFromHeader(full.subarray(0, full.length - cut)),
+        `${cut} byte(s) short of a complete ispe`).toBe(null);
+    }
+  });
+});
