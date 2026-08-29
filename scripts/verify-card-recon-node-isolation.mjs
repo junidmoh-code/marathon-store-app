@@ -150,6 +150,36 @@ try {
   check("staff cannot write the abandoned /pos/card_batch_drafts", false,
     (await req("PUT", "pos/card_batch_drafts/u/9", { as: STAFF, body: { x: 1 } })).ok);
 
+  // …BUT THE THIRD ONE IS STILL WRITABLE, and this asserts that rather than
+  // letting the doc imply otherwise. /pos/card_batch_overrides has no `.write`
+  // of its own; its $storeId/$dayYmd/$tillId rule grants create to any
+  // signed-in staff member. The trading-session gate that used to write it was
+  // deleted (marathon-pos-app #269), so nothing reads or writes it — but the
+  // path is live and takes data. (CodeRabbit, PR #504.)
+  //
+  // Note the fix is NOT a `.write`: `false` on the parent: write grants cascade
+  // downward exactly like read grants, so a shallower `false` cannot revoke the
+  // deeper grant. The deep rule has to be REMOVED and the node left named with
+  // `.write`: `false` so /pos/$other does not pick it up. Not applied here —
+  // this task's brief was that nothing else under /pos changes.
+  // tillId must EQUAL the path segment — the rule pins it, so a fixture whose
+  // body and path disagree is refused for the wrong reason.
+  const override = (authorizedByUid, tillId) => ({
+    reason: "a reason long enough to pass validation", storeId: "pe", tillId,
+    dayYmd: "2026-08-29", byUid: "staff-uid-1", authorizedByUid, at: Date.now(),
+  });
+  // Naming THEMSELVES as the authorizer is refused — the validate requires the
+  // authorizer to be an active manager.
+  check("a cashier cannot self-authorise an override", false,
+    (await req("PUT", "pos/card_batch_overrides/pe/2026-08-29/till-1", { as: STAFF, body: override("staff-uid-1", "till-1") })).ok);
+
+  // But naming a REAL active manager is accepted, with no evidence that manager
+  // agreed to anything. That is the residual: the write grant is open to any
+  // signed-in staff member and only the NAME of an approver is checked.
+  await req("PUT", "users/mgr-uid/posAccess", { as: "owner-admin", body: { role: "manager", isActive: true } });
+  check("…but naming a real active manager IS accepted (no approval required from them)", true,
+    (await req("PUT", "pos/card_batch_overrides/pe/2026-08-29/till-2", { as: STAFF, body: override("mgr-uid", "till-2") })).ok);
+
   // AND THE READ CANNOT BE CLOSED FROM THERE — asserted deliberately, as a
   // fact about RTDB rather than an oversight.
   //

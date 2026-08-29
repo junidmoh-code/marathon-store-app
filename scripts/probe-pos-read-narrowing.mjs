@@ -12,6 +12,10 @@
 // rejected as "re-granting child by child across a block three shops trade
 // through". This measures that risk instead of estimating it.
 //
+// WHAT IT DOES NOT COVER: callers outside these two repos, and anything that
+// reads /pos as a whole rather than a child of it. The second is asserted
+// below; the first is why this stays a probe and not an apply.
+//
 // COULD the /pos read grant be narrowed WITHOUT enumerating every reader?
 // The rejected framing was "re-grant /pos read child by child", which is scary
 // because a missed reader breaks selling. But /pos carries a `$other` wildcard,
@@ -78,6 +82,17 @@ try {
                    "pos/cash_sessions","pos/devices"])
     check(`staff read /${p}`, true, (await req("GET", p)).ok);
   check("staff read an UNNAMED future /pos child (covered by $other)", true, (await req("GET","pos/some_future_node")).ok);
+
+  // THE PARENT-LEVEL READ. Child grants do not authorise a read AT /pos, or a
+  // listener/query attached there — so pushing `.read` down would break any
+  // caller that subscribes to the whole block. This is the one case child-path
+  // checks cannot tell you about. (CodeRabbit, PR #504.)
+  //
+  // Expected DENY, and that is fine ONLY because nothing does it: neither repo
+  // contains a `ref(database, "pos")` or an equivalent parent-level
+  // subscription — grepped both `src/` trees. If that ever changes, this
+  // narrowing stops being safe and this assertion is where you find out.
+  check("a read AT /pos itself is denied once .read moves down", false, (await req("GET", "pos")).ok);
   // THE ONE BEHAVIOURAL CHANGE, and it is not a break — it is a rule that has
   // never worked starting to work. /pos/noReceiptReturns carries its own
   // `.read` restricting it to the owner or an ACTIVE MANAGER. That rule is dead

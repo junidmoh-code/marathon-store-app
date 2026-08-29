@@ -88,7 +88,30 @@ manual check rather than dressed up as a standing one.
 |---|---|---|
 | no client can write them | **yes** — a live rule | `".write": "false"`, asserted in `scripts/verify-card-recon-node-isolation.mjs` |
 | no server code names them | **yes** — a test in CI | `functions/test/card-recon-paths.test.cjs`. The Admin SDK ignores rules, so a path constant pointed back under `/pos` is all it would take. It catches string literals and the `.child("card_batch…")` form; it cannot catch a path assembled at runtime, and says so rather than implying otherwise. |
-| nothing is there today | **no — run it by hand** | `scripts/check-abandoned-card-paths.mjs`, shallow reads only, exits non-zero if anything appears. Worth running if a capture ever behaves oddly; not wired to a schedule, because a scheduled function for an empty, write-denied node nothing addresses would cost more than it protects. |
+| nothing is there today | **no — run it by hand** | `scripts/check-abandoned-card-paths.mjs`, shallow reads only, exits non-zero if anything appears. Worth running if a capture ever behaves oddly; not wired to a schedule, because a scheduled function for an empty, write-denied node nothing addresses would cost more than it protects. (A shallow read returns a PRIMITIVE unchanged for a leaf, so it counts a bare value as occupied — `Object.keys(true)` is `[]` and would otherwise report "empty".) |
+
+#### A third abandoned path that is NOT write-denied
+
+`/pos/card_batch_overrides` is the exception, and the doc used to imply
+otherwise. It has no `.write` of its own; its `$storeId/$dayYmd/$tillId` rule
+grants create to any signed-in staff member, gated by a `.validate` requiring
+the named authoriser to be an **active manager**. Measured rather than assumed
+(`verify-card-recon-node-isolation.mjs`, 24/24):
+
+- a cashier **cannot** self-authorise an override — refused
+- a cashier **can** create one naming any real active manager, **with no
+  approval from that manager** — accepted
+
+The trading-session gate that consumed these was deleted in marathon-pos-app
+#269, so nothing reads or acts on them and the path is inert. But it takes data,
+and a cashier can attribute an authorisation to a manager who never gave one.
+
+Closing it is **not** a `".write": "false"` on the parent: write grants cascade
+downward exactly like read grants, so a shallower `false` cannot revoke the deep
+grant — the same trap as this whole section. The deep rule has to be **removed**
+and the node left named with `".write": "false"` so `/pos/$other` does not pick
+it up. Not applied: this task's brief was that nothing else under `/pos`
+changes.
 
 The verifier proves this properly rather than accidentally. Behaviourally,
 "`.read: false` is inert" and "there is no `.read` here" look identical — both
@@ -123,6 +146,13 @@ child.
 It can also be done in two steps, the first with no effect at all: add the six
 `.read` entries (nothing changes, `/pos` still grants), confirm, then delete
 `/pos`'s `.read` as a single revertible line.
+
+**One caveat the child-path checks cannot see**: a child `.read` does not
+authorise a read *at* `/pos` itself, or a listener attached there. Neither repo
+does that today — both `src/` trees were grepped, and the probe asserts the
+denial explicitly — but a caller outside these two repos, or a future
+whole-block subscription, would break. That is the residual risk in this option,
+and it is why the probe stays a probe.
 
 **It has exactly one behavioural consequence beyond closing the residual, and it
 is not a break.** `/pos/noReceiptReturns` carries its own `.read` restricting it

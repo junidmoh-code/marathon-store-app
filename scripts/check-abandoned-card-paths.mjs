@@ -49,9 +49,16 @@ for (const path of PATHS) {
   const res = await fetch(`${DB}/${path}.json?shallow=true&access_token=${token}`);
   if (!res.ok) { console.error(`  ${path}: read failed HTTP ${res.status}`); process.exitCode = 2; continue; }
   const val = await res.json();
-  const n = val === null ? 0 : Object.keys(val).length;
+  // A shallow read returns an OBJECT of keys for a branch, but a PRIMITIVE
+  // unchanged for a leaf. Object.keys(true) / Object.keys(0) / Object.keys("")
+  // are all [], so counting keys alone would report "empty" for a path someone
+  // had written a bare value to — readable by every signed-in staff member, and
+  // invisible to this check. (CodeRabbit, PR #504.)
+  const n = val === null ? 0
+    : (typeof val === "object" ? Object.keys(val).length : 1);
   if (n) occupied++;
-  console.log(`  /${path.padEnd(24)} ${n === 0 ? "empty" : `${n} record(s)  ← READABLE BY EVERY SIGNED-IN STAFF MEMBER`}`);
+  const what = typeof val === "object" && val !== null ? "record(s)" : "bare value";
+  console.log(`  /${path.padEnd(24)} ${n === 0 ? "empty" : `${n} ${what}  ← READABLE BY EVERY SIGNED-IN STAFF MEMBER`}`);
 }
 
 console.log(occupied === 0
