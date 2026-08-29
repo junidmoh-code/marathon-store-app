@@ -11,6 +11,15 @@
 //
 // It is DATA, not a deploy: revoking the poller is deleting these two flags.
 //
+// IT IS NOT A STAFF ACCOUNT, and must never become one. The user-management
+// screen REPLACES the whole permFlags map from the permissions array it saves
+// (permFlagsFor in src/components/permissionCatalog.js), and card_recon_intake
+// is deliberately not in that catalogue — so saving this row through that screen
+// would silently strip the flag and the poller would start refusing every slip
+// with "This identity may not capture emailed slips". It cannot happen today:
+// that flow requires a username and a 4-digit PIN and this row has neither, so
+// it does not appear in the staff list. If it ever does, re-run this script.
+//
 // The uid is not a person and has no PIN, no email and no password. The poller
 // mints its own ID token from the service-account key already on the Mac mini
 // (admin.auth().createCustomToken → Identity Toolkit), so there is no
