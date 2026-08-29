@@ -118,6 +118,20 @@ method, and each verified before the next:
 Stage 2 **refuses to run** unless every child that needs a grant already has
 one, `$other` included.
 
+**`$other` was doing more work than the six named grants.** Enumerating every
+`"pos/<child>"` literal across both repos turns up 14 first-level nodes, and
+four of them — `cashups`, `config`, `creditLedger`, `pinAttempts` — have **no
+rule of their own at all**. They read entirely through `$other`. Without a
+`.read` on it, this change would have taken out the cash-up, the POS config, the
+credit ledger behind store credit and on-account, and the PIN throttle, all at
+once and only on the shop floor. They are now asserted by name in the probe
+rather than trusted to a wildcard nobody checked.
+
+The only referenced node that went dark is `pos/card_batches`, and its remaining
+references are two rules-test canaries that *expect* the denial, one comment and
+one regex — the real reader moved to top-level `/card_batches` in
+marathon-pos-app #272.
+
 #### The third path, also closed
 
 `/pos/card_batch_overrides` had no `.write` of its own; its

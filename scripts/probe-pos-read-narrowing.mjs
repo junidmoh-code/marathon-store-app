@@ -83,6 +83,19 @@ try {
     check(`staff read /${p}`, true, (await req("GET", p)).ok);
   check("staff read an UNNAMED future /pos child (covered by $other)", true, (await req("GET","pos/some_future_node")).ok);
 
+  // THE NODES THAT ONLY $other COVERS, and that both apps really use. These are
+  // not hypothetical: /pos/cashups, /pos/config, /pos/creditLedger and
+  // /pos/pinAttempts have no rule of their own, so WITHOUT a `.read` on $other
+  // this change would have taken out the cash-up, the POS config, the credit
+  // ledger behind store credit and on-account, and the PIN throttle — all at
+  // once, and only on the shop floor. Enumerated by grepping every "pos/<child>"
+  // literal in both repos, not by memory.
+  for (const child of ["cashups", "config", "creditLedger", "pinAttempts"]) {
+    await req("PUT", `pos/${child}/probe`, { as: "admin", body: { probe: true } });
+    check(`staff read /pos/${child} (no rule of its own — $other or nothing)`, true,
+      (await req("GET", `pos/${child}`)).ok);
+  }
+
   // THE PARENT-LEVEL READ. Child grants do not authorise a read AT /pos, or a
   // listener/query attached there — so pushing `.read` down would break any
   // caller that subscribes to the whole block. This is the one case child-path
