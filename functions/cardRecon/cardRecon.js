@@ -62,7 +62,7 @@ const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
-const { matchLegs } = require("../lib/card-match.cjs");
+const { matchLegs, MATCH_AHEAD_MS, MATCH_BEHIND_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 
 if (!admin.apps.length) {
@@ -382,11 +382,63 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
 // The sum answers "what did this till take on card in the window"; the match
 // answers "which of this batch's transactions can be accounted for, wherever
 // they were rung". When a machine has moved, only the second is meaningful.
-async function matchBatch(db, { extraction, terminal }) {
+
+// The findings a MATCH produces, as sentences. Shared by both extract routes:
+// the photo path computed a match and then said nothing about it, so a manager
+// photographing a slip could not see that a machine had been moved until after
+// they had submitted. (CodeRabbit, PR #516.)
+function matchNotes(match) {
+  if (!match) return [];
+  // COUNTS DECIDE WHETHER THERE IS SOMETHING TO SAY, not sums. An unmatched
+  // refund and an unmatched purchase of the same size sum to zero cents, and a
+  // sum test would then fall silent about two transactions nobody can account
+  // for — the exact case these notes exist for. (CodeRabbit, PR #517.)
+  const notes = [];
+  const offTillMatches = match.matches.filter((m) => m.offTill);
+  if (offTillMatches.length) {
+    const where = Object.entries(match.offTill)
+      .map(([k, v]) => `${k} (${formatCents(v.cents)})`).join(", ");
+    notes.push(
+      `${offTillMatches.length} of this batch's transactions were rung up on another till — ${where}. ` +
+      "That is what a card machine being moved between shops looks like, and the money is accounted for. " +
+      "The pairing is by amount and time only: the till's payment ledger records no auth code or card number.",
+    );
+  }
+  if (match.unmatchedLegsOnTill.length) {
+    notes.push(
+      `${match.unmatchedLegsOnTill.length} card sale${match.unmatchedLegsOnTill.length === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(match.unmatchedLegCents)}) have no transaction on this report. They are NOT netted off against ` +
+      "anything missing — a sale the machine has no record of is its own question.",
+    );
+  }
+  if (match.unmatchedTxns.length) {
+    notes.push(
+      `${match.unmatchedTxns.length} transaction${match.unmatchedTxns.length === 1 ? "" : "s"} on this report ` +
+      `(${formatCents(match.unmatchedTxnCents)}) have no card sale anywhere that answers them. This is the variance.`,
+    );
+  }
+  return notes;
+}
+
+async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
+  // A SUMMARY-ONLY CAPTURE HAS NOTHING TO MATCH. It has totals and no
+  // transactions, so matchLegs would return a perfectly valid result with
+  // matchedCents of zero — and buildBatchRecord would then read the whole slip
+  // total as unaccounted for. Every summary-only batch would report its own
+  // total as missing money. It gets no match at all, and falls back to the
+  // till-scoped subtraction, which is the only thing meaningful without lines.
+  // (CodeRabbit, PR #516.)
+  if (summaryOnly || !Array.isArray(extraction.lines) || !extraction.lines.length) return null;
   const legs = await cardLegsInWindow(db, {
-    startMs: extraction.openedAt, endMs: extraction.closedAt, edgeMs: edgeMsFor(extraction),
+    startMs: extraction.openedAt, endMs: extraction.closedAt,
+    // WIDE ENOUGH FOR THE MATCHER'S OWN TOLERANCE, not just the window's edge
+    // allowance — which is zero on a printed slip. A leg minutes after the last
+    // transaction is exactly what the matcher is looking for, and it cannot
+    // match what the query never fetched: the transaction would come back
+    // falsely unmatched and inflate the recorded variance.
+    edgeMs: Math.max(edgeMsFor(extraction), MATCH_AHEAD_MS, MATCH_BEHIND_MS),
   });
-  return matchLegs(extraction.lines || [], legs, terminal);
+  return matchLegs(extraction.lines, legs, terminal);
 }
 
 async function handleExtract(db, request) {
@@ -486,7 +538,13 @@ async function handleExtract(db, request) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
-  const match = await matchBatch(db, { extraction, terminal });
+  const match = await matchBatch(db, {
+    extraction, terminal, summaryOnly: !!summaryOnly,
+  });
+  // The SAME findings the PDF route reports. Computing a match and then
+  // saying nothing about it left a manager unable to see that a machine had
+  // been moved until after they had submitted. (CodeRabbit, PR #516.)
+  const warnings = [...verdict.warnings, ...matchNotes(match)];
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -520,7 +578,7 @@ async function handleExtract(db, request) {
     pickedTid: picked,
     summaryOnly: !!summaryOnly,
     correction: !!request.data.correction,
-    warnings: verdict.warnings.length ? verdict.warnings : null,
+    warnings: warnings.length ? warnings : null,
     photoPaths,
     // JSON round-trip strips the undefined values RTDB refuses.
     extraction: JSON.parse(JSON.stringify(extraction)),
@@ -549,7 +607,7 @@ async function handleExtract(db, request) {
       confidence: extraction.confidence,
       lineCount: extraction.lines.length,
       summaryOnly: !!summaryOnly,
-      warnings: verdict.warnings,
+      warnings,
       // CAPTURE ONLY. The manager confirms the OCR read the SLIP IN THEIR HAND
       // correctly and that is the end of their involvement. Deliberately NOT
       // returned: expectedCardCents / varianceCents / expectedByKind (the
@@ -680,22 +738,7 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   // on the record beside what the matching found, not in a second channel the
   // owner has to know to look at.
   const warnings = [...routingWarnings, ...verdict.warnings];
-  if (match.offTillCents !== 0) {
-    const where = Object.entries(match.offTill)
-      .map(([k, v]) => `${k} (${formatCents(v.cents)})`).join(", ");
-    warnings.push(
-      `${match.matches.filter((m) => m.offTill).length} of this batch's transactions were rung up on another till — ${where}. ` +
-      "That is what a card machine being moved between shops looks like, and the money is accounted for. " +
-      "The pairing is by amount and time only: the till's payment ledger records no auth code or card number.",
-    );
-  }
-  if (match.unmatchedLegCents !== 0) {
-    warnings.push(
-      `${match.unmatchedLegsOnTill.length} card sale${match.unmatchedLegsOnTill.length === 1 ? "" : "s"} on this till ` +
-      `(${formatCents(match.unmatchedLegCents)}) have no transaction on this report. They are NOT netted off against ` +
-      "anything missing — a sale the machine has no record of is its own question.",
-    );
-  }
+  warnings.push(...matchNotes(match));
   if (expected.tailLegs > 0) {
     warnings.push(
       `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
@@ -874,7 +917,7 @@ async function handleSubmit(db, request) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
-  const match = await matchBatch(db, { extraction, terminal });
+  const match = await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.

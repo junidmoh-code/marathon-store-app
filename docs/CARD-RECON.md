@@ -516,6 +516,25 @@ R3,500.
    taken by a cross-till candidate of the same amount.
 2. **Pass two, everywhere else.** This is where a moved machine shows up.
 
+Within a pass, a transaction takes the **earliest eligible** leg, not the
+nearest. Nearest looks right and strands transactions: two sales of the same
+amount at 0 and +3 minutes with legs at −1.5 and +1 leave the second unpaired,
+and R500 gets reported as missing money although both could have been matched.
+Earliest-eligible is not a heuristic improvement but an optimal one — amounts
+must be equal, so the problem splits into one group per amount; within a group
+both sides are time-ordered and eligibility is an interval, which makes the
+graph convex, and for convex bipartite graphs this greedy yields a **maximum**
+matching.
+
+A **summary-only** capture has totals and no transactions, so no match runs at
+all and the till-scoped subtraction stands — matching nothing would otherwise
+report the whole slip total as unaccounted for.
+
+The ledger query is widened by the matcher's own tolerance, not merely by the
+window's edge allowance (which is zero on a printed slip): a leg minutes after
+the last transaction is exactly what the matcher looks for, and it cannot match
+what the query never fetched.
+
 What is left over is the finding, and there are two kinds which are **never
 netted against each other**:
 
@@ -541,7 +560,7 @@ stamps when the card is approved, the till writes its leg when the cashier
 finishes the sale, which can only be later. Measured across all forty
 transactions of the real report against the live ledger:
 
-```
+```text
 minimum lag  118 s        median  135 s        maximum  249 s
 legs ahead of their terminal stamp:  none
 ```

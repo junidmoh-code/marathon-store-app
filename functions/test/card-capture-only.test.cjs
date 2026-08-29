@@ -118,3 +118,21 @@ test("no client-supplied field can set the extraction's format", () => {
   const assigned = [...src.matchAll(/format:\s*"([a-z]+)"/g)].map((m) => m[1]);
   assert.deepEqual(assigned, [], "the callable itself never literal-assigns a format; the parsers do");
 });
+
+// ─── THE MATCH NOTES MUST NOT FALL SILENT ON AN OFFSETTING PAIR ──────────────
+// An unmatched refund and an unmatched purchase of the same size sum to zero
+// cents. Deciding whether to warn on the SUM would then say nothing about two
+// transactions nobody can account for — precisely the case the notes exist for.
+test("the match notes are decided by counts, never by sums", () => {
+  const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
+  const notes = src.slice(src.indexOf("function matchNotes("), src.indexOf("async function matchBatch("));
+  assert.ok(notes.length > 200, "matchNotes must still be there to check");
+
+  for (const sumTest of ["offTillCents !== 0", "unmatchedLegCents !== 0", "unmatchedTxnCents !== 0"]) {
+    assert.ok(!notes.includes(`if (match.${sumTest})`),
+      `matchNotes still gates a warning on a SUM (${sumTest}) — an offsetting refund silences it`);
+  }
+  for (const countTest of ["offTillMatches.length", "match.unmatchedLegsOnTill.length", "match.unmatchedTxns.length"]) {
+    assert.ok(notes.includes(countTest), `matchNotes must gate on ${countTest}`);
+  }
+});
