@@ -162,12 +162,19 @@ describe("claimDecision — the same slip is never submitted twice", () => {
     expect(claimDecision(null, 1000).take).toBe(true);
   });
 
-  it("never re-takes one already processed", () => {
-    expect(claimDecision({ state: "done", at: 1 }, 1e12).take).toBe(false);
+  it("never re-takes one already processed, and says it is FINISHED", () => {
+    // `done` is what lets the poller mark the message read.
+    expect(claimDecision({ state: "done", at: 1 }, 1e12)).toEqual({ take: false, done: true, why: "already processed" });
   });
 
-  it("stands down while another run holds it", () => {
-    expect(claimDecision({ state: "claimed", at: 1000 }, 1000 + STALE_CLAIM_MS - 1).take).toBe(false);
+  it("stands down while another run holds it — and says it is NOT finished", () => {
+    // THE DIFFERENCE IS A SLIP. A message held by a run that died must stay
+    // UNREAD in the mailbox, because only unread mail is searched and only a
+    // later tick can retake the stale claim. Marking it read here would hide it
+    // from the very tick that was going to rescue it.
+    const d = claimDecision({ state: "claimed", at: 1000 }, 1000 + STALE_CLAIM_MS - 1);
+    expect(d.take).toBe(false);
+    expect(d.done).toBe(false);
   });
 
   it("re-takes a claim a killed run left behind — a slip must not be lost to a SIGKILL", () => {

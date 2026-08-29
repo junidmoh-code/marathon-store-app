@@ -103,12 +103,20 @@ const MUTATIONS = [
     '  return "refused";'],
 
   ["intake", "a message already processed is processed again",
-    '  if (claim.state === "done") return { take: false, why: "already processed" };',
+    '  if (claim.state === "done") return { take: false, done: true, why: "already processed" };',
     "  /* mutated */"],
 
   ["intake", "a claim another run is holding is taken anyway — two runs, one slip",
     "  if (age > STALE_CLAIM_MS) return { take: true, why: \"a previous run claimed this and never finished\" };",
     "  return { take: true, why: \"mutated\" };"],
+
+  ["intake", "a held message is reported as finished, so the poller marks it read and nothing ever rescues it",
+    '  return { take: false, done: false, why: "another run is holding it" };',
+    '  return { take: false, done: true, why: "another run is holding it" };'],
+
+  ["intake", "a finished message stops saying so, so it is re-downloaded every tick for ever",
+    '  if (claim.state === "done") return { take: false, done: true, why: "already processed" };',
+    '  if (claim.state === "done") return { take: false, why: "already processed" };'],
 
   ["intake", "a claim a killed run left behind is never retaken — the slip is lost",
     "  if (age > STALE_CLAIM_MS) return { take: true, why: \"a previous run claimed this and never finished\" };",

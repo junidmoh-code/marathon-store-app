@@ -206,8 +206,13 @@ export function intakeRecord({ message, results, skipped, at }) {
  */
 export function claimDecision(claim, nowMs) {
   if (!claim) return { take: true, why: "new" };
-  if (claim.state === "done") return { take: false, why: "already processed" };
+  // `done` is not merely "do not take it" — it is what tells the caller the
+  // message may be marked read. A message held by a run that DIED must stay
+  // unread, or the tick that would retake its stale claim in half an hour
+  // never sees it again. Two different reasons for the same `take: false`,
+  // and the difference is a slip.
+  if (claim.state === "done") return { take: false, done: true, why: "already processed" };
   const age = Number.isInteger(claim.at) ? nowMs - claim.at : Infinity;
   if (age > STALE_CLAIM_MS) return { take: true, why: "a previous run claimed this and never finished" };
-  return { take: false, why: "another run is holding it" };
+  return { take: false, done: false, why: "another run is holding it" };
 }

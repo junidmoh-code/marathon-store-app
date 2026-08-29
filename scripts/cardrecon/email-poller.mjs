@@ -259,7 +259,9 @@ async function claimMessage(db, key) {
     if (!verdict.take) return undefined;             // abort, leave it alone
     return { state: "claimed", at: now };
   });
-  return { taken: txn.committed, why: verdict?.why || "held" };
+  // `done` travels with the verdict because the CALLER decides whether to mark
+  // the message read, and only a finished message may be marked.
+  return { taken: txn.committed, done: !!verdict?.done, why: verdict?.why || "held" };
 }
 
 // ─── ONE TICK ────────────────────────────────────────────────────────────────
@@ -371,7 +373,19 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
   const claim = await claimMessage(db, message.key);
   if (!claim.taken) {
     console.log(`  · "${message.subject || "(no subject)"}" — ${claim.why}`);
-    if (!cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+    // WHETHER TO MARK IT READ DEPENDS ENTIRELY ON WHY WE STOOD DOWN, and
+    // getting this wrong loses a slip silently.
+    //
+    //   ALREADY PROCESSED — its outcome is in the feed. Marking it read is
+    //     what stops it being re-downloaded every tick for ever.
+    //
+    //   ANOTHER RUN IS HOLDING IT — including a run that DIED holding it. That
+    //     claim goes stale in 30 minutes and the next tick is supposed to
+    //     retake it — but only if the search still returns it, and the search
+    //     only returns UNSEEN mail. Marking it read here would hide it from
+    //     the very tick that was going to rescue it, and the slip would sit in
+    //     the mailbox unread by anything for ever.
+    if (claim.done && !cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
     return empty;
   }
 
@@ -394,10 +408,16 @@ async function handleMessage({ client, uid, db, idToken, cfg }) {
   if (cfg.dryRun) return empty;
 
   const record = intakeRecord({ message, results, skipped, at: serverNowMs() });
-  const intakeRef = db.ref(INTAKE_PATH).push();
-  await intakeRef.set(record);
-  await db.ref(`${SEEN_PATH}/${message.key}`).set({
-    state: "done", at: serverNowMs(), intakeId: intakeRef.key,
+  // ONE UPDATE, TWO PATHS, ATOMICALLY. Written as two calls, a crash between
+  // them leaves the outcome recorded and the claim still "claimed" — so half an
+  // hour later the next tick retakes it, resubmits slips that are already in,
+  // and files the duplicate-batch refusals as REFUSED. A false alarm on the one
+  // feed whose whole value is that a refusal means something. A root update
+  // with two absolute paths cannot half-happen.
+  const intakeId = db.ref(INTAKE_PATH).push().key;
+  await db.ref().update({
+    [`${INTAKE_PATH}/${intakeId}`]: record,
+    [`${SEEN_PATH}/${message.key}`]: { state: "done", at: serverNowMs(), intakeId },
   });
   // LAST, and deliberately: a message is only marked read once its outcome is
   // in the database. Crash before this and the next tick sees it again, which
