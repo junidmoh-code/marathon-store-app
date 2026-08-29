@@ -18,7 +18,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { validateExtraction } = require("../lib/card-recon.cjs");
-const { slipLines } = require("./fixtures/makeSlipPdf.cjs");
+const { slipLines, emailedLines } = require("./fixtures/makeSlipPdf.cjs");
 
 // THE PIPELINE AS THE CALLABLE RUNS IT. parseSlipPdf only READS; the slip's own
 // arithmetic is validateExtraction's job. Fuzzing the reader alone would call a
@@ -144,4 +144,97 @@ test("6000 corrupted slips: a figure is EXACT or refused — never quietly diffe
   }
   assert.ok(refused > 0, "no corruption was refused — the fuzz is not reaching the guards");
   assert.ok(parsed > 0, "every corruption was refused — the fuzz produces no benign cases");
+});
+
+// ═══ THE SAME PROPERTY, ON THE EMAILED BANKING REPORT ════════════════════════
+// Exactly right, or refused — the format makes no difference to the rule. What
+// DOES differ is the shape being fuzzed: gapped TSNs, a Batch column between
+// the TSN and the PAN, ZAR amounts, and a window derived from the transactions
+// rather than printed. Each of those is somewhere a reader can go quietly wrong.
+
+// A report whose figures we hold: random gapped TSNs, random amounts, some
+// refunds, with or without the batch column.
+function randomReport(r) {
+  const n = 1 + pick(r, 12);
+  const tsns = [];
+  let next = 1 + pick(r, 5);
+  for (let i = 0; i < n; i++) { tsns.push(next); next += 1 + pick(r, 4); }   // GAPS by construction
+  const amounts = tsns.map(() => 100 + pick(r, 500000));
+  const refundTsns = tsns.filter(() => r() < 0.2);
+  return emailedLines({
+    tsns, amountsCents: amounts, refundTsns,
+    batchColumn: r() < 0.5,
+    batchNo: 1 + pick(r, 999),
+    tid: String(60000000 + pick(r, 9999999)),
+  });
+}
+
+test("2000 well-formed banking reports read EXACTLY, gaps and all", () => {
+  const r = rng(590059);
+  let parsed = 0, gappy = 0;
+  for (let i = 0; i < 2000; i++) {
+    const { truth, lines } = randomReport(r);
+    const out = readSlip(lines);
+    if (!out.ok) { assert.ok(out.reason && out.reason.length > 10); continue; }
+    parsed++;
+    const ex = out.extraction;
+    assert.equal(ex.format, "emailed", `report ${i}: read as the wrong format`);
+    assert.equal(ex.purchasesCents, truth.purchasesCents, `report ${i}: purchases`);
+    assert.equal(ex.refundsCents, truth.refundsCents, `report ${i}: refunds`);
+    assert.equal(ex.totalCents, truth.totalCents, `report ${i}: total`);
+    assert.equal(ex.lines.length, truth.count, `report ${i}: line count`);
+    // The TSNs are the report's own, gaps preserved — never renumbered, and
+    // never the batch column read forty times over.
+    assert.deepEqual(ex.lines.map((l) => l.tsn), truth.tsns, `report ${i}: TSNs`);
+    assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), truth.totalCents, `report ${i}: line sum`);
+    // The derived window must contain every transaction it was derived from.
+    const times = ex.lines.map((l) => l.at);
+    assert.equal(ex.windowSource, "transactions");
+    assert.ok(Math.min(...times) >= ex.openedAt && Math.max(...times) < ex.closedAt,
+      `report ${i}: a transaction falls outside its own derived window`);
+    if (truth.tsns.some((t, k) => k > 0 && t !== truth.tsns[k - 1] + 1)) gappy++;
+  }
+  assert.ok(parsed > 1900, `only ${parsed}/2000 well-formed reports parsed — the reader has become useless`);
+  assert.ok(gappy > 1500, `only ${gappy} reports had TSN gaps — the fuzz is not exercising the exemption`);
+});
+
+test("6000 corrupted banking reports: EXACT or refused, never quietly different", () => {
+  const r = rng(660066);
+  let parsed = 0, refused = 0;
+  for (let i = 0; i < 6000; i++) {
+    const { truth, lines } = randomReport(r);
+    const idx = pick(r, lines.length);
+    const corrupt = CORRUPTIONS[pick(r, CORRUPTIONS.length)];
+    const mangled = lines.slice();
+    mangled[idx] = corrupt(String(mangled[idx]));
+    if (mangled[idx] === lines[idx]) continue;
+
+    const out = readSlip(mangled);
+    if (!out.ok) { refused++; assert.ok(out.reason && /\S/.test(out.reason)); continue; }
+    parsed++;
+    const ex = out.extraction;
+    for (const f of ["purchasesCents", "refundsCents", "totalCents"]) {
+      assert.equal(ex[f], truth[f],
+        `SILENTLY WRONG FIGURE — seed 660066, iteration ${i}\n` +
+        `  corrupted line: ${JSON.stringify(mangled[idx])}\n` +
+        `  was:            ${JSON.stringify(lines[idx])}\n` +
+        `  ${f}: reader said ${ex[f]}, report printed ${truth[f]}`);
+    }
+    assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), truth.totalCents,
+      `iteration ${i}: rows sum wrong — line ${JSON.stringify(mangled[idx])}`);
+  }
+  assert.ok(refused > 0, "no corruption was refused — the fuzz is not reaching the guards");
+  assert.ok(parsed > 0, "every corruption was refused — the fuzz produces no benign cases");
+});
+
+test("a report is never read as a slip, nor a slip as a report", () => {
+  // The dispatcher is fuzzed too: whichever format goes in must come out, or
+  // the wrong reader's rules get applied to the wrong document.
+  const r = rng(4242);
+  for (let i = 0; i < 300; i++) {
+    const emailed = readSlip(randomReport(r).lines);
+    if (emailed.ok) assert.equal(emailed.extraction.format, "emailed");
+    const printed = readSlip(slipLines());
+    if (printed.ok) assert.equal(printed.extraction.format, "printed");
+  }
 });

@@ -361,6 +361,66 @@ answer routes the extract **and** stamps `capturedVia` on the batch record, so
 the field the owner reads to tell a PDF batch from a photographed one cannot
 drift from the path that actually ran.
 
+### Two PDF formats, not one
+
+A terminal produces its batch figures in two different documents, and both are
+now read:
+
+| | terminal's printed slip | bank's emailed banking report |
+|---|---|---|
+| identity | `TERMINAL ID 0000HP1X`, `Batch Report (#494)` | `Banking Report for Batch 59 of Terminal 67365901`, plus `Merchant:` / `Terminal:` / `Batch:` rows |
+| count | `Transactions  2` | `APPROVED TRANSACTIONS` then `Items: 40` |
+| amounts | `R50,355.00` | `ZAR 900.00` |
+| window | `Opened` / `Closed` printed | **none printed** |
+| TSNs | run unbroken | **have gaps, by design** |
+| totals | Payment Type Summary | `TOTALS SUMMARY` + `CARD TOTALS`, no PTS |
+| rows | date, time, UTI, RRN, auth, TSN, PAN, amount | …TSN, **Batch**, PAN, amount, type |
+
+`detectReportFormat()` decides which before either is read, so a file that is
+neither is refused by name rather than by a pile of missing fields.
+
+#### The two checks that had to change
+
+**TSN contiguity is meaningless on a banking report.** The printed roll lists
+every attempt, so a gap there means a line was missed — the exact thing this
+feature exists to catch. The emailed report lists *approved* transactions only,
+so declines and voids leave gaps by design; the real example runs 2, 3, 4, 6, 7,
+8 and skips 21–24, 30–31, 33–34 and 43. Applying contiguity would refuse every
+emailed report ever sent, so it is skipped for that format and the gaps are
+recorded as a warning instead. **Duplicate TSNs are still refused in both** — a
+repeat is a mis-parse whatever the format, and means something quite different
+from a gap.
+
+**There is no printed window on a banking report.** It carries a print
+timestamp and the transaction times, nothing else. The window is therefore
+derived — first transaction to last, plus one millisecond so the half-open
+`[start, end)` interval contains the last transaction — and `slip.windowSource`
+records `"transactions"` rather than `"printed"` so nobody later mistakes a
+derived window for a declared one. Nothing is invented: with no transactions
+there is no window and the report is refused.
+
+#### The window edge
+
+A printed window has natural slack (the terminal opens the batch before the
+first sale and closes it after the last). A derived one has none, so a till leg
+written a few seconds either side of the terminal's clock falls outside a window
+it plainly belongs to. **The window is not widened to compensate — a fabricated
+window is a fabricated variance.** Instead `computeExpectedCard` takes an
+`edgeMs`, widens only its *fetch*, and reports card legs for that till sitting
+just outside as `expected.nearEdgeLegs` / `nearEdgeCents` plus a warning. They
+are never counted in `cardCents`; the reconciled figure is identical whether or
+not edge reporting is on, which is pinned by test.
+
+#### The Batch column trap
+
+The emailed row order is `… TSN, Batch, PAN …`. The printed reader takes "the
+last bare integer before the PAN" as the TSN, which here would take the *batch
+number* off every row — forty identical TSNs and a duplicate refusal. The
+layout is therefore settled once for the whole report from evidence, not
+position: a real Batch column carries the report's own batch number on **every**
+row. One row whose TSN merely coincides with the batch number does not make a
+column.
+
 ### Why the PDF is read as text and never OCR'd
 
 The text in a PDF is exact. There is nothing to be confident *about*, so the

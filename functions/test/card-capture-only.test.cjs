@@ -99,3 +99,22 @@ test("the figures are still COMPUTED and STORED — withheld from the phone, not
   assert.match(block, /expected/, "the record no longer stores the expected figures");
   assert.match(block, /cashiers/, "the record no longer stores the cashier trail");
 });
+
+// ─── THE CONTIGUITY EXEMPTION IS SERVER-DECIDED ──────────────────────────────
+// A banking report is exempt from TSN contiguity; a photographed slip is not.
+// That exemption keys off `extraction.format`, so it must never be settable by
+// a caller — otherwise a photographed roll with a missing line could claim to
+// be a banking report and slip past the one check that catches it.
+test("no client-supplied field can set the extraction's format", () => {
+  const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
+  // Everything the callable reads off the request, in one place.
+  const fromRequest = [...src.matchAll(/request\.data(?:\s*\|\|\s*\{\})?\s*\.?\s*([A-Za-z]+)?/g)]
+    .map((m) => m[1]).filter(Boolean);
+  assert.ok(!fromRequest.includes("format"),
+    `the callable reads a "format" off the request: ${fromRequest.join(", ")}`);
+  assert.ok(!fromRequest.includes("windowSource"), "…nor a windowSource");
+  assert.ok(!fromRequest.includes("extraction"), "…nor a whole extraction");
+  // And the two places format IS set are both parser output, not input.
+  const assigned = [...src.matchAll(/format:\s*"([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(assigned, [], "the callable itself never literal-assigns a format; the parsers do");
+});

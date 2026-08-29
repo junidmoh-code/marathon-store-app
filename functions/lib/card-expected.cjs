@@ -36,15 +36,38 @@ const { MAX_WINDOW_MS } = require("./card-recon.cjs");
  * @param {Object<string,object>|object[]} events
  * @returns {{cardCents:number, legs:number, byKind:Object<string,{cents:number,legs:number}>}}
  */
-function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs }) {
+function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs = 0 }) {
   const rows = Array.isArray(events) ? events : Object.values(events || {});
   let cardCents = 0, legs = 0;
   const byKind = {};
+  // Legs that sit JUST OUTSIDE the window — see the nearEdge note below.
+  let nearEdgeLegs = 0, nearEdgeCents = 0;
   for (const e of rows) {
     if (!e || e.method !== "card") continue;
     if (e.storeId !== storeId || e.tillId !== tillId) continue;
     const at = Number(e.at);
-    if (!Number.isFinite(at) || at < startMs || at >= endMs) continue;
+    if (!Number.isFinite(at)) continue;
+    if (at < startMs || at >= endMs) {
+      // ── THE WINDOW EDGE ──────────────────────────────────────────────────
+      // A printed slip's window has natural slack: the terminal opens the batch
+      // before the first sale and closes it after the last, so the legs that
+      // belong to it sit comfortably inside. A window DERIVED from transaction
+      // timestamps has no such slack — it starts exactly at the first
+      // transaction and ends exactly at the last — so a till leg written a few
+      // seconds either side of the terminal's own clock falls outside a window
+      // it plainly belongs to, and silently understates the expected figure.
+      //
+      // Nothing is widened to compensate: a fabricated window would be a
+      // fabricated variance. Instead the near-misses are COUNTED and reported,
+      // so a variance on a derived window can be read with that in mind
+      // instead of being blamed on the person holding the till.
+      if (edgeMs > 0 && Number.isInteger(e.amount)
+          && at >= startMs - edgeMs && at < endMs + edgeMs) {
+        nearEdgeLegs += 1;
+        nearEdgeCents += e.amount;
+      }
+      continue;
+    }
     // The ledger writes integer cents; anything else (null, a string) is a
     // malformed row and is skipped — a null must not fold in as a 0-cent leg.
     const amount = e.amount;
@@ -56,7 +79,7 @@ function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs }) {
     bucket.cents += amount;
     bucket.legs += 1;
   }
-  return { cardCents, legs, byKind };
+  return { cardCents, legs, byKind, nearEdgeLegs, nearEdgeCents };
 }
 
 /**
@@ -95,7 +118,7 @@ function cashiersFromEvents(events, { storeId, tillId, startMs, endMs }) {
  *
  * @param {import("firebase-admin").database.Database} db
  */
-async function computeExpectedCard(db, { storeId, tillId, startMs, endMs }) {
+async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs = 0 }) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     throw new Error("computeExpectedCard: bad window");
   }
@@ -104,12 +127,15 @@ async function computeExpectedCard(db, { storeId, tillId, startMs, endMs }) {
   if (endMs - startMs > MAX_WINDOW_MS) {
     throw new Error("computeExpectedCard: window exceeds the 7-day cap");
   }
+  // The query is widened by edgeMs ONLY so the near-edge legs can be counted;
+  // the window itself is unchanged, and the pure filter below still admits
+  // nothing outside [startMs, endMs) to the expected figure.
   const snap = await db.ref(PAYMENT_EVENTS_PATH)
-    .orderByChild("at").startAt(startMs).endAt(endMs)
+    .orderByChild("at").startAt(startMs - edgeMs).endAt(endMs + edgeMs)
     .once("value");
   const events = snap.val() || {};
   return {
-    ...expectedCardFromEvents(events, { storeId, tillId, startMs, endMs }),
+    ...expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs }),
     cashiers: cashiersFromEvents(events, { storeId, tillId, startMs, endMs }),
   };
 }

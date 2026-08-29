@@ -134,4 +134,107 @@ function makeSlipPdfFragmented(lines, { fontSize = 9, leading = 12, top = 800, s
   return assemble(ops);
 }
 
-module.exports = { makeSlipPdf, makeSlipPdfFragmented, slipLines };
+/**
+ * THE BANK'S EMAILED BANKING REPORT — the second format, as it prints.
+ *
+ * Built from the real example described in the request that added this reader
+ * (batch 59, terminal 67365901, 40 approved items). Its shape is what matters
+ * and every part of it is load-bearing somewhere:
+ *
+ *   • the title carries BOTH the batch number and the terminal
+ *   • "Merchant:" / "Terminal:" / "Batch:" as labelled rows, not "MID:"/"TID:"
+ *   • "APPROVED TRANSACTIONS" then "Items: 40" — the count, not "Transactions"
+ *   • "ZAR 900.00", not "R900.00"
+ *   • per row: date, time, UTI, RRN, Auth Code, TSN, **Batch**, PAN, amount, type
+ *   • TSNs WITH GAPS — approved only, so declines and voids are simply absent
+ *   • TOTALS SUMMARY and CARD TOTALS at the end, and NO Payment Type Summary
+ *
+ * `tsns` defaults to the real report's own sequence, gaps included: it runs
+ * 2,3,4 then skips 5, and skips 21-24, 30-31, 33-34 and 43. Contiguity must
+ * never be applied to this, and the default makes any test that forgets fail.
+ */
+const REAL_TSNS = [
+  2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+  25, 26, 27, 28, 29, 32, 35, 36, 37, 38, 39, 40, 41, 42,
+  44, 45, 46, 47, 48, 49, 50, 51,
+];
+
+const zar = (cents) => {
+  const s = (Math.abs(cents) / 100).toFixed(2);
+  const [whole, frac] = s.split(".");
+  return `${cents < 0 ? "-" : ""}ZAR ${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${frac}`;
+};
+
+function emailedLines({
+  tid = "67365901", batchNo = 59, tsns = REAL_TSNS, amountsCents = null,
+  refundTsns = [], batchColumn = true, printedAt = "2026/08/28 08:52:38",
+  // A SHORT RRN is the awkward case for deciding the layout: at 12 digits the
+  // RRN is not a plausible sequence number and is ignored, but a terminal that
+  // prints a 6-digit one puts TWO candidate integers before the PAN even when
+  // there is no batch column at all.
+  shortRrn = false,
+  // Terminals do not all print the same columns. `noUti` drops the leading
+  // reference (one column fewer); `extraColumn` adds a card-scheme token (one
+  // more, and an alphanumeric one, so it changes the token count without
+  // changing how many integers sit before the PAN).
+  noUti = false, extraColumn = false,
+  // Some terminals print the masked card number in groups rather than as one
+  // token, and only the middle groups carry mask characters — so the leading
+  // group is bare digits sitting exactly where a sequence number would be.
+  groupedPan = false,
+} = {}) {
+  const amounts = amountsCents || tsns.map((_, i) => 90000 + i * 1000);
+  const rows = [];
+  let purchases = 0, refunds = 0;
+  tsns.forEach((tsn, i) => {
+    const isRefund = refundTsns.includes(tsn);
+    const amt = amounts[i];
+    if (isRefund) refunds += amt; else purchases += amt;
+    const hh = String(9 + Math.floor(i / 12)).padStart(2, "0");
+    const mm = String((i * 7) % 60).padStart(2, "0");
+    const cols = [
+      "2026/08/27", `${hh}:${mm}:11`,
+      ...(noUti ? [] : [`UTI${String(1000000 + i)}`]),
+      shortRrn ? String(100000 + i) : String(223344550000 + i),
+      `K9Q${String(i).padStart(3, "0")}`,
+      ...(extraColumn ? ["VISA"] : []),
+      String(tsn),
+      ...(batchColumn ? [String(batchNo)] : []),
+      groupedPan
+        ? `4111 11** **** ${String(1000 + (i % 9000))}`
+        : `************${String(1000 + (i % 9000))}`,
+      zar(amt),
+      isRefund ? "Refund" : "Purchase",
+    ];
+    rows.push(cols.join(" "));
+  });
+  const total = purchases - refunds;
+  return {
+    truth: { purchasesCents: purchases, refundsCents: refunds, totalCents: total, count: tsns.length, tsns },
+    lines: [
+      `Banking Report for Batch ${batchNo} of Terminal ${tid}`,
+      "THE MARATHON SPORTS",
+      printedAt,
+      "Version 4.2.1",
+      "Merchant: 000000004977890",
+      `Terminal: ${tid}`,
+      `Batch: ${batchNo}`,
+      "",
+      "APPROVED TRANSACTIONS",
+      `Items: ${tsns.length}`,
+      "",
+      "Date Time UTI RRN Auth Code TSN Batch Card Total Type",
+      ...rows,
+      "",
+      "TOTALS SUMMARY",
+      `Items: ${tsns.length}`,
+      "",
+      "CARD TOTALS",
+      `Purchases   ${zar(purchases)}`,
+      `Refunds   ${zar(refunds)}`,
+      `Total   ${zar(total)}`,
+    ],
+  };
+}
+
+module.exports = { makeSlipPdf, makeSlipPdfFragmented, slipLines, emailedLines, REAL_TSNS };
