@@ -164,6 +164,125 @@ and that is checked rather than asserted
 
 ### How it was measured before it was done
 
+`scripts/probe-pos-read-narrowing.mjs` measured the risk rather than estimating
+it, and still runs — now against the live state rather than a candidate. **It
+applies nothing.**
+
+It is what turned "re-grant child by child across a block three shops trade
+through" into a change with a known blast radius: 14 first-level `/pos` nodes,
+enumerated by grepping both repos rather than read off the rules document (which
+only lists what somebody thought to name), and every one of them checked. Four
+had no rule of their own and read purely through `$other`; one node went dark
+and nothing real reads it.
+
+The staged shape is what made it safe to apply at all: stage 1 was provably
+inert — both suites came back byte-identical to baseline — so the only step that
+could break anything was a single line, with the stage before it already
+verified and a backup one PUT away.
+
+**The residual risk that remains**: a child grant does not authorise a read *at*
+`/pos` itself, or a listener attached there. Nothing in either repo does that —
+both `src/` trees were grepped and the probe asserts the denial — but a caller
+outside these two repos would break. There is no such caller today.
+
+### `/card_batches/{storeId}/{tid}/{batchKey}`  ·  TOP-LEVEL, owner-only
+
+Append-only: the `cardBatchCapture` callable (Admin SDK) is the only writer,
+and its submit transaction refuses to touch an existing key.
+
+**It moved out from under `/pos` on 2026-08-28, and that is the whole point.**
+Under `/pos` it inherited that block's `.read` — *any signed-in, non-anonymous
+staff member*. These records are investigation material about named staff:
+masked PANs, auth codes, RRNs and a per-till variance. Withholding them from
+inside `/pos` would have meant rewriting that block's read grant child by child,
+which is a shop-stopping risk on a path three shops trade through. At the **top
+level no parent grant reaches them at all** — the root carries no `.read`/
+`.write`, which the merge script asserts before it will write, because without
+that the move would achieve nothing.
+
+The live rule is **owner-only read and write**. The Admin SDK bypasses rules, so
+the owner-only `.write` is a belt: the callable is still the only writer.
+
+The old `/pos/card_batches` and `/pos/card_batch_drafts` rules were deliberately
+**left in place**, carrying `".write": "false"`. Nothing under `/pos` changed.
+Anything still running an old bundle is refused rather than quietly creating a
+shadow record under the abandoned path.
+
+#### CLOSED 2026-08-29 — /pos's blanket read was pushed down to its children
+
+Those two entries used to inherit `/pos`'s `.read` — *any signed-in,
+non-anonymous staff member* — and no rule under `/pos` could stop it. **RTDB read
+and write grants cascade downward and cannot be revoked by a deeper rule**, so
+adding `".read": "false"` beside the `".write": "false"` did nothing at all
+(verified against the real engine before it was ever applied; the `.write`
+denial works only because `/pos` has no `.write` of its own to override).
+
+The fix was to remove the grant rather than try to revoke it: **each child that
+needs it now carries the predicate verbatim, `$other` included, and `/pos`'s own
+`.read` is gone.** `$other` is what made it safe — one entry covers every
+present and future *unnamed* child, so nothing depended on remembering a reader.
+The card nodes are explicitly named, so `$other` does not reach them, and they
+are dark.
+
+Applied in three stages by `scripts/narrow-pos-read.mjs`, each with the same
+fetch → backup → merge → diff → write → re-fetch → verify → restore-on-surprise
+method, and each verified before the next:
+
+| stage | what | effect at the time |
+|---|---|---|
+| 1 | add the six child `.read` grants | **none** — `/pos` still granted; provably inert |
+| 2 | delete `/pos`'s `.read` | the behaviour change, one line, revertible |
+| 3 | drop the `card_batch_overrides` deep write grant | staff can no longer create an override |
+
+Stage 2 **refuses to run** unless every child that needs a grant already has
+one, `$other` included.
+
+**`$other` was doing more work than the six named grants.** Enumerating every
+`"pos/<child>"` literal across both repos turns up 14 first-level nodes, and
+four of them — `cashups`, `config`, `creditLedger`, `pinAttempts` — have **no
+rule of their own at all**. They read entirely through `$other`. Without a
+`.read` on it, this change would have taken out the cash-up, the POS config, the
+credit ledger behind store credit and on-account, and the PIN throttle, all at
+once and only on the shop floor. They are now asserted by name in the probe
+rather than trusted to a wildcard nobody checked.
+
+The only referenced node that went dark is `pos/card_batches`, and its remaining
+references are two rules-test canaries that *expect* the denial, one comment and
+one regex — the real reader moved to top-level `/card_batches` in
+marathon-pos-app #272.
+
+#### The third path, also closed
+
+`/pos/card_batch_overrides` had no `.write` of its own; its
+`$storeId/$dayYmd/$tillId` rule granted create to any signed-in staff member,
+gated only by naming an **active manager** as authoriser. Measured before the
+change: a cashier could not self-authorise, but **could** create one naming any
+real active manager, **with no approval from that manager**. The gate that
+consumed these was deleted in marathon-pos-app #269, so nothing acted on them —
+but the path took data.
+
+The deep rule is now removed and the node left named with `".write": "false"`.
+Named matters: deleting it outright would drop it back under `/pos/$other`,
+which grants write. And the fix could not have been a `".write": "false"`
+layered *above* the deep rule — write grants cascade downward too, so a
+shallower `false` cannot revoke a deeper grant.
+
+#### And a rule that had never worked now does
+
+`/pos/noReceiptReturns` carried a manager-or-owner `.read` that had never once
+applied, masked by the same blanket grant. It applies now. **Nothing broke**,
+and that is checked rather than asserted
+(`scripts/verify-no-receipt-return-access.mjs`, 6/6 against the live rules):
+
+- the **write** was always manager-or-owner only — a cashier never could, and
+  still cannot. Who can *make* a no-receipt return did not move.
+- the **read** now matches the write, which is what its author intended.
+- the marker still commits inside the multi-path update it rides in.
+- and nothing anywhere in either app *reads* that node — it is a write-only
+  marker (grepped both repos, including the Cloud Functions).
+
+### How it was measured before it was done
+
 `scripts/probe-pos-read-narrowing.mjs` measured the risk instead of estimating
 it, and still runs — now against the live state rather than a candidate. **It
 applies nothing.**

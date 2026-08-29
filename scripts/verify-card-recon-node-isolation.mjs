@@ -161,7 +161,13 @@ try {
     reason: "a reason long enough to pass validation", storeId: "pe", tillId,
     dayYmd: "2026-08-29", byUid: "staff-uid-1", authorizedByUid, at: Date.now(),
   });
-  await req("PUT", "users/mgr-uid/posAccess", { as: "owner-admin", body: { role: "manager", isActive: true } });
+  // ASSERT THE SEED. The next check claims a write is refused even when it names
+  // a REAL active manager — a claim that only means something if the manager
+  // actually exists. Discarding this result would let the check pass because the
+  // seed silently failed, proving only that an unknown uid is refused.
+  // (CodeRabbit, PR #506.)
+  const seeded = await req("PUT", "users/mgr-uid/posAccess", { as: "owner-admin", body: { role: "manager", isActive: true } });
+  check("the manager fixture actually seeded (else the next check proves nothing)", true, seeded.ok);
   check("a cashier cannot self-authorise an override", false,
     (await req("PUT", "pos/card_batch_overrides/pe/2026-08-29/till-1", { as: STAFF, body: override("staff-uid-1", "till-1") })).ok);
   check("…nor by naming a REAL active manager, which used to be accepted", false,
