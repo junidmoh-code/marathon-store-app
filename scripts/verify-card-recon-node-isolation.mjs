@@ -11,6 +11,10 @@
 //     about the node, not about the token)
 //   • the owner                             → must be ALLOWED
 //
+// It also pins what is TRUE of the abandoned /pos/card_* paths: no client can
+// write them, and their read CANNOT be closed from there, because RTDB read
+// grants cascade down from /pos and no deeper rule can revoke one.
+//
 //   node scripts/verify-card-recon-node-isolation.mjs
 //
 // Needs Java (the emulator is a JVM binary); set JAVA_HOME_BIN if it is not on
@@ -110,11 +114,44 @@ try {
   console.log("\n── …and the owner still can ─────────────────────────────────────");
   for (const n of NODES) check(`the owner CAN read /${n}`, true, (await req("GET", n, { as: OWNER_TOKEN })).ok);
 
-  console.log("\n── the old paths stay shut ──────────────────────────────────────");
+  console.log("\n── the abandoned /pos paths ─────────────────────────────────────");
+  // Seed them with the admin bypass so the read assertions below are about
+  // permission and not about an empty node.
+  await req("PUT", "pos/card_batches/pe/TID1/1", { as: "owner-admin", body: { batchNo: 1, probe: true } });
+  await req("PUT", "pos/card_batch_drafts/u1/d1", { as: "owner-admin", body: { probe: true } });
+
+  // NOTHING CAN BE PUT THERE. This is the control that actually holds.
   check("staff cannot write the abandoned /pos/card_batches", false,
     (await req("PUT", "pos/card_batches/pe/T/9", { as: STAFF, body: { x: 1 } })).ok);
   check("staff cannot write the abandoned /pos/card_batch_drafts", false,
     (await req("PUT", "pos/card_batch_drafts/u/9", { as: STAFF, body: { x: 1 } })).ok);
+
+  // AND THE READ CANNOT BE CLOSED FROM THERE — asserted deliberately, as a
+  // fact about RTDB rather than an oversight.
+  //
+  // Adding `".read": "false"` beside those `".write": "false"` entries looks
+  // like the obvious way to finish the job. It does nothing. RTDB read and
+  // write grants CASCADE DOWNWARD and cannot be revoked by a deeper rule:
+  // /pos grants `.read` to every signed-in non-anonymous staff member, so no
+  // child of /pos can take that away. (`.write: false` works only because /pos
+  // has no `.write` of its own for it to override.) Verified against this same
+  // engine with the candidate rules applied — staff still read straight through
+  // it.
+  //
+  // These assertions expect ALLOWED. If one ever fails, it means somebody
+  // narrowed /pos's own `.read` and the residual is genuinely closed — at which
+  // point flip these two to `false` and delete this comment. A test that fails
+  // is the right way to find that out; a rule that silently does nothing is not.
+  check("staff CAN still read the abandoned /pos/card_batches (read cannot be revoked deeper)", true,
+    (await req("GET", "pos/card_batches", { as: STAFF })).ok);
+  check("staff CAN still read the abandoned /pos/card_batch_drafts (same reason)", true,
+    (await req("GET", "pos/card_batch_drafts", { as: STAFF })).ok);
+
+  // …which is why the real control is that the paths are DEAD: write-denied to
+  // every client, and named by no code in either repo (pinned by
+  // functions/test/card-recon-paths.test.cjs here and recordPath.test.js there).
+  // The live emptiness check lives outside this emulator run — see the report
+  // and scripts/check-abandoned-card-paths.mjs.
 } finally { emu.kill("SIGTERM"); }
 
 console.log(`\n${fail === 0 ? "ALL GREEN" : "FAILURES"} — ${pass} passed, ${fail} failed\n`);

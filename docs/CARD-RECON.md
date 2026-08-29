@@ -52,6 +52,51 @@ The old `/pos/card_batches` and `/pos/card_batch_drafts` rules were deliberately
 Anything still running an old bundle is refused rather than quietly creating a
 shadow record under the abandoned path.
 
+#### Their read cannot be closed from there, and `".read": "false"` is a placebo
+
+Those two entries still inherit `/pos`'s `.read` — *any signed-in,
+non-anonymous staff member*. Adding `".read": "false"` beside the existing
+`".write": "false"` is the obvious way to finish the job and **it does nothing
+whatsoever**.
+
+**RTDB read and write grants cascade downward and cannot be revoked by a deeper
+rule.** `/pos` grants `.read`, so no child of `/pos` can take it away. The
+`.write` denial works only because `/pos` has no `.write` of its own for it to
+override. This was verified against the real rules engine with the candidate
+rule applied, before anything was written to production — staff read straight
+through it, node and leaves alike:
+
+```
+staff read /pos/sales         -> ALLOWED   (control: a real staff token)
+staff read /pos/card_batches  -> ALLOWED   <-- the ".read":"false" did not deny it
+staff read a leaf inside it   -> ALLOWED
+staff WRITE /pos/card_batches -> denied    (the existing ".write":"false")
+```
+
+So the rule was **not** applied: a line in the live rules that reads as a
+control and is not one is worse than the gap it pretends to close, because the
+next person will trust it.
+
+**What actually keeps those paths harmless is that they are dead**, and that
+rests on three things, each of which is checked rather than remembered:
+
+| | |
+|---|---|
+| no client can write them | `".write": "false"` — asserted in `scripts/verify-card-recon-node-isolation.mjs` |
+| no server code names them | `functions/test/card-recon-paths.test.cjs` — the Admin SDK ignores rules, so a path constant pointed back under `/pos` is all it would take |
+| nothing is there today | `scripts/check-abandoned-card-paths.mjs` — exits non-zero if anything appears |
+
+The isolation verifier also asserts, deliberately, that staff **can** still read
+those two paths. If that assertion ever fails it means somebody narrowed `/pos`'s
+own `.read` and the residual is genuinely closed — at which point flip it. A
+failing test is the right way to learn that; a rule that silently does nothing
+is not.
+
+**The only real closure** is narrowing `/pos`'s own `.read`, which means
+re-granting it child by child across a block three shops trade through. That was
+weighed and rejected as a shop-stopping risk for a benefit already obtained by
+moving the data out.
+
 - `batchKey` is the batch number (`"494"`); a **duplicate batch number for the
   same TID is rejected** (same slip shot twice, or a re-print).
 - A **correction** is a deliberate re-capture: it lands beside the original at
