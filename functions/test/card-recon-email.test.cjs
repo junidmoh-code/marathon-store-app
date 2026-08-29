@@ -61,7 +61,31 @@ test("an unreadable TID is refused rather than routed anywhere", () => {
     const r = routeEmailSlip({ extraction: { tid }, terminals: TERMINALS });
     assert.equal(r.ok, false);
     assert.equal(r.tid, null);
+    // AND FOR THE RIGHT REASON. Falling through to the registry lookup would
+    // also refuse — with "Terminal null is not registered", which sends an
+    // admin off to map a terminal that does not exist. `unmapped` is what the
+    // poller files as "someone must register this", so an unreadable slip must
+    // not carry it.
+    assert.match(r.reason, /No terminal ID could be read/i);
+    assert.ok(!r.unmapped, "an unreadable TID is not a registry problem");
   }
   // No registry at all is the same answer, not a crash.
   assert.equal(routeEmailSlip({ extraction: { tid: "0000HP1X" }, terminals: null }).ok, false);
+});
+
+test("a registry row missing its till is not a mapping — it is refused", () => {
+  // A half-written row (seeded with a typo, or edited by hand in the console)
+  // would otherwise route a batch to a record with no till to reconcile
+  // against, and computeExpectedCard would be asked for the takings of
+  // "undefined". Every field the record needs must be there before the slip is.
+  const half = {
+    "0000HP1X": { mid: "000000004977890", storeId: "pe", label: "PE Till 1" },       // no tillId
+    "67365901": { mid: "100000001178101", tillId: "till-2", label: "PE Till 2" },     // no storeId
+  };
+  for (const tid of Object.keys(half)) {
+    const r = routeEmailSlip({ extraction: { tid, mid: half[tid].mid }, terminals: half });
+    assert.equal(r.ok, false, `${tid} routed on a half-written registry row`);
+    assert.equal(r.unmapped, true);
+    assert.match(r.reason, /not registered/i);
+  }
 });
