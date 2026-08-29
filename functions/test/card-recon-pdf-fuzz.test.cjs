@@ -201,9 +201,12 @@ test("2000 well-formed banking reports read EXACTLY, gaps and all", () => {
     assert.deepEqual(ex.lines.map((l) => l.tsn), truth.tsns, `report ${i}: TSNs`);
     assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), truth.totalCents, `report ${i}: sum`);
     const times = ex.lines.map((l) => l.at);
-    assert.equal(ex.windowSource, "transactions");
+    // Derived either way — to the print time where the report states one, to
+    // the last transaction where it does not.
+    assert.match(ex.windowSource, /^transactions(-to-print)?$/, `report ${i}: window source`);
     assert.ok(Math.min(...times) >= ex.openedAt && Math.max(...times) < ex.closedAt,
       `report ${i}: a transaction falls outside its own derived window`);
+    assert.ok(ex.closedAt > ex.lastTxnAt, `report ${i}: the window must outlast the last sale`);
     if (truth.tsns.some((t, k) => k > 0 && t !== truth.tsns[k - 1] + 1)) gappy++;
   }
   assert.ok(parsed > 1900, `only ${parsed}/2000 well-formed reports parsed — the reader has become useless`);

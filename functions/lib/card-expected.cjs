@@ -36,12 +36,15 @@ const { MAX_WINDOW_MS } = require("./card-recon.cjs");
  * @param {Object<string,object>|object[]} events
  * @returns {{cardCents:number, legs:number, byKind:Object<string,{cents:number,legs:number}>}}
  */
-function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs = 0 }) {
+function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs = 0, tailFromMs = null }) {
   const rows = Array.isArray(events) ? events : Object.values(events || {});
   let cardCents = 0, legs = 0;
   const byKind = {};
   // Legs that sit JUST OUTSIDE the window — see the nearEdge note below.
   let nearEdgeLegs = 0, nearEdgeCents = 0;
+  // Legs INSIDE the window but after the last transaction on the report — see
+  // the tail note below.
+  let tailLegs = 0, tailCents = 0;
   for (const e of rows) {
     if (!e || e.method !== "card") continue;
     if (e.storeId !== storeId || e.tillId !== tillId) continue;
@@ -74,12 +77,25 @@ function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeM
     if (!Number.isInteger(amount)) continue;
     cardCents += amount;
     legs += 1;
+    // ── THE TAIL ───────────────────────────────────────────────────────────
+    // A banking report states no closing time, so its window runs to the moment
+    // the report was printed — which is minutes after its last transaction,
+    // because a till leg always lands after the terminal's own stamp. Legs in
+    // that gap are counted, and rightly: they are the trailing legs of the
+    // batch's own sales.
+    //
+    // But a sale rung up in that gap and settled into the NEXT batch would also
+    // fall here, and would then be counted twice — once in this window and once
+    // in the next batch's. Nothing can distinguish them from the ledger alone,
+    // so the tail is measured and reported rather than hidden inside the
+    // expected figure it contributes to.
+    if (tailFromMs !== null && at > tailFromMs) { tailLegs += 1; tailCents += amount; }
     const kind = typeof e.kind === "string" && e.kind ? e.kind : "unknown";
     const bucket = byKind[kind] || (byKind[kind] = { cents: 0, legs: 0 });
     bucket.cents += amount;
     bucket.legs += 1;
   }
-  return { cardCents, legs, byKind, nearEdgeLegs, nearEdgeCents };
+  return { cardCents, legs, byKind, nearEdgeLegs, nearEdgeCents, tailLegs, tailCents };
 }
 
 /**
@@ -118,7 +134,7 @@ function cashiersFromEvents(events, { storeId, tillId, startMs, endMs }) {
  *
  * @param {import("firebase-admin").database.Database} db
  */
-async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs = 0 }) {
+async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs = 0, tailFromMs = null }) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     throw new Error("computeExpectedCard: bad window");
   }
@@ -135,7 +151,7 @@ async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs
     .once("value");
   const events = snap.val() || {};
   return {
-    ...expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs }),
+    ...expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs, tailFromMs }),
     cashiers: cashiersFromEvents(events, { storeId, tillId, startMs, endMs }),
   };
 }

@@ -292,7 +292,12 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // capable of being nonsense if a transaction date was misread — but the
   // refusals must not tell someone to re-photograph a header that does not
   // exist on their file.
-  const derived = ex.windowSource === "transactions";
+  // Anything that is not a window the document DECLARED is a derived one, and
+  // there are two flavours (see parseEmailedReport). Testing for the absence of
+  // "printed" rather than for one named flavour is what stops a third one
+  // silently getting the printed slip's wording — which is exactly what
+  // happened when "transactions-to-print" was added.
+  const derived = ex.windowSource && ex.windowSource !== "printed";
   if (!Number.isInteger(ex.openedAt) || !Number.isInteger(ex.closedAt)) {
     return { ok: false, reason: derived
       ? "The transaction timestamps did not read cleanly, so no reconciliation window could be worked out. Nothing was recorded — photograph the slip instead."
@@ -474,6 +479,11 @@ function buildBatchRecord({
       // NOT in cardCents; they are here so a variance can be read honestly.
       nearEdgeLegs: expected.nearEdgeLegs ?? 0,
       nearEdgeCents: expected.nearEdgeCents ?? 0,
+      // Legs inside the window but after the report's last transaction. These
+      // ARE in cardCents; they are broken out so a variance can be read
+      // honestly — see the tail note in lib/card-expected.cjs.
+      tailLegs: expected.tailLegs ?? 0,
+      tailCents: expected.tailCents ?? 0,
     },
     varianceCents: extraction.totalCents - expected.cardCents,
     cashiers: cashiers && cashiers.length ? cashiers : null,

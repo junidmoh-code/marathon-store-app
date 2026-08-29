@@ -913,19 +913,44 @@ function parseEmailedReport(rows) {
   }
 
 
-  // ── the window, DERIVED, and said to be derived ──
-  // First transaction to last. The +1ms is not padding: the reconciliation
-  // window is half-open ([start, end)) so that a batch's closing instant
-  // belongs to the NEXT batch, and without it the last transaction of this
-  // batch would fall outside its own window.
-  const times = txns.map((t) => t.at);
-  const openedAt = Math.min(...times);
-  const closedAt = Math.max(...times) + 1;
-
   // …and if the header carried no timestamp of its own, a labelled one.
   const labelledPrinted = field(rows, EMAILED.printed);
   const printedAt = headerStamp
     ?? (labelledPrinted ? parseSlipTimestamp(labelledPrinted) : null);
+
+  // ── THE WINDOW, DERIVED FROM TWO PRINTED FACTS ────────────────────────────
+  // It opens at the first transaction. Where it CLOSES is the part that had to
+  // be measured rather than assumed.
+  //
+  // A TILL LEG ALWAYS LANDS AFTER THE TERMINAL'S OWN TIMESTAMP, never before.
+  // The terminal stamps the moment the card is approved; the till writes its
+  // leg when the cashier finishes the sale, which is necessarily later. Across
+  // all forty transactions of the real report, measured against the live
+  // ledger: minimum lag 118 seconds, median 134, ninetieth percentile 539, and
+  // NOT ONE leg ahead of its terminal stamp.
+  //
+  // So a window ending at the last transaction excludes that transaction's own
+  // leg — every time, on every report. On the real file that overstated the
+  // variance by exactly the last sale: R350 charged at 16:09:09 and rung up at
+  // 16:11, reported as missing money when nothing was missing. The owner spotted
+  // it before this did.
+  //
+  // The window therefore closes at the moment the report says it was PRINTED,
+  // 16:26:31 on that file — seventeen minutes after the last sale, comfortably
+  // past the lag. That is not invented slack: it is the second timestamp the
+  // document prints, and the report covers the batch as at that moment.
+  //
+  // Where no print time is stated, or it precedes the last transaction (a
+  // reprint of an old batch), the window falls back to the last transaction
+  // plus a millisecond — the half-open interval means that millisecond is what
+  // puts the last transaction inside its own window. That fallback is the old
+  // behaviour, and it is still wrong about trailing legs; it is simply the best
+  // available when the document states nothing better.
+  const times = txns.map((t) => t.at);
+  const openedAt = Math.min(...times);
+  const lastTxnAt = Math.max(...times);
+  const closesAtPrint = printedAt !== null && printedAt > lastTxnAt;
+  const closedAt = closesAtPrint ? printedAt : lastTxnAt + 1;
 
   return {
     ok: true,
@@ -942,7 +967,11 @@ function parseEmailedReport(rows) {
       reconLine: field(rows, RE.reconLine),
       confidence: null,
       format: "emailed",
-      windowSource: "transactions",
+      // How the window was worked out, recorded so nobody reading this batch
+      // later mistakes a derived window for a declared one — or wonders why it
+      // runs past the last transaction.
+      windowSource: closesAtPrint ? "transactions-to-print" : "transactions",
+      lastTxnAt,
       lines: txns,
     },
   };
