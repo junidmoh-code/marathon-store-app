@@ -13,7 +13,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  parseSlipPdf, detectReportFormat, tidy, TXN_RE, parseEmailedStamp,
+  parseSlipPdf, detectReportFormat, tidy, TXN_RE, parseEmailedStamp, sectionStarts, readTxnBlock,
 } = require("../lib/card-recon-pdf.cjs");
 const {
   validateExtraction, checkTsnContiguity, parseRandsToCents,
@@ -583,4 +583,139 @@ test("a report with no transactions at all is refused", () => {
   const out = parse([...lines.slice(0, firstTxn), ...lines.slice(totals - 1)]);
   assert.equal(out.ok, false);
   assert.match(out.reason, /No transactions could be read/);
+});
+
+// ─── SECTIONS ────────────────────────────────────────────────────────────────
+// The report divides itself with printed rules of underscores, and a section
+// begins where a divider is followed by an ALL-CAPS heading. Reading that
+// structure matters because a report may carry more than one section of
+// transactions, and their counts are different facts — not contradictions.
+
+test("the real file's sections are read from its own dividers", () => {
+  const secs = sectionStarts(realReportLines());
+  assert.deepEqual(secs.map((s) => s.heading),
+    ["APPROVED TRANSACTIONS", "TOTALS SUMMARY", "CARD TOTALS"]);
+});
+
+test("a second section's Items count is not a contradiction", () => {
+  // A Trophy till's report stated "Items: 25" and "Items: 5" in two sections
+  // and was refused as self-contradictory. It was not: 25 belonged to the
+  // approved list and 5 to something else. Only the approved section's count
+  // is the one the line-count check measures against.
+  const lines = realReportLines();
+  const totals = lines.findIndex((l) => /^TOTALS SUMMARY$/.test(l));
+  const withSecond = [
+    ...lines.slice(0, totals - 1),
+    "______________________________",
+    "DECLINED TRANSACTIONS",
+    "Items: 5",
+    "______________________________",
+    ...lines.slice(totals - 1),
+  ];
+  const out = parse(withSecond);
+  assert.equal(out.ok, true, `a second section refused the report: ${out.reason}`);
+  assert.equal(out.extraction.txnCount, REAL_REPORT.items, "the APPROVED count, not the other one");
+  assert.equal(out.extraction.lines.length, REAL_REPORT.items);
+  assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents);
+});
+
+test("…but a repeated count WITHIN the approved section must still agree", () => {
+  // Inside one section it is the same fact stated twice, and this is the figure
+  // a missed transaction is measured against.
+  const lines = realReportLines();
+  const at = lines.findIndex((l) => /^Items: 40$/.test(l));
+  const wrong = lines.slice();
+  wrong.splice(at + 1, 0, "Items: 39");
+  const out = parse(wrong);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /Items count more than once/);
+});
+
+test("a second section's TRANSACTIONS are not counted either", () => {
+  // Otherwise the roll would run over the printed Items figure and refuse.
+  const lines = realReportLines();
+  const totals = lines.findIndex((l) => /^TOTALS SUMMARY$/.test(l));
+  const withSecond = [
+    ...lines.slice(0, totals - 1),
+    "______________________________",
+    "DECLINED TRANSACTIONS",
+    "Items: 1",
+    "______________________________",
+    "29-08-2026 16:20:00",
+    "UTI:aaaaaaaa-bbbb-cccc-dddd-",
+    "eeeeeeeeeeee",
+    "RRN: 04Yewn059099",
+    "Auth Code: 111111",
+    "TSN:99 Batch:59",
+    "518103******9999",
+    "Total: ZAR 100.00",
+    "Purchase ZAR 100.00",
+    ...lines.slice(totals - 1),
+  ];
+  const out = parse(withSecond);
+  assert.equal(out.ok, true, `a declined section refused the report: ${out.reason}`);
+  assert.equal(out.extraction.lines.length, REAL_REPORT.items, "40, not 41");
+  assert.ok(!out.extraction.lines.some((l) => l.tsn === 99), "the other section's transaction is not ours");
+  assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents);
+});
+
+test("a report with no dividers at all still reads", () => {
+  // Another terminal's firmware may not print them; the section map then falls
+  // back to the whole document, which is what this did before sections existed.
+  const lines = realReportLines().filter((l) => !/^_+$/.test(l));
+  const out = parse(lines);
+  assert.equal(out.ok, true, `a divider-less report was refused: ${out.reason}`);
+  assert.equal(out.extraction.txnCount, REAL_REPORT.items);
+  assert.equal(out.extraction.lines.length, REAL_REPORT.items);
+  assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents);
+});
+
+test("a continuation is only joined when the previous line was cut mid-value", () => {
+  // The real file wraps the UTI inside a group — "UTI:70db11a9-…-8fcd-" — so
+  // the trailing hyphen is the wrap marker. Without requiring it, a bare hex
+  // line under a COMPLETE UTI gets appended: digits are hex, so an auth code
+  // of "932966" was swallowed, corrupting the UTI and losing the auth code
+  // with no refusal at all.
+  const complete = [
+    "29-08-2026 09:07:23",
+    "UTI:70db11a9-13f2-4980-8fcd-97cbf50222c5",   // complete, no trailing hyphen
+    "932966",                                      // an unlabelled hex value
+    "TSN:2 Batch:59", "518103******4436",
+    "Total: ZAR 900.00", "Purchase ZAR 900.00",
+  ];
+  const a = readTxnBlock(complete, "59").txn;
+  assert.equal(a.uti, "70db11a9-13f2-4980-8fcd-97cbf50222c5", "nothing may be appended to a complete UTI");
+
+  // …and the real wrap is still rejoined.
+  const wrapped = [
+    "29-08-2026 09:07:23",
+    "UTI:70db11a9-13f2-4980-8fcd-",
+    "97cbf50222c5",
+    "TSN:2 Batch:59", "518103******4436",
+    "Total: ZAR 900.00", "Purchase ZAR 900.00",
+  ];
+  assert.equal(readTxnBlock(wrapped, "59").txn.uti, "70db11a9-13f2-4980-8fcd-97cbf50222c5");
+});
+
+test("with no totals heading, the figures are sought below the transactions", () => {
+  // Not across the whole document: every block prints a "Total:" and a
+  // "Purchase" of its own, so an unscoped search meets forty disagreeing
+  // candidates and refuses on the first two. Here another section bounds the
+  // transaction list, and the figures follow under a heading this reader does
+  // not recognise.
+  const lines = realReportLines();
+  const totals = lines.findIndex((l) => /^TOTALS SUMMARY$/.test(l));
+  const renamed = [
+    ...lines.slice(0, totals - 1),
+    "______________________________",
+    "SETTLEMENT BREAKDOWN",
+    "______________________________",
+    "Purchase ZAR 30120.00",
+    "Total ZAR 30120.00",
+  ];
+  const out = parse(renamed);
+  assert.equal(out.ok, true, `an unrecognised totals heading refused the report: ${out.reason}`);
+  assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents, "not one transaction's total");
+  assert.equal(out.extraction.purchasesCents, REAL_REPORT.totalCents);
+  assert.equal(out.extraction.lines.length, REAL_REPORT.items);
 });

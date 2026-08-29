@@ -541,6 +541,58 @@ function splitEmailedTxnMiddle(middle, hasBatchColumn) {
 }
 
 
+
+// ─── THE REPORT IS DIVIDED INTO SECTIONS, AND THE DIVIDERS ARE PRINTED ───────
+// The real file separates every section with a rule of underscores:
+//
+//     ______________________________
+//     APPROVED TRANSACTIONS
+//     Items: 40
+//     ______________________________
+//     …the transaction blocks…
+//     ______________________________
+//     TOTALS SUMMARY
+//     ______________________________
+//
+// That structure is worth reading rather than ignoring, because a report may
+// carry MORE than one section of transactions — and their counts are different
+// facts, not contradictions. A Trophy till's report stated "Items: 25" and
+// "Items: 5" in two sections and was refused as self-contradictory, which it
+// was not: 25 belonged to the approved list and 5 to something else.
+//
+// A section begins where a divider is followed by an ALL-CAPS heading. Nothing
+// else in the document has that shape: transaction blocks open on a timestamp,
+// and the header's labelled rows are mixed case.
+const SECTION_DIVIDER = /^\s*_{4,}\s*$/;
+const SECTION_HEADING = /^\s*([A-Z][A-Z0-9 &/'.-]{3,})\s*$/;
+
+function sectionStarts(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length - 1; i++) {
+    if (!SECTION_DIVIDER.test(rows[i])) continue;
+    const m = SECTION_HEADING.exec(rows[i + 1]);
+    if (m) out.push({ at: i + 1, heading: tidy(m[1]) });
+  }
+  return out;
+}
+
+/**
+ * The span of the APPROVED TRANSACTIONS section: where its heading sits, and
+ * where the next section begins.
+ *
+ * A report with no dividers at all (another terminal's firmware, say) falls
+ * back to the whole document, which is what this did before sections were read
+ * — so nothing that worked before stops working.
+ */
+function approvedSection(rows, totalsIdx) {
+  const limit = totalsIdx >= 0 ? totalsIdx : rows.length;
+  const starts = sectionStarts(rows);
+  const approved = starts.find((sec) => /approved/i.test(sec.heading) && sec.at < limit);
+  if (!approved) return { from: 0, to: limit };
+  const next = starts.find((sec) => sec.at > approved.at);
+  return { from: approved.at, to: Math.min(next ? next.at - 1 : limit, limit) };
+}
+
 // ─── A TRANSACTION IS A BLOCK, NOT A ROW ─────────────────────────────────────
 // This is the shape the real emailed report actually uses — one transaction
 // spread over eight or nine lines rather than printed across one:
@@ -601,10 +653,10 @@ function parseEmailedStamp(text) {
  * printed — so a slice only counts as a transaction if it contains a TSN line.
  * That is what distinguishes the two, not its position in the document.
  */
-function collectTxnBlocks(rows, totalsIdx) {
-  const limit = totalsIdx >= 0 ? totalsIdx : rows.length;
+function collectTxnBlocks(rows, from = 0) {
+  const limit = rows.length;
   const starts = [];
-  for (let i = 0; i < limit; i++) if (BLOCK.stamp.test(rows[i])) starts.push(i);
+  for (let i = Math.max(from, 0); i < limit; i++) if (BLOCK.stamp.test(rows[i])) starts.push(i);
   // EVERY stamp-slice is returned, including the header's. Deciding which of
   // them is a transaction belongs to readTxnBlock, which has to look for a TSN
   // anyway — splitting that judgement across two functions left the "no TSN"
@@ -671,13 +723,19 @@ function readTxnBlock(block, batchNo) {
   const utiIdx = block.findIndex((l) => BLOCK.uti.test(l));
   if (utiIdx >= 0) {
     uti = tidy(BLOCK.uti.exec(block[utiIdx])[1]);
-    // The continuation is bare hex and nothing else on the block looks like
-    // that: the PAN carries mask characters, which are not hex digits, and
-    // every other field is labelled. So matching utiTail is sufficient — a
-    // second guard against the PAN would be unreachable, and an unreachable
-    // guard is one a later reader trusts for protection it does not give.
+    // A CONTINUATION ONLY FOLLOWS A LINE THAT WAS CUT MID-VALUE. The real file
+    // breaks the UTI inside a group — "UTI:70db11a9-13f2-4980-8fcd-" — so the
+    // trailing hyphen is the wrap marker, and requiring it is what stops the
+    // join swallowing a neighbouring value.
+    //
+    // "Bare hex on the next line" is not enough on its own: DIGITS ARE HEX, so
+    // an auth code of "932966" sitting under a COMPLETE UTI was appended to it,
+    // corrupting the UTI and losing the auth code, with no refusal. It costs no
+    // money figure — the amount, TSN and batch are read from their own lines —
+    // but it silently weakens the line-level match against the POS legs.
+    // (Raised in review of PR #513.)
     const next = block[utiIdx + 1];
-    if (next && BLOCK.utiTail.test(next)) uti += tidy(next);
+    if (uti.endsWith("-") && next && BLOCK.utiTail.test(next)) uti += tidy(next);
   }
   const rrn = first(BLOCK.rrn);
   const auth = first(BLOCK.auth);
@@ -748,8 +806,18 @@ function parseEmailedReport(rows) {
   // so getting it wrong defeats that check rather than tripping it. The money
   // fields already refuse on disagreement; there is no reason the count should
   // be treated more loosely than the figures it guards.
+  // Where the totals begin, and where the approved list lives. Both are needed
+  // before anything is read out of the document, because each scopes a search.
+  const totalsRegionIdx = rows.findIndex((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+  const approved = approvedSection(rows, totalsRegionIdx);
+
+  // ONLY THE APPROVED SECTION'S COUNT. A second section states its own, and
+  // that is a different fact — see approvedSection. Within the one section a
+  // repeated count must still agree, because there it IS the same fact stated
+  // twice, and this figure is what the line-count check measures a missed
+  // transaction against.
   const itemCounts = [];
-  for (const row of rows) {
+  for (const row of rows.slice(approved.from, approved.to + 1)) {
     const m = EMAILED.items.exec(row);
     if (m) itemCounts.push(Number(m[1]));
   }
@@ -761,6 +829,23 @@ function parseEmailedReport(rows) {
     return bad(`That report states its Items count more than once and the counts differ (${disagreeing.join(" and ")}). Nothing was recorded — photograph the slip instead.`);
   }
   const txnCount = itemCounts[0];
+
+
+  // ── THE TRANSACTIONS, WHICH ARE BLOCKS AND NOT ROWS ──
+  // Each one occupies eight or nine lines, and the page furniture lands INSIDE
+  // them — a "Page 6 of 7" footer sits between a transaction's timestamp and
+  // its UTI in the real file. Reading a block means scanning its slice for the
+  // fields it carries, so anything else in there is simply ignored.
+  // …and so do the transactions. A second section's transactions are not this
+  // list's, and counting them would put the roll over the printed Items figure.
+  const blocks = collectTxnBlocks(rows.slice(0, approved.to + 1), approved.from);
+  const txns = [];
+  for (const blk of blocks) {
+    const read = readTxnBlock(blk, batchNo);
+    if (read.skip) continue;    // a stamp with no TSN under it is not a transaction
+    if (read.err) return bad(read.err);
+    txns.push(read.txn);
+  }
 
   // ── the figures live in the TOTALS REGION, and nowhere else ──
   // A banking report closes with TOTALS SUMMARY and then CARD TOTALS. Both
@@ -777,8 +862,25 @@ function parseEmailedReport(rows) {
   // FIGURE — "enquiries 0860 12 34 56" will not parse, so the entire report was
   // refused. A refunds line printed halfway through page 3 is not this batch's
   // refunds total; absent from the totals region means absent.
-  const totalsIdx = rows.findIndex((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
-  const totalsRows = totalsIdx >= 0 ? rows.slice(totalsIdx) : rows;
+  // IF THE TOTALS HEADING IS NOT FOUND, the search falls back to the rows after
+  // the LAST TRANSACTION ENDS — never to the whole document. Every one of the
+  // forty blocks prints a "Total: ZAR …" and a "Purchase ZAR …" of its own, so
+  // an unscoped search meets dozens of disagreeing candidates and refuses the
+  // report as ambiguous on the first two it sees, which says nothing useful
+  // about what is wrong. (Raised in review of PR #513.)
+  //
+  // A report with NO recognisable totals heading is still refused — with no
+  // heading there is nothing to stop the last transaction's block running to
+  // the end of the document and absorbing the totals — but it now refuses by
+  // naming the figure it could not find, which is a sentence someone can act
+  // on. Recovering such a report properly needs a real example of one.
+  const totalsIdx = totalsRegionIdx;
+  // AFTER the last block ends, not where it begins: the final transaction
+  // carries its own "Total:" and "Purchase" lines, and including them would
+  // meet the report's real totals as two disagreeing figures.
+  const lastBlock = blocks.length ? blocks.at(-1) : null;
+  const afterTxns = lastBlock ? rows.indexOf(lastBlock[0]) + lastBlock.length : 0;
+  const totalsRows = totalsIdx >= 0 ? rows.slice(totalsIdx) : rows.slice(afterTxns);
   const money = (re, what, { required }) => {
     // The label-suffix attempt is enabled HERE and nowhere else. These are the
     // few rows of the totals region, where a labelled figure is the only thing
@@ -799,28 +901,13 @@ function parseEmailedReport(rows) {
   const cash = money(MONEY.cash, "cash figure", { required: false });
   if (cash.err) return bad(cash.err);
 
-  // ── THE TRANSACTIONS, WHICH ARE BLOCKS AND NOT ROWS ──
-  // Each one occupies eight or nine lines, and the page furniture lands INSIDE
-  // them — a "Page 6 of 7" footer sits between a transaction's timestamp and
-  // its UTI in the real file. Reading a block means scanning its slice for the
-  // fields it carries, so anything else in there is simply ignored.
-  const blocks = collectTxnBlocks(rows, totalsIdx);
-  const txns = [];
-  let headerStamp = null;
-  for (const blk of blocks) {
-    const read = readTxnBlock(blk, batchNo);
-    if (read.skip) {
-      // The block with no TSN is the report's header, and the timestamp it
-      // opens with is the moment the report was printed — the only moment this
-      // format states. Taking it from here rather than by scanning the top of
-      // the document means a transaction's own timestamp can never be mistaken
-      // for it, whatever order the pages came out in.
-      if (headerStamp === null) headerStamp = parseEmailedStamp(blk[0]);
-      continue;
-    }
-    if (read.err) return bad(read.err);
-    txns.push(read.txn);
-  }
+  // WHEN THE REPORT WAS PRINTED. Its header carries a bare timestamp of its own
+  // — the same DD-MM-YYYY shape as a transaction's — and it is the only moment
+  // this format states. It is taken from the rows ABOVE the approved section,
+  // so a transaction's own timestamp can never be mistaken for it. On the real
+  // file it reads 16:26:31, seventeen minutes after the batch's last sale.
+  const headerStamp = rows.slice(0, approved.from)
+    .map(parseEmailedStamp).find((v) => v !== null) ?? null;
   if (!txns.length) {
     return bad("No transactions could be read from that banking report. If it is the right file, photograph the slip instead.");
   }
@@ -884,5 +971,6 @@ function parseSlipPdf(lines) {
 module.exports = {
   parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
+  sectionStarts, approvedSection,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
 };
