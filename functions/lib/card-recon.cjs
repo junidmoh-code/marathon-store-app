@@ -384,6 +384,11 @@ function buildBatchRecord({
   // whether `ocr` happens to be null.
   capturedVia = "photo",
   pdfPath = null,
+  // WHERE THE FILE CAME FROM WHEN NOBODY BROUGHT IT. null for every capture a
+  // person made; on the email channel, the source message — sanitised by the
+  // callable — so a figure recorded with no human in the loop still names what
+  // put it there. See lib/card-recon-email.cjs.
+  intake = null,
 }) {
   const lines = summaryOnly ? null : Object.fromEntries(
     (extraction.lines || []).map((l) => [String(l.tsn), {
@@ -432,6 +437,7 @@ function buildBatchRecord({
     ocr: ocr ?? null, // { model, tokensIn, tokensOut, costUSD } — provenance
     capturedVia,
     pdfPath: pdfPath ?? null,
+    intake: intake ?? null,
   };
 }
 

@@ -32,17 +32,28 @@
 // NO CARD NUMBERS. The detail roll's per-transaction masked PAN is parsed and
 // stored for the matcher's line identity, and is never sent to this client.
 //
+// SLIPS THAT ARRIVE BY EMAIL LAND HERE TOO. The terminals email their batch
+// report to the shop's mailbox and a poller on the Mac mini submits each PDF
+// through the same callable, with nobody involved. That path can REFUSE — an
+// unregistered terminal, a duplicate batch, lines that do not sum — and a
+// refusal nobody sees is a terminal quietly not reconciling, which is the
+// failure this whole feature exists to prevent. So the panel below shows what
+// the mailbox produced, worst first. It shows OUTCOMES and never figures: the
+// screen stays capture-only.
+//
 // Gate: the dedicated `card_recon` permission (permFlags pattern) — checked by
 // the tile, by the route, and independently by the callable. Everything
 // money-shaped happens in functions/cardRecon/cardRecon.js; this file is
 // capture UX only.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ref as dbRef, onValue } from "firebase/database";
+import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
 import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
 import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
+import { summariseIntake, attachmentRows, silenceNotice } from "./intakeFeed";
+import { serverNowMs } from "../../utils/serverTime";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
 
@@ -133,6 +144,115 @@ function Row({ k, v, tone }) {
     <div style={S.row}>
       <span style={S.k}>{k}</span>
       <span style={{ ...S.v, color: tone || "#E9EEFF" }}>{v}</span>
+    </div>
+  );
+}
+
+
+// ─── EMAILED SLIPS — what the mailbox poller did, worst first ────────────────
+// READ-ONLY, and outcomes only: a file name, whether it was recorded, and why
+// not. No total, no expected figure, no variance — this screen is capture-only
+// and the evidence itself stays in the owner-only records.
+//
+// A DENIED READ IS NOT AN EMPTY FEED. Until the rule for /card_batch_intake is
+// pasted (scripts/cardrecon/print-card-intake-rule.mjs), the read is refused —
+// and "no emailed slips" would be a lie that reads as good news. The two states
+// are shown differently, deliberately.
+const INTAKE_FEED_SIZE = 25;
+
+function EmailedSlips() {
+  const [node, setNode] = useState(undefined);   // undefined = loading
+  const [denied, setDenied] = useState(false);
+  const [open, setOpen] = useState(null);
+
+  useEffect(() => {
+    const off = onValue(
+      // The TAIL, never the node. This grows by a row per message for ever.
+      query(dbRef(database, "card_batch_intake"), orderByChild("at"), limitToLast(INTAKE_FEED_SIZE)),
+      (snap) => { setNode(snap.val() || {}); setDenied(false); },
+      (err) => { setDenied(true); setNode(null); console.warn("emailed slips: read failed", err?.code || err); },
+    );
+    return () => off();
+  }, []);
+
+  const { rows, refusedCount, recordedCount, lastAt } = useMemo(() => summariseIntake(node), [node]);
+  // The SERVER's clock. A handset with a wrong date must not raise or silence
+  // an alarm on its own.
+  const silence = silenceNotice(lastAt, serverNowMs());
+
+  if (denied) {
+    return (
+      <div style={S.card}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 6 }}>Emailed slips</div>
+        <div style={S.warn}>
+          This account cannot read the emailed-slip feed yet — the rule for /card_batch_intake has not been
+          published. Nothing is wrong with the slips themselves; ask Junid to paste it
+          (scripts/cardrecon/print-card-intake-rule.mjs).
+        </div>
+      </div>
+    );
+  }
+  if (node === undefined) return null;
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)" }}>Emailed slips</div>
+        <div style={{ fontSize: 12, color: refusedCount ? "#FFB3B3" : "rgba(233,238,255,.5)", fontWeight: refusedCount ? 800 : 600 }}>
+          {refusedCount ? `${refusedCount} refused` : `${recordedCount} recorded`}
+        </div>
+      </div>
+      <div style={{ ...S.sub, fontSize: 12, marginTop: 4 }}>
+        What the terminals emailed, captured automatically. Nothing here needs doing unless a line is red.
+      </div>
+      {silence && <div style={S.warn}>{silence}</div>}
+      {rows.length === 0 && !silence && (
+        <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>Nothing has come in by email yet.</div>
+      )}
+      <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+        {rows.map((r) => {
+          const bad = (r.refused || 0) > 0;
+          return (
+            <div key={r.id}
+                 onClick={() => setOpen(open === r.id ? null : r.id)}
+                 style={{ border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
+                          background: bad ? "rgba(255,107,107,.07)" : "rgba(255,255,255,.03)",
+                          borderRadius: 11, padding: "9px 11px", cursor: "pointer" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
+                <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#E9EEFF", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.subject || "(no subject)"}
+                </span>
+                <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
+                {r.from || "unknown sender"}
+                {" · "}
+                {[
+                  r.recorded ? `${r.recorded} recorded` : null,
+                  r.refused ? `${r.refused} REFUSED` : null,
+                  r.unrelated ? `${r.unrelated} not a slip` : null,
+                ].filter(Boolean).join(" · ") || "nothing to capture"}
+              </div>
+              {open === r.id && (
+                <div style={{ marginTop: 8, display: "grid", gap: 5 }}>
+                  {attachmentRows(r).map((a, i) => (
+                    <div key={i} style={{ fontSize: 12, lineHeight: 1.45,
+                                          color: a.outcome === "refused" ? "#FFB3B3" : a.outcome === "recorded" ? "#B7F0CC" : "rgba(233,238,255,.5)" }}>
+                      <span style={{ fontWeight: 700 }}>{a.filename}</span>
+                      {a.outcome === "recorded"
+                        ? ` — batch ${a.batchKey}${a.tid ? ` · TID ${a.tid}` : ""}${a.linesCaptured ? "" : " (summary only)"}`
+                        : ` — ${a.reason}`}
+                      {(a.warnings || []).map((w, j) => (
+                        <div key={j} style={{ color: "#FDE9B0", fontSize: 11.5 }}>{w}</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -364,6 +484,8 @@ export default function CardReconScreen({ onExit }) {
         Settle the machine, then capture its Batch Report here. The card total is read off
         the slip itself — nothing is typed.
       </div>
+
+      <EmailedSlips />
 
       <div style={S.card}>
         <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 8 }}>1 · Which till?</div>

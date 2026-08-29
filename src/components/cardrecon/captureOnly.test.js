@@ -91,13 +91,45 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the capture screen reads exactly one node — the till picker's registry", () => {
-    // config/cardTerminals is the TID→till map the picker needs, and it is the
-    // only database read the capture flow makes. Everything else about a slip
-    // goes to the callable and comes back as an acknowledgement.
+  it("the capture screen reads exactly two nodes, and both are named here on purpose", () => {
+    // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
+    //
+    //   config/cardTerminals   the TID→till map the picker needs.
+    //
+    //   card_batch_intake      what the mailbox poller did with each emailed
+    //                          PDF — outcomes only: a sender, a subject, a file
+    //                          name, recorded-or-why-not. NO figures, no lines,
+    //                          no PANs; the evidence itself stays in the
+    //                          owner-only records. It is read here because a
+    //                          refused emailed slip means a terminal is not
+    //                          reconciling, and a refusal only the owner could
+    //                          ever see is the failure this feature exists to
+    //                          prevent.
+    //
+    // Everything else about a slip still goes to the callable and comes back as
+    // an acknowledgement. A THIRD node appearing here is a change of policy and
+    // must be made deliberately, in this list, with its reason.
     const src = readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8");
     const reads = [...stripComments(src).matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)].map((m) => m[1]);
-    expect(reads).toEqual(["config/cardTerminals"]);
+    expect(reads.slice().sort()).toEqual(["card_batch_intake", "config/cardTerminals"]);
+  });
+
+  it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
+    // It grows by a row per message for ever. A whole-node read on a handset on
+    // shop wifi is the mistake this repo keeps a rule against.
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
+    const feed = code.slice(code.indexOf("card_batch_intake"));
+    expect(feed.slice(0, 200)).toMatch(/limitToLast/);
+  });
+
+  it("the emailed-slip feed renders outcomes, never money", () => {
+    // The panel is new surface on a capture-only screen, so it gets the same
+    // treatment as the review: if a figure appears here, it came from somewhere
+    // it should not have.
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/intakeFeed.js"), "utf8"));
+    for (const forbidden of ["totalCents", "purchasesCents", "varianceCents", "amountCents", "pan", "cashiers"]) {
+      expect(code, `the emailed-slip feed must not handle ${forbidden}`).not.toMatch(new RegExp(forbidden));
+    }
   });
 
   it("shows no variance, expected figure or cashier list on the handset", () => {

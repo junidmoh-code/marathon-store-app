@@ -415,3 +415,25 @@ for (const [name, layout] of Object.entries(LAYOUTS)) {
     assert.equal(out.extraction.refundsCents, 4800);
   });
 }
+
+// ─── ONE FILE, ONE TERMINAL ──────────────────────────────────────────────────
+// The TID decides which till a batch is recorded against. Where a manager
+// picked a till, a disagreeing slip refuses itself against that pick — but an
+// emailed report has no pick, so a file that states its terminal TWICE,
+// DIFFERENTLY, must refuse rather than let the first row win in silence.
+test("a PDF printing two different terminal IDs is refused, not first-match", async () => {
+  const lines = slipLines();
+  const i = lines.findIndex((l) => /TERMINAL ID/i.test(l));
+  assert.ok(i >= 0, "fixture no longer prints a TERMINAL ID row — update this test");
+  const p = await parseOf([...lines, "TERMINAL ID  67365901"]);
+  assert.equal(p.ok, false);
+  assert.match(p.reason, /more than one terminal ID/i);
+  assert.match(p.reason, /0000HP1X/);
+  assert.match(p.reason, /67365901/);
+});
+
+test("a slip that prints its own TID twice, agreeing, is the normal case", async () => {
+  const p = await parseOf([...slipLines(), "TERMINAL ID  0000HP1X"]);
+  assert.equal(p.ok, true, p.reason);
+  assert.equal(p.extraction.tid, "0000HP1X");
+});

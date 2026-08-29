@@ -37,6 +37,19 @@ function field(lines, re) {
   return null;
 }
 
+/**
+ * EVERY line matching `re`, as capture group 1. Used where a second, DIFFERENT
+ * reading of the same field is evidence about the file rather than noise.
+ */
+function fieldAll(lines, re) {
+  const out = [];
+  for (const line of lines) {
+    const m = re.exec(line);
+    if (m) out.push(tidy(m[1]));
+  }
+  return out;
+}
+
 // ── The header ───────────────────────────────────────────────────────────────
 // Labels are matched case-insensitively and tolerate the spacing a text layer
 // introduces, but the SHAPE of each value is pinned: a TID is alphanumeric, a
@@ -241,6 +254,29 @@ function parseSlipPdf(lines) {
   const tid = normaliseTid(rawTid);
   if (!tid) return { ok: false, reason: `"${rawTid}" does not look like a terminal ID.` };
 
+  // ── ONE FILE, ONE TERMINAL ───────────────────────────────────────────────
+  // The TID is the join key: it decides which till a batch is recorded
+  // against. A file that prints TWO different terminal IDs is a file no reader
+  // should be picking between — the first match would simply win, silently,
+  // and the batch would land on whichever till happened to print first.
+  //
+  // THIS MATTERS MOST WHERE THERE IS NOBODY TO ASK. On the phone path the
+  // manager has already picked a till and a disagreeing slip refuses itself
+  // against that pick. A report that arrives by EMAIL has no pick — the TID on
+  // the slip IS the routing key — so this internal agreement is what remains
+  // of that check, and it must be a refusal rather than a first-match.
+  //
+  // Only DIFFERING valid readings refuse; a slip that prints its TID in both
+  // the header and the footer is the normal case and agrees with itself. A
+  // prose row that survived the anchor, the separators-only rule and the
+  // digit-in-token rule and yielded a second valid-looking token would refuse
+  // a good file — which is the safe direction: the refusal names both
+  // readings, and the photo path handles any layout.
+  const allTids = [...new Set(fieldAll(rows, RE.tid).map(normaliseTid).filter(Boolean))];
+  if (allTids.length > 1) {
+    return { ok: false, reason: `That PDF prints more than one terminal ID (${allTids.join(" and ")}), so which till it belongs to cannot be decided. Nothing was recorded — photograph the slip instead.` };
+  }
+
   const rawBatch = field(rows, RE.batchNo);
   bad = need(rawBatch, "a batch number"); if (bad) return bad;
   const batchNo = normaliseBatchNo(rawBatch);
@@ -329,4 +365,4 @@ function parseSlipPdf(lines) {
   };
 }
 
-module.exports = { parseSlipPdf, moneyField, TXN_RE, splitTxnMiddle, tidy };
+module.exports = { parseSlipPdf, moneyField, TXN_RE, splitTxnMiddle, tidy, field, fieldAll, RE };
