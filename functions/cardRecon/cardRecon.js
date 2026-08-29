@@ -56,12 +56,13 @@ const {
   parseSlipTimestamp, parseRandsToCents,
   normaliseTid, normaliseBatchNo, resolveBatchWrite, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
-  chooseCaptureSource, readPdfPayload,
+  chooseCaptureSource, readPdfPayload, formatCents,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
-const { computeExpectedCard } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
+const { matchLegs } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 
 if (!admin.apps.length) {
@@ -93,6 +94,20 @@ const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 // limit so an oversized file is refused with a sentence rather than failing as
 // a transport error the manager cannot read.
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
+
+// HOW FAR EITHER SIDE OF A DERIVED WINDOW TO LOOK FOR STRAY LEGS.
+// Only reporting, never reconciliation: the expected figure counts nothing
+// outside the window itself. A banking report's window is the span of its own
+// transactions with no slack at either end, so a till leg written a few seconds
+// off the terminal's clock lands outside a window it plainly belongs to. Two
+// minutes is wide enough to catch that and far too narrow to reach a
+// neighbouring batch (the shortest real gap between batches is a trading day).
+const WINDOW_EDGE_MS = 2 * 60 * 1000;
+
+// The reconciliation window either came off the slip or was worked out from the
+// transactions; only the second kind has an edge worth reporting.
+const edgeMsFor = (extraction) => (
+  extraction.windowSource && extraction.windowSource !== "printed" ? WINDOW_EDGE_MS : 0);
 
 const EXTRACTION_PROMPT = [
   "These photographs show ONE printed card-terminal Batch Report from an FNB",
@@ -361,6 +376,19 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
   return keys;
 }
 
+
+// ─── THE MATCH ───────────────────────────────────────────────────────────────
+// Runs beside the till-scoped sum, not instead of it: both go on the record.
+// The sum answers "what did this till take on card in the window"; the match
+// answers "which of this batch's transactions can be accounted for, wherever
+// they were rung". When a machine has moved, only the second is meaningful.
+async function matchBatch(db, { extraction, terminal }) {
+  const legs = await cardLegsInWindow(db, {
+    startMs: extraction.openedAt, endMs: extraction.closedAt, edgeMs: edgeMsFor(extraction),
+  });
+  return matchLegs(extraction.lines || [], legs, terminal);
+}
+
 async function handleExtract(db, request) {
   const { photos, pdf, pickedTid, summaryOnly, channel } = request.data || {};
 
@@ -451,7 +479,14 @@ async function handleExtract(db, request) {
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
+    // Only a window that runs past its last transaction has a tail worth
+    // reporting — see the tail note in lib/card-expected.cjs.
+    tailFromMs: extraction.windowSource === "transactions-to-print"
+      ? extraction.lastTxnAt ?? null
+      : null,
   });
+  const match = await matchBatch(db, { extraction, terminal });
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -618,10 +653,6 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   // because exact text has nothing to be confident about.
   const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
   if (!verdict.ok) return reject(verdict.reason);
-  // The routing warnings travel with the slip's own — what could NOT be
-  // checked is part of the record, not a footnote that stayed on the server.
-  const warnings = [...routingWarnings, ...verdict.warnings];
-
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
   const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
@@ -630,7 +661,57 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
+    // Only a window that runs past its last transaction has a tail worth
+    // reporting — see the tail note in lib/card-expected.cjs.
+    tailFromMs: extraction.windowSource === "transactions-to-print"
+      ? extraction.lastTxnAt ?? null
+      : null,
   });
+  const match = await matchBatch(db, { extraction, terminal });
+
+  // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
+  // than letting them show up only as a variance. This is a warning, never a
+  // refusal: the figures are exact, and whether those legs belong to this batch
+  // is a judgement for the person reviewing it.
+  // THE ROUTING WARNINGS COME FIRST, and they are part of the same list on
+  // purpose: what could NOT be checked about which till this belongs to (an
+  // emailed report from a terminal with no registered merchant id, say) belongs
+  // on the record beside what the matching found, not in a second channel the
+  // owner has to know to look at.
+  const warnings = [...routingWarnings, ...verdict.warnings];
+  if (match.offTillCents !== 0) {
+    const where = Object.entries(match.offTill)
+      .map(([k, v]) => `${k} (${formatCents(v.cents)})`).join(", ");
+    warnings.push(
+      `${match.matches.filter((m) => m.offTill).length} of this batch's transactions were rung up on another till — ${where}. ` +
+      "That is what a card machine being moved between shops looks like, and the money is accounted for. " +
+      "The pairing is by amount and time only: the till's payment ledger records no auth code or card number.",
+    );
+  }
+  if (match.unmatchedLegCents !== 0) {
+    warnings.push(
+      `${match.unmatchedLegsOnTill.length} card sale${match.unmatchedLegsOnTill.length === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(match.unmatchedLegCents)}) have no transaction on this report. They are NOT netted off against ` +
+      "anything missing — a sale the machine has no record of is its own question.",
+    );
+  }
+  if (expected.tailLegs > 0) {
+    warnings.push(
+      `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(expected.tailCents)}) fall after the report's last transaction and before it was printed. ` +
+      "They ARE counted: a till leg is always written a minute or two after the terminal approves the card, " +
+      "so the last sales of a batch land in that gap. Check them if this batch's variance looks wrong.",
+    );
+  }
+  if (expected.nearEdgeLegs > 0) {
+    warnings.push(
+      `${expected.nearEdgeLegs} card leg${expected.nearEdgeLegs === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(expected.nearEdgeCents)}) sit within two minutes of this window but outside it. ` +
+      "A banking report prints no Opened/Closed times, so the window is the span of its own transactions " +
+      "and has no slack at either end — these are not counted in the expected figure.",
+    );
+  }
 
   const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
   try {
@@ -721,12 +802,22 @@ async function handleSubmit(db, request) {
   const batchNo = normaliseBatchNo(extraction.batchNo);
 
   // ── RE-VALIDATE THE DRAFT, IN FULL ──────────────────────────────────────
-  // The draft was written by this function — but the live /pos rules carry a
-  // `$other` write grant, so until the owner pastes the explicit deny block
-  // (docs/CARD-RECON.md) a client could write its own "draft" under its uid.
-  // Submit therefore trusts NOTHING it did not just recompute: the same
-  // validation extract ran, the same terminal-registry check, the same
-  // window bound. A draft that fails any of it is refused and removed.
+  // DEFENCE IN DEPTH, not compensation for an open rule. This used to note that
+  // the drafts sat under /pos, whose `$other` write grant would have let a
+  // client author its own "draft" under its uid. They no longer do: PR #502
+  // moved them to a TOP-LEVEL /card_batch_drafts whose live rules are
+  // owner-only for both read and write (verified against the live
+  // .settings/rules.json, 2026-08-29), so a staff client cannot write one at
+  // all. Every field here is therefore server-written — `extraction.format`
+  // included, which is what keeps the banking report's TSN-contiguity
+  // exemption out of reach of a photographed slip.
+  //
+  // The full re-validation stays regardless, because a draft can go stale in
+  // ways nothing about rules would catch: a terminal remapped to another till
+  // between extract and submit, a batch number that has since been used. Submit
+  // trusts NOTHING it did not just recompute — the same validation, the same
+  // terminal-registry check, the same window bound. A draft that fails any of
+  // it is refused and removed.
   const terminalsNow = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
   const mapped = terminalsNow[extraction.tid];
   const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
@@ -776,7 +867,14 @@ async function handleSubmit(db, request) {
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
+    // Only a window that runs past its last transaction has a tail worth
+    // reporting — see the tail note in lib/card-expected.cjs.
+    tailFromMs: extraction.windowSource === "transactions-to-print"
+      ? extraction.lastTxnAt ?? null
+      : null,
   });
+  const match = await matchBatch(db, { extraction, terminal });
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
@@ -786,7 +884,7 @@ async function handleSubmit(db, request) {
   if (!write.ok) return reject(write.reason);
 
   const record = buildBatchRecord({
-    extraction, terminal, tid: extraction.tid,
+    extraction, terminal, tid: extraction.tid, match,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,

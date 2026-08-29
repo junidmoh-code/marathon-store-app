@@ -18,7 +18,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { validateExtraction } = require("../lib/card-recon.cjs");
-const { slipLines } = require("./fixtures/makeSlipPdf.cjs");
+const { slipLines, emailedLines, realReportLines, REAL_REPORT } = require("./fixtures/makeSlipPdf.cjs");
 
 // THE PIPELINE AS THE CALLABLE RUNS IT. parseSlipPdf only READS; the slip's own
 // arithmetic is validateExtraction's job. Fuzzing the reader alone would call a
@@ -144,4 +144,139 @@ test("6000 corrupted slips: a figure is EXACT or refused — never quietly diffe
   }
   assert.ok(refused > 0, "no corruption was refused — the fuzz is not reaching the guards");
   assert.ok(parsed > 0, "every corruption was refused — the fuzz produces no benign cases");
+});
+
+
+// ═══ THE SAME PROPERTY, ON THE EMAILED BANKING REPORT ════════════════════════
+// Exactly right, or refused — the format makes no difference to the rule. What
+// differs is the shape: transactions are BLOCKS of eight or nine lines, dates
+// are DD-MM-YYYY, TSNs have gaps, amounts are in ZAR, the window is derived
+// from the transactions, and page furniture lands inside the blocks. Each of
+// those is somewhere a reader can go quietly wrong.
+
+function randomReport(r) {
+  const n = 1 + pick(r, 12);
+  const tsns = [];
+  let next = 1 + pick(r, 5);
+  for (let i = 0; i < n; i++) { tsns.push(next); next += 1 + pick(r, 4); }   // GAPS by construction
+  const refundTsns = tsns.filter(() => r() < 0.2);
+  // A report that states refunds in its totals must also mark WHICH
+  // transactions they are — the per-transaction type line is the only thing
+  // that says so. Generating one without the other produces an incoherent
+  // document that the reader rightly refuses (its transactions cannot sum to
+  // its total), which would be the fuzz testing its own inconsistency rather
+  // than the reader. That combination is asserted directly instead, in
+  // card-recon-emailed.test.cjs.
+  const typeLine = refundTsns.length > 0 || r() < 0.8;
+  return emailedLines({
+    tsns, typeLine,
+    amountsCents: tsns.map(() => 100 + pick(r, 500000)),
+    refundTsns,
+    batchNo: 1 + pick(r, 999),
+    tid: String(60000000 + pick(r, 9999999)),
+    utiWraps: r() < 0.5,
+    noAuth: r() < 0.3,
+    withFurniture: r() < 0.8,
+    furnitureEvery: 1 + pick(r, 5),
+    panMask: r() < 0.5 ? "*" : "x",
+  });
+}
+
+test("2000 well-formed banking reports read EXACTLY, gaps and all", () => {
+  const r = rng(590059);
+  let parsed = 0, gappy = 0;
+  for (let i = 0; i < 2000; i++) {
+    const { truth, lines } = randomReport(r);
+    const out = readSlip(lines);
+    if (!out.ok) { assert.ok(out.reason && out.reason.length > 10); continue; }
+    parsed++;
+    const ex = out.extraction;
+    assert.equal(ex.format, "emailed", `report ${i}: read as the wrong format`);
+    assert.equal(ex.purchasesCents, truth.purchasesCents, `report ${i}: purchases`);
+    assert.equal(ex.refundsCents, truth.refundsCents, `report ${i}: refunds`);
+    assert.equal(ex.totalCents, truth.totalCents, `report ${i}: total`);
+    assert.equal(ex.lines.length, truth.count, `report ${i}: transaction count`);
+    // The TSNs are the report's own, gaps preserved — never renumbered, and
+    // never the batch column read over and over.
+    assert.deepEqual(ex.lines.map((l) => l.tsn), truth.tsns, `report ${i}: TSNs`);
+    assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), truth.totalCents, `report ${i}: sum`);
+    const times = ex.lines.map((l) => l.at);
+    // Derived either way — to the print time where the report states one, to
+    // the last transaction where it does not.
+    assert.match(ex.windowSource, /^transactions(-to-print)?$/, `report ${i}: window source`);
+    assert.ok(Math.min(...times) >= ex.openedAt && Math.max(...times) < ex.closedAt,
+      `report ${i}: a transaction falls outside its own derived window`);
+    assert.ok(ex.closedAt > ex.lastTxnAt, `report ${i}: the window must outlast the last sale`);
+    if (truth.tsns.some((t, k) => k > 0 && t !== truth.tsns[k - 1] + 1)) gappy++;
+  }
+  assert.ok(parsed > 1900, `only ${parsed}/2000 well-formed reports parsed — the reader has become useless`);
+  assert.ok(gappy > 1400, `only ${gappy} reports had TSN gaps — the fuzz is not exercising the exemption`);
+});
+
+test("6000 corrupted banking reports: EXACT or refused, never quietly different", () => {
+  const r = rng(660066);
+  let parsed = 0, refused = 0;
+  for (let i = 0; i < 6000; i++) {
+    const { truth, lines } = randomReport(r);
+    const idx = pick(r, lines.length);
+    const corrupt = CORRUPTIONS[pick(r, CORRUPTIONS.length)];
+    const mangled = lines.slice();
+    mangled[idx] = corrupt(String(mangled[idx]));
+    if (mangled[idx] === lines[idx]) continue;
+
+    const out = readSlip(mangled);
+    if (!out.ok) { refused++; assert.ok(out.reason && /\S/.test(out.reason)); continue; }
+    parsed++;
+    const ex = out.extraction;
+    for (const f of ["purchasesCents", "refundsCents", "totalCents"]) {
+      assert.equal(ex[f], truth[f],
+        `SILENTLY WRONG FIGURE — seed 660066, iteration ${i}\n` +
+        `  corrupted line: ${JSON.stringify(mangled[idx])}\n` +
+        `  was:            ${JSON.stringify(lines[idx])}\n` +
+        `  ${f}: reader said ${ex[f]}, report printed ${truth[f]}`);
+    }
+    assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), truth.totalCents,
+      `iteration ${i}: transactions sum wrong — line ${JSON.stringify(mangled[idx])}`);
+  }
+  assert.ok(refused > 0, "no corruption was refused — the fuzz is not reaching the guards");
+  assert.ok(parsed > 0, "every corruption was refused — the fuzz produces no benign cases");
+});
+
+// ═══ THE REAL FILE, WITH FURNITURE SCATTERED THROUGH IT ══════════════════════
+// The clean fuzz proves the reader exact on generated documents. This one takes
+// the ACTUAL report and scatters the kind of prose its own pages carry — money
+// labels followed by digits, at random positions including inside a block.
+test("4000 real reports with furniture and prose scattered through them", () => {
+  const r = rng(590712);
+  const clean = realReportLines();
+  const JUNK = [
+    "FNB Merchant Services", "P.O. Box 1153, Johannesburg,", "Page 3 of 7",
+    "First National Bank, a division of FirstRand Bank Limited. Reg No. 1929/001225/06.",
+    "An Authorised Financial Services and Credit Provider (NCRCP20).",
+    "Total pages 7", "Refunds enquiries 0860 12 34 56", "Cash enquiries 0860 12 34 56",
+    "Total surcharge rate is 12.00", "Cash advance fees are subject to a service charge of 2.50",
+    "Total excludes certain bank charges (25.00)", "Refunds on 3 ZAR 50.00",
+    "______________________________",
+  ];
+  for (let i = 0; i < 4000; i++) {
+    const lines = clean.slice();
+    const howMany = 1 + pick(r, 5);
+    for (let k = 0; k < howMany; k++) {
+      lines.splice(pick(r, lines.length + 1), 0, JUNK[pick(r, JUNK.length)]);
+    }
+    const out = readSlip(lines);
+    assert.equal(out.ok, true,
+      `furniture refused the real report (seed 590712, iteration ${i}): ${out.reason}`);
+    const ex = out.extraction;
+    assert.equal(ex.tid, REAL_REPORT.tid, `iteration ${i}: terminal`);
+    assert.equal(ex.batchNo, String(REAL_REPORT.batchNo), `iteration ${i}: batch`);
+    assert.equal(ex.txnCount, REAL_REPORT.items, `iteration ${i}: items`);
+    assert.equal(ex.lines.length, REAL_REPORT.items, `iteration ${i}: transactions read`);
+    assert.equal(ex.totalCents, REAL_REPORT.totalCents, `iteration ${i}: total`);
+    assert.equal(ex.purchasesCents, REAL_REPORT.totalCents, `iteration ${i}: purchases`);
+    assert.equal(ex.refundsCents, 0, `iteration ${i}: furniture invented a refund`);
+    assert.equal(ex.cashCents, 0, `iteration ${i}: furniture invented a cash figure`);
+    assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), REAL_REPORT.totalCents,
+      `iteration ${i}: transactions no longer sum to the total`);
+  }
 });

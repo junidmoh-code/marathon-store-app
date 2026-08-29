@@ -123,6 +123,26 @@ const socialRules = {
     ".write": SOCIAL_WRITE,
     $other: { ".validate": true },
   },
+  // ── THE PERMANENT ALBUM ───────────────────────────────────────────────────
+  // Readable by anyone signed in, and WRITABLE BY NOBODY. That absence is the
+  // feature, not an oversight.
+  //
+  // The album's single promise is that a picture put into it stays there —
+  // discarding a post, clearing the queue, or a mis-click in a grid must never
+  // cost a generated photograph. A .write rule of any shape is a way for a
+  // browser to break that promise. Leaving it out means the only writer is the
+  // generator, which uses the Admin SDK and bypasses rules entirely, and the
+  // backfill script, which does the same.
+  //
+  // So: no client can add to the album, and no client can delete from it. If a
+  // future screen needs to remove an entry, that is a deliberate change to
+  // this block plus a server-side path — which is exactly the amount of
+  // friction deleting the archive should have.
+  social_library: {
+    ".read": READ,
+    // Newest-first is the only order the album is ever read in.
+    ".indexOn": ["createdAt"],
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -361,6 +361,195 @@ answer routes the extract **and** stamps `capturedVia` on the batch record, so
 the field the owner reads to tell a PDF batch from a photographed one cannot
 drift from the path that actually ran.
 
+### Two PDF formats, not one
+
+A terminal produces its batch figures in two different documents, and both are
+now read:
+
+| | terminal's printed slip | bank's emailed banking report |
+|---|---|---|
+| identity | `TERMINAL ID 0000HP1X`, `Batch Report (#494)` | `Banking Report for Batch 59 of Terminal 67365901`, plus `Merchant:` / `Terminal:` / `Batch:` rows |
+| count | `Transactions  2` | `APPROVED TRANSACTIONS` then `Items: 40` |
+| amounts | `R50,355.00` | `ZAR 900.00` |
+| window | `Opened` / `Closed` printed | **none printed** |
+| TSNs | run unbroken | **have gaps, by design** |
+| totals | Payment Type Summary | `TOTALS SUMMARY` + `CARD TOTALS`, no PTS |
+| rows | date, time, UTI, RRN, auth, TSN, PAN, amount | …TSN, **Batch**, PAN, amount, type |
+
+`detectReportFormat()` decides which before either is read, so a file that is
+neither is refused by name rather than by a pile of missing fields.
+
+#### The two checks that had to change
+
+**TSN contiguity is meaningless on a banking report.** The printed roll lists
+every attempt, so a gap there means a line was missed — the exact thing this
+feature exists to catch. The emailed report lists *approved* transactions only,
+so declines and voids leave gaps by design; the real example runs 2, 3, 4, 6, 7,
+8 and skips 21–24, 30–31, 33–34 and 43. Applying contiguity would refuse every
+emailed report ever sent, so it is skipped for that format and the gaps are
+recorded as a warning instead. **Duplicate TSNs are still refused in both** — a
+repeat is a mis-parse whatever the format, and means something quite different
+from a gap.
+
+**There is no printed window on a banking report.** It carries a print
+timestamp and the transaction times, nothing else. The window is therefore
+derived — first transaction to last, plus one millisecond so the half-open
+`[start, end)` interval contains the last transaction — and `slip.windowSource`
+records `"transactions"` rather than `"printed"` so nobody later mistakes a
+derived window for a declared one. Nothing is invented: with no transactions
+there is no window and the report is refused.
+
+#### The window edge
+
+A printed window has natural slack (the terminal opens the batch before the
+first sale and closes it after the last). A derived one has none, so a till leg
+written a few seconds either side of the terminal's clock falls outside a window
+it plainly belongs to. **The window is not widened to compensate — a fabricated
+window is a fabricated variance.** Instead `computeExpectedCard` takes an
+`edgeMs`, widens only its *fetch*, and reports card legs for that till sitting
+just outside as `expected.nearEdgeLegs` / `nearEdgeCents` plus a warning. They
+are never counted in `cardCents`; the reconciled figure is identical whether or
+not edge reporting is on, which is pinned by test.
+
+#### A transaction is a BLOCK, not a row
+
+This is what the real file actually looks like — one transaction over eight or
+nine lines:
+
+```
+29-08-2026 09:07:23          ← the block opens on a bare timestamp
+UTI:70db11a9-13f2-4980-8fcd-
+97cbf50222c5                 ← …which WRAPS onto the next line
+RRN: 04Yewn059002
+Auth Code: 932966
+TSN:2 Batch:59               ← both numbers, on one line
+518103******4436
+Total: ZAR 900.00            ← the amount
+Purchase ZAR 900.00          ← the type, and the amount again
+```
+
+Consequences that are easy to get wrong:
+
+- **Dates are `DD-MM-YYYY`**, which the printed slip's parser does not read.
+  `parseEmailedStamp` is separate rather than a widening of
+  `parseSlipTimestamp`, because a function accepting both would have to guess
+  which way round `01-02-2026` is. The photo path is untouched by it.
+- **The header carries a bare timestamp too** — the moment the report was
+  printed, *after* the last transaction. A slice with no TSN line is that
+  header, and it is skipped; that same timestamp becomes `printedAt`.
+- **Each block states its own batch number**, which is cross-checked against
+  the report's.
+- **Each block prints its amount twice** (`Total:` then the type line). They
+  must agree, or the report is refused.
+- **Every block prints a `Total:` of its own**, which is why scoping the figure
+  search to the totals region matters: forty per-transaction totals must never
+  become the batch total.
+- **Page furniture lands *inside* blocks.** In the real file a `Page 6 of 7`
+  footer sits between one transaction's timestamp and its UTI. Reading a block
+  means scanning its slice for the fields it carries, so anything else in it is
+  ignored for free.
+
+#### Page furniture, and the totals region
+
+The real emailed report (`Till2FNB-Txn-Notification.pdf` — batch 59, terminal
+67365901, 40 items, ZAR 30 120.00) is **seven pages**, with FNB's address block
+and page footers interleaved *between* the transactions rather than confined to
+the top and bottom. That furniture is full of money labels followed by digits,
+and it broke the first version of this reader in two separate ways:
+
+1. **The figure search used to widen to the whole document** when a field was
+   not in the totals block. A footer reading `Refunds enquiries 0860 12 34 56`
+   was then read as the refunds *figure*, failed to parse, and refused the whole
+   report. The search is now confined to the **totals region** — from whichever
+   of `TOTALS SUMMARY` / `CARD TOTALS` comes first, to the end — and does not
+   widen. Absent from that region means absent. Starting at the *first* block
+   puts both in scope, so if the two ever disagree the report is refused rather
+   than one being silently preferred.
+
+2. **"A remainder containing a digit is a figure row"** was right about headings
+   and wrong about prose. `Total pages 7` is not a mangled total. The rule is
+   now whether the remainder *begins* like an amount — optional sign or bracket,
+   optional currency mark, then a digit (`looksLikeAmount`). A figure so mangled
+   it starts with a letter is skipped as prose and the field ends up missing,
+   which is still a refusal — just a differently worded one. `R5O,307.00` and
+   `ZAR 5O0.00` both still begin like amounts, so both still refuse.
+
+There is **no purchases figure distinct from the total** on this report: both
+blocks print `Purchase` and `Total` as the same value and there is no Payment
+Type Summary, so the arithmetic holds with refunds and cash absent.
+
+> **The real PDF is committed** at
+> `functions/test/fixtures/Till2FNB-Txn-Notification.pdf` — the actual
+> seven-page report, 67 KB. Its extracted text sits beside it as
+> `real-report-lines.json` so line-level tests need no pdfjs; one test
+> re-extracts the PDF and asserts the two are identical, so the copy cannot
+> drift. `emailedLines()` generates the same shape for the cases one file
+> cannot cover (refunds, a terminal that omits a column, a corrupted figure).
+>
+> Everything before this was a reconstruction from a description, and the
+> description was wrong in the way that mattered: it described one transaction
+> per row. The real format is blocks. Note also that a refused capture is still
+> never stored, which is why this file had to be sent by hand.
+
+#### The Batch column trap
+
+The emailed row order is `… TSN, Batch, PAN …`. The printed reader takes "the
+last bare integer before the PAN" as the TSN, which here would take the *batch
+number* off every row — forty identical TSNs and a duplicate refusal. The
+layout is therefore settled once for the whole report from evidence, not
+position: a real Batch column carries the report's own batch number on **every**
+row. One row whose TSN merely coincides with the batch number does not make a
+column.
+
+## The reconciliation follows the machine, not the till map
+
+`/config/cardTerminals` maps a terminal ID to a store and till. **The machines
+move.** A speedpoint spent a morning at Trophy while its terminal ID points at
+PE Till 2, so four of that day's sales were rung on Trophy's till. The old
+reconciliation — the report's total minus every card leg on the mapped till —
+called R3,500 of perfectly good takings missing, and said nothing about which
+R3,500.
+
+`lib/card-match.cjs` pairs each transaction with a card leg instead:
+
+1. **Pass one, the mapped till.** A leg rung where it should have been is never
+   taken by a cross-till candidate of the same amount.
+2. **Pass two, everywhere else.** This is where a moved machine shows up.
+
+What is left over is the finding, and there are two kinds which are **never
+netted against each other**:
+
+| | meaning |
+|---|---|
+| `match.unmatchedTxnCents` | money the machine took that no sale accounts for — **this is `varianceCents`** |
+| `match.unmatchedLegCents` | a card sale on this till the machine has no record of — a different question |
+
+`match.offTill` records *where* the work was rung when it was not on the
+terminal's own till, so "the machine was at Trophy that morning" reads off the
+record. `varianceOnTillCents` keeps the old subtraction so batches reconciled
+before and after stay comparable.
+
+### What the pairing is worth
+
+**Amount and time only.** The terminal knows an auth code, an RRN, a UTI and a
+masked card number; the till's payment ledger records *none* of them — a card
+leg carries amount, time, till, cashier, receipt and sale id, and nothing else.
+A pairing is therefore a proposal, not a proof, and the warning says so.
+
+The time signal is strong because the lag is **one-directional**: the terminal
+stamps when the card is approved, the till writes its leg when the cashier
+finishes the sale, which can only be later. Measured across all forty
+transactions of the real report against the live ledger:
+
+```
+minimum lag  118 s        median  135 s        maximum  249 s
+legs ahead of their terminal stamp:  none
+```
+
+Hence the asymmetric tolerance — 15 minutes forwards, 2 minutes back. The
+backward allowance is for clock drift between two devices, not because a leg is
+ever expected first.
+
 ### Why the PDF is read as text and never OCR'd
 
 The text in a PDF is exact. There is nothing to be confident *about*, so the

@@ -149,3 +149,157 @@ test("computeExpectedCard queries by at-window and folds", async () => {
 test("computeExpectedCard refuses a bad window", async () => {
   await assert.rejects(() => computeExpectedCard({}, { ...W, endMs: OPEN }), /bad window/);
 });
+
+// ─── THE WINDOW EDGE ─────────────────────────────────────────────────────────
+// A printed slip's window has slack: the terminal opens the batch before the
+// first sale and closes it after the last. A window DERIVED from transaction
+// timestamps (the emailed banking report prints none) has none at all, so a
+// till leg written seconds either side of the terminal's clock falls outside a
+// window it plainly belongs to.
+//
+// Nothing is widened to compensate — a fabricated window is a fabricated
+// variance. The near-misses are counted and reported instead, and these tests
+// pin BOTH halves of that: they are reported, and they are NOT reconciled.
+const EDGE = { storeId: "pe", tillId: "till-1" };
+const leg = (at, amount, over = {}) => ({ method: "card", storeId: "pe", tillId: "till-1", at, amount, kind: "sale", ...over });
+
+test("a leg just outside a derived window is reported but NOT counted", () => {
+  const events = { a: leg(1000, 100), b: leg(2000, 200), c: leg(2500, 300) };
+  const w = { ...EDGE, startMs: 1000, endMs: 2001, edgeMs: 1000 };
+  const r = expectedCardFromEvents(events, w);
+  assert.equal(r.cardCents, 300, "the expected figure counts only what is INSIDE the window");
+  assert.equal(r.legs, 2);
+  assert.equal(r.nearEdgeLegs, 1, "…and the one just outside is still reported");
+  assert.equal(r.nearEdgeCents, 300);
+});
+
+test("the expected figure is identical whether or not the edge is being reported", () => {
+  // The whole design rests on this: turning edge reporting on must not move a
+  // single cent of the reconciliation.
+  const events = { a: leg(1000, 100), b: leg(2000, 200), c: leg(2500, 300), d: leg(500, 400) };
+  const base = { ...EDGE, startMs: 1000, endMs: 2001 };
+  const off = expectedCardFromEvents(events, base);
+  const on = expectedCardFromEvents(events, { ...base, edgeMs: 60000 });
+  assert.equal(on.cardCents, off.cardCents);
+  assert.equal(on.legs, off.legs);
+  assert.deepEqual(on.byKind, off.byKind);
+  assert.equal(off.nearEdgeLegs, 0, "with no edge asked for, nothing is reported");
+  assert.equal(on.nearEdgeLegs, 2, "with one asked for, both sides are");
+});
+
+test("a leg far outside the window is not reported as near the edge", () => {
+  const events = { a: leg(1000, 100), far: leg(999999, 900) };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: 1000, endMs: 2001, edgeMs: 1000 });
+  assert.equal(r.nearEdgeLegs, 0, "the edge report must not reach a neighbouring batch");
+  assert.equal(r.cardCents, 100);
+});
+
+test("only this till's card legs count as near the edge", () => {
+  const events = {
+    other: leg(2500, 300, { tillId: "till-2" }),
+    cash: leg(2500, 300, { method: "cash" }),
+    store: leg(2500, 300, { storeId: "trophy" }),
+    mine: leg(2500, 111),
+  };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: 1000, endMs: 2001, edgeMs: 1000 });
+  assert.equal(r.nearEdgeLegs, 1);
+  assert.equal(r.nearEdgeCents, 111);
+});
+
+test("a malformed amount is not reported as a near-edge leg either", () => {
+  const events = { bad: leg(2500, null), worse: leg(2500, "300") };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: 1000, endMs: 2001, edgeMs: 1000 });
+  assert.equal(r.nearEdgeLegs, 0, "a null must not fold in as a 0-cent near-edge leg");
+  assert.equal(r.nearEdgeCents, 0);
+});
+
+test("the query WIDENS by edgeMs, or the near-edge legs are never fetched", () => {
+  // The pure filter can only report a leg the query actually returned. Widening
+  // the fetch is what makes the edge visible at all — and it must not widen the
+  // window itself, which the assertions below hold to.
+  const calls = [];
+  const mkDb = (rows) => ({
+    ref: (path) => ({
+      orderByChild: (field) => ({
+        startAt: (s) => ({
+          endAt: (e) => ({
+            async once() { calls.push({ path, field, s, e }); return { val: () => rows }; },
+          }),
+        }),
+      }),
+    }),
+  });
+  const justOutside = ev({ amount: 7700, at: CLOSE + 30 * 1000 });
+  return (async () => {
+    const r = await computeExpectedCard(mkDb({ a: ev({ amount: 12300 }), z: justOutside }), { ...W, edgeMs: 60 * 1000 });
+    assert.deepEqual(calls, [{ path: "pos/paymentEvents", field: "at", s: OPEN - 60000, e: CLOSE + 60000 }],
+      "the FETCH is widened by the edge");
+    assert.equal(r.cardCents, 12300, "…but the reconciled figure is not");
+    assert.equal(r.nearEdgeLegs, 1, "…and the leg just past the close is reported");
+    assert.equal(r.nearEdgeCents, 7700);
+  })();
+});
+
+// ─── THE TAIL ────────────────────────────────────────────────────────────────
+// A banking report states no closing time, so its window runs to the moment the
+// report was printed — minutes after its last transaction, because a till leg
+// is always written after the terminal approves the card (measured on the real
+// report against the live ledger: minimum 118 seconds, median 134, never
+// negative). Legs in that gap are counted, and rightly. But a sale rung up in
+// the gap and settled into the NEXT batch would land there too and be counted
+// twice, so the tail is measured and reported rather than hidden inside the
+// figure it contributes to.
+test("legs after the last transaction are counted AND reported", () => {
+  const events = {
+    a: leg(OPEN + 1000, 10000),
+    b: leg(OPEN + 5000, 35000),
+    c: leg(OPEN + 9000, 20000),
+  };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000, tailFromMs: OPEN + 4000 });
+  assert.equal(r.cardCents, 65000, "the tail IS part of the expected figure");
+  assert.equal(r.legs, 3);
+  assert.equal(r.tailLegs, 2, "…and is reported as its own number");
+  assert.equal(r.tailCents, 55000);
+});
+
+test("a leg exactly at the last transaction's instant is not tail", () => {
+  // The boundary is the last transaction's own timestamp, and the tail is what
+  // comes AFTER it. A leg at that very instant belongs to the transaction, not
+  // to the gap that follows.
+  const events = { at: leg(OPEN + 4000, 5000), after: leg(OPEN + 4001, 6000) };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000, tailFromMs: OPEN + 4000 });
+  assert.equal(r.cardCents, 11000, "both are inside the window either way");
+  assert.equal(r.tailLegs, 1, "only the one after the boundary");
+  assert.equal(r.tailCents, 6000);
+});
+
+test("with no tail boundary nothing is reported as tail", () => {
+  // A printed slip declares its own window, so it has no tail to speak of.
+  const events = { a: leg(OPEN + 1000, 10000), b: leg(OPEN + 9000, 20000) };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000 });
+  assert.equal(r.cardCents, 30000);
+  assert.equal(r.tailLegs, 0);
+  assert.equal(r.tailCents, 0);
+});
+
+test("the tail never changes the expected figure it is measured from", () => {
+  const events = { a: leg(OPEN + 1000, 10000), b: leg(OPEN + 9000, 20000) };
+  const base = { ...EDGE, startMs: OPEN, endMs: OPEN + 20000 };
+  const off = expectedCardFromEvents(events, base);
+  const on = expectedCardFromEvents(events, { ...base, tailFromMs: OPEN + 4000 });
+  assert.equal(on.cardCents, off.cardCents);
+  assert.equal(on.legs, off.legs);
+  assert.deepEqual(on.byKind, off.byKind);
+  assert.equal(on.tailLegs, 1);
+});
+
+test("only this till's card legs count as tail", () => {
+  const events = {
+    other: leg(OPEN + 9000, 30000, { tillId: "till-2" }),
+    cash: leg(OPEN + 9000, 30000, { method: "cash" }),
+    mine: leg(OPEN + 9000, 12300),
+  };
+  const r = expectedCardFromEvents(events, { ...EDGE, startMs: OPEN, endMs: OPEN + 20000, tailFromMs: OPEN + 4000 });
+  assert.equal(r.tailLegs, 1);
+  assert.equal(r.tailCents, 12300);
+});
