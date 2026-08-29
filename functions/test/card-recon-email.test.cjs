@@ -89,3 +89,47 @@ test("a registry row missing its till is not a mapping — it is refused", () =>
     assert.match(r.reason, /not registered/i);
   }
 });
+
+// ─── THE WHOLE EMAIL PATH, OVER A REAL PDF ───────────────────────────────────
+// Everything above tests the routing decision against hand-made extractions.
+// This runs a REAL generated batch report through the REAL text extractor and
+// the REAL parser first, so the shape the router is handed is the shape the
+// callable actually hands it — the seam where a change to either side would
+// otherwise pass both suites and fail in production.
+const { makeSlipPdf, slipLines } = require("./fixtures/makeSlipPdf.cjs");
+const { pdfToLines } = require("../cardRecon/pdfText.js");
+const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
+const { validateExtraction } = require("../lib/card-recon.cjs");
+
+const parseReal = async (lines) => {
+  const text = await pdfToLines(makeSlipPdf(lines));
+  assert.equal(text.ok, true, text.reason);
+  return parseSlipPdf(text.lines);
+};
+
+test("END TO END: a real emailed PDF routes to its till and passes every check", async () => {
+  const parsed = await parseReal(slipLines());
+  assert.equal(parsed.ok, true, parsed.reason);
+
+  const routed = routeEmailSlip({ extraction: parsed.extraction, terminals: TERMINALS });
+  assert.equal(routed.ok, true, routed.reason);
+  assert.deepEqual(
+    { storeId: routed.terminal.storeId, tillId: routed.terminal.tillId },
+    { storeId: "pe", tillId: "till-1" },
+    "the fixture's TID and MID must land on PE Till 1 — nothing about the email path may change which till a slip belongs to",
+  );
+  assert.deepEqual(routed.warnings, [], "both identifiers vouched for this one");
+
+  // And every refusal the phone path applies still applies to it.
+  const verdict = validateExtraction(parsed.extraction, { summaryOnly: false, source: "pdf" });
+  assert.equal(verdict.ok, true, verdict.reason);
+});
+
+test("END TO END: the same PDF against a registry that does not know it is REFUSED", async () => {
+  const parsed = await parseReal(slipLines());
+  const routed = routeEmailSlip({ extraction: parsed.extraction, terminals: { "67365901": TERMINALS["67365901"] } });
+  assert.equal(routed.ok, false);
+  assert.equal(routed.unmapped, true);
+  // Never routed to the one terminal that IS registered.
+  assert.match(routed.reason, /0000HP1X/);
+});
