@@ -98,7 +98,11 @@ function parseRandsToCents(str) {
   let negative = false;
   if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1).trim(); }
   if (s.startsWith("-")) { negative = !negative; s = s.slice(1).trim(); }
-  s = s.replace(/^R\s?/i, "").trim();
+  // THE CURRENCY MARK. The terminal's printed slip writes "R50,355.00"; the
+  // bank's emailed banking report writes "ZAR 900.00" for the same thing. Both
+  // are accepted and nothing else is — the mark is stripped, not skipped over,
+  // so "USD 900.00" still refuses rather than being read as 900 rand.
+  s = s.replace(/^(?:ZAR|R)\s?/i, "").trim();
   // THOUSAND SEPARATORS MUST GROUP CORRECTLY. Stripping every comma and space
   // before testing accepted "R50,307,00.5" — mis-grouped, and read as
   // R5,030,700.50 rather than refused. This function's whole contract is that a
@@ -254,7 +258,9 @@ const MAX_REVISIONS = 20;
  *
  * @returns {{ok:true, warnings:string[]} | {ok:false, reason:string}}
  */
-function validateExtraction(ex, { summaryOnly = false, source = "photo" } = {}) {
+function validateExtraction(ex, { summaryOnly = false, source = "photo", format = null } = {}) {
+  // The extraction names its own format; the caller may override for a test.
+  const reportFormat = format || ex.format || "printed";
   // THE CONFIDENCE GATE IS ABOUT OCR, AND ONLY OCR. A PDF carries the slip's
   // own text, so there is no reading to be uncertain about: either the parser
   // found a field exactly or it refused by name before reaching here. Handing
@@ -278,14 +284,29 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo" } = {}) 
   for (const f of ["totalCents", "purchasesCents", "refundsCents", "cashCents"]) {
     if (!Number.isInteger(ex[f])) return { ok: false, reason: `The slip's ${describeField(f)} did not read as an amount — retake the totals photo.` };
   }
+  // ── THE RECONCILIATION WINDOW ─────────────────────────────────────────────
+  // The printed slip declares its own Opened→Closed window. The emailed banking
+  // report declares NONE, so its window is derived from the first and last
+  // transaction (see parseEmailedReport) and `windowSource` says which it is.
+  // The bounds are checked identically either way — a derived window is still
+  // capable of being nonsense if a transaction date was misread — but the
+  // refusals must not tell someone to re-photograph a header that does not
+  // exist on their file.
+  const derived = ex.windowSource === "transactions";
   if (!Number.isInteger(ex.openedAt) || !Number.isInteger(ex.closedAt)) {
-    return { ok: false, reason: "The Opened/Closed timestamps did not read cleanly — retake the header photo." };
+    return { ok: false, reason: derived
+      ? "The transaction timestamps did not read cleanly, so no reconciliation window could be worked out. Nothing was recorded — photograph the slip instead."
+      : "The Opened/Closed timestamps did not read cleanly — retake the header photo." };
   }
   if (ex.closedAt <= ex.openedAt) {
-    return { ok: false, reason: "The slip's Closed time is not after its Opened time — check the header photo." };
+    return { ok: false, reason: derived
+      ? "That report's last transaction is not after its first, so no window could be worked out. Nothing was recorded — photograph the slip instead."
+      : "The slip's Closed time is not after its Opened time — check the header photo." };
   }
   if (ex.closedAt - ex.openedAt > MAX_WINDOW_MS) {
-    return { ok: false, reason: "The slip's Opened→Closed window is longer than 7 days — one of the dates was misread. Retake the header photo." };
+    return { ok: false, reason: derived
+      ? "That report's transactions span more than 7 days, which no single batch does — one of the dates was misread. Nothing was recorded — photograph the slip instead."
+      : "The slip's Opened→Closed window is longer than 7 days — one of the dates was misread. Retake the header photo." };
   }
   // Slip arithmetic: purchases + cash − refunds must equal TOTAL. refundsCents
   // is a POSITIVE magnitude by contract (the slip prints it bracketed); both it
@@ -318,12 +339,27 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo" } = {}) 
       reason: `The slip says ${ex.txnCount} transactions but ${lines.length} line${lines.length === 1 ? " was" : "s were"} read. A missing line is exactly what this capture exists to find — reshoot the detail roll so every line is sharp, or submit as summary-only.`,
     };
   }
+  // ── TSN CONTIGUITY, AND WHY ONE FORMAT IS EXEMPT ──────────────────────────
+  // A DUPLICATE TSN is a mis-parse in any format: the same printed line read
+  // twice, or two lines collapsed into one. Always refused.
+  //
+  // A GAP means different things in the two formats, so it cannot be judged the
+  // same way. The terminal's printed roll lists every attempt, so a gap there
+  // is a MISSING LINE — the single thing this feature exists to catch. The
+  // bank's emailed report lists APPROVED transactions only, so declines and
+  // voids leave gaps by design (a real report runs 2,3,4,6,7,8 and skips
+  // 21-24, 30-31, 33-34, 43). Refusing those would reject every emailed report
+  // ever sent, so gaps are expected there and the line count against the
+  // printed Items figure is what guards against a missed row instead.
   const tsn = checkTsnContiguity(lines.map((l) => l.tsn));
+  if (tsn.duplicates.length) {
+    return { ok: false, reason: `The transaction sequence numbers repeat (TSN ${tsn.duplicates.join(", ")} appears twice) — the same line was read twice. Nothing was recorded.` };
+  }
+  if (!tsn.ok && reportFormat !== "emailed") {
+    return { ok: false, reason: `The transaction sequence numbers are not contiguous (TSN ${tsn.gaps.join(", ")} ${tsn.gaps.length === 1 ? "is" : "are"} missing) — reshoot the detail roll, or submit as summary-only.` };
+  }
   if (!tsn.ok) {
-    const what = tsn.duplicates.length
-      ? `TSN ${tsn.duplicates.join(", ")} appears twice`
-      : `TSN ${tsn.gaps.join(", ")} ${tsn.gaps.length === 1 ? "is" : "are"} missing`;
-    return { ok: false, reason: `The transaction sequence numbers are not contiguous (${what}) — reshoot the detail roll, or submit as summary-only.` };
+    warnings.push(`${tsn.gaps.length} sequence number${tsn.gaps.length === 1 ? "" : "s"} between ${tsn.first} and ${tsn.last} are not in this report (${tsn.gaps.slice(0, 8).join(", ")}${tsn.gaps.length > 8 ? "…" : ""}) — expected on a banking report, which lists approved transactions only.`);
   }
   for (const l of lines) {
     if (!Number.isInteger(l.amountCents)) {
@@ -412,6 +448,14 @@ function buildBatchRecord({
       refundsCents: extraction.refundsCents,
       totalCents: extraction.totalCents,
       reconLine: extraction.reconLine ?? null,
+      // WHICH REPORT THIS CAME OFF, and where its window came from. The
+      // terminal's printed slip declares Opened/Closed; the bank's emailed
+      // banking report declares neither, so its window is the span of its own
+      // transactions. Recorded rather than inferred, so nobody reading this
+      // batch later mistakes a derived window for a declared one — or wonders
+      // why its TSNs have gaps.
+      format: extraction.format ?? "printed",
+      windowSource: extraction.windowSource ?? "printed",
     },
     confidence: extraction.confidence ?? null,
     lines,
@@ -425,6 +469,11 @@ function buildBatchRecord({
       byKind: expected.byKind,
       windowStartMs: extraction.openedAt,
       windowEndMs: extraction.closedAt,
+      // Card legs for this till sitting just OUTSIDE the window — only ever
+      // non-zero on a derived window, where there is no printed slack. They are
+      // NOT in cardCents; they are here so a variance can be read honestly.
+      nearEdgeLegs: expected.nearEdgeLegs ?? 0,
+      nearEdgeCents: expected.nearEdgeCents ?? 0,
     },
     varianceCents: extraction.totalCents - expected.cardCents,
     cashiers: cashiers && cashiers.length ? cashiers : null,

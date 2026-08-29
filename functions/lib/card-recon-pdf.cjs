@@ -223,15 +223,16 @@ function splitTxnMiddle(middle) {
 }
 
 /**
- * @param {string[]} lines  the PDF's text, one entry per visual line
+ * THE TERMINAL'S OWN PRINTED BATCH SLIP, as a PDF.
+ *
+ * Labelled rows ("TERMINAL ID", "Batch Report (#494)", "Opened", "Closed",
+ * "Transactions"), rand amounts, and a detail roll whose TSNs run unbroken
+ * because the roll prints every attempt including the declines.
+ *
+ * @param {string[]} rows  tidied text, one entry per visual line
  * @returns {{ok:true, extraction:object} | {ok:false, reason:string}}
  */
-function parseSlipPdf(lines) {
-  const rows = (Array.isArray(lines) ? lines : []).map(tidy).filter(Boolean);
-  if (!rows.length) {
-    return { ok: false, reason: "That PDF has no readable text — it may be a scan rather than the terminal's own file. Photograph the slip instead." };
-  }
-
+function parsePrintedSlip(rows) {
   const need = (value, what) => (value === null || value === undefined
     ? { ok: false, reason: `That PDF does not print ${what} anywhere this could find it. If it is the right file, photograph the slip instead.` }
     : null);
@@ -324,9 +325,378 @@ function parseSlipPdf(lines) {
       // confidence gate for source "pdf" rather than being handed a fabricated
       // 1.0, which would be a lie sitting in the record for ever.
       confidence: null,
+      format: "printed",
+      windowSource: "printed",     // Opened and Closed came off the slip itself
       lines: txns,
     },
   };
 }
 
-module.exports = { parseSlipPdf, moneyField, TXN_RE, splitTxnMiddle, tidy };
+
+// ═══ THE BANK'S EMAILED BANKING REPORT ═══════════════════════════════════════
+//
+// A SECOND FORMAT, not a variant of the first. FNB's emailed report covers the
+// same batch as the terminal's printed slip but states it differently, and two
+// of those differences change what the CHECKS may conclude — which is why this
+// is a separate reader rather than a few extra patterns bolted onto the other.
+//
+//   printed slip                        emailed banking report
+//   ─────────────────────────────────   ──────────────────────────────────────
+//   "TERMINAL ID  0000HP1X"             "Banking Report for Batch 59 of
+//   "Batch Report (#494)"                Terminal 67365901"  ← both, in one line
+//                                       "Merchant:" / "Terminal:" / "Batch:"
+//   "Transactions  2"                   "APPROVED TRANSACTIONS" / "Items: 40"
+//   "R50,355.00"                        "ZAR 900.00"
+//   Opened / Closed printed             NO window printed at all
+//   TSNs run unbroken                   TSNs have GAPS, and that is correct
+//   Payment Type Summary block          TOTALS SUMMARY + CARD TOTALS, no PTS
+//
+// ── THE TWO CHECKS THAT HAD TO CHANGE ────────────────────────────────────────
+//
+// TSN CONTIGUITY IS MEANINGLESS HERE. The printed roll lists every attempt, so
+// a gap in its sequence means a line was missed — the exact thing this feature
+// exists to catch. The emailed report lists APPROVED transactions only, so
+// declines and voids leave gaps by design; the real example runs 2,3,4,6,7,8
+// (no 5) and skips 21-24, 30-31, 33-34 and 43. Applying contiguity here would
+// refuse every emailed report ever sent. It is therefore skipped for this
+// format — but DUPLICATE TSNs are still refused, because a repeat is a
+// mis-parse in either format and means something quite different from a gap.
+//
+// THERE IS NO PRINTED WINDOW. The report carries a print timestamp and the
+// transaction times, and nothing else. The reconciliation window is therefore
+// DERIVED from the transactions themselves — first to last — and the record
+// says so in `windowSource`, so nobody reading it later mistakes a derived
+// window for one the terminal declared. Nothing is invented: with no
+// transactions there is no window and the report is refused.
+//
+// EVERYTHING ELSE HOLDS. TID against the picked till, duplicate batch numbers,
+// the arithmetic, the line count against the printed Items figure, and the
+// lines summing to the printed total are all unchanged.
+
+const EMAILED = {
+  // The title carries BOTH identifiers, which is what makes this format
+  // recognisable at all — and it is checked against the labelled "Terminal:"
+  // and "Batch:" rows below, so a misread title cannot pass quietly.
+  title:    /^\s*banking report for batch\s+([0-9]{1,8})\s+of terminal\s+(?=[A-Za-z0-9]{0,15}[0-9])([A-Za-z0-9]{4,16})\b/i,
+  mid:      /^\s*merchant\b[^0-9A-Za-z]*([0-9]{6,})/i,
+  tid:      /^\s*terminal\b[^0-9A-Za-z]*(?=[A-Za-z0-9]{0,15}[0-9])([A-Za-z0-9]{4,16})/i,
+  batchNo:  /^\s*batch\b[^0-9A-Za-z]*([0-9]{1,8})\b/i,
+  items:    /^\s*items\b[^0-9A-Za-z]*([0-9]{1,5})\b/i,
+  approved: /^\s*approved transactions\b/i,
+  cardTotals: /^\s*card totals\b/i,
+  printed:  /^\s*(?:date|printed)\b[^0-9A-Za-z]*([0-9]{4}[/-][0-9]{2}[/-][0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2})/i,
+  bareStamp: /^\s*([0-9]{4}[/-][0-9]{2}[/-][0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2})\s*$/,
+};
+
+/**
+ * Which report is this? Answered before anything is read out of it, so a file
+ * that is neither is refused by NAME rather than by a pile of missing fields.
+ *
+ * The emailed report is identified by its title line, or failing that by the
+ * "APPROVED TRANSACTIONS" heading together with an "Items:" count — two marks
+ * the printed slip never carries. The printed slip is identified by its own
+ * labelled TERMINAL ID row plus a parenthesised batch number.
+ *
+ * @returns {"emailed"|"printed"|null}
+ */
+function detectReportFormat(rows) {
+  const has = (re) => rows.some((r) => re.test(r));
+  if (has(EMAILED.title)) return "emailed";
+  if (has(EMAILED.approved) && has(EMAILED.items)) return "emailed";
+  if (field(rows, RE.tid) !== null && field(rows, RE.batchNo) !== null) return "printed";
+  return null;
+}
+
+
+// ─── WHERE IS THE MASKED CARD NUMBER? ────────────────────────────────────────
+// It is the fence between the row's identifiers and its amount, so getting its
+// extent wrong moves the fence and the TSN is read out of the wrong column.
+//
+// Most terminals print it as ONE token — "************1111". Some print it in
+// groups — "4111 11** **** 1111" — and then only the middle groups carry mask
+// characters at all: the leading "4111" is bare digits and was being taken as a
+// sequence number. (Raised in review of PR #511; the real file was not
+// available to confirm which style FNB uses, so both are handled.)
+//
+// THE SECOND CLAUSE ONLY FIRES ON A SPLIT PAN. Absorbing a preceding all-digit
+// group is safe when at least two tokens carry mask characters — that is a card
+// number broken across columns. With a single mask-bearing token nothing is
+// absorbed and this behaves exactly as it always did, so a row in the known
+// layout is unaffected.
+const MASKED = /[*x·•#]{2,}/i;
+
+function panSpanOf(parts) {
+  const first = parts.findIndex((t) => MASKED.test(t));
+  if (first < 0) return null;
+  let start = first, end = first;
+  while (end + 1 < parts.length && MASKED.test(parts[end + 1])) end += 1;
+  const split = end > start;
+  // …and the outer groups of a split number, which carry no mask at all.
+  // Forward absorption is bounded by `middle` itself: TXN_RE has already taken
+  // the amount off the end, so there is no figure here to swallow.
+  if (split && start > 0 && /^\d{2,6}$/.test(parts[start - 1])) start -= 1;
+  if (split && end + 1 < parts.length && /^\d{2,6}$/.test(parts[end + 1])) end += 1;
+  return { start, end, pan: parts.slice(start, end + 1).join(" ") };
+}
+
+/**
+ * Pull apart the middle of an emailed report's transaction line.
+ *
+ * Its columns are date, time, UTI, RRN, Auth Code, TSN, **Batch**, masked PAN,
+ * amount, type — and that Batch column is the trap. The printed reader takes
+ * "the last bare integer before the PAN" as the TSN, which here would take the
+ * BATCH NUMBER off every single line: forty identical TSNs, a duplicate
+ * refusal, and a feature that never works.
+ *
+ * The layout is therefore settled ONCE for the whole report, from evidence
+ * rather than from position: a real Batch column carries the report's own batch
+ * number on EVERY line. If every line's last integer matches it, that column is
+ * the batch and the TSN is the one before it. Otherwise there is no batch
+ * column and the last integer is the TSN — which is also the right answer when
+ * one line's TSN merely happens to equal the batch number by coincidence.
+ *
+ * @param {string} middle    the text between the time and the amount
+ * @param {boolean} hasBatchColumn  the layout, decided across all lines
+ */
+function splitEmailedTxnMiddle(middle, hasBatchColumn) {
+  const parts = tidy(middle).split(" ").filter(Boolean);
+  const span = panSpanOf(parts);
+  const pan = span ? span.pan : null;
+  const before = span ? parts.slice(0, span.start) : parts.slice();
+
+  const intAt = (from) => {
+    for (let i = from; i >= 0; i--) if (/^\d{1,8}$/.test(before[i])) return i;
+    return -1;
+  };
+  const lastInt = intAt(before.length - 1);
+  let tsnIdx = lastInt;
+  let batchOnLine = null;
+  if (hasBatchColumn && lastInt >= 0) {
+    batchOnLine = Number(before[lastInt]);
+    tsnIdx = intAt(lastInt - 1);
+  }
+  const tsn = tsnIdx >= 0 ? Number(before[tsnIdx]) : null;
+  // Everything that is not the TSN or the batch column, in print order.
+  const rest = before.filter((_, i) => i !== tsnIdx && !(hasBatchColumn && i === lastInt));
+  const [uti = null, rrn = null, authCode = null] = rest;
+  return { tsn, pan, uti, rrn, authCode, batchOnLine };
+}
+
+/**
+ * Read an emailed banking report.
+ *
+ * @param {string[]} rows  tidied text, one entry per visual line
+ * @returns {{ok:true, extraction:object} | {ok:false, reason:string}}
+ */
+function parseEmailedReport(rows) {
+  const bad = (reason) => ({ ok: false, reason });
+
+  // ── identity: the title, cross-checked against the labelled rows ──
+  let titleBatch = null, titleTid = null;
+  for (const row of rows) {
+    const m = EMAILED.title.exec(row);
+    if (m) { titleBatch = m[1]; titleTid = m[2]; break; }
+  }
+  const labelledTid = field(rows, EMAILED.tid);
+  const labelledBatch = field(rows, EMAILED.batchNo);
+
+  const rawTid = titleTid ?? labelledTid;
+  if (rawTid === null || rawTid === undefined) {
+    return bad("That banking report does not state a terminal number anywhere this could find it. If it is the right file, photograph the slip instead.");
+  }
+  const tid = normaliseTid(rawTid);
+  if (!tid) return bad(`"${rawTid}" does not look like a terminal ID.`);
+
+  // The title and the "Terminal:" row must agree. They are the same fact
+  // printed twice; disagreeing means one was misread, and picking between them
+  // is exactly the guess this path refuses to make.
+  if (titleTid && labelledTid && normaliseTid(labelledTid) !== tid) {
+    return bad(`That report's title says terminal ${tid} but its Terminal line says ${normaliseTid(labelledTid)}. Nothing was recorded — photograph the slip instead.`);
+  }
+
+  const rawBatch = titleBatch ?? labelledBatch;
+  if (rawBatch === null || rawBatch === undefined) {
+    return bad("That banking report does not state a batch number anywhere this could find it. If it is the right file, photograph the slip instead.");
+  }
+  const batchNo = normaliseBatchNo(rawBatch);
+  if (batchNo === null) return bad(`"${rawBatch}" does not look like a batch number.`);
+  if (titleBatch && labelledBatch && normaliseBatchNo(labelledBatch) !== batchNo) {
+    return bad(`That report's title says batch ${batchNo} but its Batch line says ${normaliseBatchNo(labelledBatch)}. Nothing was recorded — photograph the slip instead.`);
+  }
+
+  // ── the count: "Items: 40", not "Transactions 2" ──
+  // EVERY Items row, not the first. A banking report prints one under APPROVED
+  // TRANSACTIONS and another under TOTALS SUMMARY, and they state the same
+  // fact. Taking the first would quietly prefer one of two disagreeing counts —
+  // and this count is what the line-count check measures a missed row against,
+  // so getting it wrong defeats that check rather than tripping it. The money
+  // fields already refuse on disagreement; there is no reason the count should
+  // be treated more loosely than the figures it guards.
+  const itemCounts = [];
+  for (const row of rows) {
+    const m = EMAILED.items.exec(row);
+    if (m) itemCounts.push(Number(m[1]));
+  }
+  if (!itemCounts.length) {
+    return bad("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
+  }
+  const disagreeing = [...new Set(itemCounts)];
+  if (disagreeing.length > 1) {
+    return bad(`That report states its Items count more than once and the counts differ (${disagreeing.join(" and ")}). Nothing was recorded — photograph the slip instead.`);
+  }
+  const txnCount = itemCounts[0];
+
+  // ── the figures: the CARD TOTALS block first ──
+  // A banking report closes with TOTALS SUMMARY and then CARD TOTALS, and it is
+  // the CARD figures this reconciles against the till's card legs. Searching
+  // the card block first keeps a same-named line in the earlier block from
+  // being read instead; if a figure is not in that block the search widens to
+  // the whole report, and moneyField's own ambiguity rule still refuses two
+  // rows that disagree.
+  const cardIdx = rows.findIndex((r) => EMAILED.cardTotals.test(r));
+  const cardRows = cardIdx >= 0 ? rows.slice(cardIdx) : rows;
+  const money = (re, what, { required }) => {
+    let found = moneyField(cardRows, re, what);
+    if (found.missing && cardIdx >= 0) found = moneyField(rows, re, what);
+    if (found.missing) {
+      return required ? { err: `That banking report does not print a ${what}.` } : { cents: 0 };
+    }
+    return found;
+  };
+  const purchases = money(MONEY.purchases, "purchases figure", { required: true });
+  if (purchases.err) return bad(purchases.err);
+  const total = money(MONEY.total, "TOTAL", { required: true });
+  if (total.err) return bad(total.err);
+  const refunds = money(MONEY.refunds, "refunds figure", { required: false });
+  if (refunds.err) return bad(refunds.err);
+  const cash = money(MONEY.cash, "cash figure", { required: false });
+  if (cash.err) return bad(cash.err);
+
+  // ── the transaction rows, and the layout decided across all of them ──
+  const candidates = [];
+  for (const row of rows) {
+    const m = TXN_RE.exec(row);
+    if (!m) continue;
+    const [, date, time, middle, rawAmount, marker] = m;
+    candidates.push({ row, date, time, middle, rawAmount, marker });
+  }
+  if (!candidates.length) {
+    return bad("No transaction rows could be read from that banking report. If it is the right file, photograph the slip instead.");
+  }
+  // See splitEmailedTxnMiddle: a real Batch column carries the batch number on
+  // EVERY row, so that is what decides — never the position of a token.
+  // TWO CONDITIONS, because one is not enough. A batch column must carry the
+  // report's batch number on EVERY row — but on a single-row report that test
+  // is satisfied by pure coincidence the moment the one TSN happens to equal
+  // the batch number, and the reader then hunts for a sequence number that is
+  // not there and refuses a perfectly good report.
+  //
+  // So the count matters too: a batch column ADDS an integer. A row that has
+  // only one usable integer before its PAN has a TSN and nothing else, whatever
+  // that integer's value.
+  const beforePanOf = (middle) => {
+    const parts = tidy(middle).split(" ").filter(Boolean);
+    const span = panSpanOf(parts);
+    return span ? parts.slice(0, span.start) : parts;
+  };
+  const intsBeforePan = (middle) => beforePanOf(middle).filter((t) => /^\d{1,8}$/.test(t)).map(Number);
+
+  // ONE MORE TOKEN, on a report with only one row to learn from.
+  //
+  // Across several rows the batch-number test is decisive: the same value
+  // landing in the same position on every row is a column, and a TSN coinciding
+  // with the batch number cannot repeat. With a SINGLE row there is no such
+  // corroboration, and both readings fit — "TSN then Batch", or "RRN then a TSN
+  // that happens to equal the batch number".
+  //
+  // The token COUNT breaks that tie, because a batch column is an extra column:
+  // the layout is UTI, RRN, auth, TSN — four tokens — and a batch column makes
+  // five. It is only consulted for the one-row case, where the stronger
+  // evidence does not exist; asking it of every report would refuse a terminal
+  // that leaves a field blank.
+  const hasBatchColumn = candidates.every((c) => {
+    const ints = intsBeforePan(c.middle);
+    if (ints.length < 2 || ints[ints.length - 1] !== Number(batchNo)) return false;
+    return candidates.length > 1 || beforePanOf(c.middle).length >= 5;
+  });
+
+  const txns = [];
+  for (const c of candidates) {
+    const at = parseSlipTimestamp(`${c.date} ${c.time.length === 5 ? `${c.time}:00` : c.time}`);
+    if (at === null) return bad(`A transaction row's date and time will not parse: "${c.row}".`);
+    const { tsn, pan, uti, rrn, authCode } = splitEmailedTxnMiddle(c.middle, hasBatchColumn);
+    if (!Number.isInteger(tsn)) {
+      return bad(`A transaction row has no sequence number this could read: "${c.row}".`);
+    }
+    const amountCents = parseRandsToCents(c.rawAmount);
+    if (amountCents === null) {
+      return bad(`A transaction row's amount will not parse: "${c.row}".`);
+    }
+    const isRefund = /^refund$/i.test(c.marker || "") || /\brefund\b/i.test(c.row) || amountCents < 0;
+    txns.push({
+      tsn, at, date: c.date, time: c.time,
+      uti, rrn, authCode, pan,
+      type: isRefund ? "refund" : "purchase",
+      amountCents: isRefund && amountCents > 0 ? -amountCents : amountCents,
+    });
+  }
+
+  // ── the window, DERIVED, and said to be derived ──
+  // First transaction to last. The +1ms is not padding: the reconciliation
+  // window is half-open ([start, end)) so that a batch's closing instant
+  // belongs to the NEXT batch, and without it the last transaction of this
+  // batch would fall outside its own window.
+  const times = txns.map((t) => t.at);
+  const openedAt = Math.min(...times);
+  const closedAt = Math.max(...times) + 1;
+
+  const printedText = field(rows, EMAILED.printed)
+    ?? (rows.slice(0, cardIdx >= 0 ? cardIdx : rows.length).map((r) => EMAILED.bareStamp.exec(r)).find(Boolean) || [])[1]
+    ?? null;
+  const printedAt = printedText ? parseSlipTimestamp(printedText) : null;
+
+  return {
+    ok: true,
+    extraction: {
+      mid: field(rows, EMAILED.mid),
+      tid, batchNo: String(batchNo),
+      openedAt, closedAt, printedAt,
+      openedText: null, closedText: null,   // this format prints neither
+      txnCount,
+      purchasesCents: purchases.cents,
+      cashCents: cash.cents,
+      refundsCents: Math.abs(refunds.cents),
+      totalCents: total.cents,
+      reconLine: field(rows, RE.reconLine),
+      confidence: null,
+      format: "emailed",
+      windowSource: "transactions",
+      lines: txns,
+    },
+  };
+}
+
+/**
+ * Read whichever of the two reports this is.
+ *
+ * @param {string[]} lines  the PDF's text, one entry per visual line
+ * @returns {{ok:true, extraction:object} | {ok:false, reason:string}}
+ */
+function parseSlipPdf(lines) {
+  const rows = (Array.isArray(lines) ? lines : []).map(tidy).filter(Boolean);
+  if (!rows.length) {
+    return { ok: false, reason: "That PDF has no readable text — it may be a scan rather than the terminal's own file. Photograph the slip instead." };
+  }
+  const format = detectReportFormat(rows);
+  if (format === "emailed") return parseEmailedReport(rows);
+  if (format === "printed") return parsePrintedSlip(rows);
+  return {
+    ok: false,
+    reason: "That PDF is neither a terminal batch slip nor an emailed banking report — it carries no TERMINAL ID with a batch number, and no \"Banking Report for Batch … of Terminal …\" title. Check it is the right file, or photograph the slip instead.",
+  };
+}
+
+module.exports = {
+  parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
+  moneyField, TXN_RE, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
+};

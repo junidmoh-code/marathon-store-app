@@ -44,7 +44,7 @@ const {
   parseSlipTimestamp, parseRandsToCents,
   normaliseTid, normaliseBatchNo, resolveBatchWrite, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
-  chooseCaptureSource, readPdfPayload,
+  chooseCaptureSource, readPdfPayload, formatCents,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { pdfToLines } = require("./pdfText.js");
@@ -80,6 +80,19 @@ const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 // limit so an oversized file is refused with a sentence rather than failing as
 // a transport error the manager cannot read.
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
+
+// HOW FAR EITHER SIDE OF A DERIVED WINDOW TO LOOK FOR STRAY LEGS.
+// Only reporting, never reconciliation: the expected figure counts nothing
+// outside the window itself. A banking report's window is the span of its own
+// transactions with no slack at either end, so a till leg written a few seconds
+// off the terminal's clock lands outside a window it plainly belongs to. Two
+// minutes is wide enough to catch that and far too narrow to reach a
+// neighbouring batch (the shortest real gap between batches is a trading day).
+const WINDOW_EDGE_MS = 2 * 60 * 1000;
+
+// The reconciliation window either came off the slip or was worked out from the
+// transactions; only the second kind has an edge worth reporting.
+const edgeMsFor = (extraction) => (extraction.windowSource === "transactions" ? WINDOW_EDGE_MS : 0);
 
 const EXTRACTION_PROMPT = [
   "These photographs show ONE printed card-terminal Batch Report from an FNB",
@@ -373,6 +386,7 @@ async function handleExtract(db, request) {
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
   });
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
@@ -509,7 +523,22 @@ async function handleExtractPdf(db, request, { picked, pdf, source }) {
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
   });
+
+  // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
+  // than letting them show up only as a variance. This is a warning, never a
+  // refusal: the figures are exact, and whether those legs belong to this batch
+  // is a judgement for the person reviewing it.
+  const warnings = verdict.warnings.slice();
+  if (expected.nearEdgeLegs > 0) {
+    warnings.push(
+      `${expected.nearEdgeLegs} card leg${expected.nearEdgeLegs === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(expected.nearEdgeCents)}) sit within two minutes of this window but outside it. ` +
+      "A banking report prints no Opened/Closed times, so the window is the span of its own transactions " +
+      "and has no slack at either end — these are not counted in the expected figure.",
+    );
+  }
 
   const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
   try {
@@ -537,7 +566,7 @@ async function handleExtractPdf(db, request, { picked, pdf, source }) {
     pickedTid: picked,
     summaryOnly: false,
     correction: !!request.data.correction,
-    warnings: verdict.warnings.length ? verdict.warnings : null,
+    warnings: warnings.length ? warnings : null,
     photoPaths: [],
     pdfPath,
     capturedVia: source,   // the routing decision, not a second literal
@@ -596,12 +625,22 @@ async function handleSubmit(db, request) {
   const batchNo = normaliseBatchNo(extraction.batchNo);
 
   // ── RE-VALIDATE THE DRAFT, IN FULL ──────────────────────────────────────
-  // The draft was written by this function — but the live /pos rules carry a
-  // `$other` write grant, so until the owner pastes the explicit deny block
-  // (docs/CARD-RECON.md) a client could write its own "draft" under its uid.
-  // Submit therefore trusts NOTHING it did not just recompute: the same
-  // validation extract ran, the same terminal-registry check, the same
-  // window bound. A draft that fails any of it is refused and removed.
+  // DEFENCE IN DEPTH, not compensation for an open rule. This used to note that
+  // the drafts sat under /pos, whose `$other` write grant would have let a
+  // client author its own "draft" under its uid. They no longer do: PR #502
+  // moved them to a TOP-LEVEL /card_batch_drafts whose live rules are
+  // owner-only for both read and write (verified against the live
+  // .settings/rules.json, 2026-08-29), so a staff client cannot write one at
+  // all. Every field here is therefore server-written — `extraction.format`
+  // included, which is what keeps the banking report's TSN-contiguity
+  // exemption out of reach of a photographed slip.
+  //
+  // The full re-validation stays regardless, because a draft can go stale in
+  // ways nothing about rules would catch: a terminal remapped to another till
+  // between extract and submit, a batch number that has since been used. Submit
+  // trusts NOTHING it did not just recompute — the same validation, the same
+  // terminal-registry check, the same window bound. A draft that fails any of
+  // it is refused and removed.
   const terminalsNow = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
   const mapped = terminalsNow[extraction.tid];
   const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
@@ -620,6 +659,7 @@ async function handleSubmit(db, request) {
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
   });
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
