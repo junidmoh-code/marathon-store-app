@@ -43,9 +43,11 @@ import RowBoundary from "./RowBoundary";
 import StyleLibraryCard from "./StyleLibraryCard";
 import GenerateCard from "./GenerateCard";
 import PolicyCard from "./PolicyCard";
+import AlbumCard from "./AlbumCard";
 
 const TABS = [
   { key: "queue", label: "Queue" },
+  { key: "album", label: "Album" },
   { key: "library", label: "Style library" },
   { key: "generate", label: "Generate" },
   { key: "policy", label: "Policy" },
@@ -495,6 +497,7 @@ export default function SocialView({ products = [], onExit }) {
       </div>
 
       {tab === "queue" && <Queue notice={notice} onNotice={onNotice} />}
+      {tab === "album" && <AlbumCard products={products} onNotice={onNotice} />}
       {tab === "library" && <StyleLibraryCard onNotice={onNotice} notice={notice} />}
       {tab === "generate" && <GenerateCard products={products} onNotice={onNotice} notice={notice} onGenerated={() => setTab("queue")} />}
       {tab === "policy" && <PolicyCard onNotice={onNotice} notice={notice} />}

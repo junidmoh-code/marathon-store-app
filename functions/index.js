@@ -4333,8 +4333,19 @@ async function generateOnePost(db, {
           twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
         })
       : null;
-    // ONE atomic update for both — see twinWriteUpdates for why that matters.
-    await db.ref().update(socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin));
+    // ── THE ALBUM RIDES THE SAME UPDATE ──────────────────────────────────────
+    // Merged into the post's own atomic write rather than written after it. A
+    // second, later write is a second thing that can fail, and the failure
+    // mode is the one that matters: a picture live in the queue with no entry
+    // in the permanent album, which nobody notices until they go looking for
+    // it months later and it is not there. Both land or neither does.
+    //
+    // The TWIN contributes nothing here — it shares this picture, and an album
+    // that lists every story twice is a library someone has to tidy by hand.
+    await db.ref().update({
+      ...socialTwin.twinWriteUpdates(SOCIAL_POSTS_PATH, postId, record, twinId, twin),
+      ...socialLibrary.libraryWriteUpdates(postId, record, { isTwin: false }),
+    });
 
     for (const p of picks) used.add(p.pid);
     return {
@@ -4657,6 +4668,7 @@ function parseHHMM(s) {
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
 const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
 const socialTwin = require("./lib/social-twin.cjs");
+const socialLibrary = require("./lib/social-library.cjs");
 const DAY_MS = 86400000;
 
 /** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */

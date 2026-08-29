@@ -47,6 +47,10 @@ import {
 } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../../firebase";
+// The album path lives with the album reader, which has no firebase import and
+// can therefore be unit-tested on its own. Two copies of an RTDB path is two
+// things to keep in step.
+import { ALBUM_PATH } from "./socialAlbum";
 import { serverNowMs } from "../../utils/serverTime";
 import { asList, storedList } from "../../utils/rtdbList";
 import { STATUSES, CAPTION_MAX, CAPTION_MIN, PLATFORM_KEYS, MAX_MEDIA } from "./socialCore";
@@ -672,5 +676,23 @@ export async function uploadPostMedia(file) {
     return { ok: true, media: { url: await getDownloadURL(r), path, type: isVideo ? "video" : "image" } };
   } catch (err) {
     return writeError(err);
+  }
+}
+
+
+// ── READING THE PERMANENT ALBUM ──────────────────────────────────────────────
+// /social_library is append-only: the generator writes an entry as it writes
+// the post, and nothing in this app ever deletes one. So this is a plain read
+// with no subscription — the album does not change while you are looking at
+// it, and a live listener on a node that only ever grows is a bill, not a
+// feature.
+export { ALBUM_PATH };
+
+export async function loadAlbum() {
+  try {
+    const snap = await get(ref(database, ALBUM_PATH));
+    return { ok: true, raw: snap.val() || {} };
+  } catch (err) {
+    return { ...writeError(err), raw: {} };
   }
 }
