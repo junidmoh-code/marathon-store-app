@@ -89,87 +89,70 @@ The old `/pos/card_batches` and `/pos/card_batch_drafts` rules were deliberately
 Anything still running an old bundle is refused rather than quietly creating a
 shadow record under the abandoned path.
 
-#### Their read cannot be closed from there, and `".read": "false"` is a placebo
+#### CLOSED 2026-08-29 — /pos's blanket read was pushed down to its children
 
-Those two entries still inherit `/pos`'s `.read` — *any signed-in,
-non-anonymous staff member*. Adding `".read": "false"` beside the existing
-`".write": "false"` is the obvious way to finish the job and **it does nothing
-whatsoever**.
+Those two entries used to inherit `/pos`'s `.read` — *any signed-in,
+non-anonymous staff member* — and no rule under `/pos` could stop it. **RTDB read
+and write grants cascade downward and cannot be revoked by a deeper rule**, so
+adding `".read": "false"` beside the `".write": "false"` did nothing at all
+(verified against the real engine before it was ever applied; the `.write`
+denial works only because `/pos` has no `.write` of its own to override).
 
-**RTDB read and write grants cascade downward and cannot be revoked by a deeper
-rule.** `/pos` grants `.read`, so no child of `/pos` can take it away. The
-`.write` denial works only because `/pos` has no `.write` of its own for it to
-override. This was verified against the real rules engine with the candidate
-rule applied, before anything was written to production — staff read straight
-through it, node and leaves alike. `scripts/verify-card-recon-node-isolation.mjs`
-splices that rule in itself and asserts both halves — 22/22:
+The fix was to remove the grant rather than try to revoke it: **each child that
+needs it now carries the predicate verbatim, `$other` included, and `/pos`'s own
+`.read` is gone.** `$other` is what made it safe — one entry covers every
+present and future *unnamed* child, so nothing depended on remembering a reader.
+The card nodes are explicitly named, so `$other` does not reach them, and they
+are dark.
 
-```
-staff read /pos/sales         -> ALLOWED   (control: a real staff token)
-staff read /pos/card_batches  -> ALLOWED   <-- the ".read":"false" did not deny it
-staff read a leaf inside it   -> ALLOWED
-staff WRITE /pos/card_batches -> denied    (the existing ".write":"false")
-```
+Applied in three stages by `scripts/narrow-pos-read.mjs`, each with the same
+fetch → backup → merge → diff → write → re-fetch → verify → restore-on-surprise
+method, and each verified before the next:
 
-So the rule was **not** applied: a line in the live rules that reads as a
-control and is not one is worse than the gap it pretends to close, because the
-next person will trust it.
-
-**What actually keeps those paths harmless is that they are dead**, and that
-rests on three things, each of which is checked rather than remembered:
-
-Two of these run by themselves. The third does not, and is written down as a
-manual check rather than dressed up as a standing one.
-
-| | holds by itself? | |
+| stage | what | effect at the time |
 |---|---|---|
-| no client can write them | **yes** — a live rule | `".write": "false"`, asserted in `scripts/verify-card-recon-node-isolation.mjs` |
-| no server code names them | **yes** — a test in CI | `functions/test/card-recon-paths.test.cjs`. The Admin SDK ignores rules, so a path constant pointed back under `/pos` is all it would take. It catches string literals and the `.child("card_batch…")` form; it cannot catch a path assembled at runtime, and says so rather than implying otherwise. |
-| nothing is there today | **no — run it by hand** | `scripts/check-abandoned-card-paths.mjs`, shallow reads only, exits non-zero if anything appears. Worth running if a capture ever behaves oddly; not wired to a schedule, because a scheduled function for an empty, write-denied node nothing addresses would cost more than it protects. (A shallow read returns a PRIMITIVE unchanged for a leaf, so it counts a bare value as occupied — `Object.keys(true)` is `[]` and would otherwise report "empty".) |
+| 1 | add the six child `.read` grants | **none** — `/pos` still granted; provably inert |
+| 2 | delete `/pos`'s `.read` | the behaviour change, one line, revertible |
+| 3 | drop the `card_batch_overrides` deep write grant | staff can no longer create an override |
 
-#### A third abandoned path that is NOT write-denied
+Stage 2 **refuses to run** unless every child that needs a grant already has
+one, `$other` included.
 
-`/pos/card_batch_overrides` is the exception, and the doc used to imply
-otherwise. It has no `.write` of its own; its `$storeId/$dayYmd/$tillId` rule
-grants create to any signed-in staff member, gated by a `.validate` requiring
-the named authoriser to be an **active manager**. Measured rather than assumed
-(`verify-card-recon-node-isolation.mjs`, 24/24):
+#### The third path, also closed
 
-- a cashier **cannot** self-authorise an override — refused
-- a cashier **can** create one naming any real active manager, **with no
-  approval from that manager** — accepted
+`/pos/card_batch_overrides` had no `.write` of its own; its
+`$storeId/$dayYmd/$tillId` rule granted create to any signed-in staff member,
+gated only by naming an **active manager** as authoriser. Measured before the
+change: a cashier could not self-authorise, but **could** create one naming any
+real active manager, **with no approval from that manager**. The gate that
+consumed these was deleted in marathon-pos-app #269, so nothing acted on them —
+but the path took data.
 
-The trading-session gate that consumed these was deleted in marathon-pos-app
-#269, so nothing reads or acts on them and the path is inert. But it takes data,
-and a cashier can attribute an authorisation to a manager who never gave one.
+The deep rule is now removed and the node left named with `".write": "false"`.
+Named matters: deleting it outright would drop it back under `/pos/$other`,
+which grants write. And the fix could not have been a `".write": "false"`
+layered *above* the deep rule — write grants cascade downward too, so a
+shallower `false` cannot revoke a deeper grant.
 
-Closing it is **not** a `".write": "false"` on the parent: write grants cascade
-downward exactly like read grants, so a shallower `false` cannot revoke the deep
-grant — the same trap as this whole section. The deep rule has to be **removed**
-and the node left named with `".write": "false"` so `/pos/$other` does not pick
-it up. Not applied: this task's brief was that nothing else under `/pos`
-changes.
+#### And a rule that had never worked now does
 
-The verifier proves this properly rather than accidentally. Behaviourally,
-"`.read: false` is inert" and "there is no `.read` here" look identical — both
-read ALLOWED — so it first asserts, against the rules document the emulator
-actually loaded, that the `.read: false` really is present. Without that
-positive control the check passes whether or not the rule is there, which is how
-a suite proves nothing while looking green. (Found by removing the splice and
-watching it stay green.)
+`/pos/noReceiptReturns` carried a manager-or-owner `.read` that had never once
+applied, masked by the same blanket grant. It applies now. **Nothing broke**,
+and that is checked rather than asserted
+(`scripts/verify-no-receipt-return-access.mjs`, 6/6 against the live rules):
 
-It also asserts, deliberately, that staff **can** still read those two paths. If that assertion ever fails it means somebody narrowed `/pos`'s
-own `.read` and the residual is genuinely closed — at which point flip it. A
-failing test is the right way to learn that; a rule that silently does nothing
-is not.
+- the **write** was always manager-or-owner only — a cashier never could, and
+  still cannot. Who can *make* a no-receipt return did not move.
+- the **read** now matches the write, which is what its author intended.
+- the marker still commits inside the multi-path update it rides in.
+- and nothing anywhere in either app *reads* that node — it is a write-only
+  marker (grepped both repos, including the Cloud Functions).
 
-#### The real closure, measured rather than estimated
+### How it was measured before it was done
 
-The only way to close it is to remove `/pos`'s own `.read` and push it down. That
-was rejected as "re-granting child by child across a block three shops trade
-through" — so `scripts/probe-pos-read-narrowing.mjs` measures the risk instead
-of estimating it. **It applies nothing**: it reads the live rules, builds the
-candidate in memory, and runs it through the real rules engine.
+`scripts/probe-pos-read-narrowing.mjs` measured the risk instead of estimating
+it, and still runs — now against the live state rather than a candidate. **It
+applies nothing.**
 
 It is smaller than it sounds. `/pos` has 12 children; three already carry their
 own `.read`. Six need one added — `sales`, `paymentEvents`, `storeCredits`,
