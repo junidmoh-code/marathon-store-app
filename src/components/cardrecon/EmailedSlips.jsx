@@ -36,12 +36,30 @@ export default function EmailedSlips() {
   // the poller every tick including the ones that find nothing. Without it, a
   // quiet mailbox and a dead poller are the same empty feed.
   const [status, setStatus] = useState(null);
+  // A HEARTBEAT THAT CANNOT BE READ IS NOT A HEARTBEAT THAT IS MISSING. Both
+  // used to land as `null`, and null falls back to judging the feed's own age —
+  // so a heartbeat node that is merely unreadable (its rule not pasted, a
+  // dropped connection) would have produced "the poller has not reported in at
+  // all" about a poller that is reporting in perfectly well. Kept apart.
+  const [statusUnreadable, setStatusUnreadable] = useState(false);
 
   useEffect(() => {
     const off = onValue(dbRef(database, "card_batch_poll_status"),
-      (snap) => setStatus(snap.val() || null),
-      () => setStatus(null));   // denied/unavailable is handled by the feed below
+      (snap) => { setStatus(snap.val() || null); setStatusUnreadable(false); },
+      (err) => { setStatus(null); setStatusUnreadable(true); console.warn("poller heartbeat: read failed", err?.code || err); });
     return () => off();
+  }, []);
+
+  // ── TIME HAS TO MOVE ON ITS OWN HERE ────────────────────────────────────────
+  // The silence notice is the whole point of the heartbeat, and it is a function
+  // of NOW — but nothing about a dead poller changes, so nothing re-renders, so
+  // a clock read once at mount would sit at the moment the tab was opened and
+  // the notice would never appear. This screen is one a manager leaves open on a
+  // counter. One minute, bounded, cleared on unmount.
+  const [nowMs, setNowMs] = useState(() => serverNowMs());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(serverNowMs()), 60000);
+    return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
@@ -70,9 +88,14 @@ export default function EmailedSlips() {
   }, []);
 
   const { rows, refusedCount, recordedCount, lastAt } = useMemo(() => summariseIntake(node), [node]);
-  // The SERVER's clock. A handset with a wrong date must not raise or silence
-  // an alarm on its own.
-  const silence = silenceNotice(lastAt, serverNowMs(), status);
+  // The SERVER's clock, ticking. A handset with a wrong date must not raise or
+  // silence an alarm on its own — and neither must a clock read once at mount.
+  //
+  // An UNREADABLE heartbeat suppresses the notice rather than firing it: the
+  // silence sentence accuses the Mac mini of having stopped, and saying that
+  // because a rule is missing or a connection dropped is the kind of false
+  // alarm that gets a real one ignored. It is said plainly instead, below.
+  const silence = statusUnreadable ? null : silenceNotice(lastAt, nowMs, status);
 
   if (denied) {
     return (
@@ -111,6 +134,13 @@ export default function EmailedSlips() {
         What the terminals emailed, captured automatically. Nothing here needs doing unless a line is red.
       </div>
       {silence && <div style={S.warn}>{silence}</div>}
+      {statusUnreadable && (
+        <div style={S.warn}>
+          Whether the mailbox is still being checked could not be read — the rule for
+          /card_batch_poll_status may not be published yet. The slips below are real; what is
+          missing is the proof that nothing NEW is being missed.
+        </div>
+      )}
       {rows.length === 0 && !silence && (
         <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>Nothing has come in by email yet.</div>
       )}

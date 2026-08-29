@@ -51,7 +51,15 @@ say "node: $NODE ($("$NODE" --version))"
 # failure only appears in a log five minutes later. (CodeRabbit, PR #510.)
 for key in CARD_RECON_IMAP_USER CARD_RECON_IMAP_PASSWORD; do
   raw="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$REPO/.env" | tail -1)"
-  raw="${raw%\"}"; raw="${raw#\"}"; raw="${raw%\'}"; raw="${raw#\'}"
+  # TRIM FIRST, THEN ONE MATCHED PAIR — the same order loadEnv() uses, and the
+  # order matters: stripping quotes off an untrimmed value leaves the closing
+  # quote in place on a trailing space or a CRLF-saved file, so `KEY=""  ` read
+  # as present and the schedule was armed on an empty credential.
+  raw="$(printf %s "$raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$raw" in
+    \"*\") raw="${raw#\"}"; raw="${raw%\"}" ;;
+    \'*\') raw="${raw#\'}"; raw="${raw%\'}" ;;
+  esac
   [ -n "${raw//[[:space:]]/}" ] || { echo "✗ $key is missing or empty in $REPO/.env"; exit 1; }
   say "$key: present"
 done

@@ -189,6 +189,19 @@ describe("the store app is capture-only", () => {
     expect(screen, "the review section still renders the slip's own figures — if this fails the scan above proves nothing").toMatch(/\btotalCents\b/);
   });
 
+  it("the silence notice is recomputed while the screen sits open", () => {
+    // THE ONE THING THIS PANEL EXISTS TO SAY is that the mailbox has stopped
+    // being checked — and nothing about a dead poller changes, so nothing
+    // re-renders. A clock read once at mount sits at the moment the tab was
+    // opened and the notice never appears, on a screen a manager leaves open on
+    // a counter. (CodeRabbit, PR #510.)
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
+    expect(code, "the clock must be state, not a render-time read").toMatch(/setNowMs\(serverNowMs\(\)\)/);
+    expect(code, "…on a bounded timer").toMatch(/setInterval/);
+    expect(code, "…cleared on unmount").toMatch(/clearInterval/);
+    expect(code, "…and the notice must use it").toMatch(/silenceNotice\(lastAt, nowMs/);
+  });
+
   it("shows no variance, expected figure or cashier list on the handset", () => {
     // #499 removed these from the callable's response. If a screen starts
     // rendering one again it means the response shape grew back.
