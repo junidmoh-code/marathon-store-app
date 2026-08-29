@@ -53,26 +53,42 @@ const MATCH_BEHIND_MS = 15 * 60 * 1000;      // …and comfortably past the nine
  *            offTill}}
  */
 function matchLegs(txns, legs, terminal) {
-  const transactions = (txns || []).filter((t) => t && Number.isInteger(t.amountCents) && Number.isFinite(t.at));
-  const candidates = (legs || []).filter((l) => l && Number.isInteger(l.amount) && Number.isFinite(l.at));
+  // Both sides in time order — the assignment below depends on it.
+  const transactions = (txns || [])
+    .filter((t) => t && Number.isInteger(t.amountCents) && Number.isFinite(t.at))
+    .sort((a, b) => a.at - b.at);
+  const candidates = (legs || [])
+    .filter((l) => l && Number.isInteger(l.amount) && Number.isFinite(l.at))
+    .sort((a, b) => a.at - b.at);
   const taken = new Set();
   const matches = [];
 
   const onMappedTill = (l) => l.storeId === terminal.storeId && l.tillId === terminal.tillId;
 
+  // ── EARLIEST ELIGIBLE, NOT NEAREST ────────────────────────────────────────
+  // "Nearest in time" looks obviously right and quietly strands transactions.
+  // Two sales of the same amount at 0 and +3 minutes, with legs at −1.5 and +1:
+  // the first transaction takes the +1 leg because it is nearer, the second
+  // then finds nothing in tolerance, and R500 is reported as missing money
+  // although both could have been paired. (CodeRabbit, PR #516.)
+  //
+  // Taking the EARLIEST eligible leg instead, with the transactions walked in
+  // time order, is not a heuristic improvement — it is optimal. Amounts must be
+  // equal, so the problem decomposes into one group per amount; within a group
+  // both sides are sorted and eligibility is an interval, which makes the graph
+  // convex, and for convex bipartite graphs this greedy is known to produce a
+  // MAXIMUM matching. No transaction is left unpaired that could have been.
   const findFor = (txn, pool) => {
-    let best = null;
-    for (let i = 0; i < candidates.length; i++) {
+    for (let i = 0; i < candidates.length; i++) {     // candidates are time-sorted
       if (taken.has(i)) continue;
       const leg = candidates[i];
       if (!pool(leg)) continue;
       if (leg.amount !== txn.amountCents) continue;
       const lag = leg.at - txn.at;
       if (lag < -MATCH_AHEAD_MS || lag > MATCH_BEHIND_MS) continue;
-      // Nearest in time. Ties go to the earlier leg, which is deterministic.
-      if (best === null || Math.abs(lag) < Math.abs(best.lag)) best = { i, lag, leg };
+      return { i, lag, leg };
     }
-    return best;
+    return null;
   };
 
   // `offTill` is a fact about the LEG, not about which pass found it. Deriving

@@ -124,10 +124,66 @@ test("a leg well BEFORE the transaction is not its counterpart either", () => {
   assert.equal(drift.matches.length, 1, "…but a little drift still matches");
 });
 
-test("the nearest leg in time wins", () => {
+test("the earliest eligible leg wins", () => {
   const r = matchLegs([txn(1, 0, 90000)], [leg(9, 90000), leg(2.25, 90000)], TERMINAL);
   assert.equal(r.matches[0].leg.at, T0 + 2.25 * 60000);
   assert.equal(Math.round(r.matches[0].lagMs / 1000), 135);
+});
+
+test("taking the NEAREST leg would strand a transaction that could be paired", () => {
+  // Two sales of the same amount at 0 and +3 minutes; legs at −1.5 and +1.
+  // "Nearest" gives the first transaction the +1 leg, and the second then finds
+  // nothing in tolerance — R500 reported as missing money although both could
+  // have been paired. Earliest-eligible pairs them both.
+  //
+  // This is not a lucky heuristic. Amounts must be equal, so the problem splits
+  // into one group per amount; within a group both sides are time-sorted and
+  // eligibility is an interval, which makes the graph convex — and for convex
+  // bipartite graphs this greedy yields a MAXIMUM matching.
+  const r = matchLegs(
+    [txn(1, 0, 50000), txn(2, 3, 50000)],
+    [leg(-1.5, 50000), leg(1, 50000)],
+    TERMINAL,
+  );
+  assert.equal(r.matches.length, 2, "both transactions must be paired");
+  assert.equal(r.unmatchedTxnCents, 0, "…so nothing is reported as missing");
+  assert.deepEqual(r.matches.map((m) => m.txn.tsn).sort(), [1, 2]);
+});
+
+test("transactions are walked in time order however they arrive", () => {
+  // The optimality of earliest-eligible depends on walking the transactions in
+  // time order, and a report is not guaranteed to list them that way.
+  //
+  // Two sales a minute apart, with legs at +0.5 and +16 minutes. Taken in
+  // order, the first sale gets the near leg and the second still reaches the
+  // far one inside the fifteen-minute tolerance. Taken BACKWARDS, the later
+  // sale grabs the near leg and the earlier one is left with a leg sixteen
+  // minutes away — out of tolerance, and R500 falsely missing.
+  const inOrder = matchLegs(
+    [txn(1, 0, 50000), txn(2, 1, 50000)],
+    [leg(0.5, 50000), leg(16, 50000)],
+    TERMINAL,
+  );
+  assert.equal(inOrder.matches.length, 2);
+  assert.equal(inOrder.unmatchedTxnCents, 0);
+
+  // The same report, listed newest first, must reach the same answer.
+  const reversed = matchLegs(
+    [txn(2, 1, 50000), txn(1, 0, 50000)],
+    [leg(16, 50000), leg(0.5, 50000)],
+    TERMINAL,
+  );
+  assert.equal(reversed.matches.length, 2, "the input order must not change the outcome");
+  assert.equal(reversed.unmatchedTxnCents, 0);
+});
+
+test("a longer chain of same-amount sales pairs completely", () => {
+  const txns = [txn(1, 0, 20000), txn(2, 2, 20000), txn(3, 4, 20000), txn(4, 6, 20000)];
+  const legs = [leg(2.2, 20000), leg(4.2, 20000), leg(6.2, 20000), leg(8.2, 20000)];
+  const r = matchLegs(txns, legs, TERMINAL);
+  assert.equal(r.matches.length, 4, "every one of them");
+  assert.equal(r.unmatchedTxnCents, 0);
+  assert.equal(r.unmatchedLegCents, 0);
 });
 
 test("one leg answers one transaction, never two", () => {
