@@ -134,10 +134,36 @@ describe("the store app is capture-only", () => {
     // The panel is new surface on a capture-only screen, so it gets the same
     // treatment as the review: if a figure appears here, it came from somewhere
     // it should not have.
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/intakeFeed.js"), "utf8"));
-    for (const forbidden of ["totalCents", "purchasesCents", "varianceCents", "amountCents", "pan", "cashiers"]) {
-      expect(code, `the emailed-slip feed must not handle ${forbidden}`).not.toMatch(new RegExp(forbidden));
+    //
+    // BOTH HALVES, because the helper alone proves almost nothing — it sorts
+    // and counts and never names a record field, so it cannot contain these
+    // tokens by construction. The surface that could is the panel that RENDERS
+    // the records. Its function body is extracted rather than the whole file:
+    // the manual review section further down legitimately shows totalCents and
+    // purchasesCents, which is the slip in the manager's own hand.
+    // (CodeRabbit, PR #510.)
+    // WORD BOUNDARIES, because `pan` is a substring of `<span>` and of
+    // `aria-expanded` — an unbounded match makes this test fail on markup and
+    // teaches the next person to weaken it. The token being forbidden is the
+    // record FIELD, so that is what is matched.
+    const forbidden = [/\btotalCents\b/, /\bpurchasesCents\b/, /\bvarianceCents\b/, /\bamountCents\b/, /\bpan\b/, /\bcashiers\b/];
+    const helper = stripComments(readFileSync(resolve(root, "src/components/cardrecon/intakeFeed.js"), "utf8"));
+    for (const token of forbidden) {
+      expect(helper, `the emailed-slip helper must not handle ${token}`).not.toMatch(token);
     }
+
+    const screen = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
+    const start = screen.indexOf("function EmailedSlips(");
+    expect(start, "EmailedSlips has been renamed — this scan must follow it").toBeGreaterThan(-1);
+    const end = screen.indexOf("export default function CardReconScreen", start);
+    expect(end, "EmailedSlips must still sit above the screen it is part of").toBeGreaterThan(start);
+    const panel = screen.slice(start, end);
+    for (const token of forbidden) {
+      expect(panel, `the emailed-slip panel must not render ${token}`).not.toMatch(token);
+    }
+    // The scan is only worth anything if it can FAIL: the manual review section
+    // below does render the slip's own figures, and it must be outside `panel`.
+    expect(screen.slice(end)).toMatch(/\btotalCents\b/);
   });
 
   it("shows no variance, expected figure or cashier list on the handset", () => {

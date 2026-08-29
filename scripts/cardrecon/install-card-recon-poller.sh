@@ -111,7 +111,7 @@ sed -e "s|/opt/homebrew/bin/node|$NODE|g" \
 launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$UID_NUM" "$PLIST_DST"
 launchctl enable "gui/$UID_NUM/$LABEL"
-say "agent: loaded (every 5 minutes, and at login/boot)"
+say "agent: loaded (every 5 minutes, and whenever this user logs in — the mini auto-logs-in, so that includes a restart)"
 
 echo
 echo "Installed. It is running now (RunAtLoad). To watch it:"

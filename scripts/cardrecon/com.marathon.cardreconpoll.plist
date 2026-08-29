@@ -14,9 +14,24 @@
       after a reboot, or while installing it — must not fire a post to a live
       Instagram account. Nothing this job does is irreversible: it reads a
       mailbox and submits what it finds to a capture path that refuses
-      duplicates. Firing on load is what makes "it restarts with the machine"
-      mean the mailbox is checked as soon as the mini is back, rather than up
-      to five minutes later.
+      duplicates. Firing on load means the mailbox is checked the moment the
+      agent loads rather than up to five minutes later.
+
+      BE PRECISE ABOUT WHAT "RESTARTS WITH THE MACHINE" MEANS HERE. This is a
+      user LaunchAgent, and a user LaunchAgent loads when that user's GUI
+      session begins — at LOGIN, not at boot. It survives a restart of this
+      machine because the machine logs itself in: `autoLoginUser =
+      marathonclub` (verified 2026-08-29), which is also the only reason the
+      other two com.marathon agents work the way everyone assumes they do.
+      Turn auto-login off, or leave the mini sitting at a login window after a
+      power cut, and NONE of the three run — the mailbox simply stops being
+      checked, and the Card recon tab's heartbeat is what says so.
+
+      A LaunchDaemon would not have that dependency, and is deliberately not
+      used: a daemon runs as root outside any user session, which is a
+      different security posture, a different credential story (the
+      service-account key and the .env both live in this user's home) and a
+      second scheduling pattern on a machine that has one. (CodeRabbit, PR #510.)
 
     · StartInterval 300, not 120. A batch report is emailed once a day per
       terminal at settlement. Five minutes is already far faster than anyone

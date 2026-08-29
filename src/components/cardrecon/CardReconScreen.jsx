@@ -189,9 +189,13 @@ function EmailedSlips() {
       // a rule that is already live is its own kind of lie.
       (err) => {
         const code = err?.code || "";
+        // ONE test, not the same three-way comparison twice: the two would
+        // drift the moment the accepted codes changed, and they decide which of
+        // two very different things a person is told.
+        const isDenied = /^permission[-_]denied$/i.test(code);
         setNode(null);
-        setDenied(code === "PERMISSION_DENIED" || code === "permission-denied" || code === "permission_denied");
-        setBroken(code === "PERMISSION_DENIED" || code === "permission-denied" || code === "permission_denied" ? null : (code || "the feed could not be read"));
+        setDenied(isDenied);
+        setBroken(isDenied ? null : (code || "the feed could not be read"));
         console.warn("emailed slips: read failed", code || err);
       },
     );

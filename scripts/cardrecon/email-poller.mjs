@@ -151,6 +151,21 @@ function config() {
     }
     return v;
   };
+  // A NUMBER FROM A TEXT FILE IS NOT A NUMBER UNTIL IT IS CHECKED. Number("993 ")
+  // is fine, Number("nine ninety three") is NaN — and NaN travels: a NaN port
+  // fails inside the TLS socket with a message about the network, and a NaN
+  // lookback makes an Invalid Date that IMAP rejects as a malformed SEARCH.
+  // Both read as "the mailbox is broken" when the truth is a typo in .env.
+  // (CodeRabbit, PR #510.)
+  const number = (key, fallback, { min, max, what }) => {
+    const raw = String(env[key] ?? "").trim();
+    if (!raw) return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
+      fail(`${key} in ${join(REPO, ".env")} reads "${raw}", which is not ${what}. Remove the line to use the default (${fallback}).`);
+    }
+    return value;
+  };
   return {
     user: need("CARD_RECON_IMAP_USER", "the mailbox the terminals email (marathon6631@gmail.com)"),
     // GOOGLE SHOWS AN APP PASSWORD AS FOUR GROUPS OF FOUR ("abcd efgh ijkl
@@ -162,13 +177,13 @@ function config() {
     // else, so there is no legitimate value this can damage.
     password: need("CARD_RECON_IMAP_PASSWORD", "a Gmail APP PASSWORD, not the account password — myaccount.google.com → Security → App passwords").replace(/\s+/g, ""),
     host: String(env.CARD_RECON_IMAP_HOST || "imap.gmail.com").trim(),
-    port: Number(env.CARD_RECON_IMAP_PORT || 993),
+    port: number("CARD_RECON_IMAP_PORT", 993, { min: 1, max: 65535, what: "a port number" }),
     mailbox: String(env.CARD_RECON_IMAP_MAILBOX || "INBOX").trim(),
     // The identity the callable sees. It holds `card_recon` and
     // `card_recon_intake` in permFlags and nothing else — granted once by
     // scripts/cardrecon/grant-poller-identity.mjs.
     uid: String(env.CARD_RECON_POLLER_UID || "card-recon-email-poller").trim(),
-    lookbackDays: Number(env.CARD_RECON_LOOKBACK_DAYS || DEFAULT_LOOKBACK_DAYS),
+    lookbackDays: number("CARD_RECON_LOOKBACK_DAYS", DEFAULT_LOOKBACK_DAYS, { min: 1, max: 365, what: "a number of days between 1 and 365" }),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
