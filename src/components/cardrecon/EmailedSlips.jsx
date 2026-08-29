@@ -4,9 +4,10 @@
 // captured by hand, so "it must never show a figure" needs to be checkable
 // without a range: captureOnly.test.js scans this whole file and
 // intakeFeed.js, rather than slicing a function out of the screen by string
-// index. A helper extracted from the panel lands here or beside it and is
-// scanned too, where the same helper inside CardReconScreen.jsx could have
-// slipped out of the slice unnoticed. (Independent review, PR #510.)
+// index: it scans every file in this directory except CardReconScreen.jsx, so
+// a helper extracted from this panel is covered the moment it exists, where the
+// same helper inside CardReconScreen.jsx could have slipped out of the slice
+// unnoticed. (Independent review, PR #510.)
 //
 // READ-ONLY, and outcomes only: a file name, whether it was recorded, and why
 // not. No total, no expected figure, no variance — the evidence itself stays in

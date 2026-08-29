@@ -47,14 +47,13 @@
 // capture UX only.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
+import { ref as dbRef, onValue } from "firebase/database";
 import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
 import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
 import EmailedSlips from "./EmailedSlips";
 import { S, fmtTime } from "./cardReconStyles";
-import { serverNowMs } from "../../utils/serverTime";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
 

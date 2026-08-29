@@ -165,12 +165,24 @@ describe("the store app is capture-only", () => {
     // teaches the next person to weaken it. The token being forbidden is the
     // record FIELD, so that is what is matched.
     const forbidden = [/\btotalCents\b/, /\bpurchasesCents\b/, /\bvarianceCents\b/, /\bamountCents\b/, /\bpan\b/, /\bcashiers\b/];
-    for (const file of ["intakeFeed.js", "EmailedSlips.jsx"]) {
+    // THE DIRECTORY, MINUS THE ONE FILE THAT IS ALLOWED. A hand-list is the
+    // same disease as the string slice it replaced: extract a row renderer into
+    // a new sibling and it renders whatever it likes while the scan passes.
+    // Scanning everything except CardReconScreen.jsx — the manual review, which
+    // legitimately shows the slip in the manager's own hand — means a new file
+    // is covered the moment it exists, without anyone remembering to add it.
+    // (Independent review, PR #510: the first attempt at this fix hand-listed
+    // two files 45 lines after criticising single-file naming for going stale.)
+    let scanned = 0;
+    for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file) || file === "CardReconScreen.jsx") continue;
+      scanned++;
       const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const token of forbidden) {
         expect(code, `${file} must not handle ${token}`).not.toMatch(token);
       }
     }
+    expect(scanned, "the scan found no files — it is passing on nothing").toBeGreaterThan(1);
     // The scan is only worth anything if it CAN fail, so prove the tokens are
     // findable: the capture screen's own review section renders them.
     const screen = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
