@@ -91,11 +91,13 @@ export default function EmailedSlips() {
   // The SERVER's clock, ticking. A handset with a wrong date must not raise or
   // silence an alarm on its own — and neither must a clock read once at mount.
   //
-  // An UNREADABLE heartbeat suppresses the notice rather than firing it: the
-  // silence sentence accuses the Mac mini of having stopped, and saying that
-  // because a rule is missing or a connection dropped is the kind of false
-  // alarm that gets a real one ignored. It is said plainly instead, below.
-  const silence = statusUnreadable ? null : silenceNotice(lastAt, nowMs, status);
+  // An UNREADABLE heartbeat does not silence the notice — it changes what the
+  // notice can honestly claim. RTDB cancels a listener on permission-denied and
+  // never retries, so this state persists for the life of the tab; suppressing
+  // the alarm outright would have meant a screen opened before the rule was
+  // pasted could never raise one again, on exactly the counter-top screen this
+  // feature is for.
+  const silence = silenceNotice(lastAt, nowMs, status, { statusUnreadable });
 
   if (denied) {
     return (

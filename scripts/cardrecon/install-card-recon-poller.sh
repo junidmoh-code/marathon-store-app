@@ -24,6 +24,35 @@ UID_NUM="$(id -u)"
 
 say() { printf '  %s\n' "$*"; }
 
+# ── ONE NORMALISATION, MIRRORING email-poller.mjs's loadEnv() ────────────────
+# Trim, then strip ONE MATCHED PAIR of quotes — the same order, and the same
+# matched-pair rule, because this script's only job here is to judge the value
+# the POLLER will see. Two near-copies drifted twice already: stripping before
+# trimming left the closing quote on a trailing space (so an empty credential
+# read as present), and treating each quote character independently stripped
+# `"'x'"` twice (so a different uid was validated than the one that runs).
+#
+# A LONE QUOTE IS AN EMPTY VALUE, not a value of `"`. loadEnv's startsWith and
+# endsWith are BOTH true on a single character, so it slices to empty and the
+# poller refuses; the glob below cannot match one character, so it is handled
+# explicitly rather than passing as a present credential.
+strip_env_value() {
+  local v
+  v="$(printf %s "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$v" in
+    '"'|"'") v="" ;;
+    \"*\") v="${v#\"}"; v="${v%\"}" ;;
+    \'*\') v="${v#\'}"; v="${v%\'}" ;;
+  esac
+  printf %s "$v"
+}
+
+# The value of one key as the poller will read it. Handles a CRLF-saved file the
+# same way loadEnv now does — `tr -d '\r'` is this script's `split(/\r?\n/)`.
+env_value() {
+  strip_env_value "$(tr -d '\r' < "$REPO/.env" | sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" | tail -1)"
+}
+
 echo "── Card recon mailbox poller ──"
 
 # 1 · The checkout, and that it carries this feature.
@@ -50,16 +79,7 @@ say "node: $NODE ($("$NODE" --version))"
 # present (the quote is a non-space character), the schedule is armed, and the
 # failure only appears in a log five minutes later. (CodeRabbit, PR #510.)
 for key in CARD_RECON_IMAP_USER CARD_RECON_IMAP_PASSWORD; do
-  raw="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$REPO/.env" | tail -1)"
-  # TRIM FIRST, THEN ONE MATCHED PAIR — the same order loadEnv() uses, and the
-  # order matters: stripping quotes off an untrimmed value leaves the closing
-  # quote in place on a trailing space or a CRLF-saved file, so `KEY=""  ` read
-  # as present and the schedule was armed on an empty credential.
-  raw="$(printf %s "$raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  case "$raw" in
-    \"*\") raw="${raw#\"}"; raw="${raw%\"}" ;;
-    \'*\') raw="${raw#\'}"; raw="${raw%\'}" ;;
-  esac
+  raw="$(env_value "$key")"
   [ -n "${raw//[[:space:]]/}" ] || { echo "✗ $key is missing or empty in $REPO/.env"; exit 1; }
   say "$key: present"
 done
@@ -84,20 +104,7 @@ say "dependencies: ready"
 #     capture emailed slips" — a loud failure, but a pointless one, and the mail
 #     is marked read on the way past. Checked here, and it fails CLOSED with the
 #     one command that fixes it. (CodeRabbit, PR #510.)
-POLLER_UID="$(sed -n 's/^[[:space:]]*CARD_RECON_POLLER_UID[[:space:]]*=[[:space:]]*//p' "$REPO/.env" | tail -1)"
-# NORMALISED EXACTLY AS THE POLLER'S loadEnv() DOES IT — trim first, then strip
-# one MATCHED pair of quotes — because the installer's whole job here is to
-# check the identity the poller will actually run as. The first attempt stripped
-# each quote character independently on an untrimmed value, which differs in
-# both directions: a trailing space (or a CRLF-saved .env) left the closing
-# quote in place, so the installer refused an identity that was correctly
-# granted; and `"'"'"'x'"'"'"` was stripped twice, so it validated a uid the poller
-# would never use. (Independent review, PR #510.)
-POLLER_UID="$(printf %s "$POLLER_UID" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-case "$POLLER_UID" in
-  \"*\") POLLER_UID="${POLLER_UID#\"}"; POLLER_UID="${POLLER_UID%\"}" ;;
-  \'*\') POLLER_UID="${POLLER_UID#\'}"; POLLER_UID="${POLLER_UID%\'}" ;;
-esac
+POLLER_UID="$(env_value CARD_RECON_POLLER_UID)"
 POLLER_UID="${POLLER_UID:-card-recon-email-poller}"
 say "checking the poller identity ($POLLER_UID)…"
 GOOGLE_APPLICATION_CREDENTIALS="$SA" "$NODE" -e '

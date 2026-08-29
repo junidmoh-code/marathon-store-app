@@ -54,6 +54,19 @@ describe("silenceNotice — a quiet mailbox and a dead poller are opposites", ()
     expect(notice).toMatch(/card-recon-poll\.log/);
   });
 
+  it("still raises a stale feed when the heartbeat cannot be READ — without claiming why", () => {
+    // RTDB cancels a listener on permission-denied and never retries, so this
+    // state lasts the life of the tab. Suppressing the alarm outright would
+    // mean a screen opened before the rule was pasted could never raise one.
+    const notice = silenceNotice(now - 4 * day, now, null, { statusUnreadable: true });
+    expect(notice).toMatch(/4 days/);
+    expect(notice).toMatch(/cannot tell you whether the poller is running/);
+    expect(notice, "it must not assert the poller is dead when it cannot know")
+      .not.toMatch(/has stopped/);
+    // A fresh feed says nothing: the panel's own banner covers the unreadable part.
+    expect(silenceNotice(now - 3600000, now, null, { statusUnreadable: true })).toBe(null);
+  });
+
   it("falls back to the feed's own age when there is no heartbeat at all", () => {
     // An older build, or one that has never run. Absence is not good news.
     expect(silenceNotice(now - 3 * day, now, null)).toMatch(/3 days/);

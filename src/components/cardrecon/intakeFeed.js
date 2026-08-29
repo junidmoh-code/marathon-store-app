@@ -58,8 +58,23 @@ export function attachmentRows(record) {
 const HEARTBEAT_STALE_MS = 60 * 60 * 1000;   // ticks are 5 minutes apart
 const QUIET_FEED_DAYS = 2;
 
-export function silenceNotice(lastAt, now, status) {
+export function silenceNotice(lastAt, now, status, { statusUnreadable = false } = {}) {
   if (!Number.isInteger(now)) return null;
+  // ── THE HEARTBEAT CANNOT BE READ ────────────────────────────────────────
+  // Suppressing the notice entirely here was wrong, and wrong in the direction
+  // that matters. RTDB CANCELS a listener on permission-denied — it never
+  // retries — so a screen opened before the heartbeat's rule was pasted holds
+  // that state until it is reloaded, and a poller that dies afterwards would
+  // have produced no alarm at all on a screen left open on a counter. The
+  // stale-feed fallback still runs; only the WORDING changes, so it stops
+  // asserting the poller is dead when what is actually true is that we cannot
+  // tell. (Independent review, PR #510.)
+  if (statusUnreadable) {
+    if (!Number.isInteger(lastAt)) return null;
+    const days = Math.floor((now - lastAt) / 86400000);
+    if (days < QUIET_FEED_DAYS) return null;
+    return `Nothing has arrived by email for ${days} days, and whether the mailbox is still being checked cannot be read — so this cannot tell you whether the poller is running. Check logs/card-recon-poll.log.`;
+  }
   const lastRunAt = Number(status?.lastRunAt);
   if (Number.isFinite(lastRunAt) && lastRunAt > 0) {
     const quietFor = now - lastRunAt;

@@ -122,7 +122,14 @@ function loadEnv() {
     );
   }
   const env = {};
-  for (const line of text.split("\n")) {
+  // SPLIT ON EITHER LINE ENDING. A .env edited on Windows, or pasted through a
+  // tool that normalises to CRLF, ends every line with \r — and in JavaScript
+  // `.` does not match \r and an unanchored `$` is the true end of the string,
+  // so `KEY="x"\r` matched NOTHING. Every value silently vanished and the
+  // poller refused on a file that looks perfectly correct in an editor.
+  // (Independent review, PR #510 — found by checking the installer's claim of
+  // parity with this function, which is exactly what it was written to check.)
+  for (const line of text.split(/\r?\n/)) {
     const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
     if (!m) continue;
     let value = m[2].trim();
