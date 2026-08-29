@@ -159,174 +159,91 @@ const REAL_TSNS = [
   44, 45, 46, 47, 48, 49, 50, 51,
 ];
 
-const zar = (cents) => {
-  const s = (Math.abs(cents) / 100).toFixed(2);
-  const [whole, frac] = s.split(".");
-  return `${cents < 0 ? "-" : ""}ZAR ${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${frac}`;
-};
+// The real report prints "ZAR 30120.00" — no thousands separator.
+const zar = (cents) => `${cents < 0 ? "-" : ""}ZAR ${(Math.abs(cents) / 100).toFixed(2)}`;
 
 function emailedLines({
   tid = "67365901", batchNo = 59, tsns = REAL_TSNS, amountsCents = null,
-  refundTsns = [], batchColumn = true, printedAt = "2026/08/28 08:52:38",
-  // A SHORT RRN is the awkward case for deciding the layout: at 12 digits the
-  // RRN is not a plausible sequence number and is ignored, but a terminal that
-  // prints a 6-digit one puts TWO candidate integers before the PAN even when
-  // there is no batch column at all.
-  shortRrn = false,
-  // Terminals do not all print the same columns. `noUti` drops the leading
-  // reference (one column fewer); `extraColumn` adds a card-scheme token (one
-  // more, and an alphanumeric one, so it changes the token count without
-  // changing how many integers sit before the PAN).
-  noUti = false, extraColumn = false,
-  // Some terminals print the masked card number in groups rather than as one
-  // token, and only the middle groups carry mask characters — so the leading
-  // group is bare digits sitting exactly where a sequence number would be.
-  groupedPan = false,
+  refundTsns = [], printedAt = "29-08-2026 16:26:31",
+  // Page furniture, interleaved every `furnitureEvery` blocks the way the real
+  // report interleaves it — including inside a block, which is where it caused
+  // the trouble.
+  furnitureEvery = 6, withFurniture = true,
+  // Shape variations a different terminal might print. Defaults are the real
+  // file's own shape.
+  utiWraps = true, panMask = "*", noAuth = false, typeLine = true,
 } = {}) {
-  const amounts = amountsCents || tsns.map((_, i) => 90000 + i * 1000);
+  const amounts = amountsCents || tsns.map((_, i) => 90000 - i * 100);
   const rows = [];
   let purchases = 0, refunds = 0;
   tsns.forEach((tsn, i) => {
     const isRefund = refundTsns.includes(tsn);
     const amt = amounts[i];
     if (isRefund) refunds += amt; else purchases += amt;
-    const hh = String(9 + Math.floor(i / 12)).padStart(2, "0");
-    const mm = String((i * 7) % 60).padStart(2, "0");
-    const cols = [
-      "2026/08/27", `${hh}:${mm}:11`,
-      ...(noUti ? [] : [`UTI${String(1000000 + i)}`]),
-      shortRrn ? String(100000 + i) : String(223344550000 + i),
-      `K9Q${String(i).padStart(3, "0")}`,
-      ...(extraColumn ? ["VISA"] : []),
-      String(tsn),
-      ...(batchColumn ? [String(batchNo)] : []),
-      groupedPan
-        ? `4111 11** **** ${String(1000 + (i % 9000))}`
-        : `************${String(1000 + (i % 9000))}`,
-      zar(amt),
-      isRefund ? "Refund" : "Purchase",
-    ];
-    rows.push(cols.join(" "));
+    const mins = 9 * 60 + 7 + Math.round((i / Math.max(tsns.length - 1, 1)) * ((16 * 60 + 9) - (9 * 60 + 7)));
+    const hh = String(Math.floor(mins / 60)).padStart(2, "0");
+    const mm = String(mins % 60).padStart(2, "0");
+    const ss = String((i * 13 + 23) % 60).padStart(2, "0");
+    const uti = `${String(i).padStart(8, "0")}-13f2-4980-8fcd-${String(i).padStart(12, "0")}`;
+    rows.push(`29-08-2026 ${hh}:${mm}:${ss}`);
+    if (utiWraps) {
+      rows.push(`UTI:${uti.slice(0, 28)}`);
+      rows.push(uti.slice(28).replace(/-/g, "") || "0000abcd");
+    } else {
+      rows.push(`UTI:${uti}`);
+    }
+    rows.push(`RRN: 04Yewn0590${String(i).padStart(2, "0")}`);
+    if (!noAuth) rows.push(`Auth Code: ${String(900000 + i)}`);
+    rows.push(`TSN:${tsn} Batch:${batchNo}`);
+    rows.push(`518103${panMask.repeat(6)}${String(4000 + i)}`);
+    rows.push(`Total: ${zar(amt)}`);
+    if (typeLine) rows.push(`${isRefund ? "Refund" : "Purchase"} ${zar(amt)}`);
+    // …and the page footer, landing INSIDE a block as it does in the real file.
+    if (withFurniture && (i + 1) % furnitureEvery === 0) {
+      rows.splice(rows.length - 7, 0, `Page ${Math.floor((i + 1) / furnitureEvery) + 1} of 7`);
+    }
   });
   const total = purchases - refunds;
   return {
     truth: { purchasesCents: purchases, refundsCents: refunds, totalCents: total, count: tsns.length, tsns },
     lines: [
+      "FNB Merchant Services",
+      "P.O. Box 1153, Johannesburg,",
+      "2000",
+      "2 First Place, Bank City",
+      "Cnr Jeppe & Simmonds Street",
+      "Johannesburg, 2000",
+      "Email: msfinance@fnb.co.za",
+      "Call Centre: 087 575 0012",
+      "Website: www.fnb.co.za",
       `Banking Report for Batch ${batchNo} of Terminal ${tid}`,
-      "THE MARATHON SPORTS",
+      "OMARS FASHION",
       printedAt,
-      "Version 4.2.1",
-      "Merchant: 000000004977890",
+      "Version: 008.64.07.SUN_ZA_PROD",
+      "Merchant: 100000001178101",
       `Terminal: ${tid}`,
       `Batch: ${batchNo}`,
-      "",
+      "______________________________",
       "APPROVED TRANSACTIONS",
       `Items: ${tsns.length}`,
-      "",
-      "Date Time UTI RRN Auth Code TSN Batch Card Total Type",
+      "______________________________",
       ...rows,
-      "",
+      "______________________________",
       "TOTALS SUMMARY",
-      `Items: ${tsns.length}`,
-      "",
+      "______________________________",
+      `${refunds ? "Purchase" : "Purchase"} ${zar(purchases)}`,
+      ...(refunds ? [`Refund ${zar(refunds)}`] : []),
+      `Total ${zar(total)}`,
+      "______________________________",
       "CARD TOTALS",
-      `Purchases   ${zar(purchases)}`,
-      `Refunds   ${zar(refunds)}`,
-      `Total   ${zar(total)}`,
-    ],
-  };
-}
-
-/**
- * THE REAL REPORT'S SHAPE — Till2FNB-Txn-Notification.pdf.
- *
- * Batch 59, terminal 67365901, 40 approved items, ZAR 30120.00, first
- * transaction 09:07:23 for ZAR 900.00 at TSN 2, last 16:09:09 for ZAR 350.00 at
- * TSN 51. Those figures are the owner's, read off the file itself.
- *
- * WHAT MAKES THIS DIFFERENT FROM `emailedLines`, and why it earns its own
- * fixture: the real file is SEVEN PAGES, and FNB's address block and page
- * footers are interleaved through the text BETWEEN transactions rather than
- * sitting neatly at the top and bottom. That furniture is full of money labels
- * followed by digits — "Total pages 7", "Refunds enquiries 0860 …" — and it is
- * what broke the first version of this reader.
- *
- * Its totals blocks also print PURCHASE and TOTAL as the same figure: there is
- * no purchases subtotal distinct from the total, and no Payment Type Summary.
- *
- * NOT THE FILE ITSELF. The PDF has not reached this repository; the structure
- * here is reconstructed from the owner's description of it plus the figures
- * above. Replace this with the real bytes when it arrives — see
- * docs/CARD-RECON.md.
- */
-const REAL_REPORT = {
-  tid: "67365901", batchNo: 59, items: 40, totalCents: 3012000,
-  firstTime: "09:07:23", firstCents: 90000, firstTsn: 2,
-  lastTime: "16:09:09", lastCents: 35000, lastTsn: 51,
-};
-
-// The page furniture, as it interleaves. Every one of these lines sat between
-// transactions in the real file.
-const FNB_FURNITURE = (page) => ([
-  "First National Bank",
-  "a division of FirstRand Bank Limited",
-  "Merchant Services, PO Box 1153, Johannesburg, 2000",
-  "Reg No. 1929/001225/06    VAT Reg No 4500178018",
-  "Refunds enquiries 0860 12 34 56",
-  "Total pages 7",
-  `Page ${page} of 7`,
-]);
-
-function realReportLines() {
-  const { tid, batchNo, items, totalCents, firstTime, firstCents, lastTime, lastCents } = REAL_REPORT;
-  // The first and last rows are the owner's actual figures; the 38 between them
-  // are spread evenly so the roll sums to the printed total exactly.
-  const middleTotal = totalCents - firstCents - lastCents;
-  const each = Math.floor(middleTotal / 38);
-  const amounts = [firstCents, ...Array(38).fill(each), lastCents];
-  amounts[19] += middleTotal - each * 38;          // the remainder, on one row
-  const times = REAL_TSNS.map((_, i) => {
-    if (i === 0) return firstTime;
-    if (i === 39) return lastTime;
-    const mins = 9 * 60 + 7 + Math.round((i / 39) * ((16 * 60 + 9) - (9 * 60 + 7)));
-    return `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}:${String((i * 13) % 60).padStart(2, "0")}`;
-  });
-
-  const body = [];
-  REAL_TSNS.forEach((tsn, i) => {
-    body.push([
-      "2026/08/27", times[i],
-      `UTI${String(1000000 + i)}`, String(223344550000 + i), `K9Q${String(i).padStart(3, "0")}`,
-      String(tsn), String(batchNo),
-      `************${String(1000 + i)}`,
-      zar(amounts[i]), "Purchase",
-    ].join(" "));
-    // …and the page break, mid-roll, every six rows.
-    if ((i + 1) % 6 === 0) body.push(...FNB_FURNITURE(Math.floor((i + 1) / 6) + 1));
-  });
-
-  return {
-    truth: { ...REAL_REPORT, amounts, times },
-    lines: [
-      `Banking Report for Batch ${batchNo} of Terminal ${tid}`,
-      "THE MARATHON SPORTS",
-      "2026/08/27 16:15:02",
-      "Version 4.2.1",
-      ...FNB_FURNITURE(1),
-      "Merchant: 000000004977890",
-      `Terminal: ${tid}`,
-      `Batch: ${batchNo}`,
-      "APPROVED TRANSACTIONS",
-      `Items: ${items}`,
-      ...body,
-      "TOTALS SUMMARY",
-      `Purchase   ${zar(totalCents)}`,
-      `Total   ${zar(totalCents)}`,
-      "CARD TOTALS",
+      "______________________________",
       "FNBSettleSTG",
-      `Purchase   ${zar(totalCents)}`,
-      `Total   ${zar(totalCents)}`,
-      ...FNB_FURNITURE(7),
+      `Purchase ${zar(purchases)}`,
+      ...(refunds ? [`Refund ${zar(refunds)}`] : []),
+      `Total ${zar(total)}`,
+      "First National Bank, a division of FirstRand Bank Limited. Reg No. 1929/001225/06.",
+      "An Authorised Financial Services and Credit Provider (NCRCP20).",
+      "Page 7 of 7",
     ],
   };
 }
@@ -392,7 +309,29 @@ function makeSlipPdfPaged(lines, { fontSize = 9, leading = 12, top = 800, perPag
   return Buffer.concat(chunks);
 }
 
+// ─── THE REAL REPORT ─────────────────────────────────────────────────────────
+// Till2FNB-Txn-Notification.pdf is in this directory: the actual file the owner
+// captured, seven pages, 67 KB. Nothing here reconstructs it any more.
+//
+// Its extracted TEXT is committed beside it as real-report-lines.json so that
+// line-level tests can work synchronously without running pdfjs for each one.
+// That copy cannot drift: card-recon-emailed.test.cjs re-extracts the PDF and
+// asserts the two are identical.
+const REAL_REPORT_PDF = require("node:path").join(__dirname, "Till2FNB-Txn-Notification.pdf");
+const realReportPdf = () => require("node:fs").readFileSync(REAL_REPORT_PDF);
+const realReportLines = () => require("./real-report-lines.json").lines.slice();
+
+// Its own figures, read off the file and confirmed by the owner.
+const REAL_REPORT = {
+  tid: "67365901", batchNo: 59, mid: "100000001178101", items: 40,
+  totalCents: 3012000, pages: 7,
+  firstTime: "09:07:23", firstCents: 90000, firstTsn: 2,
+  lastTime: "16:09:09", lastCents: 35000, lastTsn: 51,
+  // Approved transactions only, so the sequence has gaps by design.
+  missingTsns: [5, 21, 22, 23, 24, 30, 31, 33, 34, 43],
+};
+
 module.exports = {
   makeSlipPdf, makeSlipPdfFragmented, makeSlipPdfPaged, slipLines,
-  emailedLines, REAL_TSNS, realReportLines, REAL_REPORT, FNB_FURNITURE,
+  emailedLines, REAL_TSNS, realReportPdf, realReportLines, REAL_REPORT, REAL_REPORT_PDF,
 };

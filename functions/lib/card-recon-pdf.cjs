@@ -540,6 +540,164 @@ function splitEmailedTxnMiddle(middle, hasBatchColumn) {
   return { tsn, pan, uti, rrn, authCode, batchOnLine };
 }
 
+
+// ─── A TRANSACTION IS A BLOCK, NOT A ROW ─────────────────────────────────────
+// This is the shape the real emailed report actually uses — one transaction
+// spread over eight or nine lines rather than printed across one:
+//
+//     29-08-2026 09:07:23          ← the block opens on a bare timestamp
+//     UTI:70db11a9-13f2-4980-8fcd-
+//     97cbf50222c5                 ← …which WRAPS onto the next line
+//     RRN: 04Yewn059002
+//     Auth Code: 932966
+//     TSN:2 Batch:59               ← both numbers, on one line
+//     518103******4436
+//     Total: ZAR 900.00            ← the amount
+//     Purchase ZAR 900.00          ← the type, and the amount again
+//
+// AND THE PAGE FURNITURE LANDS INSIDE THE BLOCKS. In the real file a
+// "Page 6 of 7" footer sits between one transaction's timestamp and its UTI.
+// Reading a block therefore means scanning its slice for the fields it carries
+// rather than counting lines, so anything else in there is ignored for free.
+//
+// The dates are DD-MM-YYYY, which is not what the printed slip uses — see
+// parseEmailedStamp.
+
+const BLOCK = {
+  stamp:    /^\s*(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s*$/,
+  tsnBatch: /^\s*TSN:\s*(\d{1,8})\s+Batch:\s*(\d{1,8})\s*$/i,
+  rrn:      /^\s*RRN:\s*(\S+)/i,
+  auth:     /^\s*Auth\s*Code:\s*(\S+)/i,
+  uti:      /^\s*UTI:\s*(\S*)\s*$/i,
+  utiTail:  /^\s*[0-9a-f]{4,}\s*$/i,
+  pan:      /^\s*(\d{2,6}[*x·•#]{2,}\d{2,6})\s*$/i,
+  amount:   /^\s*Total:\s*(.+)$/i,
+  type:     /^\s*(Purchase|Refund|Void|Reversal)\b(.*)$/i,
+};
+
+/**
+ * DD-MM-YYYY, which the emailed report uses and the printed slip does not.
+ *
+ * A SEPARATE parser rather than a widening of parseSlipTimestamp: that one
+ * reads YYYY-MM-DD, and a function accepting both would have to guess which
+ * way round "01-02-2026" is. Here the format is fixed by the document, so
+ * there is nothing to guess — and leaving the slip's parser untouched means
+ * the photo path cannot be changed by this at all.
+ */
+function parseEmailedStamp(text) {
+  const m = BLOCK.stamp.exec(String(text || ""));
+  if (!m) return null;
+  const [, dd, mo, yyyy, hh, mi, ss] = m;
+  // Reuse the slip parser's own validation and SAST handling by handing it the
+  // order it expects, so the two paths cannot drift on leap years or offsets.
+  return parseSlipTimestamp(`${yyyy}/${mo}/${dd} ${hh}:${mi}:${ss}`);
+}
+
+/**
+ * Slice the document into transaction blocks.
+ *
+ * A block opens on a bare timestamp and runs to the next one, or to the totals
+ * region. The report's own header carries a timestamp too — the moment it was
+ * printed — so a slice only counts as a transaction if it contains a TSN line.
+ * That is what distinguishes the two, not its position in the document.
+ */
+function collectTxnBlocks(rows, totalsIdx) {
+  const limit = totalsIdx >= 0 ? totalsIdx : rows.length;
+  const starts = [];
+  for (let i = 0; i < limit; i++) if (BLOCK.stamp.test(rows[i])) starts.push(i);
+  // EVERY stamp-slice is returned, including the header's. Deciding which of
+  // them is a transaction belongs to readTxnBlock, which has to look for a TSN
+  // anyway — splitting that judgement across two functions left the "no TSN"
+  // branch there permanently unreachable, and an unreachable branch is one a
+  // later reader trusts for protection it does not give.
+  const blocks = [];
+  starts.forEach((from, k) => {
+    blocks.push(rows.slice(from, k + 1 < starts.length ? starts[k + 1] : limit));
+  });
+  return blocks;
+}
+
+/**
+ * Read one block. Refuses rather than guessing at every step.
+ *
+ * @returns {{txn:object} | {err:string}}
+ */
+function readTxnBlock(block, batchNo) {
+  const first = (re) => {
+    for (const l of block) { const m = re.exec(l); if (m) return m; }
+    return null;
+  };
+  const at = parseEmailedStamp(block[0]);
+  if (at === null) return { err: `A transaction's date and time will not parse: "${block[0]}".` };
+
+  // NOT EVERY TIMESTAMPED SLICE IS A TRANSACTION. The report's header carries a
+  // bare timestamp of its own — the moment it was printed — and it is followed
+  // by the trading name, the version and the labelled rows, not by a TSN. A
+  // slice with no TSN line is that header block, and is skipped rather than
+  // refused; a transaction is identified by carrying a sequence number, never
+  // by its position in the document.
+  const tb = first(BLOCK.tsnBatch);
+  if (!tb) return { skip: true };
+  const tsn = Number(tb[1]);
+  // The block states its own batch number. It must be this report's, or the
+  // block has been read out of the wrong document — the same cross-check the
+  // title and the Batch row already get.
+  if (Number(tb[2]) !== Number(batchNo)) {
+    return { err: `A transaction at ${block[0]} says it belongs to batch ${tb[2]}, but this report is batch ${batchNo}. Nothing was recorded — photograph the slip instead.` };
+  }
+
+  const amt = first(BLOCK.amount);
+  if (!amt) return { err: `The transaction at ${block[0]} prints no amount this could read.` };
+  const amountCents = parseRandsToCents(tidy(amt[1]));
+  if (amountCents === null) {
+    return { err: `A transaction's amount reads "${tidy(amt[1])}", which is not an amount this understands. Nothing was recorded — photograph the slip instead.` };
+  }
+
+  // The type line repeats the amount ("Purchase ZAR 900.00"). Free integrity:
+  // the two must agree, and a disagreement means one of them was misread.
+  const ty = first(BLOCK.type);
+  const type = ty ? ty[1].toLowerCase() : "purchase";
+  if (ty && tidy(ty[2])) {
+    const repeat = parseRandsToCents(tidy(ty[2]));
+    if (repeat !== null && repeat !== amountCents) {
+      return { err: `A transaction at ${block[0]} states two different amounts (${formatCents(amountCents)} and ${formatCents(repeat)}). Nothing was recorded — photograph the slip instead.` };
+    }
+  }
+
+  // The UTI wraps: "UTI:70db11a9-13f2-4980-8fcd-" then "97cbf50222c5" alone on
+  // the next line. Join the continuation when the very next line is a bare
+  // fragment and nothing else claims it.
+  let uti = null;
+  const utiIdx = block.findIndex((l) => BLOCK.uti.test(l));
+  if (utiIdx >= 0) {
+    uti = tidy(BLOCK.uti.exec(block[utiIdx])[1]);
+    // The continuation is bare hex and nothing else on the block looks like
+    // that: the PAN carries mask characters, which are not hex digits, and
+    // every other field is labelled. So matching utiTail is sufficient — a
+    // second guard against the PAN would be unreachable, and an unreachable
+    // guard is one a later reader trusts for protection it does not give.
+    const next = block[utiIdx + 1];
+    if (next && BLOCK.utiTail.test(next)) uti += tidy(next);
+  }
+  const rrn = first(BLOCK.rrn);
+  const auth = first(BLOCK.auth);
+  const pan = first(BLOCK.pan);
+  const isRefund = type === "refund" || amountCents < 0;
+
+  return {
+    txn: {
+      tsn, at,
+      date: `${block[0].slice(0, 10)}`, time: block[0].slice(11, 19),
+      uti: uti || null,
+      rrn: rrn ? rrn[1] : null,
+      authCode: auth ? auth[1] : null,
+      pan: pan ? pan[1] : null,
+      type: isRefund ? "refund" : "purchase",
+      amountCents: isRefund && amountCents > 0 ? -amountCents : amountCents,
+    },
+  };
+}
+
 /**
  * Read an emailed banking report.
  *
@@ -641,74 +799,32 @@ function parseEmailedReport(rows) {
   const cash = money(MONEY.cash, "cash figure", { required: false });
   if (cash.err) return bad(cash.err);
 
-  // ── the transaction rows, and the layout decided across all of them ──
-  const candidates = [];
-  for (const row of rows) {
-    const m = TXN_RE.exec(row);
-    if (!m) continue;
-    const [, date, time, middle, rawAmount, marker] = m;
-    candidates.push({ row, date, time, middle, rawAmount, marker });
-  }
-  if (!candidates.length) {
-    return bad("No transaction rows could be read from that banking report. If it is the right file, photograph the slip instead.");
-  }
-  // See splitEmailedTxnMiddle: a real Batch column carries the batch number on
-  // EVERY row, so that is what decides — never the position of a token.
-  // TWO CONDITIONS, because one is not enough. A batch column must carry the
-  // report's batch number on EVERY row — but on a single-row report that test
-  // is satisfied by pure coincidence the moment the one TSN happens to equal
-  // the batch number, and the reader then hunts for a sequence number that is
-  // not there and refuses a perfectly good report.
-  //
-  // So the count matters too: a batch column ADDS an integer. A row that has
-  // only one usable integer before its PAN has a TSN and nothing else, whatever
-  // that integer's value.
-  const beforePanOf = (middle) => {
-    const parts = tidy(middle).split(" ").filter(Boolean);
-    const span = panSpanOf(parts);
-    return span ? parts.slice(0, span.start) : parts;
-  };
-  const intsBeforePan = (middle) => beforePanOf(middle).filter((t) => /^\d{1,8}$/.test(t)).map(Number);
-
-  // ONE MORE TOKEN, on a report with only one row to learn from.
-  //
-  // Across several rows the batch-number test is decisive: the same value
-  // landing in the same position on every row is a column, and a TSN coinciding
-  // with the batch number cannot repeat. With a SINGLE row there is no such
-  // corroboration, and both readings fit — "TSN then Batch", or "RRN then a TSN
-  // that happens to equal the batch number".
-  //
-  // The token COUNT breaks that tie, because a batch column is an extra column:
-  // the layout is UTI, RRN, auth, TSN — four tokens — and a batch column makes
-  // five. It is only consulted for the one-row case, where the stronger
-  // evidence does not exist; asking it of every report would refuse a terminal
-  // that leaves a field blank.
-  const hasBatchColumn = candidates.every((c) => {
-    const ints = intsBeforePan(c.middle);
-    if (ints.length < 2 || ints[ints.length - 1] !== Number(batchNo)) return false;
-    return candidates.length > 1 || beforePanOf(c.middle).length >= 5;
-  });
-
+  // ── THE TRANSACTIONS, WHICH ARE BLOCKS AND NOT ROWS ──
+  // Each one occupies eight or nine lines, and the page furniture lands INSIDE
+  // them — a "Page 6 of 7" footer sits between a transaction's timestamp and
+  // its UTI in the real file. Reading a block means scanning its slice for the
+  // fields it carries, so anything else in there is simply ignored.
+  const blocks = collectTxnBlocks(rows, totalsIdx);
   const txns = [];
-  for (const c of candidates) {
-    const at = parseSlipTimestamp(`${c.date} ${c.time.length === 5 ? `${c.time}:00` : c.time}`);
-    if (at === null) return bad(`A transaction row's date and time will not parse: "${c.row}".`);
-    const { tsn, pan, uti, rrn, authCode } = splitEmailedTxnMiddle(c.middle, hasBatchColumn);
-    if (!Number.isInteger(tsn)) {
-      return bad(`A transaction row has no sequence number this could read: "${c.row}".`);
+  let headerStamp = null;
+  for (const blk of blocks) {
+    const read = readTxnBlock(blk, batchNo);
+    if (read.skip) {
+      // The block with no TSN is the report's header, and the timestamp it
+      // opens with is the moment the report was printed — the only moment this
+      // format states. Taking it from here rather than by scanning the top of
+      // the document means a transaction's own timestamp can never be mistaken
+      // for it, whatever order the pages came out in.
+      if (headerStamp === null) headerStamp = parseEmailedStamp(blk[0]);
+      continue;
     }
-    const amountCents = parseRandsToCents(c.rawAmount);
-    if (amountCents === null) {
-      return bad(`A transaction row's amount will not parse: "${c.row}".`);
-    }
-    const isRefund = /^refund$/i.test(c.marker || "") || /\brefund\b/i.test(c.row) || amountCents < 0;
-    txns.push({
-      tsn, at, date: c.date, time: c.time,
-      uti, rrn, authCode, pan,
-      type: isRefund ? "refund" : "purchase",
-      amountCents: isRefund && amountCents > 0 ? -amountCents : amountCents,
-    });
+    if (read.err) return bad(read.err);
+    txns.push(read.txn);
   }
+  if (!txns.length) {
+    return bad("No transactions could be read from that banking report. If it is the right file, photograph the slip instead.");
+  }
+
 
   // ── the window, DERIVED, and said to be derived ──
   // First transaction to last. The +1ms is not padding: the reconciliation
@@ -719,10 +835,10 @@ function parseEmailedReport(rows) {
   const openedAt = Math.min(...times);
   const closedAt = Math.max(...times) + 1;
 
-  const printedText = field(rows, EMAILED.printed)
-    ?? (rows.slice(0, totalsIdx >= 0 ? totalsIdx : rows.length).map((r) => EMAILED.bareStamp.exec(r)).find(Boolean) || [])[1]
-    ?? null;
-  const printedAt = printedText ? parseSlipTimestamp(printedText) : null;
+  // …and if the header carried no timestamp of its own, a labelled one.
+  const labelledPrinted = field(rows, EMAILED.printed);
+  const printedAt = headerStamp
+    ?? (labelledPrinted ? parseSlipTimestamp(labelledPrinted) : null);
 
   return {
     ok: true,
@@ -767,5 +883,6 @@ function parseSlipPdf(lines) {
 
 module.exports = {
   parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
-  moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
+  moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
+  parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
 };
