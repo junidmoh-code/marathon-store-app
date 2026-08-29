@@ -1,0 +1,261 @@
+// Every awkward thing a shop mailbox actually contains: an invoice, an inline
+// signature image, a renamed JPEG, a 30 MB scan, the same report forwarded
+// twice, and a claim left behind by a run that was killed.
+import { describe, it, expect } from "vitest";
+import {
+  messageKey, classifyAttachment, planMessage, classifyRefusal,
+  attachmentOutcome, intakeRecord, claimDecision, clip,
+  MAX_ATTACHMENT_BYTES, STALE_CLAIM_MS, parseEnvText, missingEnvKeys,
+} from "./intakeCore.mjs";
+
+const pdf = (name, extra = 0) => ({
+  filename: name, contentType: "application/pdf",
+  content: Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(extra)]),
+});
+
+describe("messageKey", () => {
+  it("is stable, key-safe, and the same for the same message", () => {
+    const m = { messageId: "<abc.def@mail.gmail.com>", from: "t@x", subject: "Batch", date: 1, size: 2 };
+    expect(messageKey(m)).toBe(messageKey({ ...m }));
+    expect(messageKey(m)).toMatch(/^[0-9a-f]{40}$/);
+    expect(messageKey({ ...m, messageId: "<other@x>" })).not.toBe(messageKey(m));
+  });
+
+  it("still identifies a message that carries no Message-ID", () => {
+    const m = { from: "t@x", subject: "Batch", date: 111, size: 900, uid: 42, uidValidity: "9" };
+    expect(messageKey(m)).toMatch(/^[0-9a-f]{40}$/);
+    expect(messageKey({ ...m })).toBe(messageKey(m));
+    expect(messageKey({ ...m, date: 222 })).not.toBe(messageKey(m));
+  });
+
+  it("two DIFFERENT no-Message-ID messages never collide, however alike they look", () => {
+    // Two batch reports from the same terminal on the same evening share the
+    // sender, the subject, the date and very nearly the size. A collision does
+    // not look like a bug: the second reads as "already processed", is marked
+    // read, and a real slip is gone with nothing recorded about it. The
+    // mailbox's own uid is the only field that cannot be shared.
+    const same = { from: "terminal@fnb.co.za", subject: "Batch Report", date: 111, size: 900, uidValidity: "9" };
+    expect(messageKey({ ...same, uid: 41 })).not.toBe(messageKey({ ...same, uid: 42 }));
+    // …and the SAME message re-downloaded keeps its key, or nothing would dedupe.
+    expect(messageKey({ ...same, uid: 41 })).toBe(messageKey({ ...same, uid: 41 }));
+  });
+});
+
+describe("classifyAttachment — the BYTES decide", () => {
+  it("accepts a real PDF whatever the client called it", () => {
+    expect(classifyAttachment({ ...pdf("report.pdf"), contentType: "application/octet-stream" }).ok).toBe(true);
+  });
+
+  it("refuses a file NAMED .pdf whose bytes are not one — that did not arrive intact", () => {
+    const v = classifyAttachment({ filename: "slip.pdf", contentType: "application/pdf", content: Buffer.from([0xFF, 0xD8, 0xFF, 0xE0, 0x00]) });
+    expect(v.ok).toBe(false);
+    expect(v.kind).toBe("refuse");
+    expect(v.why).toMatch(/not one|intact/i);
+  });
+
+  it("SKIPS an inline signature image rather than refusing it — it was never a slip", () => {
+    const v = classifyAttachment({ filename: "logo.png", contentType: "image/png", content: Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D]) });
+    expect(v).toEqual({ ok: false, kind: "skip", why: "logo.png is not a PDF" });
+  });
+
+  it("refuses a scan far larger than any batch report", () => {
+    const v = classifyAttachment(pdf("scan.pdf", MAX_ATTACHMENT_BYTES + 1));
+    expect(v.ok).toBe(false);
+    expect(v.kind).toBe("refuse");
+    expect(v.why).toMatch(/too large/i);
+  });
+
+  it("does not throw on a malformed attachment", () => {
+    expect(classifyAttachment({}).ok).toBe(false);
+    expect(classifyAttachment(null).ok).toBe(false);
+  });
+});
+
+describe("planMessage", () => {
+  it("splits a mixed message into candidates, refusals and quiet skips", () => {
+    const { take, refused, skipped } = planMessage([
+      pdf("batch-494.pdf"),
+      { filename: "signature.png", contentType: "image/png", content: Buffer.from([0x89, 0x50, 0x4E, 0x47]) },
+      { filename: "broken.pdf", contentType: "application/pdf", content: Buffer.from("not a pdf at all") },
+    ]);
+    expect(take.map((t) => t.filename)).toEqual(["batch-494.pdf"]);
+    expect(refused).toHaveLength(1);
+    expect(skipped).toHaveLength(1);
+  });
+
+  it("a message with nothing attached is a quiet nothing, not a crash", () => {
+    expect(planMessage(null)).toEqual({ take: [], refused: [], skipped: [] });
+    expect(planMessage([]).take).toEqual([]);
+  });
+
+  it("bounds how many capture calls one message can cost", () => {
+    const many = new Array(14).fill(0).map((_, i) => pdf(`b${i}.pdf`));
+    const { take, refused } = planMessage(many);
+    expect(take).toHaveLength(10);
+    expect(refused).toHaveLength(4);
+    expect(refused[0].reason).toMatch(/More than 10 attachments/);
+  });
+});
+
+describe("classifyRefusal — a failing terminal must not be filed as noise", () => {
+  it("calls a real check failure REFUSED", () => {
+    for (const reason of [
+      "Terminal 9999ZZZZ is not registered under /config/cardTerminals",
+      "Batch #494 for this terminal is already captured.",
+      "The transaction lines in that PDF add up to R10.00, but the slip's own total is R20.00.",
+      "The slip says 12 transactions but 11 lines were read.",
+      "The slip's Opened→Closed window is longer than 7 days",
+      "That PDF prints merchant ID 1 but terminal 0000HP1X is registered to merchant 2.",
+    ]) expect(classifyRefusal(reason)).toBe("refused");
+  });
+
+  it("calls an invoice UNRELATED — recorded, but not a terminal failing", () => {
+    for (const reason of [
+      "That PDF does not print a terminal ID anywhere this could find it. If it is the right file, photograph the slip instead.",
+      "That PDF holds no text — it is probably a scan or a photo saved as a PDF.",
+      "That PDF has 42 pages — a batch report is one or two.",
+      "That PDF is password-protected. Photograph the slip instead.",
+    ]) expect(classifyRefusal(reason)).toBe("unrelated");
+  });
+});
+
+describe("intakeRecord", () => {
+  const message = { key: "k".repeat(40), messageId: "<a@b>", from: "terminal@fnb.co.za", subject: "Batch Report", receivedAt: 1_700_000_000_000 };
+
+  it("a refusal makes the whole message NEEDS-ATTENTION", () => {
+    const rec = intakeRecord({
+      at: 5,
+      message,
+      results: [
+        attachmentOutcome({ filename: "a.pdf", capture: { recorded: true, batchKey: "494", tid: "0000HP1X", storeId: "pe", tillId: "till-1", linesCaptured: true, warnings: [] } }),
+        attachmentOutcome({ filename: "b.pdf", capture: { ok: false, reason: "Terminal 9999ZZZZ is not registered under /config/cardTerminals" } }),
+      ],
+      skipped: [{ filename: "logo.png" }],
+    });
+    expect(rec.state).toBe("needs-attention");
+    expect(rec.recorded).toBe(1);
+    expect(rec.refused).toBe(1);
+    expect(rec.attachments[1].reason).toMatch(/not registered/);
+    expect(rec.skipped).toEqual(["logo.png"]);
+    // No slip CONTENT ever reaches this node — it is read by everyone who can
+    // capture a slip, while the evidence itself stays owner-only in
+    // /card_batches. (`linesCaptured` is a boolean about the capture, not a line.)
+    const json = JSON.stringify(rec);
+    for (const forbidden of [/"pan"/i, /varianceCents/i, /expectedC/i, /amountCents/i, /"lines":/i, /authCode/i, /"rrn"/i]) {
+      expect(json).not.toMatch(forbidden);
+    }
+  });
+
+  it("an invoice alone is done, not an alarm — but it is still recorded", () => {
+    const rec = intakeRecord({
+      at: 5, message, skipped: [],
+      results: [attachmentOutcome({ filename: "invoice.pdf", capture: { ok: false, reason: "That PDF does not print a terminal ID anywhere this could find it." } })],
+    });
+    expect(rec.state).toBe("done");
+    expect(rec.unrelated).toBe(1);
+    expect(rec.attachments).toHaveLength(1);
+  });
+
+  it("a thrown error is an outcome, not a lost slip", () => {
+    const row = attachmentOutcome({ filename: "a.pdf", error: "the capture call timed out" });
+    expect(row.outcome).toBe("refused");
+    expect(row.reason).toMatch(/timed out/);
+  });
+
+  it("clips attacker-supplied text — a subject line lands in a record people read", () => {
+    const rec = intakeRecord({ at: 1, results: [], skipped: [], message: { ...message, subject: "x".repeat(900) } });
+    expect(rec.subject.length).toBeLessThanOrEqual(200);
+    expect(clip("", 10)).toBe(null);
+  });
+});
+
+describe("claimDecision — the same slip is never submitted twice", () => {
+  it("takes a message nobody has claimed", () => {
+    expect(claimDecision(null, 1000).take).toBe(true);
+  });
+
+  it("never re-takes one already processed, and says it is FINISHED", () => {
+    // `done` is what lets the poller mark the message read.
+    expect(claimDecision({ state: "done", at: 1 }, 1e12)).toEqual({ take: false, done: true, why: "already processed" });
+  });
+
+  it("stands down while another run holds it — and says it is NOT finished", () => {
+    // THE DIFFERENCE IS A SLIP. A message held by a run that died must stay
+    // UNREAD in the mailbox, because only unread mail is searched and only a
+    // later tick can retake the stale claim. Marking it read here would hide it
+    // from the very tick that was going to rescue it.
+    const d = claimDecision({ state: "claimed", at: 1000 }, 1000 + STALE_CLAIM_MS - 1);
+    expect(d.take).toBe(false);
+    expect(d.done).toBe(false);
+  });
+
+  it("re-takes a claim a killed run left behind — a slip must not be lost to a SIGKILL", () => {
+    const d = claimDecision({ state: "claimed", at: 1000 }, 1000 + STALE_CLAIM_MS + 1);
+    expect(d.take).toBe(true);
+    expect(d.why).toMatch(/never finished/);
+  });
+});
+
+// ─── .env, AS THE POLLER AND THE INSTALLER BOTH READ IT ──────────────────────
+// This parser is now the ONLY implementation — the installer runs it through
+// node rather than mirroring it in bash, because that mirror drifted four times
+// in a single review cycle and every drift had the same shape: the installer
+// says fine and the failure appears in a log five minutes later.
+//
+// The corpus below is exactly those drifts, pinned so they cannot come back.
+describe("parseEnvText", () => {
+  it("reads a CRLF-saved file — the case where every value silently vanished", () => {
+    // `.` does not match \r in JS, and an unanchored `$` is the true end of the
+    // string, so splitting on "\n" left `KEY="x"\r` matching NOTHING. A file
+    // that looks perfectly correct in an editor, refused for a missing key.
+    expect(parseEnvText('A="x@y.com"\r\nB=abcd\r\n')).toEqual({ A: "x@y.com", B: "abcd" });
+  });
+
+  it("a quoted empty value, and a quoted space, are EMPTY", () => {
+    // `KEY=""` read as present once, because a quote is a non-space character,
+    // and the schedule was armed over a credential that does not exist.
+    expect(parseEnvText('A=""\nB="   "  \n')).toEqual({ A: "", B: "   " });
+    expect(missingEnvKeys(parseEnvText('A=""\nB="   "\n'), ["A", "B"])).toEqual(["A", "B"]);
+  });
+
+  it("a LONE quote is an empty value, not a value of a quote", () => {
+    expect(parseEnvText('A="\n')).toEqual({ A: "" });
+    expect(missingEnvKeys(parseEnvText('A="\n'), ["A"])).toEqual(["A"]);
+  });
+
+  it("strips ONE matched pair and no more", () => {
+    expect(parseEnvText(`A="'z'"\nB='q'\nC=plain \n`)).toEqual({ A: "'z'", B: "q", C: "plain" });
+  });
+
+  it("keeps a value's own = and spaces, and takes the last of a repeated key", () => {
+    expect(parseEnvText("A=abcd efgh ijkl mnop\nB=a=b=c\nC=1\nC=2\n"))
+      .toEqual({ A: "abcd efgh ijkl mnop", B: "a=b=c", C: "2" });
+  });
+
+  it("ignores comments, blanks and anything that is not a key=value", () => {
+    expect(parseEnvText("# a note\n\n  \nnot a line\nA=1\n")).toEqual({ A: "1" });
+    expect(parseEnvText(null)).toEqual({});
+  });
+
+  it("missingEnvKeys names only what is missing", () => {
+    expect(missingEnvKeys({ A: "x", B: "" }, ["A", "B", "C"])).toEqual(["B", "C"]);
+  });
+});
+
+describe("parseEnvText — a stray carriage return is not a line ending", () => {
+  it("leaves a mid-line CR to poison the line, exactly as it always did", () => {
+    // THE FIFTH DRIFT, PINNED. `split(/\r?\n/)` only consumes a CR that
+    // precedes a newline; a lone one stays inside the line, where `.` cannot
+    // match it and an unanchored `$` is the end of the STRING — so the line
+    // matches nothing and the key is simply absent.
+    //
+    // That is the contract, and it is the safe direction: the poller refuses a
+    // key it cannot read. What must never come back is a reader that is more
+    // forgiving than this one — the installer used `tr -d '\r'`, saw a value,
+    // and armed the schedule over a file the poller could not read. It runs
+    // THIS function now, so the two cannot differ; this test is what stops a
+    // future "tidy-up" of the regex silently reintroducing the gap.
+    expect(parseEnvText("A=x\ry\nB=2\n")).toEqual({ B: "2" });
+    expect(parseEnvText("A=1\r\nB=2\n")).toEqual({ A: "1", B: "2" });
+  });
+});

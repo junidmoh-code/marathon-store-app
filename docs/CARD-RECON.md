@@ -836,3 +836,183 @@ fails and is reported like any other refusal, which is fail-closed.
   feature must coordinate through this module or add a CAS.
 - The backfill script is therefore also the standing drift check, not only a
   one-time bootstrap.
+
+---
+
+# The email poller — slips that capture themselves
+
+The FNB terminals (and the managers) email the Batch Report PDF to
+**marathon6631@gmail.com**. A poller on the Mac mini reads that mailbox every
+five minutes and feeds every PDF through **the same `cardBatchCapture`
+callable** a manager's phone calls. Nobody does anything.
+
+It is not a second reader. It does not parse a slip, check arithmetic or decide
+what a figure is — it puts a file in and writes down what came back. **Every
+refusal already in this document applies unchanged**: unmapped TID, TID
+mismatch, duplicate batch, the slip's own arithmetic, the line count against
+the printed Transactions figure, the seven-day window bound, TSN contiguity.
+
+## The one check that could not survive unchanged, and what replaced it
+
+On the phone the manager picks a till and the slip's TID must match it. **An
+email has nobody to ask.** The TID printed on the slip *is* the routing key —
+and a routing key with nothing checking it can be wrong in silence. So the
+mismatch refusal becomes three checks, in three places:
+
+| Where | Check |
+|---|---|
+| `lib/card-recon-pdf.cjs` | A PDF printing **two different terminal IDs** is refused. The first match must never quietly win. |
+| `lib/card-recon-email.cjs` | The slip's TID must **resolve in `/config/cardTerminals`**. An unregistered terminal is REFUSED — and the refusal is written where it can be seen. |
+| `lib/card-recon-email.cjs` | The slip's printed **MID must not contradict** the one registered for that terminal. The four live terminals carry three different MIDs, so this is a real second identifier, not a formality. |
+
+A terminal registered *without* a MID (Trophy Till 1, today) can only be
+vouched for by its TID, and the record **says so as a warning** rather than
+implying two checks ran when one did.
+
+`cardBatchCapture` gains `channel: "email"`, gated on its own permission flag
+(`card_recon_intake`) so nothing that can capture from a phone also acquires a
+path that skips the till pick. The submit phase **re-routes an emailed draft
+from scratch** against the registry as it stands then — the same
+trust-nothing discipline the rest of submit already applies.
+
+## Nothing is silently dropped
+
+Every message that carried a PDF leaves a record at **`/card_batch_intake`**,
+and the **Card recon tab** in the store app shows it, worst first:
+
+* **recorded** — the batch is in `/card_batches`. Nothing to do.
+* **refused** — a batch report that failed a check. *Someone must look.* This
+  is the one that must never be invisible.
+* **unrelated** — a PDF that was never a batch report (an invoice, a
+  statement). Recorded so the feed is complete; marked so it is not noise.
+
+The feed holds **outcomes only** — sender, subject, file name, recorded-or-why-
+not. No totals, no lines, no PANs, no variance: it is read by everyone who can
+capture a slip, while the evidence itself stays in the owner-only records. The
+tab reads it as a bounded tail (`limitToLast`), never as a whole node, and a
+**denied read is shown as denied**, never as an empty feed.
+
+### Silence is how a scheduled job fails, and there are two silences
+
+A quiet mailbox and a **dead poller** are the same empty feed, and they mean
+opposite things. The poller therefore writes a heartbeat to
+**`/card_batch_poll_status`** on *every* tick — including the ones that find
+nothing — and the panel checks it first:
+
+* the poller ran minutes ago and nothing came in → **nothing is said**. An alarm
+  here is the kind that teaches people to ignore alarms.
+* the mailbox has not been checked for an hour → **"the poller has stopped. Any
+  batch report emailed since is sitting unread."** Even when the feed looks
+  recent.
+
+Three nodes go into the rules, not two: without the heartbeat, "no refusals"
+from a poller that stopped hours ago is the most dangerous thing the panel could
+imply.
+
+## The same slip is never submitted twice
+
+Three guards, and the owner's instruction was that the downstream
+duplicate-batch refusal must not be the only one:
+
+1. **A claim** at `/card_batch_intake_seen/{messageKey}`, taken in a
+   transaction before any work. A claim a killed run left behind is retaken
+   after 30 minutes, so a `SIGKILL` costs a delay and never a lost slip.
+2. **The mailbox itself** — the message is flagged `\Seen` *after* its outcome
+   is in the database, and only unseen mail is searched. Crash before the flag
+   and the next tick sees it again; crash after with nothing recorded is the
+   ordering that would lose a slip, so it cannot happen.
+3. The **duplicate-batch refusal** in the callable, unchanged.
+
+## Where it lives, and why there
+
+**In this repo**, at `scripts/cardrecon/` — not in a new one. The capture path
+it calls, the pure modules it reuses (`intakeCore.mjs` sits beside
+`functions/lib/card-recon*.cjs` in spirit and in review), the Card recon tab it
+surfaces into and the terminal registry it depends on are all here, and the Mac
+mini already runs a checkout of this repo for the Shopify reconciler. A separate
+repo would have bought a second place to keep in step with a callable that
+changes here.
+
+**Process management is the machine's existing pattern, not a new one**: a user
+LaunchAgent (`com.marathon.cardreconpoll`), `scripts/lib/launchdRunner.mjs` for
+the pid-carrying lockfile, rotated logs and the consecutive-failure counter, and
+logs under the repo — exactly as the three agents already loaded on that
+machine do (`com.marathon.socialpublish`, `com.marathon.shopifyreconcile` and
+`com.marathon.photograbber`, verified 2026-08-29). `RunAtLoad` is **true** here,
+unlike the social publisher, whose fire is an irreversible Instagram post:
+nothing this job does cannot be repeated, so the mailbox is checked the moment
+the agent loads rather than up to five minutes later.
+
+**What "restarts with the machine" actually means.** A *user* LaunchAgent loads
+when that user's GUI session begins — at **login, not at boot**. It survives a
+restart because the mini logs itself in (`autoLoginUser = marathonclub`,
+verified 2026-08-29), which is also the only reason the other three behave the
+way everyone assumes. Leave the mini sitting at a login window after a power cut
+and **none of the four run**; the heartbeat in the Card recon tab is what tells
+you, and it is the reason that heartbeat exists.
+
+A LaunchDaemon would not have that dependency, and is deliberately not used:
+root, outside any user session, with the service-account key and `.env` both
+living in this user's home, is a different security posture and a second
+scheduling pattern on a machine that has one.
+
+`imapflow` and `mailparser` live in **`scripts/cardrecon/package.json`**, not in
+`functions/package.json` — those dependencies are installed into every Cloud
+Function deploy, and a mail client has no business in the production functions
+runtime. `firebase-admin` is borrowed from `functions/` the way every other
+script on the mini borrows it.
+
+## Setup
+
+```bash
+# 1 · The mailbox credentials, in the gitignored .env at the repo root ON THE MINI
+#     (~/marathon-store-app/.env — it already exists for the Shopify scripts)
+CARD_RECON_IMAP_USER=marathon6631@gmail.com
+CARD_RECON_IMAP_PASSWORD=<16-character Gmail APP password, not the account password>
+# optional: CARD_RECON_IMAP_MAILBOX, CARD_RECON_LOOKBACK_DAYS, CARD_RECON_POLLER_UID
+#   (if you set CARD_RECON_POLLER_UID, pass the SAME value to --uid in step 2 —
+#    the grant script does not read .env, so granting the default while the
+#    poller runs as a custom uid produces an identity with no permissions and a
+#    poller refused on every message)
+
+# 2 · The poller's identity (once). This one writes to /users, so it needs
+#     ADMIN credentials — it does NOT read .env. Either run it on the Mac mini
+#     with GOOGLE_APPLICATION_CREDENTIALS pointing at the service-account key,
+#     or on a machine with an owner gcloud ADC login.
+GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json \
+  node scripts/cardrecon/grant-poller-identity.mjs --execute   # add --uid <uid> if you set one
+
+# 3 · The rules for the THREE new nodes — printed, then pasted in the console
+node scripts/cardrecon/print-card-intake-rule.mjs
+
+# 4 · On the mini
+ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && git fetch origin && git reset --hard origin/main'
+ssh marathonclub@100.64.186.78 'bash ~/marathon-store-app/scripts/cardrecon/install-card-recon-poller.sh'
+```
+
+An app password is minted at myaccount.google.com → Security → App passwords
+(2-Step Verification must be on). Google shows it in four groups of four; the
+spaces are presentation and are stripped, so paste it either way.
+
+The poller reads `.env` and **fails with a sentence naming exactly what to add**
+if a value is missing; no credential value is ever printed, logged or echoed.
+The installer refuses to arm the schedule over a `.env` the poller cannot read —
+and it answers that question by running **the poller's own parser**
+(`scripts/cardrecon/env-report.mjs`, which prints missing key *names* and, for
+the uid alone, its value). It used to mirror that parser in bash, and the two
+drifted four times in one review cycle; there is one implementation now.
+
+## Checking on it
+
+```bash
+# is it running
+ssh marathonclub@100.64.186.78 'launchctl print gui/501/com.marathon.cardreconpoll | head -20'
+# what it has been doing
+ssh marathonclub@100.64.186.78 'tail -40 ~/marathon-store-app/logs/card-recon-poll.log'
+# one run that changes nothing
+ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json /opt/homebrew/bin/node scripts/cardrecon/email-poller.mjs --dry-run'
+```
+
+A tick with no unread mail logs one line, so a quiet log still proves the
+schedule is alive. Refused slips surface in the **Card recon tab → Emailed
+slips**, in red, at the top.
