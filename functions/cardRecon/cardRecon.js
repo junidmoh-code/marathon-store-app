@@ -594,6 +594,20 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
     routingWarnings.push(...routed.warnings);
   }
 
+  // ── THE INVARIANT BOTH BRANCHES MUST SATISFY ─────────────────────────────
+  // A batch is recorded against THE REGISTRY ROW FOR THE TID PRINTED ON THE
+  // SLIP. Nothing else, on either path — the pick only ever gets to disagree
+  // and refuse, never to choose. That is true of both branches above today
+  // (the picked one reached here only because extraction.tid === picked), and
+  // this is what keeps it true of whatever is written next. It is a bug guard,
+  // not a validation: if it ever fires, a slip was about to be filed against a
+  // till it does not belong to, which is the one outcome this feature exists
+  // to prevent.
+  if (terminal !== terminals[extraction.tid]) {
+    console.error("cardBatchCapture: routing invariant broken for TID", extraction.tid);
+    return reject("This slip could not be matched to its terminal — nothing was recorded. Tell Junid.");
+  }
+
   // Overlapping sections cannot happen in a single file, but a terminal that
   // prints a line twice still must not be averaged away.
   const dedup = dedupeLines(extraction.lines);
