@@ -153,7 +153,14 @@ function config() {
   };
   return {
     user: need("CARD_RECON_IMAP_USER", "the mailbox the terminals email (marathon6631@gmail.com)"),
-    password: need("CARD_RECON_IMAP_PASSWORD", "a Gmail APP PASSWORD, not the account password — myaccount.google.com → Security → App passwords"),
+    // GOOGLE SHOWS AN APP PASSWORD AS FOUR GROUPS OF FOUR ("abcd efgh ijkl
+    // mnop") and people paste what they are shown. The spaces are presentation,
+    // not part of the secret, and an IMAP LOGIN with them fails as
+    // AUTHENTICATIONFAILED — which reads as "the password is wrong" and sends
+    // someone off to mint another one that will fail the same way. Stripped
+    // here, and only here: a Gmail app password is sixteen letters and nothing
+    // else, so there is no legitimate value this can damage.
+    password: need("CARD_RECON_IMAP_PASSWORD", "a Gmail APP PASSWORD, not the account password — myaccount.google.com → Security → App passwords").replace(/\s+/g, ""),
     host: String(env.CARD_RECON_IMAP_HOST || "imap.gmail.com").trim(),
     port: Number(env.CARD_RECON_IMAP_PORT || 993),
     mailbox: String(env.CARD_RECON_IMAP_MAILBOX || "INBOX").trim(),
