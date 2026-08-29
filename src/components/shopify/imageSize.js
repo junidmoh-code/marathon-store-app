@@ -111,7 +111,11 @@ function webpSize(b) {
 // null and the caller falls back.
 function bmpSize(b) {
   const dib = u32le(b, 14);
-  if (dib === 12) return pair(u16le(b, 18), Math.abs((u16le(b, 20) << 16) >> 16));
+  // UNSIGNED, both of them. The top-down convention arrived with the 40-byte
+  // header; a core header's height is a plain 16-bit count, so sign-extending
+  // it turns any height above 32767 into a negative and then into the wrong
+  // number. (CodeRabbit, PR #510.)
+  if (dib === 12) return pair(u16le(b, 18), u16le(b, 20));
   // Height is signed in every 40+ byte header: negative means a top-down
   // bitmap, which is the same size the other way up.
   if (dib >= 40) return pair(u32le(b, 18), Math.abs(u32le(b, 22) | 0));

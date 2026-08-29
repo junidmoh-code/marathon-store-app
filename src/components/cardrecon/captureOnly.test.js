@@ -91,7 +91,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the capture screen reads exactly two nodes, and both are named here on purpose", () => {
+  it("the capture screen reads exactly three nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -106,12 +106,20 @@ describe("the store app is capture-only", () => {
     //                          ever see is the failure this feature exists to
     //                          prevent.
     //
+    //   card_batch_poll_status  the poller's heartbeat — one small node saying
+    //                          when the mailbox was last checked and nothing
+    //                          else. It is read because a quiet mailbox and a
+    //                          dead poller are the same empty feed without it,
+    //                          and "no refusals" from a poller that stopped
+    //                          hours ago is the most dangerous thing this panel
+    //                          could imply.
+    //
     // Everything else about a slip still goes to the callable and comes back as
-    // an acknowledgement. A THIRD node appearing here is a change of policy and
+    // an acknowledgement. A FOURTH node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
     const src = readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8");
     const reads = [...stripComments(src).matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)].map((m) => m[1]);
-    expect(reads.slice().sort()).toEqual(["card_batch_intake", "config/cardTerminals"]);
+    expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals"]);
   });
 
   it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {

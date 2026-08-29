@@ -684,8 +684,22 @@ capture a slip, while the evidence itself stays in the owner-only records. The
 tab reads it as a bounded tail (`limitToLast`), never as a whole node, and a
 **denied read is shown as denied**, never as an empty feed.
 
-If nothing has arrived for two days the panel says so by name: silence is how a
-scheduled job fails.
+### Silence is how a scheduled job fails, and there are two silences
+
+A quiet mailbox and a **dead poller** are the same empty feed, and they mean
+opposite things. The poller therefore writes a heartbeat to
+**`/card_batch_poll_status`** on *every* tick — including the ones that find
+nothing — and the panel checks it first:
+
+* the poller ran minutes ago and nothing came in → **nothing is said**. An alarm
+  here is the kind that teaches people to ignore alarms.
+* the mailbox has not been checked for an hour → **"the poller has stopped. Any
+  batch report emailed since is sitting unread."** Even when the feed looks
+  recent.
+
+Three nodes go into the rules, not two: without the heartbeat, "no refusals"
+from a poller that stopped hours ago is the most dangerous thing the panel could
+imply.
 
 ## The same slip is never submitted twice
 
@@ -737,7 +751,7 @@ CARD_RECON_IMAP_PASSWORD=<16-character Gmail APP password, not the account passw
 # 2 · The poller's identity (once)
 node scripts/cardrecon/grant-poller-identity.mjs --execute
 
-# 3 · The rule for the new nodes — printed, then pasted in the console by hand
+# 3 · The rules for the THREE new nodes — printed, then pasted in the console
 node scripts/cardrecon/print-card-intake-rule.mjs
 
 # 4 · On the mini

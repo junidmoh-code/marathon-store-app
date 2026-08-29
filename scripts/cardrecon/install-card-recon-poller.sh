@@ -45,9 +45,14 @@ say "node: $NODE ($("$NODE" --version))"
 # 3 · Credentials must be PRESENT before a schedule is armed. The values are
 #     never read, printed or echoed here — only whether the keys exist.
 [ -f "$REPO/.env" ] || { echo "✗ no $REPO/.env — the poller reads CARD_RECON_IMAP_USER and CARD_RECON_IMAP_PASSWORD from it. Create it first; it is gitignored."; exit 1; }
+# QUOTES ARE STRIPPED BEFORE THE VALUE IS JUDGED, exactly as the poller's own
+# loadEnv() strips them. Without that, CARD_RECON_IMAP_PASSWORD="" reads as
+# present (the quote is a non-space character), the schedule is armed, and the
+# failure only appears in a log five minutes later. (CodeRabbit, PR #510.)
 for key in CARD_RECON_IMAP_USER CARD_RECON_IMAP_PASSWORD; do
-  grep -qE "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]]" "$REPO/.env" \
-    || { echo "✗ $key is missing or empty in $REPO/.env"; exit 1; }
+  raw="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$REPO/.env" | tail -1)"
+  raw="${raw%\"}"; raw="${raw#\"}"; raw="${raw%\'}"; raw="${raw#\'}"
+  [ -n "${raw//[[:space:]]/}" ] || { echo "✗ $key is missing or empty in $REPO/.env"; exit 1; }
   say "$key: present"
 done
 SA="/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json"
@@ -65,7 +70,37 @@ say "installing imapflow + mailparser…"
 [ -d "$REPO/functions/node_modules/firebase-admin" ] || { echo "✗ functions/node_modules/firebase-admin is missing — run npm install in $REPO/functions"; exit 1; }
 say "dependencies: ready"
 
-# 5 · The agent. The plist is rewritten with the node this machine actually has
+# 5 · THE IDENTITY, BEFORE THE SCHEDULE. RunAtLoad fires this the moment the
+#     agent is bootstrapped, so installing without the two permission flags
+#     means every message in the mailbox is answered with "This identity may not
+#     capture emailed slips" — a loud failure, but a pointless one, and the mail
+#     is marked read on the way past. Checked here, and it fails CLOSED with the
+#     one command that fixes it. (CodeRabbit, PR #510.)
+POLLER_UID="$(sed -n 's/^[[:space:]]*CARD_RECON_POLLER_UID[[:space:]]*=[[:space:]]*//p' "$REPO/.env" | tail -1)"
+POLLER_UID="${POLLER_UID:-card-recon-email-poller}"
+say "checking the poller identity ($POLLER_UID)…"
+GOOGLE_APPLICATION_CREDENTIALS="$SA" "$NODE" -e '
+const admin = require(process.argv[1] + "/functions/node_modules/firebase-admin");
+admin.initializeApp({ credential: admin.credential.applicationDefault(),
+  databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
+const uid = process.argv[2];
+(async () => {
+  const missing = [];
+  for (const flag of ["card_recon", "card_recon_intake"]) {
+    const v = (await admin.database().ref(`users/${uid}/permFlags/${flag}`).get()).val();
+    if (v !== true) missing.push(flag);
+  }
+  await admin.app().delete();
+  if (missing.length) { console.error(`missing permFlags: ${missing.join(", ")}`); process.exit(2); }
+})();
+' "$REPO" "$POLLER_UID" || {
+  echo "✗ the poller identity is not granted. Run this first, from a machine with owner credentials:"
+  echo "    node scripts/cardrecon/grant-poller-identity.mjs --uid $POLLER_UID --execute"
+  exit 1
+}
+say "identity: card_recon + card_recon_intake granted"
+
+# 6 · The agent. The plist is rewritten with the node this machine actually has
 #     and the checkout it actually uses, so the file and the machine cannot
 #     drift apart.
 mkdir -p "$HOME/Library/LaunchAgents" "$REPO/logs"

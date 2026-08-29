@@ -165,6 +165,17 @@ function EmailedSlips() {
   const [denied, setDenied] = useState(false);   // the rule is not published
   const [broken, setBroken] = useState(null);    // anything else went wrong
   const [open, setOpen] = useState(null);
+  // THE HEARTBEAT, read separately and deliberately: one small node, written by
+  // the poller every tick including the ones that find nothing. Without it, a
+  // quiet mailbox and a dead poller are the same empty feed.
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => {
+    const off = onValue(dbRef(database, "card_batch_poll_status"),
+      (snap) => setStatus(snap.val() || null),
+      () => setStatus(null));   // denied/unavailable is handled by the feed below
+    return () => off();
+  }, []);
 
   useEffect(() => {
     const off = onValue(
@@ -190,7 +201,7 @@ function EmailedSlips() {
   const { rows, refusedCount, recordedCount, lastAt } = useMemo(() => summariseIntake(node), [node]);
   // The SERVER's clock. A handset with a wrong date must not raise or silence
   // an alarm on its own.
-  const silence = silenceNotice(lastAt, serverNowMs());
+  const silence = silenceNotice(lastAt, serverNowMs(), status);
 
   if (denied) {
     return (
@@ -236,9 +247,15 @@ function EmailedSlips() {
         {rows.map((r) => {
           const bad = (r.refused || 0) > 0;
           return (
-            <div key={r.id}
+            // A BUTTON, not a div with a click handler. It is the only
+            // interactive thing in this panel, and a div gets no keyboard, no
+            // focus ring and nothing to announce — on a screen whose whole
+            // purpose is that a refusal is noticed. (CodeRabbit, PR #510.)
+            <button key={r.id} type="button"
                  onClick={() => setOpen(open === r.id ? null : r.id)}
-                 style={{ border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
+                 aria-expanded={open === r.id}
+                 style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit",
+                          border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
                           background: bad ? "rgba(255,107,107,.07)" : "rgba(255,255,255,.03)",
                           borderRadius: 11, padding: "9px 11px", cursor: "pointer" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
@@ -272,7 +289,7 @@ function EmailedSlips() {
                   ))}
                 </div>
               )}
-            </div>
+            </button>
           );
         })}
       </div>

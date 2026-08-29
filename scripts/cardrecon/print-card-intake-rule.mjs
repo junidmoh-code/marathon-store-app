@@ -18,6 +18,10 @@ WHERE:      at the TOP LEVEL, as siblings of "card_batches" — NOT inside /pos,
   ".write": "false",
   ".indexOn": ["at"]
 },
+"card_batch_poll_status": {
+  ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous' && (auth.token.email === 'gunidmoh@gmail.com' || root.child('users').child(auth.uid).child('permFlags').child('card_recon').val() === true)",
+  ".write": "false"
+},
 "card_batch_intake_seen": {
   ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
   ".write": "false"
@@ -40,6 +44,13 @@ WHY EACH LINE IS WHAT IT IS
   the writer; it is a guarantee that NOTHING ELSE can write here. Without it,
   and being top-level nodes, they would answer to no rule at all.
 
+card_batch_poll_status is the HEARTBEAT — one small node, overwritten by the
+  poller every tick including the ticks that find nothing. It is readable by the
+  same people as the feed because without it a quiet mailbox and a dead poller
+  are the same empty panel, and "no refusals" from a poller that stopped hours
+  ago is the most dangerous thing that panel could imply. It holds counts and a
+  timestamp; no message content.
+
 card_batch_intake_seen is the dedupe ledger — one tiny row per message, no
   content. Owner-only because nobody needs to read it; the poller does not
   read it through rules either.
@@ -52,6 +63,8 @@ card_batch_intake_seen is the dedupe ledger — one tiny row per message, no
   retaken, and it is what the tab asks for.)
 
 AFTER PASTING, verify from the app: the Card recon tab's "Emailed slips" panel
-should populate for a card_recon holder and stay empty (permission denied) for
-a staff member without the flag.
+should populate for a card_recon holder and show the permission notice for a
+staff member without the flag. THREE nodes go in, not two — a missing
+card_batch_poll_status leaves the panel unable to tell a quiet mailbox from a
+stopped poller, which is the one thing it exists to say.
 `);

@@ -745,7 +745,22 @@ async function handleSubmit(db, request) {
   // made that choice safe is re-run against the registry as it stands NOW —
   // the same discipline as the re-validation above, applied to the one decision
   // the phone path never has to make.
-  if (draft.intake && draft.intake.channel === "email") {
+  // TRUST NOTHING THE DRAFT SAYS ABOUT ITSELF, INCLUDING ITS PROVENANCE. The
+  // block above re-runs every validation rather than believing a draft this
+  // function wrote, and `intake` deserves the same treatment for two reasons:
+  // it is attacker-supplied text (a subject line, a sender address) on its way
+  // into an append-only record the owner reads, and it is what says this
+  // capture came in on the channel with no picked till. So it is re-sanitised
+  // through the same seam extract used, and the channel's own permission is
+  // asserted again at the moment of record — a flag revoked between extract and
+  // submit must stop the submit. (CodeRabbit, PR #510.)
+  const draftIntake = readIntake(draft.intake);
+  if (draft.intake && !draftIntake) {
+    await draftRef.remove().catch(() => {});
+    return reject("This capture's source could not be verified — nothing was recorded.");
+  }
+  if (draftIntake) {
+    await assertEmailIntake(request);
     const rerouted = routeEmailSlip({ extraction, terminals: terminalsNow });
     if (!rerouted.ok) {
       await draftRef.remove().catch(() => {});
@@ -784,7 +799,7 @@ async function handleSubmit(db, request) {
     ocr: draft.ocr || null,
     capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
     pdfPath: draft.pdfPath || null,
-    intake: draft.intake || null,
+    intake: draftIntake,
   });
 
   const txn = await tidRef.child(write.key).transaction((cur) => {

@@ -34,15 +34,31 @@ describe("attachmentRows", () => {
   });
 });
 
-describe("silenceNotice", () => {
+describe("silenceNotice — a quiet mailbox and a dead poller are opposites", () => {
   const day = 86400000;
-  it("says nothing while the feed is fresh", () => {
-    expect(silenceNotice(1000 * day, 1000 * day + 3600000)).toBe(null);
-    expect(silenceNotice(null, 1000 * day)).toBe(null);
+  const now = 1000 * day;
+
+  it("says NOTHING about a mailbox that is merely quiet, if the poller is alive", () => {
+    // Two weeks of no emailed slips with a heartbeat from ten minutes ago is a
+    // quiet fortnight, not an outage. An alarm here is the kind that teaches
+    // people to ignore alarms.
+    expect(silenceNotice(now - 14 * day, now, { lastRunAt: now - 600000 })).toBe(null);
   });
 
-  it("names the silence once it is long enough to mean something", () => {
-    expect(silenceNotice(1000 * day, 1003 * day)).toMatch(/3 days/);
-    expect(silenceNotice(1000 * day, 1003 * day)).toMatch(/card-recon-poll\.log/);
+  it("calls a STOPPED poller what it is, even when the feed looks recent", () => {
+    // A batch captured an hour ago and no tick since: every report emailed in
+    // between is sitting unread, and the feed alone would look healthy.
+    const notice = silenceNotice(now - 3600000, now, { lastRunAt: now - 5 * 3600000 });
+    expect(notice).toMatch(/has stopped/);
+    expect(notice).toMatch(/5 hours/);
+    expect(notice).toMatch(/card-recon-poll\.log/);
+  });
+
+  it("falls back to the feed's own age when there is no heartbeat at all", () => {
+    // An older build, or one that has never run. Absence is not good news.
+    expect(silenceNotice(now - 3 * day, now, null)).toMatch(/3 days/);
+    expect(silenceNotice(now - 3 * day, now, {})).toMatch(/not reported in at all/);
+    expect(silenceNotice(now - 3600000, now, null)).toBe(null);
+    expect(silenceNotice(null, now, null)).toBe(null);
   });
 });

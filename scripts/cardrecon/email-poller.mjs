@@ -75,6 +75,13 @@ const CALLABLE_URL = "https://europe-west1-marathon-club.cloudfunctions.net/card
 
 const INTAKE_PATH = "card_batch_intake";
 const SEEN_PATH = "card_batch_intake_seen";
+// ── THE HEARTBEAT ────────────────────────────────────────────────────────────
+// ONE node, overwritten every successful tick. Without it, "no emailed slips
+// for two days" is ambiguous in the worst possible direction: a quiet mailbox
+// and a poller that died look identical, and the feed's whole purpose is that a
+// terminal not reconciling is VISIBLE. With it, the tab can say which one it
+// is. (CodeRabbit, PR #510.)
+const STATUS_PATH = "card_batch_poll_status";
 
 // A tick's ceiling. A backlog is drained a tick at a time rather than in one
 // run that holds the lock for an hour; the schedule is every few minutes.
@@ -83,6 +90,19 @@ const MAX_MESSAGES_PER_TICK = 20;
 // re-read because a flag was lost.
 const DEFAULT_LOOKBACK_DAYS = 14;
 const CAPTURE_TIMEOUT_MS = 5 * 60 * 1000;
+// ── THE TICK STOPS TAKING WORK BEFORE THE RUNNER STOPS IT ────────────────────
+// The worst case is arithmetic nobody should rely on: 20 messages × 10
+// attachments × two calls × a five-minute timeout is hours, and the launchd
+// runner kills a run at 30 minutes. A kill is survivable — the claim goes stale
+// and the next tick retakes that message — but it is survivable by accident,
+// and a run killed mid-capture is a run whose log ends in the middle of a
+// sentence.
+//
+// So the tick bounds ITSELF: once it has been going this long it finishes the
+// message in hand and stops taking new ones, leaving the rest for the tick five
+// minutes later. The runner's maxRunMs stays what it should be — a backstop for
+// something genuinely stuck, not the thing that ends a normal busy run.
+const TICK_BUDGET_MS = 12 * 60 * 1000;
 
 // ─── .env ────────────────────────────────────────────────────────────────────
 // Deliberately parsed here rather than by a dependency: it is a dozen lines,
@@ -302,6 +322,7 @@ async function run() {
   }
 
   let scanned = 0, processed = 0, recorded = 0, refused = 0, unrelated = 0;
+  let scannedSoFar = 0;
   try {
     const lock = await client.getMailboxLock(cfg.mailbox);
     try {
@@ -310,23 +331,31 @@ async function run() {
       const take = (uids || []).slice(-MAX_MESSAGES_PER_TICK);
       scanned = take.length;
       if (!take.length) {
+        // A QUIET TICK STILL BEATS. The heartbeat below is written on the way
+        // out either way, which is what tells the tab apart from a dead poller.
         console.log("· 0 unread messages to look at");
-        return 0;
-      }
-      console.log(`· ${take.length} unread message${take.length === 1 ? "" : "s"} to look at`);
+      } else {
+        console.log(`· ${take.length} unread message${take.length === 1 ? "" : "s"} to look at`);
 
-      for (const uid of take) {
-        // ONE MESSAGE'S FAILURE IS NEVER THE TICK'S. A malformed MIME tree, an
-        // attachment that will not decode, a capture call that times out — each
-        // is recorded against that message and the next one still runs.
-        try {
-          const result = await handleMessage({ client, uid, db, idToken, cfg });
-          if (result.processed) processed++;
-          recorded += result.recorded;
-          refused += result.refused;
-          unrelated += result.unrelated;
-        } catch (err) {
-          console.error(`  ✗ message uid ${uid}: ${err.message}`);
+        const deadline = Date.now() + TICK_BUDGET_MS;
+        for (const uid of take) {
+          if (Date.now() > deadline) {
+            console.log(`  · ${take.length - scannedSoFar} message(s) left for the next tick — this one has been going ${Math.round(TICK_BUDGET_MS / 60000)} minutes`);
+            break;
+          }
+          scannedSoFar++;
+          // ONE MESSAGE'S FAILURE IS NEVER THE TICK'S. A malformed MIME tree,
+          // an attachment that will not decode, a capture call that times out —
+          // each is recorded against that message and the next one still runs.
+          try {
+            const result = await handleMessage({ client, uid, db, idToken, cfg });
+            if (result.processed) processed++;
+            recorded += result.recorded;
+            refused += result.refused;
+            unrelated += result.unrelated;
+          } catch (err) {
+            console.error(`  ✗ message uid ${uid}: ${err.message}`);
+          }
         }
       }
     } finally {
@@ -334,6 +363,18 @@ async function run() {
     }
   } finally {
     try { await client.logout(); } catch { /* the connection is going anyway */ }
+  }
+
+  // WRITTEN EVEN WHEN THE TICK FOUND NOTHING — that is the entire point of it.
+  // A failure to write the heartbeat must not fail the tick: the slips are
+  // already recorded, and the next tick writes it again.
+  try {
+    await db.ref(STATUS_PATH).set({
+      lastRunAt: serverNowMs(), scanned, processed, recorded, refused, unrelated,
+      mailbox: cfg.mailbox,
+    });
+  } catch (err) {
+    console.warn(`⚠ could not write the heartbeat (${err.message}) — the capture itself is unaffected`);
   }
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);

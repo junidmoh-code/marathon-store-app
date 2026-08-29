@@ -36,16 +36,43 @@ export function attachmentRows(record) {
 }
 
 /**
- * How long since the poller last wrote anything, as a sentence.
+ * SILENCE IS THE FAILURE MODE OF A SCHEDULED JOB, and there are two silences
+ * that look identical in a feed and mean opposite things:
  *
- * SILENCE IS THE FAILURE MODE OF A SCHEDULED JOB, and a feed that is merely
- * empty looks exactly like a mailbox with nothing in it. `now` is the caller's
- * SERVER-corrected clock (serverNowMs), never the device's: a phone with a
- * wrong clock would otherwise raise or hide an alarm on its own.
+ *   NOTHING CAME IN — the poller ran minutes ago and the mailbox was empty.
+ *     A quiet week. Nothing to do, and an alarm here is the kind that teaches
+ *     people to ignore alarms.
+ *
+ *   NOTHING RAN — the poller itself has stopped, and every batch report emailed
+ *     since is sitting unread. This is an outage, and it is invisible without
+ *     being told: the feed of a dead poller looks exactly like a quiet one.
+ *
+ * The heartbeat (/card_batch_poll_status, written every tick including the ones
+ * that found nothing) is what tells them apart, so it is checked FIRST and its
+ * absence is not treated as good news.
+ *
+ * `now` is the caller's SERVER-corrected clock (serverNowMs), never the
+ * device's: a phone with a wrong date would otherwise raise or hide an alarm on
+ * its own.
  */
-export function silenceNotice(lastAt, now) {
-  if (!Number.isInteger(lastAt) || !Number.isInteger(now)) return null;
+const HEARTBEAT_STALE_MS = 60 * 60 * 1000;   // ticks are 5 minutes apart
+const QUIET_FEED_DAYS = 2;
+
+export function silenceNotice(lastAt, now, status) {
+  if (!Number.isInteger(now)) return null;
+  const lastRunAt = Number(status?.lastRunAt);
+  if (Number.isFinite(lastRunAt) && lastRunAt > 0) {
+    const quietFor = now - lastRunAt;
+    if (quietFor > HEARTBEAT_STALE_MS) {
+      const hours = Math.max(1, Math.round(quietFor / 3600000));
+      return `The mailbox has not been checked for ${hours} hour${hours === 1 ? "" : "s"} — the poller on the Mac mini has stopped. Any batch report emailed since is sitting unread. Check logs/card-recon-poll.log.`;
+    }
+    return null;   // it ran recently; a quiet mailbox is just a quiet mailbox
+  }
+  // No heartbeat at all: either it has never run, or it is an older build. Fall
+  // back to the feed's own age rather than saying nothing.
+  if (!Number.isInteger(lastAt)) return null;
   const days = Math.floor((now - lastAt) / 86400000);
-  if (days < 2) return null;
-  return `Nothing has arrived by email for ${days} days. If the terminals are still emailing their reports, the poller on the Mac mini has stopped — check logs/card-recon-poll.log.`;
+  if (days < QUIET_FEED_DAYS) return null;
+  return `Nothing has arrived by email for ${days} days, and the poller has not reported in at all. If the terminals are still emailing their reports, it has stopped — check logs/card-recon-poll.log.`;
 }
