@@ -40,9 +40,17 @@ test("the record and draft paths are TOP-LEVEL, not under /pos", () => {
   assert.equal(CARD_TERMINALS_PATH, "config/cardTerminals");
 });
 
-test("no function writes a pos/card_* path by hand, bypassing the constants", () => {
+test("no function names a pos/card_* path directly, bypassing the constants", () => {
   // A constant is only a control if nothing goes around it. The Admin SDK
   // ignores rules, so a literal here is all it would take.
+  //
+  // WHAT THIS CATCHES, honestly: a path written as a string literal, and the
+  // `.child("card_batch…")` chained form. What it does NOT catch is a path
+  // ASSEMBLED at runtime — `"pos/" + name`, or a segment held in a variable.
+  // No amount of grepping catches that, and pretending otherwise is worse than
+  // saying so: the real defence against a computed path is that the two
+  // exported constants are the only way anything here addresses these nodes,
+  // which the test above pins, and that a reviewer reads the diff.
   const root = resolve(__dirname, "..");
   const files = [];
   (function walk(dir) {
@@ -60,8 +68,10 @@ test("no function writes a pos/card_* path by hand, bypassing the constants", ()
     const code = readFileSync(file, "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");
-    if (/["'`]pos\/card_batch/.test(code)) offenders.push(file.slice(root.length + 1));
+    const literal = /["'`]pos\/card_batch/.test(code);              // "pos/card_batches/…"
+    const chained = /\.child\(\s*["'`]card_batch/.test(code);        // .ref("pos").child("card_batches")
+    if (literal || chained) offenders.push(file.slice(root.length + 1));
   }
   assert.deepEqual(offenders, [],
-    `these write or read a /pos card path directly: ${offenders.join(", ")}`);
+    `these name a /pos card path directly: ${offenders.join(", ")}`);
 });

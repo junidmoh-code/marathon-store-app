@@ -17,6 +17,11 @@
 //
 //   node scripts/verify-card-recon-node-isolation.mjs
 //
+// It runs the live rules with ONE deliberate modification: `".read": "false"`
+// spliced onto /pos/card_batches and /pos/card_batch_drafts, so the assertions
+// about those two paths test the actual claim (that such a rule is inert)
+// rather than a weaker one that would pass anyway.
+//
 // Needs Java (the emulator is a JVM binary); set JAVA_HOME_BIN if it is not on
 // PATH. Fetches the live rules read-only with the Firebase CLI's own
 // credentials — it writes nothing to production.
@@ -49,8 +54,27 @@ function accessToken() {
 }
 
 const live = await (await fetch(`${DB}/.settings/rules.json?access_token=${accessToken()}`)).text();
+
+// ── THE COUNTERFACTUAL, SPLICED IN ──────────────────────────────────────────
+// The claim this script makes about the abandoned /pos paths is not "they have
+// no .read" — it is the stronger and less obvious "adding `.read`: `false` to
+// them would not help". Running the LIVE rules verbatim cannot test that: with
+// no .read on those nodes at all, staff read them by inheritance and the
+// assertions pass trivially, proving a much weaker thing while looking green.
+// (A review caught exactly that; the original proof was a throwaway probe that
+// was never committed, so the quoted evidence could not be reproduced by
+// running this file.)
+//
+// So the candidate rule is applied here, in memory, and the assertions below
+// run against it. If RTDB ever gained deeper-revocation semantics, they would
+// start failing — which is the point.
+const doc = JSON.parse(live);
+doc.rules.pos.card_batches[".read"] = "false";
+doc.rules.pos.card_batch_drafts[".read"] = "false";
+const candidate = JSON.stringify(doc, null, 2);
+
 const dir = mkdtempSync(join(tmpdir(), "node-isolation-"));
-writeFileSync(join(dir, "rules.json"), live);
+writeFileSync(join(dir, "rules.json"), candidate);
 writeFileSync(join(dir, "firebase.json"), JSON.stringify({
   database: { rules: "rules.json" },
   emulators: { database: { port: PORT, host: "127.0.0.1" }, ui: { enabled: false } },
@@ -142,10 +166,32 @@ try {
   // narrowed /pos's own `.read` and the residual is genuinely closed — at which
   // point flip these two to `false` and delete this comment. A test that fails
   // is the right way to find that out; a rule that silently does nothing is not.
-  check("staff CAN still read the abandoned /pos/card_batches (read cannot be revoked deeper)", true,
+  // POSITIVE CONTROL FIRST. The behavioural assertions below cannot, on their
+  // own, tell "the `.read`:`false` is inert" from "there is no `.read` here at
+  // all" — both read ALLOWED, which is exactly the finding and exactly what
+  // makes it easy to prove nothing by accident. (Confirmed the hard way:
+  // commenting out the splice left the suite green at 20/20.) So assert the
+  // rule really is in the document the emulator loaded, before asserting that
+  // it does nothing.
+  const loaded = JSON.parse(readFileSync(join(dir, "rules.json"), "utf8"));
+  check("the rules under test DO carry `.read`:`false` on /pos/card_batches", true,
+    loaded.rules.pos.card_batches[".read"] === "false");
+  check("…and on /pos/card_batch_drafts", true,
+    loaded.rules.pos.card_batch_drafts[".read"] === "false");
+
+  // These run against those rules. They still expect ALLOWED, and that is the
+  // whole finding.
+  check("`.read`:`false` on /pos/card_batches does NOT deny staff", true,
     (await req("GET", "pos/card_batches", { as: STAFF })).ok);
-  check("staff CAN still read the abandoned /pos/card_batch_drafts (same reason)", true,
+  check("`.read`:`false` on /pos/card_batch_drafts does NOT deny staff either", true,
     (await req("GET", "pos/card_batch_drafts", { as: STAFF })).ok);
+  check("…nor does it deny a leaf inside one", true,
+    (await req("GET", "pos/card_batches/pe/TID1/1", { as: STAFF })).ok);
+  // …while the sibling `.write`:`false` on the SAME node does work, because
+  // /pos has no `.write` of its own for it to override. One line of the pair
+  // bites and the other cannot, in the same rule object.
+  check("the `.write`:`false` beside it DOES deny", false,
+    (await req("PUT", "pos/card_batches/pe/TID1/9", { as: STAFF, body: { x: 1 } })).ok);
 
   // …which is why the real control is that the paths are DEAD: write-denied to
   // every client, and named by no code in either repo (pinned by
