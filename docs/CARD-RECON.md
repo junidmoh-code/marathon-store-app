@@ -411,6 +411,44 @@ just outside as `expected.nearEdgeLegs` / `nearEdgeCents` plus a warning. They
 are never counted in `cardCents`; the reconciled figure is identical whether or
 not edge reporting is on, which is pinned by test.
 
+#### A transaction is a BLOCK, not a row
+
+This is what the real file actually looks like — one transaction over eight or
+nine lines:
+
+```
+29-08-2026 09:07:23          ← the block opens on a bare timestamp
+UTI:70db11a9-13f2-4980-8fcd-
+97cbf50222c5                 ← …which WRAPS onto the next line
+RRN: 04Yewn059002
+Auth Code: 932966
+TSN:2 Batch:59               ← both numbers, on one line
+518103******4436
+Total: ZAR 900.00            ← the amount
+Purchase ZAR 900.00          ← the type, and the amount again
+```
+
+Consequences that are easy to get wrong:
+
+- **Dates are `DD-MM-YYYY`**, which the printed slip's parser does not read.
+  `parseEmailedStamp` is separate rather than a widening of
+  `parseSlipTimestamp`, because a function accepting both would have to guess
+  which way round `01-02-2026` is. The photo path is untouched by it.
+- **The header carries a bare timestamp too** — the moment the report was
+  printed, *after* the last transaction. A slice with no TSN line is that
+  header, and it is skipped; that same timestamp becomes `printedAt`.
+- **Each block states its own batch number**, which is cross-checked against
+  the report's.
+- **Each block prints its amount twice** (`Total:` then the type line). They
+  must agree, or the report is refused.
+- **Every block prints a `Total:` of its own**, which is why scoping the figure
+  search to the totals region matters: forty per-transaction totals must never
+  become the batch total.
+- **Page furniture lands *inside* blocks.** In the real file a `Page 6 of 7`
+  footer sits between one transaction's timestamp and its UTI. Reading a block
+  means scanning its slice for the fields it carries, so anything else in it is
+  ignored for free.
+
 #### Page furniture, and the totals region
 
 The real emailed report (`Till2FNB-Txn-Notification.pdf` — batch 59, terminal
@@ -440,13 +478,18 @@ There is **no purchases figure distinct from the total** on this report: both
 blocks print `Purchase` and `Total` as the same value and there is no Payment
 Type Summary, so the arithmetic holds with refunds and cash absent.
 
-> ⚠️ **The PDF itself is not in this repository.** A refused capture is never
-> stored (the callable rejects before the Storage write), so the file could not
-> be recovered from the failure. `realReportLines()` in
-> `functions/test/fixtures/makeSlipPdf.cjs` reconstructs its structure from the
-> owner's description plus the figures above, and `makeSlipPdfPaged()` renders
-> it as a genuine seven-page PDF. **Replace it with the real bytes when they
-> arrive** — the assertions should not need to change.
+> **The real PDF is committed** at
+> `functions/test/fixtures/Till2FNB-Txn-Notification.pdf` — the actual
+> seven-page report, 67 KB. Its extracted text sits beside it as
+> `real-report-lines.json` so line-level tests need no pdfjs; one test
+> re-extracts the PDF and asserts the two are identical, so the copy cannot
+> drift. `emailedLines()` generates the same shape for the cases one file
+> cannot cover (refunds, a terminal that omits a column, a corrupted figure).
+>
+> Everything before this was a reconstruction from a description, and the
+> description was wrong in the way that mattered: it described one transaction
+> per row. The real format is blocks. Note also that a refused capture is still
+> never stored, which is why this file had to be sent by hand.
 
 #### The Batch column trap
 
