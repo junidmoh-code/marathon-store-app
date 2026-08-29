@@ -8,7 +8,15 @@
 // minutes later.
 //
 // So the mirror is gone. This runs the SAME parser the poller runs, and prints
-// only what the installer needs to decide:
+// only what the installer needs to decide.
+//
+// IT READS THE FILE ONLY, WHERE THE POLLER MERGES process.env OVER IT — and
+// that asymmetry is deliberate, in the safe direction. The poller runs under
+// launchd, whose plist sets neither credential, so the file IS what it will
+// see; if this merged the installer's own shell environment instead, a variable
+// exported in the terminal someone is installing from would report "present"
+// for a credential that will not exist at 03:00. Reading less than the poller
+// can only refuse a working setup, never arm a broken one.
 //
 //   node scripts/cardrecon/env-report.mjs missing KEY [KEY…]   → missing names
 //   node scripts/cardrecon/env-report.mjs value CARD_RECON_POLLER_UID

@@ -27,8 +27,10 @@ say() { printf '  %s\n' "$*"; }
 # THE .env IS READ BY THE POLLER'S OWN PARSER, not by a bash copy of it.
 # scripts/cardrecon/env-report.mjs prints missing key NAMES and, for the uid
 # alone, its value — so this script never sees a credential and cannot drift
-# from what the poller will actually read. Four drifts in one review cycle are
-# what that mirror cost; see the header of intakeCore.mjs.
+# from how the poller PARSES the file. Four drifts in one review cycle are what
+# that mirror cost; see the header of intakeCore.mjs. (It reads the file only,
+# where the poller merges process.env over it: deliberate, and in the safe
+# direction — see env-report.mjs.)
 
 echo "── Card recon mailbox poller ──"
 
