@@ -22,9 +22,11 @@
       session begins — at LOGIN, not at boot. It survives a restart of this
       machine because the machine logs itself in: `autoLoginUser =
       marathonclub` (verified 2026-08-29), which is also the only reason the
-      other two com.marathon agents work the way everyone assumes they do.
-      Turn auto-login off, or leave the mini sitting at a login window after a
-      power cut, and NONE of the three run — the mailbox simply stops being
+      three agents already loaded there work the way everyone assumes they do —
+      com.marathon.socialpublish, com.marathon.shopifyreconcile and
+      com.marathon.photograbber (listed on the machine the same day; this makes
+      four). Turn auto-login off, or leave the mini sitting at a login window
+      after a power cut, and NONE of them run — the mailbox simply stops being
       checked, and the Card recon tab's heartbeat is what says so.
 
       A LaunchDaemon would not have that dependency, and is deliberately not

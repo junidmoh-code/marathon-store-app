@@ -52,12 +52,12 @@ import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../sho
 import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
-import { summariseIntake, attachmentRows, silenceNotice } from "./intakeFeed";
+import EmailedSlips from "./EmailedSlips";
+import { S, fmtTime } from "./cardReconStyles";
 import { serverNowMs } from "../../utils/serverTime";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
 
-const FONT = "'Inter','SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif";
 
 // Slip photos need legible 8pt thermal print, so the downscale budget is wider
 // than the label reader's 1024px. ~2000px keeps a full receipt column sharp
@@ -71,14 +71,6 @@ function fmtR(cents) {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(cents);
   return `${sign}R${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
-}
-function fmtTime(ms) {
-  if (!Number.isInteger(ms)) return "—";
-  return new Date(ms).toLocaleString("en-ZA", {
-    timeZone: "Africa/Johannesburg",
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  });
 }
 
 /**
@@ -125,19 +117,6 @@ async function downscalePhoto(file) {
   }
 }
 
-const S = {
-  page: { minHeight: "100vh", background: "#05070D", color: "#E9EEFF", fontFamily: FONT, padding: "18px 14px 40px", maxWidth: 560, margin: "0 auto" },
-  h1: { fontSize: 20, fontWeight: 800, margin: "6px 0 2px" },
-  sub: { fontSize: 13, color: "rgba(233,238,255,.55)", lineHeight: 1.5 },
-  card: { background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 14, padding: 14, marginTop: 14 },
-  btn: { width: "100%", minHeight: 54, borderRadius: 13, fontSize: 16, fontWeight: 800, fontFamily: FONT, cursor: "pointer", border: "2px solid rgba(74,127,255,.55)", background: "rgba(74,127,255,.18)", color: "#D7E3FF" },
-  btnGhost: { width: "100%", minHeight: 46, borderRadius: 13, fontSize: 14, fontWeight: 700, fontFamily: FONT, cursor: "pointer", border: "1px solid rgba(255,255,255,.16)", background: "rgba(255,255,255,.04)", color: "rgba(233,238,255,.75)" },
-  warn: { background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.3)", borderRadius: 11, padding: "10px 12px", fontSize: 13, color: "#FDE9B0", marginTop: 10, lineHeight: 1.5 },
-  err: { background: "rgba(255,107,107,.08)", border: "1px solid rgba(255,107,107,.35)", borderRadius: 11, padding: "10px 12px", fontSize: 13.5, color: "#FFB3B3", marginTop: 10, lineHeight: 1.5 },
-  row: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.06)", fontSize: 14 },
-  k: { color: "rgba(233,238,255,.55)" },
-  v: { fontWeight: 700, fontVariantNumeric: "tabular-nums", textAlign: "right" },
-};
 
 function Row({ k, v, tone }) {
   return (
@@ -148,159 +127,6 @@ function Row({ k, v, tone }) {
   );
 }
 
-
-// ─── EMAILED SLIPS — what the mailbox poller did, worst first ────────────────
-// READ-ONLY, and outcomes only: a file name, whether it was recorded, and why
-// not. No total, no expected figure, no variance — this screen is capture-only
-// and the evidence itself stays in the owner-only records.
-//
-// A DENIED READ IS NOT AN EMPTY FEED. Until the rule for /card_batch_intake is
-// pasted (scripts/cardrecon/print-card-intake-rule.mjs), the read is refused —
-// and "no emailed slips" would be a lie that reads as good news. The two states
-// are shown differently, deliberately.
-const INTAKE_FEED_SIZE = 25;
-
-function EmailedSlips() {
-  const [node, setNode] = useState(undefined);   // undefined = loading
-  const [denied, setDenied] = useState(false);   // the rule is not published
-  const [broken, setBroken] = useState(null);    // anything else went wrong
-  const [open, setOpen] = useState(null);
-  // THE HEARTBEAT, read separately and deliberately: one small node, written by
-  // the poller every tick including the ones that find nothing. Without it, a
-  // quiet mailbox and a dead poller are the same empty feed.
-  const [status, setStatus] = useState(null);
-
-  useEffect(() => {
-    const off = onValue(dbRef(database, "card_batch_poll_status"),
-      (snap) => setStatus(snap.val() || null),
-      () => setStatus(null));   // denied/unavailable is handled by the feed below
-    return () => off();
-  }, []);
-
-  useEffect(() => {
-    const off = onValue(
-      // The TAIL, never the node. This grows by a row per message for ever.
-      query(dbRef(database, "card_batch_intake"), orderByChild("at"), limitToLast(INTAKE_FEED_SIZE)),
-      (snap) => { setNode(snap.val() || {}); setDenied(false); setBroken(null); },
-      // TWO DIFFERENT FAILURES, AND ONLY ONE OF THEM IS ABOUT THE RULE.
-      // "The rule has not been published" is precise, actionable advice — and
-      // completely wrong for a dropped connection or a missing index, which is
-      // what every non-permission error here is. Sending someone to Junid about
-      // a rule that is already live is its own kind of lie.
-      (err) => {
-        const code = err?.code || "";
-        // ONE test, not the same three-way comparison twice: the two would
-        // drift the moment the accepted codes changed, and they decide which of
-        // two very different things a person is told.
-        const isDenied = /^permission[-_]denied$/i.test(code);
-        setNode(null);
-        setDenied(isDenied);
-        setBroken(isDenied ? null : (code || "the feed could not be read"));
-        console.warn("emailed slips: read failed", code || err);
-      },
-    );
-    return () => off();
-  }, []);
-
-  const { rows, refusedCount, recordedCount, lastAt } = useMemo(() => summariseIntake(node), [node]);
-  // The SERVER's clock. A handset with a wrong date must not raise or silence
-  // an alarm on its own.
-  const silence = silenceNotice(lastAt, serverNowMs(), status);
-
-  if (denied) {
-    return (
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 6 }}>Emailed slips</div>
-        <div style={S.warn}>
-          This account cannot read the emailed-slip feed yet — the rule for /card_batch_intake has not been
-          published. Nothing is wrong with the slips themselves; ask Junid to paste it
-          (scripts/cardrecon/print-card-intake-rule.mjs).
-        </div>
-      </div>
-    );
-  }
-  if (broken) {
-    return (
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 6 }}>Emailed slips</div>
-        <div style={S.warn}>
-          The emailed-slip feed could not be read just now ({broken}). This says nothing about the slips
-          themselves — try again in a moment.
-        </div>
-      </div>
-    );
-  }
-  if (node === undefined) return null;
-
-  return (
-    <div style={S.card}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)" }}>Emailed slips</div>
-        <div style={{ fontSize: 12, color: refusedCount ? "#FFB3B3" : "rgba(233,238,255,.5)", fontWeight: refusedCount ? 800 : 600 }}>
-          {refusedCount ? `${refusedCount} refused` : `${recordedCount} recorded`}
-        </div>
-      </div>
-      <div style={{ ...S.sub, fontSize: 12, marginTop: 4 }}>
-        What the terminals emailed, captured automatically. Nothing here needs doing unless a line is red.
-      </div>
-      {silence && <div style={S.warn}>{silence}</div>}
-      {rows.length === 0 && !silence && (
-        <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>Nothing has come in by email yet.</div>
-      )}
-      <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-        {rows.map((r) => {
-          const bad = (r.refused || 0) > 0;
-          return (
-            // A BUTTON, not a div with a click handler — and phrasing content
-            // inside it, because a <button> may not legally contain a <div>. It is the only
-            // interactive thing in this panel, and a div gets no keyboard, no
-            // focus ring and nothing to announce — on a screen whose whole
-            // purpose is that a refusal is noticed. (CodeRabbit, PR #510.)
-            <button key={r.id} type="button"
-                 onClick={() => setOpen(open === r.id ? null : r.id)}
-                 aria-expanded={open === r.id}
-                 style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit",
-                          border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
-                          background: bad ? "rgba(255,107,107,.07)" : "rgba(255,255,255,.03)",
-                          borderRadius: 11, padding: "9px 11px", cursor: "pointer" }}>
-              <span style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
-                <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#E9EEFF", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {r.subject || "(no subject)"}
-                </span>
-                <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
-              </span>
-              <span style={{ display: "block", fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
-                {r.from || "unknown sender"}
-                {" · "}
-                {[
-                  r.recorded ? `${r.recorded} recorded` : null,
-                  r.refused ? `${r.refused} REFUSED` : null,
-                  r.unrelated ? `${r.unrelated} not a slip` : null,
-                ].filter(Boolean).join(" · ") || "nothing to capture"}
-              </span>
-              {open === r.id && (
-                <span style={{ marginTop: 8, display: "grid", gap: 5 }}>
-                  {attachmentRows(r).map((a, i) => (
-                    <span key={i} style={{ display: "block", fontSize: 12, lineHeight: 1.45,
-                                          color: a.outcome === "refused" ? "#FFB3B3" : a.outcome === "recorded" ? "#B7F0CC" : "rgba(233,238,255,.5)" }}>
-                      <span style={{ fontWeight: 700 }}>{a.filename}</span>
-                      {a.outcome === "recorded"
-                        ? ` — batch ${a.batchKey}${a.tid ? ` · TID ${a.tid}` : ""}${a.linesCaptured ? "" : " (summary only)"}`
-                        : ` — ${a.reason}`}
-                      {(a.warnings || []).map((w, j) => (
-                        <span key={j} style={{ display: "block", color: "#FDE9B0", fontSize: 11.5 }}>{w}</span>
-                      ))}
-                    </span>
-                  ))}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export default function CardReconScreen({ onExit }) {
   // ── terminal registry (the till picker's source) ──

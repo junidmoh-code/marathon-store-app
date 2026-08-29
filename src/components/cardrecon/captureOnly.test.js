@@ -91,7 +91,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the capture screen reads exactly three nodes, and each is named here on purpose", () => {
+  it("the card recon screens read exactly three nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -117,17 +117,28 @@ describe("the store app is capture-only", () => {
     // Everything else about a slip still goes to the callable and comes back as
     // an acknowledgement. A FOURTH node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
-    const src = readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8");
-    const reads = [...stripComments(src).matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)].map((m) => m[1]);
+    // EVERY file in the feature, not one of them: the emailed-slip panel is its
+    // own file now, and a scan naming a single file goes stale the moment
+    // something is extracted.
+    const reads = [];
+    for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file)) continue;
+      const src = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
+      for (const m of src.matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)) reads.push(m[1]);
+    }
     expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals"]);
   });
 
   it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
     // It grows by a row per message for ever. A whole-node read on a handset on
     // shop wifi is the mistake this repo keeps a rule against.
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
-    const feed = code.slice(code.indexOf("card_batch_intake"));
-    expect(feed.slice(0, 200)).toMatch(/limitToLast/);
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
+    const at = code.indexOf("card_batch_intake");
+    expect(at, "the feed read has moved — this scan must follow it").toBeGreaterThan(-1);
+    expect(code.slice(at, at + 200)).toMatch(/limitToLast/);
+    // The heartbeat is ONE small node and is read whole, deliberately; that is
+    // the difference this assertion must not blur.
+    expect(code).toMatch(/card_batch_poll_status/);
   });
 
   it("the emailed-slip feed renders outcomes, never money", () => {
@@ -135,35 +146,35 @@ describe("the store app is capture-only", () => {
     // treatment as the review: if a figure appears here, it came from somewhere
     // it should not have.
     //
-    // BOTH HALVES, because the helper alone proves almost nothing — it sorts
-    // and counts and never names a record field, so it cannot contain these
-    // tokens by construction. The surface that could is the panel that RENDERS
-    // the records. Its function body is extracted rather than the whole file:
-    // the manual review section further down legitimately shows totalCents and
-    // purchasesCents, which is the slip in the manager's own hand.
-    // (CodeRabbit, PR #510.)
+    // WHOLE FILES, NOT A SLICE OF ONE. The first version of this scanned only
+    // the pure helper, which sorts and counts and never names a record field —
+    // it could not have contained these tokens if it tried. The second sliced
+    // the panel's function body out of CardReconScreen.jsx by string index,
+    // which any ordinary refactor escapes: extract a row renderer, place it
+    // below the screen component, and it renders whatever it likes outside the
+    // slice while both anchor assertions still pass.
+    //
+    // So the panel is its OWN FILE, and both files are scanned entire. A helper
+    // extracted from the panel lands beside it and is scanned too. The manual
+    // review section — which legitimately shows totalCents and purchasesCents,
+    // the slip in the manager's own hand — stays in CardReconScreen.jsx, where
+    // it is not scanned and does not need to be.
+    // (CodeRabbit, then independent review, PR #510.)
     // WORD BOUNDARIES, because `pan` is a substring of `<span>` and of
     // `aria-expanded` — an unbounded match makes this test fail on markup and
     // teaches the next person to weaken it. The token being forbidden is the
     // record FIELD, so that is what is matched.
     const forbidden = [/\btotalCents\b/, /\bpurchasesCents\b/, /\bvarianceCents\b/, /\bamountCents\b/, /\bpan\b/, /\bcashiers\b/];
-    const helper = stripComments(readFileSync(resolve(root, "src/components/cardrecon/intakeFeed.js"), "utf8"));
-    for (const token of forbidden) {
-      expect(helper, `the emailed-slip helper must not handle ${token}`).not.toMatch(token);
+    for (const file of ["intakeFeed.js", "EmailedSlips.jsx"]) {
+      const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
+      for (const token of forbidden) {
+        expect(code, `${file} must not handle ${token}`).not.toMatch(token);
+      }
     }
-
+    // The scan is only worth anything if it CAN fail, so prove the tokens are
+    // findable: the capture screen's own review section renders them.
     const screen = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
-    const start = screen.indexOf("function EmailedSlips(");
-    expect(start, "EmailedSlips has been renamed — this scan must follow it").toBeGreaterThan(-1);
-    const end = screen.indexOf("export default function CardReconScreen", start);
-    expect(end, "EmailedSlips must still sit above the screen it is part of").toBeGreaterThan(start);
-    const panel = screen.slice(start, end);
-    for (const token of forbidden) {
-      expect(panel, `the emailed-slip panel must not render ${token}`).not.toMatch(token);
-    }
-    // The scan is only worth anything if it can FAIL: the manual review section
-    // below does render the slip's own figures, and it must be outside `panel`.
-    expect(screen.slice(end)).toMatch(/\btotalCents\b/);
+    expect(screen, "the review section still renders the slip's own figures — if this fails the scan above proves nothing").toMatch(/\btotalCents\b/);
   });
 
   it("shows no variance, expected figure or cashier list on the handset", () => {

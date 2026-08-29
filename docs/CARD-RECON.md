@@ -728,10 +728,25 @@ changes here.
 **Process management is the machine's existing pattern, not a new one**: a user
 LaunchAgent (`com.marathon.cardreconpoll`), `scripts/lib/launchdRunner.mjs` for
 the pid-carrying lockfile, rotated logs and the consecutive-failure counter, and
-logs under the repo — exactly as `com.marathon.socialpublish` and
-`com.marathon.shopifyreconcile` do. `RunAtLoad` is **true** here (unlike the
-social publisher, whose fire is an irreversible Instagram post): the mailbox is
-checked as soon as the mini is back.
+logs under the repo — exactly as the three agents already loaded on that
+machine do (`com.marathon.socialpublish`, `com.marathon.shopifyreconcile` and
+`com.marathon.photograbber`, verified 2026-08-29). `RunAtLoad` is **true** here,
+unlike the social publisher, whose fire is an irreversible Instagram post:
+nothing this job does cannot be repeated, so the mailbox is checked the moment
+the agent loads rather than up to five minutes later.
+
+**What "restarts with the machine" actually means.** A *user* LaunchAgent loads
+when that user's GUI session begins — at **login, not at boot**. It survives a
+restart because the mini logs itself in (`autoLoginUser = marathonclub`,
+verified 2026-08-29), which is also the only reason the other three behave the
+way everyone assumes. Leave the mini sitting at a login window after a power cut
+and **none of the four run**; the heartbeat in the Card recon tab is what tells
+you, and it is the reason that heartbeat exists.
+
+A LaunchDaemon would not have that dependency, and is deliberately not used:
+root, outside any user session, with the service-account key and `.env` both
+living in this user's home, is a different security posture and a second
+scheduling pattern on a machine that has one.
 
 `imapflow` and `mailparser` live in **`scripts/cardrecon/package.json`**, not in
 `functions/package.json` — those dependencies are installed into every Cloud

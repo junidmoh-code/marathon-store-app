@@ -143,7 +143,12 @@ class PollerStop extends Error {}
 function fail(message) { throw new PollerStop(message); }
 
 function config() {
-  const env = { ...loadEnv(), ...process.env };
+  const fileEnv = loadEnv();
+  const env = { ...fileEnv, ...process.env };
+  // Which of the two places a value came from — the NAME only, never the value.
+  const sourceOf = (key) => (process.env[key] !== undefined
+    ? "this process's environment (a shell export, or the launchd plist)"
+    : join(REPO, ".env"));
   const need = (key, what) => {
     const v = String(env[key] || "").trim();
     if (!v) {
@@ -162,7 +167,13 @@ function config() {
     if (!raw) return fallback;
     const value = Number(raw);
     if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
-      fail(`${key} in ${join(REPO, ".env")} reads "${raw}", which is not ${what}. Remove the line to use the default (${fallback}).`);
+      // NAME THE FILE THE VALUE IS ACTUALLY IN. process.env wins over .env
+      // here, so a variable set in the shell or in the launchd plist's
+      // EnvironmentVariables produced a message telling someone to remove a
+      // line from .env that is not there — and removing it changes nothing,
+      // which is a worse place to be than no message at all. The whole point
+      // of this validator is the sentence.
+      fail(`${key} reads "${raw}", which is not ${what}. It is set in ${sourceOf(key)}; remove it to use the default (${fallback}).`);
     }
     return value;
   };

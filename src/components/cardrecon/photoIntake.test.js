@@ -101,9 +101,17 @@ describe("the ~2000px downscale reaches library photos too", () => {
     // Scoped to downscalePhoto: the PDF path legitimately uses readAsDataURL to
     // turn a file into base64, which is not image decoding and must not be
     // confused with it.
-    const body = code.slice(code.indexOf("async function downscalePhoto"),
-                            code.indexOf("const S = {"));
+    //
+    // ANCHORED TO THE FUNCTION'S OWN END, not to whatever happens to follow it.
+    // This used to slice up to `const S = {`, and when the style block moved to
+    // cardReconStyles.js the slice silently grew to the rest of the file and
+    // swallowed the PDF path — a guard that failed for a reason having nothing
+    // to do with what it guards. A landmark you do not own is not an anchor.
+    const from = code.indexOf("async function downscalePhoto");
+    expect(from, "downscalePhoto has been renamed — this scan must follow it").toBeGreaterThan(-1);
+    const body = code.slice(from, code.indexOf("\n}\n", from) + 3);
     expect(body.length, "the slice must actually cover the function").toBeGreaterThan(200);
+    expect(body, "…and must stop at its closing brace").not.toMatch(/const addPdf/);
     expect(body).toMatch(/decodeImageFile\(/);
     expect(body, "the naive decode path must be gone").not.toMatch(/new Image\(\)/);
     expect(body, "…and the image path must not read files as data URLs").not.toMatch(/readAsDataURL/);
