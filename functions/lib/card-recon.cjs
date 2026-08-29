@@ -417,7 +417,7 @@ function describeField(f) {
  */
 function buildBatchRecord({
   extraction, terminal, tid, batchKey, revision, supersedes,
-  photoPaths, summaryOnly, warnings, expected, cashiers,
+  photoPaths, summaryOnly, warnings, expected, cashiers, match = null,
   submittedBy, submittedAt, draftId, ocr,
   // "pdf"  — read from the terminal's own emailed file, text extracted exactly
   // "photo" — photographed and OCR'd
@@ -485,7 +485,38 @@ function buildBatchRecord({
       tailLegs: expected.tailLegs ?? 0,
       tailCents: expected.tailCents ?? 0,
     },
-    varianceCents: extraction.totalCents - expected.cardCents,
+    // ── WHAT COULD BE ACCOUNTED FOR, WHEREVER IT WAS RUNG ──────────────────
+    // The subtraction above is scoped to the till this terminal is MAPPED to.
+    // The machines move: a speedpoint spent a morning at another shop and its
+    // sales were rung on that shop's till, so the subtraction called R3,500 of
+    // perfectly good takings missing. The match follows the money instead.
+    match: match ? {
+      matchedLegs: match.matches.length,
+      matchedCents: match.matchedCents,
+      onTillCents: match.onTillCents,
+      offTillCents: match.offTillCents,
+      // Where the work was rung when it was not on this terminal's own till,
+      // so "the machine was at Trophy that morning" reads off the record.
+      offTill: Object.keys(match.offTill).length ? match.offTill : null,
+      // Money the machine took that no sale accounts for — the finding.
+      unmatchedTxns: match.unmatchedTxns.length,
+      unmatchedTxnCents: match.unmatchedTxnCents,
+      // …and card sales on this till that the machine has no record of. A
+      // different error, deliberately NOT netted off against the first.
+      unmatchedLegs: match.unmatchedLegsOnTill.length,
+      unmatchedLegCents: match.unmatchedLegCents,
+    } : null,
+    // THE FINDING. Money on the machine that no sale accounts for — which is
+    // exactly `match.unmatchedTxnCents`, since a matched leg carries the same
+    // amount as the transaction it answers. Where no match could run (a
+    // summary-only capture has no transactions), this falls back to the old
+    // till-scoped subtraction.
+    varianceCents: match
+      ? extraction.totalCents - match.matchedCents
+      : extraction.totalCents - expected.cardCents,
+    // The old subtraction, kept so a batch reconciled before the match existed
+    // stays comparable with one reconciled after.
+    varianceOnTillCents: extraction.totalCents - expected.cardCents,
     cashiers: cashiers && cashiers.length ? cashiers : null,
     submittedBy, submittedAt, draftId,
     ocr: ocr ?? null, // { model, tokensIn, tokensOut, costUSD } — provenance

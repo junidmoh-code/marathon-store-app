@@ -48,7 +48,8 @@ const {
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { pdfToLines } = require("./pdfText.js");
-const { computeExpectedCard } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
+const { matchLegs } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 
 if (!admin.apps.length) {
@@ -314,6 +315,19 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
   return keys;
 }
 
+
+// ─── THE MATCH ───────────────────────────────────────────────────────────────
+// Runs beside the till-scoped sum, not instead of it: both go on the record.
+// The sum answers "what did this till take on card in the window"; the match
+// answers "which of this batch's transactions can be accounted for, wherever
+// they were rung". When a machine has moved, only the second is meaningful.
+async function matchBatch(db, { extraction, terminal }) {
+  const legs = await cardLegsInWindow(db, {
+    startMs: extraction.openedAt, endMs: extraction.closedAt, edgeMs: edgeMsFor(extraction),
+  });
+  return matchLegs(extraction.lines || [], legs, terminal);
+}
+
 async function handleExtract(db, request) {
   const { photos, pdf, pickedTid, summaryOnly } = request.data || {};
 
@@ -394,6 +408,7 @@ async function handleExtract(db, request) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
+  const match = await matchBatch(db, { extraction, terminal });
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -536,12 +551,29 @@ async function handleExtractPdf(db, request, { picked, pdf, source }) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
+  const match = await matchBatch(db, { extraction, terminal });
 
   // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
   // than letting them show up only as a variance. This is a warning, never a
   // refusal: the figures are exact, and whether those legs belong to this batch
   // is a judgement for the person reviewing it.
   const warnings = verdict.warnings.slice();
+  if (match.offTillCents !== 0) {
+    const where = Object.entries(match.offTill)
+      .map(([k, v]) => `${k} (${formatCents(v.cents)})`).join(", ");
+    warnings.push(
+      `${match.matches.filter((m) => m.offTill).length} of this batch's transactions were rung up on another till — ${where}. ` +
+      "That is what a card machine being moved between shops looks like, and the money is accounted for. " +
+      "The pairing is by amount and time only: the till's payment ledger records no auth code or card number.",
+    );
+  }
+  if (match.unmatchedLegCents !== 0) {
+    warnings.push(
+      `${match.unmatchedLegsOnTill.length} card sale${match.unmatchedLegsOnTill.length === 1 ? "" : "s"} on this till ` +
+      `(${formatCents(match.unmatchedLegCents)}) have no transaction on this report. They are NOT netted off against ` +
+      "anything missing — a sale the machine has no record of is its own question.",
+    );
+  }
   if (expected.tailLegs > 0) {
     warnings.push(
       `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
@@ -685,6 +717,7 @@ async function handleSubmit(db, request) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
+  const match = await matchBatch(db, { extraction, terminal });
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
@@ -694,7 +727,7 @@ async function handleSubmit(db, request) {
   if (!write.ok) return reject(write.reason);
 
   const record = buildBatchRecord({
-    extraction, terminal, tid: extraction.tid,
+    extraction, terminal, tid: extraction.tid, match,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,

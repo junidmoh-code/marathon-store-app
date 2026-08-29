@@ -501,6 +501,55 @@ position: a real Batch column carries the report's own batch number on **every**
 row. One row whose TSN merely coincides with the batch number does not make a
 column.
 
+## The reconciliation follows the machine, not the till map
+
+`/config/cardTerminals` maps a terminal ID to a store and till. **The machines
+move.** A speedpoint spent a morning at Trophy while its terminal ID points at
+PE Till 2, so four of that day's sales were rung on Trophy's till. The old
+reconciliation — the report's total minus every card leg on the mapped till —
+called R3,500 of perfectly good takings missing, and said nothing about which
+R3,500.
+
+`lib/card-match.cjs` pairs each transaction with a card leg instead:
+
+1. **Pass one, the mapped till.** A leg rung where it should have been is never
+   taken by a cross-till candidate of the same amount.
+2. **Pass two, everywhere else.** This is where a moved machine shows up.
+
+What is left over is the finding, and there are two kinds which are **never
+netted against each other**:
+
+| | meaning |
+|---|---|
+| `match.unmatchedTxnCents` | money the machine took that no sale accounts for — **this is `varianceCents`** |
+| `match.unmatchedLegCents` | a card sale on this till the machine has no record of — a different question |
+
+`match.offTill` records *where* the work was rung when it was not on the
+terminal's own till, so "the machine was at Trophy that morning" reads off the
+record. `varianceOnTillCents` keeps the old subtraction so batches reconciled
+before and after stay comparable.
+
+### What the pairing is worth
+
+**Amount and time only.** The terminal knows an auth code, an RRN, a UTI and a
+masked card number; the till's payment ledger records *none* of them — a card
+leg carries amount, time, till, cashier, receipt and sale id, and nothing else.
+A pairing is therefore a proposal, not a proof, and the warning says so.
+
+The time signal is strong because the lag is **one-directional**: the terminal
+stamps when the card is approved, the till writes its leg when the cashier
+finishes the sale, which can only be later. Measured across all forty
+transactions of the real report against the live ledger:
+
+```
+minimum lag  118 s        median  135 s        maximum  249 s
+legs ahead of their terminal stamp:  none
+```
+
+Hence the asymmetric tolerance — 15 minutes forwards, 2 minutes back. The
+backward allowance is for clock drift between two devices, not because a leg is
+ever expected first.
+
 ### Why the PDF is read as text and never OCR'd
 
 The text in a PDF is exact. There is nothing to be confident *about*, so the
