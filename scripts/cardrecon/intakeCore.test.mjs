@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import {
   messageKey, classifyAttachment, planMessage, classifyRefusal,
   attachmentOutcome, intakeRecord, claimDecision, clip,
-  MAX_ATTACHMENT_BYTES, STALE_CLAIM_MS,
+  MAX_ATTACHMENT_BYTES, STALE_CLAIM_MS, parseEnvText, missingEnvKeys,
 } from "./intakeCore.mjs";
 
 const pdf = (name, extra = 0) => ({
@@ -193,5 +193,51 @@ describe("claimDecision — the same slip is never submitted twice", () => {
     const d = claimDecision({ state: "claimed", at: 1000 }, 1000 + STALE_CLAIM_MS + 1);
     expect(d.take).toBe(true);
     expect(d.why).toMatch(/never finished/);
+  });
+});
+
+// ─── .env, AS THE POLLER AND THE INSTALLER BOTH READ IT ──────────────────────
+// This parser is now the ONLY implementation — the installer runs it through
+// node rather than mirroring it in bash, because that mirror drifted four times
+// in a single review cycle and every drift had the same shape: the installer
+// says fine and the failure appears in a log five minutes later.
+//
+// The corpus below is exactly those drifts, pinned so they cannot come back.
+describe("parseEnvText", () => {
+  it("reads a CRLF-saved file — the case where every value silently vanished", () => {
+    // `.` does not match \r in JS, and an unanchored `$` is the true end of the
+    // string, so splitting on "\n" left `KEY="x"\r` matching NOTHING. A file
+    // that looks perfectly correct in an editor, refused for a missing key.
+    expect(parseEnvText('A="x@y.com"\r\nB=abcd\r\n')).toEqual({ A: "x@y.com", B: "abcd" });
+  });
+
+  it("a quoted empty value, and a quoted space, are EMPTY", () => {
+    // `KEY=""` read as present once, because a quote is a non-space character,
+    // and the schedule was armed over a credential that does not exist.
+    expect(parseEnvText('A=""\nB="   "  \n')).toEqual({ A: "", B: "   " });
+    expect(missingEnvKeys(parseEnvText('A=""\nB="   "\n'), ["A", "B"])).toEqual(["A", "B"]);
+  });
+
+  it("a LONE quote is an empty value, not a value of a quote", () => {
+    expect(parseEnvText('A="\n')).toEqual({ A: "" });
+    expect(missingEnvKeys(parseEnvText('A="\n'), ["A"])).toEqual(["A"]);
+  });
+
+  it("strips ONE matched pair and no more", () => {
+    expect(parseEnvText(`A="'z'"\nB='q'\nC=plain \n`)).toEqual({ A: "'z'", B: "q", C: "plain" });
+  });
+
+  it("keeps a value's own = and spaces, and takes the last of a repeated key", () => {
+    expect(parseEnvText("A=abcd efgh ijkl mnop\nB=a=b=c\nC=1\nC=2\n"))
+      .toEqual({ A: "abcd efgh ijkl mnop", B: "a=b=c", C: "2" });
+  });
+
+  it("ignores comments, blanks and anything that is not a key=value", () => {
+    expect(parseEnvText("# a note\n\n  \nnot a line\nA=1\n")).toEqual({ A: "1" });
+    expect(parseEnvText(null)).toEqual({});
+  });
+
+  it("missingEnvKeys names only what is missing", () => {
+    expect(missingEnvKeys({ A: "x", B: "" }, ["A", "B", "C"])).toEqual(["B", "C"]);
   });
 });

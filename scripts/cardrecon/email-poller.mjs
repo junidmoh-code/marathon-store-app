@@ -55,6 +55,7 @@ import { simpleParser } from "mailparser";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
+  parseEnvText,
 } from "./intakeCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
@@ -105,8 +106,10 @@ const CAPTURE_TIMEOUT_MS = 5 * 60 * 1000;
 const TICK_BUDGET_MS = 12 * 60 * 1000;
 
 // ─── .env ────────────────────────────────────────────────────────────────────
-// Deliberately parsed here rather than by a dependency: it is a dozen lines,
-// and a package that reads secrets is a package somebody must keep patched.
+// THE PARSING ITSELF LIVES IN intakeCore.mjs, exported. The installer needs the
+// same answer this does — "can the poller read this file?" — and answering it
+// twice, once here and once in bash, drifted four times in a single review
+// cycle. It runs this parser through node instead. See parseEnvText.
 function loadEnv() {
   const path = join(REPO, ".env");
   let text;
@@ -121,24 +124,7 @@ function loadEnv() {
       `and nothing else is required.`,
     );
   }
-  const env = {};
-  // SPLIT ON EITHER LINE ENDING. A .env edited on Windows, or pasted through a
-  // tool that normalises to CRLF, ends every line with \r — and in JavaScript
-  // `.` does not match \r and an unanchored `$` is the true end of the string,
-  // so `KEY="x"\r` matched NOTHING. Every value silently vanished and the
-  // poller refused on a file that looks perfectly correct in an editor.
-  // (Independent review, PR #510 — found by checking the installer's claim of
-  // parity with this function, which is exactly what it was written to check.)
-  for (const line of text.split(/\r?\n/)) {
-    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
-    if (!m) continue;
-    let value = m[2].trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    env[m[1]] = value;
-  }
-  return env;
+  return parseEnvText(text);
 }
 
 // ── ONE EXIT SHAPE ───────────────────────────────────────────────────────────

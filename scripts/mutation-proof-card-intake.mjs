@@ -154,6 +154,14 @@ const MUTATIONS = [
     "  const basis = clip(messageId, 400)\n    || `no-id|${uidValidity || \"\"}|${uid ?? \"\"}|${clip(from, 200) || \"\"}|${clip(subject, 200) || \"\"}|${date || \"\"}|${size || 0}`;",
     '  const basis = clip(messageId, 400) || "no-id";'],
 
+  ["intake", "a CRLF-saved .env parses to nothing, and every credential goes missing",
+    '  for (const line of String(text ?? "").split(/\\r?\\n/)) {',
+    '  for (const line of String(text ?? "").split("\\n")) {'],
+
+  ["intake", "a quoted empty credential reads as present and arms the schedule",
+    "    if ((value.startsWith('\"') && value.endsWith('\"')) || (value.startsWith(\"'\") && value.endsWith(\"'\"))) {\n      value = value.slice(1, -1);\n    }",
+    "    /* mutated */"],
+
   ["intake", "a subject line is stored unbounded — attacker text in a record people read",
     "  return s.length > max ? `${s.slice(0, max - 1)}…` : s;",
     "  return s;"],

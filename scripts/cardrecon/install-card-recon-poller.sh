@@ -24,34 +24,11 @@ UID_NUM="$(id -u)"
 
 say() { printf '  %s\n' "$*"; }
 
-# ── ONE NORMALISATION, MIRRORING email-poller.mjs's loadEnv() ────────────────
-# Trim, then strip ONE MATCHED PAIR of quotes — the same order, and the same
-# matched-pair rule, because this script's only job here is to judge the value
-# the POLLER will see. Two near-copies drifted twice already: stripping before
-# trimming left the closing quote on a trailing space (so an empty credential
-# read as present), and treating each quote character independently stripped
-# `"'x'"` twice (so a different uid was validated than the one that runs).
-#
-# A LONE QUOTE IS AN EMPTY VALUE, not a value of `"`. loadEnv's startsWith and
-# endsWith are BOTH true on a single character, so it slices to empty and the
-# poller refuses; the glob below cannot match one character, so it is handled
-# explicitly rather than passing as a present credential.
-strip_env_value() {
-  local v
-  v="$(printf %s "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-  case "$v" in
-    '"'|"'") v="" ;;
-    \"*\") v="${v#\"}"; v="${v%\"}" ;;
-    \'*\') v="${v#\'}"; v="${v%\'}" ;;
-  esac
-  printf %s "$v"
-}
-
-# The value of one key as the poller will read it. Handles a CRLF-saved file the
-# same way loadEnv now does — `tr -d '\r'` is this script's `split(/\r?\n/)`.
-env_value() {
-  strip_env_value "$(tr -d '\r' < "$REPO/.env" | sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" | tail -1)"
-}
+# THE .env IS READ BY THE POLLER'S OWN PARSER, not by a bash copy of it.
+# scripts/cardrecon/env-report.mjs prints missing key NAMES and, for the uid
+# alone, its value — so this script never sees a credential and cannot drift
+# from what the poller will actually read. Four drifts in one review cycle are
+# what that mirror cost; see the header of intakeCore.mjs.
 
 echo "── Card recon mailbox poller ──"
 
@@ -74,15 +51,9 @@ say "node: $NODE ($("$NODE" --version))"
 # 3 · Credentials must be PRESENT before a schedule is armed. The values are
 #     never read, printed or echoed here — only whether the keys exist.
 [ -f "$REPO/.env" ] || { echo "✗ no $REPO/.env — the poller reads CARD_RECON_IMAP_USER and CARD_RECON_IMAP_PASSWORD from it. Create it first; it is gitignored."; exit 1; }
-# QUOTES ARE STRIPPED BEFORE THE VALUE IS JUDGED, exactly as the poller's own
-# loadEnv() strips them. Without that, CARD_RECON_IMAP_PASSWORD="" reads as
-# present (the quote is a non-space character), the schedule is armed, and the
-# failure only appears in a log five minutes later. (CodeRabbit, PR #510.)
-for key in CARD_RECON_IMAP_USER CARD_RECON_IMAP_PASSWORD; do
-  raw="$(env_value "$key")"
-  [ -n "${raw//[[:space:]]/}" ] || { echo "✗ $key is missing or empty in $REPO/.env"; exit 1; }
-  say "$key: present"
-done
+MISSING="$("$NODE" "$REPO/scripts/cardrecon/env-report.mjs" missing CARD_RECON_IMAP_USER CARD_RECON_IMAP_PASSWORD)"
+[ -z "$MISSING" ] || { echo "✗ missing or empty in $REPO/.env: $MISSING"; exit 1; }
+say "CARD_RECON_IMAP_USER + CARD_RECON_IMAP_PASSWORD: present"
 SA="/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json"
 [ -f "$SA" ] || { echo "✗ no service-account key at $SA — the poller needs it to mint its identity and write /card_batch_intake."; exit 1; }
 say "service account: present"
@@ -104,7 +75,7 @@ say "dependencies: ready"
 #     capture emailed slips" — a loud failure, but a pointless one, and the mail
 #     is marked read on the way past. Checked here, and it fails CLOSED with the
 #     one command that fixes it. (CodeRabbit, PR #510.)
-POLLER_UID="$(env_value CARD_RECON_POLLER_UID)"
+POLLER_UID="$("$NODE" "$REPO/scripts/cardrecon/env-report.mjs" value CARD_RECON_POLLER_UID)"
 POLLER_UID="${POLLER_UID:-card-recon-email-poller}"
 say "checking the poller identity ($POLLER_UID)…"
 GOOGLE_APPLICATION_CREDENTIALS="$SA" "$NODE" -e '

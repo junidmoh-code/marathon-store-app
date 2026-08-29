@@ -783,9 +783,16 @@ ssh marathonclub@100.64.186.78 'bash ~/marathon-store-app/scripts/cardrecon/inst
 ```
 
 An app password is minted at myaccount.google.com → Security → App passwords
-(2-Step Verification must be on). The poller reads `.env` and **fails with a
-sentence naming exactly what to add** if a value is missing; no credential value
-is ever printed, logged or echoed.
+(2-Step Verification must be on). Google shows it in four groups of four; the
+spaces are presentation and are stripped, so paste it either way.
+
+The poller reads `.env` and **fails with a sentence naming exactly what to add**
+if a value is missing; no credential value is ever printed, logged or echoed.
+The installer refuses to arm the schedule over a `.env` the poller cannot read —
+and it answers that question by running **the poller's own parser**
+(`scripts/cardrecon/env-report.mjs`, which prints missing key *names* and, for
+the uid alone, its value). It used to mirror that parser in bash, and the two
+drifted four times in one review cycle; there is one implementation now.
 
 ## Checking on it
 

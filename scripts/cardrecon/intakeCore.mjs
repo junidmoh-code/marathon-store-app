@@ -25,6 +25,49 @@
 // firebase-admin, no fetch, no clock. Tested in intakeCore.test.mjs.
 import { createHash } from "node:crypto";
 
+// ─── .env, PARSED ONCE, IN ONE PLACE ─────────────────────────────────────────
+// Deliberately not a dependency: it is a dozen lines, and a package that reads
+// secrets is a package somebody must keep patched forever.
+//
+// IT LIVES HERE, EXPORTED, BECAUSE TWO PROGRAMS NEED THE SAME ANSWER. The
+// poller reads the values; the installer must refuse to arm a schedule over a
+// file the poller cannot read. That was written twice — once in JavaScript and
+// once in bash — and the two copies drifted FOUR times in one review cycle:
+// stripping before trimming, stripping each quote character independently, a
+// lone quote read as a credential, and CRLF handling that differed on a stray
+// carriage return. Every one of them had the same shape: the installer says
+// fine and the failure appears in a log five minutes later.
+//
+// So there is no bash copy any more. The installer runs THIS, through node,
+// and asks which keys are missing — names only, never values.
+//
+// Line endings: split on /\r?\n/, because a .env saved on Windows ends every
+// line with \r, and in JavaScript `.` does not match \r and an unanchored `$`
+// is the true end of the string — so `KEY="x"\r` matched NOTHING and every
+// value silently vanished from a file that looks perfectly correct in an editor.
+export function parseEnvText(text) {
+  const env = {};
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
+    if (!m) continue;
+    let value = m[2].trim();
+    // ONE MATCHED PAIR. A lone quote is an empty value, not a value of `"`.
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    env[m[1]] = value;
+  }
+  return env;
+}
+
+/**
+ * Which of these keys carry a usable value, and which do not — by NAME.
+ * The installer's whole check, and it never sees a value.
+ */
+export function missingEnvKeys(env, keys) {
+  return keys.filter((k) => !String(env?.[k] ?? "").trim());
+}
+
 // The callable's own ceiling is 10 MB, but a base64 body is a third larger
 // again and the request limit sits at 10 MB — so an attachment above this is
 // refused HERE, with a sentence in the feed, rather than failing as a transport
