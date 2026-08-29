@@ -237,6 +237,26 @@ describe("two picks at once must not lose photos", () => {
   });
 });
 
+describe("the copy matches what the buttons now do", () => {
+  it("no instruction still says only SHOOT, now that choosing is allowed", () => {
+    // The buttons say "Shoot or choose"; a hint that says "Shoot the detail
+    // roll" quietly contradicts them and sends a manager back to the camera.
+    // Found by probing the deployed bundle for the old label and getting a hit.
+    // Per SENTENCE, not per word: "Shoot it here or pick it from your photos"
+    // is fine, "Shoot the detail roll" is not. A bare word-match flagged the
+    // correct copy and had to be replaced.
+    const sentences = code.split(/(?<=[.!?])\s+|\n/);
+    const cameraOnly = sentences
+      .filter((t) => /\bShoot\b/.test(t))
+      .filter((t) => !/\b(choose|pick)\b/i.test(t))
+      .map((t) => t.trim().slice(0, 60));
+    expect(cameraOnly, `these still assume the camera: ${cameraOnly.join(" | ")}`).toEqual([]);
+    // …and the alternative is actually offered somewhere, so this cannot pass
+    // by the copy having been deleted rather than fixed.
+    expect(code).toMatch(/Shoot or choose/);
+  });
+});
+
 describe("what must NOT have changed", () => {
   it("the two uploads are still separate — detail roll and summary", () => {
     expect(code).toMatch(/setDetailPhotos/);

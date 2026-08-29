@@ -332,7 +332,7 @@ export default function CardReconScreen({ onExit }) {
         <>
           <div style={S.card}>
             <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>2 · The detail roll</div>
-            <div style={S.sub}>Shoot the printed transaction list in overlapping sections — every line, sharp. This is the point of the capture.</div>
+            <div style={S.sub}>The printed transaction list, in overlapping sections — every line, sharp. Shoot it here or pick it from your photos. This is the point of the capture.</div>
             {/* No `capture` attribute: with it, the OS opens the camera and
                 nothing else. Without it the manager gets the normal picker and
                 can shoot the whole roll in the Photos app first, then pick the
@@ -405,7 +405,7 @@ export default function CardReconScreen({ onExit }) {
             </button>
             {summaryPhotos.length === 0 && <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>The summary photo is required.</div>}
             {summaryPhotos.length > 0 && detailPhotos.length === 0 && !summaryOnly && (
-              <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>Shoot the detail roll, or tick summary-only.</div>
+              <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>Add the detail roll, or tick summary-only.</div>
             )}
           </div>
         </>
