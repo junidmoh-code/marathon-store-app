@@ -87,6 +87,12 @@ function fmtTime(ms) {
  * phones this change is for. decodeImageFile falls back to a lazily-imported
  * wasm decoder, and resizes DURING decode where the browser supports it — which
  * on a phone is the difference between one upload and three.
+ *
+ * That resize is gated on the picture's own PIXELS, not on the file's size, so
+ * a slip photographed as a heavy but modest-resolution file is no longer
+ * UPSCALED on the way in. It matters most here: the clamp below limits the
+ * longer side only, so an upscaled bitmap would have been uploaded upscaled —
+ * a blurrier photograph of 8pt thermal print, for more bytes.
  */
 async function downscalePhoto(file) {
   const decoded = await decodeImageFile(file, MAX_PHOTO_DIM);
