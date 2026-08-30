@@ -684,10 +684,23 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   const documents = []; // { lines: string[]|null, text: string }
   let slipPdfs = 0;
   if (verdict.pass) {
-    const pdfs = (Array.isArray(parsed.attachments) ? parsed.attachments : [])
-      .filter((a) => classifyAttachment(a).ok)
-      .slice(0, MAX_EFT_PDFS);
-    for (const att of pdfs) {
+    // Every attachment is ACCOUNTED FOR in the record, even the ones that are
+    // not extracted: an oversized or corrupt PDF, or one past the ceiling,
+    // leaves a placeholder line in the raw text instead of vanishing — a
+    // refusal that hides the very document it refused would be undiagnosable.
+    const verdicts = (Array.isArray(parsed.attachments) ? parsed.attachments : [])
+      .map((att) => ({ att, cls: classifyAttachment(att) }))
+      .filter(({ cls }) => cls.ok || cls.kind === "refuse"); // skip = inline logos etc.
+    let extracted = 0;
+    for (const { att, cls } of verdicts) {
+      if (!cls.ok) {
+        documents.push({ lines: null, text: `[attachment "${clip(att.filename, 80)}" not read: ${cls.why}]` });
+        continue;
+      }
+      if (++extracted > MAX_EFT_PDFS) {
+        documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" not read: more than ${MAX_EFT_PDFS} PDFs on one message]` });
+        continue;
+      }
       const out = await pdfToLines(att.content);
       if (!out.ok) {
         documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" could not be read: ${out.reason}]` });
