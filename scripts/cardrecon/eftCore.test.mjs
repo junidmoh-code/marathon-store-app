@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import {
   domainOfAddress, domainsAligned, unfoldHeader, authenticationVerdict,
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
-  parseEftNotification, eftMessageKey,
+  parseEftNotification, eftMessageKey, poolWriteDecision, eftPoolRecord,
 } from "./eftCore.mjs";
 
 // Verbatim from the real message (uid 6, "Banking Report for Batch 16 of
@@ -267,5 +267,66 @@ describe("identity — the same notification never lands twice", () => {
     const noId = { ...parts, messageId: null };
     expect(eftMessageKey({ ...noId, authPass: true })).toBe(eftMessageKey({ ...noId, authPass: true }));
     expect(eftMessageKey({ ...noId, authPass: true })).not.toBe(eftMessageKey({ ...noId, uid: 13, authPass: true }));
+  });
+
+  it("REPLAY: the create-only write leaves the existing record — and its status — untouched", () => {
+    // A miniature of the RTDB transaction the poller runs: first delivery
+    // writes; the same message replayed later (stale claim, mailbox re-read)
+    // finds the record and must not reset a status a later session has moved.
+    const store = {};
+    const transact = (key, record) => {
+      const d = poolWriteDecision(store[key] ?? null, record);
+      if (d.write) store[key] = d.value;
+      return d;
+    };
+    const key = eftMessageKey({ ...parts, authPass: true });
+    const record = { outcome: "recorded", status: "unmatched", amountCents: 50000 };
+    expect(transact(key, record).write).toBe(true);
+    store[key].status = "matched"; // a future session moved it on
+    expect(transact(key, { ...record }).write).toBe(false);
+    expect(store[key].status).toBe("matched");
+    expect(Object.keys(store)).toHaveLength(1);
+  });
+});
+
+describe("the pool record", () => {
+  const message = { messageId: "<m@x>", from: `<${REAL_FROM}>`, subject: "Payment notification", receivedAt: 1788093716654 };
+  const passVerdict = { pass: true, fromDomain: "fnb.co.za", dkimDomain: "fnb.co.za", detail: "dkim=pass, signed by fnb.co.za, aligned with fnb.co.za" };
+
+  it("a verified, parsed payment: outcome recorded, status unmatched, every field aboard", () => {
+    const r = eftPoolRecord({
+      message, verdict: passVerdict,
+      parsed: { ok: true, amountCents: 123456, reference: "THANDI", payer: "T M", bankTs: 5 },
+      rawText: "Amount: R 1,234.56\nfrom account 62834519234", at: 99,
+    });
+    expect(r).toMatchObject({
+      outcome: "recorded", status: "unmatched", amountCents: 123456,
+      reference: "THANDI", payer: "T M", bankTs: 5, at: 99, receivedAt: 1788093716654,
+      auth: { verdict: "pass" },
+    });
+    expect(r.rawText).toContain("⋯234"); // the account run is struck out
+    expect(r.rawText).not.toContain("62834519234");
+  });
+
+  it("a failed-authentication refusal is its own outcome, named as a forgery attempt", () => {
+    const r = eftPoolRecord({
+      message, verdict: { pass: false, fromDomain: "fnb.co.za", dkimDomain: null, detail: "no aligned DKIM pass — Gmail recorded dkim=fail (fnb.co.za)" },
+      parsed: null, rawText: "pay me", at: 99,
+    });
+    expect(r.outcome).toBe("refused-auth");
+    expect(r.reason).toMatch(/forgery attempt/);
+    expect(r.status).toBeUndefined();
+    expect(r.amountCents).toBeUndefined();
+  });
+
+  it("a parse refusal keeps the raw text so the format change is diagnosable", () => {
+    const r = eftPoolRecord({
+      message, verdict: passVerdict,
+      parsed: { ok: false, reason: "No Amount field and no rand figure anywhere in the message." },
+      rawText: "Sawubona! Your payment of five hundred rand is in.", at: 99,
+    });
+    expect(r.outcome).toBe("refused-parse");
+    expect(r.rawText).toContain("five hundred rand");
+    expect(r.status).toBeUndefined();
   });
 });

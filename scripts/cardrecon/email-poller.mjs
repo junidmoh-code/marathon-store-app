@@ -57,6 +57,16 @@ import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
   parseEnvText,
 } from "./intakeCore.mjs";
+// ── THE SECOND READER ────────────────────────────────────────────────────────
+// EFT payment notifications arrive in the SAME mailbox (customers enter it as
+// the notification address in their FNB app). This poller is the only IMAP
+// consumer — a separate poller could never work, because this one marks
+// ordinary mail \Seen and would hide every notification from it. The decisions
+// live in eftCore.mjs; here is only the wiring. See handleEftMessage.
+import {
+  EFT_POOL_PATH, isEftCandidate, authenticationVerdict, htmlToText,
+  parseEftNotification, eftMessageKey, poolWriteDecision, eftPoolRecord,
+} from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
 // mini borrows it (scripts/shopify, scripts/social). One copy, one version.
@@ -375,6 +385,10 @@ async function run() {
   }
 
   let scanned = 0, processed = 0, recorded = 0, refused = 0, unrelated = 0;
+  // The EFT reader's own tallies — separable on purpose: a refused slip means a
+  // terminal is not reconciling; a refused-auth notification means somebody
+  // tried to forge a payment. Different alarms for different people.
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0;
   let scannedSoFar = 0;
   try {
     const lock = await client.getMailboxLock(cfg.mailbox);
@@ -406,6 +420,9 @@ async function run() {
             recorded += result.recorded;
             refused += result.refused;
             unrelated += result.unrelated;
+            eftRecorded += result.eftRecorded || 0;
+            eftRefusedAuth += result.eftRefusedAuth || 0;
+            eftRefusedParse += result.eftRefusedParse || 0;
           } catch (err) {
             console.error(`  ✗ message uid ${uid}: ${err.message}`);
           }
@@ -424,6 +441,9 @@ async function run() {
   try {
     await db.ref(STATUS_PATH).set({
       lastRunAt: serverNowMs(), scanned, processed, recorded, refused, unrelated,
+      // The EFT reader beats on the same heart: counts only, never a figure —
+      // this node is readable by every card_recon holder.
+      eftRecorded, eftRefusedAuth, eftRefusedParse,
       mailbox: cfg.mailbox,
     });
   } catch (err) {
@@ -432,6 +452,9 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} refused as unparseable — see /eft_pool`);
+  }
   return 0;
 }
 
@@ -475,6 +498,17 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
 
   const { take, refused: badAttachments, skipped } = planMessage(parsed.attachments);
   if (!take.length && !badAttachments.length) {
+    // ── THE SECOND READER ────────────────────────────────────────────────────
+    // A message with no slip PDFs that CLAIMS to be from an allowlisted bank is
+    // an EFT payment notification candidate. The claim is attacker-controlled
+    // text — it decides only that the authentication check runs. Everything
+    // else about the message is decided in eftCore.mjs.
+    const eft = await handleEftMessage({
+      client, range, db, parsed, message, cfg,
+      uid, uidValidity: String(client.mailbox?.uidValidity ?? ""),
+      size: downloaded.meta?.expectedSize || 0,
+    });
+    if (eft) return eft;
     // Ordinary mail. Marked read so it is not looked at again, and nothing is
     // written — a record per newsletter would bury the thing this feed is for.
     if (!cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true });
@@ -545,6 +579,86 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   return {
     processed: true,
     recorded: record.recorded, refused: record.refused, unrelated: record.unrelated,
+  };
+}
+
+// ─── THE EFT READER ──────────────────────────────────────────────────────────
+// One payment notification, all the way through: authenticate, parse, store.
+// Returns null when the message was never an EFT candidate (the caller falls
+// through to ordinary mail); otherwise the tick's tallies for this message.
+//
+// NOTHING IS SILENTLY DROPPED, same law as the slips: every candidate leaves a
+// record at /eft_pool — a verified payment (status "unmatched"), a forgery
+// attempt (refused-auth), or a format surprise (refused-parse). A payment that
+// silently fails to land is the failure mode this whole feature exists to
+// prevent.
+//
+// THE SAME NOTIFICATION NEVER CREATES TWO POOL RECORDS. Three layers:
+//   1. The record's node name IS the message's key (eftMessageKey) — a replay
+//      lands on the same node.
+//   2. The write is a CREATE-ONLY transaction (poolWriteDecision): an existing
+//      record — whatever status a later session has moved it to — is never
+//      overwritten.
+//   3. The shared claim at /card_batch_intake_seen/{key}, same discipline and
+//      the same stale-claim rescue as the slips. One mailbox, one ledger.
+async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, uidValidity, size }) {
+  const fromAddress = parsed.from?.value?.[0]?.address || null;
+  if (!isEftCandidate({ fromAddress, subject: message.subject, slipCount: 0 })) return null;
+
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
+  const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
+  // The auth verdict is part of the key so a forgery carrying a guessed genuine
+  // Message-ID cannot occupy the key the genuine notification will need.
+  const key = eftMessageKey({
+    messageId: parsed.messageId, from: message.from, subject: message.subject,
+    date: message.receivedAt, size, uid, uidValidity, authPass: verdict.pass,
+  });
+
+  if (cfg.dryRun) {
+    console.log(`  · would examine as an EFT notification (auth ${verdict.pass ? "pass" : "FAIL"}): "${message.subject || "(no subject)"}"`);
+    return empty;
+  }
+
+  const claim = await claimMessage(db, key);
+  if (!claim.taken) {
+    console.log(`  · EFT "${message.subject || "(no subject)"}" — ${claim.why}`);
+    if (claim.done) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+    return empty;
+  }
+
+  // FNB's real mail has NO text part (verified against the live mailbox) — the
+  // body is read out of the html when the text is missing or blank.
+  const rawText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
+  const parsedPay = verdict.pass ? parseEftNotification(rawText) : null;
+  const record = eftPoolRecord({ message, verdict, parsed: parsedPay, rawText, at: serverNowMs() });
+
+  let decision = null;
+  await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => {
+    decision = poolWriteDecision(cur, record);
+    return decision.write ? decision.value : undefined; // undefined = abort, keep what is there
+  });
+  if (decision && !decision.write) {
+    console.log(`  · EFT "${message.subject || "(no subject)"}" — ${decision.why}`);
+  }
+  // The claim flips to done AFTER the pool write. A crash between the two costs
+  // a stale-claim delay; the create-only transaction is what makes the retry
+  // land on the existing record instead of doubling it.
+  await db.ref(`${SEEN_PATH}/${key}`).set({ state: "done", at: serverNowMs(), eft: true });
+  // Last, and deliberately: a message is only marked read once its outcome is
+  // in the database.
+  await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
+    console.warn(`  ⚠ could not mark "${message.subject}" read (${err.message}) — the claim still stops it landing twice`);
+  });
+
+  const label = record.outcome === "recorded"
+    ? `payment recorded (status unmatched)`
+    : `${record.outcome} — ${record.reason}`;
+  console.log(`  · EFT: ${label}`);
+  return {
+    processed: true, recorded: 0, refused: 0, unrelated: 0,
+    eftRecorded: record.outcome === "recorded" ? 1 : 0,
+    eftRefusedAuth: record.outcome === "refused-auth" ? 1 : 0,
+    eftRefusedParse: record.outcome === "refused-parse" ? 1 : 0,
   };
 }
 

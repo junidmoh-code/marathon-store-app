@@ -325,3 +325,58 @@ export function eftMessageKey({ messageId, from, subject, date, size, uid, uidVa
     + `|auth:${authPass ? "pass" : "fail"}`;
   return createHash("sha256").update(basis).digest("hex").slice(0, 40);
 }
+
+/**
+ * Create-only: the decision inside the RTDB transaction that writes the pool.
+ * An existing record — whatever its status by then — is NEVER overwritten; a
+ * later session's matched/used must not be reset to unmatched by a replay.
+ */
+export function poolWriteDecision(existing, record) {
+  if (existing !== null && existing !== undefined) return { write: false, why: "a record for this message already exists" };
+  return { write: true, value: record };
+}
+
+// ─── THE RECORD ──────────────────────────────────────────────────────────────
+/**
+ * One pool record, exactly as stored at /eft_pool/{eftKey}.
+ *
+ *   outcome   "recorded" | "refused-auth" | "refused-parse" — separable on
+ *             purpose: a forgery attempt and a format change are different
+ *             problems for different people.
+ *   status    only on recorded payments, and always "unmatched" this session.
+ *             The lifecycle it is designed for is unmatched → matched → used;
+ *             no transition exists yet anywhere.
+ *   rawText   what the parser saw, account runs struck out — the diagnostic
+ *             that makes a refusal fixable without reconstructing the message.
+ */
+export function eftPoolRecord({ message, verdict, parsed, rawText, at }) {
+  const base = {
+    at,
+    receivedAt: Number.isInteger(message.receivedAt) ? message.receivedAt : null,
+    messageId: clip(message.messageId, 200),
+    from: clip(message.from, 200),
+    subject: clip(message.subject, 200),
+    auth: {
+      verdict: verdict.pass ? "pass" : "fail",
+      fromDomain: verdict.fromDomain || null,
+      dkimDomain: verdict.dkimDomain || null,
+      detail: clip(verdict.detail, 300),
+    },
+    rawText: clip(redactAccountDigits(rawText), 4000),
+  };
+  if (!verdict.pass) {
+    return { ...base, outcome: "refused-auth", reason: `Failed authentication: ${verdict.detail}. Treat as a forgery attempt until shown otherwise.` };
+  }
+  if (!parsed.ok) {
+    return { ...base, outcome: "refused-parse", reason: parsed.reason };
+  }
+  return {
+    ...base,
+    outcome: "recorded",
+    status: "unmatched",
+    amountCents: parsed.amountCents,
+    reference: parsed.reference,
+    payer: parsed.payer,
+    bankTs: parsed.bankTs,
+  };
+}
