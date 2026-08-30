@@ -8,12 +8,15 @@
 // machinery in the way.
 //
 // LAYOUT RULES this screen holds to:
-//   • Every photo is the same size. The tile height is FIXED and the card never
-//     stretches to its grid row, so a tall product can't make its neighbour's
-//     photo a different shape.
-//   • Filters are COLLAPSED behind their own value. Each control shows what it
-//     is currently set to and opens on click — the long chip ladders are one
-//     tap away instead of permanently filling the screen.
+//   • Every photo is the same shape. The tile is a SQUARE that scales with its
+//     column and the card never stretches to its grid row, so a tall product
+//     can't make its neighbour's photo a different shape.
+//   • Three products per row on a phone, auto-fill from 640px up. The buying
+//     read is comparative — a wall of three beats one fat card per screen.
+//   • The controls are TWO LINES, never more: a segmented view switcher, then
+//     one scrolling filter bar. Filters stay COLLAPSED behind their own value —
+//     each shows what it is set to and opens on click, so the long chip ladders
+//     are one tap away instead of permanently filling the screen.
 //   • The ✚ on a tile files a product into one of two fixed lists (Marketing
 //     or Display) at /attention_lists — the ONLY thing this screen writes.
 //     REVIEWING those lists lives in the Marketing workspace, not here: picking
@@ -42,13 +45,54 @@ import { FONT, GLASS, GLASS_SOLID, GRAY, GREEN, RED, AMBER, BLUE_L, input } from
 
 const DAY_MS = 86400000;
 const PAGE = 48;
-const PHOTO_H = 188;   // fixed — the whole point of the grid reading evenly
 
 const VIEWS = [
-  { id: VIEW_LOW,  label: "Low stock",  blurb: "Running out — reorder these" },
-  { id: VIEW_OVER, label: "Overstock",  blurb: "Piled up — cash sitting still" },
-  { id: VIEW_DEAD, label: "Not moving", blurb: "Real stock that isn't selling" },
+  { id: VIEW_LOW,  label: "Low Stock",  blurb: "Below reorder level" },
+  { id: VIEW_OVER, label: "Overstock",  blurb: "Above target holding" },
+  { id: VIEW_DEAD, label: "Dead Stock", blurb: "No sales in the period" },
 ];
+
+// Layout lives in CSS, not inline styles, because the two things that matter
+// here are BREAKPOINTS (three-up on a phone, auto-fill on a desk) and hover —
+// neither of which a style object can express.
+const CSS = `
+  .atn-wrap{padding:14px 12px 40px}
+  .atn-seg{display:flex;gap:4px;margin-bottom:10px;padding:4px;border-radius:13px;
+    background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08)}
+  .atn-seg button{flex:1 1 0;min-width:0;border:none;border-radius:10px;padding:9px 4px;cursor:pointer;
+    background:transparent;color:#9CA3AF;font-weight:700;font-size:12px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis;transition:background .15s,color .15s}
+  .atn-seg button:hover{color:#cfd8ee}
+  .atn-seg button[aria-pressed="true"]{background:rgba(74,127,255,.18);color:#fff;
+    box-shadow:inset 0 0 0 1px rgba(74,127,255,.45)}
+  /* One line, always: the bar scrolls sideways rather than growing a second row. */
+  .atn-bar{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;overflow-x:auto;
+    margin-bottom:12px;padding-bottom:2px;scrollbar-width:none}
+  .atn-bar::-webkit-scrollbar{display:none}
+  .atn-bar>*{flex:0 0 auto}
+  .atn-bar .atn-search{flex:1 1 110px;min-width:92px}
+  .atn-kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:14px}
+  .atn-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:start}
+  .atn-body{padding:8px 9px 10px}
+  .atn-name{font-size:11px}
+  .atn-meta{font-size:9px}
+  .atn-badge-n{font-size:13px}
+  .atn-badge-u{font-size:8.5px}
+  .atn-init{font-size:26px}
+  @media(min-width:640px){
+    .atn-wrap{padding:18px 22px 44px}
+    .atn-seg{max-width:560px;gap:6px}
+    .atn-seg button{font-size:13px;padding:10px 8px}
+    .atn-kpis{max-width:420px;gap:10px}
+    .atn-grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+    .atn-body{padding:10px 12px 12px}
+    .atn-name{font-size:12.5px}
+    .atn-meta{font-size:10.5px}
+    .atn-badge-n{font-size:16px}
+    .atn-badge-u{font-size:9.5px}
+    .atn-init{font-size:38px}
+  }
+`;
 
 const count = (n) => new Intl.NumberFormat("en-ZA").format(n || 0);
 
@@ -154,7 +198,9 @@ export default function AttentionView({ products, onExit }) {
   const activeView = VIEWS.find((v) => v.id === view);
 
   return (
-    <div style={{ fontFamily: FONT, color: "#fff", padding: "18px 22px 44px", maxWidth: 1640, margin: "0 auto" }}>
+    <div className="atn-wrap" style={{ fontFamily: FONT, color: "#fff", maxWidth: 1640, margin: "0 auto" }}>
+      <style>{CSS}</style>
+
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
         <button onClick={onExit} style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.25)", color: BLUE_L, borderRadius: 10, padding: "9px 13px", fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: FONT }}>← Back</button>
@@ -171,54 +217,48 @@ export default function AttentionView({ products, onExit }) {
         </button>
       </div>
 
-      {/* View switcher — the one control that stays open, because it's the question being asked */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 13, flexWrap: "wrap" }}>
-        {VIEWS.map((v) => {
-          const on = view === v.id;
-          return (
-            <button
-              key={v.id}
-              onClick={() => { setView(v.id); setSortId(null); }}
-              aria-pressed={on}
-              style={{
-                ...GLASS, fontFamily: FONT, cursor: "pointer", textAlign: "left", padding: "10px 16px", minWidth: 168,
-                border: on ? "1px solid rgba(74,127,255,.55)" : "1px solid rgba(255,255,255,.08)",
-                background: on ? "rgba(74,127,255,.13)" : GLASS.background,
-              }}
-            >
-              <div style={{ fontSize: 13.5, fontWeight: 800, color: on ? "#fff" : "#cfd8ee" }}>{v.label}</div>
-              <div style={{ fontSize: 10.5, color: on ? BLUE_L : GRAY, marginTop: 3 }}>{v.blurb}</div>
-            </button>
-          );
-        })}
+      {/* View switcher — one segmented line. The description of the selected view
+          sits under the title, so the three segments carry names only. */}
+      <div className="atn-seg" role="group" aria-label="View">
+        {VIEWS.map((v) => (
+          <button
+            key={v.id}
+            onClick={() => { setView(v.id); setSortId(null); }}
+            aria-pressed={view === v.id}
+            style={{ fontFamily: FONT }}
+          >
+            {v.label}
+          </button>
+        ))}
       </div>
 
-      {/* Filters — each shows its current value and opens on click */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+      {/* Filters — one line. Each shows its current value and opens on click; the
+          bar scrolls sideways on a phone rather than stacking into a second row. */}
+      <div className="atn-bar">
         {view === VIEW_LOW && (
-          <Picker label="Quantity" value={findStep(LOW_STEPS, lowStepId, DEFAULT_LOW_STEP).label}
+          <Picker label="Qty" value={findStep(LOW_STEPS, lowStepId, DEFAULT_LOW_STEP).label}
                   options={LOW_STEPS.map((s) => ({ id: s.id, label: s.label }))}
                   selected={lowStepId} onPick={setLowStepId} />
         )}
         {view === VIEW_OVER && (
-          <Picker label="Quantity" value={findStep(OVER_STEPS, overStepId, DEFAULT_OVER_STEP).label}
+          <Picker label="Qty" value={findStep(OVER_STEPS, overStepId, DEFAULT_OVER_STEP).label}
                   options={OVER_STEPS.map((s) => ({ id: s.id, label: s.label }))}
                   selected={overStepId} onPick={setOverStepId} />
         )}
         {dead && (
           <>
-            <Picker label="No sales in" value={`${days} days`}
+            <Picker label="Period" value={`${days}d`}
                     options={DEAD_WINDOWS.map((w) => ({ id: String(w.days), label: w.label }))}
                     selected={String(days)} onPick={(id) => setDays(Number(id))} />
-            <Picker label="At least" value={findStep(DEAD_MIN_STEPS, deadMinId, DEFAULT_DEAD_MIN).label}
+            <Picker label="Min qty" value={findStep(DEAD_MIN_STEPS, deadMinId, DEFAULT_DEAD_MIN).label}
                     options={DEAD_MIN_STEPS.map((s) => ({ id: s.id, label: s.label }))}
                     selected={deadMinId} onPick={setDeadMinId}
                     hint="A style down to its last one or two has nearly sold out — it isn't stagnant." />
           </>
         )}
 
-        <Picker label="Type" value={category === "all" ? "All types" : category}
-                options={[{ id: "all", label: "All types" }, ...[...TOP_CATEGORIES, UNCATEGORIZED_TOP].map((c) => ({ id: c, label: c }))]}
+        <Picker label="Category" value={category === "all" ? "All" : category}
+                options={[{ id: "all", label: "All categories" }, ...[...TOP_CATEGORIES, UNCATEGORIZED_TOP].map((c) => ({ id: c, label: c }))]}
                 selected={category} onPick={setCategory} />
 
         <Picker label="Sort" value={findSort(effectiveSort).label}
@@ -228,30 +268,33 @@ export default function AttentionView({ products, onExit }) {
         {dead && (
           <button
             onClick={() => setHideJustArrived((v) => !v)}
+            aria-pressed={hideJustArrived}
             title="Stock delivered inside the window hasn't had a chance to sell yet"
             style={{
-              borderRadius: 10, padding: "9px 13px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT,
+              borderRadius: 10, padding: "7px 11px", fontWeight: 700, fontSize: 11.5, cursor: "pointer",
+              fontFamily: FONT, whiteSpace: "nowrap",
               background: hideJustArrived ? "rgba(74,127,255,.16)" : "rgba(255,255,255,.04)",
               border: hideJustArrived ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.12)",
               color: hideJustArrived ? BLUE_L : GRAY,
             }}
           >
-            {hideJustArrived ? "✓ " : ""}Hide just arrived
+            {hideJustArrived ? "✓ " : ""}Exclude new
           </button>
         )}
 
         <input
+          className="atn-search"
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search…"
           aria-label="Search products"
-          style={{ ...input, padding: "8px 12px", fontSize: "0.85rem", flex: "1 1 190px", minWidth: 160, maxWidth: 320 }}
+          style={{ ...input, padding: "7px 11px", fontSize: 12.5, borderRadius: 10, maxWidth: 320, minWidth: 0 }}
         />
       </div>
 
       {/* Headline numbers for the current filter */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 }}>
+      <div className="atn-kpis">
         <Kpi label="Styles" value={busy ? "…" : count(stats.styles)} tone={BLUE_L} />
         <Kpi label="Units" value={busy ? "…" : count(stats.units)} tone="#fff" />
       </div>
@@ -272,7 +315,7 @@ export default function AttentionView({ products, onExit }) {
         </Empty>
       ) : (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))", gap: 12, alignItems: "start" }}>
+          <div className="atn-grid">
             {shown.map((r) => (
               <AttentionCard
                 key={r.id}
@@ -322,15 +365,15 @@ function Picker({ label, value, options, selected, onPick, hint, scroll }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         style={{
-          display: "flex", alignItems: "center", gap: 8, fontFamily: FONT, cursor: "pointer",
+          display: "flex", alignItems: "center", gap: 5, fontFamily: FONT, cursor: "pointer", whiteSpace: "nowrap",
           background: open ? "rgba(74,127,255,.14)" : "rgba(255,255,255,.04)",
           border: open ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.12)",
-          borderRadius: 10, padding: "7px 12px",
+          borderRadius: 10, padding: "7px 10px",
         }}
       >
-        <span style={{ fontSize: 9.5, fontWeight: 800, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</span>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#fff" }}>{value}</span>
-        <span style={{ fontSize: 9, color: GRAY, transform: open ? "rotate(180deg)" : "none", transition: "transform 120ms" }}>▼</span>
+        <span style={{ fontSize: 8.5, fontWeight: 800, color: GRAY, textTransform: "uppercase", letterSpacing: ".06em" }}>{label}</span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: "#fff" }}>{value}</span>
+        <span style={{ fontSize: 8, color: GRAY, transform: open ? "rotate(180deg)" : "none", transition: "transform 120ms" }}>▼</span>
       </button>
 
       {open && (
@@ -377,8 +420,9 @@ function Empty({ children, tone = GRAY }) {
   return <div style={{ ...GLASS, padding: "48px 20px", textAlign: "center", color: tone, fontSize: 13.5 }}>{children}</div>;
 }
 
-// One product. The photo tile is a FIXED height and never stretches, so the grid
-// reads as one even wall of images regardless of how much text sits underneath.
+// One product. The photo tile is a SQUARE and never stretches to the grid row,
+// so the wall of images reads evenly at any column width — three-up on a phone
+// or eight-up on a desk — regardless of how much text sits underneath.
 function AttentionCard({ row, view, lists, onAdd, onRemove }) {
   const [failed, setFailed] = useState(false);
   const showPhoto = row.photo && !failed;
@@ -389,7 +433,7 @@ function AttentionCard({ row, view, lists, onAdd, onRemove }) {
 
   return (
     <div style={{ ...GLASS, overflow: "hidden" }}>
-      <div style={{ position: "relative", height: PHOTO_H, background: "rgba(255,255,255,.03)", flexShrink: 0 }}>
+      <div style={{ position: "relative", aspectRatio: "1 / 1", background: "rgba(255,255,255,.03)", flexShrink: 0 }}>
         {showPhoto ? (
           <img
             src={row.photo}
@@ -399,32 +443,32 @@ function AttentionCard({ row, view, lists, onAdd, onRemove }) {
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
           />
         ) : (
-          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontSize: 38, fontWeight: 800 }}>
+          <div className="atn-init" style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,.16)", fontWeight: 800 }}>
             {(row.name || "?").trim().charAt(0).toUpperCase()}
           </div>
         )}
 
-        <div style={{ position: "absolute", top: 8, left: 8, background: "rgba(0,0,0,.74)", border: `1px solid ${tone}66`, borderRadius: 9, padding: "4px 9px" }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: tone }}>{count(row.total)}</span>
-          <span style={{ fontSize: 9.5, color: GRAY, marginLeft: 4 }}>{row.total === 1 ? "unit" : "units"}</span>
+        <div style={{ position: "absolute", top: 6, left: 6, background: "rgba(0,0,0,.74)", border: `1px solid ${tone}66`, borderRadius: 9, padding: "3px 7px" }}>
+          <span className="atn-badge-n" style={{ fontWeight: 800, color: tone }}>{count(row.total)}</span>
+          <span className="atn-badge-u" style={{ color: GRAY, marginLeft: 3 }}>{row.total === 1 ? "unit" : "units"}</span>
         </div>
 
-        <div style={{ position: "absolute", bottom: 8, right: 8 }}>
+        <div style={{ position: "absolute", bottom: 6, right: 6 }}>
           <AddToList productId={row.id} lists={lists} onAdd={onAdd} onRemove={onRemove} />
         </div>
 
         {row.justArrived && (
-          <div style={{ position: "absolute", top: 8, right: 8, background: "rgba(0,0,0,.74)", border: `1px solid ${GREEN}66`, color: GREEN, borderRadius: 999, padding: "3px 8px", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em" }}>
+          <div style={{ position: "absolute", top: 6, right: 6, background: "rgba(0,0,0,.74)", border: `1px solid ${GREEN}66`, color: GREEN, borderRadius: 999, padding: "2px 6px", fontSize: 8, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em" }}>
             new
           </div>
         )}
       </div>
 
-      <div style={{ padding: "10px 12px 12px" }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, lineHeight: 1.3, height: "2.6em", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+      <div className="atn-body">
+        <div className="atn-name" style={{ fontWeight: 700, lineHeight: 1.3, height: "2.6em", overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
           {row.name}
         </div>
-        <div style={{ fontSize: 10.5, color: GRAY, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <div className="atn-meta" style={{ color: GRAY, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {[row.brand, row.subcategory || row.category].filter(Boolean).join(" · ")}
         </div>
 
@@ -433,7 +477,7 @@ function AttentionCard({ row, view, lists, onAdd, onRemove }) {
             because sizes are a follow-up question, not something worth spending
             the grid's whole surface on. */}
         {locations.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(255,255,255,.07)", marginTop: 9, paddingTop: 9 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, borderTop: "1px solid rgba(255,255,255,.07)", marginTop: 8, paddingTop: 8 }}>
             {locations.map((l) => (
               <LocChip key={l.loc} label={l.label} qty={l.qty} shop={l.shop} sizes={l.sizes} />
             ))}
@@ -609,7 +653,7 @@ function LocChip({ label, qty, shop, sizes }) {
         aria-expanded={open}
         title={`Sizes at ${label}`}
         style={{
-          fontFamily: FONT, cursor: "pointer", fontSize: 10.5, borderRadius: 6, padding: "3px 7px", whiteSpace: "nowrap",
+          fontFamily: FONT, cursor: "pointer", fontSize: 9.5, borderRadius: 6, padding: "3px 6px", whiteSpace: "nowrap",
           background: open ? `${accent}26` : "rgba(255,255,255,.04)",
           border: open ? `1px solid ${accent}` : "1px solid rgba(255,255,255,.12)",
           color: open ? "#fff" : "#cfd8ee",
