@@ -111,8 +111,18 @@ console.log(`marked ${unflagged} message(s) unread`);
 
 await db.ref(`${SEEN_PATH}/${record.messageKey}`).remove();
 console.log("claim cleared");
-// The refused ROW is left exactly where it is. It is the record of what
-// happened, and the retry will write its own; a feed that quietly deletes its
-// own history is one nobody can audit.
-console.log(`\nDone. The next tick will treat it as new mail. The refused row (${id}) stays as the record of the first attempt.`);
+
+// The refused ROW STAYS — it is the record of what happened, and a feed that
+// quietly deletes its own failures is one nobody can audit. But it is STAMPED,
+// because an outstanding-refusal count that only ever grows stops meaning
+// anything: "3 refused" would come to mean "3 things went wrong at some point"
+// rather than "3 things need you now". The tab reads retriedAt and stops
+// counting the row; whatever the re-run produces gets a row of its own to
+// shout with if it fails again.
+await db.ref(`${INTAKE_PATH}/${id}`).update({
+  retriedAt: admin.database.ServerValue.TIMESTAMP,
+  retriedBy: "retry-intake-message.mjs",
+});
+console.log("the refused row is marked as re-run — it stays in the feed, but stops counting as outstanding");
+console.log(`\nDone. The next tick will treat it as new mail. Row ${id} remains as the record of the first attempt.`);
 await admin.app().delete();
