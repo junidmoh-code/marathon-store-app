@@ -352,10 +352,13 @@ export function redactAccountDigits(text) {
   //
   // EXCEPT A DATE. "2026-08-30 23h48" is digits joined by dashes and a space,
   // and striking it out of a refusal's raw text deletes the very field the
-  // format is judged by. A run that STARTS as an ISO date is a date.
-  // (Independent adversarial review, v2.)
+  // format is judged by. END-ANCHORED, deliberately: a run that merely STARTS
+  // like a date ("1234-56-789012", or an account riding one space after a
+  // real date) must still be swept — only a run that IS a date (plus at most
+  // the hour "23" that a "23h48" contributes before the 'h' breaks the run)
+  // is exempt. (Delta review, v2 — the prefix test exempted whole runs.)
   return text.replace(/\d(?:[ -]?\d){5,}/g, (run) =>
-    /^\d{4}-\d{2}-\d{2}/.test(run) ? run : `⋯${run.replace(/\D/g, "").slice(-3)}`);
+    /^\d{4}-\d{2}-\d{2}( \d{2})?$/.test(run) ? run : `⋯${run.replace(/\D/g, "").slice(-3)}`);
 }
 
 /**

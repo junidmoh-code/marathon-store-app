@@ -285,6 +285,10 @@ describe("account numbers are struck out", () => {
   });
   it("…but never a DATE — the refusal diagnostic keeps its timestamp", () => {
     expect(redactAccountDigits("Payment date and time 2026-08-30 23h48")).toBe("Payment date and time 2026-08-30 23h48");
+    // …and the exemption is END-anchored: a run that merely STARTS like a
+    // date is still an account, and a run riding one space after a date too.
+    expect(redactAccountDigits("Account 1234-56-789012 holder")).toBe("Account ⋯012 holder");
+    expect(redactAccountDigits("paid 2026-08-30 1234567890 ref")).toBe("paid ⋯890 ref");
   });
   it("maskAccountValue: a bank that prints the full number stores only the last four", () => {
     expect(maskAccountValue("62834519234")).toBe("XXXXXXX9234");

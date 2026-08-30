@@ -78,18 +78,14 @@ say "installing imapflow + mailparser…"
 # major differs from the manifest's range would skip the install and then fail
 # (or drift) at run time — validate, and reinstall on mismatch. (CodeRabbit.)
 PDFJS_WANT_MAJOR=$("$NODE" -p "String(require('$REPO/functions/package.json').dependencies['pdfjs-dist']).replace(/[^0-9]*([0-9]+).*/, '\$1')")
-if [ -d "$REPO/functions/node_modules/pdfjs-dist" ]; then
-  PDFJS_HAVE_MAJOR=$("$NODE" -p "require('$REPO/functions/node_modules/pdfjs-dist/package.json').version.split('.')[0]" 2>/dev/null || echo "?")
-  if [ "$PDFJS_HAVE_MAJOR" != "$PDFJS_WANT_MAJOR" ]; then
-    say "pdfjs-dist major $PDFJS_HAVE_MAJOR does not match the manifest's $PDFJS_WANT_MAJOR — reinstalling…"
-    rm -rf "$REPO/functions/node_modules/pdfjs-dist"
-  fi
-fi
-if [ ! -d "$REPO/functions/node_modules/pdfjs-dist" ]; then
-  say "installing pdfjs-dist into functions/node_modules (the EFT reader's PDF text extraction)…"
-  # PINNED TO THE MANIFEST'S OWN RANGE — an unpinned install here would let
-  # the mini's extraction drift from the one the deployed function uses, the
-  # exact two-copies failure this repo keeps a rule against.
+PDFJS_HAVE_MAJOR=$("$NODE" -p "require('$REPO/functions/node_modules/pdfjs-dist/package.json').version.split('.')[0]" 2>/dev/null || echo "absent")
+if [ "$PDFJS_HAVE_MAJOR" != "$PDFJS_WANT_MAJOR" ]; then
+  say "pdfjs-dist is $PDFJS_HAVE_MAJOR, manifest wants major $PDFJS_WANT_MAJOR — installing…"
+  # PINNED TO THE MANIFEST'S OWN RANGE — an unpinned install would let the
+  # mini's extraction drift from the one the deployed function uses. npm
+  # OVERWRITES in place, so the working copy is never deleted first: a failed
+  # install (offline mini) leaves the old one running rather than none.
+  # (Delta review, v2.)
   PDFJS_RANGE=$("$NODE" -p "require('$REPO/functions/package.json').dependencies['pdfjs-dist']")
   ( cd "$REPO/functions" && npm install --no-save --no-audit --no-fund "pdfjs-dist@$PDFJS_RANGE" >/dev/null )
   [ -d "$REPO/functions/node_modules/pdfjs-dist" ] || { echo "✗ pdfjs-dist did not install"; exit 1; }

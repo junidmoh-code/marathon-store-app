@@ -404,7 +404,7 @@ async function run() {
   // The EFT reader's own tallies — separable on purpose: a refused slip means a
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
-  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0;
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftErrors = 0;
   let scannedSoFar = 0;
   try {
     const lock = await client.getMailboxLock(cfg.mailbox);
@@ -440,6 +440,7 @@ async function run() {
             eftRefusedAuth += result.eftRefusedAuth || 0;
             eftRefusedParse += result.eftRefusedParse || 0;
             eftRefusedAccount += result.eftRefusedAccount || 0;
+            eftErrors += result.eftErrors || 0;
           } catch (err) {
             console.error(`  ✗ message uid ${uid}: ${err.message}`);
           }
@@ -465,6 +466,9 @@ async function run() {
       // a value. Zero is the loudest number on this line: it means every
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
       eftAccountTails: cfg.eftAccountTails.length,
+      // Messages the EFT reader THREW on this tick (left unread, retried) — a
+      // persistent environment failure must not hide behind a healthy beat.
+      eftErrors,
       mailbox: cfg.mailbox,
     });
   } catch (err) {
@@ -550,7 +554,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     });
   } catch (err) {
     console.error(`  ✗ EFT reader on "${message.logSubject}": ${err.message} — the message stays unread and is retried`);
-    return empty;
+    return { ...empty, eftErrors: 1 };
   }
   if (eft) return eft;
 
@@ -681,6 +685,13 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
 
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0 };
   const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
+  // The auth verdict is part of the key so a forgery carrying a guessed genuine
+  // Message-ID cannot occupy the key the genuine notification will need.
+  const key = eftMessageKey({
+    messageId: parsed.messageId, from: message.from, subject: message.subject,
+    date: message.receivedAt, size, uid, uidValidity, authPass: verdict.pass,
+  });
+
 
   // ── CONTENT INSPECTION, BEFORE ANY CLAIM ───────────────────────────────────
   // Only an AUTHENTICATED message earns PDF rendering — a forgery's
@@ -690,14 +701,28 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   const documents = []; // { lines: string[]|null, text: string }
   let slipPdfs = 0;
   // ── AN AUTH-FAILED MESSAGE WITH ATTACHMENTS IS NOT CONSUMED ────────────────
-  // Its PDFs are never opened (attacker files), so their content cannot be
-  // routed — and consuming the message would eat a GENUINE batch report whose
-  // delivery path broke its DKIM (a forward, a relay). It falls through to the
-  // slip path, whose capture callable validates every byte itself; a forged
-  // "slip" refuses harmlessly there, a real one is captured. Only an
-  // attachment-less auth failure is recorded here as a forgery attempt.
-  // (Independent adversarial review, v2.)
+  // Its PDFs are never opened HERE (attacker files; the capture callable
+  // opens them server-side with its own hardening), so their content cannot
+  // be routed — and consuming the message would eat a GENUINE batch report
+  // whose delivery path broke its DKIM (a forward, a relay). It falls through
+  // to the slip path, whose callable validates every byte; a forged "slip"
+  // refuses harmlessly there, a real one is captured.
+  //
+  // BUT THE FORGERY ATTEMPT IS STILL RECORDED FIRST — attaching one PDF must
+  // not silence the forgery alarm. The pool record (body text only, no claim
+  // needed: the create-only transaction on the auth-fail key is the dedupe)
+  // is written before the hand-off; the slip path then owns claim and \Seen.
+  // (Delta review, v2.)
   if (!verdict.pass && (parsed.attachments || []).some((a) => { try { return classifyAttachment(a).ok; } catch { return false; } })) {
+    if (!cfg.dryRun) {
+      const forgery = eftPoolRecord({ message, verdict, parsed: null, account: null, reader: null, rawText: bodyText, at: serverNowMs() });
+      let d = null;
+      await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => {
+        d = poolWriteDecision(cur, forgery);
+        return d.write ? d.value : undefined;
+      });
+      if (d?.write) console.log(`  · EFT: refused-auth recorded (message also carries attachments — handed to the slip path)`);
+    }
     return null;
   }
   if (verdict.pass) {
@@ -741,19 +766,15 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       if (detectReportFormat(out.lines)) { slipPdfs++; continue; }
       documents.push({ lines: out.lines, text: out.lines.join("\n") });
     }
-    if (slipPdfs > 0 && documents.length === 0) {
-      // Every document was a slip: this whole message is the card path's.
+    if (slipPdfs > 0 && !documents.some((d) => d.lines)) {
+      // Every READABLE document was a slip (placeholders for corrupt or
+      // oversized attachments do not count — a real slip must not be kept out
+      // of the card path by a broken sibling). This whole message is the card
+      // path's. (Delta review, v2.)
       return null;
     }
 
   }
-
-  // The auth verdict is part of the key so a forgery carrying a guessed genuine
-  // Message-ID cannot occupy the key the genuine notification will need.
-  const key = eftMessageKey({
-    messageId: parsed.messageId, from: message.from, subject: message.subject,
-    date: message.receivedAt, size, uid, uidValidity, authPass: verdict.pass,
-  });
 
   if (cfg.dryRun) {
     console.log(`  · would examine as an EFT notification (auth ${verdict.pass ? "pass" : "FAIL"}, ${documents.length} document(s)): "${message.logSubject}"`);
@@ -782,7 +803,11 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       results: [attachmentOutcome({ filename: `${slipPdfs} batch-slip PDF(s)`, error: "Arrived alongside a payment notification, which this message was read as — the slip was NOT captured. Forward the batch report on its own." })],
       skipped: [], at: serverNowMs(),
     });
-    await db.ref(INTAKE_PATH).push(slipLoss).catch((err) => {
+    // A DETERMINISTIC child, not a push id: the claim this sits behind is
+    // merely "claimed" until the pool write lands, and a crash between the
+    // two retries this whole block — a push would file the same loss twice.
+    // (Delta review, v2.)
+    await db.ref(`${INTAKE_PATH}/eftslip-${key}`).set(slipLoss).catch((err) => {
       console.warn(`  ⚠ could not record the uncaptured slip in the intake feed (${err.message})`);
     });
     console.warn(`  ⚠ "${message.logSubject}" carries ${slipPdfs} batch-slip PDF(s) alongside other documents — refusal row written to the slip feed`);
@@ -802,16 +827,25 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     const claimed = offered
       .map((d) => ({ d, r: selectReader({ fromDomain, lines: d.lines }) }))
       .filter((x) => x.r);
-    if (claimed.length > 1) {
-      // TWO PAYMENT DOCUMENTS ON ONE MESSAGE. Recording only the first would
-      // silently lose the second payment; refused instead, whole, and a
-      // person splits them. (Independent adversarial review, v2.)
-      parsedPay = { ok: false, reason: `This message carries ${claimed.length} recognisable payment documents — only one payment per message can be recorded safely. Handle them individually.` };
-      rawText = claimed.map((x) => x.d.text).join("\n────────\n");
-    } else if (claimed.length === 1) {
-      const { d: doc, r: reader } = claimed[0];
+    // SEVERAL CLAIMED DOCUMENTS ARE ONE PAYMENT ONLY IF THEY AGREE. A bank
+    // that prints its fields in the body AND attaches the same confirmation
+    // PDF (or a duplicate attach) is one ordinary payment, not a refusal —
+    // but two documents whose parses DIFFER are two payments, and recording
+    // only the first would silently lose money. Parsed and compared; refuse
+    // on any disagreement, and on any claimed document that will not parse
+    // (an unparseable twin is not provably the same payment).
+    // (Delta review, v2.)
+    const parsedDocs = claimed.map((x) => ({ ...x, p: x.r.parse(x.d.lines) }));
+    const agree = (a, b) => a.ok && b.ok
+      && a.amountCents === b.amountCents && a.bankRef === b.bankRef
+      && a.reference === b.reference && a.accountMask === b.accountMask;
+    if (parsedDocs.length > 1 && !parsedDocs.every((x) => agree(parsedDocs[0].p, x.p))) {
+      parsedPay = { ok: false, reason: `This message carries ${parsedDocs.length} recognisable payment documents that do not agree — only one payment per message can be recorded safely. Handle them individually.` };
+      rawText = parsedDocs.map((x) => x.d.text).join("\n────────\n");
+    } else if (parsedDocs.length >= 1) {
+      const { d: doc, r: reader, p } = parsedDocs[0];
       readerId = reader.id;
-      parsedPay = reader.parse(doc.lines);
+      parsedPay = p;
       rawText = doc.text;
       if (parsedPay.ok) {
         account = accountVerdict({ accountMask: parsedPay.accountMask, allowedTails: cfg.eftAccountTails, configured: cfg.eftAccountsConfigured });
@@ -824,7 +858,12 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // something. Ordinary mail: marked read, nothing written.
       // (Independent adversarial review, v2.)
       const everything = [...documents.map((d) => d.text), bodyText].filter(Boolean).join("\n────────\n");
-      if (!looksPaymentShaped(`${message.subject || ""}\n${everything}`)) {
+      // AN UNREADABLE ATTACHMENT FORCES THE GATE OPEN: a password-protected
+      // or corrupt PDF on a bank message is exactly where a payment hides,
+      // and its body ("please see the attached document") carries no cue.
+      // Silence here would be an unrecoverable loss. (Delta review, v2.)
+      const unreadable = documents.some((d) => d.lines === null);
+      if (!unreadable && !looksPaymentShaped(`${message.subject || ""}\n${everything}`)) {
         console.log(`  · bank mail, not payment-shaped: "${message.logSubject}" — marked read, nothing recorded`);
         // The claim is settled (not abandoned to go stale), THEN the flag.
         await db.ref(`${SEEN_PATH}/${key}`).set({ state: "done", at: serverNowMs(), eft: true });
