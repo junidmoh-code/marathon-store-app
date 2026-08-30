@@ -120,8 +120,10 @@ export function stripQuotesAndComments(value) {
       else if (ch === ")") depth--;
       continue;
     }
-    if (ch === '"') { inQuote = true; continue; }
-    if (ch === "(") { depth = 1; continue; }
+    // A space stands in for the stripped content, so text on either side of a
+    // quote or comment can never merge into one token. (Delta review.)
+    if (ch === '"') { inQuote = true; out += " "; continue; }
+    if (ch === "(") { depth = 1; out += " "; continue; }
     if (ch === ")") return null;
     out += ch;
   }
@@ -183,16 +185,28 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
   if (cleaned === null) {
     return { pass: false, fromDomain, dkimDomain: null, detail: "Gmail's Authentication-Results carries unbalanced quoting or comments — refused rather than parsed loosely" };
   }
-  // …AND DKIM IS ONLY READ FROM BEFORE THE FIRST spf/dmarc/arc SEGMENT. In
-  // Gmail's format the dkim result(s) lead; every place attacker text can
-  // reach (the spf comment, smtp.mailfrom) lies inside or after the spf
-  // segment, so even a hypothetical balanced injection through an exotic
-  // localpart lands where this loop has already stopped looking.
+  // …AND DKIM IS ONLY READ FROM THE LEADING RUN OF dkim= SEGMENTS. The scan
+  // stops at the first segment that is not a dkim result — an ALLOWLIST, not
+  // a denylist of known other methods: a method name this file has never
+  // heard of must stop the scan too, or a segment carrying attacker-reachable
+  // text becomes a place to smuggle a passing pseudo-segment past a list that
+  // did not know its name. In Gmail's format the dkim result(s) lead. The one
+  // surface this does not cover is the dkim segment's own header.i/s/b values
+  // — attacker-chosen, but RFC 8601 requires quoting there and the scanner
+  // already ate quotes, so reaching it needs Gmail to print an unquoted ';'
+  // inside a signature tag: theoretical, and named here rather than claimed
+  // away. (Independent delta review, this PR.)
+  //
+  // Cost of the allowlist: a genuine dkim result that Gmail ever printed
+  // AFTER another method would be refused (fail-closed, visible on the owner
+  // panel as refused-auth) — the detail string below says exactly that, so
+  // the day it happens the record itself names the fix.
+  const segments = cleaned.split(";");
   const dkimSeen = [];
-  for (const segment of cleaned.split(";")) {
-    if (/^\s*(?:spf|dmarc|arc)\s*=/i.test(segment)) break;
+  for (const segment of segments.slice(1)) { // [0] is the authserv-id, checked above
+    if (!/^\s*dkim\s*=/i.test(segment)) break;
     const m = /\bdkim\s*=\s*([a-z]+)/i.exec(segment);
-    if (!m) continue;
+    if (!m) break;
     const result = m[1].toLowerCase();
     const dom = /\bheader\.i\s*=\s*@?([A-Za-z0-9.-]+)/.exec(segment)?.[1]
       || /\bheader\.d\s*=\s*([A-Za-z0-9.-]+)/.exec(segment)?.[1]
@@ -204,7 +218,13 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
     }
   }
   if (!dkimSeen.length) {
-    return { pass: false, fromDomain, dkimDomain: null, detail: "Gmail's Authentication-Results records no DKIM result at all" };
+    // PRECISE, because this is the one failure the allowlist itself can
+    // cause: a dkim result printed after another method exists but is not
+    // read, and the record must say so rather than claim there was none.
+    const laterDkim = segments.slice(1).some((s) => /\bdkim\s*=/i.test(s));
+    return { pass: false, fromDomain, dkimDomain: null, detail: laterDkim
+      ? "no DKIM result in the leading dkim segments of Gmail's Authentication-Results (one appears later, after another method — if FNB mail genuinely does this, the scan order in eftCore.mjs needs a look)"
+      : "Gmail's Authentication-Results records no DKIM result at all" };
   }
   const said = dkimSeen.map((d) => `dkim=${d.result}${d.domain ? ` (${d.domain})` : ""}`).join(", ");
   return { pass: false, fromDomain, dkimDomain: dkimSeen[0].domain, detail: `no aligned DKIM pass — Gmail recorded ${said}` };
@@ -309,7 +329,11 @@ export function parseBankTimestamp(str) {
 // write, not a field the bank printed about an account.)
 export function redactAccountDigits(text) {
   if (typeof text !== "string" || !text) return text;
-  return text.replace(/\d{6,}/g, (run) => `⋯${run.slice(-3)}`);
+  // Grouped forms too ("6283 4519 234", "62-834-519") — six or more digits
+  // however they are spaced or dashed. This eats grouped AMOUNTS as well,
+  // which is the accepted cost: over-striking a diagnostic is fine,
+  // under-striking an account is not. (Delta review.)
+  return text.replace(/\d(?:[ -]?\d){5,}/g, (run) => `⋯${run.replace(/\D/g, "").slice(-3)}`);
 }
 
 // ─── PARSING THE NOTIFICATION ────────────────────────────────────────────────
@@ -468,7 +492,9 @@ export function eftPoolRecord({ message, verdict, parsed, rawText, at }) {
     return { ...base, outcome: "refused-auth", reason: `Failed authentication: ${verdict.detail}. Treat as a forgery attempt until shown otherwise.` };
   }
   if (!parsed.ok) {
-    return { ...base, outcome: "refused-parse", reason: parsed.reason };
+    // The reason can QUOTE the body ('The Amount field reads "…"'), so it
+    // gets the account sweep too. (Delta review.)
+    return { ...base, outcome: "refused-parse", reason: clip(redactAccountDigits(parsed.reason), 400) };
   }
   return {
     ...base,

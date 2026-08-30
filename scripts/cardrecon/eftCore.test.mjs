@@ -252,6 +252,10 @@ describe("account numbers are struck out", () => {
   it("keeps the last three digits of any long run and nothing else", () => {
     expect(redactAccountDigits("from account 62834519234 to 250655588888")).toBe("from account ⋯234 to ⋯888");
   });
+  it("catches grouped account numbers too — spaces and dashes do not hide one", () => {
+    expect(redactAccountDigits("acc 6283 4519 234")).toBe("acc ⋯234");
+    expect(redactAccountDigits("acc 62-834-519")).toBe("acc ⋯519");
+  });
   it("leaves amounts and short numbers alone", () => {
     expect(redactAccountDigits("R 1,234.56 ref 12345")).toBe("R 1,234.56 ref 12345");
   });
