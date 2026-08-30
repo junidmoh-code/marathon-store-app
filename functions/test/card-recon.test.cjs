@@ -266,7 +266,7 @@ test("buildBatchRecord takes its variance from the MATCH, not the till subtracti
     match: {
       matches: [{}, {}, {}], matchedCents: 95000,
       onTillCents: 60000, offTillCents: 35000,
-      offTill: { "trophy/till-1": { legs: 1, cents: 35000 } },
+      offTill: [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
       unmatchedTxns: [], unmatchedTxnCents: 0,
       unmatchedLegsOnTill: [], unmatchedLegCents: 0,
     },
@@ -275,7 +275,7 @@ test("buildBatchRecord takes its variance from the MATCH, not the till subtracti
   assert.equal(rec.varianceOnTillCents, 95000 - 60000,
     "…and the old subtraction is kept, so batches stay comparable");
   assert.equal(rec.match.offTillCents, 35000);
-  assert.deepEqual(rec.match.offTill, { "trophy/till-1": { legs: 1, cents: 35000 } },
+  assert.deepEqual(rec.match.offTill, [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
     "the record says WHERE, so a moved machine reads as information");
 });
 
@@ -288,7 +288,7 @@ test("…and the variance IS the unmatched transactions", () => {
     photoPaths: [], summaryOnly: false, warnings: [],
     expected: { cardCents: 88000, legs: 3, byKind: {} },
     match: {
-      matches: [{}, {}], matchedCents: 88000, onTillCents: 88000, offTillCents: 0, offTill: {},
+      matches: [{}, {}], matchedCents: 88000, onTillCents: 88000, offTillCents: 0, offTill: [],
       unmatchedTxns: [{ tsn: 7 }], unmatchedTxnCents: 7000,
       // A card sale the machine has no record of. A DIFFERENT question, and it
       // must not cancel against the 7000.
@@ -345,7 +345,7 @@ test("a batch whose totals disagree is settled by the match", () => {
     expected: { cardCents: 60000, legs: 2, byKind: {} },
     match: {
       matches: [{}, {}, {}], matchedCents: 95000, onTillCents: 60000, offTillCents: 35000,
-      offTill: { "trophy/till-1": { legs: 1, cents: 35000 } },
+      offTill: [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
       unmatchedTxns: [], unmatchedTxnCents: 0,
       unmatchedLegsOnTill: [], unmatchedLegCents: 0,
     },
@@ -355,4 +355,67 @@ test("a batch whose totals disagree is settled by the match", () => {
   assert.equal(rec.reconciledBy, "match", "the summaries disagreed, so the catalogue was read");
   assert.equal(rec.varianceCents, 0, "…and it explained the difference: the machine had moved");
   assert.equal(rec.match.offTillCents, 35000);
+});
+
+// ─── THE RECORD MUST BE WRITABLE TO RTDB ─────────────────────────────────────
+// Every key in the record travels to Firebase as a path segment, and RTDB
+// refuses ".", "#", "$", "/", "[" and "]" in one. Keying the off-till breakdown
+// by "trophy/till-1" looked perfectly natural and made every submit that found
+// an off-till match fail with `invalid key (trophy/till-1)` — the batch parsed,
+// the manager reviewed it, and only the save blew up, as "INTERNAL".
+//
+// So the shape is asserted, and so is the general rule: no key anywhere in a
+// finished record may carry a character RTDB rejects.
+const RTDB_ILLEGAL = /[.#$/[\]]/;
+function assertWritable(node, path = "") {
+  if (node === null || typeof node !== "object") return;
+  if (Array.isArray(node)) { node.forEach((v, i) => assertWritable(v, `${path}[${i}]`)); return; }
+  for (const [k, v] of Object.entries(node)) {
+    assert.ok(!RTDB_ILLEGAL.test(k), `record key "${k}" at ${path || "<root>"} is not writable to RTDB`);
+    assert.ok(k.length > 0, `empty record key at ${path}`);
+    assertWritable(v, `${path}/${k}`);
+  }
+}
+
+test("no key in a finished record is one RTDB would refuse", () => {
+  const rec = buildBatchRecord({
+    extraction: goodExtraction(),
+    terminal: { storeId: "pe", tillId: "till-2", label: "PE Till 2" },
+    tid: "67365901", batchKey: "60", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: false, warnings: ["a note"],
+    expected: { cardCents: 60000, legs: 2, byKind: { sale: { cents: 60000, legs: 2 } } },
+    match: {
+      matches: [{}, {}], matchedCents: 95000, onTillCents: 60000, offTillCents: 35000,
+      // The shape that crashed production: a LIST, never a map keyed by a path.
+      offTill: [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
+      unmatchedTxns: [], unmatchedTxnCents: 0,
+      unmatchedLegsOnTill: [], unmatchedLegCents: 0,
+    },
+    cashiers: [{ uid: "u1", name: "zinhle@marathon.internal", firstAt: 1, lastAt: 2, legs: 3 }],
+    submittedBy: { uid: "u9", name: "manager@marathon.internal" },
+    submittedAt: 1787000000000, draftId: "d1", ocr: null,
+  });
+  assertWritable(rec);
+  // …and the off-till breakdown specifically, since that is where it bit.
+  assert.ok(Array.isArray(rec.match.offTill), "offTill must be a list, not a keyed map");
+  assert.equal(rec.match.offTill[0].storeId, "trophy");
+  assert.equal(rec.match.offTill[0].tillId, "till-1");
+});
+
+test("an empty off-till breakdown is stored as null, not an empty array", () => {
+  // RTDB drops an empty array entirely, so the key would vanish rather than
+  // read as "nothing was rung elsewhere".
+  const rec = buildBatchRecord({
+    extraction: goodExtraction(),
+    terminal: { storeId: "pe", tillId: "till-2" },
+    tid: "67365901", batchKey: "60", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: false, warnings: [],
+    expected: { cardCents: 95000, legs: 3, byKind: {} },
+    match: {
+      matches: [{}], matchedCents: 95000, onTillCents: 95000, offTillCents: 0, offTill: [],
+      unmatchedTxns: [], unmatchedTxnCents: 0, unmatchedLegsOnTill: [], unmatchedLegCents: 0,
+    },
+    cashiers: [], submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d1", ocr: null,
+  });
+  assert.equal(rec.match.offTill, null);
 });

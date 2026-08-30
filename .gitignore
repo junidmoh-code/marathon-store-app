@@ -22,15 +22,6 @@ service-account*.json
 scripts/seedUsers.pins.json
 scripts/targets/out/
 
-# LIVE RTDB rules backups. The backup a rules script takes is the complete live
-# ENFORCEMENT document, and this repo is PUBLIC — while database.rules.json here
-# is stale, so a committed backup is the first accurate public copy of who may
-# read what. Newer scripts write them to the home directory instead
-# (scripts/cardrecon/apply-card-intake-rules.mjs); this stops one arriving here
-# by another route. The six already tracked are left alone — untracking them
-# does not unpublish them, and that is the owner's call, not a tidy-up.
-rules-live-backup-*.json
-
 # Census / model output — machine-local working data, regenerated on demand
 # (scripts/model-category-policy.mjs writes here). Never committed.
 var/

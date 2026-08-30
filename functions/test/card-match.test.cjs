@@ -34,7 +34,7 @@ test("an ordinary batch matches on its own till", () => {
   assert.equal(r.offTillCents, 0);
   assert.equal(r.unmatchedTxnCents, 0);
   assert.equal(r.unmatchedLegCents, 0);
-  assert.equal(r.offTill.pe, undefined);
+  assert.deepEqual(r.offTill, [], "nothing was rung elsewhere");
 });
 
 test("THE MOVED MACHINE: legs rung on another till still count", () => {
@@ -51,8 +51,11 @@ test("THE MOVED MACHINE: legs rung on another till still count", () => {
   assert.equal(r.unmatchedTxnCents, 0, "…so nothing is missing");
   assert.equal(r.onTillCents, 35000);
   assert.equal(r.offTillCents, 350000, "R3,500 rung elsewhere");
-  assert.deepEqual(r.offTill, { "trophy/till-1": { legs: 4, cents: 350000 } },
+  assert.deepEqual(r.offTill, [{ storeId: "trophy", tillId: "till-1", legs: 4, cents: 350000 }],
     "…and the record says where, so a moved machine reads as information");
+  // A LIST, never a map keyed by "store/till": RTDB refuses "/" in a key and
+  // the batch would fail to save after a clean review. (Found in production.)
+  assert.ok(Array.isArray(r.offTill));
 });
 
 test("a leg on the RIGHT till is never stolen by a cross-till candidate", () => {
