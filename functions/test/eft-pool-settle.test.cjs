@@ -16,7 +16,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  settleDecision, attachSaleDecision, releaseDecision, reverseDecision,
+  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
 } = require("../lib/eft-settle.cjs");
 
 // ── an RTDB-transaction stand-in ─────────────────────────────────────────────
@@ -240,4 +240,47 @@ test("reverse returns the payment to the pool and keeps the whole settlement", (
   assert.equal(Object.keys(node.get().reversals).length, 2);
   assert.equal(node.get().reversals[9000].cashierName, "Ahmed");
   assert.equal(node.get().reversals[9500].cashierName, "Sipho");
+});
+
+// ── THE ADMIN SDK'S NULL-FIRST-CALL TRAP, tested rather than reasoned about ──
+// admin.database().ref().transaction runs the update function with null when
+// its cache is cold; returning undefined THERE aborts without consulting the
+// server. This fake reproduces exactly that: fn(null) first, and only a
+// non-undefined return earns the re-run against the real server value.
+function adminLikeTransaction(serverValue, fn) {
+  const first = fn(null);
+  if (first === undefined) return { committed: false, ranWithServerValue: false };
+  if (serverValue === null) return { committed: true, value: first, ranWithServerValue: false };
+  // CAS against the server fails (null !== serverValue) → re-run with truth.
+  const second = fn(serverValue);
+  if (second === undefined) return { committed: false, ranWithServerValue: true };
+  return { committed: true, value: second, ranWithServerValue: true };
+}
+
+test("poolTransactionStep: a cold cache still reaches the real record", () => {
+  const server = recorded();
+  let decision = null;
+  const res = adminLikeTransaction(server, poolTransactionStep((cur) => settleDecision(cur, tillA), (d) => { decision = d; }));
+  // Without the null→null return, fn(null) would refuse "not-found" and abort
+  // blind; with it, the decision that stands was made against the record.
+  assert.equal(res.ranWithServerValue, true);
+  assert.equal(decision.ok, true);
+  assert.equal(res.value.status, "used");
+});
+
+test("poolTransactionStep: a genuinely absent record refuses not-found, harmlessly", () => {
+  let decision = null;
+  const res = adminLikeTransaction(null, poolTransactionStep((cur) => settleDecision(cur, tillA), (d) => { decision = d; }));
+  assert.equal(decision.ok, false);
+  assert.equal(decision.code, "not-found");
+  assert.equal(res.value, null); // the committed null is a no-op delete of nothing
+});
+
+test("poolTransactionStep: a refusal against real data leaves the record be", () => {
+  const server = recorded({ status: "used", used: { attemptId: "P-other", cashierName: "Sipho", sale: null } });
+  let decision = null;
+  const res = adminLikeTransaction(server, poolTransactionStep((cur) => settleDecision(cur, tillA), (d) => { decision = d; }));
+  assert.equal(res.committed, false);
+  assert.equal(res.ranWithServerValue, true);
+  assert.equal(decision.code, "already-used");
 });

@@ -15,8 +15,20 @@ const path = require("node:path");
 // Where pdfjs-dist ships the 14 standard fonts, resolved from the installed
 // package so a version bump or a different install layout (the poller on the
 // mini, the deployed function) always points at ITS OWN copy.
-const STANDARD_FONT_DATA_URL =
-  path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts") + path.sep;
+//
+// RESOLVED DEFENSIVELY: pdfjs-dist has genuinely been absent on the mini
+// before, and this module is required at poller STARTUP — a throw here would
+// kill the whole poller, card path included, where the contract is a graceful
+// per-message "reader unavailable" refusal from the lazy import below.
+// Missing package → undefined → pdfToLines fails exactly the way it always
+// did. (Fable-vs-spec review, this PR.)
+const STANDARD_FONT_DATA_URL = (() => {
+  try {
+    return path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts") + path.sep;
+  } catch {
+    return undefined;
+  }
+})();
 
 // A text layer's Y coordinates wobble by fractions of a point within one line.
 // Rounding to the nearest point groups a line without merging adjacent ones —

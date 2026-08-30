@@ -133,6 +133,10 @@ export default function EftPool() {
     .sort((a, b) => (b.at || 0) - (a.at || 0));
   const refusedCount = rows.filter((r) => r.outcome !== "recorded").length;
   const recordedCount = rows.length - refusedCount;
+  // Settled but never linked to a sale — a till crash between settling and
+  // completing, OR a sale that committed and only the slip link failed. Either
+  // way it needs eyes: this is the one state the till cannot repair itself.
+  const stuckCount = rows.filter((r) => r.status === "used" && r.used && !r.used.sale).length;
 
   return (
     <div style={S.card}>
@@ -141,6 +145,7 @@ export default function EftPool() {
         <div style={{ fontSize: 12, color: refusedCount ? "#FFB3B3" : "rgba(233,238,255,.5)", fontWeight: refusedCount ? 800 : 600 }}>
           {/* These counts describe THE TAIL SHOWN, never the whole pool — the
               read is bounded at FEED_SIZE and the pool grows for ever. */}
+          {stuckCount ? `${stuckCount} used with NO SALE ATTACHED · ` : ""}
           {refusedCount ? `${refusedCount} refused (last ${rows.length})` : `${recordedCount} recorded (last ${rows.length})`}
         </div>
       </div>
@@ -193,11 +198,17 @@ export default function EftPool() {
                   {r.status === "used" && r.used && (
                     <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(233,238,255,.75)" }}>
                       Settled {fmtTime(r.used.at)} by {r.used.cashierName || "an unknown cashier"}
+                      {/* A payment bigger than the sale it settled: the whole
+                          payment is consumed, and the difference must be
+                          VISIBLE here — it is money the customer overpaid. */}
+                      {Number.isInteger(r.used.appliedCents) && Number.isInteger(r.amountCents) && r.used.appliedCents < r.amountCents
+                        ? ` — applied ${fmtRands(r.used.appliedCents)} of ${fmtRands(r.amountCents)} (customer overpaid by ${fmtRands(r.amountCents - r.used.appliedCents)})`
+                        : ""}
                       {r.used.tillId ? ` (${r.used.storeId || "?"} / ${r.used.tillId})` : ""}
                       {r.used.customerName ? ` for ${r.used.customerName}` : ""} —
                       {r.used.sale
                         ? ` sale ${r.used.sale.saleId}, slip ${r.used.sale.receiptNumber || "—"}`
-                        : " no sale attached (the till may have crashed between settling and completing — reverse to free the payment)"}
+                        : " no sale attached — either the sale never completed, OR it completed and only the slip link failed. Check Sale History for a matching sale before reversing; reversing frees the payment to be used again."}
                       {revFor !== r.id ? (
                         <button type="button" disabled={revBusy}
                                 onClick={() => { setRevFor(r.id); setRevReason(""); setRevErr(null); }}

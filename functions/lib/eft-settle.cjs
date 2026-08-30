@@ -185,4 +185,31 @@ function reverseDecision(current, { at, by, reason }) {
   };
 }
 
-module.exports = { settleDecision, attachSaleDecision, releaseDecision, reverseDecision };
+/**
+ * The transaction update function the callable hands to the Admin SDK,
+ * wrapping one decision — PURE and here so the null-first-call handling is
+ * itself under test (test/eft-pool-settle.test.cjs), not just reasoned about:
+ *
+ * THE NULL-FIRST-CALL TRAP. The Admin SDK runs the update function with null
+ * when its cache is cold, and returning undefined THERE aborts without ever
+ * consulting the server — a "not found" verdict on a record that exists. So a
+ * null current returns null instead: the compare-and-swap then fails against
+ * the real server value (a true no-op when the record is genuinely absent)
+ * and the function re-runs with the actual record. The DECISION captured via
+ * `capture`, not the transaction's `committed`, is the outcome that matters.
+ *
+ * @param {(current:any)=>object} decide   one of the decision functions above
+ * @param {(d:object)=>void} capture       receives every run's decision; the
+ *                                         last one is authoritative
+ */
+function poolTransactionStep(decide, capture) {
+  return (current) => {
+    const decision = decide(current);
+    capture(decision);
+    if (decision.ok && !decision.already) return decision.value;
+    if (current === null) return null; // force the server round-trip
+    return undefined; // genuine refusal or idempotent no-op: leave the record be
+  };
+}
+
+module.exports = { settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep };

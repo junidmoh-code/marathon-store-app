@@ -44,7 +44,7 @@ const admin = require("firebase-admin");
 
 const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, searchEftPool } = require("../lib/eft-pool.cjs");
 const {
-  settleDecision, attachSaleDecision, releaseDecision, reverseDecision,
+  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
 } = require("../lib/eft-settle.cjs");
 
 if (!admin.apps.length) {
@@ -96,25 +96,15 @@ async function cashierNameOf(request) {
 }
 
 /**
- * Run one decision as an RTDB transaction on the payment's node.
- *
- * THE NULL-FIRST-CALL TRAP, handled: the Admin SDK calls the update function
- * with null when its cache is cold, and returning undefined THERE aborts
- * without ever consulting the server. So a null current returns null instead —
- * the compare-and-swap then fails against the real server value (unless the
- * record is truly absent, where writing null is a no-op) and the function
- * re-runs with the actual record. The DECISION, not `committed`, is the
- * outcome that matters.
+ * Run one decision as an RTDB transaction on the payment's node. The whole
+ * update function — including the Admin SDK's null-first-call handling — is
+ * poolTransactionStep (lib/eft-settle.cjs), pure and under test there; this
+ * wrapper only owns the ref and the await.
  */
 async function runPoolTransaction(key, decide) {
   const ref = admin.database().ref(`${EFT_POOL_PATH}/${key}`);
   let decision = null;
-  await ref.transaction((current) => {
-    decision = decide(current);
-    if (decision.ok && !decision.already) return decision.value;
-    if (current === null) return null; // force the server round-trip
-    return undefined; // genuine refusal or idempotent no-op: leave the record be
-  });
+  await ref.transaction(poolTransactionStep(decide, (d) => { decision = d; }));
   return decision;
 }
 
@@ -128,6 +118,14 @@ function refusalToError(decision) {
 exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
   const query = String(request.data?.query ?? "").slice(0, 120);
+  // A QUERY IS REQUIRED. An empty search would return the newest payments
+  // wholesale — payer names and amounts of customers who have nothing to do
+  // with this sale — turning the search into a browsable directory of the
+  // pool. The till's modal pre-fills the amount due, so a real sale always
+  // arrives here with a query; refusing short ones costs nothing but the
+  // enumeration. (Independent architect review, this PR.) The refused call
+  // skips the database read entirely.
+  if (query.trim().length < 2) return { results: [], searched: 0, needQuery: true };
   // The TAIL, never the node — the pool grows by a record per payment for
   // ever, and a till search is about this week's customers.
   const snap = await admin.database()
