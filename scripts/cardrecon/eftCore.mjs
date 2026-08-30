@@ -415,16 +415,21 @@ export function parseAllowedAccountTails(raw) {
 
 /**
  * Is this masked destination one of ours?
+ * `configured` says whether ${EFT_ACCOUNTS_ENV_VAR} carried ANY text — a set
+ * variable whose every entry was too short to be an account must not produce
+ * a refusal claiming the variable is unset. (CodeRabbit, this PR.)
  * @returns {{ok:true, tail:string} | {ok:false, reason:string}}
  */
-export function accountVerdict({ accountMask, allowedTails }) {
+export function accountVerdict({ accountMask, allowedTails, configured }) {
   const visible = String(accountMask ?? "").replace(/\D/g, "");
   if (visible.length < 4) {
     return { ok: false, reason: `The destination account prints as "${clip(accountMask, 40)}" — fewer than four visible digits, so it cannot be checked against the allowlist.` };
   }
   const tail = visible.slice(-4);
   if (!Array.isArray(allowedTails) || !allowedTails.length) {
-    return { ok: false, reason: `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (comma-separated account numbers). Until then every payment refuses here, deliberately.` };
+    return { ok: false, reason: configured
+      ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number — each comma-separated entry needs at least four digits. Every payment refuses here until it is fixed.`
+      : `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (comma-separated account numbers). Until then every payment refuses here, deliberately.` };
   }
   if (!allowedTails.includes(tail)) {
     return { ok: false, reason: `This payment credits an account ending ${tail}, which is not one of the shop's own accounts. If it should be, add it to ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini.` };

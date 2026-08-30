@@ -320,9 +320,16 @@ describe("the destination-account allowlist — only the shop's own accounts", (
   });
 
   it("FAILS CLOSED: no allowlist configured refuses, and names the variable to set", () => {
-    const v = accountVerdict({ accountMask: "XXXXXXXXXXXX6625", allowedTails: [] });
+    const v = accountVerdict({ accountMask: "XXXXXXXXXXXX6625", allowedTails: [], configured: false });
     expect(v.ok).toBe(false);
     expect(v.reason).toContain(EFT_ACCOUNTS_ENV_VAR);
+    expect(v.reason).toMatch(/No account allowlist is configured/);
+  });
+
+  it("a SET variable with no usable entry refuses with the RIGHT cause — never 'not configured'", () => {
+    const v = accountVerdict({ accountMask: "XXXXXXXXXXXX6625", allowedTails: [], configured: true });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/set but holds no usable/);
   });
 
   it("FAILS CLOSED: fewer than four visible digits cannot be checked", () => {

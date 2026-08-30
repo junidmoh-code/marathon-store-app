@@ -74,6 +74,17 @@ say "installing imapflow + mailparser…"
 # functions/node_modules — declared in functions/package.json but absent when
 # only firebase-admin was installed there by hand. --no-save: the manifests
 # already carry it; this only materialises it.
+# A PRESENT DIRECTORY IS NOT A CORRECT VERSION. An installed pdfjs-dist whose
+# major differs from the manifest's range would skip the install and then fail
+# (or drift) at run time — validate, and reinstall on mismatch. (CodeRabbit.)
+PDFJS_WANT_MAJOR=$("$NODE" -p "String(require('$REPO/functions/package.json').dependencies['pdfjs-dist']).replace(/[^0-9]*([0-9]+).*/, '\$1')")
+if [ -d "$REPO/functions/node_modules/pdfjs-dist" ]; then
+  PDFJS_HAVE_MAJOR=$("$NODE" -p "require('$REPO/functions/node_modules/pdfjs-dist/package.json').version.split('.')[0]" 2>/dev/null || echo "?")
+  if [ "$PDFJS_HAVE_MAJOR" != "$PDFJS_WANT_MAJOR" ]; then
+    say "pdfjs-dist major $PDFJS_HAVE_MAJOR does not match the manifest's $PDFJS_WANT_MAJOR — reinstalling…"
+    rm -rf "$REPO/functions/node_modules/pdfjs-dist"
+  fi
+fi
 if [ ! -d "$REPO/functions/node_modules/pdfjs-dist" ]; then
   say "installing pdfjs-dist into functions/node_modules (the EFT reader's PDF text extraction)…"
   # PINNED TO THE MANIFEST'S OWN RANGE — an unpinned install here would let

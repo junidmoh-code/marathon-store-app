@@ -219,6 +219,7 @@ function config() {
     // value in a log — at most the count. An empty list refuses every payment
     // as refused-account, deliberately: fail-closed until the owner fills it.
     eftAccountTails: parseAllowedAccountTails(env.EFT_ALLOWED_ACCOUNTS),
+    eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
     dryRun: process.argv.includes("--dry-run"),
   };
 }
@@ -813,7 +814,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       parsedPay = reader.parse(doc.lines);
       rawText = doc.text;
       if (parsedPay.ok) {
-        account = accountVerdict({ accountMask: parsedPay.accountMask, allowedTails: cfg.eftAccountTails });
+        account = accountVerdict({ accountMask: parsedPay.accountMask, allowedTails: cfg.eftAccountTails, configured: cfg.eftAccountsConfigured });
       }
     } else {
       // NOBODY RECOGNISES IT. If it is payment-shaped at all, the refusal is

@@ -144,7 +144,7 @@ export default function EftPool() {
                       : isForgery ? "FAILED AUTHENTICATION — forgery attempt"
                       : r.outcome === "refused-account"
                         ? `${fmtRands(r.amountCents)} INTO A DIFFERENT ACCOUNT${r.destination?.accountMask ? ` (${r.destination.accountMask})` : ""}`
-                        : "Could not be read — no reader for this format yet"}
+                        : "Could not be read exactly — open for the reason"}
                   </span>
                   <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
                 </span>
