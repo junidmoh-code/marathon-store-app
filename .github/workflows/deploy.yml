@@ -1,0 +1,32 @@
+name: Deploy hosting (marathon-club)
+
+on:
+  push:
+    branches: [main]
+
+# Hosting only. This workflow must never gain a `firebase deploy --only functions`
+# or `--only database` step — functions are shared with marathon-pos-app and a
+# bare functions deploy from this repo offers to delete its functions; rules are
+# never deployed from CI. See DEPLOY-TRACKER.md.
+jobs:
+  deploy-hosting:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          projectId: marathon-club
+          channelId: live
