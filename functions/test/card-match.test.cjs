@@ -51,7 +51,11 @@ test("THE MOVED MACHINE: legs rung on another till still count", () => {
   assert.equal(r.unmatchedTxnCents, 0, "…so nothing is missing");
   assert.equal(r.onTillCents, 35000);
   assert.equal(r.offTillCents, 350000, "R3,500 rung elsewhere");
-  assert.deepEqual(r.offTill, { "trophy/till-1": { legs: 4, cents: 350000 } },
+  // A LIST, and the till is FIELDS rather than a key: it was
+  // offTill["trophy/till-1"], and an RTDB key may not contain "/", so writing
+  // this record threw and the whole capture failed with INTERNAL — on every
+  // capture path, for exactly the case this field exists to record.
+  assert.deepEqual(r.offTill, [{ storeId: "trophy", tillId: "till-1", legs: 4, cents: 350000 }],
     "…and the record says where, so a moved machine reads as information");
 });
 
