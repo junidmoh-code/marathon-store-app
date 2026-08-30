@@ -35,10 +35,16 @@
       service-account key and the .env both live in this user's home) and a
       second scheduling pattern on a machine that has one. (CodeRabbit, PR #510.)
 
-    · StartInterval 300, not 120. A batch report is emailed once a day per
-      terminal at settlement. Five minutes is already far faster than anyone
-      needs and is a twelfth of the IMAP connections a two-minute tick would
-      make. A tick with no unread mail exits in under a second.
+    · StartInterval 120. It was 300 when this job only fetched batch reports —
+      those are emailed once a day per terminal, and five minutes was already
+      far faster than anyone needed. The same tick now ALSO pools EFT payment
+      notifications (the second reader, eftCore.mjs), and the clock that
+      matters there is a customer at the counter who has just paid: two
+      minutes is the ceiling on how stale the pool can be when a later
+      session's cashier surface starts searching it. Two minutes is 720 IMAP
+      sessions a day — far below where Gmail throttles (its published limits
+      are about simultaneous connections and bandwidth, not modest connection
+      counts) — and a tick with no unread mail still exits in under a second.
 
     · A MISSED FIRE is run by launchd as soon as the machine wakes, which is
       the behaviour we want: a slip that arrived while the mini was off is
@@ -75,7 +81,7 @@
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
-  <key>StartInterval</key><integer>300</integer>
+  <key>StartInterval</key><integer>120</integer>
   <key>RunAtLoad</key><true/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
        not handle itself (node failing to start, a syntax error) lands here.

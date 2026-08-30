@@ -57,6 +57,17 @@ import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
   parseEnvText,
 } from "./intakeCore.mjs";
+// ── THE SECOND READER ────────────────────────────────────────────────────────
+// EFT payment notifications arrive in the SAME mailbox (customers enter it as
+// the notification address in their FNB app). This poller is the only IMAP
+// consumer — a separate poller could never work, because this one marks
+// ordinary mail \Seen and would hide every notification from it. The decisions
+// live in eftCore.mjs; here is only the wiring. See handleEftMessage.
+import {
+  EFT_POOL_PATH, isEftCandidate, authenticationVerdict, htmlToText,
+  parseEftNotification, eftMessageKey, poolWriteDecision, eftPoolRecord,
+  redactAccountDigits,
+} from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
 // mini borrows it (scripts/shopify, scripts/social). One copy, one version.
@@ -375,6 +386,10 @@ async function run() {
   }
 
   let scanned = 0, processed = 0, recorded = 0, refused = 0, unrelated = 0;
+  // The EFT reader's own tallies — separable on purpose: a refused slip means a
+  // terminal is not reconciling; a refused-auth notification means somebody
+  // tried to forge a payment. Different alarms for different people.
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0;
   let scannedSoFar = 0;
   try {
     const lock = await client.getMailboxLock(cfg.mailbox);
@@ -406,6 +421,9 @@ async function run() {
             recorded += result.recorded;
             refused += result.refused;
             unrelated += result.unrelated;
+            eftRecorded += result.eftRecorded || 0;
+            eftRefusedAuth += result.eftRefusedAuth || 0;
+            eftRefusedParse += result.eftRefusedParse || 0;
           } catch (err) {
             console.error(`  ✗ message uid ${uid}: ${err.message}`);
           }
@@ -424,6 +442,9 @@ async function run() {
   try {
     await db.ref(STATUS_PATH).set({
       lastRunAt: serverNowMs(), scanned, processed, recorded, refused, unrelated,
+      // The EFT reader beats on the same heart: counts only, never a figure —
+      // this node is readable by every card_recon holder.
+      eftRecorded, eftRefusedAuth, eftRefusedParse,
       mailbox: cfg.mailbox,
     });
   } catch (err) {
@@ -432,6 +453,9 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} refused as unparseable — see /eft_pool`);
+  }
   return 0;
 }
 
@@ -462,6 +486,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     subject: clip(parsed.subject, 200),
     receivedAt: parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime()) ? parsed.date.getTime() : null,
   };
+  // The subject as LOGS may show it: FNB subject lines can carry an account
+  // number, and the launchd log must not. Records sweep separately
+  // (eftPoolRecord); this is for every console line. (CodeRabbit, this PR.)
+  message.logSubject = redactAccountDigits(message.subject) || "(no subject)";
   message.key = messageKey({
     messageId: parsed.messageId, from: message.from, subject: message.subject,
     // imapflow's DownloadObject.meta names it expectedSize; `size` is always
@@ -474,12 +502,57 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   });
 
   const { take, refused: badAttachments, skipped } = planMessage(parsed.attachments);
-  if (!take.length && !badAttachments.length) {
+  const hasSlipwork = take.length > 0 || badAttachments.length > 0;
+
+  // ── THE SECOND READER RUNS REGARDLESS OF ATTACHMENTS ───────────────────────
+  // A message that CLAIMS an allowlisted bank domain (and is not a batch
+  // report) is an EFT candidate — the claim is attacker-controlled text and
+  // decides only that the authentication check runs. It is examined EVEN WHEN
+  // it also carries PDFs: a notification with a proof-of-payment PDF attached,
+  // or a forwarded chain dragging an old slip along, would otherwise route
+  // exclusively down the slip pipeline and the payment itself would never be
+  // examined — a silently lost payment, from a message that WAS read.
+  // (Independent architect review, this PR.)
+  //
+  // When slip work exists too, the EFT reader must NOT mark the message read —
+  // the slip path below still owns that, and marking early would hide the
+  // slips from the very tick processing them.
+  // THE TWO READERS ARE INDEPENDENTLY FENCED. A throw in the EFT reader must
+  // not cost the slip on the same message its capture (or vice versa) — each
+  // failure is that reader's alone. What a failed or unfinished EFT reader
+  // DOES cost the message is the \Seen flag: eftSettled false means the EFT
+  // outcome is not durably recorded yet, and marking the message read anywhere
+  // would hide it from the stale-claim rescue for ever.
+  // (Independent adversarial review.)
+  let eft = null;
+  let eftSettled = true;
+  try {
+    eft = await handleEftMessage({
+      client, range, db, parsed, message, cfg,
+      uid, uidValidity: String(client.mailbox?.uidValidity ?? ""),
+      size: downloaded.meta?.expectedSize || 0,
+      markSeen: !hasSlipwork,
+    });
+    if (eft) eftSettled = eft.eftSettled !== false;
+  } catch (err) {
+    console.error(`  ✗ EFT reader on "${message.logSubject}": ${err.message} — the message stays unread and is retried`);
+    eftSettled = false;
+  }
+  if (!hasSlipwork) {
+    if (eft) return eft;
+    if (!eftSettled) return empty; // an EFT candidate that failed mid-read: stay unread, retry next tick
     // Ordinary mail. Marked read so it is not looked at again, and nothing is
     // written — a record per newsletter would bury the thing this feed is for.
     if (!cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true });
     return empty;
   }
+  // Slip work AND (possibly) EFT work on one message: whatever the slip path
+  // returns below, the EFT reader's tallies travel with it.
+  const eftCounts = {
+    eftRecorded: eft?.eftRecorded || 0,
+    eftRefusedAuth: eft?.eftRefusedAuth || 0,
+    eftRefusedParse: eft?.eftRefusedParse || 0,
+  };
 
   // A DRY RUN CHANGES NOTHING, AND THE CLAIM IS A CHANGE. Taking one here left
   // a "claimed" row behind that the real schedule then stood down from for
@@ -487,7 +560,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // the one that stopped the poller capturing. (CodeRabbit, PR #510.)
   const claim = cfg.dryRun ? { taken: true, done: false, why: "dry run" } : await claimMessage(db, message.key);
   if (!claim.taken) {
-    console.log(`  · "${message.subject || "(no subject)"}" — ${claim.why}`);
+    console.log(`  · "${message.logSubject}" — ${claim.why}`);
     // WHETHER TO MARK IT READ DEPENDS ENTIRELY ON WHY WE STOOD DOWN, and
     // getting this wrong loses a slip silently.
     //
@@ -500,8 +573,11 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     //     only returns UNSEEN mail. Marking it read here would hide it from
     //     the very tick that was going to rescue it, and the slip would sit in
     //     the mailbox unread by anything for ever.
-    if (claim.done && !cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
-    return empty;
+    //     …and NEITHER may fire while the EFT side of this same message is
+    //     unsettled: the flag is one per message, and the reader that is done
+    //     must not hide it from the reader that is not.
+    if (claim.done && !cfg.dryRun && eftSettled) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+    return { ...empty, ...eftCounts };
   }
 
   const results = badAttachments.map((r) => attachmentOutcome({ filename: r.filename, error: r.reason }));
@@ -520,7 +596,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     results.push(row);
     console.log(`  · ${row.filename}: ${row.outcome}${row.reason ? ` — ${row.reason}` : ` (batch ${row.batchKey} · ${row.tid})`}`);
   }
-  if (cfg.dryRun) return empty;
+  if (cfg.dryRun) return { ...empty, ...eftCounts };
 
   const record = intakeRecord({ message, results, skipped, at: serverNowMs() });
   // ONE UPDATE, TWO PATHS, ATOMICALLY. Written as two calls, a crash between
@@ -538,13 +614,147 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // in the database. Crash before this and the next tick sees it again, which
   // the claim and the duplicate-batch refusal both handle; crash after marking
   // it read with nothing recorded and the slip is gone.
-  await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
-    console.warn(`  ⚠ could not mark "${message.subject}" read (${err.message}) — the claim still stops it being submitted twice`);
-  });
+  //
+  // AND ONLY IF THE EFT SIDE IS ALSO DOWN. The slips are recorded either way —
+  // an unsettled EFT outcome leaves the message unread so the next tick can
+  // finish the payment, and the slip claim (done, above) is what stops the
+  // slips being submitted twice on that revisit.
+  if (eftSettled) {
+    await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
+      console.warn(`  ⚠ could not mark "${message.logSubject}" read (${err.message}) — the claim still stops it being submitted twice`);
+    });
+  } else {
+    console.log(`  · "${message.logSubject}" left unread — its EFT side is not recorded yet; the slips themselves are in`);
+  }
 
   return {
     processed: true,
     recorded: record.recorded, refused: record.refused, unrelated: record.unrelated,
+    ...eftCounts,
+  };
+}
+
+// ─── THE EFT READER ──────────────────────────────────────────────────────────
+// One payment notification, all the way through: authenticate, parse, store.
+// Returns null when the message was never an EFT candidate (the caller falls
+// through to ordinary mail); otherwise the tick's tallies for this message.
+//
+// NOTHING IS SILENTLY DROPPED, same law as the slips: every candidate leaves a
+// record at /eft_pool — a verified payment (status "unmatched"), a forgery
+// attempt (refused-auth), or a format surprise (refused-parse). A payment that
+// silently fails to land is the failure mode this whole feature exists to
+// prevent.
+//
+// THE SAME NOTIFICATION NEVER CREATES TWO POOL RECORDS. Three layers:
+//   1. The record's node name IS the message's key (eftMessageKey) — a replay
+//      lands on the same node.
+//   2. The write is a CREATE-ONLY transaction (poolWriteDecision): an existing
+//      record — whatever status a later session has moved it to — is never
+//      overwritten.
+//   3. The shared claim at /card_batch_intake_seen/{key}, same discipline and
+//      the same stale-claim rescue as the slips. One mailbox, one ledger.
+// ── eftSettled IS WHAT KEEPS \Seen HONEST ────────────────────────────────────
+// Every return carries eftSettled: TRUE only when this message's EFT outcome
+// is durably recorded (or it needs none). FALSE — another run's claim is still
+// held, or a write failed — means the message MUST stay unread: the search
+// only returns UNSEEN mail, so a \Seen set anywhere while the outcome is not
+// down yet would hide the message from the stale-claim rescue for ever. The
+// slip path consults it before every flag it sets. (Independent adversarial
+// review — the slip path marking a both-kinds message read while the EFT
+// claim was merely HELD was a permanently lost payment.)
+async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, uidValidity, size, markSeen }) {
+  // mailparser can fail to resolve a From ADDRESS a human would read fine; the
+  // raw header text is the fallback so a bank-claiming message with an odd
+  // From still gets examined (and refused visibly) rather than silently filed
+  // as ordinary mail. (Independent adversarial review.)
+  const fromAddress = parsed.from?.value?.[0]?.address
+    || /<([^<>\s]+@[^<>\s]+)>/.exec(message.from || "")?.[1]
+    || null;
+  if (!isEftCandidate({ fromAddress, subject: message.subject })) return null;
+
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0 };
+  const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
+  // The auth verdict is part of the key so a forgery carrying a guessed genuine
+  // Message-ID cannot occupy the key the genuine notification will need.
+  const key = eftMessageKey({
+    messageId: parsed.messageId, from: message.from, subject: message.subject,
+    date: message.receivedAt, size, uid, uidValidity, authPass: verdict.pass,
+  });
+
+  if (cfg.dryRun) {
+    console.log(`  · would examine as an EFT notification (auth ${verdict.pass ? "pass" : "FAIL"}): "${message.logSubject}"`);
+    return { ...empty, eftSettled: true };
+  }
+
+  const claim = await claimMessage(db, key);
+  if (!claim.taken) {
+    console.log(`  · EFT "${message.logSubject}" — ${claim.why}`);
+    // done = the outcome is recorded, the message may be marked read.
+    // NOT done = a run (possibly dead) still holds it — the message must stay
+    // unread or the rescue tick can never see it.
+    if (claim.done && markSeen) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+    return { ...empty, eftSettled: !!claim.done };
+  }
+
+  // FNB's real mail has NO text part at all (verified against the live
+  // mailbox) — but a multipart message can also carry a text part that is a
+  // useless stub ("view this message in HTML") beside the real html body. So
+  // BOTH renderings are candidates, text first, the first that parses wins —
+  // and a refusal keeps THE BODY ITS REASON DESCRIBES (the longest candidate's
+  // own refusal), because a reason diagnosing a body the record does not show
+  // is no diagnostic at all. (Independent reviews, this PR.)
+  const textBody = (parsed.text || "").trim();
+  const htmlBody = htmlToText(parsed.html || "");
+  const candidates = [textBody, htmlBody].filter(Boolean);
+  let rawText = candidates[0] || "";
+  let parsedPay = null;
+  if (verdict.pass) {
+    const attempts = candidates.map((body) => ({ body, outcome: parseEftNotification(body) }));
+    const pick = attempts.find((a) => a.outcome.ok)
+      || attempts.reduce((best, a) => (a.body.length > (best?.body.length || 0) ? a : best), null);
+    parsedPay = pick ? pick.outcome : parseEftNotification("");
+    rawText = pick ? pick.body : "";
+  }
+  const record = eftPoolRecord({ message, verdict, parsed: parsedPay, rawText, at: serverNowMs() });
+
+  let decision = null;
+  await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => {
+    decision = poolWriteDecision(cur, record);
+    return decision.write ? decision.value : undefined; // undefined = abort, keep what is there
+  });
+  // The claim flips to done AFTER the pool write. A crash between the two costs
+  // a stale-claim delay; the create-only transaction is what makes the retry
+  // land on the existing record instead of doubling it.
+  await db.ref(`${SEEN_PATH}/${key}`).set({ state: "done", at: serverNowMs(), eft: true });
+  // Last, and deliberately: a message is only marked read once its outcome is
+  // in the database. When the message ALSO carries slip work, the slip path
+  // owns the flag — marking here would hide the slips from their own tick.
+  if (markSeen) {
+    await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
+      console.warn(`  ⚠ could not mark "${message.logSubject}" read (${err.message}) — the claim still stops it landing twice`);
+    });
+  }
+
+  // A REPLAY REPORTS NOTHING. The record was written by an earlier run; saying
+  // "recorded" again — and counting it again in the heartbeat — makes a no-op
+  // look like a payment. (Independent adversarial review.)
+  if (decision && !decision.write) {
+    console.log(`  · EFT "${message.logSubject}" — ${decision.why}`);
+    return { ...empty, eftSettled: true };
+  }
+  const label = record.outcome === "recorded"
+    ? `payment recorded (status unmatched)`
+    : `${record.outcome} — ${record.reason}`;
+  console.log(`  · EFT: ${label}`);
+  return {
+    // processed feeds the "N with slips" line and the heartbeat's slip count —
+    // an EFT-only message is not slip work and must not inflate it; the EFT
+    // tallies are its whole story.
+    ...empty,
+    eftSettled: true,
+    eftRecorded: record.outcome === "recorded" ? 1 : 0,
+    eftRefusedAuth: record.outcome === "refused-auth" ? 1 : 0,
+    eftRefusedParse: record.outcome === "refused-parse" ? 1 : 0,
   };
 }
 

@@ -1103,3 +1103,66 @@ ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && GOOGLE_APPLICATION_CR
 A tick with no unread mail logs one line, so a quiet log still proves the
 schedule is alive. Refused slips surface in the **Card recon tab → Emailed
 slips**, in red, at the top.
+
+# The EFT payment pool — the second reader on the same mailbox
+
+Customers paying by EFT enter **marathon6631@gmail.com** as the notification
+address in their FNB app, and FNB (NoReplyTransReport@fnb.co.za) emails a
+payment notification to the mailbox the card recon poller already reads. The
+**same poller, same tick, same launchd agent** now also examines those
+messages — a separate poller could never work, because this one marks ordinary
+mail `\Seen` and would hide every notification from it.
+
+**This is ingestion and storage only.** A verified notification becomes a
+record at top-level **`/eft_pool`** with `status: "unmatched"`. The only
+reader is the owner-only panel described below — no matching, no cashier
+surface, no sale release consumes the pool yet; those are later sessions. The
+status field is designed for `matched` and `used` but no transition exists.
+
+## The message is believed only on Gmail's word
+
+The visible From address is attacker-controlled text and is **never the check
+on its own**. A message claiming an allowlisted bank domain must carry Gmail's
+own `Authentication-Results` stamp (authserv-id `mx.google.com`, topmost)
+recording **dkim=pass with the signing domain aligned to the From domain**,
+and the From domain must be on the allowlist (`fnb.co.za`). A message that
+claims fnb.co.za and fails is recorded as a **failed-authentication refusal —
+a forgery attempt** — separable from a parse refusal. Return-Path, the
+Received chain, Message-ID and TLS are deliberately not checked.
+
+## Exact or refused
+
+Amount (via card recon's own fuzzed `parseRandsToCents` — never a second
+copy), reference, payer and the bank's own timestamp. The amount must parse
+exactly or the message refuses; every refusal stores the extracted text with
+**anything that looks like an account number struck out** (runs of 6+ digits
+keep their last three), so a format change is diagnosable from the record
+alone. The extracted *reference* is kept verbatim — it is the customer's own
+typed matching key, often a phone number.
+
+## Never twice
+
+The record's node name IS the message's key (auth verdict included, so a
+forgery guessing a genuine Message-ID cannot squat on the genuine record's
+key); the write is a create-only transaction; and the shared claim ledger at
+`/card_batch_intake_seen` covers it with the same stale-claim rescue as the
+slips.
+
+## Where the owner sees it
+
+**Card recon tab → EFT payments** (renders only for the super-admin; the
+`/eft_pool` rule — owner-only read, `.write: false`, Admin SDK only, the
+`/card_batches` isolation pattern — refuses everyone else anyway). Recorded
+payments show amount · reference · payer; refusals are red at the top, with
+the stored raw text behind a tap. The poller heartbeat
+(`/card_batch_poll_status`) carries `eftRecorded / eftRefusedAuth /
+eftRefusedParse` counts per tick.
+
+Rules live in `scripts/cardrecon/eftRules.mjs`, applied with the house method
+by `scripts/cardrecon/apply-eft-pool-rules.mjs [--apply]` — never
+`firebase deploy --only database`.
+
+The poll interval is **120 seconds** (was 300): the clock that matters is a
+customer at the counter who has just paid, and 720 IMAP sessions/day is far
+below Gmail's throttling territory. Nothing new to add to `.env` — the EFT
+reader uses the same mailbox credentials the card poller already reads.

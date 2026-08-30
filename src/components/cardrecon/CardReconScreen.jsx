@@ -53,6 +53,7 @@ import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SU
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
 import EmailedSlips from "./EmailedSlips";
+import EftPool from "./EftPool";
 import { S, fmtTime } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -356,6 +357,10 @@ export default function CardReconScreen({ onExit }) {
       </div>
 
       <EmailedSlips />
+      {/* Owner-only inside (renders null for everyone else): the EFT payment
+          pool's window, beside the refused-slip feed because the failure mode
+          that matters — something silently not landing — is the same. */}
+      <EftPool />
 
       <div style={S.card}>
         <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 8 }}>1 · Which till?</div>
