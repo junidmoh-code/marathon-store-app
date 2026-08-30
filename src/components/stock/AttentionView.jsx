@@ -50,7 +50,6 @@ const VIEWS = [
   { id: VIEW_DEAD, label: "Not moving", blurb: "Real stock that isn't selling" },
 ];
 
-const zar = (n) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(n || 0);
 const count = (n) => new Intl.NumberFormat("en-ZA").format(n || 0);
 
 // ── Movement ledger, windowed ────────────────────────────────────────────────
@@ -255,12 +254,6 @@ export default function AttentionView({ products, onExit }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 }}>
         <Kpi label="Styles" value={busy ? "…" : count(stats.styles)} tone={BLUE_L} />
         <Kpi label="Units" value={busy ? "…" : count(stats.units)} tone="#fff" />
-        <Kpi
-          label="Cash at cost"
-          value={busy ? "…" : zar(stats.value)}
-          tone={view === VIEW_LOW ? GREEN : AMBER}
-          sub={stats.valueMissing > 0 ? `${count(stats.valueMissing)} of ${count(stats.styles)} have no cost price` : "all styles priced"}
-        />
       </div>
 
       {/* Results */}
@@ -435,19 +428,12 @@ function AttentionCard({ row, view, lists, onAdd, onRemove }) {
           {[row.brand, row.subcategory || row.category].filter(Boolean).join(" · ")}
         </div>
 
-        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, borderTop: "1px solid rgba(255,255,255,.07)", marginTop: 9, paddingTop: 8 }}>
-          <span style={{ fontSize: 9.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em" }}>At cost</span>
-          <span style={{ fontSize: 13, fontWeight: 800, color: row.costValue == null ? GRAY : "#fff" }}>
-            {row.costValue == null ? "—" : zar(row.costValue)}
-          </span>
-        </div>
-
         {/* WHERE — quantity first, then the place: "269 Hub 2". No size
             breakdown on the face of the card; tapping a location floats it,
             because sizes are a follow-up question, not something worth spending
             the grid's whole surface on. */}
         {locations.length > 0 && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 10 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, borderTop: "1px solid rgba(255,255,255,.07)", marginTop: 9, paddingTop: 9 }}>
             {locations.map((l) => (
               <LocChip key={l.loc} label={l.label} qty={l.qty} shop={l.shop} sizes={l.sizes} />
             ))}
