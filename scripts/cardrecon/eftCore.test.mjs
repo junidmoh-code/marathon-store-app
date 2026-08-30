@@ -8,7 +8,7 @@
 // part an attacker controls.
 import { describe, it, expect } from "vitest";
 import {
-  domainOfAddress, domainsAligned, unfoldHeader, authenticationVerdict,
+  domainOfAddress, domainsAligned, domainAllowlisted, authenticationVerdict,
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
   parseEftNotification, eftMessageKey, poolWriteDecision, eftPoolRecord,
 } from "./eftCore.mjs";
@@ -49,6 +49,17 @@ describe("domains", () => {
     // suffix without a dot boundary must NOT align
     expect(domainsAligned("evilfnb.co.za", "fnb.co.za")).toBe(false);
     expect(domainsAligned(null, "fnb.co.za")).toBe(false);
+  });
+  it("the allowlist accepts subdomains of a listed domain and NEVER its parents", () => {
+    expect(domainAllowlisted("fnb.co.za")).toBe(true);
+    expect(domainAllowlisted("secure.fnb.co.za")).toBe(true);
+    // The parent direction is the hole a bidirectional test would open: every
+    // .co.za sender would qualify, then align its own DKIM with itself.
+    expect(domainAllowlisted("co.za")).toBe(false);
+    expect(domainAllowlisted("za")).toBe(false);
+    expect(domainAllowlisted("evilfnb.co.za")).toBe(false);
+    expect(domainAllowlisted("fnb.co.za.evil.example")).toBe(false);
+    expect(domainAllowlisted(null)).toBe(false);
   });
 });
 

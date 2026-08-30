@@ -71,11 +71,29 @@ export function domainOfAddress(address) {
  * they are equal or one is a subdomain of the other ("frg.fnb.co.za" signs for
  * "fnb.co.za" and vice versa). Case-insensitive — the real mail writes
  * "@FNB.co.za" in From and "@fnb.co.za" in the signature.
+ *
+ * BIDIRECTIONAL, and that is safe HERE ONLY because the From domain has
+ * already been pinned to the allowlist: the parent direction ("fnb.co.za"
+ * vouching for "frg.fnb.co.za") cannot be reached by an attacker without
+ * controlling fnb.co.za's DNS. It is NOT the allowlist test — see
+ * domainAllowlisted, where the parent direction would be a hole.
  */
 export function domainsAligned(a, b) {
   const x = String(a ?? "").toLowerCase(), y = String(b ?? "").toLowerCase();
   if (!x || !y) return false;
   return x === y || x.endsWith(`.${y}`) || y.endsWith(`.${x}`);
+}
+
+/**
+ * Is this domain an allowlisted bank domain, or a SUBDOMAIN of one?
+ * ONE DIRECTION ONLY, deliberately: "secure.fnb.co.za" qualifies, "co.za"
+ * must not — a bidirectional test would have made every .co.za sender a
+ * candidate whose own DKIM-signed subdomain then aligned with itself, which
+ * is the exact hole an allowlist exists to close.
+ */
+export function domainAllowlisted(domain) {
+  const d = String(domain ?? "").toLowerCase();
+  return !!d && EFT_ALLOWED_DOMAINS.some((a) => d === a || d.endsWith(`.${a}`));
 }
 
 // ─── THE AUTHENTICATION VERDICT ──────────────────────────────────────────────
@@ -102,7 +120,7 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
   if (!fromDomain) {
     return { pass: false, fromDomain: null, dkimDomain: null, detail: "the From header carries no usable address" };
   }
-  if (!EFT_ALLOWED_DOMAINS.includes(fromDomain)) {
+  if (!domainAllowlisted(fromDomain)) {
     return { pass: false, fromDomain, dkimDomain: null, detail: `${fromDomain} is not an allowlisted bank domain` };
   }
 
@@ -154,8 +172,10 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
 export function isEftCandidate({ fromAddress, subject, slipCount }) {
   if (slipCount > 0) return false;
   if (BATCH_REPORT_SUBJECT.test(String(subject ?? ""))) return false;
-  const domain = domainOfAddress(fromAddress);
-  return !!domain && EFT_ALLOWED_DOMAINS.some((d) => domainsAligned(domain, d));
+  // The SAME allowlist test the verdict applies (subdomain-of-allowlisted,
+  // never parent-of) — candidacy and verdict disagreeing is how genuine
+  // subdomain mail would have been filed as a forgery attempt.
+  return domainAllowlisted(domainOfAddress(fromAddress));
 }
 
 // ─── HTML → TEXT ─────────────────────────────────────────────────────────────
