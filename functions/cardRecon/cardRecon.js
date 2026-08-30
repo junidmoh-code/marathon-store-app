@@ -16,18 +16,6 @@
 //     TSN gaps. The detail roll is the default ask; summaryOnly is a permitted
 //     fallback that FLAGS the record so downstream never implies a line match
 //     ran.
-//   channel:"email" — the SAME extract, with no picked till. The FNB terminals
-//     email their batch report to the shop's mailbox and a poller on the Mac
-//     mini (scripts/cardrecon/) feeds each PDF through here unattended. Every
-//     refusal above applies unchanged; the ONE thing that cannot is the "slip
-//     TID ≠ the till the operator picked" check, because there is no operator
-//     and no pick. What replaces it is in lib/card-recon-email.cjs: the slip's
-//     TID must resolve in the registry (an unmapped terminal is REFUSED, and
-//     the poller records that refusal where it can be seen) and its printed
-//     MID must not contradict the one registered for that terminal. The
-//     channel is gated on its own permission flag, so nothing that can capture
-//     from a phone acquires a path that skips the till pick.
-//
 //   action:"submit" — draftId in, duplicate re-checked inside a transaction on
 //     the exact record key (append-only: the transaction aborts rather than
 //     overwrites), expected recomputed, record written, variance out. The
@@ -59,10 +47,9 @@ const {
   chooseCaptureSource, readPdfPayload, formatCents,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
-const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
-const { matchLegs, MATCH_AHEAD_MS, MATCH_BEHIND_MS } = require("../lib/card-match.cjs");
+const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 
 if (!admin.apps.length) {
@@ -198,54 +185,6 @@ async function assertCardRecon(request) {
     throw new HttpsError("unavailable", "Could not check permissions. Try again.");
   }
   if (!granted) throw new HttpsError("permission-denied", "Card recon permission required.");
-}
-
-// ── THE EMAIL CHANNEL'S OWN GATE — a SECOND flag, checked the same way ───────
-// FAIL CLOSED, like the one above. This is not a convenience: the email channel
-// is the one path with no picked till, so it must not be reachable by everyone
-// who can capture a slip from a phone. One identity holds it — the poller's —
-// and it is data, so revoking it is a rules-free edit rather than a redeploy.
-async function assertEmailIntake(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
-  const uid = request.auth?.uid;
-  // assertCardRecon has already refused an unauthenticated call, so this cannot
-  // be reached without a uid — and it does not depend on that being true, since
-  // `users/undefined/permFlags/...` is a path that reads as granted the moment
-  // somebody writes it.
-  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
-  let granted = false;
-  try {
-    const snap = await admin.database().ref(`users/${uid}/permFlags/${EMAIL_INTAKE_FLAG}`).once("value");
-    granted = snap.val() === true;
-  } catch (err) {
-    console.error("assertEmailIntake: permission read failed:", err.message);
-    throw new HttpsError("unavailable", "Could not check permissions. Try again.");
-  }
-  if (!granted) throw new HttpsError("permission-denied", "This identity may not capture emailed slips.");
-}
-
-// What the poller may tell us about where a file came from. Recorded on the
-// batch so a figure's provenance is never a guess — and SANITISED here, because
-// it is the one part of an emailed capture that is attacker-supplied text (a
-// subject line, a sender address) and it lands in an append-only record the
-// owner reads. Strings only, bounded, never objects.
-const INTAKE_TEXT_MAX = 200;
-function readIntake(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const text = (v) => {
-    const s = typeof v === "string" ? v.trim() : "";
-    return s ? s.slice(0, INTAKE_TEXT_MAX) : null;
-  };
-  const messageId = text(raw.messageId);
-  if (!messageId) return null;
-  return {
-    channel: "email",
-    messageId,
-    from: text(raw.from),
-    subject: text(raw.subject),
-    filename: text(raw.filename),
-    receivedAt: Number.isInteger(raw.receivedAt) ? raw.receivedAt : null,
-  };
 }
 
 // ── PHOTO SANITY — the readStyleCodeLabel base64 discipline ──────────────────
@@ -420,6 +359,24 @@ function matchNotes(match) {
   return notes;
 }
 
+// ─── THE SUMMARY SETTLES IT FIRST ────────────────────────────────────────────
+// If the terminal's total and the till's card total agree, the batch is done.
+// Not "probably done" — done. Every rand the machine took is in the ledger, and
+// nothing a transaction-by-transaction walk can find will add to that.
+//
+// So it is not walked. The owner's rule, and the right one: read the summary,
+// and only open the catalogue when the summary disagrees. That saves a
+// cross-till ledger query on every clean batch and — more to the point — leaves
+// a matcher no opportunity at all to invent a finding on a batch where the
+// money already balances.
+//
+// One honest limit, since it is real: two totals can agree while their
+// COMPOSITION differs — a missing R100 transaction against surplus R60 and R40
+// legs sums the same. That is not investigated, by instruction and by design.
+// The money is all present; which sale is which is a different question from
+// whether any is missing.
+const totalsAgree = (extraction, expected) => extraction.totalCents === expected.cardCents;
+
 async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
   // A SUMMARY-ONLY CAPTURE HAS NOTHING TO MATCH. It has totals and no
   // transactions, so matchLegs would return a perfectly valid result with
@@ -431,44 +388,27 @@ async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
   if (summaryOnly || !Array.isArray(extraction.lines) || !extraction.lines.length) return null;
   const legs = await cardLegsInWindow(db, {
     startMs: extraction.openedAt, endMs: extraction.closedAt,
-    // WIDE ENOUGH FOR THE MATCHER'S OWN TOLERANCE, not just the window's edge
-    // allowance — which is zero on a printed slip. A leg minutes after the last
-    // transaction is exactly what the matcher is looking for, and it cannot
-    // match what the query never fetched: the transaction would come back
-    // falsely unmatched and inflate the recorded variance.
-    edgeMs: Math.max(edgeMsFor(extraction), MATCH_AHEAD_MS, MATCH_BEHIND_MS),
+    // WIDE ENOUGH FOR A TERMINAL THAT KEEPS BAD TIME, not just the window's own
+    // edge allowance — which is zero on a printed slip. The matcher decides on
+    // AMOUNT, not time, but it can only match a leg the query actually fetched,
+    // and the window itself is built from timestamps the terminal may have got
+    // wrong. An hour either side covers a drifting clock and a slow till write.
+    edgeMs: Math.max(edgeMsFor(extraction), MATCH_WINDOW_MARGIN_MS),
   });
   return matchLegs(extraction.lines, legs, terminal);
 }
 
 async function handleExtract(db, request) {
-  const { photos, pdf, pickedTid, summaryOnly, channel } = request.data || {};
+  const { photos, pdf, pickedTid, summaryOnly } = request.data || {};
 
   // ONE PATH PER SUBMISSION — decided once, in chooseCaptureSource, because the
   // same answer stamps `capturedVia` on the record further down.
   const chosen = chooseCaptureSource({ photos, pdf, maxPhotos: MAX_PHOTOS });
   if (chosen.err) throw new HttpsError("invalid-argument", chosen.err);
-
-  // ── THE EMAIL CHANNEL — no picked till, because there is no person ─────────
-  // The mailbox poller submits here. It is a PDF-only path by construction: a
-  // photograph has no email provenance to record and no exact text to read, so
-  // allowing one would be inventing a third capture shape nobody asked for.
-  if (channel === "email") {
-    await assertEmailIntake(request);
-    if (chosen.source !== "pdf") throw new HttpsError("invalid-argument", "The email channel carries the terminal's PDF, nothing else.");
-    if (pickedTid) throw new HttpsError("invalid-argument", "An emailed slip has no picked till — its own TID is the routing key.");
-    const intake = readIntake(request.data.intake);
-    if (!intake) throw new HttpsError("invalid-argument", "An emailed capture must carry the source message id.");
-    return handleExtractPdf(db, request, { picked: null, pdf, source: chosen.source, intake });
-  }
-  if (channel !== undefined && channel !== "app") {
-    throw new HttpsError("invalid-argument", "Unknown capture channel.");
-  }
-
   const picked = normaliseTid(pickedTid);
   if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
 
-  if (chosen.source === "pdf") return handleExtractPdf(db, request, { picked, pdf, source: chosen.source, intake: null });
+  if (chosen.source === "pdf") return handleExtractPdf(db, request, { picked, pdf, source: chosen.source });
   const decoded = photos.map(decodePhoto);
 
   // The terminal registry FIRST: an unmapped picked TID means setup, not OCR.
@@ -538,7 +478,11 @@ async function handleExtract(db, request) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
-  const match = await matchBatch(db, {
+  // The summary first: the transactions are only looked at if it disagrees.
+  const reconciledByTotals = totalsAgree(extraction, expected);
+  const match = reconciledByTotals
+    ? null
+    : await matchBatch(db, {
     extraction, terminal, summaryOnly: !!summaryOnly,
   });
   // The SAME findings the PDF route reports. Computing a match and then
@@ -629,7 +573,7 @@ async function handleExtract(db, request) {
 // a reason naming what it could not find. A fuzzy second attempt would be the
 // one thing worse than refusing: a figure nobody can vouch for, recorded as a
 // variance against a named person's till. Photos remain, and the refusal says so.
-async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
+async function handleExtractPdf(db, request, { picked, pdf, source }) {
   // Intactness, size and the magic bytes, all in one pure seam — see
   // readPdfPayload. A malformed upload is a sentence, never a transport error.
   const payload = readPdfPayload(pdf.base64, MAX_PDF_BYTES);
@@ -641,16 +585,11 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   }
   const buffer = payload.buffer;
 
-  // The terminal registry FIRST — an unmapped PICKED TID is setup, not a bad
-  // file, and saying so before spending a PDF parse on it is the useful order.
-  // The email channel has no pick, so its registry check happens after the
-  // parse (the slip's own TID is what there is to look up).
+  // The terminal registry FIRST — an unmapped TID is setup, not a bad file.
   const terminals = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
-  if (picked) {
-    const pickedTerminal = terminals[picked];
-    if (!pickedTerminal || !pickedTerminal.storeId || !pickedTerminal.tillId) {
-      return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
-    }
+  const terminal = terminals[picked];
+  if (!terminal || !terminal.storeId || !terminal.tillId) {
+    return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
   }
 
   const text = await pdfToLines(buffer);
@@ -659,46 +598,11 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   if (!parsed.ok) return reject(parsed.reason);
   const extraction = parsed.extraction;
 
-  // ── WHICH TILL, AND WHAT VOUCHES FOR THAT ANSWER ──────────────────────────
-  // TWO PATHS, ONE PRINCIPLE: the answer is never allowed to be a guess.
-  //
-  //   PICKED (a manager, on a phone) — the TID DECIDES, NOT THE PICKER. A slip
-  //     whose TID is not the till they picked refuses itself.
-  //
-  //   EMAILED — there is no pick to disagree with, so the slip's own TID is the
-  //     routing key and lib/card-recon-email.cjs is what checks it: the TID
-  //     must resolve in the registry, and the printed MID must not contradict
-  //     the one registered for that terminal. An unregistered terminal is
-  //     refused with a reason the poller records — invisible non-reconciliation
-  //     is the failure this whole feature exists to prevent.
-  let terminal;
-  const routingWarnings = [];
-  if (picked) {
-    if (extraction.tid !== picked) {
-      const mapped = terminals[extraction.tid];
-      const where = mapped && mapped.label ? ` (that file belongs to ${mapped.label})` : mapped ? ` (that file belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
-      return reject(`This PDF is for TID ${extraction.tid}, not the till you picked${where}. Capture it on its own till.`);
-    }
-    terminal = terminals[picked];
-  } else {
-    const routed = routeEmailSlip({ extraction, terminals });
-    if (!routed.ok) return reject(routed.reason);
-    terminal = routed.terminal;
-    routingWarnings.push(...routed.warnings);
-  }
-
-  // ── THE INVARIANT BOTH BRANCHES MUST SATISFY ─────────────────────────────
-  // A batch is recorded against THE REGISTRY ROW FOR THE TID PRINTED ON THE
-  // SLIP. Nothing else, on either path — the pick only ever gets to disagree
-  // and refuse, never to choose. That is true of both branches above today
-  // (the picked one reached here only because extraction.tid === picked), and
-  // this is what keeps it true of whatever is written next. It is a bug guard,
-  // not a validation: if it ever fires, a slip was about to be filed against a
-  // till it does not belong to, which is the one outcome this feature exists
-  // to prevent.
-  if (terminal !== terminals[extraction.tid]) {
-    console.error("cardBatchCapture: routing invariant broken for TID", extraction.tid);
-    return reject("This slip could not be matched to its terminal — nothing was recorded. Tell Junid.");
+  // ── THE TID DECIDES, NOT THE PICKER — identical to the photo path ──
+  if (extraction.tid !== picked) {
+    const mapped = terminals[extraction.tid];
+    const where = mapped && mapped.label ? ` (that file belongs to ${mapped.label})` : mapped ? ` (that file belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
+    return reject(`This PDF is for TID ${extraction.tid}, not the till you picked${where}. Capture it on its own till.`);
   }
 
   // Overlapping sections cannot happen in a single file, but a terminal that
@@ -711,6 +615,7 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   // because exact text has nothing to be confident about.
   const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
   if (!verdict.ok) return reject(verdict.reason);
+
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
   const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
@@ -726,18 +631,17 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
-  const match = await matchBatch(db, { extraction, terminal });
+  // The summary first: the transactions are only looked at if it disagrees.
+  const reconciledByTotals = totalsAgree(extraction, expected);
+  const match = reconciledByTotals
+    ? null
+    : await matchBatch(db, { extraction, terminal });
 
   // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
   // than letting them show up only as a variance. This is a warning, never a
   // refusal: the figures are exact, and whether those legs belong to this batch
   // is a judgement for the person reviewing it.
-  // THE ROUTING WARNINGS COME FIRST, and they are part of the same list on
-  // purpose: what could NOT be checked about which till this belongs to (an
-  // emailed report from a terminal with no registered merchant id, say) belongs
-  // on the record beside what the matching found, not in a second channel the
-  // owner has to know to look at.
-  const warnings = [...routingWarnings, ...verdict.warnings];
+  const warnings = verdict.warnings.slice();
   warnings.push(...matchNotes(match));
   if (expected.tailLegs > 0) {
     warnings.push(
@@ -785,9 +689,6 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
     warnings: warnings.length ? warnings : null,
     photoPaths: [],
     pdfPath,
-    // Where the file came from, when it did not come from a person: the source
-    // message, sanitised in readIntake. null on the app path.
-    intake: intake || null,
     capturedVia: source,   // the routing decision, not a second literal
     extraction: JSON.parse(JSON.stringify(extraction)),
     terminal: { storeId: terminal.storeId, tillId: terminal.tillId, label: terminal.label ?? null },
@@ -816,7 +717,6 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
       lineCount: extraction.lines.length,
       summaryOnly: false,
       capturedVia: "pdf",
-      channel: intake ? "email" : "app",
       warnings,
     },
   };
@@ -874,37 +774,6 @@ async function handleSubmit(db, request) {
     await draftRef.remove().catch(() => {});
     return reject(revalid.reason);
   }
-  // AN EMAILED DRAFT IS RE-ROUTED FROM SCRATCH, not trusted. On this path the
-  // TID chose the till with no human to disagree with it, so the check that
-  // made that choice safe is re-run against the registry as it stands NOW —
-  // the same discipline as the re-validation above, applied to the one decision
-  // the phone path never has to make.
-  // TRUST NOTHING THE DRAFT SAYS ABOUT ITSELF, INCLUDING ITS PROVENANCE. The
-  // block above re-runs every validation rather than believing a draft this
-  // function wrote, and `intake` deserves the same treatment for two reasons:
-  // it is attacker-supplied text (a subject line, a sender address) on its way
-  // into an append-only record the owner reads, and it is what says this
-  // capture came in on the channel with no picked till. So it is re-sanitised
-  // through the same seam extract used, and the channel's own permission is
-  // asserted again at the moment of record — a flag revoked between extract and
-  // submit must stop the submit. (CodeRabbit, PR #510.)
-  const draftIntake = readIntake(draft.intake);
-  if (draft.intake && !draftIntake) {
-    await draftRef.remove().catch(() => {});
-    return reject("This capture's source could not be verified — nothing was recorded.");
-  }
-  if (draftIntake) {
-    await assertEmailIntake(request);
-    const rerouted = routeEmailSlip({ extraction, terminals: terminalsNow });
-    if (!rerouted.ok) {
-      await draftRef.remove().catch(() => {});
-      return reject(rerouted.reason);
-    }
-    if (rerouted.terminal.storeId !== terminal.storeId || rerouted.terminal.tillId !== terminal.tillId) {
-      await draftRef.remove().catch(() => {});
-      return reject("That terminal has been re-registered to a different till since the file was read — nothing was recorded.");
-    }
-  }
 
   // Recompute expected at the moment of record — the authoritative figure.
   const expected = await computeExpectedCard(db, {
@@ -917,7 +786,11 @@ async function handleSubmit(db, request) {
       ? extraction.lastTxnAt ?? null
       : null,
   });
-  const match = await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
+  // The summary first: the transactions are only looked at if it disagrees.
+  const reconciledByTotals = totalsAgree(extraction, expected);
+  const match = reconciledByTotals
+    ? null
+    : await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
@@ -927,7 +800,7 @@ async function handleSubmit(db, request) {
   if (!write.ok) return reject(write.reason);
 
   const record = buildBatchRecord({
-    extraction, terminal, tid: extraction.tid, match,
+    extraction, terminal, tid: extraction.tid, match, reconciledByTotals,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
@@ -940,7 +813,6 @@ async function handleSubmit(db, request) {
     ocr: draft.ocr || null,
     capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
     pdfPath: draft.pdfPath || null,
-    intake: draftIntake,
   });
 
   const txn = await tidRef.child(write.key).transaction((cur) => {
@@ -987,5 +859,8 @@ exports.cardBatchCapture = onCall(
 
 // Exported for tests (pure-ish seams).
 exports.toExtraction = toExtraction;
+// The summary-first gate, exported so it can be tested directly: everything
+// else about it lives inside async handlers behind a database.
+exports.totalsAgree = totalsAgree;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;

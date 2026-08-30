@@ -136,3 +136,22 @@ test("the match notes are decided by counts, never by sums", () => {
     assert.ok(notes.includes(countTest), `matchNotes must gate on ${countTest}`);
   }
 });
+
+// ─── THE MATCH FETCH MUST OUTREACH A DRIFTING TERMINAL CLOCK ─────────────────
+// The matcher decides on AMOUNT, not time — but it can only match a leg the
+// query fetched, and the batch window is built from timestamps the terminal may
+// have got wrong. Fetching only the window's own edge allowance (zero on a
+// printed slip) would put a late-stamped leg out of reach and reinvent the
+// shortfall that money-first matching exists to prevent.
+test("the ledger query for matching is widened by the matcher's own margin", () => {
+  const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
+  const fn = src.slice(src.indexOf("async function matchBatch("), src.indexOf("async function handleExtract("));
+  assert.ok(fn.includes("MATCH_WINDOW_MARGIN_MS"),
+    "matchBatch must widen its fetch by the matcher's margin, not only by edgeMsFor");
+  assert.match(fn, /edgeMs:\s*Math\.max\(/,
+    "…and must take the LARGER of the two, so a derived window's own allowance is never lost");
+
+  const { MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
+  assert.ok(MATCH_WINDOW_MARGIN_MS >= 30 * 60 * 1000,
+    "a margin under half an hour does not cover a drifting terminal clock");
+});

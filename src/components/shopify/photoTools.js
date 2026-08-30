@@ -84,12 +84,9 @@ export async function compressImageFile(file, maxDim = 1600, maxBytes = 800 * 10
   try {
     const { source, width, height } = decoded;
     if (!(width > 0 && height > 0)) throw new Error("That photo came out empty. Try picking it again.");
-    // NEVER upscales. The decode's resize hint now clamps the LONG side
-    // (imageDecode.js reads the picture's real dimensions out of its header
-    // before asking for anything), so a bitmap arriving above maxDim is the
-    // exception rather than the rule — but this clamp stays, because the hint
-    // is a request a browser may ignore and a small picture must come through
-    // at its own size.
+    // NEVER upscales — the decode may have come back larger than maxDim on its
+    // short side (the resize hint sets a width, not a maximum), and it may have
+    // come back smaller than maxDim entirely.
     const scale = Math.min(1, maxDim / width, maxDim / height);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(width * scale);

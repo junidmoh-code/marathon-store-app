@@ -32,15 +32,6 @@
 // NO CARD NUMBERS. The detail roll's per-transaction masked PAN is parsed and
 // stored for the matcher's line identity, and is never sent to this client.
 //
-// SLIPS THAT ARRIVE BY EMAIL LAND HERE TOO. The terminals email their batch
-// report to the shop's mailbox and a poller on the Mac mini submits each PDF
-// through the same callable, with nobody involved. That path can REFUSE — an
-// unregistered terminal, a duplicate batch, lines that do not sum — and a
-// refusal nobody sees is a terminal quietly not reconciling, which is the
-// failure this whole feature exists to prevent. So the panel below shows what
-// the mailbox produced, worst first. It shows OUTCOMES and never figures: the
-// screen stays capture-only.
-//
 // Gate: the dedicated `card_recon` permission (permFlags pattern) — checked by
 // the tile, by the route, and independently by the callable. Everything
 // money-shaped happens in functions/cardRecon/cardRecon.js; this file is
@@ -52,11 +43,10 @@ import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../sho
 import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
-import EmailedSlips from "./EmailedSlips";
-import { S, fmtTime } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
 
+const FONT = "'Inter','SF Pro Display',-apple-system,BlinkMacSystemFont,sans-serif";
 
 // Slip photos need legible 8pt thermal print, so the downscale budget is wider
 // than the label reader's 1024px. ~2000px keeps a full receipt column sharp
@@ -70,6 +60,14 @@ function fmtR(cents) {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(cents);
   return `${sign}R${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
+}
+function fmtTime(ms) {
+  if (!Number.isInteger(ms)) return "—";
+  return new Date(ms).toLocaleString("en-ZA", {
+    timeZone: "Africa/Johannesburg",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
 }
 
 /**
@@ -89,12 +87,6 @@ function fmtR(cents) {
  * phones this change is for. decodeImageFile falls back to a lazily-imported
  * wasm decoder, and resizes DURING decode where the browser supports it — which
  * on a phone is the difference between one upload and three.
- *
- * That resize is gated on the picture's own PIXELS, not on the file's size, so
- * a slip photographed as a heavy but modest-resolution file is no longer
- * UPSCALED on the way in. It matters most here: the clamp below limits the
- * longer side only, so an upscaled bitmap would have been uploaded upscaled —
- * a blurrier photograph of 8pt thermal print, for more bytes.
  */
 async function downscalePhoto(file) {
   const decoded = await decodeImageFile(file, MAX_PHOTO_DIM);
@@ -116,6 +108,19 @@ async function downscalePhoto(file) {
   }
 }
 
+const S = {
+  page: { minHeight: "100vh", background: "#05070D", color: "#E9EEFF", fontFamily: FONT, padding: "18px 14px 40px", maxWidth: 560, margin: "0 auto" },
+  h1: { fontSize: 20, fontWeight: 800, margin: "6px 0 2px" },
+  sub: { fontSize: 13, color: "rgba(233,238,255,.55)", lineHeight: 1.5 },
+  card: { background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 14, padding: 14, marginTop: 14 },
+  btn: { width: "100%", minHeight: 54, borderRadius: 13, fontSize: 16, fontWeight: 800, fontFamily: FONT, cursor: "pointer", border: "2px solid rgba(74,127,255,.55)", background: "rgba(74,127,255,.18)", color: "#D7E3FF" },
+  btnGhost: { width: "100%", minHeight: 46, borderRadius: 13, fontSize: 14, fontWeight: 700, fontFamily: FONT, cursor: "pointer", border: "1px solid rgba(255,255,255,.16)", background: "rgba(255,255,255,.04)", color: "rgba(233,238,255,.75)" },
+  warn: { background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.3)", borderRadius: 11, padding: "10px 12px", fontSize: 13, color: "#FDE9B0", marginTop: 10, lineHeight: 1.5 },
+  err: { background: "rgba(255,107,107,.08)", border: "1px solid rgba(255,107,107,.35)", borderRadius: 11, padding: "10px 12px", fontSize: 13.5, color: "#FFB3B3", marginTop: 10, lineHeight: 1.5 },
+  row: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: "1px solid rgba(255,255,255,.06)", fontSize: 14 },
+  k: { color: "rgba(233,238,255,.55)" },
+  v: { fontWeight: 700, fontVariantNumeric: "tabular-nums", textAlign: "right" },
+};
 
 function Row({ k, v, tone }) {
   return (
@@ -125,7 +130,6 @@ function Row({ k, v, tone }) {
     </div>
   );
 }
-
 
 export default function CardReconScreen({ onExit }) {
   // ── terminal registry (the till picker's source) ──
@@ -354,8 +358,6 @@ export default function CardReconScreen({ onExit }) {
         Settle the machine, then capture its Batch Report here. The card total is read off
         the slip itself — nothing is typed.
       </div>
-
-      <EmailedSlips />
 
       <div style={S.card}>
         <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 8 }}>1 · Which till?</div>

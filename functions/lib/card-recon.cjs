@@ -134,24 +134,6 @@ function normaliseTid(raw) {
   return /^[A-Z0-9]{4,16}$/.test(s) ? s : null;
 }
 
-/**
- * Merchant ids print with leading zeros and are stored the same way, but a
- * terminal registered by hand may carry one form and the slip the other.
- * Compared as DIGITS ONLY with leading zeros dropped, so "000000004977890" and
- * "4977890" are the same merchant — and anything with no digits at all is not a
- * MID and compares as absent.
- *
- * It lives HERE rather than beside the routing that first needed it, because
- * two things now ask "are these the same merchant?": the router, comparing the
- * slip against the registry, and the PDF parser, comparing the slip against
- * ITSELF. Two normalisations would eventually disagree, and the disagreement
- * would show up as a batch recorded against the wrong shop.
- */
-function normaliseMid(raw) {
-  const digits = String(raw ?? "").replace(/\D/g, "").replace(/^0+/, "");
-  return digits || null;
-}
-
 /** Batch numbers print as "#494" — digits only, bounded. */
 function normaliseBatchNo(raw) {
   const s = String(raw ?? "").trim().replace(/^#/, "");
@@ -436,6 +418,9 @@ function describeField(f) {
 function buildBatchRecord({
   extraction, terminal, tid, batchKey, revision, supersedes,
   photoPaths, summaryOnly, warnings, expected, cashiers, match = null,
+  // True when the terminal's total and the till's card total agreed, so the
+  // transactions were never walked — see the summary-first note in cardRecon.js.
+  reconciledByTotals = false,
   submittedBy, submittedAt, draftId, ocr,
   // "pdf"  — read from the terminal's own emailed file, text extracted exactly
   // "photo" — photographed and OCR'd
@@ -443,11 +428,6 @@ function buildBatchRecord({
   // whether `ocr` happens to be null.
   capturedVia = "photo",
   pdfPath = null,
-  // WHERE THE FILE CAME FROM WHEN NOBODY BROUGHT IT. null for every capture a
-  // person made; on the email channel, the source message — sanitised by the
-  // callable — so a figure recorded with no human in the loop still names what
-  // put it there. See lib/card-recon-email.cjs.
-  intake = null,
 }) {
   const lines = summaryOnly ? null : Object.fromEntries(
     (extraction.lines || []).map((l) => [String(l.tsn), {
@@ -513,6 +493,11 @@ function buildBatchRecord({
     // The machines move: a speedpoint spent a morning at another shop and its
     // sales were rung on that shop's till, so the subtraction called R3,500 of
     // perfectly good takings missing. The match follows the money instead.
+    // HOW THIS BATCH WAS SETTLED. "totals" means the two summaries agreed and
+    // nothing further was read; "match" means they did not, and the
+    // transactions were walked to find out why. Recorded so a clean batch is
+    // visibly clean rather than merely silent.
+    reconciledBy: reconciledByTotals ? "totals" : (match ? "match" : "none"),
     match: match ? {
       matchedLegs: match.matches.length,
       matchedCents: match.matchedCents,
@@ -545,7 +530,6 @@ function buildBatchRecord({
     ocr: ocr ?? null, // { model, tokensIn, tokensOut, costUSD } — provenance
     capturedVia,
     pdfPath: pdfPath ?? null,
-    intake: intake ?? null,
   };
 }
 
@@ -596,7 +580,7 @@ module.exports = {
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
   MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
-  normaliseTid, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite,
+  normaliseTid, normaliseBatchNo, batchKeyFor, resolveBatchWrite,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
 };
