@@ -383,3 +383,41 @@ describe("redactMoney — the feed carries outcomes, not figures", () => {
     expect(redactMoney("")).toBe("");
   });
 });
+
+describe("intakeRecord — no key RTDB would refuse, ever", () => {
+  // The same whole-class guard the batch record carries, on the OTHER writer.
+  // The batch record grew a key of "trophy/till-1" and crashed every capture of
+  // a moved machine; this record is built from a subject line, a sender address
+  // and file names, which are outside text and could as easily end up as keys
+  // if someone reaches for the convenient shape.
+  it("holds no illegal key, however hostile the message", () => {
+    const illegal = /[.#$/[\]]/;
+    const walk = (node, path) => {
+      if (node === null || typeof node !== "object") return;
+      for (const [key, value] of Object.entries(node)) {
+        if (!Array.isArray(node)) {
+          expect(key.length, `empty key at ${path}`).toBeGreaterThan(0);
+          expect(illegal.test(key), `"${key}" at ${path} is a key RTDB refuses`).toBe(false);
+        }
+        walk(value, `${path}/${key}`);
+      }
+    };
+    const rec = intakeRecord({
+      at: 1,
+      message: {
+        key: "a".repeat(40),
+        messageId: "<1028704628.199447@communications-adapt-7fc8cc4b79-9mh86>",
+        from: "NoReplyTransReport@FNB.co.za",
+        subject: "Banking Report for Batch 60 of Terminal 67365901 [#$./]",
+        receivedAt: 1,
+      },
+      results: [
+        attachmentOutcome({ filename: "FNB-Txn-Notification.pdf", capture: { recorded: true, batchKey: "60", tid: "67365901", storeId: "pe", tillId: "till-2", linesCaptured: true, warnings: ["a note"] } }),
+        attachmentOutcome({ filename: "weird.#name$.pdf", capture: { ok: false, reason: "Terminal 9999ZZZZ is not registered." } }),
+      ],
+      skipped: [{ filename: "logo[1].png" }],
+    });
+    walk(rec, "");
+    expect(() => walk({ match: { "pe/till-2": {} } }, "")).toThrow();
+  });
+});

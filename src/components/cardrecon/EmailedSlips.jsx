@@ -26,7 +26,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
 import { database } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { summariseIntake, attachmentRows, silenceNotice } from "./intakeFeed";
+import { summariseIntake, attachmentRows, silenceNotice, needsAttention } from "./intakeFeed";
 import { S, fmtTime } from "./cardReconStyles";
 
 const INTAKE_FEED_SIZE = 25;
@@ -151,7 +151,9 @@ export default function EmailedSlips() {
       )}
       <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
         {rows.map((r) => {
-          const bad = (r.refused || 0) > 0;
+          // Red is for what needs someone NOW. A refusal already re-run keeps
+          // its row and its reason, but loses the shouting.
+          const bad = needsAttention(r);
           return (
             // A BUTTON, not a div with a click handler — and phrasing content
             // inside it, because a <button> may not legally contain a <div>. It is the only
@@ -176,7 +178,7 @@ export default function EmailedSlips() {
                 {" · "}
                 {[
                   r.recorded ? `${r.recorded} recorded` : null,
-                  r.refused ? `${r.refused} REFUSED` : null,
+                  r.refused ? `${r.refused} REFUSED${r.retriedAt ? " (re-run since)" : ""}` : null,
                   r.unrelated ? `${r.unrelated} not a slip` : null,
                 ].filter(Boolean).join(" · ") || "nothing to capture"}
               </span>

@@ -11,15 +11,31 @@
 // the top regardless of when it arrived, and the count is stated rather than
 // left to be noticed.
 
-/** newest first, refusals first of all. */
+/**
+ * newest first, refusals first of all — EXCEPT the ones already acted on.
+ *
+ * A refused row is history and is never deleted: it is the record of what
+ * happened, and a feed that tidies away its own failures is one nobody can
+ * audit. But a failure someone has already re-run must stop counting as
+ * OUTSTANDING, or the headline count only ever grows and "3 refused" comes to
+ * mean "3 things went wrong at some point", which is the alarm that teaches
+ * people to ignore alarms. `retriedAt` is stamped by
+ * scripts/cardrecon/retry-intake-message.mjs when a slip is deliberately sent
+ * back through: the row stays, and whatever the retry produced has a row of its
+ * own to shout with if it failed again.
+ */
+export function needsAttention(row) {
+  return (row?.refused || 0) > 0 && !row?.retriedAt;
+}
+
 export function summariseIntake(node) {
   const rows = Object.entries(node || {}).map(([id, r]) => ({ id, ...(r || {}) }));
-  const needsAttention = rows.filter((r) => (r.refused || 0) > 0);
-  const rest = rows.filter((r) => !((r.refused || 0) > 0));
+  const needsAttentionRows = rows.filter(needsAttention);
+  const rest = rows.filter((r) => !needsAttention(r));
   const byNewest = (a, b) => (Number(b.at) || 0) - (Number(a.at) || 0);
   return {
-    rows: [...needsAttention.sort(byNewest), ...rest.sort(byNewest)],
-    refusedCount: needsAttention.reduce((n, r) => n + (r.refused || 0), 0),
+    rows: [...needsAttentionRows.sort(byNewest), ...rest.sort(byNewest)],
+    refusedCount: needsAttentionRows.reduce((n, r) => n + (r.refused || 0), 0),
     recordedCount: rows.reduce((n, r) => n + (r.recorded || 0), 0),
     lastAt: rows.length ? Math.max(...rows.map((r) => Number(r.at) || 0)) : null,
   };
