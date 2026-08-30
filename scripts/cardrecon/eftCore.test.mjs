@@ -140,18 +140,23 @@ describe("the authentication verdict", () => {
 });
 
 describe("candidacy — which messages the EFT reader examines at all", () => {
-  it("an FNB-claiming message with no slip PDFs is a candidate", () => {
-    expect(isEftCandidate({ fromAddress: REAL_FROM, subject: "Payment notification", slipCount: 0 })).toBe(true);
+  it("an FNB-claiming message is a candidate — attachments do not disqualify", () => {
+    // A notification with a proof-of-payment PDF attached must still be
+    // examined; the poller runs BOTH readers on such a message. Candidacy
+    // deliberately knows nothing about attachments.
+    expect(isEftCandidate({ fromAddress: REAL_FROM, subject: "Payment notification" })).toBe(true);
+  });
+  it("a subdomain sender is a candidate too — and the verdict will agree, not file it as forgery", () => {
+    expect(isEftCandidate({ fromAddress: "alerts@secure.fnb.co.za", subject: "Payment notification" })).toBe(true);
   });
   it("a batch report is the CARD path's, even if its PDF went missing", () => {
-    expect(isEftCandidate({ fromAddress: REAL_FROM, subject: "Banking Report for Batch 16 of Terminal 67377843", slipCount: 0 })).toBe(false);
-  });
-  it("a message carrying slip PDFs is the card path's", () => {
-    expect(isEftCandidate({ fromAddress: REAL_FROM, subject: "Payment notification", slipCount: 2 })).toBe(false);
+    expect(isEftCandidate({ fromAddress: REAL_FROM, subject: "Banking Report for Batch 16 of Terminal 67377843" })).toBe(false);
   });
   it("ordinary mail is nobody's", () => {
-    expect(isEftCandidate({ fromAddress: "news@shopify.com", subject: "hello", slipCount: 0 })).toBe(false);
-    expect(isEftCandidate({ fromAddress: null, subject: "x", slipCount: 0 })).toBe(false);
+    expect(isEftCandidate({ fromAddress: "news@shopify.com", subject: "hello" })).toBe(false);
+    expect(isEftCandidate({ fromAddress: null, subject: "x" })).toBe(false);
+    // The parent-of-allowlisted direction stays out (see domainAllowlisted).
+    expect(isEftCandidate({ fromAddress: "x@co.za", subject: "Payment" })).toBe(false);
   });
 });
 
@@ -234,15 +239,17 @@ describe("parsing the notification — exact or refused", () => {
     expect(p.reason).toMatch(/does not parse exactly/);
   });
 
-  it("with no Amount label, exactly ONE rand figure in the text is accepted", () => {
-    const p = parseEftNotification("You have received R 750.00 into your account.");
-    expect(p).toMatchObject({ ok: true, amountCents: 75000 });
-  });
-
-  it("with no Amount label and SEVERAL figures, it refuses to guess", () => {
-    const p = parseEftNotification("You received R 750.00. Your balance is R 9,120.44.");
-    expect(p.ok).toBe(false);
-    expect(p.reason).toMatch(/refuses to make/);
+  it("with NO Amount label it refuses — even one lone rand figure is a guess", () => {
+    // "The only R-figure in the text" and "the payment" are not the same
+    // claim; a wrong amount here eventually releases stock. The refusal names
+    // how many loose figures it saw, so the refusal itself documents the
+    // format for the fix.
+    const one = parseEftNotification("You have received R 750.00 into your account.");
+    expect(one.ok).toBe(false);
+    expect(one.reason).toMatch(/1 loose rand figure/);
+    const two = parseEftNotification("You received R 750.00. Your balance is R 9,120.44.");
+    expect(two.ok).toBe(false);
+    expect(two.reason).toMatch(/2 loose rand figure/);
   });
 
   it("REFUSES a message with no money in it at all", () => {

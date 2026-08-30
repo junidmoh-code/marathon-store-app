@@ -165,12 +165,18 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
 // ─── WHICH MESSAGES THIS READER EXAMINES ─────────────────────────────────────
 /**
  * A message is an EFT candidate when its From CLAIMS an allowlisted bank
- * domain, it is not a batch report (those belong to the card path), and it
- * carried no slip PDFs. The claim is attacker-controlled text — candidacy only
- * decides that the authentication check RUNS, never that it passes.
+ * domain and it is not a batch report (those belong to the card path). The
+ * claim is attacker-controlled text — candidacy only decides that the
+ * authentication check RUNS, never that it passes.
+ *
+ * ATTACHMENTS DO NOT DISQUALIFY. An earlier draft skipped any message carrying
+ * a slip PDF — but a notification with a proof-of-payment PDF attached, or a
+ * forwarded chain dragging an old slip along, would then have routed
+ * exclusively down the slip pipeline and the payment itself would never have
+ * been examined: a silently lost payment from a message that WAS read. The
+ * poller runs both readers on such a message. (Independent architect review.)
  */
-export function isEftCandidate({ fromAddress, subject, slipCount }) {
-  if (slipCount > 0) return false;
+export function isEftCandidate({ fromAddress, subject }) {
   if (BATCH_REPORT_SUBJECT.test(String(subject ?? ""))) return false;
   // The SAME allowlist test the verdict applies (subdomain-of-allowlisted,
   // never parent-of) — candidacy and verdict disagreeing is how genuine
@@ -293,16 +299,19 @@ export function parseEftNotification(text) {
     }
     amountCents = parsed[0];
   } else {
-    // No labelled amount: acceptable ONLY when the whole text carries exactly
-    // one distinct rand figure — anything else is a guess about money.
+    // NO LABELLED AMOUNT MEANS NO AMOUNT. An earlier draft accepted a lone
+    // rand figure loose in the prose — but "the only R-figure in the text" and
+    // "the payment" are not the same claim: a disclaimer or fee line carrying
+    // the message's one R-token while the real amount prints unprefixed would
+    // have been accepted WRONG, and a wrong amount here eventually releases
+    // stock. Refused instead, with the count of loose figures in the reason so
+    // the first real notification's refusal already says what the format is.
+    // (Independent architect review, this PR.)
     const tokens = body.match(MONEY_TOKEN) || [];
     const parsed = [...new Set(tokens.map((t) => parseRandsToCents(t.trim())).filter((v) => v !== null))];
-    if (parsed.length !== 1) {
-      return { ok: false, reason: parsed.length === 0
-        ? "No Amount field and no rand figure anywhere in the message."
-        : `No Amount field, and ${parsed.length} different rand figures in the text — which one is the payment is a guess this refuses to make.` };
-    }
-    amountCents = parsed[0];
+    return { ok: false, reason: parsed.length === 0
+      ? "No Amount field and no rand figure anywhere in the message."
+      : `No labelled Amount field. The text carries ${parsed.length} loose rand figure(s), and which one is the payment is a guess this refuses to make.` };
   }
   if (!Number.isInteger(amountCents) || amountCents <= 0) {
     return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
