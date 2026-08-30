@@ -40,7 +40,14 @@
 // Tested in eftCore.test.mjs against the REAL headers of real FNB mail pulled
 // from this very mailbox.
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { clip } from "./intakeCore.mjs";
+
+// The money parser is BORROWED from card recon, not rewritten: it has been
+// fuzzed and had two real grouping bugs found and fixed in it, and a second
+// copy would need the same history to be worth the same trust.
+const require = createRequire(new URL("../../functions/package.json", import.meta.url));
+const { parseRandsToCents } = require("./lib/card-recon.cjs");
 
 export const EFT_POOL_PATH = "eft_pool";
 
@@ -149,6 +156,154 @@ export function isEftCandidate({ fromAddress, subject, slipCount }) {
   if (BATCH_REPORT_SUBJECT.test(String(subject ?? ""))) return false;
   const domain = domainOfAddress(fromAddress);
   return !!domain && EFT_ALLOWED_DOMAINS.some((d) => domainsAligned(domain, d));
+}
+
+// ─── HTML → TEXT ─────────────────────────────────────────────────────────────
+// FNB's real mail carries NO text part at all — html only (verified against the
+// live mailbox, 2026-08-30) — so the notification body has to be read out of
+// the markup. This is a deliberately dumb flattener: block tags become line
+// breaks, tags go, a handful of entities decode. Anything it mangles shows up
+// verbatim in the stored rawText and refuses loudly rather than mis-parsing.
+export function htmlToText(html) {
+  let s = String(html ?? "");
+  s = s.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, " ");
+  s = s.replace(/<!--[\s\S]*?-->/g, " ");
+  s = s.replace(/<\s*(?:br|\/p|\/div|\/tr|\/li|\/h[1-6]|\/table)\b[^>]*>/gi, "\n");
+  s = s.replace(/<\s*\/t[dh]\b[^>]*>/gi, "  ");
+  s = s.replace(/<[^>]+>/g, " ");
+  s = s.replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'");
+  return s.split("\n").map((line) => line.replace(/[ \t]+/g, " ").trim()).filter(Boolean).join("\n");
+}
+
+// ─── THE BANK'S OWN TIMESTAMP ────────────────────────────────────────────────
+// SA is UTC+2 with no daylight saving; the offset is a constant, same as the
+// card slips. Only shapes the bank is known to print are accepted; anything
+// else is null — the record still lands, carried by receivedAt, because a
+// payment with an unreadable date is still a payment.
+const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+export function parseBankTimestamp(str) {
+  const s = String(str ?? "").trim();
+  if (!s) return null;
+  let y, mo, d, h = 0, mi = 0, sec = 0;
+  // 2026/08/30 14:41:56 · 2026-08-30 14:41
+  let m = /^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
+  if (m) {
+    [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
+    if (m[4]) [h, mi, sec] = [Number(m[4]), Number(m[5]), Number(m[6] ?? 0)];
+  } else {
+    // 30 Aug 2026 · 30 August 2026 14:41
+    m = /^(\d{1,2}) ([A-Za-z]{3,9}) (\d{4})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
+    if (!m) return null;
+    const month = MONTHS[m[2].slice(0, 3).toLowerCase()];
+    if (month === undefined) return null;
+    [d, mo, y] = [Number(m[1]), month, Number(m[3])];
+    if (m[4]) [h, mi, sec] = [Number(m[4]), Number(m[5]), Number(m[6] ?? 0)];
+  }
+  if (d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return null;
+  const utc = Date.UTC(y, mo, d, h, mi, sec) - SAST_OFFSET_MS;
+  // Date.UTC rolls Feb 30 into March; round-trip to refuse the phantom.
+  const check = new Date(utc + SAST_OFFSET_MS);
+  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== mo || check.getUTCDate() !== d) return null;
+  return utc;
+}
+
+// ─── ACCOUNT NUMBERS DO NOT GET STORED ───────────────────────────────────────
+// The notification body can carry the paying account, and the raw text is kept
+// with every record precisely so refusals are diagnosable — so anything that
+// looks like an account number is struck out on the way in: any run of six or
+// more digits keeps its last three and loses the rest. Over-striking is the
+// right direction; the cost is a vaguer diagnostic, not a leaked account.
+// (The EXTRACTED reference is deliberately not swept: it is the customer's own
+// typed matching key — often a phone number — and destroying it would destroy
+// the thing the pool exists to search on. It is a field the payer chose to
+// write, not a field the bank printed about an account.)
+export function redactAccountDigits(text) {
+  if (typeof text !== "string" || !text) return text;
+  return text.replace(/\d{6,}/g, (run) => `⋯${run.slice(-3)}`);
+}
+
+// ─── PARSING THE NOTIFICATION ────────────────────────────────────────────────
+// NO REAL PAYMENT NOTIFICATION EXISTED IN THE MAILBOX WHEN THIS WAS BUILT (the
+// mailbox is days old; searched all folders, 2026-08-30) — so this parser is
+// labelled-field driven and biased hard toward refusal: the FIRST real
+// notification that arrives either parses exactly or leaves a refusal carrying
+// its full (account-struck) text, from which this file is corrected in one
+// round. That failure mode is the designed one.
+const AMOUNT_LABELS = /^(?:amount(?: paid)?|payment amount)\s*[:\-–]\s*(.+)$/i;
+const REFERENCE_LABELS = /^(?:(?:payment |their |beneficiary |recipient |my )?reference(?: number)?)\s*[:\-–]\s*(.+)$/i;
+const PAYER_LABELS = /^(?:from|paid by|payer|sender|received from)\s*[:\-–]\s*(.+)$/i;
+const DATE_LABELS = /^(?:(?:payment |transaction |effective )?date(?: and time)?)\s*[:\-–]\s*(.+)$/i;
+// A rand figure loose in prose, for the no-label fallback. Grouping correctness
+// is parseRandsToCents' job; this only FINDS candidates.
+const MONEY_TOKEN = /(?:ZAR|R)\s?\d[\d,\s]*(?:\.\d{1,2})?/gi;
+
+function labelledValues(lines, re) {
+  const out = [];
+  for (const line of lines) {
+    const m = re.exec(line);
+    if (m) out.push(m[1].trim());
+  }
+  return out;
+}
+
+/**
+ * Extract the payment from a notification's text. Exact or refused — never a
+ * guess, because a wrong amount here eventually releases stock.
+ *
+ * @returns {{ok:true, amountCents:number, reference:string|null, payer:string|null, bankTs:number|null}
+ *          |{ok:false, reason:string}}
+ */
+export function parseEftNotification(text) {
+  const body = String(text ?? "").trim();
+  if (!body) return { ok: false, reason: "The message has no readable text at all." };
+  const lines = body.split("\n");
+
+  // ── THE AMOUNT — the one field that must parse, exactly ────────────────────
+  const labelled = labelledValues(lines, AMOUNT_LABELS);
+  let amountCents = null;
+  if (labelled.length) {
+    const parsed = [...new Set(labelled.map((v) => parseRandsToCents(v)))];
+    if (parsed.length !== 1 || parsed[0] === null) {
+      return { ok: false, reason: labelled.length > 1 && parsed.length > 1
+        ? `The message carries ${labelled.length} Amount fields that disagree.`
+        : `The Amount field reads "${clip(labelled[0], 60)}", which does not parse exactly as a rand amount.` };
+    }
+    amountCents = parsed[0];
+  } else {
+    // No labelled amount: acceptable ONLY when the whole text carries exactly
+    // one distinct rand figure — anything else is a guess about money.
+    const tokens = body.match(MONEY_TOKEN) || [];
+    const parsed = [...new Set(tokens.map((t) => parseRandsToCents(t.trim())).filter((v) => v !== null))];
+    if (parsed.length !== 1) {
+      return { ok: false, reason: parsed.length === 0
+        ? "No Amount field and no rand figure anywhere in the message."
+        : `No Amount field, and ${parsed.length} different rand figures in the text — which one is the payment is a guess this refuses to make.` };
+    }
+    amountCents = parsed[0];
+  }
+  if (!Number.isInteger(amountCents) || amountCents <= 0) {
+    return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
+  }
+
+  // ── REFERENCE / PAYER / BANK TIME — taken where present, refused only on
+  //    contradiction. A payment without a reference is still a payment.
+  const refs = [...new Set(labelledValues(lines, REFERENCE_LABELS).map((v) => v.trim()).filter(Boolean))];
+  if (refs.length > 1) {
+    return { ok: false, reason: `The message carries ${refs.length} Reference fields that disagree.` };
+  }
+  const payers = [...new Set(labelledValues(lines, PAYER_LABELS).map((v) => v.trim()).filter(Boolean))];
+  const dates = labelledValues(lines, DATE_LABELS).map(parseBankTimestamp).filter((v) => v !== null);
+
+  return {
+    ok: true,
+    amountCents,
+    reference: refs.length ? clip(refs[0], 140) : null,
+    payer: payers.length ? clip(redactAccountDigits(payers[0]), 120) : null,
+    bankTs: dates.length ? dates[0] : null,
+  };
 }
 
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────

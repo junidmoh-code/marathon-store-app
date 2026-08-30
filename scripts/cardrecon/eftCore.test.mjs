@@ -8,8 +8,9 @@
 // part an attacker controls.
 import { describe, it, expect } from "vitest";
 import {
-  domainOfAddress, domainsAligned, authenticationVerdict,
-  isEftCandidate, eftMessageKey,
+  domainOfAddress, domainsAligned, unfoldHeader, authenticationVerdict,
+  isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
+  parseEftNotification, eftMessageKey,
 } from "./eftCore.mjs";
 
 // Verbatim from the real message (uid 6, "Banking Report for Batch 16 of
@@ -140,6 +141,114 @@ describe("candidacy — which messages the EFT reader examines at all", () => {
   it("ordinary mail is nobody's", () => {
     expect(isEftCandidate({ fromAddress: "news@shopify.com", subject: "hello", slipCount: 0 })).toBe(false);
     expect(isEftCandidate({ fromAddress: null, subject: "x", slipCount: 0 })).toBe(false);
+  });
+});
+
+describe("htmlToText — FNB mail carries no text part", () => {
+  it("flattens block markup into labelled lines", () => {
+    const html = `<html><style>.x{color:red}</style><body><table>
+      <tr><td>Amount:</td><td>R 1,234.56</td></tr>
+      <tr><td>Reference:</td><td>THANDI M</td></tr>
+    </table><p>Regards<br>FNB</p></body></html>`;
+    const text = htmlToText(html);
+    expect(text).toContain("Amount: R 1,234.56");
+    expect(text).toContain("Reference: THANDI M");
+    expect(text).not.toContain("color:red");
+    expect(text).not.toMatch(/<[a-z]/i);
+  });
+  it("decodes the entities banks actually use", () => {
+    expect(htmlToText("R&nbsp;500.00 &amp; more")).toBe("R 500.00 & more");
+  });
+});
+
+describe("the bank's own timestamp", () => {
+  it("reads the shapes FNB prints, as SAST", () => {
+    // 2026-08-30 14:41:56 SAST = 12:41:56 UTC
+    expect(parseBankTimestamp("2026/08/30 14:41:56")).toBe(Date.UTC(2026, 7, 30, 12, 41, 56));
+    expect(parseBankTimestamp("2026-08-30 14:41")).toBe(Date.UTC(2026, 7, 30, 12, 41, 0));
+    expect(parseBankTimestamp("30 Aug 2026")).toBe(Date.UTC(2026, 7, 29, 22, 0, 0));
+    expect(parseBankTimestamp("30 August 2026 14:41")).toBe(Date.UTC(2026, 7, 30, 12, 41, 0));
+  });
+  it("refuses phantoms and garbage rather than rolling them", () => {
+    expect(parseBankTimestamp("2026/02/30 10:00:00")).toBe(null);
+    expect(parseBankTimestamp("30 Foo 2026")).toBe(null);
+    expect(parseBankTimestamp("yesterday")).toBe(null);
+    expect(parseBankTimestamp("")).toBe(null);
+  });
+});
+
+describe("account numbers are struck out", () => {
+  it("keeps the last three digits of any long run and nothing else", () => {
+    expect(redactAccountDigits("from account 62834519234 to 250655588888")).toBe("from account ⋯234 to ⋯888");
+  });
+  it("leaves amounts and short numbers alone", () => {
+    expect(redactAccountDigits("R 1,234.56 ref 12345")).toBe("R 1,234.56 ref 12345");
+  });
+});
+
+describe("parsing the notification — exact or refused", () => {
+  const good = [
+    "Payment notification",
+    "Amount: R 1,234.56",
+    "Reference: THANDI 0821234567",
+    "Paid by: T MOKOENA",
+    "Date: 2026/08/30 14:41:56",
+  ].join("\n");
+
+  it("extracts amount, reference, payer and the bank's timestamp", () => {
+    const p = parseEftNotification(good);
+    expect(p).toMatchObject({
+      ok: true, amountCents: 123456,
+      reference: "THANDI 0821234567", payer: "T MOKOENA",
+      bankTs: Date.UTC(2026, 7, 30, 12, 41, 56),
+    });
+  });
+
+  it("a payment without a reference still lands — reference null", () => {
+    const p = parseEftNotification("Amount: R 500.00\nPaid by: X");
+    expect(p.ok).toBe(true);
+    expect(p.reference).toBe(null);
+    expect(p.amountCents).toBe(50000);
+  });
+
+  it("REFUSES two Amount fields that disagree", () => {
+    const p = parseEftNotification("Amount: R 500.00\nAmount: R 600.00");
+    expect(p.ok).toBe(false);
+    expect(p.reason).toMatch(/disagree/);
+  });
+
+  it("REFUSES a mangled figure — the fuzzed card-recon parser is the judge", () => {
+    const p = parseEftNotification("Amount: R50,307,00.5");
+    expect(p.ok).toBe(false);
+    expect(p.reason).toMatch(/does not parse exactly/);
+  });
+
+  it("with no Amount label, exactly ONE rand figure in the text is accepted", () => {
+    const p = parseEftNotification("You have received R 750.00 into your account.");
+    expect(p).toMatchObject({ ok: true, amountCents: 75000 });
+  });
+
+  it("with no Amount label and SEVERAL figures, it refuses to guess", () => {
+    const p = parseEftNotification("You received R 750.00. Your balance is R 9,120.44.");
+    expect(p.ok).toBe(false);
+    expect(p.reason).toMatch(/refuses to make/);
+  });
+
+  it("REFUSES a message with no money in it at all", () => {
+    expect(parseEftNotification("Dear customer, your statement is ready.").ok).toBe(false);
+    expect(parseEftNotification("").ok).toBe(false);
+  });
+
+  it("REFUSES a zero or negative amount — not an incoming payment", () => {
+    expect(parseEftNotification("Amount: R 0.00").ok).toBe(false);
+    expect(parseEftNotification("Amount: -R 50.00").ok).toBe(false);
+  });
+
+  it("REFUSES two References that disagree, keeps one that repeats", () => {
+    expect(parseEftNotification("Amount: R 5.00\nReference: A\nReference: B").ok).toBe(false);
+    const p = parseEftNotification("Amount: R 5.00\nReference: A\nReference: A");
+    expect(p.ok).toBe(true);
+    expect(p.reference).toBe("A");
   });
 });
 
