@@ -316,3 +316,43 @@ test("with no match at all the old subtraction still stands", () => {
   assert.equal(rec.varianceCents, 95000 - 90000);
   assert.equal(rec.varianceOnTillCents, 95000 - 90000);
 });
+
+// ─── THE SUMMARY SETTLES IT FIRST ────────────────────────────────────────────
+// If the terminal's total and the till's card total agree, the batch is done
+// and the transactions are never walked. Recorded as `reconciledBy: "totals"`
+// so a clean batch is visibly clean rather than merely silent.
+test("a batch whose totals agree is settled by the summary alone", () => {
+  const rec = buildBatchRecord({
+    extraction: goodExtraction(),                    // slip total 95000
+    terminal: { storeId: "pe", tillId: "till-1" },
+    tid: "0000HP1X", batchKey: "494", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: false, warnings: [],
+    expected: { cardCents: 95000, legs: 3, byKind: {} },
+    match: null, reconciledByTotals: true,
+    cashiers: [], submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d1", ocr: null,
+  });
+  assert.equal(rec.reconciledBy, "totals");
+  assert.equal(rec.varianceCents, 0);
+  assert.equal(rec.match, null, "no catalogue was read");
+});
+
+test("a batch whose totals disagree is settled by the match", () => {
+  const rec = buildBatchRecord({
+    extraction: goodExtraction(),                    // slip total 95000
+    terminal: { storeId: "pe", tillId: "till-1" },
+    tid: "0000HP1X", batchKey: "494", revision: 1, supersedes: null,
+    photoPaths: [], summaryOnly: false, warnings: [],
+    expected: { cardCents: 60000, legs: 2, byKind: {} },
+    match: {
+      matches: [{}, {}, {}], matchedCents: 95000, onTillCents: 60000, offTillCents: 35000,
+      offTill: { "trophy/till-1": { legs: 1, cents: 35000 } },
+      unmatchedTxns: [], unmatchedTxnCents: 0,
+      unmatchedLegsOnTill: [], unmatchedLegCents: 0,
+    },
+    reconciledByTotals: false,
+    cashiers: [], submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d1", ocr: null,
+  });
+  assert.equal(rec.reconciledBy, "match", "the summaries disagreed, so the catalogue was read");
+  assert.equal(rec.varianceCents, 0, "…and it explained the difference: the machine had moved");
+  assert.equal(rec.match.offTillCents, 35000);
+});

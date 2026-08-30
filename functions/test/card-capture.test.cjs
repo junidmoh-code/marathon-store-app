@@ -152,3 +152,31 @@ test("a file larger than the cap is refused with its own size, in MB", () => {
   assert.match(r.err, /3\.0MB — too large/);
   assert.equal(r.buffer, undefined);
 });
+
+// ─── THE SUMMARY SETTLES IT FIRST ────────────────────────────────────────────
+// If the terminal's total and the till's card total agree, the batch is done
+// and the transactions are never walked. A speedpoint's clock is unreliable —
+// it delays stamps and reorders rows — so a matcher run on a batch whose money
+// already balances has nothing to add and something to get wrong.
+const { totalsAgree } = require("../cardRecon/cardRecon.js");
+
+test("totals that agree settle the batch without reading the transactions", () => {
+  assert.equal(totalsAgree({ totalCents: 3012000 }, { cardCents: 3012000 }), true);
+  assert.equal(totalsAgree({ totalCents: 35100 }, { cardCents: 35100 }), true);
+  assert.equal(totalsAgree({ totalCents: 0 }, { cardCents: 0 }), true, "an empty batch balances too");
+});
+
+test("totals that disagree by ANY amount open the catalogue", () => {
+  assert.equal(totalsAgree({ totalCents: 3012000 }, { cardCents: 2662000 }), false);
+  assert.equal(totalsAgree({ totalCents: 35100 }, { cardCents: 35099 }), false, "one cent is a disagreement");
+  assert.equal(totalsAgree({ totalCents: 35100 }, { cardCents: 35101 }), false, "in either direction");
+});
+
+test("the match is gated on the summary at every call site", () => {
+  // Three routes reach it — photo extract, PDF extract, submit — and a route
+  // that skipped the gate would walk the transactions on a balanced batch.
+  const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
+  const gated = src.match(/const match = reconciledByTotals\s*\n\s*\? null\s*\n\s*: await matchBatch\(/g) || [];
+  assert.equal(gated.length, 3, `only ${gated.length} of the three routes gate the match on the summary`);
+  assert.equal((src.match(/await matchBatch\(/g) || []).length, 3, "…and there are no ungated calls");
+});

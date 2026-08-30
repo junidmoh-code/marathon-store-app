@@ -2,36 +2,53 @@
 // The reconciliation used to be a subtraction: the report's total, minus every
 // card leg on the till the terminal is mapped to. That is wrong the moment the
 // MACHINE MOVES, and the machines do move — a speedpoint spent a morning at
-// Trophy while its terminal ID is mapped to PE Till 2, so three of that day's
-// sales were rung on Trophy's till. They were not missing money. The
-// subtraction called them missing anyway, R2,800 of it, and buried the one
-// sale that really was unaccounted for.
+// Trophy while its terminal ID is mapped to PE Till 2, so four of that day's
+// sales were rung on Trophy's till. They were not missing money.
 //
-// So the legs are matched to the transactions instead, and what is left over is
-// the finding. A machine that moved shows up as "matched on another till",
-// which is information, not an error.
+// ── THE MONEY DECIDES. THE CLOCK ONLY SUGGESTS. ──────────────────────────────
+// This is the rule the whole file now turns on, and it was learned the hard
+// way: an earlier version used time as an ELIGIBILITY gate — a leg outside a
+// fifteen-minute tolerance simply could not answer a transaction — and it
+// accused a cashier of taking R351 that was sitting in the ledger the whole
+// time, because the terminal had stamped it late.
+//
+// A speedpoint's report is not a reliable clock. It delays timestamps, and it
+// prints transactions out of order. So:
+//
+//     IF THE TERMINAL SAYS R351.00 AND THE TILL SAYS R351.00, THERE IS NO
+//     ISSUE — whatever the two clocks say about when.
+//
+// Amount equality is therefore the only thing that makes a leg eligible to
+// answer a transaction. Time is used solely to choose BETWEEN legs of the same
+// amount, so the pairing shown to a person is the sensible one; it can never
+// turn a leg into a non-candidate and so can never manufacture a discrepancy.
+//
+// That also makes the assignment trivially optimal: within one amount, every
+// unclaimed leg is as eligible as any other, so a greedy pass matches
+// min(transactions, legs) of them — the most there can be.
 //
 // ── WHAT THERE IS TO MATCH ON ────────────────────────────────────────────────
 // Not much, and it is worth being blunt about it. The terminal knows an auth
 // code, an RRN, a UTI and a masked card number. The till's payment ledger
 // records NONE of them — a card leg carries only amount, time, till, cashier,
-// receipt and sale id. So the only signals are THE AMOUNT and THE TIME, and a
-// pairing here is a proposal, never a proof. It is reported as such.
+// receipt and sale id. So the only hard signal is THE AMOUNT, and a pairing is
+// a proposal, never a proof. It is reported as such.
 //
-// ── WHAT THE TIME SIGNAL IS WORTH ────────────────────────────────────────────
-// A great deal, because the lag is one-directional. The terminal stamps when
-// the card is approved; the till writes its leg when the cashier finishes the
-// sale, which can only be later. Measured across all forty transactions of a
-// real report against the live ledger: minimum 118 seconds, median 134, ninetieth
-// percentile 539, and not one leg ahead of its terminal stamp.
-//
-// Hence the asymmetric tolerance below: generous forwards, barely anything
-// backwards. The small backward allowance exists only for clock drift between
-// two devices, not because a leg is ever expected first.
+// ── WHAT THE CLOCK IS STILL GOOD FOR ─────────────────────────────────────────
+// Choosing among equals. The lag is one-directional — the terminal stamps when
+// the card is approved, the till writes its leg when the cashier finishes, so
+// the leg can only be later. Measured across all forty transactions of a real
+// report against the live ledger: minimum 118 seconds, median 135, maximum 249.
+// Given several legs of the same amount, the nearest in time is the sensible
+// one to show. Nothing more rests on it.
 "use strict";
 
-const MATCH_AHEAD_MS = 2 * 60 * 1000;        // a leg fractionally BEFORE: clock drift only
-const MATCH_BEHIND_MS = 15 * 60 * 1000;      // …and comfortably past the ninetieth percentile
+// How far either side of the batch window to FETCH legs. Not an eligibility
+// test — see above — but the pool has to be bounded by something, and the
+// window is derived from timestamps the terminal may have got wrong. An hour
+// covers a badly drifting terminal clock and a slow till write; beyond that the
+// risk of reaching a neighbouring batch outweighs the reach.
+const MATCH_WINDOW_MARGIN_MS = 60 * 60 * 1000;
 
 /**
  * Pair each transaction with at most one card leg, and each leg with at most
@@ -57,38 +74,35 @@ function matchLegs(txns, legs, terminal) {
   const transactions = (txns || [])
     .filter((t) => t && Number.isInteger(t.amountCents) && Number.isFinite(t.at))
     .sort((a, b) => a.at - b.at);
+  // CARD LEGS ONLY, checked here as well as by the caller. A sale paid part
+  // cash and part card writes one row per tender, and the cash row must never
+  // be read as "a card sale the machine has no record of" — it is not a card
+  // sale at all. The caller does filter, but a function that reports a
+  // discrepancy should not depend on its caller to avoid inventing one.
   const candidates = (legs || [])
-    .filter((l) => l && Number.isInteger(l.amount) && Number.isFinite(l.at))
+    .filter((l) => l && l.method === "card" && Number.isInteger(l.amount) && Number.isFinite(l.at))
     .sort((a, b) => a.at - b.at);
   const taken = new Set();
   const matches = [];
 
   const onMappedTill = (l) => l.storeId === terminal.storeId && l.tillId === terminal.tillId;
 
-  // ── EARLIEST ELIGIBLE, NOT NEAREST ────────────────────────────────────────
-  // "Nearest in time" looks obviously right and quietly strands transactions.
-  // Two sales of the same amount at 0 and +3 minutes, with legs at −1.5 and +1:
-  // the first transaction takes the +1 leg because it is nearer, the second
-  // then finds nothing in tolerance, and R500 is reported as missing money
-  // although both could have been paired. (CodeRabbit, PR #516.)
-  //
-  // Taking the EARLIEST eligible leg instead, with the transactions walked in
-  // time order, is not a heuristic improvement — it is optimal. Amounts must be
-  // equal, so the problem decomposes into one group per amount; within a group
-  // both sides are sorted and eligibility is an interval, which makes the graph
-  // convex, and for convex bipartite graphs this greedy is known to produce a
-  // MAXIMUM matching. No transaction is left unpaired that could have been.
+  // AMOUNT DECIDES ELIGIBILITY; TIME ONLY BREAKS THE TIE. A leg of the right
+  // amount is always a candidate, however far off the two clocks are — that is
+  // what stops a delayed or out-of-order terminal stamp inventing a shortfall.
+  // Among several of the same amount the nearest in time is chosen, purely so
+  // the pairing a person is shown is the sensible one.
   const findFor = (txn, pool) => {
-    for (let i = 0; i < candidates.length; i++) {     // candidates are time-sorted
+    let best = null;
+    for (let i = 0; i < candidates.length; i++) {
       if (taken.has(i)) continue;
       const leg = candidates[i];
       if (!pool(leg)) continue;
       if (leg.amount !== txn.amountCents) continue;
       const lag = leg.at - txn.at;
-      if (lag < -MATCH_AHEAD_MS || lag > MATCH_BEHIND_MS) continue;
-      return { i, lag, leg };
+      if (best === null || Math.abs(lag) < Math.abs(best.lag)) best = { i, lag, leg };
     }
-    return null;
+    return best;
   };
 
   // `offTill` is a fact about the LEG, not about which pass found it. Deriving
@@ -132,7 +146,19 @@ function matchLegs(txns, legs, terminal) {
     b.legs += 1; b.cents += m.leg.amount;
   }
 
+  const txnTotal = sum(transactions, (t) => t.amountCents);
+  const onTillLegTotal = sum(candidates.filter(onMappedTill), (l) => l.amount);
+
   return {
+    // THE PLAIN-MONEY VERDICT, first, because it is the one that settles it.
+    // Everything below is attribution; this is whether anything is wrong.
+    // Nothing unaccounted for on EITHER side. A surplus card leg on the mapped
+    // till — a sale the machine has no record of — is a discrepancy too, and a
+    // batch carrying one is not reconciled however well its transactions
+    // matched. (CodeRabbit, PR #518.)
+    reconciled: unmatchedTxns.length === 0 && unmatchedLegsOnTill.length === 0,
+    txnTotal,
+    onTillLegTotal,
     matches: matches.sort((a, b) => a.txn.tsn - b.txn.tsn),
     unmatchedTxns,
     unmatchedLegsOnTill,
@@ -145,4 +171,4 @@ function matchLegs(txns, legs, terminal) {
   };
 }
 
-module.exports = { matchLegs, MATCH_AHEAD_MS, MATCH_BEHIND_MS };
+module.exports = { matchLegs, MATCH_WINDOW_MARGIN_MS };
