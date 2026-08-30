@@ -91,13 +91,115 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the capture screen reads exactly one node — the till picker's registry", () => {
-    // config/cardTerminals is the TID→till map the picker needs, and it is the
-    // only database read the capture flow makes. Everything else about a slip
-    // goes to the callable and comes back as an acknowledgement.
-    const src = readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8");
-    const reads = [...stripComments(src).matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)].map((m) => m[1]);
-    expect(reads).toEqual(["config/cardTerminals"]);
+  it("the card recon screens read exactly three nodes, and each is named here on purpose", () => {
+    // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
+    //
+    //   config/cardTerminals   the TID→till map the picker needs.
+    //
+    //   card_batch_intake      what the mailbox poller did with each emailed
+    //                          PDF — outcomes only: a sender, a subject, a file
+    //                          name, recorded-or-why-not. NO figures, no lines,
+    //                          no PANs; the evidence itself stays in the
+    //                          owner-only records. It is read here because a
+    //                          refused emailed slip means a terminal is not
+    //                          reconciling, and a refusal only the owner could
+    //                          ever see is the failure this feature exists to
+    //                          prevent.
+    //
+    //   card_batch_poll_status  the poller's heartbeat — one small node saying
+    //                          when the mailbox was last checked and nothing
+    //                          else. It is read because a quiet mailbox and a
+    //                          dead poller are the same empty feed without it,
+    //                          and "no refusals" from a poller that stopped
+    //                          hours ago is the most dangerous thing this panel
+    //                          could imply.
+    //
+    // Everything else about a slip still goes to the callable and comes back as
+    // an acknowledgement. A FOURTH node appearing here is a change of policy and
+    // must be made deliberately, in this list, with its reason.
+    // EVERY file in the feature, not one of them: the emailed-slip panel is its
+    // own file now, and a scan naming a single file goes stale the moment
+    // something is extracted.
+    const reads = [];
+    for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file)) continue;
+      const src = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
+      for (const m of src.matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)) reads.push(m[1]);
+    }
+    expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals"]);
+  });
+
+  it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
+    // It grows by a row per message for ever. A whole-node read on a handset on
+    // shop wifi is the mistake this repo keeps a rule against.
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
+    const at = code.indexOf("card_batch_intake");
+    expect(at, "the feed read has moved — this scan must follow it").toBeGreaterThan(-1);
+    expect(code.slice(at, at + 200)).toMatch(/limitToLast/);
+    // The heartbeat is ONE small node and is read whole, deliberately; that is
+    // the difference this assertion must not blur.
+    expect(code).toMatch(/card_batch_poll_status/);
+  });
+
+  it("the emailed-slip feed renders outcomes, never money", () => {
+    // The panel is new surface on a capture-only screen, so it gets the same
+    // treatment as the review: if a figure appears here, it came from somewhere
+    // it should not have.
+    //
+    // WHOLE FILES, NOT A SLICE OF ONE. The first version of this scanned only
+    // the pure helper, which sorts and counts and never names a record field —
+    // it could not have contained these tokens if it tried. The second sliced
+    // the panel's function body out of CardReconScreen.jsx by string index,
+    // which any ordinary refactor escapes: extract a row renderer, place it
+    // below the screen component, and it renders whatever it likes outside the
+    // slice while both anchor assertions still pass.
+    //
+    // So the panel is its OWN FILE, and both files are scanned entire. A helper
+    // extracted from the panel lands beside it and is scanned too. The manual
+    // review section — which legitimately shows totalCents and purchasesCents,
+    // the slip in the manager's own hand — stays in CardReconScreen.jsx, where
+    // it is not scanned and does not need to be.
+    // (CodeRabbit, then independent review, PR #510.)
+    // WORD BOUNDARIES, because `pan` is a substring of `<span>` and of
+    // `aria-expanded` — an unbounded match makes this test fail on markup and
+    // teaches the next person to weaken it. The token being forbidden is the
+    // record FIELD, so that is what is matched.
+    const forbidden = [/\btotalCents\b/, /\bpurchasesCents\b/, /\bvarianceCents\b/, /\bamountCents\b/, /\bpan\b/, /\bcashiers\b/];
+    // THE DIRECTORY, MINUS THE ONE FILE THAT IS ALLOWED. A hand-list is the
+    // same disease as the string slice it replaced: extract a row renderer into
+    // a new sibling and it renders whatever it likes while the scan passes.
+    // Scanning everything except CardReconScreen.jsx — the manual review, which
+    // legitimately shows the slip in the manager's own hand — means a new file
+    // is covered the moment it exists, without anyone remembering to add it.
+    // (Independent review, PR #510: the first attempt at this fix hand-listed
+    // two files 45 lines after criticising single-file naming for going stale.)
+    let scanned = 0;
+    for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file) || file === "CardReconScreen.jsx") continue;
+      scanned++;
+      const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
+      for (const token of forbidden) {
+        expect(code, `${file} must not handle ${token}`).not.toMatch(token);
+      }
+    }
+    expect(scanned, "the scan found no files — it is passing on nothing").toBeGreaterThan(1);
+    // The scan is only worth anything if it CAN fail, so prove the tokens are
+    // findable: the capture screen's own review section renders them.
+    const screen = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
+    expect(screen, "the review section still renders the slip's own figures — if this fails the scan above proves nothing").toMatch(/\btotalCents\b/);
+  });
+
+  it("the silence notice is recomputed while the screen sits open", () => {
+    // THE ONE THING THIS PANEL EXISTS TO SAY is that the mailbox has stopped
+    // being checked — and nothing about a dead poller changes, so nothing
+    // re-renders. A clock read once at mount sits at the moment the tab was
+    // opened and the notice never appears, on a screen a manager leaves open on
+    // a counter. (CodeRabbit, PR #510.)
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
+    expect(code, "the clock must be state, not a render-time read").toMatch(/setNowMs\(serverNowMs\(\)\)/);
+    expect(code, "…on a bounded timer").toMatch(/setInterval/);
+    expect(code, "…cleared on unmount").toMatch(/clearInterval/);
+    expect(code, "…and the notice must use it").toMatch(/silenceNotice\(lastAt, nowMs/);
   });
 
   it("shows no variance, expected figure or cashier list on the handset", () => {

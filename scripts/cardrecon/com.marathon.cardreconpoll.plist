@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the card recon mailbox poller (Mac mini).
+
+  Deliberately the SAME mechanism as com.marathon.socialpublish and
+  com.marathon.shopifyreconcile: a user LaunchAgent in ~/Library/LaunchAgents
+  running node against the repo checkout, with its logs under the repo, and
+  single-flight enforced by scripts/lib/launchdRunner.mjs. No second scheduling
+  system is introduced, and nothing here is a new idea.
+
+  Differences from the social publisher, and why:
+
+    · RunAtLoad is TRUE. The publisher's is false because loading the agent —
+      after a reboot, or while installing it — must not fire a post to a live
+      Instagram account. Nothing this job does is irreversible: it reads a
+      mailbox and submits what it finds to a capture path that refuses
+      duplicates. Firing on load means the mailbox is checked the moment the
+      agent loads rather than up to five minutes later.
+
+      BE PRECISE ABOUT WHAT "RESTARTS WITH THE MACHINE" MEANS HERE. This is a
+      user LaunchAgent, and a user LaunchAgent loads when that user's GUI
+      session begins — at LOGIN, not at boot. It survives a restart of this
+      machine because the machine logs itself in: `autoLoginUser =
+      marathonclub` (verified 2026-08-29), which is also the only reason the
+      three agents already loaded there work the way everyone assumes they do —
+      com.marathon.socialpublish, com.marathon.shopifyreconcile and
+      com.marathon.photograbber (listed on the machine the same day; this makes
+      four). Turn auto-login off, or leave the mini sitting at a login window
+      after a power cut, and NONE of them run — the mailbox simply stops being
+      checked, and the Card recon tab's heartbeat is what says so.
+
+      A LaunchDaemon would not have that dependency, and is deliberately not
+      used: a daemon runs as root outside any user session, which is a
+      different security posture, a different credential story (the
+      service-account key and the .env both live in this user's home) and a
+      second scheduling pattern on a machine that has one. (CodeRabbit, PR #510.)
+
+    · StartInterval 300, not 120. A batch report is emailed once a day per
+      terminal at settlement. Five minutes is already far faster than anyone
+      needs and is a twelfth of the IMAP connections a two-minute tick would
+      make. A tick with no unread mail exits in under a second.
+
+    · A MISSED FIRE is run by launchd as soon as the machine wakes, which is
+      the behaviour we want: a slip that arrived while the mini was off is
+      captured late rather than never.
+
+  NODE PATH: /opt/homebrew/bin/node — this is an Apple-silicon Mac mini, where
+  Homebrew installs under /opt/homebrew, and launchd resolves
+  ProgramArguments[0] itself without consulting PATH. The installer rewrites
+  this line to whichever node it actually finds and refuses to install if that
+  binary is missing, so the two cannot drift apart.
+
+  CREDENTIALS: nothing secret belongs in this file — it is committed. The
+  mailbox user and its Gmail APP PASSWORD live in the gitignored .env at the
+  repo root, read at run time. Only PATHS appear here, never values.
+  GOOGLE_APPLICATION_CREDENTIALS is the same service-account key the other two
+  agents already point at; it is what lets the poller mint its own identity's
+  token and write /card_batch_intake.
+
+  INSTALL: scripts/cardrecon/install-card-recon-poller.sh. Paths below assume
+  the checkout at /Users/marathonclub/marathon-store-app — change BOTH the
+  ProgramArguments path and WorkingDirectory if it lives elsewhere.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.cardreconpoll</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/cardrecon/poll-runner.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
+       not handle itself (node failing to start, a syntax error) lands here.
+       The readable per-run log is logs/card-recon-poll.log, written and
+       rotated by the runner. -->
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/card-recon-launchd.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/card-recon-launchd.err.log</string>
+</dict>
+</plist>

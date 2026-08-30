@@ -33,6 +33,8 @@
 // NEVER a regex lookbehind in this file (or any file in src/): a parse-time
 // SyntaxError blanks the whole app on Safari below 16.4.
 
+import { readPixelSize } from "./imageSize";
+
 // What the picker may hand over. Kept as documentation of the common cases,
 // and exported for the tests — but the GATE below no longer enumerates: any
 // `image/*` type is attempted (the phone's own picker already filtered to
@@ -90,22 +92,46 @@ export function describePickedFile(file) {
   return bits.join(" — ");
 }
 
-// Under this, a file is small enough that decoding it at full size costs
-// nothing worth avoiding, and asking for a resize risks UPSCALING it — the
-// resize hint sets a width, and a width is not a maximum. Above it, the
-// picture is a phone photo and the resize is the whole point.
+// ─── THE RESIZE HINT — GATED ON PIXELS, NOT ON BYTES ─────────────────────────
+// createImageBitmap's `resizeWidth` sets a width; it is NOT a maximum. Asking
+// for 1600 on a 900-pixel graphic UPSCALES it, and everything after that works
+// on invented pixels — a blurrier photo, a bigger upload, and a canvas step
+// with nothing left to shrink.
 //
-// 900 KB is comfortably above a small graphic and comfortably below any modern
-// camera capture (an iPhone HEIC is 1.5–3 MB, a 12 MP JPEG 3–6 MB).
+// This used to be gated on FILE SIZE ("over 900 KB, therefore a phone photo"),
+// which is a proxy that is wrong in exactly the case that matters: a
+// screenshot, a scan or a PNG cutout is routinely several megabytes and only
+// ~1,200 pixels wide, and every one of those was being upscaled during decode.
+//
+// So the gate asks the file how big the picture actually is (imageSize.js
+// reads it out of the header — one slice, no decode) and hints only when the
+// picture is genuinely LARGER than the ceiling.
+//
+// AND IT CLAMPS THE LONG SIDE. The hint is put on whichever side is longer, so
+// a portrait photo comes back with its HEIGHT at maxDim rather than its width —
+// the memory ceiling the hint exists for now actually holds in both
+// orientations, and the caller's canvas has nothing left to do but agree.
+//
+// WHEN THE HEADER CANNOT BE READ — an unrecognised container, a file object
+// with no slice() — the old byte heuristic is the fallback, because the
+// alternative is decoding a 12-megapixel photo at full size on a handset that
+// will kill the tab for it. An unknown format over this size is overwhelmingly
+// a camera capture; the fallback keeps that case safe and is never reached for
+// anything JPEG, PNG, WebP, GIF, BMP, TIFF or HEIC.
 const RESIZE_ABOVE_BYTES = 900 * 1024;
 
-function resizeHint(file, maxDim) {
+async function resizeHint(file, maxDim) {
+  const size = await readPixelSize(file);
+  if (size) {
+    if (Math.max(size.width, size.height) <= maxDim) return undefined;
+    return size.width >= size.height
+      ? { resizeWidth: maxDim, resizeQuality: "high" }
+      : { resizeHeight: maxDim, resizeQuality: "high" };
+  }
   if (!(file?.size > RESIZE_ABOVE_BYTES)) return undefined;
-  // ONLY a width. Height is left for the decoder to derive, which preserves
-  // the aspect ratio — and a portrait photo therefore comes back taller than
-  // maxDim. That is fine and deliberate: the caller's canvas step clamps the
-  // LONGER side afterwards and never upscales, so this is a memory ceiling,
-  // not the final size.
+  // Unknown container, large file: a width-only hint, which preserves the
+  // aspect ratio and is a memory ceiling rather than a final size. The
+  // caller's canvas step clamps the longer side afterwards and never upscales.
   return { resizeWidth: maxDim, resizeQuality: "high" };
 }
 
@@ -144,7 +170,7 @@ export async function decodeImageFile(file, maxDim = 1600) {
   });
 
   if (typeof createImageBitmap === "function") {
-    const hint = resizeHint(file, maxDim);
+    const hint = await resizeHint(file, maxDim);
     if (hint) {
       // Resize DURING decode. Not universally supported (older Safari ignores
       // or rejects the options), so a failure here is not a failure of the
@@ -183,7 +209,7 @@ export async function decodeImageFile(file, maxDim = 1600) {
   // not, decoded through the <img> element that already works there.
   try {
     if (typeof createImageBitmap === "function") {
-      const hint = resizeHint(file, maxDim);
+      const hint = await resizeHint(file, maxDim);
       return wrap(await heic.heicTo({ blob: file, type: "bitmap", ...(hint ? { options: hint } : {}) }));
     }
     // No resize-during-decode on this branch — the blob API has no such

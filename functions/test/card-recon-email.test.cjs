@@ -1,0 +1,157 @@
+// The email channel has no picked till, so the TID on the slip IS the routing
+// key. These are the checks that stand in for the mismatch refusal the phone
+// path gets for free.
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { routeEmailSlip, normaliseMid } = require("../lib/card-recon-email.cjs");
+
+const TERMINALS = {
+  "0000HP1X": { mid: "000000004977890", storeId: "pe", tillId: "till-1", label: "PE Till 1" },
+  "67365901": { mid: "100000001178101", storeId: "pe", tillId: "till-2", label: "PE Till 2" },
+  "67377843": { storeId: "trophy", tillId: "till-1", label: "Trophy Till 1" },  // no MID registered
+};
+
+test("routes on the slip's own TID", () => {
+  const r = routeEmailSlip({ extraction: { tid: "0000HP1X", mid: "000000004977890" }, terminals: TERMINALS });
+  assert.equal(r.ok, true);
+  assert.equal(r.tid, "0000HP1X");
+  assert.equal(r.terminal.tillId, "till-1");
+  assert.deepEqual(r.warnings, []);
+});
+
+test("an UNREGISTERED terminal is refused by name — it must surface, not vanish", () => {
+  // A terminal nobody mapped is a terminal quietly failing to reconcile. The
+  // poller records this reason against the source message.
+  const r = routeEmailSlip({ extraction: { tid: "9999ZZZZ", mid: "1" }, terminals: TERMINALS });
+  assert.equal(r.ok, false);
+  assert.equal(r.unmapped, true);
+  assert.equal(r.tid, "9999ZZZZ");
+  assert.match(r.reason, /not registered/i);
+  assert.match(r.reason, /9999ZZZZ/);
+});
+
+test("a MID that contradicts the registry is refused — the file is from elsewhere", () => {
+  const r = routeEmailSlip({ extraction: { tid: "0000HP1X", mid: "100000001178101" }, terminals: TERMINALS });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /merchant ID/i);
+  assert.ok(!r.unmapped);
+});
+
+test("the registered merchant need only be AMONG the ones the file prints", () => {
+  // A multi-scheme settlement report carries a second, honest merchant id —
+  // Amex or Diners under its own agreement, printed as its own section.
+  // Refusing that would refuse every emailed slip from that terminal for ever,
+  // over a check that is not what decides the till.
+  const ok = routeEmailSlip({
+    extraction: { tid: "0000HP1X", mid: "000000004977890", mids: ["4977890", "377777777777777"] },
+    terminals: TERMINALS,
+  });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.deepEqual(ok.warnings, []);
+
+  // …and NONE of them being the registered merchant is still a refusal, which
+  // is what stops one reading being defeated by whichever section printed first.
+  const bad = routeEmailSlip({
+    extraction: { tid: "0000HP1X", mid: "100000001178101", mids: ["100000001178101", "377777777777777"] },
+    terminals: TERMINALS,
+  });
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /merchant IDs/i);
+});
+
+test("leading zeros are not a merchant difference", () => {
+  const r = routeEmailSlip({ extraction: { tid: "0000HP1X", mid: "4977890" }, terminals: TERMINALS });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.warnings, []);
+  assert.equal(normaliseMid("000000004977890"), normaliseMid("4977890"));
+  assert.equal(normaliseMid("  "), null);
+});
+
+test("a missing MID is a WARNING, never a check that quietly did not run", () => {
+  const noneRegistered = routeEmailSlip({ extraction: { tid: "67377843", mid: "100000001178101" }, terminals: TERMINALS });
+  assert.equal(noneRegistered.ok, true);
+  assert.match(noneRegistered.warnings[0], /no merchant ID registered/i);
+
+  const noneOnSlip = routeEmailSlip({ extraction: { tid: "67365901", mid: null }, terminals: TERMINALS });
+  assert.equal(noneOnSlip.ok, true);
+  assert.match(noneOnSlip.warnings[0], /could not be read/i);
+});
+
+test("an unreadable TID is refused rather than routed anywhere", () => {
+  for (const tid of [null, "", "??", "a terminal"]) {
+    const r = routeEmailSlip({ extraction: { tid }, terminals: TERMINALS });
+    assert.equal(r.ok, false);
+    assert.equal(r.tid, null);
+    // AND FOR THE RIGHT REASON. Falling through to the registry lookup would
+    // also refuse — with "Terminal null is not registered", which sends an
+    // admin off to map a terminal that does not exist. `unmapped` is what the
+    // poller files as "someone must register this", so an unreadable slip must
+    // not carry it.
+    assert.match(r.reason, /No terminal ID could be read/i);
+    assert.ok(!r.unmapped, "an unreadable TID is not a registry problem");
+  }
+  // No registry at all is the same answer, not a crash.
+  assert.equal(routeEmailSlip({ extraction: { tid: "0000HP1X" }, terminals: null }).ok, false);
+});
+
+test("a registry row missing its till is not a mapping — it is refused", () => {
+  // A half-written row (seeded with a typo, or edited by hand in the console)
+  // would otherwise route a batch to a record with no till to reconcile
+  // against, and computeExpectedCard would be asked for the takings of
+  // "undefined". Every field the record needs must be there before the slip is.
+  const half = {
+    "0000HP1X": { mid: "000000004977890", storeId: "pe", label: "PE Till 1" },       // no tillId
+    "67365901": { mid: "100000001178101", tillId: "till-2", label: "PE Till 2" },     // no storeId
+  };
+  for (const tid of Object.keys(half)) {
+    const r = routeEmailSlip({ extraction: { tid, mid: half[tid].mid }, terminals: half });
+    assert.equal(r.ok, false, `${tid} routed on a half-written registry row`);
+    assert.equal(r.unmapped, true);
+    assert.match(r.reason, /not registered/i);
+  }
+});
+
+// ─── THE WHOLE EMAIL PATH, OVER A REAL PDF ───────────────────────────────────
+// Everything above tests the routing decision against hand-made extractions.
+// This runs a REAL generated batch report through the REAL text extractor and
+// the REAL parser first, so the shape the router is handed is the shape the
+// callable actually hands it — the seam where a change to either side would
+// otherwise pass both suites and fail in production.
+const { makeSlipPdf, slipLines } = require("./fixtures/makeSlipPdf.cjs");
+const { pdfToLines } = require("../cardRecon/pdfText.js");
+const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
+const { validateExtraction } = require("../lib/card-recon.cjs");
+
+const parseReal = async (lines) => {
+  const text = await pdfToLines(makeSlipPdf(lines));
+  assert.equal(text.ok, true, text.reason);
+  return parseSlipPdf(text.lines);
+};
+
+test("END TO END: a real emailed PDF routes to its till and passes every check", async () => {
+  const parsed = await parseReal(slipLines());
+  assert.equal(parsed.ok, true, parsed.reason);
+
+  const routed = routeEmailSlip({ extraction: parsed.extraction, terminals: TERMINALS });
+  assert.equal(routed.ok, true, routed.reason);
+  assert.deepEqual(
+    { storeId: routed.terminal.storeId, tillId: routed.terminal.tillId },
+    { storeId: "pe", tillId: "till-1" },
+    "the fixture's TID and MID must land on PE Till 1 — nothing about the email path may change which till a slip belongs to",
+  );
+  assert.deepEqual(routed.warnings, [], "both identifiers vouched for this one");
+
+  // And every refusal the phone path applies still applies to it.
+  const verdict = validateExtraction(parsed.extraction, { summaryOnly: false, source: "pdf" });
+  assert.equal(verdict.ok, true, verdict.reason);
+});
+
+test("END TO END: the same PDF against a registry that does not know it is REFUSED", async () => {
+  const parsed = await parseReal(slipLines());
+  const routed = routeEmailSlip({ extraction: parsed.extraction, terminals: { "67365901": TERMINALS["67365901"] } });
+  assert.equal(routed.ok, false);
+  assert.equal(routed.unmapped, true);
+  // Never routed to the one terminal that IS registered.
+  assert.match(routed.reason, /0000HP1X/);
+});
