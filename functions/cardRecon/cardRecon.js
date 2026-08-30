@@ -396,8 +396,8 @@ function matchNotes(match) {
   const notes = [];
   const offTillMatches = match.matches.filter((m) => m.offTill);
   if (offTillMatches.length) {
-    const where = Object.entries(match.offTill)
-      .map(([k, v]) => `${k} (${formatCents(v.cents)})`).join(", ");
+    const where = match.offTill
+      .map((o) => `${o.storeId}/${o.tillId} (${formatCents(o.cents)})`).join(", ");
     notes.push(
       `${offTillMatches.length} of this batch's transactions were rung up on another till — ${where}. ` +
       "That is what a card machine being moved between shops looks like, and the money is accounted for. " +

@@ -528,7 +528,11 @@ function buildBatchRecord({
       offTillCents: match.offTillCents,
       // Where the work was rung when it was not on this terminal's own till,
       // so "the machine was at Trophy that morning" reads off the record.
-      offTill: Object.keys(match.offTill).length ? match.offTill : null,
+      // A LIST of { storeId, tillId, legs, cents }. It was a map keyed by
+      // "storeId/tillId", which RTDB refuses — see card-match.cjs. null when
+      // empty, because RTDB drops an empty array anyway and an explicit null
+      // says "checked, none" rather than "field missing".
+      offTill: match.offTill.length ? match.offTill : null,
       // Money the machine took that no sale accounts for — the finding.
       unmatchedTxns: match.unmatchedTxns.length,
       unmatchedTxnCents: match.unmatchedTxnCents,

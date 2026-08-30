@@ -139,12 +139,28 @@ function matchLegs(txns, legs, terminal) {
   const offTillMatches = matches.filter((m) => m.offTill);
   // Where the machine's work was actually rung up, when it was not on its own
   // till — so "the speedpoint was at Trophy that morning" reads off the record.
-  const offTill = {};
+  //
+  // A LIST, NOT A MAP KEYED BY THE TILL. It was `offTill["trophy/till-1"]`, and
+  // an RTDB key may not contain "/" — so the submit transaction threw
+  // `Data returned contains an invalid key (trophy/till-1)` and the whole
+  // capture failed with INTERNAL. Not on the email path: on EVERY path, for any
+  // batch whose transactions were rung up on another till, which is precisely
+  // the case this field exists to record. It was found by the mailbox poller
+  // because that was the first capture to meet a moved machine (PE Till 2,
+  // batch 60, 2026-08-30) — a manager's phone would have crashed identically.
+  //
+  // The repo has been here before: never build an RTDB key out of data
+  // (project_engine_retryhistory_crash). Nothing indexed this by key — its one
+  // consumer builds a sentence — so the shape carries storeId and tillId as
+  // FIELDS and cannot be made illegal by a value.
+  const offTillBy = new Map();
   for (const m of offTillMatches) {
-    const where = `${m.leg.storeId}/${m.leg.tillId}`;
-    const b = offTill[where] || (offTill[where] = { legs: 0, cents: 0 });
+    const where = `${m.leg.storeId}\u0000${m.leg.tillId}`;   // in-memory only
+    const b = offTillBy.get(where) || { storeId: m.leg.storeId, tillId: m.leg.tillId, legs: 0, cents: 0 };
     b.legs += 1; b.cents += m.leg.amount;
+    offTillBy.set(where, b);
   }
+  const offTill = [...offTillBy.values()];
 
   const txnTotal = sum(transactions, (t) => t.amountCents);
   const onTillLegTotal = sum(candidates.filter(onMappedTill), (l) => l.amount);

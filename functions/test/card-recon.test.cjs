@@ -266,7 +266,7 @@ test("buildBatchRecord takes its variance from the MATCH, not the till subtracti
     match: {
       matches: [{}, {}, {}], matchedCents: 95000,
       onTillCents: 60000, offTillCents: 35000,
-      offTill: { "trophy/till-1": { legs: 1, cents: 35000 } },
+      offTill: [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
       unmatchedTxns: [], unmatchedTxnCents: 0,
       unmatchedLegsOnTill: [], unmatchedLegCents: 0,
     },
@@ -275,7 +275,7 @@ test("buildBatchRecord takes its variance from the MATCH, not the till subtracti
   assert.equal(rec.varianceOnTillCents, 95000 - 60000,
     "…and the old subtraction is kept, so batches stay comparable");
   assert.equal(rec.match.offTillCents, 35000);
-  assert.deepEqual(rec.match.offTill, { "trophy/till-1": { legs: 1, cents: 35000 } },
+  assert.deepEqual(rec.match.offTill, [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
     "the record says WHERE, so a moved machine reads as information");
 });
 
@@ -345,7 +345,7 @@ test("a batch whose totals disagree is settled by the match", () => {
     expected: { cardCents: 60000, legs: 2, byKind: {} },
     match: {
       matches: [{}, {}, {}], matchedCents: 95000, onTillCents: 60000, offTillCents: 35000,
-      offTill: { "trophy/till-1": { legs: 1, cents: 35000 } },
+      offTill: [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
       unmatchedTxns: [], unmatchedTxnCents: 0,
       unmatchedLegsOnTill: [], unmatchedLegCents: 0,
     },
@@ -355,4 +355,57 @@ test("a batch whose totals disagree is settled by the match", () => {
   assert.equal(rec.reconciledBy, "match", "the summaries disagreed, so the catalogue was read");
   assert.equal(rec.varianceCents, 0, "…and it explained the difference: the machine had moved");
   assert.equal(rec.match.offTillCents, 35000);
+});
+
+// ─── EVERY KEY IN THE RECORD MUST BE A KEY RTDB WILL TAKE ────────────────────
+// This is a whole-class guard, not a test of one field, because the class has
+// now cost two outages: an ISO timestamp used as a key crashed the refill
+// engine, and `offTill["trophy/till-1"]` crashed EVERY capture of a batch whose
+// transactions were rung up on another till — the exact case that field exists
+// to record. Both were written by code that never asked what RTDB accepts.
+//
+// RTDB refuses ".", "#", "$", "/", "[", "]" and an empty key. A record is built
+// from slip text, store ids, till ids and TSNs, and any of them can end up as a
+// key by someone reaching for the convenient shape. So the record is walked and
+// every key checked — including the ones a future field adds.
+test("CONTRACT: no key anywhere in a built record is one RTDB would refuse", () => {
+  const illegal = /[.#$/[\]]/;
+  const walk = (node, path) => {
+    if (node === null || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      // Array indices are RTDB's own numeric keys and are always safe.
+      if (!Array.isArray(node)) {
+        assert.ok(key.length > 0, `empty key at ${path}`);
+        assert.ok(!illegal.test(key),
+          `"${key}" at ${path} is not a key RTDB will take — the write throws and the whole capture fails with INTERNAL`);
+      }
+      walk(value, `${path}/${key}`);
+    }
+  };
+
+  const ex = goodExtraction();
+  const rec = buildBatchRecord({
+    extraction: ex,
+    terminal: { storeId: "pe", tillId: "till-1", label: "PE Till 1" },
+    tid: "0000HP1X", batchKey: "494", revision: 1, supersedes: null,
+    photoPaths: ["cardRecon/d1/photo-0.jpg"], summaryOnly: false,
+    warnings: ["something worth saying"],
+    expected: { cardCents: 60000, legs: 2, byKind: { card: 60000 } },
+    cashiers: [{ uid: "u1", name: "A" }],
+    submittedBy: { uid: "u9" }, submittedAt: 1, draftId: "d1", ocr: null,
+    // The shape that crashed production: a machine that was rung up elsewhere.
+    match: {
+      matches: [{}], matchedCents: 95000, onTillCents: 60000, offTillCents: 35000,
+      offTill: [{ storeId: "trophy", tillId: "till-1", legs: 1, cents: 35000 }],
+      unmatchedTxns: [], unmatchedTxnCents: 0, unmatchedLegsOnTill: [], unmatchedLegCents: 0,
+    },
+    intake: { channel: "email", messageId: "<a.b@mail.example>", from: "NoReplyTransReport <x@y.co.za>",
+              subject: "Banking Report for Batch 60 of Terminal 67365901", filename: "FNB-Txn-Notification.pdf",
+              receivedAt: 1 },
+  });
+  walk(rec, "");
+
+  // …and the guard can fail, or it is checking nothing.
+  assert.throws(() => walk({ match: { offTill: { "trophy/till-1": { cents: 1 } } } }, ""),
+    /not a key RTDB will take/);
 });
