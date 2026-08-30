@@ -51,9 +51,21 @@ const { parseRandsToCents } = require("./lib/card-recon.cjs");
 
 export const EFT_POOL_PATH = "eft_pool";
 
-// The banks whose notifications are believed at all. One entry today; adding a
-// bank is adding a line AND checking what its Authentication-Results look like.
-export const EFT_ALLOWED_DOMAINS = ["fnb.co.za"];
+// The banks whose notifications are believed at all. THE NOTIFICATION COMES
+// FROM THE PAYER'S BANK, not the shop's — the R100 test payment of 2026-08-30
+// proved it, arriving from standardbank.co.za — so this is the list of SA
+// banks customers pay from, each verified by DKIM against its OWN domain.
+// Being listed here only admits a message to the authentication check and the
+// per-format readers (eftBanks.mjs); a listed bank with no reader yet is a
+// clean refusal that stores the raw text, never a guess.
+export const EFT_ALLOWED_DOMAINS = [
+  "fnb.co.za",
+  "standardbank.co.za",
+  "absa.co.za",
+  "nedbank.co.za",
+  "capitecbank.co.za",
+  "tymebank.co.za",
+];
 
 // The card poller routes these to the PDF capture path; they must never appear
 // in the payment pool even when a report arrives with its PDF missing.
@@ -300,6 +312,10 @@ export function parseBankTimestamp(str) {
   if (m) {
     [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
     if (m[4]) [h, mi, sec] = [Number(m[4]), Number(m[5]), Number(m[6] ?? 0)];
+  } else if ((m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2})h(\d{2})$/.exec(s))) {
+    // 2026-08-30 23h48 — Standard Bank's printed shape (real notification,
+    // 2026-08-30).
+    [y, mo, d, h, mi] = [Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])];
   } else {
     // 30 Aug 2026 · 30 August 2026 14:41
     m = /^(\d{1,2}) ([A-Za-z]{3,9}) (\d{4})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(s);
@@ -333,99 +349,95 @@ export function redactAccountDigits(text) {
   // however they are spaced or dashed. This eats grouped AMOUNTS as well,
   // which is the accepted cost: over-striking a diagnostic is fine,
   // under-striking an account is not. (Delta review.)
-  return text.replace(/\d(?:[ -]?\d){5,}/g, (run) => `⋯${run.replace(/\D/g, "").slice(-3)}`);
-}
-
-// ─── PARSING THE NOTIFICATION ────────────────────────────────────────────────
-// NO REAL PAYMENT NOTIFICATION EXISTED IN THE MAILBOX WHEN THIS WAS BUILT (the
-// mailbox is days old; searched all folders, 2026-08-30) — so this parser is
-// labelled-field driven and biased hard toward refusal: the FIRST real
-// notification that arrives either parses exactly or leaves a refusal carrying
-// its full (account-struck) text, from which this file is corrected in one
-// round. That failure mode is the designed one.
-const AMOUNT_LABELS = /^(?:amount(?: paid)?|payment amount)\s*[:\-–]\s*(.+)$/i;
-const REFERENCE_LABELS = /^(?:(?:payment |their |beneficiary |recipient |my )?reference(?: number)?)\s*[:\-–]\s*(.+)$/i;
-// "From" is DELIBERATELY not a payer label: it is the single most common line
-// in a forwarded or quoted body, and matching it makes the BANK the payer the
-// moment anyone forwards a notification. (Independent adversarial review.)
-const PAYER_LABELS = /^(?:paid by|payer|sender|received from)\s*[:\-–]\s*(.+)$/i;
-const DATE_LABELS = /^(?:(?:payment |transaction |effective )?date(?: and time)?)\s*[:\-–]\s*(.+)$/i;
-// A rand figure loose in prose, for the no-label fallback. Grouping correctness
-// is parseRandsToCents' job; this only FINDS candidates.
-const MONEY_TOKEN = /(?:ZAR|R)\s?\d[\d,\s]*(?:\.\d{1,2})?/gi;
-
-function labelledValues(lines, re) {
-  const out = [];
-  for (const line of lines) {
-    const m = re.exec(line);
-    if (m) out.push(m[1].trim());
-  }
-  return out;
+  //
+  // EXCEPT A DATE. "2026-08-30 23h48" is digits joined by dashes and a space,
+  // and striking it out of a refusal's raw text deletes the very field the
+  // format is judged by. END-ANCHORED, deliberately: a run that merely STARTS
+  // like a date ("1234-56-789012", or an account riding one space after a
+  // real date) must still be swept — only a run that IS a date (plus at most
+  // the hour "23" that a "23h48" contributes before the 'h' breaks the run)
+  // is exempt. (Delta review, v2 — the prefix test exempted whole runs.)
+  return text.replace(/\d(?:[ -]?\d){5,}/g, (run) =>
+    /^\d{4}-\d{2}-\d{2}( \d{2})?$/.test(run) ? run : `⋯${run.replace(/\D/g, "").slice(-3)}`);
 }
 
 /**
- * Extract the payment from a notification's text. Exact or refused — never a
- * guess, because a wrong amount here eventually releases stock.
- *
- * @returns {{ok:true, amountCents:number, reference:string|null, payer:string|null, bankTs:number|null}
- *          |{ok:false, reason:string}}
+ * The stored/rendered form of a destination account value. Today's banks print
+ * it masked already ("XXXXXXXXXXXX6625") and this changes nothing — but a bank
+ * that prints the FULL number must not put a complete account number into the
+ * database and onto a screen. Digits beyond the last four become X.
+ * (Independent adversarial review, v2.)
  */
-export function parseEftNotification(text) {
-  const body = String(text ?? "").trim();
-  if (!body) return { ok: false, reason: "The message has no readable text at all." };
-  const lines = body.split("\n");
+export function maskAccountValue(value) {
+  const s = String(value ?? "");
+  if (!s) return null;
+  return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
+}
 
-  // ── THE AMOUNT — the one field that must parse, exactly ────────────────────
-  const labelled = labelledValues(lines, AMOUNT_LABELS);
-  let amountCents = null;
-  if (labelled.length) {
-    const parsed = [...new Set(labelled.map((v) => parseRandsToCents(v)))];
-    if (parsed.length !== 1 || parsed[0] === null) {
-      return { ok: false, reason: labelled.length > 1 && parsed.length > 1
-        ? `The message carries ${labelled.length} Amount fields that disagree.`
-        : `The Amount field reads "${clip(labelled[0], 60)}", which does not parse exactly as a rand amount.` };
-    }
-    amountCents = parsed[0];
-  } else {
-    // NO LABELLED AMOUNT MEANS NO AMOUNT. An earlier draft accepted a lone
-    // rand figure loose in the prose — but "the only R-figure in the text" and
-    // "the payment" are not the same claim: a disclaimer or fee line carrying
-    // the message's one R-token while the real amount prints unprefixed would
-    // have been accepted WRONG, and a wrong amount here eventually releases
-    // stock. Refused instead, with the count of loose figures in the reason so
-    // the first real notification's refusal already says what the format is.
-    // (Independent architect review, this PR.)
-    const tokens = body.match(MONEY_TOKEN) || [];
-    const parsed = [...new Set(tokens.map((t) => parseRandsToCents(t.trim())).filter((v) => v !== null))];
-    return { ok: false, reason: parsed.length === 0
-      ? "No Amount field and no rand figure anywhere in the message."
-      : `No labelled Amount field. The text carries ${parsed.length} loose rand figure(s), and which one is the payment is a guess this refuses to make.` };
-  }
-  if (!Number.isInteger(amountCents) || amountCents <= 0) {
-    return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
-  }
+// A cheap "is this even about a payment?" cue, used ONLY to decide whether an
+// unrecognised bank message deserves a pool refusal or is ordinary bank mail
+// (a statement, a marketing letter, a fraud alert). Refusals must stay
+// meaningful — a feed of red rows about newsletters trains the owner to
+// ignore red — but the gate errs open: any money token or payment-ish word
+// records the refusal. (Independent adversarial review, v2.)
+const PAYMENT_CUES = /payment|proof of|credited|credit received|deposit|transfer|eft|confirmation/i;
+const MONEY_CUE = /(?:ZAR|R)\s?\d[\d,\s]*\.\d{2}\b/;
+export function looksPaymentShaped(text) {
+  const s = String(text ?? "");
+  return PAYMENT_CUES.test(s) || MONEY_CUE.test(s);
+}
 
-  // ── REFERENCE / PAYER / BANK TIME — taken where present, refused only on
-  //    contradiction. A payment without a reference is still a payment.
-  const refs = [...new Set(labelledValues(lines, REFERENCE_LABELS).map((v) => v.trim()).filter(Boolean))];
-  if (refs.length > 1) {
-    return { ok: false, reason: `The message carries ${refs.length} Reference fields that disagree.` };
-  }
-  // Payer and date are optional, so a CONTRADICTION does not refuse the
-  // payment — it refuses the FIELD: two disagreeing payers or dates store
-  // null rather than a silently-picked first. A payment with an unknown payer
-  // is still a payment; a confidently wrong payer poisons the matching that
-  // is coming. (Independent adversarial review.)
-  const payers = [...new Set(labelledValues(lines, PAYER_LABELS).map((v) => v.trim()).filter(Boolean))];
-  const dates = [...new Set(labelledValues(lines, DATE_LABELS).map(parseBankTimestamp).filter((v) => v !== null))];
+// ─── THE DESTINATION-ACCOUNT ALLOWLIST ───────────────────────────────────────
+// THE POOL ONLY ACCEPTS CREDITS INTO THE SHOP'S OWN ACCOUNTS. An authenticated
+// notification is real money moving — but into WHOSE account? Without this
+// check, any FNB customer could send their own genuine payment notification to
+// the shop's mailbox and have an unrelated payment settle a sale.
+//
+// The allowed accounts live in the gitignored .env ON THE MINI as
+// EFT_ALLOWED_ACCOUNTS (comma-separated; full numbers or last-four) — never in
+// this public repo. The notification is printed by the PAYER'S bank and shows
+// the destination MASKED ("XXXXXXXXXXXX6625" — real sample, 2026-08-30), so
+// matching is on the LAST FOUR digits: an entry matches when its own last four
+// equal the mask's visible tail.
+//
+// FAIL-CLOSED THREE WAYS: no allowlist configured refuses (naming the
+// variable), a mask with fewer than four visible digits refuses, and an
+// unmatched tail refuses — each as outcome "refused-account", distinct from
+// auth and parse refusals, because the person reading the feed does different
+// things about them.
+export const EFT_ACCOUNTS_ENV_VAR = "EFT_ALLOWED_ACCOUNTS";
 
-  return {
-    ok: true,
-    amountCents,
-    reference: refs.length ? clip(refs[0], 140) : null,
-    payer: payers.length === 1 ? clip(redactAccountDigits(payers[0]), 120) : null,
-    bankTs: dates.length === 1 ? dates[0] : null,
-  };
+/** "62123456625, 4009" → ["6625","4009"] — the last four digits of each entry. */
+export function parseAllowedAccountTails(raw) {
+  return String(raw ?? "")
+    .split(",")
+    .map((s) => s.replace(/\D/g, ""))
+    .filter((digits) => digits.length >= 4)
+    .map((digits) => digits.slice(-4));
+}
+
+/**
+ * Is this masked destination one of ours?
+ * `configured` says whether ${EFT_ACCOUNTS_ENV_VAR} carried ANY text — a set
+ * variable whose every entry was too short to be an account must not produce
+ * a refusal claiming the variable is unset. (CodeRabbit, this PR.)
+ * @returns {{ok:true, tail:string} | {ok:false, reason:string}}
+ */
+export function accountVerdict({ accountMask, allowedTails, configured }) {
+  const visible = String(accountMask ?? "").replace(/\D/g, "");
+  if (visible.length < 4) {
+    return { ok: false, reason: `The destination account prints as "${clip(accountMask, 40)}" — fewer than four visible digits, so it cannot be checked against the allowlist.` };
+  }
+  const tail = visible.slice(-4);
+  if (!Array.isArray(allowedTails) || !allowedTails.length) {
+    return { ok: false, reason: configured
+      ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number — each comma-separated entry needs at least four digits. Every payment refuses here until it is fixed.`
+      : `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (comma-separated account numbers). Until then every payment refuses here, deliberately.` };
+  }
+  if (!allowedTails.includes(tail)) {
+    return { ok: false, reason: `This payment credits an account ending ${tail}, which is not one of the shop's own accounts. If it should be, add it to ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini.` };
+  }
+  return { ok: true, tail };
 }
 
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
@@ -462,16 +474,23 @@ export function poolWriteDecision(existing, record) {
 /**
  * One pool record, exactly as stored at /eft_pool/{eftKey}.
  *
- *   outcome   "recorded" | "refused-auth" | "refused-parse" — separable on
- *             purpose: a forgery attempt and a format change are different
- *             problems for different people.
+ *   outcome   "recorded" | "refused-auth" | "refused-parse" | "refused-account"
+ *             — separable on purpose: a forgery attempt, a format change and a
+ *             payment into somebody else's account are different problems for
+ *             different people.
  *   status    only on recorded payments, and always "unmatched" this session.
  *             The lifecycle it is designed for is unmatched → matched → used;
  *             no transition exists yet anywhere.
- *   rawText   what the parser saw, account runs struck out — the diagnostic
+ *   rawText   what the reader saw, account runs struck out — the diagnostic
  *             that makes a refusal fixable without reconstructing the message.
+ *   reader    which bank reader produced the fields (eftBanks.mjs), so a
+ *             record can always be traced to the format it was read with.
+ *
+ * `account` is the destination-allowlist verdict (accountVerdict) — required
+ * whenever `parsed.ok`; a parsed payment whose destination was not checked
+ * must be impossible to store as recorded.
  */
-export function eftPoolRecord({ message, verdict, parsed, rawText, at }) {
+export function eftPoolRecord({ message, verdict, parsed, account, reader, rawText, at }) {
   const base = {
     at,
     receivedAt: Number.isInteger(message.receivedAt) ? message.receivedAt : null,
@@ -487,14 +506,32 @@ export function eftPoolRecord({ message, verdict, parsed, rawText, at }) {
       detail: clip(verdict.detail, 300),
     },
     rawText: clip(redactAccountDigits(rawText), 4000),
+    reader: reader || null,
   };
   if (!verdict.pass) {
     return { ...base, outcome: "refused-auth", reason: `Failed authentication: ${verdict.detail}. Treat as a forgery attempt until shown otherwise.` };
   }
   if (!parsed.ok) {
-    // The reason can QUOTE the body ('The Amount field reads "…"'), so it
+    // The reason can QUOTE the body ('The Amount line reads "…"'), so it
     // gets the account sweep too. (Delta review.)
     return { ...base, outcome: "refused-parse", reason: clip(redactAccountDigits(parsed.reason), 400) };
+  }
+  // The reader's destination fields travel on BOTH the account refusal and
+  // the recorded payment — a refusal must show which account the money
+  // actually went to, and a recorded payment must show it was checked.
+  const destination = {
+    // maskAccountValue: a bank that prints the FULL destination number must
+    // not put it in the database — digits beyond the last four become X.
+    accountMask: clip(maskAccountValue(parsed.accountMask), 40) || null,
+    beneficiaryName: clip(parsed.beneficiaryName, 120) || null,
+    destBankName: clip(parsed.destBankName, 60) || null,
+  };
+  if (!account || account.ok !== true) {
+    return {
+      ...base, outcome: "refused-account", destination,
+      amountCents: parsed.amountCents,
+      reason: clip(redactAccountDigits(account?.reason || "The destination account was never checked — refused rather than assumed."), 400),
+    };
   }
   return {
     ...base,
@@ -504,5 +541,8 @@ export function eftPoolRecord({ message, verdict, parsed, rawText, at }) {
     reference: parsed.reference,
     payer: parsed.payer,
     bankTs: parsed.bankTs,
+    bankRef: clip(parsed.bankRef, 60) || null,
+    destination,
+    accountTail: account.tail,
   };
 }

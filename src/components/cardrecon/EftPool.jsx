@@ -1,6 +1,6 @@
 // ─── EFT PAYMENTS — what the mailbox's second reader did, worst first ────────
-// The card recon poller also reads FNB EFT payment notifications out of the
-// same mailbox and pools them at /eft_pool (owner-only, Admin SDK writes only —
+// The card recon poller also reads EFT payment notifications — sent by each
+// PAYER'S OWN BANK — out of the same mailbox and pools them at /eft_pool (owner-only, Admin SDK writes only —
 // the /card_batches isolation pattern). This panel is the OWNER'S window on
 // that pool, rendered alongside the emailed-slip feed because the failure mode
 // that matters is identical: a payment that silently fails to land.
@@ -12,13 +12,19 @@
 // empty feed that reads as good news.
 //
 // NOTHING READS THE POOL BUT THIS. No matching, no cashier surface, no release
-// — those are later sessions. Three outcomes, three different actions:
+// — those are later sessions. Four outcomes, four different actions:
 //
-//   recorded       a verified payment, waiting unmatched. Nothing to do yet.
-//   refused-auth   a message CLAIMING to be FNB that failed Gmail's DKIM
-//                  verification — a forgery attempt. Someone tried something.
-//   refused-parse  a real FNB message this could not read exactly. The stored
-//                  raw text (account numbers struck out) is the diagnosis.
+//   recorded         a verified payment INTO ONE OF THE SHOP'S OWN ACCOUNTS,
+//                    waiting unmatched. Nothing to do yet.
+//   refused-auth     a message claiming a bank domain that failed Gmail's DKIM
+//                    verification — a forgery attempt.
+//   refused-parse    a real bank message no reader could read exactly — a new
+//                    bank, or a changed layout. The stored raw text (account
+//                    numbers struck out) is the work order for the reader.
+//   refused-account  a REAL payment that credits an account that is not on
+//                    the owner's allowlist (EFT_ALLOWED_ACCOUNTS in the .env
+//                    on the mini) — someone else's money, or an account not
+//                    yet listed.
 import React, { useEffect, useState } from "react";
 import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
 import { database } from "../../firebase";
@@ -107,8 +113,8 @@ export default function EftPool() {
         </div>
       </div>
       <div style={{ ...S.sub, fontSize: 12, marginTop: 4 }}>
-        FNB payment notifications sent to the shop mailbox, verified and pooled. Nothing matches or
-        releases against these yet.
+        Payment notifications from customers' banks, verified, account-checked and pooled. Nothing
+        matches or releases against these yet.
       </div>
       {rows.length === 0 && (
         <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>No payment notifications have arrived yet.</div>
@@ -135,7 +141,10 @@ export default function EftPool() {
                   <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#B7F0CC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {r.outcome === "recorded"
                       ? `${fmtRands(r.amountCents)}${r.reference ? ` · ${r.reference}` : " · (no reference)"}`
-                      : isForgery ? "FAILED AUTHENTICATION — forgery attempt" : "Could not be read exactly"}
+                      : isForgery ? "FAILED AUTHENTICATION — forgery attempt"
+                      : r.outcome === "refused-account"
+                        ? `${fmtRands(r.amountCents)} INTO A DIFFERENT ACCOUNT${r.destination?.accountMask ? ` (${r.destination.accountMask})` : ""}`
+                        : "Could not be read exactly — open for the reason"}
                   </span>
                   <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
                 </span>
@@ -151,7 +160,9 @@ export default function EftPool() {
                     <div style={{ fontSize: 12, lineHeight: 1.45, color: "#FFB3B3" }}>{r.reason}</div>
                   )}
                   <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.55)" }}>
-                    {r.subject || "(no subject)"} · auth {r.auth?.verdict}{r.auth?.detail ? ` — ${r.auth.detail}` : ""}
+                    {r.subject || "(no subject)"} · auth {r.auth?.verdict}
+                    {r.reader ? ` · ${r.reader} reader` : ""}
+                    {r.auth?.detail ? ` — ${r.auth.detail}` : ""}
                   </div>
                   {r.rawText && (
                     <div style={{ fontSize: 11, lineHeight: 1.5, whiteSpace: "pre-wrap",

@@ -10,7 +10,9 @@ import { describe, it, expect } from "vitest";
 import {
   domainOfAddress, domainsAligned, domainAllowlisted, authenticationVerdict,
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
-  parseEftNotification, eftMessageKey, poolWriteDecision, eftPoolRecord,
+  parseAllowedAccountTails, accountVerdict, EFT_ACCOUNTS_ENV_VAR,
+  maskAccountValue, looksPaymentShaped,
+  eftMessageKey, poolWriteDecision, eftPoolRecord,
 } from "./eftCore.mjs";
 
 // Verbatim from the real message (uid 6, "Banking Report for Batch 16 of
@@ -119,7 +121,7 @@ describe("the authentication verdict", () => {
   });
 
   it("REFUSES a domain that is not allowlisted, before believing any header", () => {
-    const v = authenticationVerdict({ headerLines: realHeaderLines, fromAddress: "x@absa.co.za" });
+    const v = authenticationVerdict({ headerLines: realHeaderLines, fromAddress: "x@shopify.com" });
     expect(v.pass).toBe(false);
     expect(v.detail).toMatch(/not an allowlisted/);
   });
@@ -189,7 +191,32 @@ describe("the authentication verdict", () => {
   });
 });
 
+// Verbatim from the REAL R100 payment notification (uid 10, "Payment
+// confirmation 4401", 2026-08-30) — the payer's own bank, Standard Bank.
+const REAL_SB_AUTH_RESULTS =
+  "Authentication-Results: mx.google.com;\r\n" +
+  "       dkim=pass header.i=@standardbank.co.za header.s=myupdates2a header.b=sosrp8N9;\r\n" +
+  "       spf=pass (google.com: domain of bounce-330458969-1b@myupdates2.standardbank.co.za designates 196.8.104.111 as permitted sender) smtp.mailfrom=bounce-330458969-1B@myupdates2.standardbank.co.za;\r\n" +
+  "       dmarc=pass (p=REJECT sp=NONE dis=NONE) header.from=standardbank.co.za";
+
+describe("the authentication verdict — the payer's bank", () => {
+  it("PASSES the real Standard Bank payment notification", () => {
+    const lines = [
+      realHeaderLines[0],
+      { key: "authentication-results", line: REAL_SB_AUTH_RESULTS },
+      { key: "from", line: "From: <noreply@standardbank.co.za>" },
+    ];
+    const v = authenticationVerdict({ headerLines: lines, fromAddress: "noreply@standardbank.co.za" });
+    expect(v).toMatchObject({ pass: true, fromDomain: "standardbank.co.za", dkimDomain: "standardbank.co.za" });
+  });
+});
+
 describe("candidacy — which messages the EFT reader examines at all", () => {
+  it("the payer's bank is the sender — every allowlisted SA bank is a candidate", () => {
+    for (const d of ["standardbank.co.za", "absa.co.za", "nedbank.co.za", "capitecbank.co.za", "tymebank.co.za"]) {
+      expect(isEftCandidate({ fromAddress: `noreply@${d}`, subject: "Payment confirmation 4401" }), d).toBe(true);
+    }
+  });
   it("an FNB-claiming message is a candidate — attachments do not disqualify", () => {
     // A notification with a proof-of-payment PDF attached must still be
     // examined; the poller runs BOTH readers on such a message. Candidacy
@@ -224,10 +251,8 @@ describe("htmlToText — FNB mail carries no text part", () => {
   });
   it("decodes the entities banks actually use — numeric references included", () => {
     expect(htmlToText("R&nbsp;500.00 &amp; more")).toBe("R 500.00 & more");
-    // &#160; is the no-break space bank templates love; a parser that cannot
-    // see through it refuses the first genuine notification for nothing.
-    const p = parseEftNotification(htmlToText("<p>Amount:&#160;R500.00</p><p>Reference: X</p>"));
-    expect(p).toMatchObject({ ok: true, amountCents: 50000, reference: "X" });
+    // &#160; is the no-break space bank templates love.
+    expect(htmlToText("<p>Amount:&#160;R500.00</p>")).toBe("Amount:\u00a0R500.00");
     expect(htmlToText("&#82;100.00 &#x52;")).toBe("R100.00 R");
   });
 });
@@ -239,6 +264,8 @@ describe("the bank's own timestamp", () => {
     expect(parseBankTimestamp("2026-08-30 14:41")).toBe(Date.UTC(2026, 7, 30, 12, 41, 0));
     expect(parseBankTimestamp("30 Aug 2026")).toBe(Date.UTC(2026, 7, 29, 22, 0, 0));
     expect(parseBankTimestamp("30 August 2026 14:41")).toBe(Date.UTC(2026, 7, 30, 12, 41, 0));
+    // Standard Bank's own shape, from the real notification: "2026-08-30 23h48"
+    expect(parseBankTimestamp("2026-08-30 23h48")).toBe(Date.UTC(2026, 7, 30, 21, 48, 0));
   });
   it("refuses phantoms and garbage rather than rolling them", () => {
     expect(parseBankTimestamp("2026/02/30 10:00:00")).toBe(null);
@@ -256,92 +283,63 @@ describe("account numbers are struck out", () => {
     expect(redactAccountDigits("acc 6283 4519 234")).toBe("acc ⋯234");
     expect(redactAccountDigits("acc 62-834-519")).toBe("acc ⋯519");
   });
+  it("…but never a DATE — the refusal diagnostic keeps its timestamp", () => {
+    expect(redactAccountDigits("Payment date and time 2026-08-30 23h48")).toBe("Payment date and time 2026-08-30 23h48");
+    // …and the exemption is END-anchored: a run that merely STARTS like a
+    // date is still an account, and a run riding one space after a date too.
+    expect(redactAccountDigits("Account 1234-56-789012 holder")).toBe("Account ⋯012 holder");
+    expect(redactAccountDigits("paid 2026-08-30 1234567890 ref")).toBe("paid ⋯890 ref");
+  });
+  it("maskAccountValue: a bank that prints the full number stores only the last four", () => {
+    expect(maskAccountValue("62834519234")).toBe("XXXXXXX9234");
+    expect(maskAccountValue("XXXXXXXXXXXX6625")).toBe("XXXXXXXXXXXX6625"); // already masked: unchanged
+    expect(maskAccountValue("1234")).toBe("1234");
+    expect(maskAccountValue(null)).toBe(null);
+  });
+  it("looksPaymentShaped keeps the refusal feed about payments, not newsletters", () => {
+    expect(looksPaymentShaped("Payment confirmation 4401")).toBe(true);
+    expect(looksPaymentShaped("You received R 750.00")).toBe(true);
+    expect(looksPaymentShaped("Your statement is ready to view")).toBe(false);
+    expect(looksPaymentShaped("Win big with our new rewards programme!")).toBe(false);
+  });
   it("leaves amounts and short numbers alone", () => {
     expect(redactAccountDigits("R 1,234.56 ref 12345")).toBe("R 1,234.56 ref 12345");
   });
 });
 
-describe("parsing the notification — exact or refused", () => {
-  const good = [
-    "Payment notification",
-    "Amount: R 1,234.56",
-    "Reference: THANDI 0821234567",
-    "Paid by: T MOKOENA",
-    "Date: 2026/08/30 14:41:56",
-  ].join("\n");
-
-  it("extracts amount, reference, payer and the bank's timestamp", () => {
-    const p = parseEftNotification(good);
-    expect(p).toMatchObject({
-      ok: true, amountCents: 123456,
-      reference: "THANDI 0821234567", payer: "T MOKOENA",
-      bankTs: Date.UTC(2026, 7, 30, 12, 41, 56),
-    });
+describe("the destination-account allowlist — only the shop's own accounts", () => {
+  it("reads last-four tails out of the env value, full numbers or tails alike", () => {
+    expect(parseAllowedAccountTails("62123456625, 4009")).toEqual(["6625", "4009"]);
+    expect(parseAllowedAccountTails(" 6212-345-6625 ")).toEqual(["6625"]);
+    expect(parseAllowedAccountTails("123")).toEqual([]); // too short to be an account
+    expect(parseAllowedAccountTails("")).toEqual([]);
+    expect(parseAllowedAccountTails(undefined)).toEqual([]);
   });
 
-  it("a payment without a reference still lands — reference null", () => {
-    const p = parseEftNotification("Amount: R 500.00\nPaid by: X");
-    expect(p.ok).toBe(true);
-    expect(p.reference).toBe(null);
-    expect(p.amountCents).toBe(50000);
+  it("matches the MASKED destination on its last four — the payer's bank never prints the full number", () => {
+    expect(accountVerdict({ accountMask: "XXXXXXXXXXXX6625", allowedTails: ["6625"] })).toMatchObject({ ok: true, tail: "6625" });
+    const wrong = accountVerdict({ accountMask: "XXXXXXXXXXXX9999", allowedTails: ["6625"] });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.reason).toMatch(/ending 9999/);
   });
 
-  it("REFUSES two Amount fields that disagree", () => {
-    const p = parseEftNotification("Amount: R 500.00\nAmount: R 600.00");
-    expect(p.ok).toBe(false);
-    expect(p.reason).toMatch(/disagree/);
+  it("FAILS CLOSED: no allowlist configured refuses, and names the variable to set", () => {
+    const v = accountVerdict({ accountMask: "XXXXXXXXXXXX6625", allowedTails: [], configured: false });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toContain(EFT_ACCOUNTS_ENV_VAR);
+    expect(v.reason).toMatch(/No account allowlist is configured/);
   });
 
-  it("REFUSES a mangled figure — the fuzzed card-recon parser is the judge", () => {
-    const p = parseEftNotification("Amount: R50,307,00.5");
-    expect(p.ok).toBe(false);
-    expect(p.reason).toMatch(/does not parse exactly/);
+  it("a SET variable with no usable entry refuses with the RIGHT cause — never 'not configured'", () => {
+    const v = accountVerdict({ accountMask: "XXXXXXXXXXXX6625", allowedTails: [], configured: true });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/set but holds no usable/);
   });
 
-  it("with NO Amount label it refuses — even one lone rand figure is a guess", () => {
-    // "The only R-figure in the text" and "the payment" are not the same
-    // claim; a wrong amount here eventually releases stock. The refusal names
-    // how many loose figures it saw, so the refusal itself documents the
-    // format for the fix.
-    const one = parseEftNotification("You have received R 750.00 into your account.");
-    expect(one.ok).toBe(false);
-    expect(one.reason).toMatch(/1 loose rand figure/);
-    const two = parseEftNotification("You received R 750.00. Your balance is R 9,120.44.");
-    expect(two.ok).toBe(false);
-    expect(two.reason).toMatch(/2 loose rand figure/);
-  });
-
-  it("REFUSES a message with no money in it at all", () => {
-    expect(parseEftNotification("Dear customer, your statement is ready.").ok).toBe(false);
-    expect(parseEftNotification("").ok).toBe(false);
-  });
-
-  it("REFUSES a zero or negative amount — not an incoming payment", () => {
-    expect(parseEftNotification("Amount: R 0.00").ok).toBe(false);
-    expect(parseEftNotification("Amount: -R 50.00").ok).toBe(false);
-  });
-
-  it("a 'From:' line is NOT a payer — a forwarded chain must not make the bank the payer", () => {
-    const p = parseEftNotification("Amount: R 500.00\nFrom: NoReplyTransReport@FNB.co.za");
-    expect(p.ok).toBe(true);
-    expect(p.payer).toBe(null);
-  });
-
-  it("disagreeing payers or dates refuse the FIELD, not the payment — null, never a silent first", () => {
-    const p = parseEftNotification("Amount: R 5.00\nPaid by: A\nPaid by: B\nDate: 30 Aug 2026\nDate: 2026/08/29 10:00:00");
-    expect(p.ok).toBe(true);
-    expect(p.payer).toBe(null);
-    expect(p.bankTs).toBe(null);
-    // …and a value that merely REPEATS is not a disagreement.
-    const q = parseEftNotification("Amount: R 5.00\nPaid by: A\nPaid by: A");
-    expect(q.payer).toBe("A");
-  });
-
-  it("REFUSES two References that disagree, keeps one that repeats", () => {
-    expect(parseEftNotification("Amount: R 5.00\nReference: A\nReference: B").ok).toBe(false);
-    const p = parseEftNotification("Amount: R 5.00\nReference: A\nReference: A");
-    expect(p.ok).toBe(true);
-    expect(p.reference).toBe("A");
+  it("FAILS CLOSED: fewer than four visible digits cannot be checked", () => {
+    const v = accountVerdict({ accountMask: "XXXXXXXX625", allowedTails: ["6625"] });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/fewer than four/);
   });
 });
 
@@ -386,26 +384,53 @@ describe("the pool record", () => {
   const message = { messageId: "<m@x>", from: `<${REAL_FROM}>`, subject: "Payment notification", receivedAt: 1788093716654 };
   const passVerdict = { pass: true, fromDomain: "fnb.co.za", dkimDomain: "fnb.co.za", detail: "dkim=pass, signed by fnb.co.za, aligned with fnb.co.za" };
 
-  it("a verified, parsed payment: outcome recorded, status unmatched, every field aboard", () => {
+  const parsedOk = {
+    ok: true, amountCents: 123456, reference: "THANDI", payer: "T M", bankTs: 5,
+    bankRef: "999", beneficiaryName: "ATUGAR TRADING", destBankName: "FIRST NATIONAL BANK",
+    accountMask: "XXXXXXXXXXXX4321",
+  };
+
+  it("a verified, parsed, ACCOUNT-CHECKED payment: outcome recorded, status unmatched, every field aboard", () => {
     const r = eftPoolRecord({
-      message, verdict: passVerdict,
-      parsed: { ok: true, amountCents: 123456, reference: "THANDI", payer: "T M", bankTs: 5 },
+      message, verdict: passVerdict, parsed: parsedOk,
+      account: { ok: true, tail: "4321" }, reader: "standardbank",
       rawText: "Amount: R 1,234.56\nfrom account 62834519234", at: 99,
     });
     expect(r).toMatchObject({
       outcome: "recorded", status: "unmatched", amountCents: 123456,
       reference: "THANDI", payer: "T M", bankTs: 5, at: 99, receivedAt: 1788093716654,
+      bankRef: "999", accountTail: "4321", reader: "standardbank",
+      destination: { accountMask: "XXXXXXXXXXXX4321", beneficiaryName: "ATUGAR TRADING", destBankName: "FIRST NATIONAL BANK" },
       auth: { verdict: "pass" },
     });
     expect(r.rawText).toContain("⋯234"); // the account run is struck out
     expect(r.rawText).not.toContain("62834519234");
   });
 
+  it("a payment into somebody else's account is refused-account — with the amount and destination on show", () => {
+    const r = eftPoolRecord({
+      message, verdict: passVerdict, parsed: parsedOk,
+      account: { ok: false, reason: "This payment credits an account ending 4321, which is not one of the shop's own accounts." },
+      reader: "standardbank", rawText: "x", at: 99,
+    });
+    expect(r.outcome).toBe("refused-account");
+    expect(r.amountCents).toBe(123456);
+    expect(r.destination.accountMask).toBe("XXXXXXXXXXXX4321");
+    expect(r.status).toBeUndefined();
+    expect(r.reference).toBeUndefined(); // not a poolable payment; the fields that matter are the refusal's
+  });
+
+  it("a parsed payment with NO account verdict at all cannot be stored as recorded", () => {
+    const r = eftPoolRecord({ message, verdict: passVerdict, parsed: parsedOk, account: null, reader: "standardbank", rawText: "x", at: 99 });
+    expect(r.outcome).toBe("refused-account");
+    expect(r.reason).toMatch(/never checked/);
+  });
+
   it("the subject gets the same account-number sweep as the body", () => {
     const r = eftPoolRecord({
       message: { ...message, subject: "Payment to account 62834519234" },
       verdict: passVerdict,
-      parsed: { ok: true, amountCents: 100, reference: null, payer: null, bankTs: null },
+      parsed: parsedOk, account: { ok: true, tail: "4321" }, reader: "standardbank",
       rawText: "x", at: 99,
     });
     expect(r.subject).toBe("Payment to account ⋯234");
