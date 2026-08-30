@@ -143,6 +143,42 @@ describe("the authentication verdict", () => {
     expect(v.pass).toBe(false);
   });
 
+  it("a ')' and ';' smuggled UNQUOTED through the spf comment cannot pass either — dkim is only read before the spf segment", () => {
+    // Even if the comment is broken open by an exotic localpart and the
+    // injection re-balances itself, everything attacker-reachable sits inside
+    // or after the spf segment, where the dkim scan has already stopped.
+    const forged = realHeaderLines.map((h) => h.key !== "authentication-results" ? h : {
+      ...h, line:
+        "Authentication-Results: mx.google.com;\r\n" +
+        "       dkim=fail header.i=@fnb.co.za;\r\n" +
+        "       spf=pass (google.com: domain of x)y;dkim=pass header.i=@fnb.co.za;z(w@evil.example designates 1.2.3.4 as permitted sender) smtp.mailfrom=z@evil.example",
+    });
+    const v = authenticationVerdict({ headerLines: forged, fromAddress: REAL_FROM });
+    expect(v.pass).toBe(false);
+  });
+
+  it("an escaped quote inside smtp.mailfrom does not end the quoted string early", () => {
+    const forged = realHeaderLines.map((h) => h.key !== "authentication-results" ? h : {
+      ...h, line:
+        "Authentication-Results: mx.google.com;\r\n" +
+        "       dkim=fail header.i=@fnb.co.za;\r\n" +
+        '       spf=pass smtp.mailfrom="x\\";dkim=pass header.i=@fnb.co.za;\\"y"@evil.example',
+    });
+    const v = authenticationVerdict({ headerLines: forged, fromAddress: REAL_FROM });
+    expect(v.pass).toBe(false);
+  });
+
+  it("UNBALANCED quoting or comments refuse the verdict outright", () => {
+    for (const tail of ['smtp.mailfrom="unterminated', "spf=pass (unclosed comment", "spf=pass stray ) here"]) {
+      const forged = realHeaderLines.map((h) => h.key !== "authentication-results" ? h : {
+        ...h, line: `Authentication-Results: mx.google.com;\r\n       dkim=pass header.i=@fnb.co.za;\r\n       ${tail}`,
+      });
+      const v = authenticationVerdict({ headerLines: forged, fromAddress: REAL_FROM });
+      expect(v.pass, tail).toBe(false);
+      expect(v.detail, tail).toMatch(/unbalanced/);
+    }
+  });
+
   it("accepts an aligned SUBDOMAIN signature (frg.fnb.co.za signing for fnb.co.za)", () => {
     const sub = realHeaderLines.map((h) => h.key !== "authentication-results" ? h : {
       ...h, line: h.line.replace("header.i=@fnb.co.za", "header.i=@frg.fnb.co.za"),

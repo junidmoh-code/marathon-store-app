@@ -134,18 +134,26 @@ try {
   await restore(`the verification re-fetch failed (${err.message}) — the write landed and cannot be checked`);
   process.exit(1);
 }
+// THE VERIFICATION ITSELF CAN THROW — malformed JSON, an empty document — and
+// a throw here is after the PUT has landed: it must reach restore(), not an
+// unhandled rejection that leaves the live document unverified and the backup
+// unused. (CodeRabbit, this PR.)
 const problems = [];
-if (live !== after) problems.push("the re-fetched document is not byte-identical to what was sent");
-const liveDoc = JSON.parse(live);
-for (const k of untouched) {
-  if (JSON.stringify(liveDoc.rules[k]) !== neighboursBefore[k]) problems.push(`/${k} CHANGED — it must be untouched`);
-}
-for (const [name, block] of Object.entries(EFT_RULE_BLOCKS)) {
-  if (JSON.stringify(liveDoc.rules[name]) !== JSON.stringify(block)) problems.push(`/${name} did not land verbatim`);
-}
 const expected = [...Object.keys(JSON.parse(before).rules), ...Object.keys(EFT_RULE_BLOCKS)].sort();
-if (JSON.stringify(Object.keys(liveDoc.rules).sort()) !== JSON.stringify(expected)) {
-  problems.push("the set of root children is not exactly what was expected");
+try {
+  if (live !== after) problems.push("the re-fetched document is not byte-identical to what was sent");
+  const liveDoc = JSON.parse(live);
+  for (const k of untouched) {
+    if (JSON.stringify(liveDoc.rules[k]) !== neighboursBefore[k]) problems.push(`/${k} CHANGED — it must be untouched`);
+  }
+  for (const [name, block] of Object.entries(EFT_RULE_BLOCKS)) {
+    if (JSON.stringify(liveDoc.rules[name]) !== JSON.stringify(block)) problems.push(`/${name} did not land verbatim`);
+  }
+  if (JSON.stringify(Object.keys(liveDoc.rules).sort()) !== JSON.stringify(expected)) {
+    problems.push("the set of root children is not exactly what was expected");
+  }
+} catch (err) {
+  problems.push(`the verification itself failed (${err.message})`);
 }
 
 if (problems.length) {

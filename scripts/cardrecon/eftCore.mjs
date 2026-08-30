@@ -103,6 +103,32 @@ export function unfoldHeader(line) {
 }
 
 /**
+ * Empty every quoted string and parenthesised comment out of a header value,
+ * RFC 5322-style: quotes honour backslash escapes, comments NEST, and either
+ * one left unbalanced returns null — the caller refuses the verdict rather
+ * than guessing where structure ends and attacker text begins. A bare ')'
+ * outside any comment is unbalanced too.
+ */
+export function stripQuotesAndComments(value) {
+  let out = "", inQuote = false, depth = 0, escaped = false;
+  for (const ch of String(value ?? "")) {
+    if (inQuote || depth > 0) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (inQuote) { if (ch === '"') inQuote = false; continue; }
+      if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      continue;
+    }
+    if (ch === '"') { inQuote = true; continue; }
+    if (ch === "(") { depth = 1; continue; }
+    if (ch === ")") return null;
+    out += ch;
+  }
+  return inQuote || depth > 0 ? null : out;
+}
+
+/**
  * The verdict on one message, from what Gmail verified on delivery.
  *
  * `headerLines` is mailparser's array — {key, line} in ORIGINAL ORDER, top of
@@ -149,11 +175,22 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
   // A naive split would let a sender whose mailfrom reads
   //   "x;dkim=pass header.i=@fnb.co.za;y"@evil.example
   // manufacture a passing segment out of Gmail's truthful transcription of
-  // their own address. With quotes and comments emptied, every remaining
-  // segment is structure Gmail wrote. (Independent adversarial review.)
-  const cleaned = value.replace(/"[^"]*"/g, '""').replace(/\([^)]*\)/g, " ");
+  // their own address. The scanner tracks quote state, backslash escapes and
+  // comment NESTING, and an unbalanced quote or comment refuses the verdict
+  // outright — a header this cannot parse cleanly is a header this does not
+  // believe. (Independent adversarial review; scanner per CodeRabbit.)
+  const cleaned = stripQuotesAndComments(value);
+  if (cleaned === null) {
+    return { pass: false, fromDomain, dkimDomain: null, detail: "Gmail's Authentication-Results carries unbalanced quoting or comments — refused rather than parsed loosely" };
+  }
+  // …AND DKIM IS ONLY READ FROM BEFORE THE FIRST spf/dmarc/arc SEGMENT. In
+  // Gmail's format the dkim result(s) lead; every place attacker text can
+  // reach (the spf comment, smtp.mailfrom) lies inside or after the spf
+  // segment, so even a hypothetical balanced injection through an exotic
+  // localpart lands where this loop has already stopped looking.
   const dkimSeen = [];
   for (const segment of cleaned.split(";")) {
+    if (/^\s*(?:spf|dmarc|arc)\s*=/i.test(segment)) break;
     const m = /\bdkim\s*=\s*([a-z]+)/i.exec(segment);
     if (!m) continue;
     const result = m[1].toLowerCase();

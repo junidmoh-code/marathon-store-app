@@ -66,6 +66,7 @@ import {
 import {
   EFT_POOL_PATH, isEftCandidate, authenticationVerdict, htmlToText,
   parseEftNotification, eftMessageKey, poolWriteDecision, eftPoolRecord,
+  redactAccountDigits,
 } from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
@@ -485,6 +486,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     subject: clip(parsed.subject, 200),
     receivedAt: parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime()) ? parsed.date.getTime() : null,
   };
+  // The subject as LOGS may show it: FNB subject lines can carry an account
+  // number, and the launchd log must not. Records sweep separately
+  // (eftPoolRecord); this is for every console line. (CodeRabbit, this PR.)
+  message.logSubject = redactAccountDigits(message.subject) || "(no subject)";
   message.key = messageKey({
     messageId: parsed.messageId, from: message.from, subject: message.subject,
     // imapflow's DownloadObject.meta names it expectedSize; `size` is always
@@ -530,7 +535,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     });
     if (eft) eftSettled = eft.eftSettled !== false;
   } catch (err) {
-    console.error(`  ✗ EFT reader on "${message.subject || "(no subject)"}": ${err.message} — the message stays unread and is retried`);
+    console.error(`  ✗ EFT reader on "${message.logSubject}": ${err.message} — the message stays unread and is retried`);
     eftSettled = false;
   }
   if (!hasSlipwork) {
@@ -555,7 +560,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // the one that stopped the poller capturing. (CodeRabbit, PR #510.)
   const claim = cfg.dryRun ? { taken: true, done: false, why: "dry run" } : await claimMessage(db, message.key);
   if (!claim.taken) {
-    console.log(`  · "${message.subject || "(no subject)"}" — ${claim.why}`);
+    console.log(`  · "${message.logSubject}" — ${claim.why}`);
     // WHETHER TO MARK IT READ DEPENDS ENTIRELY ON WHY WE STOOD DOWN, and
     // getting this wrong loses a slip silently.
     //
@@ -616,10 +621,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // slips being submitted twice on that revisit.
   if (eftSettled) {
     await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
-      console.warn(`  ⚠ could not mark "${message.subject}" read (${err.message}) — the claim still stops it being submitted twice`);
+      console.warn(`  ⚠ could not mark "${message.logSubject}" read (${err.message}) — the claim still stops it being submitted twice`);
     });
   } else {
-    console.log(`  · "${message.subject || "(no subject)"}" left unread — its EFT side is not recorded yet; the slips themselves are in`);
+    console.log(`  · "${message.logSubject}" left unread — its EFT side is not recorded yet; the slips themselves are in`);
   }
 
   return {
@@ -677,13 +682,13 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   });
 
   if (cfg.dryRun) {
-    console.log(`  · would examine as an EFT notification (auth ${verdict.pass ? "pass" : "FAIL"}): "${message.subject || "(no subject)"}"`);
+    console.log(`  · would examine as an EFT notification (auth ${verdict.pass ? "pass" : "FAIL"}): "${message.logSubject}"`);
     return { ...empty, eftSettled: true };
   }
 
   const claim = await claimMessage(db, key);
   if (!claim.taken) {
-    console.log(`  · EFT "${message.subject || "(no subject)"}" — ${claim.why}`);
+    console.log(`  · EFT "${message.logSubject}" — ${claim.why}`);
     // done = the outcome is recorded, the message may be marked read.
     // NOT done = a run (possibly dead) still holds it — the message must stay
     // unread or the rescue tick can never see it.
@@ -726,7 +731,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // owns the flag — marking here would hide the slips from their own tick.
   if (markSeen) {
     await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
-      console.warn(`  ⚠ could not mark "${message.subject}" read (${err.message}) — the claim still stops it landing twice`);
+      console.warn(`  ⚠ could not mark "${message.logSubject}" read (${err.message}) — the claim still stops it landing twice`);
     });
   }
 
@@ -734,7 +739,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // "recorded" again — and counting it again in the heartbeat — makes a no-op
   // look like a payment. (Independent adversarial review.)
   if (decision && !decision.write) {
-    console.log(`  · EFT "${message.subject || "(no subject)"}" — ${decision.why}`);
+    console.log(`  · EFT "${message.logSubject}" — ${decision.why}`);
     return { ...empty, eftSettled: true };
   }
   const label = record.outcome === "recorded"

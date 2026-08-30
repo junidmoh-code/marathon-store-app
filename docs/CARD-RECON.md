@@ -1114,10 +1114,10 @@ messages — a separate poller could never work, because this one marks ordinary
 mail `\Seen` and would hide every notification from it.
 
 **This is ingestion and storage only.** A verified notification becomes a
-record at top-level **`/eft_pool`** with `status: "unmatched"`. Nothing reads
-the pool yet — no matching, no cashier surface, no release; those are later
-sessions. The status field is designed for `matched` and `used` but no
-transition exists.
+record at top-level **`/eft_pool`** with `status: "unmatched"`. The only
+reader is the owner-only panel described below — no matching, no cashier
+surface, no sale release consumes the pool yet; those are later sessions. The
+status field is designed for `matched` and `used` but no transition exists.
 
 ## The message is believed only on Gmail's word
 
