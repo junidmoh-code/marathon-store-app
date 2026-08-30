@@ -1107,11 +1107,18 @@ slips**, in red, at the top.
 # The EFT payment pool — the second reader on the same mailbox
 
 Customers paying by EFT enter **marathon6631@gmail.com** as the notification
-address in their FNB app, and FNB (NoReplyTransReport@fnb.co.za) emails a
-payment notification to the mailbox the card recon poller already reads. The
-**same poller, same tick, same launchd agent** now also examines those
-messages — a separate poller could never work, because this one marks ordinary
-mail `\Seen` and would hide every notification from it.
+address in their banking app, and **the PAYER'S OWN BANK** emails a payment
+notification to the mailbox the card recon poller already reads (the R100
+test payment of 2026-08-30 arrived from standardbank.co.za, carrying every
+field in an attached PaymentConfirmation.pdf). The **same poller, same tick,
+same launchd agent** examines those messages — a separate poller could never
+work, because this one marks ordinary mail `\Seen` and would hide every
+notification from it.
+
+Routing is by **content, not sender or attachment shape**: each PDF's text is
+extracted (borrowing the slip path's own `pdfToLines`) and classified — a
+batch slip goes to the card path, a recognised bank notification to its
+reader, anything else to a recorded refusal.
 
 **This is ingestion and storage only.** A verified notification becomes a
 record at top-level **`/eft_pool`** with `status: "unmatched"`. The only
@@ -1124,21 +1131,38 @@ status field is designed for `matched` and `used` but no transition exists.
 The visible From address is attacker-controlled text and is **never the check
 on its own**. A message claiming an allowlisted bank domain must carry Gmail's
 own `Authentication-Results` stamp (authserv-id `mx.google.com`, topmost)
-recording **dkim=pass with the signing domain aligned to the From domain**,
-and the From domain must be on the allowlist (`fnb.co.za`). A message that
-claims fnb.co.za and fails is recorded as a **failed-authentication refusal —
-a forgery attempt** — separable from a parse refusal. Return-Path, the
-Received chain, Message-ID and TLS are deliberately not checked.
+recording **dkim=pass with the signing domain aligned to the From domain**.
+The allowlist is the SA banks customers pay from — fnb.co.za,
+standardbank.co.za, absa.co.za, nedbank.co.za, capitecbank.co.za,
+tymebank.co.za — each verified against its OWN domain. A claiming-but-failing
+message is recorded as a **failed-authentication refusal — a forgery
+attempt** — separable from the other refusals. Return-Path, the Received
+chain, Message-ID and TLS are deliberately not checked.
 
-## Exact or refused
+## Per-bank readers — exact or refused
 
-Amount (via card recon's own fuzzed `parseRandsToCents` — never a second
-copy), reference, payer and the bank's own timestamp. The amount must parse
-exactly or the message refuses; every refusal stores the extracted text with
-**anything that looks like an account number struck out** (runs of 6+ digits
-keep their last three), so a format change is diagnosable from the record
-alone. The extracted *reference* is kept verbatim — it is the customer's own
-typed matching key, often a phone number.
+Every bank lays its notification out differently, so parsing is **per format**
+(`scripts/cardrecon/eftBanks.mjs`), the same way the slip parsers are: detect
+which bank's document this is from its content, then read it with that bank's
+reader. Standard Bank is the first reader, built from the real R100
+notification and pinned by its extracted lines as a fixture. **An
+unrecognised format is a clean refusal** that stores the raw text (account
+digits struck out) and names the sending domain — the work order for the next
+reader, never a guess. Expect refusals to be the common case until the
+formats accumulate. Amounts go through card recon's fuzzed
+`parseRandsToCents`; the extracted *reference* (Standard Bank: "Beneficiary
+reference") is the customer's typed matching key and is kept verbatim.
+
+## Only the shop's own accounts
+
+**`EFT_ALLOWED_ACCOUNTS`** in the gitignored `.env` on the mini — comma-
+separated account numbers (full numbers or last-four; never committed, the
+repo is public). The payer's bank prints the destination **masked**
+(`XXXXXXXXXXXX…` plus the last digits), so matching is on the **last four**.
+A real, authenticated payment into any other account is recorded as
+**refused-account** — its amount and masked destination on show — and never
+enters the pool as money. No allowlist configured refuses everything,
+deliberately.
 
 ## Never twice
 
@@ -1156,7 +1180,7 @@ slips.
 payments show amount · reference · payer; refusals are red at the top, with
 the stored raw text behind a tap. The poller heartbeat
 (`/card_batch_poll_status`) carries `eftRecorded / eftRefusedAuth /
-eftRefusedParse` counts per tick.
+eftRefusedParse / eftRefusedAccount` counts per tick.
 
 Rules live in `scripts/cardrecon/eftRules.mjs`, applied with the house method
 by `scripts/cardrecon/apply-eft-pool-rules.mjs [--apply]` — never

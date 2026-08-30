@@ -69,6 +69,16 @@ say "installing imapflow + mailparser…"
 ( cd "$REPO/scripts/cardrecon" && npm install --omit=dev --no-audit --no-fund >/dev/null )
 [ -d "$REPO/scripts/cardrecon/node_modules/imapflow" ] || { echo "✗ imapflow did not install"; exit 1; }
 [ -d "$REPO/functions/node_modules/firebase-admin" ] || { echo "✗ functions/node_modules/firebase-admin is missing — run npm install in $REPO/functions"; exit 1; }
+# The EFT reader borrows the card path's PDF text extraction
+# (functions/cardRecon/pdfText.js), which lazily imports pdfjs-dist from
+# functions/node_modules — declared in functions/package.json but absent when
+# only firebase-admin was installed there by hand. --no-save: the manifests
+# already carry it; this only materialises it.
+if [ ! -d "$REPO/functions/node_modules/pdfjs-dist" ]; then
+  say "installing pdfjs-dist into functions/node_modules (the EFT reader's PDF text extraction)…"
+  ( cd "$REPO/functions" && npm install --no-save --no-audit --no-fund pdfjs-dist >/dev/null )
+  [ -d "$REPO/functions/node_modules/pdfjs-dist" ] || { echo "✗ pdfjs-dist did not install"; exit 1; }
+fi
 say "dependencies: ready"
 
 # 5 · THE IDENTITY, BEFORE THE SCHEDULE. RunAtLoad fires this the moment the

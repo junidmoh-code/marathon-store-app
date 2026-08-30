@@ -14,11 +14,17 @@
 // NOTHING READS THE POOL BUT THIS. No matching, no cashier surface, no release
 // — those are later sessions. Three outcomes, three different actions:
 //
-//   recorded       a verified payment, waiting unmatched. Nothing to do yet.
-//   refused-auth   a message CLAIMING to be FNB that failed Gmail's DKIM
-//                  verification — a forgery attempt. Someone tried something.
-//   refused-parse  a real FNB message this could not read exactly. The stored
-//                  raw text (account numbers struck out) is the diagnosis.
+//   recorded         a verified payment INTO ONE OF THE SHOP'S OWN ACCOUNTS,
+//                    waiting unmatched. Nothing to do yet.
+//   refused-auth     a message claiming a bank domain that failed Gmail's DKIM
+//                    verification — a forgery attempt.
+//   refused-parse    a real bank message no reader could read exactly — a new
+//                    bank, or a changed layout. The stored raw text (account
+//                    numbers struck out) is the work order for the reader.
+//   refused-account  a REAL payment that credits an account that is not on
+//                    the owner's allowlist (EFT_ALLOWED_ACCOUNTS in the .env
+//                    on the mini) — someone else's money, or an account not
+//                    yet listed.
 import React, { useEffect, useState } from "react";
 import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
 import { database } from "../../firebase";
@@ -135,7 +141,10 @@ export default function EftPool() {
                   <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#B7F0CC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {r.outcome === "recorded"
                       ? `${fmtRands(r.amountCents)}${r.reference ? ` · ${r.reference}` : " · (no reference)"}`
-                      : isForgery ? "FAILED AUTHENTICATION — forgery attempt" : "Could not be read exactly"}
+                      : isForgery ? "FAILED AUTHENTICATION — forgery attempt"
+                      : r.outcome === "refused-account"
+                        ? `${fmtRands(r.amountCents)} INTO A DIFFERENT ACCOUNT${r.destination?.accountMask ? ` (${r.destination.accountMask})` : ""}`
+                        : "Could not be read — no reader for this format yet"}
                   </span>
                   <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
                 </span>
