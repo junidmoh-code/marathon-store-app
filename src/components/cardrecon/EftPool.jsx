@@ -1,6 +1,6 @@
 // ─── EFT PAYMENTS — what the mailbox's second reader did, worst first ────────
-// The card recon poller also reads FNB EFT payment notifications out of the
-// same mailbox and pools them at /eft_pool (owner-only, Admin SDK writes only —
+// The card recon poller also reads EFT payment notifications — sent by each
+// PAYER'S OWN BANK — out of the same mailbox and pools them at /eft_pool (owner-only, Admin SDK writes only —
 // the /card_batches isolation pattern). This panel is the OWNER'S window on
 // that pool, rendered alongside the emailed-slip feed because the failure mode
 // that matters is identical: a payment that silently fails to land.
@@ -12,7 +12,7 @@
 // empty feed that reads as good news.
 //
 // NOTHING READS THE POOL BUT THIS. No matching, no cashier surface, no release
-// — those are later sessions. Three outcomes, three different actions:
+// — those are later sessions. Four outcomes, four different actions:
 //
 //   recorded         a verified payment INTO ONE OF THE SHOP'S OWN ACCOUNTS,
 //                    waiting unmatched. Nothing to do yet.
@@ -113,8 +113,8 @@ export default function EftPool() {
         </div>
       </div>
       <div style={{ ...S.sub, fontSize: 12, marginTop: 4 }}>
-        FNB payment notifications sent to the shop mailbox, verified and pooled. Nothing matches or
-        releases against these yet.
+        Payment notifications from customers' banks, verified, account-checked and pooled. Nothing
+        matches or releases against these yet.
       </div>
       {rows.length === 0 && (
         <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>No payment notifications have arrived yet.</div>
@@ -160,7 +160,9 @@ export default function EftPool() {
                     <div style={{ fontSize: 12, lineHeight: 1.45, color: "#FFB3B3" }}>{r.reason}</div>
                   )}
                   <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.55)" }}>
-                    {r.subject || "(no subject)"} · auth {r.auth?.verdict}{r.auth?.detail ? ` — ${r.auth.detail}` : ""}
+                    {r.subject || "(no subject)"} · auth {r.auth?.verdict}
+                    {r.reader ? ` · ${r.reader} reader` : ""}
+                    {r.auth?.detail ? ` — ${r.auth.detail}` : ""}
                   </div>
                   {r.rawText && (
                     <div style={{ fontSize: 11, lineHeight: 1.5, whiteSpace: "pre-wrap",

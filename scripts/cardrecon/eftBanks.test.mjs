@@ -75,6 +75,12 @@ describe("the Standard Bank reader — built from the real notification", () => 
     expect(p.bankRef).toBe("4149999999");
   });
 
+  it("REFUSES a document holding TWO payment blocks — even identical ones (a reprint and a double-payment look the same)", () => {
+    const p = sb.parse([...REAL_SB_PDF_LINES, ...REAL_SB_PDF_LINES]);
+    expect(p.ok).toBe(false);
+    expect(p.reason).toMatch(/2 payment blocks/);
+  });
+
   it("REFUSES a document with no Amount line", () => {
     const p = sb.parse(REAL_SB_PDF_LINES.filter((l) => !/^Amount /.test(l)));
     expect(p.ok).toBe(false);

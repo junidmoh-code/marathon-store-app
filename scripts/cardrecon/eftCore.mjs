@@ -349,7 +349,39 @@ export function redactAccountDigits(text) {
   // however they are spaced or dashed. This eats grouped AMOUNTS as well,
   // which is the accepted cost: over-striking a diagnostic is fine,
   // under-striking an account is not. (Delta review.)
-  return text.replace(/\d(?:[ -]?\d){5,}/g, (run) => `⋯${run.replace(/\D/g, "").slice(-3)}`);
+  //
+  // EXCEPT A DATE. "2026-08-30 23h48" is digits joined by dashes and a space,
+  // and striking it out of a refusal's raw text deletes the very field the
+  // format is judged by. A run that STARTS as an ISO date is a date.
+  // (Independent adversarial review, v2.)
+  return text.replace(/\d(?:[ -]?\d){5,}/g, (run) =>
+    /^\d{4}-\d{2}-\d{2}/.test(run) ? run : `⋯${run.replace(/\D/g, "").slice(-3)}`);
+}
+
+/**
+ * The stored/rendered form of a destination account value. Today's banks print
+ * it masked already ("XXXXXXXXXXXX6625") and this changes nothing — but a bank
+ * that prints the FULL number must not put a complete account number into the
+ * database and onto a screen. Digits beyond the last four become X.
+ * (Independent adversarial review, v2.)
+ */
+export function maskAccountValue(value) {
+  const s = String(value ?? "");
+  if (!s) return null;
+  return s.replace(/\d(?=(?:\D*\d){4})/g, "X");
+}
+
+// A cheap "is this even about a payment?" cue, used ONLY to decide whether an
+// unrecognised bank message deserves a pool refusal or is ordinary bank mail
+// (a statement, a marketing letter, a fraud alert). Refusals must stay
+// meaningful — a feed of red rows about newsletters trains the owner to
+// ignore red — but the gate errs open: any money token or payment-ish word
+// records the refusal. (Independent adversarial review, v2.)
+const PAYMENT_CUES = /payment|proof of|credited|credit received|deposit|transfer|eft|confirmation/i;
+const MONEY_CUE = /(?:ZAR|R)\s?\d[\d,\s]*\.\d{2}\b/;
+export function looksPaymentShaped(text) {
+  const s = String(text ?? "");
+  return PAYMENT_CUES.test(s) || MONEY_CUE.test(s);
 }
 
 // ─── THE DESTINATION-ACCOUNT ALLOWLIST ───────────────────────────────────────
@@ -480,7 +512,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, reader, rawTe
   // the recorded payment — a refusal must show which account the money
   // actually went to, and a recorded payment must show it was checked.
   const destination = {
-    accountMask: clip(parsed.accountMask, 40) || null,
+    // maskAccountValue: a bank that prints the FULL destination number must
+    // not put it in the database — digits beyond the last four become X.
+    accountMask: clip(maskAccountValue(parsed.accountMask), 40) || null,
     beneficiaryName: clip(parsed.beneficiaryName, 120) || null,
     destBankName: clip(parsed.destBankName, 60) || null,
   };

@@ -67,6 +67,7 @@ import {
   EFT_POOL_PATH, isEftCandidate, authenticationVerdict, htmlToText,
   eftMessageKey, poolWriteDecision, eftPoolRecord,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, accountVerdict,
+  looksPaymentShaped,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
 
@@ -459,6 +460,10 @@ async function run() {
       // The EFT reader beats on the same heart: counts only, never a figure —
       // this node is readable by every card_recon holder.
       eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount,
+      // How many account tails the allowlist held this tick — a COUNT, never
+      // a value. Zero is the loudest number on this line: it means every
+      // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
+      eftAccountTails: cfg.eftAccountTails.length,
       mailbox: cfg.mailbox,
     });
   } catch (err) {
@@ -683,13 +688,29 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
   const documents = []; // { lines: string[]|null, text: string }
   let slipPdfs = 0;
+  // ── AN AUTH-FAILED MESSAGE WITH ATTACHMENTS IS NOT CONSUMED ────────────────
+  // Its PDFs are never opened (attacker files), so their content cannot be
+  // routed — and consuming the message would eat a GENUINE batch report whose
+  // delivery path broke its DKIM (a forward, a relay). It falls through to the
+  // slip path, whose capture callable validates every byte itself; a forged
+  // "slip" refuses harmlessly there, a real one is captured. Only an
+  // attachment-less auth failure is recorded here as a forgery attempt.
+  // (Independent adversarial review, v2.)
+  if (!verdict.pass && (parsed.attachments || []).some((a) => { try { return classifyAttachment(a).ok; } catch { return false; } })) {
+    return null;
+  }
   if (verdict.pass) {
     // Every attachment is ACCOUNTED FOR in the record, even the ones that are
     // not extracted: an oversized or corrupt PDF, or one past the ceiling,
     // leaves a placeholder line in the raw text instead of vanishing — a
     // refusal that hides the very document it refused would be undiagnosable.
     const verdicts = (Array.isArray(parsed.attachments) ? parsed.attachments : [])
-      .map((att) => ({ att, cls: classifyAttachment(att) }))
+      .map((att) => {
+        // planMessage guards this same call; an EFT message's attachment list
+        // is outside data too. (Independent adversarial review, v2.)
+        try { return { att, cls: classifyAttachment(att) }; }
+        catch { return { att, cls: { ok: false, kind: "refuse", why: "That attachment could not be read at all." } }; }
+      })
       .filter(({ cls }) => cls.ok || cls.kind === "refuse"); // skip = inline logos etc.
     let extracted = 0;
     for (const { att, cls } of verdicts) {
@@ -703,6 +724,15 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       }
       const out = await pdfToLines(att.content);
       if (!out.ok) {
+        // AN ENVIRONMENTAL FAILURE MUST NOT BECOME A DURABLE REFUSAL. pdfjs
+        // failing to LOAD is this machine's problem, not the document's — a
+        // refusal here would be create-only and \Seen for ever, unrecoverable
+        // after the environment is fixed. Throw instead: the message stays
+        // unread and every later tick retries. (Independent adversarial
+        // review, v2 — found while pdfjs-dist was genuinely absent.)
+        if (/reader is unavailable/i.test(out.reason)) {
+          throw new Error(`the PDF reader is unavailable on this machine (pdfjs-dist missing from functions/node_modules?) — run scripts/cardrecon/install-card-recon-poller.sh`);
+        }
         documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" could not be read: ${out.reason}]` });
         continue;
       }
@@ -714,12 +744,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       // Every document was a slip: this whole message is the card path's.
       return null;
     }
-    if (slipPdfs > 0) {
-      // Mixed cargo — a slip AND something else on one message. The EFT reader
-      // takes the message, so the slip will NOT be captured from this email;
-      // say so where someone will read it.
-      console.warn(`  ⚠ "${message.logSubject}" carries ${slipPdfs} batch-slip PDF(s) alongside other documents — the slip is NOT captured from this message; forward it on its own`);
-    }
+
   }
 
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
@@ -744,6 +769,24 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     return empty;
   }
 
+  if (slipPdfs > 0) {
+    // Mixed cargo — a slip AND other documents on one message. The EFT reader
+    // takes the message, so the slip will NOT be captured from this email —
+    // and a launchd log line is not a place anyone looks. The loss goes into
+    // the SLIP feed as a refusal row, where slip problems live. AFTER the
+    // claim, so a crash-retry cannot write it twice.
+    // (Independent adversarial review, v2.)
+    const slipLoss = intakeRecord({
+      message,
+      results: [attachmentOutcome({ filename: `${slipPdfs} batch-slip PDF(s)`, error: "Arrived alongside a payment notification, which this message was read as — the slip was NOT captured. Forward the batch report on its own." })],
+      skipped: [], at: serverNowMs(),
+    });
+    await db.ref(INTAKE_PATH).push(slipLoss).catch((err) => {
+      console.warn(`  ⚠ could not record the uncaptured slip in the intake feed (${err.message})`);
+    });
+    console.warn(`  ⚠ "${message.logSubject}" carries ${slipPdfs} batch-slip PDF(s) alongside other documents — refusal row written to the slip feed`);
+  }
+
   // ── WHICH BANK'S DOCUMENT IS THIS? ─────────────────────────────────────────
   // Every extracted document is offered to the readers, then the body itself
   // (a bank that prints its fields in the email body will be read there). The
@@ -755,12 +798,17 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   if (verdict.pass) {
     const bodyLines = bodyText ? bodyText.split("\n") : [];
     const offered = [...documents.filter((d) => d.lines), { lines: bodyLines, text: bodyText }];
-    let reader = null, doc = null;
-    for (const d of offered) {
-      const r = selectReader({ fromDomain, lines: d.lines });
-      if (r) { reader = r; doc = d; break; }
-    }
-    if (reader) {
+    const claimed = offered
+      .map((d) => ({ d, r: selectReader({ fromDomain, lines: d.lines }) }))
+      .filter((x) => x.r);
+    if (claimed.length > 1) {
+      // TWO PAYMENT DOCUMENTS ON ONE MESSAGE. Recording only the first would
+      // silently lose the second payment; refused instead, whole, and a
+      // person splits them. (Independent adversarial review, v2.)
+      parsedPay = { ok: false, reason: `This message carries ${claimed.length} recognisable payment documents — only one payment per message can be recorded safely. Handle them individually.` };
+      rawText = claimed.map((x) => x.d.text).join("\n────────\n");
+    } else if (claimed.length === 1) {
+      const { d: doc, r: reader } = claimed[0];
       readerId = reader.id;
       parsedPay = reader.parse(doc.lines);
       rawText = doc.text;
@@ -768,10 +816,24 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         account = accountVerdict({ accountMask: parsedPay.accountMask, allowedTails: cfg.eftAccountTails });
       }
     } else {
+      // NOBODY RECOGNISES IT. If it is payment-shaped at all, the refusal is
+      // the work order for the missing reader. If not — a statement, a fraud
+      // alert, bank marketing — recording it would fill the owner's refusal
+      // feed with red rows about newsletters, and red must keep meaning
+      // something. Ordinary mail: marked read, nothing written.
+      // (Independent adversarial review, v2.)
+      const everything = [...documents.map((d) => d.text), bodyText].filter(Boolean).join("\n────────\n");
+      if (!looksPaymentShaped(`${message.subject || ""}\n${everything}`)) {
+        console.log(`  · bank mail, not payment-shaped: "${message.logSubject}" — marked read, nothing recorded`);
+        // The claim is settled (not abandoned to go stale), THEN the flag.
+        await db.ref(`${SEEN_PATH}/${key}`).set({ state: "done", at: serverNowMs(), eft: true });
+        await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+        return empty;
+      }
       parsedPay = { ok: false, reason: noReaderReason(fromDomain) };
       // The refusal shows everything that was seen: each document, then the
       // body — this text IS the missing reader's specification.
-      rawText = [...documents.map((d) => d.text), bodyText].filter(Boolean).join("\n────────\n");
+      rawText = everything;
     }
   } else {
     rawText = bodyText;

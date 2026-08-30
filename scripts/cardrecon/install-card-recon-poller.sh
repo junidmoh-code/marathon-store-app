@@ -76,7 +76,11 @@ say "installing imapflow + mailparser…"
 # already carry it; this only materialises it.
 if [ ! -d "$REPO/functions/node_modules/pdfjs-dist" ]; then
   say "installing pdfjs-dist into functions/node_modules (the EFT reader's PDF text extraction)…"
-  ( cd "$REPO/functions" && npm install --no-save --no-audit --no-fund pdfjs-dist >/dev/null )
+  # PINNED TO THE MANIFEST'S OWN RANGE — an unpinned install here would let
+  # the mini's extraction drift from the one the deployed function uses, the
+  # exact two-copies failure this repo keeps a rule against.
+  PDFJS_RANGE=$("$NODE" -p "require('$REPO/functions/package.json').dependencies['pdfjs-dist']")
+  ( cd "$REPO/functions" && npm install --no-save --no-audit --no-fund "pdfjs-dist@$PDFJS_RANGE" >/dev/null )
   [ -d "$REPO/functions/node_modules/pdfjs-dist" ] || { echo "✗ pdfjs-dist did not install"; exit 1; }
 fi
 say "dependencies: ready"

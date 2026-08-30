@@ -72,6 +72,18 @@ const standardBank = {
   parse(lines) {
     const take = (re, what) => labelledLine(lines, re, what);
 
+    // ONE PAYMENT PER DOCUMENT, COUNTED ON RAW LINES. labelledLine dedupes
+    // identical values to tolerate repeated page headers — which would also
+    // silently collapse TWO IDENTICAL PAYMENTS (same amount, same reference:
+    // routine when a customer pays twice) into one recorded payment. A reprint
+    // and a genuine double are indistinguishable from here, so more than one
+    // payment block refuses and a person decides.
+    // (Independent adversarial review, v2.)
+    const blocks = lines.filter((l) => /^Beneficiary account number\s+/i.test(l)).length;
+    if (blocks > 1) {
+      return { ok: false, reason: `This document holds ${blocks} payment blocks — a reprint and two identical payments cannot be told apart here. Handle it by hand.` };
+    }
+
     // THE AMOUNT — required, exact, single.
     const amount = take(/^Amount\s+(.+)$/i, "Amount line");
     if (!amount.ok) return { ok: false, reason: `Standard Bank notification: ${amount.why}.` };
@@ -87,7 +99,7 @@ const standardBank = {
     // than sail past the one check that keeps other people's payments out.
     const account = take(/^Beneficiary account number\s+(\S+)\s*$/i, "Beneficiary account number");
     if (!account.ok) return { ok: false, reason: `Standard Bank notification: ${account.why}.` };
-    if (account.value === null) return { ok: false, reason: "Standard Bank notification carries no Beneficiary account number line — the destination account cannot be checked." };
+    if (account.value === null) return { ok: false, reason: "No Beneficiary account number could be read from this Standard Bank notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
 
     // "Beneficiary reference" is what the PAYER typed — the future matching
     // key. "Reference number" is the bank's own transaction id; the two are
@@ -99,8 +111,8 @@ const standardBank = {
     const beneficiaryName = take(/^Beneficiary name\s+(.+)$/i, "Beneficiary name");
     const destBankName = take(/^Bank name\s+(.+)$/i, "Bank name");
 
-    // "…payment has been made into your account from OUSMANE THIAM:" — the
-    // payer, in prose. Optional: a payment with no payer line still lands.
+    // "…payment has been made into your account from J SOAP:" — the payer,
+    // in prose. Optional: a payment with no payer line still lands.
     const payer = labelledLine(lines, /payment has been made into your account from\s+(.+?):?\s*$/i, "payer sentence");
 
     // "Payment date and time 2026-08-30 23h48" — parseBankTimestamp knows the

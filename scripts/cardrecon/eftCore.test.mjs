@@ -11,6 +11,7 @@ import {
   domainOfAddress, domainsAligned, domainAllowlisted, authenticationVerdict,
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
   parseAllowedAccountTails, accountVerdict, EFT_ACCOUNTS_ENV_VAR,
+  maskAccountValue, looksPaymentShaped,
   eftMessageKey, poolWriteDecision, eftPoolRecord,
 } from "./eftCore.mjs";
 
@@ -281,6 +282,21 @@ describe("account numbers are struck out", () => {
   it("catches grouped account numbers too — spaces and dashes do not hide one", () => {
     expect(redactAccountDigits("acc 6283 4519 234")).toBe("acc ⋯234");
     expect(redactAccountDigits("acc 62-834-519")).toBe("acc ⋯519");
+  });
+  it("…but never a DATE — the refusal diagnostic keeps its timestamp", () => {
+    expect(redactAccountDigits("Payment date and time 2026-08-30 23h48")).toBe("Payment date and time 2026-08-30 23h48");
+  });
+  it("maskAccountValue: a bank that prints the full number stores only the last four", () => {
+    expect(maskAccountValue("62834519234")).toBe("XXXXXXX9234");
+    expect(maskAccountValue("XXXXXXXXXXXX6625")).toBe("XXXXXXXXXXXX6625"); // already masked: unchanged
+    expect(maskAccountValue("1234")).toBe("1234");
+    expect(maskAccountValue(null)).toBe(null);
+  });
+  it("looksPaymentShaped keeps the refusal feed about payments, not newsletters", () => {
+    expect(looksPaymentShaped("Payment confirmation 4401")).toBe(true);
+    expect(looksPaymentShaped("You received R 750.00")).toBe(true);
+    expect(looksPaymentShaped("Your statement is ready to view")).toBe(false);
+    expect(looksPaymentShaped("Win big with our new rewards programme!")).toBe(false);
   });
   it("leaves amounts and short numbers alone", () => {
     expect(redactAccountDigits("R 1,234.56 ref 12345")).toBe("R 1,234.56 ref 12345");
