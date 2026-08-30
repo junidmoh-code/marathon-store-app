@@ -56,6 +56,14 @@ if (!admin.apps.length) {
 // Same constant as the POS app's PermissionsContext and posUsers.js.
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
 
+// Owner = the admin email AND a VERIFIED one. The owner signs in with Google
+// (always verified); requiring the flag closes the theoretical seam where an
+// unverified credential claiming the address would inherit owner rights on
+// pool projections and reversals. (CodeRabbit, this PR.)
+function isOwner(request) {
+  return request.auth?.token?.email === ADMIN_EMAIL && request.auth?.token?.email_verified === true;
+}
+
 const RUNTIME = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30 };
 
 // Pool keys are eftMessageKey's sha256 prefix — 40 hex chars, nothing else.
@@ -69,7 +77,7 @@ function poolKeyOf(data) {
 /** Owner, or an active POS identity — the same gate the POS login enforces,
  *  re-checked server-side because the callable, not the client, is the wall. */
 async function assertPosIdentity(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return;
+  if (isOwner(request)) return;
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let active = false;
@@ -86,7 +94,7 @@ async function assertPosIdentity(request) {
 /** The cashier's display name as the POS access record knows it — resolved
  *  server-side so a settlement always names a person the owner recognises. */
 async function cashierNameOf(request) {
-  if (request.auth?.token?.email === ADMIN_EMAIL) return "owner";
+  if (isOwner(request)) return "owner";
   try {
     const snap = await admin.database().ref(`users/${request.auth.uid}/posAccess/displayName`).once("value");
     const name = snap.val();
@@ -167,7 +175,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       // Holder-only twice over: the attempt id must match AND the settlement
       // must have been made by this very account — an attempt id is not a
       // bearer token another till can replay.
-      if (current?.used && current.used.cashierUid !== uid && request.auth?.token?.email !== ADMIN_EMAIL) {
+      if (current?.used && current.used.cashierUid !== uid && !isOwner(request)) {
         return { ok: false, code: "not-holder", message: "A different till holds this payment." };
       }
       return attachSaleDecision(current, {
@@ -179,7 +187,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     });
   } else if (action === "release") {
     decision = await runPoolTransaction(key, (current) => {
-      if (current?.used && current.used.cashierUid !== uid && request.auth?.token?.email !== ADMIN_EMAIL) {
+      if (current?.used && current.used.cashierUid !== uid && !isOwner(request)) {
         return { ok: false, code: "not-holder", message: "A different till holds this payment." };
       }
       return releaseDecision(current, {
@@ -200,7 +208,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
 
 // ─── REVERSE — the owner alone ───────────────────────────────────────────────
 exports.eftPoolReverse = onCall(RUNTIME, async (request) => {
-  if (request.auth?.token?.email !== ADMIN_EMAIL) {
+  if (!isOwner(request)) {
     throw new HttpsError("permission-denied", "Only the owner can reverse a settlement.");
   }
   const key = poolKeyOf(request.data);

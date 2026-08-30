@@ -219,7 +219,10 @@ export default function EftPool() {
                         </button>
                       ) : (
                         <span style={{ display: "grid", gap: 5, marginTop: 6 }}>
+                          {/* The callable retains 300 chars — cap the input so
+                              no part of an audit reason is silently dropped. */}
                           <input value={revReason} onChange={(e) => setRevReason(e.target.value)}
+                                 maxLength={300}
                                  placeholder="Why — this stays on the record"
                                  style={{ font: "inherit", fontSize: 12, padding: "5px 8px", borderRadius: 8,
                                           border: "1px solid rgba(255,255,255,.15)", background: "rgba(0,0,0,.25)", color: "inherit" }} />

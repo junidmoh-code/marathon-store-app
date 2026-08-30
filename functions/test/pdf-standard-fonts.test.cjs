@@ -26,17 +26,20 @@ test("pdfjs-dist still ships standard_fonts where pdfText.js points", () => {
 });
 
 test("a non-embedded standard-font PDF parses with no standardFontDataUrl warning", async () => {
-  // pdfjs prints its warnings through console.log; capture everything the
-  // parse writes there. makeSlipPdf's fixture names /Courier unembedded —
-  // exactly the shape that used to warn twice per parse.
+  // pdfjs routes warnings through console.log OR console.warn depending on
+  // build and level — capture both, or removing the fix could still pass.
+  // makeSlipPdf's fixture names /Courier unembedded — exactly the shape that
+  // used to warn twice per parse.
   const logged = [];
-  const orig = console.log;
+  const origLog = console.log, origWarn = console.warn;
   console.log = (...args) => { logged.push(args.join(" ")); };
+  console.warn = (...args) => { logged.push(args.join(" ")); };
   let out;
   try {
     out = await pdfToLines(makeSlipPdf(["Amount R100.00", "Beneficiary reference OM82"]));
   } finally {
-    console.log = orig;
+    console.log = origLog;
+    console.warn = origWarn;
   }
   assert.equal(out.ok, true);
   // The text never depended on the font data — same lines as ever.

@@ -284,3 +284,22 @@ test("poolTransactionStep: a refusal against real data leaves the record be", ()
   assert.equal(res.ranWithServerValue, true);
   assert.equal(decision.code, "already-used");
 });
+
+test("a retried release (till timed out after the first landed) is a success, not an error", () => {
+  const node = makeNode(recorded());
+  runSettle(node, tillA);
+  const release = (args) => {
+    let out = null;
+    node.transaction((cur) => {
+      out = releaseDecision(cur, args);
+      return out.ok && !out.already ? out.value : undefined;
+    });
+    return out;
+  };
+  assert.equal(release({ attemptId: "P-a1", at: 7000, reason: "x" }).ok, true);
+  const retry = release({ attemptId: "P-a1", at: 7001, reason: "x" });
+  assert.equal(retry.ok, true);
+  assert.equal(retry.already, true);
+  // A DIFFERENT attempt still gets the honest refusal.
+  assert.equal(release({ attemptId: "P-zz", at: 7002, reason: "x" }).ok, false);
+});

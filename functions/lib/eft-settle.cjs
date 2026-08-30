@@ -136,6 +136,13 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at }) {
  */
 function releaseDecision(current, { attemptId, at, reason }) {
   if (!current || current.status !== "used" || !current.used) {
+    // A RETRIED release (the till timed out after the first one landed) finds
+    // the payment already back in the pool — the appended attempt is the
+    // proof, and the retry is a success, not a "not-held" error the cashier
+    // has to puzzle over. (CodeRabbit, this PR.)
+    const alreadyReleased = Object.values(current?.attempts ?? {})
+      .some((a) => a?.attemptId === attemptId && a?.ended === "released");
+    if (alreadyReleased) return { ok: true, already: true };
     return refuse("not-held", "No settlement is holding this payment.");
   }
   if (current.used.attemptId !== attemptId) {
