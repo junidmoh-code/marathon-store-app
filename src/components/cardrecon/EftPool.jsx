@@ -101,7 +101,9 @@ export default function EftPool() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)" }}>EFT payments</div>
         <div style={{ fontSize: 12, color: refusedCount ? "#FFB3B3" : "rgba(233,238,255,.5)", fontWeight: refusedCount ? 800 : 600 }}>
-          {refusedCount ? `${refusedCount} refused` : `${recordedCount} in the pool`}
+          {/* These counts describe THE TAIL SHOWN, never the whole pool — the
+              read is bounded at FEED_SIZE and the pool grows for ever. */}
+          {refusedCount ? `${refusedCount} refused (last ${rows.length})` : `${recordedCount} recorded (last ${rows.length})`}
         </div>
       </div>
       <div style={{ ...S.sub, fontSize: 12, marginTop: 4 }}>
@@ -116,43 +118,50 @@ export default function EftPool() {
           const bad = r.outcome !== "recorded";
           const isForgery = r.outcome === "refused-auth";
           return (
-            <button key={r.id} type="button"
-                 onClick={() => setOpen(open === r.id ? null : r.id)}
-                 aria-expanded={open === r.id}
-                 style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit",
-                          border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
+            // The toggle is a BUTTON; the expanded detail is its SIBLING, not
+            // its child — the raw-text region scrolls, and a scroll-drag
+            // inside a button is a click that collapses the very thing being
+            // read. (Independent adversarial review.)
+            <div key={r.id}
+                 style={{ border: `1px solid ${bad ? "rgba(255,107,107,.35)" : "rgba(255,255,255,.09)"}`,
                           background: bad ? "rgba(255,107,107,.07)" : "rgba(255,255,255,.03)",
-                          borderRadius: 11, padding: "9px 11px", cursor: "pointer" }}>
-              <span style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
-                <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#B7F0CC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {r.outcome === "recorded"
-                    ? `${fmtRands(r.amountCents)}${r.reference ? ` · ${r.reference}` : " · (no reference)"}`
-                    : isForgery ? "FAILED AUTHENTICATION — forgery attempt" : "Could not be read exactly"}
-                </span>
-                <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
-              </span>
-              <span style={{ display: "block", fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
-                {r.outcome === "recorded"
-                  ? `${r.payer || "payer not named"} · ${r.status}`
-                  : r.from || "unknown sender"}
-              </span>
-              {open === r.id && (
-                <span style={{ marginTop: 8, display: "grid", gap: 5 }}>
-                  {r.reason && (
-                    <span style={{ display: "block", fontSize: 12, lineHeight: 1.45, color: "#FFB3B3" }}>{r.reason}</span>
-                  )}
-                  <span style={{ display: "block", fontSize: 11.5, color: "rgba(233,238,255,.55)" }}>
-                    {r.subject || "(no subject)"} · auth {r.auth?.verdict}{r.auth?.detail ? ` — ${r.auth.detail}` : ""}
+                          borderRadius: 11, padding: "9px 11px" }}>
+              <button type="button"
+                   onClick={() => setOpen(open === r.id ? null : r.id)}
+                   aria-expanded={open === r.id}
+                   style={{ display: "block", width: "100%", textAlign: "left", font: "inherit", color: "inherit",
+                            border: "none", background: "none", padding: 0, cursor: "pointer" }}>
+                <span style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
+                  <span style={{ fontWeight: 700, color: bad ? "#FFB3B3" : "#B7F0CC", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {r.outcome === "recorded"
+                      ? `${fmtRands(r.amountCents)}${r.reference ? ` · ${r.reference}` : " · (no reference)"}`
+                      : isForgery ? "FAILED AUTHENTICATION — forgery attempt" : "Could not be read exactly"}
                   </span>
-                  {r.rawText && (
-                    <span style={{ display: "block", fontSize: 11, lineHeight: 1.5, whiteSpace: "pre-wrap",
-                                   color: "rgba(233,238,255,.45)", maxHeight: 180, overflowY: "auto" }}>
-                      {r.rawText}
-                    </span>
-                  )}
+                  <span style={{ color: "rgba(233,238,255,.45)", flex: "0 0 auto", fontSize: 12 }}>{fmtTime(r.at)}</span>
                 </span>
+                <span style={{ display: "block", fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
+                  {r.outcome === "recorded"
+                    ? `${r.payer || "payer not named"} · ${r.status}`
+                    : r.from || "unknown sender"}
+                </span>
+              </button>
+              {open === r.id && (
+                <div style={{ marginTop: 8, display: "grid", gap: 5 }}>
+                  {r.reason && (
+                    <div style={{ fontSize: 12, lineHeight: 1.45, color: "#FFB3B3" }}>{r.reason}</div>
+                  )}
+                  <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.55)" }}>
+                    {r.subject || "(no subject)"} · auth {r.auth?.verdict}{r.auth?.detail ? ` — ${r.auth.detail}` : ""}
+                  </div>
+                  {r.rawText && (
+                    <div style={{ fontSize: 11, lineHeight: 1.5, whiteSpace: "pre-wrap",
+                                  color: "rgba(233,238,255,.45)", maxHeight: 180, overflowY: "auto" }}>
+                      {r.rawText}
+                    </div>
+                  )}
+                </div>
               )}
-            </button>
+            </div>
           );
         })}
       </div>

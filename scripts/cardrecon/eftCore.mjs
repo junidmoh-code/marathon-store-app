@@ -141,8 +141,19 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
   // dkim=pass header.i=@fnb.co.za header.s=frg header.b=… — one segment per
   // method, semicolon-separated. Several dkim results can coexist (a message
   // signed twice); ONE passing, aligned signature is what the check needs.
+  //
+  // QUOTED STRINGS AND COMMENTS ARE EMPTIED BEFORE THE SPLIT, and this is a
+  // security boundary, not tidiness: Gmail's own header EMBEDS ATTACKER TEXT —
+  // the envelope sender appears both quoted (smtp.mailfrom="…") and inside a
+  // parenthesised comment, and an envelope localpart may legally contain ';'.
+  // A naive split would let a sender whose mailfrom reads
+  //   "x;dkim=pass header.i=@fnb.co.za;y"@evil.example
+  // manufacture a passing segment out of Gmail's truthful transcription of
+  // their own address. With quotes and comments emptied, every remaining
+  // segment is structure Gmail wrote. (Independent adversarial review.)
+  const cleaned = value.replace(/"[^"]*"/g, '""').replace(/\([^)]*\)/g, " ");
   const dkimSeen = [];
-  for (const segment of value.split(";")) {
+  for (const segment of cleaned.split(";")) {
     const m = /\bdkim\s*=\s*([a-z]+)/i.exec(segment);
     if (!m) continue;
     const result = m[1].toLowerCase();
@@ -197,8 +208,21 @@ export function htmlToText(html) {
   s = s.replace(/<\s*(?:br|\/p|\/div|\/tr|\/li|\/h[1-6]|\/table)\b[^>]*>/gi, "\n");
   s = s.replace(/<\s*\/t[dh]\b[^>]*>/gi, "  ");
   s = s.replace(/<[^>]+>/g, " ");
-  s = s.replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'");
+  // Numeric character references are routine in bank HTML (&#160; for a
+  // space in "Amount:&#160;R500.00" would otherwise turn the first genuine
+  // notification into a refusal). Decoded before the named entities; anything
+  // outside the printable range becomes a space rather than a control char.
+  s = s.replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+    const c = parseInt(h, 16);
+    return c >= 32 && c <= 0xffff ? String.fromCharCode(c) : " ";
+  });
+  s = s.replace(/&#(\d+);/g, (_, d) => {
+    const c = Number(d);
+    return c >= 32 && c <= 0xffff ? String.fromCharCode(c) : " ";
+  });
+  s = s.replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+    .replace(/&amp;/gi, "&");
   return s.split("\n").map((line) => line.replace(/[ \t]+/g, " ").trim()).filter(Boolean).join("\n");
 }
 
@@ -260,7 +284,10 @@ export function redactAccountDigits(text) {
 // round. That failure mode is the designed one.
 const AMOUNT_LABELS = /^(?:amount(?: paid)?|payment amount)\s*[:\-–]\s*(.+)$/i;
 const REFERENCE_LABELS = /^(?:(?:payment |their |beneficiary |recipient |my )?reference(?: number)?)\s*[:\-–]\s*(.+)$/i;
-const PAYER_LABELS = /^(?:from|paid by|payer|sender|received from)\s*[:\-–]\s*(.+)$/i;
+// "From" is DELIBERATELY not a payer label: it is the single most common line
+// in a forwarded or quoted body, and matching it makes the BANK the payer the
+// moment anyone forwards a notification. (Independent adversarial review.)
+const PAYER_LABELS = /^(?:paid by|payer|sender|received from)\s*[:\-–]\s*(.+)$/i;
 const DATE_LABELS = /^(?:(?:payment |transaction |effective )?date(?: and time)?)\s*[:\-–]\s*(.+)$/i;
 // A rand figure loose in prose, for the no-label fallback. Grouping correctness
 // is parseRandsToCents' job; this only FINDS candidates.
@@ -323,15 +350,20 @@ export function parseEftNotification(text) {
   if (refs.length > 1) {
     return { ok: false, reason: `The message carries ${refs.length} Reference fields that disagree.` };
   }
+  // Payer and date are optional, so a CONTRADICTION does not refuse the
+  // payment — it refuses the FIELD: two disagreeing payers or dates store
+  // null rather than a silently-picked first. A payment with an unknown payer
+  // is still a payment; a confidently wrong payer poisons the matching that
+  // is coming. (Independent adversarial review.)
   const payers = [...new Set(labelledValues(lines, PAYER_LABELS).map((v) => v.trim()).filter(Boolean))];
-  const dates = labelledValues(lines, DATE_LABELS).map(parseBankTimestamp).filter((v) => v !== null);
+  const dates = [...new Set(labelledValues(lines, DATE_LABELS).map(parseBankTimestamp).filter((v) => v !== null))];
 
   return {
     ok: true,
     amountCents,
     reference: refs.length ? clip(refs[0], 140) : null,
-    payer: payers.length ? clip(redactAccountDigits(payers[0]), 120) : null,
-    bankTs: dates.length ? dates[0] : null,
+    payer: payers.length === 1 ? clip(redactAccountDigits(payers[0]), 120) : null,
+    bankTs: dates.length === 1 ? dates[0] : null,
   };
 }
 
@@ -384,7 +416,9 @@ export function eftPoolRecord({ message, verdict, parsed, rawText, at }) {
     receivedAt: Number.isInteger(message.receivedAt) ? message.receivedAt : null,
     messageId: clip(message.messageId, 200),
     from: clip(message.from, 200),
-    subject: clip(message.subject, 200),
+    // The subject gets the same account-number sweep as the body — FNB
+    // subject lines can carry one. (Independent adversarial review.)
+    subject: clip(redactAccountDigits(message.subject), 200),
     auth: {
       verdict: verdict.pass ? "pass" : "fail",
       fromDomain: verdict.fromDomain || null,

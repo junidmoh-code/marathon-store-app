@@ -129,6 +129,20 @@ describe("the authentication verdict", () => {
     expect(authenticationVerdict({ headerLines: realHeaderLines, fromAddress: undefined }).pass).toBe(false);
   });
 
+  it("a ';' smuggled through a QUOTED mailfrom cannot manufacture a passing dkim segment", () => {
+    // Gmail's header truthfully transcribes the sender's own envelope address,
+    // quoted — and an envelope localpart may legally contain ';'. Unquoted
+    // splitting would read the smuggled text as a segment of Gmail's verdict.
+    const forged = realHeaderLines.map((h) => h.key !== "authentication-results" ? h : {
+      ...h, line:
+        'Authentication-Results: mx.google.com;\r\n' +
+        '       dkim=fail header.i=@fnb.co.za;\r\n' +
+        '       spf=pass (google.com: domain of "x;dkim=pass header.i=@fnb.co.za;y"@evil.example designates 1.2.3.4 as permitted sender) smtp.mailfrom="x;dkim=pass header.i=@fnb.co.za;y"@evil.example',
+    });
+    const v = authenticationVerdict({ headerLines: forged, fromAddress: REAL_FROM });
+    expect(v.pass).toBe(false);
+  });
+
   it("accepts an aligned SUBDOMAIN signature (frg.fnb.co.za signing for fnb.co.za)", () => {
     const sub = realHeaderLines.map((h) => h.key !== "authentication-results" ? h : {
       ...h, line: h.line.replace("header.i=@fnb.co.za", "header.i=@frg.fnb.co.za"),
@@ -172,8 +186,13 @@ describe("htmlToText — FNB mail carries no text part", () => {
     expect(text).not.toContain("color:red");
     expect(text).not.toMatch(/<[a-z]/i);
   });
-  it("decodes the entities banks actually use", () => {
+  it("decodes the entities banks actually use — numeric references included", () => {
     expect(htmlToText("R&nbsp;500.00 &amp; more")).toBe("R 500.00 & more");
+    // &#160; is the no-break space bank templates love; a parser that cannot
+    // see through it refuses the first genuine notification for nothing.
+    const p = parseEftNotification(htmlToText("<p>Amount:&#160;R500.00</p><p>Reference: X</p>"));
+    expect(p).toMatchObject({ ok: true, amountCents: 50000, reference: "X" });
+    expect(htmlToText("&#82;100.00 &#x52;")).toBe("R100.00 R");
   });
 });
 
@@ -262,6 +281,22 @@ describe("parsing the notification — exact or refused", () => {
     expect(parseEftNotification("Amount: -R 50.00").ok).toBe(false);
   });
 
+  it("a 'From:' line is NOT a payer — a forwarded chain must not make the bank the payer", () => {
+    const p = parseEftNotification("Amount: R 500.00\nFrom: NoReplyTransReport@FNB.co.za");
+    expect(p.ok).toBe(true);
+    expect(p.payer).toBe(null);
+  });
+
+  it("disagreeing payers or dates refuse the FIELD, not the payment — null, never a silent first", () => {
+    const p = parseEftNotification("Amount: R 5.00\nPaid by: A\nPaid by: B\nDate: 30 Aug 2026\nDate: 2026/08/29 10:00:00");
+    expect(p.ok).toBe(true);
+    expect(p.payer).toBe(null);
+    expect(p.bankTs).toBe(null);
+    // …and a value that merely REPEATS is not a disagreement.
+    const q = parseEftNotification("Amount: R 5.00\nPaid by: A\nPaid by: A");
+    expect(q.payer).toBe("A");
+  });
+
   it("REFUSES two References that disagree, keeps one that repeats", () => {
     expect(parseEftNotification("Amount: R 5.00\nReference: A\nReference: B").ok).toBe(false);
     const p = parseEftNotification("Amount: R 5.00\nReference: A\nReference: A");
@@ -324,6 +359,16 @@ describe("the pool record", () => {
     });
     expect(r.rawText).toContain("⋯234"); // the account run is struck out
     expect(r.rawText).not.toContain("62834519234");
+  });
+
+  it("the subject gets the same account-number sweep as the body", () => {
+    const r = eftPoolRecord({
+      message: { ...message, subject: "Payment to account 62834519234" },
+      verdict: passVerdict,
+      parsed: { ok: true, amountCents: 100, reference: null, payer: null, bankTs: null },
+      rawText: "x", at: 99,
+    });
+    expect(r.subject).toBe("Payment to account ⋯234");
   });
 
   it("a failed-authentication refusal is its own outcome, named as a forgery attempt", () => {
