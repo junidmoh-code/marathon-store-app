@@ -139,12 +139,20 @@ function matchLegs(txns, legs, terminal) {
   const offTillMatches = matches.filter((m) => m.offTill);
   // Where the machine's work was actually rung up, when it was not on its own
   // till — so "the speedpoint was at Trophy that morning" reads off the record.
-  const offTill = {};
+  //
+  // A LIST, NOT A MAP KEYED BY "store/till". RTDB forbids "/" in a key, so the
+  // obvious keying crashed every submit that found an off-till match with
+  // `invalid key (trophy/till-1)` — the batch parsed, reviewed and then failed
+  // to save. Storing the identifiers as FIELDS sidesteps key encoding
+  // altogether, and reads better besides.
+  const byWhere = new Map();
   for (const m of offTillMatches) {
-    const where = `${m.leg.storeId}/${m.leg.tillId}`;
-    const b = offTill[where] || (offTill[where] = { legs: 0, cents: 0 });
+    const key = `${m.leg.storeId}\u0000${m.leg.tillId}`;
+    const b = byWhere.get(key) || { storeId: m.leg.storeId, tillId: m.leg.tillId, legs: 0, cents: 0 };
     b.legs += 1; b.cents += m.leg.amount;
+    byWhere.set(key, b);
   }
+  const offTill = [...byWhere.values()].sort((a, b) => b.cents - a.cents);
 
   const txnTotal = sum(transactions, (t) => t.amountCents);
   const onTillLegTotal = sum(candidates.filter(onMappedTill), (l) => l.amount);

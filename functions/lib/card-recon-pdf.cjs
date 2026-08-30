@@ -20,7 +20,7 @@
 
 "use strict";
 
-const { parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents } = require("./card-recon.cjs");
+const { parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, formatCents } = require("./card-recon.cjs");
 
 /** Collapse runs of whitespace; a PDF's text layer is full of them. */
 const tidy = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
@@ -35,19 +35,6 @@ function field(lines, re) {
     if (m) return tidy(m[1]);
   }
   return null;
-}
-
-/**
- * EVERY line matching `re`, as capture group 1. Used where a second, DIFFERENT
- * reading of the same field is evidence about the file rather than noise.
- */
-function fieldAll(lines, re) {
-  const out = [];
-  for (const line of lines) {
-    const m = re.exec(line);
-    if (m) out.push(tidy(m[1]));
-  }
-  return out;
 }
 
 // ── The header ───────────────────────────────────────────────────────────────
@@ -312,47 +299,6 @@ function parsePrintedSlip(rows) {
   const tid = normaliseTid(rawTid);
   if (!tid) return { ok: false, reason: `"${rawTid}" does not look like a terminal ID.` };
 
-  // ── ONE FILE, ONE TERMINAL ───────────────────────────────────────────────
-  // The TID is the join key: it decides which till a batch is recorded
-  // against. A file that prints TWO different terminal IDs is a file no reader
-  // should be picking between — the first match would simply win, silently,
-  // and the batch would land on whichever till happened to print first.
-  //
-  // THIS MATTERS MOST WHERE THERE IS NOBODY TO ASK. On the phone path the
-  // manager has already picked a till and a disagreeing slip refuses itself
-  // against that pick. A report that arrives by EMAIL has no pick — the TID on
-  // the slip IS the routing key — so this internal agreement is what remains
-  // of that check, and it must be a refusal rather than a first-match.
-  //
-  // Only DIFFERING valid readings refuse; a slip that prints its TID in both
-  // the header and the footer is the normal case and agrees with itself. A
-  // prose row that survived the anchor, the separators-only rule and the
-  // digit-in-token rule and yielded a second valid-looking token would refuse
-  // a good file — which is the safe direction: the refusal names both
-  // readings, and the photo path handles any layout.
-  const allTids = [...new Set(fieldAll(rows, RE.tid).map(normaliseTid).filter(Boolean))];
-  if (allTids.length > 1) {
-    return { ok: false, reason: `That PDF prints more than one terminal ID (${allTids.join(" and ")}), so which till it belongs to cannot be decided. Nothing was recorded — photograph the slip instead.` };
-  }
-
-  // ── EVERY MERCHANT ID THE FILE PRINTS, REPORTED AND NOT JUDGED ───────────
-  // The TID rule above refuses a file naming two terminals, because two
-  // terminals make the routing key ambiguous and nothing downstream can
-  // recover from that. A file naming two MERCHANTS is a different shape of
-  // problem and was briefly given the same answer, wrongly: the slip is still
-  // routable (its TID is unique), and a multi-scheme settlement report —
-  // Amex or Diners under a separate merchant agreement, printed as its own
-  // section with its own Merchant No — is an HONEST file with two correct
-  // merchant ids. Refusing it would have refused every emailed slip from that
-  // terminal, for ever, over a check that is not what decides the till.
-  //
-  // So all of them travel, and the router decides: the registry's merchant
-  // must be AMONG the ones printed. That is a stronger check than comparing
-  // one reading (it cannot be defeated by which section printed first) and it
-  // cannot refuse a file that does name the right merchant somewhere.
-  // (CodeRabbit raised the check; independent review found the false refusal.)
-  const allMids = [...new Set(fieldAll(rows, RE.mid).map(normaliseMid).filter(Boolean))];
-
   const rawBatch = field(rows, RE.batchNo);
   bad = need(rawBatch, "a batch number"); if (bad) return bad;
   const batchNo = normaliseBatchNo(rawBatch);
@@ -422,10 +368,6 @@ function parsePrintedSlip(rows) {
     ok: true,
     extraction: {
       mid: field(rows, RE.mid),
-      // Normalised, deduped, in print order — what the ROUTER checks the
-      // registry against. `mid` above stays the first as printed, because that
-      // is what belongs on the record.
-      mids: allMids,
       tid, batchNo: String(batchNo),
       openedAt, closedAt, printedAt,
       openedText, closedText,
@@ -1014,14 +956,6 @@ function parseEmailedReport(rows) {
     ok: true,
     extraction: {
       mid: field(rows, EMAILED.mid),
-      // EVERY merchant id this report prints, normalised and deduped — the
-      // same thing the printed slip carries, for the same reader: the email
-      // channel's router asks whether the REGISTERED merchant is among them,
-      // which cannot be defeated by which section printed first and cannot
-      // refuse a multi-scheme report that names the right one somewhere.
-      // (Without this the router falls back to the single first reading, which
-      // is the weaker check this branch was written to replace.)
-      mids: [...new Set(fieldAll(rows, EMAILED.mid).map(normaliseMid).filter(Boolean))],
       tid, batchNo: String(batchNo),
       openedAt, closedAt, printedAt,
       openedText: null, closedText: null,   // this format prints neither
@@ -1068,8 +1002,4 @@ module.exports = {
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
   sectionStarts, approvedSection,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
-  // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
-  // (and every row that matches, which is how a file naming two terminals is
-  // caught), and RE is the pattern set they read it with.
-  field, fieldAll, RE,
 };
