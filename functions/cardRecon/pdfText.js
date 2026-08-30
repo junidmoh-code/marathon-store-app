@@ -10,6 +10,14 @@
 
 "use strict";
 
+const path = require("node:path");
+
+// Where pdfjs-dist ships the 14 standard fonts, resolved from the installed
+// package so a version bump or a different install layout (the poller on the
+// mini, the deployed function) always points at ITS OWN copy.
+const STANDARD_FONT_DATA_URL =
+  path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts") + path.sep;
+
 // A text layer's Y coordinates wobble by fractions of a point within one line.
 // Rounding to the nearest point groups a line without merging adjacent ones —
 // a batch report is 9pt on 12pt leading, so the gap between lines is an order
@@ -74,9 +82,17 @@ async function pdfToLines(buffer) {
       isEvalSupported: false,
       useSystemFonts: false,
       disableFontFace: true,
-      // Text extraction needs no glyph outlines; supplying nothing here is what
-      // the standardFontDataUrl warning is about and it does not affect `str`.
-      standardFontDataUrl: undefined,
+      // The 14 standard fonts, from pdfjs's own package — a PDF that names
+      // /Helvetica or /Courier WITHOUT embedding it (Standard Bank's payment
+      // confirmation does; FNB's slips embed theirs) otherwise makes pdfjs
+      // print "Ensure that the standardFontDataUrl API parameter is provided"
+      // on every parse. Extraction of `str` never depended on the glyph data
+      // (verified: the same fixture extracts identical lines with and without
+      // it) — this feeds the logger, not the text, so a REAL parse failure is
+      // no longer buried under a warning that fires on every healthy run.
+      // The legacy Node build reads a filesystem path; the trailing separator
+      // is required (pdfjs appends the font filename to it).
+      standardFontDataUrl: STANDARD_FONT_DATA_URL,
     });
     doc = await task.promise;
   } catch (err) {
