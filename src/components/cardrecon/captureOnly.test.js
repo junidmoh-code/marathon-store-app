@@ -93,7 +93,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the card recon screens read exactly three nodes, and each is named here on purpose", () => {
+  it("the card recon screen reads exactly two nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -101,20 +101,20 @@ describe("the store app is capture-only", () => {
     //   card_batch_intake      what the mailbox poller did with each emailed
     //                          PDF — outcomes only: a sender, a subject, a file
     //                          name, recorded-or-why-not. NO figures, no lines,
-    //                          no PANs; the evidence itself stays in the
-    //                          owner-only records. It is read here because a
-    //                          refused emailed slip means a terminal is not
-    //                          reconciling, and a refusal only the owner could
-    //                          ever see is the failure this feature exists to
-    //                          prevent.
+    //                          no PANs. It is read here for ONE thing now: the
+    //                          tick on a till card, which needs to know that
+    //                          THIS terminal's report was recorded TODAY. The
+    //                          refusals themselves — which attachment, and why
+    //                          — are read by the owner on the POS reports tab;
+    //                          a manager gets the one bit they can act on,
+    //                          which is that a slip still has to be
+    //                          photographed.
     //
-    //   card_batch_poll_status  the poller's heartbeat — one small node saying
-    //                          when the mailbox was last checked and nothing
-    //                          else. It is read because a quiet mailbox and a
-    //                          dead poller are the same empty feed without it,
-    //                          and "no refusals" from a poller that stopped
-    //                          hours ago is the most dangerous thing this panel
-    //                          could imply.
+    // The poller's heartbeat (/card_batch_poll_status) went with the emailed-
+    // slip feed to marathon-pos-app → Reports → Emailed slips (POS #290). It
+    // answered "is the mailbox still being read at all?", which is an owner
+    // question about infrastructure, and it belongs beside the refusals it
+    // qualifies rather than on a handset that cannot act on either.
     //
     // The EFT pool used to be read here too (/eft_pool, /eft_unallocated).
     // It is not any more: that panel is owner work — unallocated money, giving
@@ -125,11 +125,10 @@ describe("the store app is capture-only", () => {
     // manager's handset.
     //
     // Everything else about a slip still goes to the callable and comes back as
-    // an acknowledgement. A FOURTH node appearing here is a change of policy and
+    // an acknowledgement. A THIRD node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
-    // EVERY file in the feature, not one of them: the emailed-slip panel is its
-    // own file now, and a scan naming a single file goes stale the moment
-    // something is extracted.
+    // EVERY file in the directory, not a named one: a scan naming a single file
+    // goes stale the moment something is extracted into a sibling.
     const reads = [];
     for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
       if (!/\.jsx?$/.test(file) || /\.test\./.test(file)) continue;
@@ -141,19 +140,18 @@ describe("the store app is capture-only", () => {
     // feed — and the same node read twice is still one node. What this pins is
     // the SET of nodes this feature touches, which is the thing that must not
     // grow quietly.
-    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals"]);
+    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "config/cardTerminals"]);
   });
 
-  it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
-    // It grows by a row per message for ever. A whole-node read on a handset on
-    // shop wifi is the mistake this repo keeps a rule against.
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
+  it("the intake node is read as a bounded TAIL, never as a whole node", () => {
+    // It grows by a row per message for ever, and this screen opens on a
+    // handset on shop wifi. The guard followed the read: it used to live on the
+    // emailed-slip panel, which has moved to the POS reports tab — the capture
+    // screen now does this read itself, for the ticks.
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
     const at = code.indexOf("card_batch_intake");
-    expect(at, "the feed read has moved — this scan must follow it").toBeGreaterThan(-1);
+    expect(at, "the intake read has moved — this scan must follow it").toBeGreaterThan(-1);
     expect(code.slice(at, at + 200)).toMatch(/limitToLast/);
-    // The heartbeat is ONE small node and is read whole, deliberately; that is
-    // the difference this assertion must not blur.
-    expect(code).toMatch(/card_batch_poll_status/);
   });
 
   it("the emailed-slip feed renders outcomes, never money", () => {
@@ -230,18 +228,10 @@ describe("the store app is capture-only", () => {
   // Nothing in this app reads the pool any more — the allow-list above is what
   // enforces that here.
 
-  it("the silence notice is recomputed while the screen sits open", () => {
-    // THE ONE THING THIS PANEL EXISTS TO SAY is that the mailbox has stopped
-    // being checked — and nothing about a dead poller changes, so nothing
-    // re-renders. A clock read once at mount sits at the moment the tab was
-    // opened and the notice never appears, on a screen a manager leaves open on
-    // a counter. (CodeRabbit, PR #510.)
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
-    expect(code, "the clock must be state, not a render-time read").toMatch(/setNowMs\(serverNowMs\(\)\)/);
-    expect(code, "…on a bounded timer").toMatch(/setInterval/);
-    expect(code, "…cleared on unmount").toMatch(/clearInterval/);
-    expect(code, "…and the notice must use it").toMatch(/silenceNotice\(lastAt, nowMs/);
-  });
+  // The silence notice's own test went with the panel: a stopped poller is now
+  // reported by marathon-pos-app's Emailed slips tab, whose suite pins both the
+  // ticking server clock behind it and the difference between a heartbeat that
+  // is MISSING and one that merely could not be read.
 
   it("shows no variance, expected figure or cashier list on the handset", () => {
     // #499 removed these from the callable's response. If a screen starts
