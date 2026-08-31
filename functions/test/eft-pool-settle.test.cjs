@@ -17,6 +17,7 @@ const assert = require("node:assert/strict");
 
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
+  eftCreditIdOf, allocateRemainderDecision, remainderStatusDecision,
 } = require("../lib/eft-settle.cjs");
 
 // ── an RTDB-transaction stand-in ─────────────────────────────────────────────
@@ -283,6 +284,190 @@ test("poolTransactionStep: a refusal against real data leaves the record be", ()
   assert.equal(res.committed, false);
   assert.equal(res.ranWithServerValue, true);
   assert.equal(decision.code, "already-used");
+});
+
+// ── THE REMAINDER — the R30-sale/R100-payment incident, closed ───────────────
+// A payment bigger than the sale is consumed whole; the difference must be
+// OWED TO SOMEONE, never a bare "overpaid" note. The plan is stamped at
+// attach (the sale is real by then; a released payment owes nobody) and the
+// callable's follow-up IO turns it into store credit or a visible hold.
+const KEY = "a".repeat(40);
+
+function settleAndAttach(node, settlement, saleId = "S-1") {
+  runSettle(node, settlement);
+  let out = null;
+  node.transaction((cur) => {
+    out = attachSaleDecision(cur, { attemptId: settlement.attemptId, saleId, receiptNumber: "00042", at: 6000, poolKey: KEY });
+    return out.ok && !out.already ? out.value : undefined;
+  });
+  return out;
+}
+
+test("attach on a partial application stamps a store-credit remainder for the customer", () => {
+  // R100 payment, R30 applied — tillA carries a customer.
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  settleAndAttach(node, { ...tillA, appliedCents: 3000 });
+  const r = node.get().used.remainder;
+  assert.equal(r.cents, 7000);
+  assert.equal(r.disposition, "credit");
+  assert.equal(r.customerId, "c1");
+  assert.equal(r.customerName, "Mr Dlamini");
+  assert.equal(r.creditId, eftCreditIdOf(KEY, 5000)); // deterministic: pool key + settle time
+  assert.equal(r.status, "pending"); // the follow-up IO moves it to "issued"
+});
+
+test("attach with no customer stamps an UNALLOCATED remainder — held, never swallowed", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  settleAndAttach(node, { ...tillB, appliedCents: 3000 }); // tillB has no customer
+  const r = node.get().used.remainder;
+  assert.equal(r.cents, 7000);
+  assert.equal(r.disposition, "unallocated");
+  assert.equal(r.customerId, null);
+  assert.equal(r.creditId, null);
+  assert.equal(r.status, "pending"); // the follow-up IO moves it to "held"
+});
+
+test("an exact payment stamps NO remainder", () => {
+  const node = makeNode(recorded({ amountCents: 55000 }));
+  settleAndAttach(node, tillA); // appliedCents 55000
+  assert.equal(node.get().used.remainder, undefined);
+});
+
+test("a released payment carries no remainder — nothing was owed on a sale that never happened", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  runSettle(node, { ...tillA, appliedCents: 3000 });
+  let out = null;
+  node.transaction((cur) => {
+    out = releaseDecision(cur, { attemptId: "P-a1", at: 7000, reason: "the sale did not complete" });
+    return out.ok ? out.value : undefined;
+  });
+  assert.equal(out.ok, true);
+  assert.equal(node.get().attempts[7000].remainder, undefined);
+  assert.equal(node.get().used, null);
+});
+
+test("the owner allocates a held remainder to a customer; already-credited refuses", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  settleAndAttach(node, { ...tillB, appliedCents: 3000 });
+  const allocate = (args) => {
+    let out = null;
+    node.transaction((cur) => {
+      out = allocateRemainderDecision(cur, { poolKey: KEY, at: 9000, ...args });
+      return out.ok && !out.already ? out.value : undefined;
+    });
+    return out;
+  };
+  assert.equal(allocate({ customerId: null }).code, "bad-customer");
+  assert.equal(allocate({ customerId: "c9", customerName: "Mrs Naidoo" }).ok, true);
+  const r = node.get().used.remainder;
+  assert.equal(r.disposition, "credit");
+  assert.equal(r.customerId, "c9");
+  assert.equal(r.creditId, eftCreditIdOf(KEY, 5001)); // tillB settled at 5001
+  assert.equal(r.status, "pending");
+  // The same customer again: idempotent. A different one: a refusal, not a move.
+  assert.equal(allocate({ customerId: "c9", customerName: "Mrs Naidoo" }).already, true);
+  assert.equal(allocate({ customerId: "c8", customerName: "Someone Else" }).code, "already-credited");
+  // A remainder on a payment that was never partially applied: nothing to allocate.
+  const exact = makeNode(recorded({ amountCents: 55000 }));
+  settleAndAttach(exact, tillA);
+  let out = null;
+  exact.transaction((cur) => {
+    out = allocateRemainderDecision(cur, { poolKey: KEY, at: 9000, customerId: "c9", customerName: "x" });
+    return out.ok && !out.already ? out.value : undefined;
+  });
+  assert.equal(out.code, "no-remainder");
+});
+
+test("remainderStatusDecision moves pending → issued/held, idempotently, and refuses with no remainder", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  settleAndAttach(node, { ...tillA, appliedCents: 3000 });
+  const flip = (status) => {
+    let out = null;
+    node.transaction((cur) => {
+      out = remainderStatusDecision(cur, { status, at: 9500 });
+      return out.ok && !out.already ? out.value : undefined;
+    });
+    return out;
+  };
+  assert.equal(flip("issued").ok, true);
+  assert.equal(node.get().used.remainder.status, "issued");
+  assert.equal(flip("issued").already, true);
+  const bare = makeNode(recorded());
+  let out = null;
+  bare.transaction((cur) => {
+    out = remainderStatusDecision(cur, { status: "issued", at: 9500 });
+    return out.ok && !out.already ? out.value : undefined;
+  });
+  assert.equal(out.code, "no-remainder");
+});
+
+test("a reversal keeps the remainder (creditId included) on the reversal record", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  settleAndAttach(node, { ...tillA, appliedCents: 3000 });
+  node.transaction((cur) => {
+    const s = remainderStatusDecision(cur, { status: "issued", at: 9500 });
+    return s.ok && !s.already ? s.value : undefined;
+  });
+  let out = null;
+  node.transaction((cur) => {
+    out = reverseDecision(cur, { at: 9900, by: "gunidmoh@gmail.com", reason: "wrong sale" });
+    return out.ok ? out.value : undefined;
+  });
+  const rev = node.get().reversals[9900];
+  assert.equal(rev.remainder.creditId, eftCreditIdOf(KEY, 5000));
+  assert.equal(rev.remainder.status, "issued"); // the credit STANDS; the owner removes it separately
+});
+
+// ── UNDERPAYMENT + MULTIPLE PAYMENTS, ONE SALE ───────────────────────────────
+// A R700 payment against a R750 sale settles R700 (appliedCents = the whole
+// payment, no remainder) and the R50 is another tender's business. A customer
+// who paid in two transfers: each payment is its OWN consume-once transaction
+// on its OWN node — the guarantee is per payment, and a rival till loses on
+// exactly the payment it raced for, never on the other.
+test("underpayment: the whole payment applies, no remainder, the balance is another tender's", () => {
+  const node = makeNode(recorded({ amountCents: 70000 }));
+  settleAndAttach(node, { ...tillA, appliedCents: 70000 }); // R700 of a R750 sale
+  const after = node.get();
+  assert.equal(after.status, "used");
+  assert.equal(after.used.appliedCents, 70000);
+  assert.equal(after.used.remainder, undefined);
+});
+
+test("two pool payments settle one sale; a rival till loses only the payment it raced for", () => {
+  const p1 = makeNode(recorded({ amountCents: 40000 }));
+  const p2 = makeNode(recorded({ amountCents: 40000, reference: "JUNID5678" }));
+
+  // The same till settles both legs of a R750 sale: R400 + R350 (the second
+  // payment overpays by R50 — ITS remainder, not the first's).
+  const legA1 = { ...tillA, attemptId: "P-a1", appliedCents: 40000 };
+  const legA2 = { ...tillA, attemptId: "P-a2", appliedCents: 35000 };
+  assert.equal(runSettle(p1, legA1).ok, true);
+  // A rival till grabs payment 2 at the same instant — and wins it.
+  assert.equal(runSettle(p2, { ...tillB, appliedCents: 40000 }).ok, true);
+  const lost = runSettle(p2, legA2);
+  assert.equal(lost.ok, false);
+  assert.equal(lost.code, "already-used");
+  // Payment 1 is untouched by that loss — the first till still holds it, and
+  // releases it exactly as a single-payment sale failure would.
+  assert.equal(p1.get().used.attemptId, "P-a1");
+  let out = null;
+  p1.transaction((cur) => {
+    out = releaseDecision(cur, { attemptId: "P-a1", at: 7000, reason: "another EFT leg on the same sale could not be settled" });
+    return out.ok ? out.value : undefined;
+  });
+  assert.equal(out.ok, true);
+  assert.equal(p1.get().status, "unmatched");
+
+  // Undisturbed run: both settle, both attach to the same sale, and only the
+  // overpaying leg carries a remainder.
+  const q1 = makeNode(recorded({ amountCents: 40000 }));
+  const q2 = makeNode(recorded({ amountCents: 40000 }));
+  settleAndAttach(q1, legA1, "S-7");
+  settleAndAttach(q2, legA2, "S-7");
+  assert.equal(q1.get().used.sale.saleId, "S-7");
+  assert.equal(q2.get().used.sale.saleId, "S-7");
+  assert.equal(q1.get().used.remainder, undefined);
+  assert.equal(q2.get().used.remainder.cents, 5000);
 });
 
 test("a retried release (till timed out after the first landed) is a success, not an error", () => {
