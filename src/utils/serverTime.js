@@ -85,10 +85,20 @@ export function serverNowIso() {
   return new Date(serverNowMs()).toISOString();
 }
 
-/** "YYYY-MM-DD" in SA time, per the server. Shift then read UTC parts so the
- *  device's timezone never enters. */
+/** "YYYY-MM-DD" in SA time for ANY instant. Shift then read UTC parts so the
+ *  device's timezone never enters.
+ *
+ *  Separate from saDateString() because some callers have to place a stamp that
+ *  is not now — "did this batch report arrive TODAY?" compares a recorded `at`
+ *  against the server's current day, and both sides must be reduced to a day by
+ *  the same formula or the comparison is meaningless for two hours a day. */
+export function saDateStringAt(ms) {
+  return new Date(ms + SA_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** "YYYY-MM-DD" in SA time, per the server. */
 export function saDateString() {
-  return new Date(serverNowMs() + SA_OFFSET_MS).toISOString().slice(0, 10);
+  return saDateStringAt(serverNowMs());
 }
 
 /** Hour of day (0–23) in SA time, per the server. */
