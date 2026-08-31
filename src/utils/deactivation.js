@@ -74,6 +74,22 @@ export function orderSizeOut(product, { clothingOrder, hubQty }) {
   return !!clothingOrder && hubQty <= 0;
 }
 
+// ── THE BROWSE FILTER (owner spec 2026-08-31, BUG 1) ─────────────────────────
+// The flag was being WRITTEN and not READ: "Air foce 1" sat in the Deactivated
+// list AND still rendered as an orderable Tap-to-add card in the product grid.
+// orderSizeOut above only greys the SIZES — the card was still there, and staff
+// tapped whichever copy they saw first, found no sizes, and lost the sale.
+//
+// So every list a product is BROWSED from drops deactivated records here. The
+// three places a deactivated product must still be findable are deliberately
+// NOT browse lists and must NOT call this:
+//   • the merge picker (mergeSearch.js — already marks them "· deactivated"),
+//   • SEARCH — a typed query searches the FULL universe and marks the hits,
+//   • the Deactivated list on the Leftovers tab, where it is reactivated.
+export function browsableProducts(list) {
+  return (list || []).filter((p) => !isDeactivated(p));
+}
+
 /** Short "who and when" line for a card. */
 export function deactivationLine(p) {
   const d = p && p.deactivated;

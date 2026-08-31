@@ -33,6 +33,7 @@ import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells, useStockTargets, useTargetDecisions, useEngineConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
+import { isDeactivated } from "../../utils/deactivation";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
@@ -136,6 +137,7 @@ export default function NoTargetQueue({ products = [] }) {
     for (const [pid, bySize] of Object.entries(allStock?.central || {})) {
       const p = byId.get(pid);
       if (!isClothing(p)) continue;
+      if (isDeactivated(p)) continue;   // retired finished line — no decision is owed on it
       if (mappedAnywhere(pid)) continue;   // the category already decided
       if (dests.some((d) => allTargets?.[d]?.[pid])) continue;
       if (dests.some((d) => Object.keys(allStock?.[d]?.[pid] || {}).length)) continue;
@@ -159,6 +161,7 @@ export default function NoTargetQueue({ products = [] }) {
       for (const [pid, bySize] of Object.entries(allStock?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
+        if (isDeactivated(p)) continue;   // retired finished line — no decision is owed on it
         if (mappedAt(pid, loc)) continue;   // the category already decided here
         if (allTargets?.[loc]?.[pid]) continue;
         const introducedElsewhere = dests.some((d) => allTargets?.[d]?.[pid]);
@@ -187,6 +190,7 @@ export default function NoTargetQueue({ products = [] }) {
       for (const [pid, byTarget] of Object.entries(allTargets?.[loc] || {})) {
         const p = byId.get(pid);
         if (!isClothing(p)) continue;
+        if (isDeactivated(p)) continue;   // retired finished line — no decision is owed on it
         if (mappedAt(pid, loc) && mappedPerSize(pid)) continue;   // every declared size decided
         if (decisionActive(loc, pid)) continue;
         const sizes = Object.entries(allStock?.[loc]?.[pid] || {})
