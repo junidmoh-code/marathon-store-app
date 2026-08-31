@@ -72,6 +72,9 @@ test("the canonical record matches the POS buildCreditRecord shape", () => {
     issuedAt: TS,
     issuedByUid: "uA",
     source: "eft_overpayment",
+    // Same as the POS builder given the same claim: the anchoring sale lands
+    // as originalRefundSaleId, so both minters produce identical records.
+    originalRefundSaleId: "S-1",
     reason: claim.reason,
   });
 });

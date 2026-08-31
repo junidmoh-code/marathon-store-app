@@ -72,6 +72,10 @@ function buildEftCreditRecord(claim, serverTs) {
     issuedAt: serverTs,
     issuedByUid: claim.issuedByUid ?? null,
     source: claim.source,
+    // The POS builder stamps the anchoring sale when a claim carries one, and
+    // this claim does — the two minters (here and the POS sweep) must produce
+    // the SAME record, or which one won a race becomes observable data.
+    ...(claim.saleId ? { originalRefundSaleId: claim.saleId } : {}),
     ...(claim.reason ? { reason: claim.reason } : {}),
   };
 }

@@ -81,6 +81,8 @@ test("a used payment stays visible with its settled summary", () => {
   assert.deepEqual(v.used, {
     at: 2000, cashierName: "Ahmed", customerName: "Mr Dlamini",
     saleId: "S-abc", receiptNumber: "00123",
+    // The whole amount, accounted for: fully applied, nothing left over.
+    appliedCents: 55000, remainder: null,
   });
   // The settlement's uids and till context stay in the pool record.
   const s = JSON.stringify(v);
@@ -189,4 +191,26 @@ test("searchPlan reads amounts per token and caps token count", () => {
 test("scoreEftView: a zero amount never matches by amount", () => {
   const v = publicEftView("k", recorded({ amountCents: 0, reference: null, payer: null, bankRef: null }));
   assert.equal(scoreEftView(v, searchPlan("0")), null);
+});
+
+test("a partially-applied payment says where every rand went", () => {
+  const v = publicEftView("k2", recorded({
+    status: "used", amountCents: 10000,
+    used: {
+      at: 2000, cashierUid: "u9", cashierName: "Ahmed", storeId: "pe", tillId: "till1",
+      customerId: "c1", customerName: "Mr Dlamini", appliedCents: 3000,
+      sale: { saleId: "S-abc", receiptNumber: "00123", at: 2001 },
+      remainder: {
+        cents: 7000, disposition: "credit", customerId: "c1", customerName: "Mr Dlamini",
+        creditId: "eftsc-k-2000", status: "issued",
+      },
+    },
+  }));
+  assert.equal(v.used.appliedCents, 3000);
+  assert.deepEqual(v.used.remainder, {
+    cents: 7000, disposition: "credit", status: "issued",
+    customerName: "Mr Dlamini", creditId: "eftsc-k-2000",
+  });
+  // The customer id itself stays in the pool record, like the uids.
+  assert.ok(!JSON.stringify(v).includes('"c1"'));
 });

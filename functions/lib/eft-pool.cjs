@@ -67,6 +67,20 @@ function publicEftView(key, record) {
         customerName: record.used.customerName ?? null,
         saleId: record.used.sale?.saleId ?? null,
         receiptNumber: record.used.sale?.receiptNumber ?? null,
+        // The WHOLE amount must be accounted for at the counter: how much of
+        // the payment the sale took, and where the difference went — store
+        // credit (whose, which credit) or held unallocated for the owner. A
+        // used payment must never leave a cashier guessing about the rest.
+        appliedCents: Number.isInteger(record.used.appliedCents) ? record.used.appliedCents : null,
+        remainder: record.used.remainder && typeof record.used.remainder === "object"
+          ? {
+              cents: record.used.remainder.cents ?? null,
+              disposition: record.used.remainder.disposition ?? null,
+              status: record.used.remainder.status ?? null,
+              customerName: record.used.remainder.customerName ?? null,
+              creditId: record.used.remainder.creditId ?? null,
+            }
+          : null,
       }
     : null;
   return {
