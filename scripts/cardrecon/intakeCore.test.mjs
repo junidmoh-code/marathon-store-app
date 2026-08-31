@@ -183,7 +183,7 @@ describe("claimDecision — the same slip is never submitted twice", () => {
 
   it("stands down while another run holds it — and says it is NOT finished", () => {
     // THE DIFFERENCE IS A SLIP. A message held by a run that died must stay
-    // UNREAD in the mailbox, because only unread mail is searched and only a
+    // visible to the next scan (its ledger row is not "done"), and only a
     // later tick can retake the stale claim. Marking it read here would hide it
     // from the very tick that was going to rescue it.
     const d = claimDecision({ state: "claimed", at: 1000 }, 1000 + STALE_CLAIM_MS - 1);

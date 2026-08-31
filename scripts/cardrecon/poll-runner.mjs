@@ -6,7 +6,7 @@
 // scripts/lib/launchdRunner.mjs — so the machine has one way of running
 // scheduled work rather than a third.
 //
-// A tick with no unread mail exits in under a second having made zero capture
+// A tick with nothing unprocessed exits in seconds having made zero capture
 // calls, and logs one line, so a quiet log still proves the schedule is alive.
 //
 // CREDENTIALS are not this file's business: the poller reads them from the
@@ -31,9 +31,12 @@ const code = await runTick({
   // A message count above zero is what proves there was work. Anything on
   // stderr settles it too — see the runner.
   busyWhen: (text) => {
-    const m = text.match(/·\s*(\d+)\s*unread message/);
+    // "unprocessed", not "unread": the poller now scans by the PROCESSED
+    // ledger, because the owner's phone marks mail read before the poller
+    // sees it. The regex must track the poller's own line.
+    const m = text.match(/·\s*(\d+)\s*unprocessed message/);
     return !!(m && Number(m[1]) > 0);
   },
-  idleLine: "tick: no unread mail in the recon mailbox",
+  idleLine: "tick: nothing unprocessed in the recon mailbox",
 });
 process.exit(code);

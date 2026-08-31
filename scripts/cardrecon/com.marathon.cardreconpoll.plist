@@ -81,7 +81,19 @@
     <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
-  <key>StartInterval</key><integer>120</integer>
+  <!-- KEEPALIVE, NOT StartInterval — learned the hard way on 2026-08-31.
+       At 01:16 launchd silently stopped firing every StartInterval agent in
+       this user's session at once (spawns "pended", no error, no log line, no
+       reboot, no sleep) and the poller was dead for nine hours while payments
+       sat in the mailbox. The one agent that survived the same event was the
+       one with KeepAlive: launchd treats a KeepAlive job as "must be running"
+       and respawns it whenever it exits — a crash, a clean tick, or the very
+       wedge that killed the interval schedule. The runner still runs ONE tick
+       and exits; ThrottleInterval spaces the respawns to the old cadence, and
+       the single-flight lock in launchdRunner.mjs keeps overlap impossible
+       regardless of what launchd does. -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>120</integer>
   <key>RunAtLoad</key><true/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
        not handle itself (node failing to start, a syntax error) lands here.

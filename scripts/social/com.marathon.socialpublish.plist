@@ -29,10 +29,12 @@
       unnoticed. If this agent is ever wanted on a machine in another zone,
       convert the hours by hand — do not assume the label.
 
-    · RunAtLoad is FALSE, unlike the reconciler. Loading the agent — after a
-      reboot, or while installing it — must not fire a post. Nothing here is
-      urgent enough to justify a publish at an unscheduled moment, and a
-      surprise post to a live Instagram account is not recoverable.
+    · RunAtLoad is FALSE historically — but note that KeepAlive (below)
+      starts the job at load REGARDLESS, so the plist no longer guarantees
+      "loading never fires a tick". The guarantee that matters lives in the
+      runner itself: a tick publishes only what is approved AND due, so a
+      tick at load is identical to the tick two minutes later. That
+      slot-gating, not this key, is what keeps a surprise post impossible.
 
     · A missed fire (the mini was asleep or off at the scheduled time) is run by launchd as
       soon as it wakes. That is the behaviour we want: an approved post goes
@@ -95,7 +97,18 @@
        Single-flight is the runner's lockfile, and double-posting is prevented
        by the claim transaction in publish.mjs — both already relied on by the
        daily fire, neither weakened by ticking more often. -->
-  <key>StartInterval</key><integer>120</integer>
+  <!-- KEEPALIVE, NOT StartInterval — 2026-08-31. At 01:16 launchd silently
+       stopped firing every StartInterval agent in this session at once
+       (spawns "pended", no error, no reboot, no sleep); the one agent with
+       KeepAlive survived. KeepAlive means launchd MUST keep the job running
+       and respawns it on any exit — a crash, a clean tick, or the very wedge
+       that killed the interval schedule. The runner still runs one tick and
+       exits; ThrottleInterval spaces the respawns to the old cadence, so this
+       is NOT a hot loop, and the single-flight lock keeps overlap impossible.
+       (The old comment feared a hot loop — ThrottleInterval is the piece that
+       fear was missing.) -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>120</integer>
   <key>RunAtLoad</key><false/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
        not handle itself (node failing to start, a syntax error) lands here.

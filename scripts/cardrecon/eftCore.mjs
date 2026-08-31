@@ -41,7 +41,7 @@
 // from this very mailbox.
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { clip } from "./intakeCore.mjs";
+import { clip, messageKey } from "./intakeCore.mjs";
 
 // The money parser is BORROWED from card recon, not rewritten: it has been
 // fuzzed and had two real grouping bugs found and fixed in it, and a second
@@ -461,6 +461,30 @@ export function eftMessageKey({ messageId, from, subject, date, size, uid, uidVa
 }
 
 /**
+ * The candidate claim keys a message COULD be filed under, computable from the
+ * envelope's Message-ID alone — before downloading anything. Three, because
+ * the two readers key differently: the slip path claims under messageKey
+ * (intakeCore), the EFT path under eftMessageKey with the auth verdict folded
+ * in (pass and fail are different keys by design). A message whose ledger
+ * entry under ANY of these says "done" has been processed, whatever its
+ * read-flag says — the owner reads this mailbox on their phone, and \Seen is
+ * their gesture, not this program's memory.
+ *
+ * Null when the envelope carries no Message-ID: the fallback key needs fields
+ * only the full download provides, so such a message is downloaded and the
+ * per-message claim decides — one wasted download, never a wrong skip.
+ */
+export function envelopeCandidateKeys({ messageId }) {
+  const id = clip(messageId, 400);
+  if (!id) return null;
+  return [
+    messageKey({ messageId: id }),
+    eftMessageKey({ messageId: id, authPass: true }),
+    eftMessageKey({ messageId: id, authPass: false }),
+  ];
+}
+
+/**
  * Create-only: the decision inside the RTDB transaction that writes the pool.
  * An existing record — whatever its status by then — is NEVER overwritten; a
  * later session's matched/used must not be reset to unmatched by a replay.
@@ -545,4 +569,73 @@ export function eftPoolRecord({ message, verdict, parsed, account, reader, rawTe
     destination,
     accountTail: account.tail,
   };
+}
+
+// ─── SEVERAL PAYMENTS ON ONE MESSAGE ─────────────────────────────────────────
+// Standard Bank batches payments: one email, several PaymentConfirmation PDFs,
+// each PDF one payment. The earlier shape recorded a message as AT MOST one
+// payment and refused when its documents disagreed — correct for a duplicate
+// attach, silently-visible-but-wrong for a batch: every payment after the
+// first became a refusal a person had to untangle. These two functions are the
+// pure heart of the fix: group a message's parsed documents into DISTINCT
+// payments (identical parses are one payment printed twice — a reprint, or the
+// same figures in body and PDF; different parses are different payments), and
+// give every payment its own deterministic pool key so each lands as its own
+// /eft_pool record and a replay lands on the same records.
+
+/** What makes two parsed payments THE SAME payment. The bank's own transaction
+ *  id carries most of the weight; amount, reference and destination close the
+ *  door on a bank that ever reuses one. */
+export function paymentIdentity(parse) {
+  return [parse.amountCents, parse.bankRef ?? "", parse.reference ?? "", parse.accountMask ?? ""].join("|");
+}
+
+/**
+ * @param parsedDocs  [{d: {text}, r: {id}, p: parse}] — every document a bank
+ *   reader claimed, with that reader's parse of it (ok or not).
+ * @returns [{readerId, parse, rawText, copies}] — one entry per DISTINCT
+ *   payment (ok parses deduped by paymentIdentity) plus one per unparseable
+ *   document (deduped by text, so the same broken attachment twice is one
+ *   refusal). Order is stable: first appearance wins.
+ */
+export function groupEftPayments(parsedDocs) {
+  const groups = [];
+  const byKey = new Map();
+  for (const { d, r, p } of parsedDocs ?? []) {
+    const key = p?.ok ? `ok:${paymentIdentity(p)}` : `bad:${createHash("sha256").update(String(d?.text ?? "")).digest("hex")}`;
+    const existing = byKey.get(key);
+    if (existing) { existing.copies++; continue; }
+    const group = { readerId: r?.id ?? null, parse: p, rawText: String(d?.text ?? ""), copies: 1 };
+    byKey.set(key, group);
+    groups.push(group);
+  }
+  return groups;
+}
+
+/**
+ * The pool node for one payment: 40 hex chars like every pool key (the POS
+ * callable refuses any other shape).
+ *
+ * AN OK PARSE IS KEYED BY ITS CONTENT IDENTITY, ALWAYS — never by how many
+ * groups the message happened to yield THIS run. A count-dependent key was
+ * unstable across a crash-retry: a batched message read as two payments, one
+ * written, then retried on a tick where the other PDF transiently failed
+ * extraction, would re-derive groupCount 1 and write the SAME bank payment a
+ * second time under the message key — two independently settleable records
+ * for one deposit. Content identity is what a replay reproduces regardless of
+ * its siblings' luck. (Adversarial review, this PR. Records written before
+ * batching sit under message keys, are ledger-done, and can never re-enter
+ * processing — nothing replays into them.)
+ *
+ * REFUSALS keep the message key when they are the message's only group: a
+ * refusal is about the MESSAGE ("no reader for this"), its text can carry
+ * transient placeholders, and a duplicated refusal row would be noise where a
+ * duplicated payment is money.
+ */
+export function eftPaymentKey(baseKey, group, groupCount) {
+  if (group.parse?.ok) {
+    return createHash("sha256").update(`${baseKey}|doc|ok:${paymentIdentity(group.parse)}`).digest("hex").slice(0, 40);
+  }
+  if (groupCount === 1) return baseKey;
+  return createHash("sha256").update(`${baseKey}|doc|bad:${group.rawText}`).digest("hex").slice(0, 40);
 }

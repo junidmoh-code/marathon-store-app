@@ -458,3 +458,103 @@ describe("the pool record", () => {
     expect(r.status).toBeUndefined();
   });
 });
+
+// ─── SEVERAL PAYMENTS ON ONE MESSAGE ─────────────────────────────────────────
+// Standard Bank batches payments: one email, several PDFs, each one payment.
+// The contract pinned here: identical parses collapse to ONE payment (reprint,
+// or body+PDF twins), distinct parses are EACH their own payment with their
+// own deterministic 40-hex pool key, a single-payment message keeps the
+// message key itself (records written before batching existed stay reachable
+// by replays), and unparseable documents each refuse separately.
+import { groupEftPayments, eftPaymentKey, paymentIdentity, envelopeCandidateKeys } from "./eftCore.mjs";
+import { messageKey } from "./intakeCore.mjs";
+
+const okParse = (over = {}) => ({
+  ok: true, amountCents: 55000, reference: "JUNID1234", payer: "J SOAP",
+  bankTs: 890, bankRef: "4140542552", beneficiaryName: "ATUGAR", destBankName: "FNB",
+  accountMask: "XXXXXXXXXXXX6625", ...over,
+});
+const doc = (text, p) => ({ d: { text }, r: { id: "standardbank" }, p });
+
+describe("groupEftPayments", () => {
+  it("two DIFFERENT payments in one message are two groups, order stable", () => {
+    const a = okParse();
+    const b = okParse({ amountCents: 20000, bankRef: "999", reference: "OM82" });
+    const groups = groupEftPayments([doc("A", a), doc("B", b)]);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].parse.amountCents).toBe(55000);
+    expect(groups[1].parse.amountCents).toBe(20000);
+    expect(groups[0].rawText).toBe("A");
+  });
+
+  it("identical parses collapse to one payment and count their copies", () => {
+    const groups = groupEftPayments([doc("pdf", okParse()), doc("body", okParse())]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].copies).toBe(2);
+  });
+
+  it("same amount+reference but different bank transaction ids are TWO payments", () => {
+    // The customer paying twice: everything identical except the bank's id.
+    const groups = groupEftPayments([doc("A", okParse()), doc("B", okParse({ bankRef: "4140542553" }))]);
+    expect(groups).toHaveLength(2);
+  });
+
+  it("unparseable documents refuse separately; identical broken twins collapse", () => {
+    const bad = { ok: false, reason: "no Amount line" };
+    const groups = groupEftPayments([doc("broken-1", bad), doc("broken-1", bad), doc("broken-2", bad)]);
+    expect(groups).toHaveLength(2);
+    expect(groups.every((g) => !g.parse.ok)).toBe(true);
+  });
+
+  it("a parsed payment and a broken sibling both survive as their own groups", () => {
+    const groups = groupEftPayments([doc("good", okParse()), doc("bad", { ok: false, reason: "x" })]);
+    expect(groups).toHaveLength(2);
+  });
+});
+
+describe("eftPaymentKey", () => {
+  const base = "a".repeat(40);
+  it("an OK parse is keyed by content identity even when it is the only group — a crash-retry whose sibling document flapped must land on the SAME key", () => {
+    const [g] = groupEftPayments([doc("A", okParse())]);
+    const alone = eftPaymentKey(base, g, 1);
+    const [g2] = groupEftPayments([doc("A", okParse()), doc("B", okParse({ bankRef: "9" }))]);
+    expect(alone).toBe(eftPaymentKey(base, g2, 2)); // same payment, same key, any group count
+    expect(alone).toMatch(/^[0-9a-f]{40}$/);
+    expect(alone).not.toBe(base);
+  });
+  it("a message's ONLY refusal keeps the message key (a refusal is about the message)", () => {
+    const [g] = groupEftPayments([doc("broken", { ok: false, reason: "x" })]);
+    expect(eftPaymentKey(base, g, 1)).toBe(base);
+  });
+  it("multi-payment keys are 40-hex, deterministic, distinct per payment", () => {
+    const groups = groupEftPayments([doc("A", okParse()), doc("B", okParse({ bankRef: "9" }))]);
+    const k0 = eftPaymentKey(base, groups[0], 2);
+    const k1 = eftPaymentKey(base, groups[1], 2);
+    expect(k0).toMatch(/^[0-9a-f]{40}$/);
+    expect(k1).toMatch(/^[0-9a-f]{40}$/);
+    expect(k0).not.toBe(k1);
+    expect(k0).not.toBe(base);
+    // A replay computes the same keys — that is what makes the pool write
+    // create-only rather than duplicating.
+    expect(eftPaymentKey(base, groups[0], 2)).toBe(k0);
+  });
+  it("identity ignores volatile fields (payer prose, timestamps)", () => {
+    expect(paymentIdentity(okParse({ payer: "X", bankTs: 1 }))).toBe(paymentIdentity(okParse({ payer: "Y", bankTs: 2 })));
+  });
+});
+
+describe("envelopeCandidateKeys", () => {
+  it("covers the slip key and both EFT auth-verdict keys from the Message-ID alone", () => {
+    const id = "<abc@standardbank.co.za>";
+    const keys = envelopeCandidateKeys({ messageId: id });
+    expect(keys).toHaveLength(3);
+    expect(keys).toContain(messageKey({ messageId: id }));
+    expect(keys).toContain(eftMessageKey({ messageId: id, authPass: true }));
+    expect(keys).toContain(eftMessageKey({ messageId: id, authPass: false }));
+    expect(new Set(keys).size).toBe(3);
+  });
+  it("no Message-ID → null: download and let the claim decide, never a wrong skip", () => {
+    expect(envelopeCandidateKeys({ messageId: null })).toBe(null);
+    expect(envelopeCandidateKeys({ messageId: "" })).toBe(null);
+  });
+});
