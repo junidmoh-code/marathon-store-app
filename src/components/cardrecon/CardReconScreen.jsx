@@ -1,101 +1,89 @@
-// ─── CARD RECON — the phone submit screen for the FNB batch slip ─────────────
-// A manager settles the till's card machine, tears off the Batch Report, and
-// captures it here: pick the TILL, shoot the detail roll (the default ask) and
-// the summary, confirm the OCR read the slip correctly, submit. Done.
+// ─── CARD RECON — four tills, one tick each ──────────────────────────────────
+// A manager settles a card machine, tears off the Batch Report, and this screen
+// answers one question: is today's report in? One card per terminal, a tick
+// when it is, nothing loud when it is not. Ten seconds, at arm's length.
 //
-// CAPTURE ONLY — THE MANAGER SEES NOTHING BACK. No variance, no expected
-// figure, no comparison, no verdict on whether the till balanced. That is
-// deliberate: the owner reviews reconciliation on his own account
-// (marathon-pos-app → Reports → Card reconciliation, super-admin only) and
-// takes it up with whoever it concerns. A manager who can see the variance
-// their own till produced is a manager who can be tempted to manage it.
+// THREE OF THE FOUR TERMINALS EMAIL THEIR REPORT and tick on their own — the
+// poller on the Mac mini captures the PDF with nobody involved. PE Till 1
+// (0000HP1X) cannot email, so its slip is photographed here. Every card is
+// tappable all the same: a terminal whose email fails is still capturable by
+// hand, which is what this path has always been for.
 //
-// The server enforces this, not this screen: the callable simply does not
-// return expected/variance/cashiers/lines any more. Every figure IS still
-// computed and stored on the record — it just never travels to the phone.
+// THE READING IS INVISIBLE. Tapping a card opens the photo picker and that is
+// the whole interaction — the extraction, every validation and the variance all
+// run server-side exactly as before, and the manager is told one of two things:
+// recorded, or a plain sentence saying why not. No figures, no confidence, no
+// review step, no "read the slip" button to press afterwards. The owner reads
+// the variance, the emailed slips and the EFT pool on his own reports tab; none
+// of that belongs on a screen a manager uses for ten seconds. This file no
+// longer renders a single money figure, and captureOnly.test.js now scans it
+// like every other file in this directory to keep it that way.
 //
-// KEYED BY TILL, NEVER BY A NAME. The slip prints a TID and no cashier, so the
-// picker offers the registered terminals (/config/cardTerminals) and the
-// server rejects a slip whose printed TID is not the till that was picked —
-// the wrong slip on the wrong till refuses itself. Who worked the till during
-// the batch window is DERIVED server-side from the POS tender ledger and shown
-// read-only below the review; nobody selects a person anywhere in this
-// feature.
+// WHY THE PICKER OPENS FROM A <label> AND NOT FROM ref.click().
+// The screen this replaced put the photo in a hidden input and opened it with
+// JavaScript, behind a numbered form whose final button — "Read the slip" — was
+// disabled unless a checkbox in the section ABOVE it had been ticked, and which
+// looked exactly the same disabled as enabled (S.btn sets its own background,
+// border and colour inline, so the browser's disabled styling never shows). A
+// manager who put their one photo in the wrong slot, or who never found the
+// checkbox, tapped a live-looking button that did nothing, for ever. Nothing
+// reached the server on 31 Aug 2026 — the OCR usage log records zero calls
+// against two successful captures on the 29th and 30th, both of them
+// single-photo, summary-only, made by someone who knew where the checkbox was.
+// There is now no gate button, no checkbox and no slots: the label IS the
+// control, the OS opens the picker natively, and the upload starts on pick.
 //
-// NOBODY TYPES THE CARD TOTAL. Every figure on this screen is rendered from
-// the server's OCR of the terminal's own printout — and every one of them is
-// something the manager can check against the paper in their hand, which is
-// the entire purpose of the review step. There is no editable money field, and
-// the submit phase takes the server-parked draft verbatim. A bad read is a
-// retake, never a correction by keyboard.
+// KEYED BY TILL, NEVER BY A NAME. The slip prints a TID and no cashier; the
+// server rejects a slip whose printed TID is not the card that was tapped, so
+// the wrong slip on the wrong till refuses itself. Who worked the till is
+// derived server-side and nobody selects a person anywhere in this feature.
 //
-// NO CARD NUMBERS. The detail roll's per-transaction masked PAN is parsed and
-// stored for the matcher's line identity, and is never sent to this client.
+// NOBODY TYPES A FIGURE, and there is no editable field to type one into. A bad
+// read is a retake.
 //
-// SLIPS THAT ARRIVE BY EMAIL LAND HERE TOO. The terminals email their batch
-// report to the shop's mailbox and a poller on the Mac mini submits each PDF
-// through the same callable, with nobody involved. That path can REFUSE — an
-// unregistered terminal, a duplicate batch, lines that do not sum — and a
-// refusal nobody sees is a terminal quietly not reconciling, which is the
-// failure this whole feature exists to prevent. So the panel below shows what
-// the mailbox produced, worst first. It shows OUTCOMES and never figures: the
-// screen stays capture-only.
+// NO CARD NUMBERS. The masked PAN is parsed server-side for line identity and
+// is never sent to this client.
 //
-// Gate: the dedicated `card_recon` permission (permFlags pattern) — checked by
-// the tile, by the route, and independently by the callable. Everything
-// money-shaped happens in functions/cardRecon/cardRecon.js; this file is
-// capture UX only.
+// Gate: the dedicated `card_recon` permission — checked by the tile, by the
+// route, and independently by the callable. Everything money-shaped happens in
+// functions/cardRecon/cardRecon.js; this file is capture UX only.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ref as dbRef, onValue } from "firebase/database";
-import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
-import { planPhotoIntake, mergeIntake, payloadRefusal, MAX_DETAIL_PHOTOS, MAX_SUMMARY_PHOTOS } from "./photoIntake";
+import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
-import EmailedSlips from "./EmailedSlips";
-import EftPool from "./EftPool";
-import { S, fmtTime } from "./cardReconStyles";
+import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
+import { planPhotoIntake, payloadRefusal } from "./photoIntake";
+import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
+import { emailedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
+import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
 
-
 // Slip photos need legible 8pt thermal print, so the downscale budget is wider
-// than the label reader's 1024px. ~2000px keeps a full receipt column sharp
-// and a JPEG comfortably under the callable's per-photo ceiling.
+// than the label reader's 1024px. ~2000px keeps a full receipt column sharp and
+// a JPEG comfortably under the callable's per-photo ceiling.
 const MAX_PHOTO_DIM = 2000;
 
+// A bounded tail, never the whole node: /card_batch_intake grows by a row per
+// message for ever, and this runs on a handset on shop wifi. Four terminals
+// report once a day, so 25 rows covers several days of arrivals.
+const INTAKE_FEED_SIZE = 25;
 
-
-function fmtR(cents) {
-  if (!Number.isInteger(cents)) return "—";
-  const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  return `${sign}R${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
-}
+// The day key has to move on its own — a phone left on the counter through
+// midnight must clear its ticks without being touched.
+const DAY_ROLL_MS = 60 * 1000;
 
 /**
  * A picked file → a ~2000px JPEG, whatever the phone handed over.
  *
- * THE DOWNSCALE IS THE POINT, and it applies to every source equally: this runs
- * on the File objects the input produces, and the input does not record whether
- * they came from the camera or the library. A 12-megapixel library photo of a
- * long roll is reduced here, before it is ever base64'd or sent, which is what
- * keeps a capture uploadable on shop wifi.
- *
- * DECODING GOES THROUGH THE SHARED DECODER, not FileReader + `new Image()`.
- * That mattered the moment gallery selection became a first-class path: an
- * iPhone's library stores HEIC, and while the camera hands back a JPEG through
- * a file input, the library hands back what it has. `new Image()` cannot decode
- * HEIC anywhere but Safari, so the old path would have failed on exactly the
- * phones this change is for. decodeImageFile falls back to a lazily-imported
- * wasm decoder, and resizes DURING decode where the browser supports it — which
- * on a phone is the difference between one upload and three.
- *
- * That resize is gated on the picture's own PIXELS, not on the file's size, so
- * a slip photographed as a heavy but modest-resolution file is no longer
- * UPSCALED on the way in. It matters most here: the clamp below limits the
- * longer side only, so an upscaled bitmap would have been uploaded upscaled —
- * a blurrier photograph of 8pt thermal print, for more bytes.
+ * DECODING GOES THROUGH THE SHARED DECODER, not FileReader + `new Image()`: an
+ * iPhone's library stores HEIC and `new Image()` cannot decode it outside
+ * Safari, so the naive path fails on exactly the phones this exists for.
+ * decodeImageFile falls back to a lazily-imported wasm decoder and resizes
+ * DURING decode where the browser supports it — on a phone, the difference
+ * between one upload and three. The resize is gated on the picture's own
+ * PIXELS, so a heavy but modest-resolution file is never upscaled on the way in.
  */
 async function downscalePhoto(file) {
   const decoded = await decodeImageFile(file, MAX_PHOTO_DIM);
@@ -109,397 +97,259 @@ async function downscalePhoto(file) {
     canvas.height = Math.round(height * scale);
     canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
     const jpeg = canvas.toDataURL("image/jpeg", 0.88);
-    return { dataUrl: jpeg, base64: jpeg.split(",")[1] || "" };
+    return { base64: jpeg.split(",")[1] || "" };
   } finally {
     // An ImageBitmap holds its pixels outside the JS heap; the collector is in
-    // no hurry. Six roll sections on a phone is where that shows.
+    // no hurry, and this runs on cheap handsets.
     decoded.release();
   }
 }
 
+// ── SKIN ─────────────────────────────────────────────────────────────────────
+// Its own, not the old screen's: that palette was built for a stack of dense
+// panels. This is four rows and a lot of air.
+const T = {
+  page: { minHeight: "100vh", background: "#05070D", color: "#E9EEFF", fontFamily: FONT,
+          padding: "14px 16px 56px", maxWidth: 520, margin: "0 auto" },
+  back: { appearance: "none", border: 0, background: "transparent", color: "rgba(233,238,255,.5)",
+          fontFamily: FONT, fontSize: 15, fontWeight: 600, padding: "8px 4px", margin: "0 0 18px -4px",
+          cursor: "pointer", minHeight: 44, display: "block" },
+  h1: { fontSize: 27, fontWeight: 700, letterSpacing: "-0.5px", margin: 0 },
+  day: { fontSize: 14, color: "rgba(233,238,255,.42)", marginTop: 5, letterSpacing: "-0.1px" },
+  list: { marginTop: 30, display: "grid", gap: 12 },
+  card: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between",
+          gap: 14, minHeight: 78, padding: "0 20px", borderRadius: 18, cursor: "pointer",
+          background: "rgba(255,255,255,.045)", border: "1px solid rgba(255,255,255,.075)",
+          WebkitTapHighlightColor: "transparent" },
+  cardDone: { background: "rgba(52,199,89,.07)", border: "1px solid rgba(52,199,89,.22)" },
+  cardBusy: { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.06)", cursor: "default" },
+  name: { fontSize: 17.5, fontWeight: 600, letterSpacing: "-0.2px", color: "#E9EEFF" },
+  tick: { width: 27, height: 27, borderRadius: 999, background: "rgba(52,199,89,.16)", color: "#54D97F",
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800 },
+  camera: { opacity: 0.3, display: "block" },
+  working: { fontSize: 14, fontWeight: 500, color: "rgba(233,238,255,.45)" },
+  fail: { fontSize: 13.5, lineHeight: 1.5, color: "#FFB3B3", background: "rgba(255,107,107,.07)",
+          border: "1px solid rgba(255,107,107,.28)", borderRadius: 14, padding: "12px 14px", marginTop: -4 },
+  again: { appearance: "none", width: "100%", minHeight: 46, marginTop: -2, borderRadius: 14, cursor: "pointer",
+           fontFamily: FONT, fontSize: 14.5, fontWeight: 600, color: "rgba(233,238,255,.8)",
+           background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)" },
+  quiet: { fontSize: 13, color: "rgba(233,238,255,.35)", lineHeight: 1.55, marginTop: 26 },
+  // Rendered, not display:none. A file input the browser has laid out is one
+  // its label can always open; display:none inputs are the thing phone browsers
+  // and webviews quietly refuse to activate.
+  input: { position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" },
+};
 
-function Row({ k, v, tone }) {
+/**
+ * A refusal always reads as a sentence.
+ *
+ * The server's own reason is shown verbatim — it is written for the person
+ * holding the slip — but a response that refuses without one must not render as
+ * an empty red box, which says nothing and looks like a bug in the screen
+ * rather than an answer about the slip.
+ */
+const reasonOf = (r) => (typeof r?.reason === "string" && r.reason.trim())
+  ? r.reason
+  : "The slip was not recorded, and no reason came back. Try again.";
+
+/** The only ornament on the screen: a quiet camera on a till with nothing in. */
+function CameraGlyph() {
   return (
-    <div style={S.row}>
-      <span style={S.k}>{k}</span>
-      <span style={{ ...S.v, color: tone || "#E9EEFF" }}>{v}</span>
-    </div>
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#E9EEFF"
+         strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+         style={T.camera} aria-hidden="true">
+      <path d="M4 8.5h3l1.5-2h7L17 8.5h3a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Z" />
+      <circle cx="12" cy="13.5" r="3.2" />
+    </svg>
   );
 }
 
+const dayLabel = (ms) => new Date(ms).toLocaleDateString("en-ZA", {
+  timeZone: "Africa/Johannesburg", weekday: "long", day: "numeric", month: "long" });
 
 export default function CardReconScreen({ onExit }) {
-  // ── terminal registry (the till picker's source) ──
-  const [terminals, setTerminals] = useState(null); // null = loading
+  // ── the registry: which machines exist, and what each till is called ──
+  const [terminals, setTerminals] = useState(null);   // null = loading
   useEffect(() => {
     const off = onValue(dbRef(database, "config/cardTerminals"),
       (snap) => setTerminals(snap.val() || {}),
       () => setTerminals({}));
     return () => off();
   }, []);
+
+  // ── what the mailbox recorded: the tick for the three that email ──
+  const [intake, setIntake] = useState(undefined);    // undefined = loading, null = unreadable
+  useEffect(() => {
+    const off = onValue(
+      query(dbRef(database, "card_batch_intake"), orderByChild("at"), limitToLast(INTAKE_FEED_SIZE)),
+      (snap) => setIntake(snap.val() || {}),
+      (err) => { setIntake(null); console.warn("card recon: intake read failed", err?.code || err); });
+    return () => off();
+  }, []);
+
+  // THE SERVER'S CLOCK, not the device's, and re-read while the screen sits
+  // open so the ticks clear at midnight on their own.
+  const [nowMs, setNowMs] = useState(() => serverNowMs());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(serverNowMs()), DAY_ROLL_MS);
+    return () => clearInterval(id);
+  }, []);
+  const today = saDateStringAt(nowMs);
+
+  // Hand captures are remembered per device (see todaysArrivals.js); this is
+  // state rather than a read-through so a fresh capture ticks immediately.
+  const [mine, setMine] = useState(() => handCaptures(saDateStringAt(serverNowMs())));
+  useEffect(() => setMine(handCaptures(today)), [today]);
+
+  // tid → { phase: "busy" | "failed", reason, canReplace }
+  const [work, setWork] = useState({});
+  // The photo of the last attempt, kept only so "replace the earlier capture"
+  // does not ask for it to be taken again.
+  const lastPhoto = useRef({});
+
   const terminalList = useMemo(
     () => Object.entries(terminals || {}).map(([tid, t]) => ({ tid, ...t }))
       .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid))),
     [terminals],
   );
 
-  const [tid, setTid] = useState(null);
-  const [detailPhotos, setDetailPhotos] = useState([]);   // [{dataUrl, base64}]
-  const [summaryPhotos, setSummaryPhotos] = useState([]);
-  const [summaryOnly, setSummaryOnly] = useState(false);
-  const [busy, setBusy] = useState(null);                  // "extract" | "submit" | null
-  const [preparing, setPreparing] = useState(0);           // decodes in flight
-  // THE PDF PATH. One file is the whole slip — header, totals and detail roll —
-  // so it never coexists with photos: adding one clears and disables them, and
-  // adding photos disables it. One path per submission, decided here and
-  // enforced again in the callable.
-  const [pdfFile, setPdfFile] = useState(null);            // { name, size, base64 }
-  const pdfRef = useRef(null);
-  const [reject, setReject] = useState(null);              // plain server reason
-  const [error, setError] = useState(null);                // transport/unexpected
-  const [draft, setDraft] = useState(null);                // { draftId, review }
-  const [result, setResult] = useState(null);              // submit response
-  const [offerCorrection, setOfferCorrection] = useState(false);
-  const detailRef = useRef(null);
-  const summaryRef = useRef(null);
+  const arrived = useMemo(() => {
+    const byEmail = emailedArrivals(intake, today, saDateStringAt);
+    for (const tid of mine) byEmail.add(tid);
+    return byEmail;
+  }, [intake, today, mine]);
 
-  // The DECISION is planPhotoIntake (pure, tested on its own). This owns only
-  // the parts that need the browser: decoding and state.
-  const addPhotos = (setter, current, cap, { replace = false } = {}) => async (e) => {
+  const setPhase = (tid, value) => setWork((prev) => {
+    const next = { ...prev };
+    if (value) next[tid] = value; else delete next[tid];
+    return next;
+  });
+
+  // ── THE CAPTURE, START TO FINISH, WITH NOTHING IN BETWEEN ──────────────────
+  // extract → submit, in one go. The old screen parked the draft and asked the
+  // manager to confirm the figures it had read; the figures are no longer shown,
+  // so there is nothing to confirm. The callable is untouched: the same two
+  // actions, the same payload one photo makes, the same refusals.
+  const send = async (tid, base64, correction) => {
+    setPhase(tid, { phase: "busy" });
+    try {
+      const { data } = await cardBatchCaptureFn({
+        action: "extract", pickedTid: tid, photos: [{ base64 }],
+        // ONE PHOTO IS A SUMMARY. It always was: the screen this replaced sent
+        // `summaryOnly || detailPhotos.length === 0`, so a single-photo capture
+        // was flagged summary-only whether or not the checkbox was ticked. The
+        // record still carries the server's warning that no line-level match
+        // can run for it.
+        summaryOnly: true, correction,
+      });
+      if (!data.ok) {
+        setPhase(tid, { phase: "failed", reason: reasonOf(data),
+                        // The one refusal with a way out. Matched on the
+                        // server's own words — widened to either half of the
+                        // sentence it writes, so a re-word of one clause does
+                        // not silently strand a manager with a bad capture.
+                        canReplace: /already captured|resubmit as a correction/i.test(data.reason || "") });
+        return;
+      }
+      // `{ data }`, not the envelope: a callable resolves to { data }, and
+      // reading .ok off the envelope makes every submit look refused — with an
+      // undefined reason, which renders as an empty red box saying nothing.
+      const { data: done } = await cardBatchCaptureFn({ action: "submit", draftId: data.draftId });
+      if (!done.ok) { setPhase(tid, { phase: "failed", reason: reasonOf(done) }); return; }
+      rememberHandCapture(tid, today);
+      setMine((prev) => new Set(prev).add(tid));
+      setPhase(tid, null);
+      delete lastPhoto.current[tid];
+    } catch (err) {
+      // A transport failure is not a sentence a manager can act on, so it is
+      // translated. The detail goes to the console, where it can be read by
+      // whoever is asked to look.
+      console.error("cardBatchCapture failed", err);
+      setPhase(tid, { phase: "failed", reason: "That did not go through. Check the signal and try again." });
+    }
+  };
+
+  const onPick = (tid) => async (e) => {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
-    setError(null);
 
-    const { keep, take, refusal, notice } = planPhotoIntake({
-      current, files, cap, replace,
+    // The decision about what is usable stays in the tested pure module, cap 1:
+    // a non-photo is refused BY NAME rather than as "that doesn't look like a
+    // photo" about a photo.
+    const { take, refusal } = planPhotoIntake({
+      current: [], files, cap: 1, replace: true,
       isImage: isAcceptedImageFile, describe: describePickedFile,
     });
-    if (refusal) { setError(refusal); return; }
+    if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
 
-    setPreparing((n) => n + 1);
+    setPhase(tid, { phase: "busy" });
+    let photo;
     try {
-      const prepared = [];
-      for (const f of take) prepared.push(await downscalePhoto(f));
-      // FUNCTIONAL, against live state — never `setter([...keep, ...prepared])`.
-      // Decoding takes real time (a HEIC goes through a wasm decoder), the
-      // picker can be reopened while it runs, and two overlapping picks that
-      // each wrote their own stale copy would leave only the second one's
-      // photos with nothing said about it.
-      setter(mergeIntake({ prepared, cap, replace }));
-      if (notice) setError(notice);
+      photo = await downscalePhoto(take[0]);
     } catch (err) {
-      setError(`Could not read that photo (${err?.message || err}).`);
-    } finally {
-      setPreparing((n) => n - 1);
-    }
-  };
-
-  // The terminal's emailed batch report. Read as base64 and sent whole — the
-  // TEXT is extracted server-side, so the figures never depend on this device
-  // and the file itself is what gets stored as evidence.
-  const hasPhotos = detailPhotos.length > 0 || summaryPhotos.length > 0;
-
-  const addPdf = async (e) => {
-    const file = (e.target.files || [])[0];
-    e.target.value = "";
-    if (!file) return;
-    setError(null);
-    if (file.type && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name || "")) {
-      setError(`${file.name || "That file"} is not a PDF. Attach the terminal's emailed batch report.`);
+      setPhase(tid, { phase: "failed", reason: `That photo could not be opened (${err?.message || err}).` });
       return;
     }
-    setPreparing((n) => n + 1);
-    try {
-      const base64 = await new Promise((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result).split(",")[1] || "");
-        r.onerror = () => reject(new Error("could not read the file"));
-        r.readAsDataURL(file);
-      });
-      const tooBig = payloadRefusal([{ base64 }]);
-      if (tooBig) { setError(tooBig); return; }
-      setPdfFile({ name: file.name || "batch report.pdf", size: file.size, base64 });
-      // ONE PATH: a PDF covers the whole slip, so anything already photographed
-      // is cleared rather than left to look as though it will be sent too.
-      setDetailPhotos([]); setSummaryPhotos([]); setSummaryOnly(false);
-    } catch (err) {
-      setError(`Could not read that file (${err?.message || err}).`);
-    } finally {
-      setPreparing((n) => n - 1);
-    }
+    // Refused HERE rather than as a transport error nobody can read.
+    const tooBig = payloadRefusal([photo]);
+    if (tooBig) { setPhase(tid, { phase: "failed", reason: tooBig }); return; }
+    lastPhoto.current[tid] = photo.base64;
+    await send(tid, photo.base64, false);
   };
 
-  const extract = async (correction = false) => {
-    setBusy("extract");
-    setReject(null); setError(null); setOfferCorrection(false);
-    try {
-      const photos = [...detailPhotos, ...summaryPhotos].map((p) => ({ base64: p.base64 }));
-      // Refused HERE rather than as a transport error the manager cannot read.
-      const tooBig = payloadRefusal(pdfFile ? [pdfFile] : photos);
-      if (tooBig) { setError(tooBig); setBusy(null); return; }
-      const { data } = await cardBatchCaptureFn(pdfFile
-        ? { action: "extract", pickedTid: tid, pdf: { base64: pdfFile.base64 }, correction }
-        : {
-            action: "extract", pickedTid: tid, photos,
-            summaryOnly: summaryOnly || detailPhotos.length === 0,
-            correction,
-          });
-      if (!data.ok) {
-        setReject(data.reason);
-        if (/already captured/i.test(data.reason || "")) setOfferCorrection(true);
-        return;
-      }
-      setDraft({ draftId: data.draftId, review: data.review, correction });
-    } catch (err) {
-      setError(err?.message || String(err));
-    } finally { setBusy(null); }
-  };
-
-  const submit = async () => {
-    if (!draft) return;
-    setBusy("submit");
-    setReject(null); setError(null);
-    try {
-      const { data } = await cardBatchCaptureFn({ action: "submit", draftId: draft.draftId });
-      if (!data.ok) { setReject(data.reason); return; }
-      setResult(data);
-    } catch (err) {
-      setError(err?.message || String(err));
-    } finally { setBusy(null); }
-  };
-
-  // "Capture another slip" must leave NOTHING of the last one behind — the PDF
-  // included. It was missed when the file input was added, and a retained
-  // pdfFile meant the next capture would silently re-submit the PREVIOUS
-  // terminal's report against a freshly picked till. (CodeRabbit, PR #509.)
-  const reset = () => {
-    setTid(null); setDetailPhotos([]); setSummaryPhotos([]); setSummaryOnly(false);
-    setPdfFile(null);
-    setReject(null); setError(null); setDraft(null); setResult(null); setOfferCorrection(false);
-  };
-
-  const term = terminalList.find((t) => t.tid === tid) || null;
-
-  // ── RESULT — recorded. Not a verdict. ──
-  // CAPTURE ONLY: the manager's job ends when the slip is in. Whether the till
-  // balanced is not shown here — the owner reviews that on his own account and
-  // takes it up with whoever it concerns. The only thing said back is the one
-  // fact that changes what the manager should DO: is the slip recorded, and did
-  // the detail roll make it in.
-  if (result) {
-    return (
-      <div style={S.page}>
-        <button onClick={onExit} style={{ ...S.btnGhost, width: "auto", padding: "0 16px", minHeight: 40 }}>← Home</button>
-        <div style={{ ...S.card, textAlign: "center", padding: "28px 16px" }}>
-          <div style={{ fontSize: 44, lineHeight: 1 }}>✅</div>
-          <div style={{ fontSize: 20, fontWeight: 900, margin: "14px 0 6px", color: "#B7F0CC" }}>
-            Slip recorded
-          </div>
-          <div style={{ fontSize: 14, color: "rgba(233,238,255,.65)", lineHeight: 1.6 }}>
-            Batch {result.batchKey}{result.revision > 1 ? ` (correction, rev ${result.revision})` : ""} for{" "}
-            {term?.label || term?.tid}. Nothing else to do.
-          </div>
-          {!result.linesCaptured && (
-            <div style={{ ...S.warn, textAlign: "left", marginTop: 14 }}>
-              Summary only — the transaction lines were not captured. If you can still get
-              the detail roll, shoot it and resubmit as a correction.
-            </div>
-          )}
-        </div>
-        {(result.warnings || []).map((w, i) => <div key={i} style={S.warn}>{w}</div>)}
-        <div style={{ marginTop: 16 }}><button style={S.btn} onClick={reset}>Capture another slip</button></div>
-      </div>
-    );
-  }
-
-  // ── REVIEW — what the OCR read; nothing here is editable ──
-  if (draft) {
-    const r = draft.review;
-    return (
-      <div style={S.page}>
-        <button onClick={() => setDraft(null)} style={{ ...S.btnGhost, width: "auto", padding: "0 16px", minHeight: 40 }}>← Back to photos</button>
-        <div style={S.h1}>Check what was read</div>
-        <div style={S.sub}>Read from the slip itself. If anything is wrong, go back and reshoot — figures cannot be edited here, by design.</div>
-        <div style={S.card}>
-          <Row k="Terminal" v={`${r.tid}${r.terminal?.label ? ` · ${r.terminal.label}` : ""}`} />
-          <Row k="Batch" v={`#${r.batchNo}${r.revision > 1 ? ` (correction rev ${r.revision})` : ""}`} />
-          <Row k="Opened" v={r.openedText || fmtTime(r.openedAt)} />
-          <Row k="Closed" v={r.closedText || fmtTime(r.closedAt)} />
-          <Row k="Transactions" v={r.txnCount} />
-          <Row k="Purchases" v={fmtR(r.purchasesCents)} />
-          {r.cashCents !== 0 && <Row k="Cash" v={fmtR(r.cashCents)} />}
-          <Row k="Refunds" v={fmtR(-Math.abs(r.refundsCents))} />
-          <Row k="Slip TOTAL" v={fmtR(r.totalCents)} />
-          {r.reconLine && <Row k="Reconciliation" v={r.reconLine} />}
-          <Row k="Lines captured" v={r.summaryOnly ? "none (summary only)" : `${r.lineCount} · TSN contiguous ✓`} tone={r.summaryOnly ? "#FDE9B0" : "#B7F0CC"} />
-        </div>
-        {(r.warnings || []).map((w, i) => <div key={i} style={S.warn}>{w}</div>)}
-        {reject && <div style={S.err}>{reject}</div>}
-        {error && <div style={S.err}>Something went wrong: {error}</div>}
-        <div style={{ marginTop: 16 }}>
-          <button style={S.btn} disabled={busy === "submit"} onClick={submit}>
-            {busy === "submit" ? "Recording…" : "Submit this batch"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── CAPTURE — pick the till, shoot the roll and the summary ──
   return (
-    <div style={S.page}>
-      <button onClick={onExit} style={{ ...S.btnGhost, width: "auto", padding: "0 16px", minHeight: 40 }}>← Home</button>
-      <div style={S.h1}>Card machine batch slip</div>
-      <div style={S.sub}>
-        Settle the machine, then capture its Batch Report here. The card total is read off
-        the slip itself — nothing is typed.
-      </div>
+    <div style={T.page}>
+      <button onClick={onExit} style={T.back}>← Home</button>
+      <h1 style={T.h1}>Card machines</h1>
+      <div style={T.day}>{dayLabel(nowMs)}</div>
 
-      <EmailedSlips />
-      {/* Owner-only inside (renders null for everyone else): the EFT payment
-          pool's window, beside the refused-slip feed because the failure mode
-          that matters — something silently not landing — is the same. */}
-      <EftPool />
-
-      <div style={S.card}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 8 }}>1 · Which till?</div>
-        {terminals === null ? (
-          <div style={S.sub}>Loading terminals…</div>
-        ) : terminalList.length === 0 ? (
-          <div style={S.warn}>No card terminals are registered yet. An admin must map each machine's TID to its till under /config/cardTerminals (see docs/CARD-RECON.md) before slips can be captured.</div>
-        ) : (
-          <div style={{ display: "grid", gap: 8 }}>
-            {terminalList.map((t) => (
-              <button key={t.tid} onClick={() => setTid(t.tid)}
-                style={{ ...S.btnGhost, textAlign: "left", padding: "12px 14px",
-                         ...(tid === t.tid ? { border: "2px solid rgba(74,127,255,.65)", background: "rgba(74,127,255,.14)", color: "#D7E3FF" } : {}) }}>
-                <div style={{ fontWeight: 800, fontSize: 15 }}>{t.label || `${t.storeId} · ${t.tillId}`}</div>
-                <div style={{ fontSize: 12, color: "rgba(233,238,255,.5)", marginTop: 2 }}>TID {t.tid}</div>
-              </button>
-            ))}
+      <div style={T.list}>
+        {terminals === null && <div style={T.quiet}>Loading…</div>}
+        {terminals !== null && terminalList.length === 0 && (
+          <div style={T.quiet}>
+            No card machines are registered yet. An admin maps each machine to its till under
+            /config/cardTerminals before slips can be captured.
           </div>
         )}
-      </div>
-
-      {tid && (
-        <>
-          {/* THE FAST PATH, FIRST AND SMALL. FNB terminals can email their batch
-              report; that file is the whole slip, so it needs neither the
-              detail/summary split nor a large drop area. One line. The photo
-              uploads below are the fallback for terminals that cannot email. */}
-          <div style={{ ...S.card, padding: "10px 14px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", flex: "0 0 auto" }}>2 · The PDF</div>
-              <div style={{ ...S.sub, flex: "1 1 140px", fontSize: 12 }}>
-                {pdfFile ? pdfFile.name : "If the terminal emailed its batch report, this is the whole slip in one file."}
-              </div>
-              <input ref={pdfRef} type="file" accept="application/pdf,.pdf"
-                     onChange={addPdf} style={{ display: "none" }} />
-              {pdfFile ? (
-                <button style={{ ...S.btnGhost, width: "auto", minHeight: 34, padding: "0 12px", flex: "0 0 auto" }}
-                        onClick={() => setPdfFile(null)}>Remove</button>
-              ) : (
-                <button style={{ ...S.btnGhost, width: "auto", minHeight: 34, padding: "0 14px", flex: "0 0 auto",
-                                 opacity: hasPhotos || preparing ? 0.45 : 1 }}
-                        disabled={hasPhotos || preparing > 0}
-                        onClick={() => pdfRef.current?.click()}>
-                  {preparing > 0 ? "Reading…" : "Add file"}
+        {terminalList.map((t) => {
+          const state = work[t.tid] || {};
+          const busy = state.phase === "busy";
+          const done = arrived.has(t.tid);
+          return (
+            <React.Fragment key={t.tid}>
+              <label
+                style={{ ...T.card, ...(done ? T.cardDone : null), ...(busy ? T.cardBusy : null) }}>
+                <input type="file" accept="image/*" style={T.input}
+                       disabled={busy} onChange={onPick(t.tid)} />
+                <span style={T.name}>{t.label || `${t.storeId} · ${t.tillId}`}</span>
+                {busy ? <span style={T.working}>Reading…</span>
+                  : done ? <span style={T.tick} aria-label="today's report is in">✓</span>
+                  /* Quiet on purpose: a till with nothing in raises no alarm,
+                     only the hint that a photo is what it takes. Drawn rather
+                     than typed — an emoji renders as a grey smudge at this
+                     opacity, and differently on every handset. */
+                  : <CameraGlyph />}
+              </label>
+              {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}
+              {state.phase === "failed" && state.canReplace && lastPhoto.current[t.tid] && (
+                <button style={T.again}
+                        onClick={() => send(t.tid, lastPhoto.current[t.tid], true)}>
+                  Replace the earlier capture
                 </button>
               )}
-            </div>
-            {hasPhotos && !pdfFile && (
-              <div style={{ ...S.sub, fontSize: 11.5, marginTop: 6 }}>
-                Remove the photos below to attach a PDF instead — one or the other, never both.
-              </div>
-            )}
-          </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
 
-          <div style={{ ...S.card, opacity: pdfFile ? 0.45 : 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>3 · The detail roll</div>
-            <div style={S.sub}>The printed transaction list, in overlapping sections — every line, sharp. Shoot it here or pick it from your photos. This is the point of the capture.</div>
-            {/* No `capture` attribute: with it, the OS opens the camera and
-                nothing else. Without it the manager gets the normal picker and
-                can shoot the whole roll in the Photos app first, then pick the
-                frames — which is how a long roll actually gets photographed. */}
-            <input ref={detailRef} type="file" accept="image/*" multiple
-                   onChange={addPhotos(setDetailPhotos, detailPhotos, MAX_DETAIL_PHOTOS)}
-                   style={{ display: "none" }} />
-            <button style={{ ...S.btn, marginTop: 10, opacity: preparing ? 0.6 : 1 }}
-                    disabled={!!pdfFile || preparing > 0 || detailPhotos.length >= MAX_DETAIL_PHOTOS}
-                    onClick={() => detailRef.current?.click()}>
-              {preparing > 0 ? "Preparing photos…" : `📷 ${detailPhotos.length
-                    ? `Add another section (${detailPhotos.length} of ${MAX_DETAIL_PHOTOS})`
-                    : "Shoot or choose the detail roll"}`}
-            </button>
-            {detailPhotos.length > 0 && (
-              <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                {detailPhotos.map((p, i) => (
-                  <img key={i} src={p.dataUrl} alt={`detail ${i + 1}`}
-                       onClick={() => setDetailPhotos((prev) => prev.filter((_, j) => j !== i))}
-                       style={{ width: 64, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)" }} />
-                ))}
-                <div style={{ ...S.sub, alignSelf: "center", fontSize: 11.5 }}>tap a photo to remove it</div>
-              </div>
-            )}
-            {detailPhotos.length === 0 && !pdfFile && (
-              <label style={{ ...S.sub, display: "flex", gap: 8, alignItems: "center", marginTop: 12, fontSize: 12.5 }}>
-                <input type="checkbox" checked={summaryOnly} onChange={(e) => setSummaryOnly(e.target.checked)} />
-                Summary only (fallback) — the record will be flagged: no line-level match can ever run for this batch.
-              </label>
-            )}
-          </div>
-
-          <div style={{ ...S.card, opacity: pdfFile ? 0.45 : 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: "rgba(233,238,255,.6)", marginBottom: 4 }}>4 · The summary</div>
-            <div style={S.sub}>The header + totals section: MID, TID, batch number, Opened/Closed, Payment Type Summary, CARD TOTALS.</div>
-            {/* One slot, and no `capture` here either — same reason. Picking
-                again replaces the shot rather than being refused. */}
-            <input ref={summaryRef} type="file" accept="image/*"
-                   onChange={addPhotos(setSummaryPhotos, summaryPhotos, MAX_SUMMARY_PHOTOS, { replace: true })}
-                   style={{ display: "none" }} />
-            <button style={{ ...S.btn, marginTop: 10, opacity: preparing ? 0.6 : 1 }}
-                    disabled={!!pdfFile || preparing > 0}
-                    onClick={() => summaryRef.current?.click()}>
-              {preparing > 0 ? "Preparing photos…" : `📷 ${summaryPhotos.length ? "Replace the summary shot" : "Shoot or choose the summary"}`}
-            </button>
-            {summaryPhotos.length > 0 && (
-              <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                {summaryPhotos.map((p, i) => (
-                  <img key={i} src={p.dataUrl} alt={`summary ${i + 1}`}
-                       onClick={() => setSummaryPhotos((prev) => prev.filter((_, j) => j !== i))}
-                       style={{ width: 64, height: 86, objectFit: "cover", borderRadius: 8, border: "1px solid rgba(255,255,255,.15)" }} />
-                ))}
-              </div>
-            )}
-          </div>
-
-          {reject && <div style={S.err}>{reject}</div>}
-          {offerCorrection && (
-            <button style={{ ...S.btnGhost, marginTop: 10 }} disabled={busy === "extract"} onClick={() => extract(true)}>
-              The earlier capture was wrong — resubmit as a correction (keeps both)
-            </button>
-          )}
-          {error && <div style={S.err}>Something went wrong: {error}</div>}
-
-          <div style={{ marginTop: 16 }}>
-            <button style={S.btn}
-              // Either path may proceed. A PDF is the whole slip, so it needs
-              // no summary photo and no detail roll; the photo path still
-              // requires a summary and either a roll or the summary-only tick.
-              disabled={busy === "extract" || preparing > 0 || (pdfFile
-                ? false
-                : summaryPhotos.length === 0 || (detailPhotos.length === 0 && !summaryOnly))}
-              onClick={() => extract(false)}>
-              {busy === "extract" ? "Reading the slip…" : "Read the slip"}
-            </button>
-            {pdfFile && <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>Reading {pdfFile.name} — the file covers the whole slip, so no photos are needed.</div>}
-            {!pdfFile && summaryPhotos.length === 0 && <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>The summary photo is required.</div>}
-            {!pdfFile && summaryPhotos.length > 0 && detailPhotos.length === 0 && !summaryOnly && (
-              <div style={{ ...S.sub, marginTop: 8, fontSize: 12 }}>Add the detail roll, or tick summary-only.</div>
-            )}
-          </div>
-        </>
+      {/* A read that was DENIED is not an empty feed, and must never be shown as
+          one: without the mailbox we cannot say whether the three that email
+          have reported, and a missing tick would read as "it never arrived". */}
+      {intake === null && (
+        <div style={T.quiet}>
+          What has arrived by email cannot be read right now, so those ticks may be missing.
+        </div>
       )}
     </div>
   );

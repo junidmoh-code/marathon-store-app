@@ -75,9 +75,11 @@ describe("the store app is capture-only", () => {
       expect(stripComments(raw).length / raw.length,
         `${file} must not be largely deleted by stripping`).toBeGreaterThan(0.5);
     }
-    // …and a real comment must still go.
+    // …and a real comment must still go. The probe is a phrase that exists in
+    // the screen's header block and nowhere in its code, so a stripper that
+    // stopped stripping would fail here rather than pass on absence.
     expect(stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8")))
-      .not.toContain("the OS opens the camera");
+      .not.toContain("the label IS the control");
   });
 
   it("reads none of the card-recon nodes, anywhere in src/", () => {
@@ -151,7 +153,12 @@ describe("the store app is capture-only", () => {
       const src = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const m of src.matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)) reads.push(m[1]);
     }
-    expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals", "eft_pool", "eft_unallocated"]);
+    // DEDUPED: the capture screen and the emailed-slip panel both read
+    // /card_batch_intake — the screen for the per-till tick, the panel for the
+    // feed — and the same node read twice is still one node. What this pins is
+    // the SET of nodes this feature touches, which is the thing that must not
+    // grow quietly.
+    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals", "eft_pool", "eft_unallocated"]);
   });
 
   it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
@@ -207,7 +214,14 @@ describe("the store app is capture-only", () => {
     // card-batch material leaking to a manager's handset.
     let scanned = 0;
     for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
-      if (!/\.jsx?$/.test(file) || /\.test\./.test(file) || file === "CardReconScreen.jsx" || file === "EftPool.jsx") continue;
+      // THE CAPTURE SCREEN IS NO LONGER EXEMPT. It used to render the slip in
+      // the manager's own hand — the review step, where a total and a purchases
+      // figure were legitimately shown so the OCR could be checked against the
+      // paper. That step is gone: the reading happens server-side and the
+      // manager is told recorded or not-recorded and nothing else, so the
+      // screen has no business naming a money field and is scanned like every
+      // other file here. EftPool.jsx remains the one exemption, argued above.
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file) || file === "EftPool.jsx") continue;
       scanned++;
       const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const token of forbidden) {
@@ -216,9 +230,13 @@ describe("the store app is capture-only", () => {
     }
     expect(scanned, "the scan found no files — it is passing on nothing").toBeGreaterThan(1);
     // The scan is only worth anything if it CAN fail, so prove the tokens are
-    // findable: the capture screen's own review section renders them.
-    const screen = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
-    expect(screen, "the review section still renders the slip's own figures — if this fails the scan above proves nothing").toMatch(/\btotalCents\b/);
+    // findable in this directory: the EFT pool — the one exempt file — renders
+    // amounts, and it is exempt precisely because it is owner-gated in render.
+    // (The control used to be the capture screen's review section. That section
+    // no longer exists, and an anchor pointed at deleted code is an assertion
+    // that passes on nothing.)
+    const exempt = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EftPool.jsx"), "utf8"));
+    expect(exempt, "the exempt panel still renders a money field — if this fails the scan above proves nothing").toMatch(/\bamountCents\b/);
   });
 
   it("the EFT pool panel is owner-gated in render and reads a bounded tail", () => {

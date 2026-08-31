@@ -42,42 +42,68 @@ const f = (name) => ({ name, type: "image/jpeg" });
 const many = (n, p = "s") => Array.from({ length: n }, (_, i) => f(`${p}${i}.jpg`));
 const opts = { isImage: () => true, describe: (x) => x.name };
 
-describe("where the frames may come from", () => {
-  it("neither upload restricts the picker to the camera", () => {
-    // `capture="environment"` makes the OS open the camera and NOTHING else.
-    // Without it a manager can shoot the whole roll in the Photos app first and
-    // pick the frames afterwards, which is how a long roll actually gets
-    // photographed.
-    expect(code).not.toMatch(/capture=/);
-  });
-
+describe("the picker, and how a tap opens it", () => {
   // Slice each file input from `<input` to its self-closing `/>`. A regex over
   // `[^>]*` cannot do it: `disabled={x >= y}` and `=>` both carry a `>`.
   const fileInputs = () =>
     [...code.matchAll(/<input\b[\s\S]*?\/>/g)].map((m) => m[0]).filter((t) => /type="file"/.test(t));
 
-  it("…and the stripper this file relies on has not eaten the inputs", () => {
-    // The guard for the bug above: if comment-stripping ever mangles the source
-    // again, every other assertion here goes quietly green.
+  it("the stripper this file relies on has not eaten the input", () => {
+    // If comment-stripping ever mangles the source again, every other assertion
+    // here goes quietly green.
     expect(code).toContain('type="file"');
-    expect(fileInputs(), "all three file inputs must survive stripping — PDF, roll, summary")
-      .toHaveLength(3);
-    expect(code, "a real comment must still be gone").not.toContain("the OS opens the camera");
+    expect(fileInputs(), "one upload per till card, and it must survive stripping")
+      .toHaveLength(1);
+    expect(code, "a real comment must still be gone").not.toContain("the label IS the control");
   });
 
-  it("but the two PHOTO uploads still accept images only", () => {
-    const photoInputs = fileInputs().filter((t) => /setDetailPhotos|setSummaryPhotos/.test(t));
-    expect(photoInputs).toHaveLength(2);
-    for (const tag of photoInputs) expect(tag).toMatch(/accept="image\/\*"/);
+  it("does not restrict the picker to the camera", () => {
+    // `capture="environment"` makes the OS open the camera and NOTHING else.
+    // Without it the manager can shoot the slip in the Photos app first and pick
+    // the frame afterwards.
+    expect(code).not.toMatch(/capture=/);
   });
 
-  it("the detail roll takes several frames; the summary takes one", () => {
-    const inputs = fileInputs();
-    const detail = inputs.find((t) => /setDetailPhotos/.test(t));
-    const summary = inputs.find((t) => /setSummaryPhotos/.test(t));
-    expect(detail, "the roll is shot in sections").toMatch(/\bmultiple\b/);
-    expect(summary, "one slot — `multiple` would invite a pick the cap then drops")
+  it("takes images only, one of them", () => {
+    const [input] = fileInputs();
+    expect(input).toMatch(/accept="image\/\*"/);
+    expect(input, "one slip, one frame — `multiple` invites a pick the cap then drops")
       .not.toMatch(/\bmultiple\b/);
+  });
+
+  // ── THE BUG THIS SCREEN WAS REBUILT AROUND ────────────────────────────────
+  // The picker is opened by the LABEL the card is made of, natively, with no
+  // JavaScript in the path — and the input is laid out (1px, transparent)
+  // rather than display:none, because a file input the browser has not laid out
+  // is one phone browsers and webviews quietly refuse to activate. Both halves
+  // are pinned: either one alone brings the dead button back.
+  it("the card is a <label> around the input — nothing calls .click()", () => {
+    expect(code, "the tappable card must be a label").toMatch(/<label\b/);
+    expect(code, "a programmatic click is the failure mode this replaced")
+      .not.toMatch(/\.click\(\)/);
+    expect(code, "…and no ref stands in for one").not.toMatch(/useRef\(null\)/);
+  });
+
+  it("the input is laid out, never display:none", () => {
+    const from = code.indexOf("input: {");
+    expect(from, "the input's own style has moved — this scan must follow it").toBeGreaterThan(-1);
+    const style = code.slice(from, code.indexOf("}", from));
+    expect(style, "it must occupy layout").toMatch(/position: "absolute"/);
+    expect(style, "…while being invisible").toMatch(/opacity: 0/);
+    expect(code, "display:none is what a phone browser refuses to open")
+      .not.toMatch(/display: "none"/);
+  });
+
+  it("nothing stands between the pick and the call", () => {
+    // The screen this replaced parked the photo and waited for a second button
+    // — one that was disabled unless a checkbox in the section above had been
+    // ticked, and which looked identical disabled. The upload now starts on the
+    // pick itself: onPick decodes and sends, with no button in between.
+    const from = code.indexOf("const onPick =");
+    expect(from, "onPick has been renamed — this scan must follow it").toBeGreaterThan(-1);
+    const body = code.slice(from, code.indexOf("\n  };", from));
+    expect(body, "the pick itself must reach the callable").toMatch(/await send\(tid, photo\.base64, false\)/);
+    expect(code, "no checkbox may gate a capture again").not.toMatch(/type="checkbox"/);
   });
 });
 
@@ -90,8 +116,11 @@ describe("the ~2000px downscale reaches library photos too", () => {
     expect([...code.matchAll(/downscalePhoto\(/g)]).toHaveLength(2); // its definition + its one caller
   });
 
-  it("every file the plan takes is put through it — no branch skips a source", () => {
-    expect(code).toMatch(/for \(const f of take\) prepared\.push\(await downscalePhoto\(f\)\)/);
+  it("the picked file is put through it before anything is sent", () => {
+    // No branch may reach the callable with an undownscaled file: the only
+    // base64 that leaves this screen is the one downscalePhoto produced.
+    expect(code).toMatch(/photo = await downscalePhoto\(take\[0\]\)/);
+    expect(code, "and that is what is sent").toMatch(/await send\(tid, photo\.base64, false\)/);
   });
 
   it("decoding goes through the shared decoder, so a library HEIC opens at all", () => {
@@ -235,93 +264,42 @@ describe("two picks at once must not lose photos", () => {
     expect(fold([])).toEqual(["new"]);
   });
 
-  it("the screen passes a FUNCTION to the setter, never an array", () => {
-    expect(code).toMatch(/setter\(mergeIntake\(/);
-    expect(code, "an array write here is the bug this section is about")
-      .not.toMatch(/setter\(\[/);
+  it("a till that is uploading cannot be re-tapped", () => {
+    // The screen now sends on the pick, so a second pick mid-flight would be a
+    // second capture of the same batch — refused by the server as a duplicate,
+    // but only after the manager has been told nothing for a minute. The input
+    // is disabled while its own card is busy, and a disabled input is one its
+    // label cannot open.
+    expect(code).toMatch(/disabled=\{busy\}/);
+    expect(code, "…and the card says so").toMatch(/Reading…/);
   });
 
-  it("and BOTH pickers are disabled while a decode is in flight", () => {
-    // "somewhere in the file" is not enough: with only the summary button
-    // guarded, this passed while the detail roll — the one that takes six
-    // frames and so is by far the likeliest to be re-tapped mid-decode — was
-    // wide open. A mutation proved it.
-    // Both photo pickers gate on `preparing`, and both also gate on a PDF
-    // being attached — the predicates differ, so match the shared prefix.
-    expect([...code.matchAll(/disabled=\{!!pdfFile \|\| preparing > 0/g)],
-      "both the detail and summary pickers must be disabled while decoding").toHaveLength(2);
-    expect(code, "and the file line while reading").toMatch(/disabled=\{hasPhotos \|\| preparing > 0\}/);
-    expect(code).toMatch(/Preparing photos/);
+  it("each card is busy on its own — one upload does not freeze the others", () => {
+    // Four tills, four independent captures. A single screen-wide `busy` flag
+    // would make the slowest phone's one upload lock the whole screen.
+    expect(code, "work is keyed by till").toMatch(/const \[work, setWork\] = useState\(\{\}\)/);
+    expect(code).toMatch(/const state = work\[t\.tid\] \|\| \{\}/);
   });
 });
 
-describe("the copy matches what the buttons now do", () => {
-  it("no instruction still says only SHOOT, now that choosing is allowed", () => {
-    // The buttons say "Shoot or choose"; a hint that says "Shoot the detail
-    // roll" quietly contradicts them and sends a manager back to the camera.
-    // Found by probing the deployed bundle for the old label and getting a hit.
-    // Per SENTENCE, not per word: "Shoot it here or pick it from your photos"
-    // is fine, "Shoot the detail roll" is not. A bare word-match flagged the
-    // correct copy and had to be replaced.
-    // Split on sentence ends WITHOUT a lookbehind — a lookbehind is a
-    // parse-time SyntaxError on Safari below 16.4 and the repo-wide guard
-    // (noLookbehind.test.js) refuses one anywhere under src/, test files
-    // included. Matching whole sentences does the same job.
-    const sentences = code.match(/[^.!?\n]+[.!?]?/g) || [];
-    const cameraOnly = sentences
-      .filter((t) => /\bShoot\b/.test(t))
-      .filter((t) => !/\b(choose|pick)\b/i.test(t))
-      .map((t) => t.trim().slice(0, 60));
-    expect(cameraOnly, `these still assume the camera: ${cameraOnly.join(" | ")}`).toEqual([]);
-    // …and the alternative is actually offered somewhere, so this cannot pass
-    // by the copy having been deleted rather than fixed.
-    expect(code).toMatch(/Shoot or choose/);
-  });
-});
-
-describe("the PDF path", () => {
-  it("is the FIRST input, above both photo uploads", () => {
-    const order = ["2 · The PDF", "3 · The detail roll", "4 · The summary"]
-      .map((label) => code.indexOf(label));
-    expect(order.every((i) => i > -1), "all three sections must exist").toBe(true);
-    expect(order, "the PDF line comes first").toEqual([...order].sort((a, b) => a - b));
+describe("the screen says only what it must", () => {
+  it("no numbered steps, no instructional prose, no split to explain", () => {
+    // A manager uses this for ten seconds. The screen it replaced carried four
+    // numbered sections, a paragraph on PDFs versus photos, an explanation of
+    // the detail roll and a fallback checkbox — every one of them something to
+    // read before anything could be done, and one of them the reason nothing
+    // could be.
+    for (const gone of [/\d · /, /detail roll/i, /summary only/i, /Read the slip/i, /Shoot/]) {
+      expect(code, `${gone} belongs to the screen this replaced`).not.toMatch(gone);
+    }
   });
 
-  it("is one compact line, not a drop area like the photo uploads", () => {
-    // The photo uploads use the full-width primary button (S.btn); the file
-    // line uses the small ghost one with an auto width. If it ever grows into
-    // a third drop area it stops being the quick path it exists to be.
-    const pdfBlock = code.slice(code.indexOf("2 · The PDF"), code.indexOf("3 · The detail roll"));
-    expect(pdfBlock).toMatch(/S\.btnGhost/);
-    expect(pdfBlock, "the big primary button belongs to the photo uploads").not.toMatch(/\.\.\.S\.btn,/);
-    expect(pdfBlock).toMatch(/Add file/);
-  });
-
-  it("accepts PDFs only", () => {
-    const pdfInput = [...code.matchAll(/<input\b[\s\S]*?\/>/g)].map((m) => m[0]).find((t) => /addPdf/.test(t));
-    expect(pdfInput).toBeTruthy();
-    expect(pdfInput).toMatch(/accept="application\/pdf,\.pdf"/);
-    expect(pdfInput, "one file — a PDF is the whole slip").not.toMatch(/\bmultiple\b/);
-  });
-
-  it("ONE PATH: a PDF clears the photos, and photos disable the file line", () => {
-    // Enforced here AND in the callable, which refuses a request carrying both.
-    expect(code, "attaching a PDF clears anything photographed").toMatch(/setDetailPhotos\(\[\]\); setSummaryPhotos\(\[\]\)/);
-    expect(code, "the file button is disabled once photos exist").toMatch(/disabled=\{hasPhotos \|\| preparing > 0\}/);
-    expect(code, "the detail picker is disabled once a PDF exists").toMatch(/disabled=\{!!pdfFile \|\| preparing > 0 \|\| detailPhotos\.length/);
-    expect(code, "the summary picker too").toMatch(/disabled=\{!!pdfFile \|\| preparing > 0\}/);
-  });
-
-  it("a PDF needs no summary photo to proceed", () => {
-    // The photo path requires a summary and either a roll or the summary-only
-    // tick. A PDF is the whole slip and requires neither.
-    expect(code).toMatch(/pdfFile\s*\?\s*false/);
-  });
-
-  it("summary-only is not offered on the PDF path", () => {
-    // A PDF with lines is never linesCaptured:false, so the tick would be a
-    // way to record a worse capture than the file actually contains.
-    expect(code).toMatch(/detailPhotos\.length === 0 && !pdfFile &&/);
+  it("says recorded or why not, and no figure either way", () => {
+    // Pinned here as copy as well as in captureOnly.test.js as fields: the
+    // manager is never shown what the slip said, only whether it landed.
+    for (const gone of [/variance/i, /confidence/i, /expected/i, /R\$\{/]) {
+      expect(code, `${gone} is the owner's business, on his own reports tab`).not.toMatch(gone);
+    }
   });
 });
 
@@ -343,10 +321,15 @@ describe("the payload pre-flight", () => {
     expect(MAX_PAYLOAD_BYTES).toBeLessThan(10 * 1024 * 1024);
   });
 
-  it("is applied to BOTH paths, before the call", () => {
-    expect(code).toMatch(/payloadRefusal\(pdfFile \? \[pdfFile\] : photos\)/);
-    expect(code, "and to the PDF as it is read, so an oversized file is caught at pick time")
-      .toMatch(/payloadRefusal\(\[\{ base64 \}\]\)/);
+  it("is applied before the call, on the downscaled photo", () => {
+    // After the downscale, not before it: refusing the file a phone camera
+    // produced would refuse every capture, since that file is the reason the
+    // downscale exists.
+    const from = code.indexOf("const onPick =");
+    const body = code.slice(from, code.indexOf("\n  };", from));
+    expect(body).toMatch(/payloadRefusal\(\[photo\]\)/);
+    expect(body.indexOf("downscalePhoto"), "…and after it")
+      .toBeLessThan(body.indexOf("payloadRefusal"));
   });
 
   it("counts nothing as nothing", () => {
@@ -355,49 +338,68 @@ describe("the payload pre-flight", () => {
   });
 });
 
-describe("what must NOT have changed", () => {
-  it("the two uploads are still separate — detail roll and summary", () => {
-    expect(code).toMatch(/setDetailPhotos/);
-    expect(code).toMatch(/setSummaryPhotos/);
-    expect(code, "the summary-only fallback still exists").toMatch(/summaryOnly/);
+describe("what must NOT have changed behind the upload", () => {
+  // The rebuild is presentation. Everything the callable is told, and every
+  // refusal it can answer with, is the same — so the parts of the request that
+  // decide what gets recorded are pinned here.
+  it("the till that was tapped is what the slip is checked against", () => {
+    expect(code).toMatch(/pickedTid: tid/);
+    expect(code, "the server rejects a slip whose printed TID is not this one — never overridden here")
+      .not.toMatch(/pickedTid: (?!tid)/);
   });
 
-  it("summary-only is still driven by an empty detail roll", () => {
-    // The server records linesCaptured:false from this; the client must keep
-    // telling it the truth about whether a roll was shot.
-    expect(code).toMatch(/summaryOnly: summaryOnly \|\| detailPhotos\.length === 0/);
-  });
-});
-
-describe("starting over leaves nothing of the last slip behind", () => {
-  // The comment-STRIPPED source: the explanatory comment above reset names
-  // every setter, and matching that would pass with the code removed.
-  const screen = code;
-
-  it("reset clears the PDF as well as the photos", () => {
-    // A retained pdfFile meant "Capture another slip" would re-submit the
-    // PREVIOUS terminal's report against a freshly picked till — the wrong
-    // figures, against the wrong person's name.
-    const body = screen.slice(screen.indexOf("const reset ="), screen.indexOf("const reset =") + 400);
-    expect(body, "reset must clear the picked till").toMatch(/setTid\(null\)/);
-    expect(body, "reset must clear the detail roll").toMatch(/setDetailPhotos\(\[\]\)/);
-    expect(body, "reset must clear the summary").toMatch(/setSummaryPhotos\(\[\]\)/);
-    expect(body, "reset must clear the PDF").toMatch(/setPdfFile\(null\)/);
+  it("one photo is still declared summary-only", () => {
+    // The old screen sent `summaryOnly || detailPhotos.length === 0`, so a
+    // single-photo capture was flagged summary-only either way. The record
+    // still carries the server's warning that no line match can run for it.
+    expect(code).toMatch(/summaryOnly: true/);
   });
 
-  it("every piece of capture state reset holds is cleared by it", () => {
-    // Named individually above; counted here so the NEXT input added to this
-    // screen cannot quietly skip reset the way the PDF one did.
-    const setters = new Set(
-      (screen.match(/const \[[a-zA-Z]+, (set[A-Za-z]+)\]/g) || [])
-        .map((m) => m.replace(/.*(set[A-Za-z]+).*/, "$1")),
-    );
-    const captureState = ["setTid", "setDetailPhotos", "setSummaryPhotos", "setSummaryOnly", "setPdfFile"];
-    for (const s of captureState) {
-      expect(setters.has(s), `${s} is no longer a state setter on this screen — update this list`).toBe(true);
-    }
-    const body = screen.slice(screen.indexOf("const reset ="), screen.indexOf("const reset =") + 400);
-    const missed = captureState.filter((s) => !body.includes(s));
-    expect(missed, `reset does not clear: ${missed.join(", ")}`).toEqual([]);
+  it("extract then submit, with the draft the server parked", () => {
+    expect(code).toMatch(/action: "extract"/);
+    expect(code).toMatch(/action: "submit", draftId: data\.draftId/);
+    expect(code, "the client never invents a draft id").not.toMatch(/draftId: [^d]/);
+  });
+
+  it("BOTH calls are unwrapped from the callable's envelope", () => {
+    // A callable resolves to { data }. Reading `.ok` off the envelope makes
+    // every submit look refused, with an undefined reason — an empty red box
+    // that says nothing about a slip that was in fact recorded. Caught by
+    // driving the real screen; pinned here because the two calls are written
+    // differently and only one of them was wrong.
+    expect([...code.matchAll(/await cardBatchCaptureFn\(/g)],
+      "extract and submit, and nothing else calls it").toHaveLength(2);
+    expect([...code.matchAll(/\{ data[^}]*\} = await cardBatchCaptureFn/g)],
+      "both results must be destructured").toHaveLength(2);
+  });
+
+  it("a capture that succeeded ticks the card, and is remembered for the day", () => {
+    // The tick for the hand-captured till is this app's only record of it —
+    // /card_batches is owner-only and unreadable here — so losing this write
+    // means a manager who captured PE Till 1 sees an untouched card and
+    // photographs it again.
+    const from = code.indexOf("const send =");
+    const body = code.slice(from, code.indexOf("\n  };", from));
+    expect(body).toMatch(/rememberHandCapture\(tid, today\)/);
+    expect(body, "…and the screen ticks without waiting for a reload")
+      .toMatch(/setMine\(\(prev\) => new Set\(prev\)\.add\(tid\)\)/);
+  });
+
+  it("a refusal never renders as an empty box", () => {
+    expect(code).toMatch(/const reasonOf = /);
+    expect(code, "every refusal path goes through it")
+      .not.toMatch(/reason: (data|done)\.reason/);
+  });
+
+  it("a refusal is shown verbatim, and a duplicate can still be corrected", () => {
+    // `correction` is the only way to replace a batch already recorded, and it
+    // keeps both records. Losing it would leave a bad capture permanent.
+    expect(code).toMatch(/phase: "failed", reason: reasonOf\(data\)/);
+    expect(code).toMatch(/already captured\|resubmit as a correction/);
+    // …and the words matched are the server's own, so a re-word there is
+    // caught here rather than at a till.
+    const server = readFileSync(resolve(here, "../../../functions/lib/card-recon.cjs"), "utf8");
+    expect(server, "the duplicate refusal still says one of them").toMatch(/already captured|resubmit as a correction/);
+    expect(code).toMatch(/correction/);
   });
 });
