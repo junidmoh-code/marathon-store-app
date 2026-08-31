@@ -257,11 +257,31 @@ export function authenticationVerdict({ headerLines, fromAddress }) {
  * poller runs both readers on such a message. (Independent architect review.)
  */
 export function isEftCandidate({ fromAddress, subject }) {
-  if (BATCH_REPORT_SUBJECT.test(String(subject ?? ""))) return false;
+  return eftMessageRoute({ fromAddress, subject }) === "bank";
+}
+
+/**
+ * WHOSE MESSAGE IS THIS?
+ *
+ *   "card"      a terminal's batch report — the slip path's, never this one's.
+ *   "bank"      from an allowlisted bank domain: authenticate it, read it.
+ *   "stranger"  everything else. Not a bank we are set up for, so nothing is
+ *               authenticated, nothing is opened and nothing is parsed — but
+ *               if it looks like a payment notification it must still leave a
+ *               RECORD, because the alternative is the silent loss this whole
+ *               feature exists to prevent: a bank paying the shop that nobody
+ *               ever hears about.
+ *
+ * Three answers, one function, because "not a candidate" used to mean both
+ * "the slip path's" and "nobody's" — and the second of those was a message
+ * dropped without a trace.
+ */
+export function eftMessageRoute({ fromAddress, subject }) {
+  if (BATCH_REPORT_SUBJECT.test(String(subject ?? ""))) return "card";
   // The SAME allowlist test the verdict applies (subdomain-of-allowlisted,
   // never parent-of) — candidacy and verdict disagreeing is how genuine
   // subdomain mail would have been filed as a forgery attempt.
-  return domainAllowlisted(domainOfAddress(fromAddress));
+  return domainAllowlisted(domainOfAddress(fromAddress)) ? "bank" : "stranger";
 }
 
 // ─── HTML → TEXT ─────────────────────────────────────────────────────────────
@@ -385,6 +405,81 @@ const MONEY_CUE = /(?:ZAR|R)\s?\d[\d,\s]*\.\d{2}\b/;
 export function looksPaymentShaped(text) {
   const s = String(text ?? "");
   return PAYMENT_CUES.test(s) || MONEY_CUE.test(s);
+}
+
+// ─── A BANK THE POOL IS NOT SET UP FOR ───────────────────────────────────────
+// A notification from a domain that is not on the allowlist used to be filed as
+// ordinary mail: no record, no refusal, nobody told. That is the silent loss
+// this feature exists to prevent, and it is WORSE than a refusal — a refusal is
+// at least a red row somebody can act on.
+//
+// So a stranger's message that looks like a payment notification leaves a
+// record too. What it is NOT is a judgement about the message: nothing is
+// authenticated (we make no claim about a domain we do not know), no attachment
+// is opened, no reader runs, no amount is taken. The record says one thing —
+// "something payment-shaped arrived from a bank you have not set up" — and
+// names the domain, which is the entire work order.
+//
+// THE BAR IS HIGHER HERE THAN FOR A BANK WE KNOW, deliberately. looksPaymentShaped
+// errs open because the sender is already a known bank and a stray newsletter
+// costs one row. A stranger is anyone at all, and a feed that reddens for every
+// message with the word "payment" in it teaches the owner to ignore the feed.
+// So a cue must appear where a BANK puts it — in the subject, or in the name of
+// an attached document — or the body must carry both a cue AND an amount.
+//
+// THE ATTACHMENT'S NAME, NOT ITS CONTENTS. Reading a filename off the envelope
+// is not opening an unauthenticated file, and it is the signal that matters:
+// Standard Bank's own notification body says only "please open the attached PDF
+// file", so a body-only test would go silent on exactly the layout most banks
+// use. (PaymentConfirmation.pdf, Payment Notification.pdf — the cue is right
+// there in the name.)
+export function looksLikeStrangerPayment({ subject, bodyText, attachmentNames }) {
+  const names = (Array.isArray(attachmentNames) ? attachmentNames : []).join(" ");
+  const heading = `${String(subject ?? "")} ${names}`;
+  if (PAYMENT_CUES.test(heading)) return true;
+  const body = String(bodyText ?? "");
+  return PAYMENT_CUES.test(body) && MONEY_CUE.test(body);
+}
+
+/**
+ * The record for a payment-shaped message from a domain the pool does not know.
+ *
+ * DISTINCT FROM refused-auth, AND THE DIFFERENCE MATTERS. "refused-auth" means
+ * a message CLAIMED to be from a bank we know and failed Gmail's verification —
+ * a forgery attempt, and something is wrong. "unknown-bank" means nobody
+ * claimed anything: the sender is not a bank this pool is set up for, so no
+ * verification was attempted and no reader was offered the document. One is an
+ * attack; the other is a bank to set up. They must never render as the same row.
+ *
+ * The raw text is kept SHORTER than a refusal's: it is the sender's own words,
+ * from a sender we know nothing about, and a wall of it is not evidence — it is
+ * a stranger's page in the owner's tab. Enough to recognise the bank; no more.
+ */
+export const UNKNOWN_BANK_RAW_LIMIT = 1200;
+
+export function unknownBankRecord({ message, fromDomain, rawText, at }) {
+  const domain = String(fromDomain ?? "").toLowerCase() || "an unreadable address";
+  return {
+    at,
+    receivedAt: Number.isInteger(message.receivedAt) ? message.receivedAt : null,
+    messageId: clip(message.messageId, 200),
+    from: clip(message.from, 200),
+    subject: clip(redactAccountDigits(message.subject), 200),
+    outcome: "unknown-bank",
+    fromDomain: clip(domain, 120),
+    // NOT a verdict. Saying "fail" here would file a bank we have simply never
+    // set up alongside forgery attempts; saying "pass" would be a lie. The
+    // honest answer is that nothing was checked, and why.
+    auth: {
+      verdict: "not-checked",
+      fromDomain: clip(domain, 120),
+      dkimDomain: null,
+      detail: `${domain} is not one of the banks this pool is set up for, so nothing was authenticated and nothing was read`,
+    },
+    reason: `Something payment-shaped arrived from ${domain}, which is NOT one of the banks this pool is set up for. Nothing was read from it — no reader ran, no attachment was opened, no amount was taken. If a customer is really paying you from this bank, add its domain to EFT_ALLOWED_DOMAINS and build a reader from a real notification (scripts/cardrecon/eftBanks.mjs).`,
+    rawText: clip(redactAccountDigits(rawText), UNKNOWN_BANK_RAW_LIMIT),
+    reader: null,
+  };
 }
 
 // ─── THE DESTINATION-ACCOUNT ALLOWLIST ───────────────────────────────────────
