@@ -81,6 +81,7 @@ export default function EftPool() {
   // customer attached, held at /eft_unallocated until the owner assigns a
   // customer here (the "allocate" action mints the store credit server-side).
   const [unalloc, setUnalloc] = useState(null);
+  const [unallocErr, setUnallocErr] = useState(null);
   const [allocFor, setAllocFor] = useState(null);
   const [allocPhone, setAllocPhone] = useState("");
   const [allocBusy, setAllocBusy] = useState(false);
@@ -151,10 +152,13 @@ export default function EftPool() {
     if (!isSuperAdmin) return undefined;
     const off = onValue(
       dbRef(database, "eft_unallocated"),
-      (snap) => setUnalloc(snap.val() || {}),
+      (snap) => { setUnalloc(snap.val() || {}); setUnallocErr(null); },
       (err) => {
-        // Same rule split as the pool: absent rule = warning, not silence.
+        // A failed read must WARN, never blank the section — held money that
+        // cannot be listed is the exact silence this node exists to prevent.
+        // (Owner + missing rule = run apply-eft-unallocated-rules.mjs.)
         setUnalloc(null);
+        setUnallocErr(err?.code || "the unallocated list could not be read");
         console.warn("eft unallocated: read failed", err?.code || err);
       },
     );
@@ -220,6 +224,18 @@ export default function EftPool() {
           Read whole (small by construction: resolving removes the entry), so a
           hold can never age out of the pool tail and vanish. Allocating mints
           the customer's store credit through the same mint as everything else. */}
+      {unallocErr && (
+        <div style={{ ...S.warn, marginTop: 10 }}>
+          The unallocated-remainder list could not be read ({unallocErr}). Held money may exist that
+          this panel cannot show — if the /eft_unallocated rule is not live, run
+          scripts/cardrecon/apply-eft-unallocated-rules.mjs.
+        </div>
+      )}
+      {/* The confirmation renders OUTSIDE the backlog block: allocating the
+          LAST hold empties the list, and the message must survive that. */}
+      {allocMsg && (!unalloc || Object.keys(unalloc).length === 0) && (
+        <div style={{ marginTop: 8, fontSize: 12, color: allocMsg.ok ? "#B7F0CC" : "#FFB3B3" }}>{allocMsg.text}</div>
+      )}
       {unalloc && Object.keys(unalloc).length > 0 && (
         <div style={{ marginTop: 10, border: "1px solid rgba(255,204,102,.45)", background: "rgba(255,204,102,.08)",
                       borderRadius: 11, padding: "9px 11px" }}>

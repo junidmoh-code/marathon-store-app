@@ -74,7 +74,7 @@ function publicEftView(key, record) {
         appliedCents: Number.isInteger(record.used.appliedCents) ? record.used.appliedCents : null,
         remainder: record.used.remainder && typeof record.used.remainder === "object"
           ? {
-              cents: record.used.remainder.cents ?? null,
+              cents: Number.isInteger(record.used.remainder.cents) ? record.used.remainder.cents : null,
               disposition: record.used.remainder.disposition ?? null,
               status: record.used.remainder.status ?? null,
               customerName: record.used.remainder.customerName ?? null,

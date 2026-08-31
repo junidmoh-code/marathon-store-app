@@ -511,3 +511,15 @@ test("pendingRemainderScanAction: wait fresh, finish pending, clear everything e
   // A malformed breadcrumb (no `at`) is treated as stale, not immortal.
   assert.equal(scan({}, issued, 2000000, MIN), "clear");
 });
+
+test("a path-hostile customer id downgrades the remainder to UNALLOCATED, never a broken mint", () => {
+  // The id would become customers/{id}/… — a "/" or "#" in it must not be
+  // able to break the mint (which would retry for ever); the money goes to
+  // the visible hold instead.
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  settleAndAttach(node, { ...tillA, customerId: "c1/evil#path", appliedCents: 3000 });
+  const r = node.get().used.remainder;
+  assert.equal(r.disposition, "unallocated");
+  assert.equal(r.customerId, null);
+  assert.equal(r.creditId, null);
+});

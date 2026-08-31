@@ -59,7 +59,8 @@ const {
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
 } = require("../lib/eft-settle.cjs");
 const {
-  buildEftCreditClaim, buildEftCreditRecord, eftCreditSideWrites, buildUnallocatedRecord,
+  buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
+  ledgerApplyDecision, buildUnallocatedRecord,
 } = require("../lib/eft-credit.cjs");
 
 if (!admin.apps.length) {
@@ -181,28 +182,39 @@ async function finishRemainder(key) {
     const { ServerValue } = admin.database;
     const res = await db.ref(`pos/storeCredits/${claim.creditId}`)
       .transaction((cur) => (cur === null ? buildEftCreditRecord(claim, ServerValue.TIMESTAMP) : undefined));
-    if (res.committed) {
-      const eventKey = db.ref(`pos/audit/store_credit_issued/${claim.customerId}`).push().key;
-      const updates = eftCreditSideWrites(claim, {
-        eventKey,
-        serverTs: ServerValue.TIMESTAMP,
-        increment: (n) => ServerValue.increment(n),
-      });
-      updates[`pos/storeCreditQueue/${claim.creditId}`] = null; // consume the claim
-      await db.ref().update(updates);
-    } else {
-      // Already minted (a retry, or the sweep won) — just clear the claim.
-      // Paranoia that costs one read: the standing record must be THIS
-      // remainder's. A mismatch means two settlements produced the same
-      // deterministic id, which the id's construction is meant to preclude —
-      // if it ever logs, money is wrong and a human must look.
+    if (!res.committed) {
+      // Already minted (a retry, or the sweep won). Paranoia that costs one
+      // read: the standing record must be THIS remainder's. A mismatch means
+      // two settlements produced the same deterministic id, which the id's
+      // construction is meant to preclude — if it ever logs, money is wrong
+      // and a human must look (the sides below are then NOT applied).
       const standing = (await db.ref(`pos/storeCredits/${claim.creditId}`).once("value")).val();
       if (standing && (standing.customerId !== claim.customerId || standing.issuedAmount !== claim.amount)) {
         console.error(`eftPool: CREDIT ID COLLISION on ${claim.creditId} — standing record differs from this remainder (${standing.customerId}/${standing.issuedAmount} vs ${claim.customerId}/${claim.amount}). Investigate before trusting either.`);
+        await db.ref(`pos/storeCreditQueue/${claim.creditId}`).remove();
+        return { ...summary, status: "pending" };
       }
-      await db.ref(`pos/storeCreditQueue/${claim.creditId}`).remove();
     }
-    await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "issued", at: Date.now() }));
+    // The side writes run on EVERY pass — fresh mint and repair alike — and
+    // each is create-only, so a crash after any step is healed by the next
+    // retry and nothing double-applies. The ledger transaction records the
+    // txn and moves the balance atomically; the mirror is create-only because
+    // redemptions decrement it. (CodeRabbit, this PR.)
+    await db.ref(`customers/${claim.customerId}/storeCredit/${claim.creditId}`)
+      .transaction((cur) => (cur === null ? eftCreditMirrorRecord(claim, ServerValue.TIMESTAMP) : undefined));
+    await db.ref(`pos/audit/store_credit_issued/${claim.customerId}/sc_${claim.creditId}`)
+      .transaction((cur) => (cur === null ? eftCreditAuditRecord(claim, ServerValue.TIMESTAMP) : undefined));
+    await db.ref(`pos/creditLedger/${claim.customerId}`)
+      .transaction((cur) => ledgerApplyDecision(cur, claim, ServerValue.TIMESTAMP));
+    await db.ref(`pos/storeCreditQueue/${claim.creditId}`).remove(); // sides landed — consume the claim
+    const flip = await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "issued", at: Date.now() }));
+    if (!flip.ok) {
+      // The one way this refuses: the owner REVERSED the settlement while the
+      // mint was in flight, so `used` is gone. The credit is real and
+      // spendable but the reversal record still says "pending" — say so
+      // loudly, or the discrepancy is only visible on the customer's balance.
+      console.error(`eftPool: credit ${claim.creditId} minted but the settlement on ${key} was reversed mid-flight — the credit STANDS; remove it from the customer if the reversal meant to void it.`);
+    }
     await db.ref(`${PENDING_PATH}/${key}`).remove(); // terminal — breadcrumb done
     console.log(`eftPool: remainder of ${r.cents}c on ${key} issued as store credit ${claim.creditId} to ${claim.customerId}`);
     return { ...summary, status: "issued" };
@@ -350,10 +362,19 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       poolKey: key, at: now, customerId: customer.id, customerName: customer.name,
     }));
     if (!decision.ok) throw refusalToError(decision);
-    const remainder = await finishRemainder(key);
-    // The hold is resolved — take it off the owner's list. (Idempotent; a
-    // re-run of an already-credited allocation cleans a leftover hold too.)
-    await admin.database().ref(`eft_unallocated/${key}`).remove();
+    // The allocation is COMMITTED at this point — a follow-up failure must not
+    // read as "allocation failed" (the owner would retry with a different
+    // customer and hit already-credited). Report the pending state instead;
+    // the remainder scan finishes it within minutes. (CodeRabbit, this PR.)
+    let remainder = null;
+    try {
+      remainder = await finishRemainder(key);
+      // The hold is resolved — take it off the owner's list. (Idempotent; a
+      // re-run of an already-credited allocation cleans a leftover hold too.)
+      await admin.database().ref(`eft_unallocated/${key}`).remove();
+    } catch (e) {
+      console.error(`eftPool: allocate committed on ${key} but the mint follow-up failed (the scan will finish it):`, e);
+    }
     console.log(`eftPoolSettle: allocate ${key} → customer ${customer.id} by owner`);
     return { ok: true, already: decision.already === true, remainder, customer };
   } else if (action === "release") {

@@ -80,51 +80,80 @@ function buildEftCreditRecord(claim, serverTs) {
   };
 }
 
-/**
- * The multi-path side writes of a mint — mirror + audit + unified ledger —
- * byte-compatible with the POS mintSideWrites. The audit event key and the
- * server sentinels are injected so this stays pure:
- *   eventKey    a push key under pos/audit/store_credit_issued/{customerId}
- *   serverTs    the server-timestamp sentinel
- *   increment   (n) => the server increment sentinel
- */
-function eftCreditSideWrites(claim, { eventKey, serverTs, increment }) {
-  const txnId = `sc_${claim.creditId}`;
+// ─── THE SIDE WRITES, EACH IDEMPOTENT ON ITS OWN ─────────────────────────────
+// The POS mint applies mirror + audit + ledger in one multi-path update after
+// the canonical create — which leaves a known crash window where the canonical
+// credit exists and the sides never land (and a repair pass cannot tell "not
+// yet" from "half"). This minter is RETRIED (by the till, the owner and
+// eftRemainderScan), so every side write here is individually create-only:
+// re-running heals exactly what is missing and can never double-apply.
+// (CodeRabbit, this PR.)
+//
+//   mirror  customers/{id}/storeCredit/{creditId} — create-only is LOAD-
+//           BEARING: redemptions decrement remainingAmount, so a blind re-set
+//           would restore money the customer already spent.
+//   audit   pos/audit/store_credit_issued/{id}/sc_{creditId} — the event key
+//           is the deterministic txn id, not a push key, so a retry cannot
+//           write the event twice.
+//   ledger  ONE transaction on pos/creditLedger/{customerId} that records the
+//           txn AND moves the balance together, guarded by the txn id — the
+//           balance increment is exactly-once by construction. (The node is
+//           one customer's ledger — bounded, not a whole-node read.)
+
+/** The mirror record the till spends from — same shape as the POS mint's. */
+function eftCreditMirrorRecord(claim, serverTs) {
+  return { remainingAmount: claim.amount, issuedAt: serverTs };
+}
+
+/** The audit event — same fields as the POS mintSideWrites'. */
+function eftCreditAuditRecord(claim, serverTs) {
   return {
-    [`customers/${claim.customerId}/storeCredit/${claim.creditId}`]: {
-      remainingAmount: claim.amount,
-      issuedAt: serverTs,
+    managerUid: null,
+    managerName: null,
+    cashierUid: claim.issuedByUid ?? null,
+    cashierName: claim.cashierName ?? null,
+    customerId: claim.customerId,
+    customerCode: claim.customerCode ?? null,
+    customerName: claim.customerName ?? null,
+    amount: claim.amount,
+    reason: claim.reason ?? null,
+    notes: claim.notes ?? null,
+    at: serverTs,
+    storeId: claim.storeId ?? null,
+    tillId: claim.tillId ?? null,
+    creditId: claim.creditId,
+    source: claim.source,
+    issuedBy: "server",
+  };
+}
+
+/**
+ * The ledger transaction's update function: record the txn and move the
+ * balance in ONE atomic decision, or leave the node be when the txn already
+ * exists. Null current is a valid empty ledger (the Admin SDK's cold-cache
+ * first call returns a real value here because a created node CASes against
+ * the server and re-runs on mismatch).
+ */
+function ledgerApplyDecision(current, claim, serverTs) {
+  const txnId = `sc_${claim.creditId}`;
+  if (current?.txns?.[txnId]) return undefined; // already applied — exactly once
+  return {
+    ...(current ?? {}),
+    balance: (Number.isInteger(current?.balance) ? current.balance : 0) + claim.amount,
+    txns: {
+      ...(current?.txns ?? {}),
+      [txnId]: {
+        txnId,
+        amount: claim.amount,
+        source: claim.source,
+        kind: "credit",
+        at: serverTs,
+        staffUid: claim.issuedByUid ?? null,
+        storeId: claim.storeId ?? null,
+        tillId: claim.tillId ?? null,
+        ref: claim.reason ?? claim.saleId ?? null,
+      },
     },
-    [`pos/audit/store_credit_issued/${claim.customerId}/${eventKey}`]: {
-      managerUid: null,
-      managerName: null,
-      cashierUid: claim.issuedByUid ?? null,
-      cashierName: claim.cashierName ?? null,
-      customerId: claim.customerId,
-      customerCode: claim.customerCode ?? null,
-      customerName: claim.customerName ?? null,
-      amount: claim.amount,
-      reason: claim.reason ?? null,
-      notes: claim.notes ?? null,
-      at: serverTs,
-      storeId: claim.storeId ?? null,
-      tillId: claim.tillId ?? null,
-      creditId: claim.creditId,
-      source: claim.source,
-      issuedBy: "server",
-    },
-    [`pos/creditLedger/${claim.customerId}/txns/${txnId}`]: {
-      txnId,
-      amount: claim.amount,
-      source: claim.source,
-      kind: "credit",
-      at: serverTs,
-      staffUid: claim.issuedByUid ?? null,
-      storeId: claim.storeId ?? null,
-      tillId: claim.tillId ?? null,
-      ref: claim.reason ?? claim.saleId ?? null,
-    },
-    [`pos/creditLedger/${claim.customerId}/balance`]: increment(claim.amount),
   };
 }
 
@@ -154,6 +183,8 @@ module.exports = {
   CREDIT_SOURCE,
   buildEftCreditClaim,
   buildEftCreditRecord,
-  eftCreditSideWrites,
+  eftCreditMirrorRecord,
+  eftCreditAuditRecord,
+  ledgerApplyDecision,
   buildUnallocatedRecord,
 };

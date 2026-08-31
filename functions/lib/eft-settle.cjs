@@ -131,7 +131,14 @@ function remainderPlanOf(poolKey, used, amountCents) {
     ? amountCents - used.appliedCents
     : 0;
   if (cents <= 0) return null;
-  const customerId = used.customerId ?? null;
+  // The customer id came from the till's settle payload and is about to
+  // become a credit id and a database PATH SEGMENT (customers/{id}/…,
+  // creditLedger/{id}/…). An id that fails the charset check is treated as NO
+  // customer — the money stays visible at /eft_unallocated instead of a mint
+  // that throws on every retry for ever. (CodeRabbit, this PR.)
+  const customerId = typeof used.customerId === "string" && /^[A-Za-z0-9_-]{1,60}$/.test(used.customerId)
+    ? used.customerId
+    : null;
   return {
     cents,
     disposition: customerId ? "credit" : "unallocated",

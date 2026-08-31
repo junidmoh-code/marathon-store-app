@@ -11,7 +11,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  CREDIT_SOURCE, buildEftCreditClaim, buildEftCreditRecord, eftCreditSideWrites, buildUnallocatedRecord,
+  CREDIT_SOURCE, buildEftCreditClaim, buildEftCreditRecord,
+  eftCreditMirrorRecord, eftCreditAuditRecord, ledgerApplyDecision, buildUnallocatedRecord,
 } = require("../lib/eft-credit.cjs");
 const { eftCreditIdOf } = require("../lib/eft-settle.cjs");
 
@@ -79,30 +80,37 @@ test("the canonical record matches the POS buildCreditRecord shape", () => {
   });
 });
 
-test("the side writes hit the mirror, the audit and the ledger — the POS paths exactly", () => {
+test("the side writes carry the POS shapes — mirror, audit, ledger txn", () => {
   const claim = buildEftCreditClaim(KEY, usedRecord(), 7777);
-  const inc = (n) => ({ ".sv": { increment: n } });
-  const updates = eftCreditSideWrites(claim, { eventKey: "EV1", serverTs: TS, increment: inc });
-  assert.deepEqual(Object.keys(updates).sort(), [
-    `customers/c1/storeCredit/${claim.creditId}`,
-    "pos/audit/store_credit_issued/c1/EV1",
-    "pos/creditLedger/c1/balance",
-    `pos/creditLedger/c1/txns/sc_${claim.creditId}`,
-  ].sort());
   // The mirror is what the till spends from — remainingAmount + issuedAt only.
-  assert.deepEqual(updates[`customers/c1/storeCredit/${claim.creditId}`], {
-    remainingAmount: 7000, issuedAt: TS,
-  });
-  const audit = updates["pos/audit/store_credit_issued/c1/EV1"];
+  assert.deepEqual(eftCreditMirrorRecord(claim, TS), { remainingAmount: 7000, issuedAt: TS });
+  const audit = eftCreditAuditRecord(claim, TS);
   assert.equal(audit.amount, 7000);
   assert.equal(audit.source, "eft_overpayment");
   assert.equal(audit.issuedBy, "server");
   assert.equal(audit.cashierName, "Ahmed");
-  const txn = updates[`pos/creditLedger/c1/txns/sc_${claim.creditId}`];
-  assert.equal(txn.kind, "credit");
-  assert.equal(txn.amount, 7000);
-  assert.equal(txn.staffUid, "uA");
-  assert.deepEqual(updates["pos/creditLedger/c1/balance"], inc(7000));
+  assert.equal(audit.creditId, claim.creditId);
+});
+
+test("ledgerApplyDecision records the txn and moves the balance ONCE, atomically", () => {
+  const claim = buildEftCreditClaim(KEY, usedRecord(), 7777);
+  const txnId = `sc_${claim.creditId}`;
+  // Empty ledger (and the Admin SDK's cold-cache null): txn + balance together.
+  const first = ledgerApplyDecision(null, claim, TS);
+  assert.equal(first.balance, 7000);
+  assert.equal(first.txns[txnId].amount, 7000);
+  assert.equal(first.txns[txnId].kind, "credit");
+  assert.equal(first.txns[txnId].staffUid, "uA");
+  // An existing ledger: prior txns and balance survive, this txn adds on.
+  const existing = { balance: 500, txns: { sc_other: { txnId: "sc_other", amount: 500 } } };
+  const second = ledgerApplyDecision(existing, claim, TS);
+  assert.equal(second.balance, 7500);
+  assert.equal(Object.keys(second.txns).length, 2);
+  // A RE-RUN against a ledger that already holds this txn aborts — the
+  // balance can never move twice for one credit, no matter how many retries.
+  assert.equal(ledgerApplyDecision(second, claim, TS), undefined);
+  // A corrupted balance is treated as zero, never NaN.
+  assert.equal(ledgerApplyDecision({ balance: "junk" }, claim, TS).balance, 7000);
 });
 
 test("the unallocated hold carries everything the owner needs to resolve it", () => {
