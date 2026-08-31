@@ -102,11 +102,61 @@ function settleDecision(current, settlement) {
   };
 }
 
+// ─── THE REMAINDER — where the rest of a partially-applied payment goes ──────
+// A payment bigger than the sale it settles is STILL consumed whole (consume-
+// once is per payment, never per rand), so the difference is money the shop
+// owes. It must never end as a bare "overpaid" note nobody owns (the R30-sale/
+// R100-payment incident this build exists for): with a customer on the
+// settlement it becomes STORE CREDIT through the existing mint machinery
+// (lib/eft-credit.cjs — the same records the POS refund path writes, never a
+// parallel "EFT credit"); with no customer it is HELD, visibly, at
+// /eft_unallocated until the owner assigns one.
+
+/** The credit id an EFT remainder mints under — DETERMINISTIC, so a retried
+ *  attach (or the POS sweep finishing a crashed one) can never mint twice:
+ *  the /pos/storeCredits create-if-absent transaction collides on this id.
+ *  usedAt (epoch ms) is in the id because a payment can be settled, reversed
+ *  by the owner and settled again — each settlement is its own credit. */
+function eftCreditIdOf(poolKey, usedAt) {
+  return `eftsc-${poolKey}-${usedAt}`;
+}
+
+/** The remainder plan stamped on used.remainder at attach/allocate time.
+ *  status starts "pending"; the callable's follow-up IO moves it to "issued"
+ *  (credit minted) or "held" (/eft_unallocated written) — so a crash between
+ *  the transaction and the IO leaves a visibly unfinished record, never a
+ *  silently swallowed difference. */
+function remainderPlanOf(poolKey, used, amountCents) {
+  const cents = Number.isInteger(amountCents) && Number.isInteger(used?.appliedCents)
+    ? amountCents - used.appliedCents
+    : 0;
+  if (cents <= 0) return null;
+  // The customer id came from the till's settle payload and is about to
+  // become a credit id and a database PATH SEGMENT (customers/{id}/…,
+  // creditLedger/{id}/…). An id that fails the charset check is treated as NO
+  // customer — the money stays visible at /eft_unallocated instead of a mint
+  // that throws on every retry for ever. (CodeRabbit, this PR.)
+  const customerId = typeof used.customerId === "string" && /^[A-Za-z0-9_-]{1,60}$/.test(used.customerId)
+    ? used.customerId
+    : null;
+  return {
+    cents,
+    disposition: customerId ? "credit" : "unallocated",
+    customerId,
+    customerName: used.customerName ?? null,
+    creditId: customerId ? eftCreditIdOf(poolKey, used.at) : null,
+    status: "pending",
+  };
+}
+
 /**
- * The committed sale's identity lands on the settlement this attempt holds.
+ * The committed sale's identity lands on the settlement this attempt holds —
+ * and, now that the sale is real, the remainder plan is decided and stamped
+ * (a remainder must not exist before the sale commits: a released payment
+ * owes nobody anything).
  * @returns same shape as settleDecision
  */
-function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at }) {
+function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey }) {
   if (!current || current.status !== "used" || !current.used) {
     return refuse("not-held", "No settlement is holding this payment — the sale cannot be attached.");
   }
@@ -120,11 +170,67 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at }) {
     if (current.used.sale.saleId === saleId) return { ok: true, already: true };
     return refuse("sale-mismatch", "This settlement already records a different sale — nothing was changed.");
   }
+  const used = { ...current.used, sale: { saleId, receiptNumber: receiptNumber ?? null, at } };
+  const remainder = remainderPlanOf(poolKey, used, current.amountCents);
+  if (remainder) used.remainder = remainder;
+  return { ok: true, value: { ...current, used } };
+}
+
+/**
+ * The owner assigns a customer to a HELD remainder — the unallocated money
+ * becomes that customer's store credit through the same mint. Idempotent for
+ * the same customer; refuses to move a remainder that is already someone's
+ * credit (that is a reversal conversation, not an allocate).
+ */
+function allocateRemainderDecision(current, { poolKey, at, customerId, customerName }) {
+  if (typeof customerId !== "string" || !customerId) {
+    return refuse("bad-customer", "The allocation names no customer.");
+  }
+  if (!current || current.status !== "used" || !current.used?.remainder) {
+    return refuse("no-remainder", "This payment has no held remainder to allocate.");
+  }
+  const r = current.used.remainder;
+  if (r.disposition === "credit") {
+    if (r.customerId === customerId) return { ok: true, already: true };
+    return refuse("already-credited",
+      `This remainder is already ${r.status === "issued" ? "issued as" : "becoming"} store credit for ${r.customerName || "another customer"}.`);
+  }
   return {
     ok: true,
     value: {
       ...current,
-      used: { ...current.used, sale: { saleId, receiptNumber: receiptNumber ?? null, at } },
+      used: {
+        ...current.used,
+        remainder: {
+          ...r,
+          disposition: "credit",
+          customerId,
+          customerName: customerName ?? null,
+          creditId: eftCreditIdOf(poolKey, current.used.at),
+          status: "pending",
+          allocatedAt: at,
+          allocatedBy: "owner",
+        },
+      },
+    },
+  };
+}
+
+/**
+ * The follow-up IO reports what it did: "pending" → "issued" (credit minted)
+ * or "held" (/eft_unallocated written). A transaction, not a set — a reverse
+ * racing this must not find a stray child re-created under a used that is gone.
+ */
+function remainderStatusDecision(current, { status, at }) {
+  if (!current?.used?.remainder) {
+    return refuse("no-remainder", "No remainder on this settlement.");
+  }
+  if (current.used.remainder.status === status) return { ok: true, already: true };
+  return {
+    ok: true,
+    value: {
+      ...current,
+      used: { ...current.used, remainder: { ...current.used.remainder, status, statusAt: at } },
     },
   };
 }
@@ -193,6 +299,25 @@ function reverseDecision(current, { at, by, reason }) {
 }
 
 /**
+ * What eftRemainderScan does with one /eft_pending_remainders breadcrumb.
+ * Breadcrumbs are written BEFORE the attach/allocate transaction, so their
+ * existence proves nothing by itself — the pool record decides:
+ *   "wait"    the breadcrumb is fresh; the callable that wrote it is probably
+ *             still finishing. Touch nothing.
+ *   "finish"  a stamped remainder is still pending — the follow-up IO crashed;
+ *             re-run finishRemainder.
+ *   "clear"   there is nothing to finish (no remainder was stamped, the plan
+ *             already reached a terminal state, or the settlement was reversed
+ *             — the reverse cleans its own claim). Remove the breadcrumb.
+ */
+function pendingRemainderScanAction(breadcrumb, record, nowMs, minAgeMs) {
+  const at = Number.isInteger(breadcrumb?.at) ? breadcrumb.at : 0;
+  if (nowMs - at < minAgeMs) return "wait";
+  if (record?.status === "used" && record.used?.remainder?.status === "pending") return "finish";
+  return "clear";
+}
+
+/**
  * The transaction update function the callable hands to the Admin SDK,
  * wrapping one decision — PURE and here so the null-first-call handling is
  * itself under test (test/eft-pool-settle.test.cjs), not just reasoned about:
@@ -219,4 +344,8 @@ function poolTransactionStep(decide, capture) {
   };
 }
 
-module.exports = { settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep };
+module.exports = {
+  settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
+  eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
+  pendingRemainderScanAction,
+};

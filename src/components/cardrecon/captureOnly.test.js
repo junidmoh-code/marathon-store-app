@@ -91,7 +91,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the card recon screens read exactly four nodes, and each is named here on purpose", () => {
+  it("the card recon screens read exactly five nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -125,8 +125,22 @@ describe("the store app is capture-only", () => {
     //                          can act on it. Managers never see it, and the
     //                          rule refuses them anyway.
     //
+    //   eft_unallocated        the remainders of consumed EFT payments that
+    //                          settled sales with NO customer attached — money
+    //                          the shop owes someone it cannot yet name. Read
+    //                          WHOLE, deliberately: resolving an entry (the
+    //                          owner allocates it to a customer, or reverses
+    //                          the settlement) removes it, so the node is the
+    //                          owner's open backlog, small by construction —
+    //                          and a hold that aged out of a bounded tail
+    //                          would be exactly the silently-vanished money
+    //                          this feature exists to prevent. Owner-only by
+    //                          rule AND by render, same as /eft_pool: it is
+    //                          rendered inside EftPool.jsx, behind the same
+    //                          isSuperAdmin gate.
+    //
     // Everything else about a slip still goes to the callable and comes back as
-    // an acknowledgement. A FIFTH node appearing here is a change of policy and
+    // an acknowledgement. A SIXTH node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
     // EVERY file in the feature, not one of them: the emailed-slip panel is its
     // own file now, and a scan naming a single file goes stale the moment
@@ -137,7 +151,7 @@ describe("the store app is capture-only", () => {
       const src = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const m of src.matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)) reads.push(m[1]);
     }
-    expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals", "eft_pool"]);
+    expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals", "eft_pool", "eft_unallocated"]);
   });
 
   it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {

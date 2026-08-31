@@ -38,6 +38,7 @@ import { usePermissions } from "../PermissionsContext";
 import { S, fmtTime } from "./cardReconStyles";
 
 const eftPoolReverseFn = httpsCallable(functions, "eftPoolReverse");
+const eftPoolSettleFn = httpsCallable(functions, "eftPoolSettle");
 
 const FEED_SIZE = 25;
 
@@ -48,6 +49,20 @@ const fmtRands = (cents) => {
   const abs = Math.abs(cents);
   return `${sign}R${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
 };
+
+/** One sentence saying where the unapplied part of a consumed payment went.
+ *  `fallbackCents` covers records settled BEFORE remainders existed — those
+ *  have the arithmetic but no plan, and must still read as money to chase. */
+function describeRemainder(rem, fallbackCents) {
+  if (!rem) return `${fmtRands(fallbackCents)} overpaid with NO remainder plan (settled before remainders were tracked, or the attach never ran) — reverse and re-settle to resolve it`;
+  const amt = fmtRands(rem.cents);
+  if (rem.disposition === "credit") {
+    if (rem.status === "issued") return `${amt} issued as store credit to ${rem.customerName || "the customer"} (${rem.creditId})`;
+    return `${amt} BECOMING store credit for ${rem.customerName || "the customer"} — not issued yet; the remainder scan finishes it within minutes`;
+  }
+  if (rem.status === "held") return `${amt} HELD UNALLOCATED — no customer on the sale; assign one below`;
+  return `${amt} unallocated and NOT YET HELD (the follow-up write is pending)`;
+}
 
 export default function EftPool() {
   const { isSuperAdmin } = usePermissions();
@@ -62,21 +77,52 @@ export default function EftPool() {
   const [revReason, setRevReason] = useState("");
   const [revBusy, setRevBusy] = useState(false);
   const [revErr, setRevErr] = useState(null);
+  // UNALLOCATED REMAINDERS — money customers overpaid on settlements with no
+  // customer attached, held at /eft_unallocated until the owner assigns a
+  // customer here (the "allocate" action mints the store credit server-side).
+  const [unalloc, setUnalloc] = useState(null);
+  const [unallocErr, setUnallocErr] = useState(null);
+  const [allocFor, setAllocFor] = useState(null);
+  const [allocPhone, setAllocPhone] = useState("");
+  const [allocBusy, setAllocBusy] = useState(false);
+  const [allocMsg, setAllocMsg] = useState(null);
 
   async function reverse(id) {
     if (revBusy) return;
     setRevBusy(true);
     setRevErr(null);
     try {
-      await eftPoolReverseFn({ poolKey: id, reason: revReason.trim() });
+      const { data } = await eftPoolReverseFn({ poolKey: id, reason: revReason.trim() });
       // The onValue listener repaints the row from the database — the record,
       // not this component, is the truth about what happened.
       setRevFor(null);
       setRevReason("");
+      // A remainder credit that was already issued is NOT clawed back by a
+      // reversal (it may be spent) — say so, or the owner double-pays it back.
+      if (data?.creditStands) {
+        setRevErr(`Reversed. Store credit ${data.creditStands} was already issued from this payment and STANDS — remove it from the customer (Remove credit at a till) if that is wrong.`);
+      }
     } catch (e) {
       setRevErr(e?.message || "The reversal did not go through.");
     } finally {
       setRevBusy(false);
+    }
+  }
+
+  async function allocate(poolKey) {
+    const phone = allocPhone.trim();
+    if (allocBusy || !phone) return;
+    setAllocBusy(true);
+    setAllocMsg(null);
+    try {
+      const { data } = await eftPoolSettleFn({ poolKey, action: "allocate", customerPhone: phone });
+      setAllocMsg({ ok: true, text: `${fmtRands(data?.remainder?.cents)} issued as store credit to ${data?.customer?.name || data?.customer?.id}.` });
+      setAllocFor(null);
+      setAllocPhone("");
+    } catch (e) {
+      setAllocMsg({ ok: false, text: e?.message || "The allocation did not go through." });
+    } finally {
+      setAllocBusy(false);
     }
   }
 
@@ -93,6 +139,27 @@ export default function EftPool() {
         setDenied(isDenied);
         setBroken(isDenied ? null : (code || "the pool could not be read"));
         console.warn("eft pool: read failed", code || err);
+      },
+    );
+    return () => off();
+  }, [isSuperAdmin]);
+
+  // The unallocated list is read WHOLE, not as a tail — it is small by
+  // construction (each entry is a settlement the owner has not resolved yet,
+  // and resolving removes it), and a held remainder must never age out of
+  // sight the way a pool-tail row does.
+  useEffect(() => {
+    if (!isSuperAdmin) return undefined;
+    const off = onValue(
+      dbRef(database, "eft_unallocated"),
+      (snap) => { setUnalloc(snap.val() || {}); setUnallocErr(null); },
+      (err) => {
+        // A failed read must WARN, never blank the section — held money that
+        // cannot be listed is the exact silence this node exists to prevent.
+        // (Owner + missing rule = run apply-eft-unallocated-rules.mjs.)
+        setUnalloc(null);
+        setUnallocErr(err?.code || "the unallocated list could not be read");
+        console.warn("eft unallocated: read failed", err?.code || err);
       },
     );
     return () => off();
@@ -153,6 +220,69 @@ export default function EftPool() {
         Payment notifications from customers' banks, verified, account-checked and pooled. Tills
         settle EFT sales against these; a used payment shows its slip, cashier and customer here.
       </div>
+      {/* ── UNALLOCATED REMAINDERS — money owed to a customer nobody named ──
+          Read whole (small by construction: resolving removes the entry), so a
+          hold can never age out of the pool tail and vanish. Allocating mints
+          the customer's store credit through the same mint as everything else. */}
+      {unallocErr && (
+        <div style={{ ...S.warn, marginTop: 10 }}>
+          The unallocated-remainder list could not be read ({unallocErr}). Held money may exist that
+          this panel cannot show — if the /eft_unallocated rule is not live, run
+          scripts/cardrecon/apply-eft-unallocated-rules.mjs.
+        </div>
+      )}
+      {/* The confirmation renders OUTSIDE the backlog block: allocating the
+          LAST hold empties the list, and the message must survive that. */}
+      {allocMsg && (!unalloc || Object.keys(unalloc).length === 0) && (
+        <div style={{ marginTop: 8, fontSize: 12, color: allocMsg.ok ? "#B7F0CC" : "#FFB3B3" }}>{allocMsg.text}</div>
+      )}
+      {unalloc && Object.keys(unalloc).length > 0 && (
+        <div style={{ marginTop: 10, border: "1px solid rgba(255,204,102,.45)", background: "rgba(255,204,102,.08)",
+                      borderRadius: 11, padding: "9px 11px" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: "#FFD98A" }}>
+            UNALLOCATED EFT MONEY — {Object.keys(unalloc).length} remainder(s) waiting for a customer
+          </div>
+          {Object.entries(unalloc).sort(([, a], [, b]) => (b.at || 0) - (a.at || 0)).map(([k, u]) => (
+            <div key={k} style={{ marginTop: 7, fontSize: 12, lineHeight: 1.5, color: "rgba(233,238,255,.8)" }}>
+              <strong>{fmtRands(u.amountCents)}</strong> left over from a {fmtRands(u.paymentCents)} payment
+              {u.payer ? ` by ${u.payer}` : ""}{u.reference ? ` (ref ${u.reference})` : ""} —
+              slip {u.receiptNumber || "—"}, {u.cashierName || "cashier unknown"}, {fmtTime(u.settledAt)}.
+              {allocFor !== k ? (
+                <button type="button" disabled={allocBusy}
+                        onClick={() => { setAllocFor(k); setAllocPhone(""); setAllocMsg(null); }}
+                        style={{ display: "inline-block", marginLeft: 8, font: "inherit", fontSize: 12, color: "#FFD98A",
+                                 background: "none", border: "1px solid rgba(255,204,102,.5)", borderRadius: 8,
+                                 padding: "2px 9px", cursor: "pointer" }}>
+                  Give it to a customer…
+                </button>
+              ) : (
+                <span style={{ display: "flex", gap: 6, marginTop: 5 }}>
+                  <input value={allocPhone} onChange={(e) => setAllocPhone(e.target.value)}
+                         placeholder="Customer's phone number"
+                         inputMode="tel"
+                         style={{ font: "inherit", fontSize: 12, padding: "4px 8px", borderRadius: 8, flex: 1,
+                                  border: "1px solid rgba(255,255,255,.15)", background: "rgba(0,0,0,.25)", color: "inherit" }} />
+                  <button type="button" disabled={allocBusy || !allocPhone.trim()} onClick={() => allocate(k)}
+                          style={{ font: "inherit", fontSize: 12, fontWeight: 700, color: "#B7F0CC",
+                                   background: "rgba(90,220,140,.12)", border: "1px solid rgba(90,220,140,.5)",
+                                   borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
+                    {allocBusy ? "Issuing…" : "Issue store credit"}
+                  </button>
+                  <button type="button" disabled={allocBusy} onClick={() => { setAllocFor(null); setAllocMsg(null); }}
+                          style={{ font: "inherit", fontSize: 12, color: "rgba(233,238,255,.6)",
+                                   background: "none", border: "1px solid rgba(255,255,255,.15)",
+                                   borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
+                    Not now
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+          {allocMsg && (
+            <div style={{ marginTop: 6, fontSize: 12, color: allocMsg.ok ? "#B7F0CC" : "#FFB3B3" }}>{allocMsg.text}</div>
+          )}
+        </div>
+      )}
       {rows.length === 0 && (
         <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>No payment notifications have arrived yet.</div>
       )}
@@ -198,11 +328,13 @@ export default function EftPool() {
                   {r.status === "used" && r.used && (
                     <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(233,238,255,.75)" }}>
                       Settled {fmtTime(r.used.at)} by {r.used.cashierName || "an unknown cashier"}
-                      {/* A payment bigger than the sale it settled: the whole
-                          payment is consumed, and the difference must be
-                          VISIBLE here — it is money the customer overpaid. */}
+                      {/* THE WHOLE AMOUNT, ACCOUNTED FOR. A payment bigger
+                          than the sale is consumed whole; the difference must
+                          say exactly where it went — store credit (whose,
+                          which credit, issued or still pending) or held
+                          unallocated — never a bare "overpaid". */}
                       {Number.isInteger(r.used.appliedCents) && Number.isInteger(r.amountCents) && r.used.appliedCents < r.amountCents
-                        ? ` — applied ${fmtRands(r.used.appliedCents)} of ${fmtRands(r.amountCents)} (customer overpaid by ${fmtRands(r.amountCents - r.used.appliedCents)})`
+                        ? ` — applied ${fmtRands(r.used.appliedCents)} of ${fmtRands(r.amountCents)}; ${describeRemainder(r.used.remainder, r.amountCents - r.used.appliedCents)}`
                         : ""}
                       {r.used.tillId ? ` (${r.used.storeId || "?"} / ${r.used.tillId})` : ""}
                       {r.used.customerName ? ` for ${r.used.customerName}` : ""} —
