@@ -5011,6 +5011,29 @@ exports.socialHealthScan = onSchedule(
       return;
     }
 
+    // ── ONLY "DOWN" REACHES A PHONE ──────────────────────────────────────────
+    // Owner, 2026-08-31: "the alert should only come when the system is down".
+    // He was right, and the reason is instructive: ONE post failed its
+    // Instagram leg on 28 August — Facebook took it, Instagram's media
+    // container had expired — and it can never succeed, because the container
+    // is gone. It sat in `failed`, so every day since, a healthy engine that
+    // generated and published everything it owed still produced
+    // `degraded · 1 post(s) are in failed` and mailed him about it.
+    //
+    // An alarm that fires on a known, unfixable, three-day-old backlog item is
+    // an alarm that teaches you to ignore alarms — and the next one it sends
+    // will be the real outage nobody opens.
+    //
+    // So DEGRADED is recorded and shown, but does not page. Only SILENT does:
+    // nothing published when something was owed, or the publisher stopped
+    // ticking. That is the shape of "down", and it is the shape that was
+    // actually happening at 01:16 this morning when the publisher stalled for
+    // 625 minutes and nothing on this earth would have told him.
+    if (verdict.severity !== "silent") {
+      console.log(`socialHealthScan ${saDate}: ${verdict.severity} (not paging)`, verdict.reasons);
+      return;
+    }
+
     // ── ALERT ONCE PER DISTINCT PROBLEM, NOT ONCE PER RUN ────────────────────
     // The signature is severity plus the reasons themselves, so sixteen runs
     // over one bad day send one email — but a day that gets WORSE (the

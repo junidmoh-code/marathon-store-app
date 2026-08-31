@@ -696,3 +696,37 @@ export async function loadAlbum() {
     return { ...writeError(err), raw: {} };
   }
 }
+
+
+// ── "REVIVE PUBLISHER" ───────────────────────────────────────────────────────
+// The publisher runs on a Mac mini with no public address, so the browser
+// cannot reach it. It writes a REQUEST instead; the mini's watchdog polls this
+// key every two minutes and kickstarts the launchd agent when it sees one
+// newer than the last it handled (scripts/social/revive-check.mjs).
+//
+// A TIMESTAMP, not a flag: the mini keeps its own high-water mark and never
+// writes back, so a second press is genuinely "again" rather than a flag that
+// was already consumed, and the history stays visible.
+export async function requestPublisherRevive() {
+  try {
+    await update(ref(database, "social_health/revive"), {
+      requestedAt: Date.now(),
+      requestedBy: auth.currentUser?.uid || null,
+    });
+    return { ok: true };
+  } catch (err) {
+    return writeError(err);
+  }
+}
+
+// The publisher's own heartbeat, so the button can say how long it has been
+// quiet instead of asking someone to guess.
+export async function loadPublisherHeartbeat() {
+  try {
+    const snap = await get(ref(database, "social_health/publisher/lastTickAt"));
+    const v = Number(snap.val());
+    return { ok: true, lastTickAt: Number.isFinite(v) && v > 0 ? v : null };
+  } catch (err) {
+    return { ...writeError(err), lastTickAt: null };
+  }
+}
