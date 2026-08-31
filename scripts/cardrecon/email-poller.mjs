@@ -66,10 +66,10 @@ import {
 // ordinary mail \Seen and would hide every notification from it. The decisions
 // live in eftCore.mjs; here is only the wiring. See handleEftMessage.
 import {
-  EFT_POOL_PATH, isEftCandidate, authenticationVerdict, htmlToText,
+  EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
   eftMessageKey, poolWriteDecision, eftPoolRecord,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, accountVerdict,
-  looksPaymentShaped,
+  looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
 import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey } from "./eftCore.mjs";
@@ -552,6 +552,10 @@ async function run() {
       // The EFT reader beats on the same heart: counts only, never a figure —
       // this node is readable by every card_recon holder.
       eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount,
+      // Counted where it happens: noteStrangerPayment hands nothing back (it
+      // must not consume the message), so the tally is a run counter rather
+      // than a value threaded through six return points.
+      eftUnknownBank: unknownBankThisRun,
       // How many account tails the allowlist held this tick — a COUNT, never
       // a value. Zero is the loudest number on this line: it means every
       // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
@@ -567,8 +571,8 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
-  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT — see /eft_pool`);
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || unknownBankThisRun) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
   }
   return 0;
 }
@@ -779,8 +783,22 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   const fromAddress = parsed.from?.value?.[0]?.address
     || /<([^<>\s]+@[^<>\s]+)>/.exec(message.from || "")?.[1]
     || null;
-  if (!isEftCandidate({ fromAddress, subject: message.subject })) return null;
+  const route = eftMessageRoute({ fromAddress, subject: message.subject });
+  // A batch report is the slip path's, always. A stranger gets the
+  // visibility-only path below — never a reader, never an opened attachment.
+  if (route === "card") return null;
   const fromDomain = domainOfAddress(fromAddress);
+  if (route === "stranger") {
+    // NOTE it, then HAND IT BACK. Returning a result here would consume the
+    // message, and a stranger's message is not this reader's to consume: a
+    // batch report forwarded from someone's own address with an edited subject
+    // is a stranger too, and swallowing it would lose the slip inside —
+    // silently, which is the failure this whole change is about. The row is
+    // written; the message carries on down the ordinary route exactly as it
+    // did before, and the card path claims and reads it as usual.
+    await noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain });
+    return null;
+  }
 
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0 };
   const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
@@ -1053,6 +1071,66 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     eftRefusedParse: count("refused-parse"),
     eftRefusedAccount: count("refused-account"),
   };
+}
+
+// ─── A BANK THE POOL IS NOT SET UP FOR ───────────────────────────────────────
+// The message is from a domain that is not on the allowlist. Everything this
+// does is deliberately less than the bank path does:
+//
+//   NOTHING IS AUTHENTICATED. Authentication answers "is this really the bank
+//   it claims to be?", and this sender claims to be a bank we do not know. A
+//   verdict here would file a bank the owner has simply not set up alongside
+//   forgery attempts, which are a different thing entirely.
+//
+//   NO ATTACHMENT IS OPENED. Rendering a PDF from an unauthenticated stranger
+//   is the one thing this poller has always refused to do, and being curious
+//   about the sender does not change that. Only the attachment NAMES are read,
+//   off the envelope, which is where a bank puts the word "payment".
+//
+//   NOTHING IS PARSED. No reader is offered the document, so no amount, no
+//   reference and no account can reach the record. It cannot be settled
+//   against, by construction — there is nothing to settle.
+//
+//   NOTHING IS CONSUMED. The message is not claimed and not marked read: it
+//   goes on down the ordinary route, so a batch report that happens to reach us
+//   from an unexpected address is still captured by the card path. Recording a
+//   sighting must never cost the thing sighted.
+//
+// What is left is one visible row naming the domain, which is the whole point:
+// a bank paying the shop that nobody has set up used to be ordinary mail, seen
+// by no one.
+let unknownBankThisRun = 0;
+
+async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain }) {
+  const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
+  const attachmentNames = (parsed.attachments || []).map((a) => a?.filename || "").filter(Boolean);
+  if (!looksLikeStrangerPayment({ subject: message.subject, bodyText, attachmentNames })) return;
+
+  // The key carries authPass:false — the same shape a refused record uses — and
+  // is derived from the message, so the next tick computes the same key and the
+  // create-only write below finds the record already there. That is the only
+  // dedupe this path needs: it claims nothing.
+  const key = eftMessageKey({
+    messageId: parsed.messageId, from: message.from, subject: message.subject,
+    date: message.receivedAt, size, uid, uidValidity, authPass: false,
+  });
+  const record = unknownBankRecord({
+    message, fromDomain,
+    // The BODY only. The attachment names are named in the text so the row can
+    // be recognised without anything being opened.
+    rawText: [bodyText, attachmentNames.length ? `Attachments (not opened): ${attachmentNames.join(", ")}` : ""].filter(Boolean).join("\n────────\n"),
+    at: serverNowMs(),
+  });
+
+  if (cfg.dryRun) {
+    console.log(`  · EFT (dry run): would note unknown-bank mail from ${fromDomain} — "${message.logSubject}"`);
+    unknownBankThisRun += 1;
+    return;
+  }
+  const written = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((existing) => poolWriteDecision(existing, record));
+  if (!written.committed || !written.snapshot.exists()) return;   // an earlier tick already noted it
+  unknownBankThisRun += 1;
+  console.log(`  · EFT: unknown-bank — payment-shaped mail from ${fromDomain}, which is not a bank this pool knows. Nothing was read from it.`);
 }
 
 // ── THE TICK'S OWN EXIT ──────────────────────────────────────────────────────

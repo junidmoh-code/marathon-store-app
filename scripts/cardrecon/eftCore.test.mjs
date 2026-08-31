@@ -7,12 +7,16 @@
 // The forgeries are then derived from the real thing by changing exactly the
 // part an attacker controls.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   domainOfAddress, domainsAligned, domainAllowlisted, authenticationVerdict,
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
   parseAllowedAccountTails, accountVerdict, EFT_ACCOUNTS_ENV_VAR,
   maskAccountValue, looksPaymentShaped,
   eftMessageKey, poolWriteDecision, eftPoolRecord,
+  eftMessageRoute, looksLikeStrangerPayment, unknownBankRecord, UNKNOWN_BANK_RAW_LIMIT,
 } from "./eftCore.mjs";
 
 // Verbatim from the real message (uid 6, "Banking Report for Batch 16 of
@@ -556,5 +560,207 @@ describe("envelopeCandidateKeys", () => {
   it("no Message-ID → null: download and let the claim decide, never a wrong skip", () => {
     expect(envelopeCandidateKeys({ messageId: null })).toBe(null);
     expect(envelopeCandidateKeys({ messageId: "" })).toBe(null);
+  });
+});
+
+// ─── A BANK THE POOL IS NOT SET UP FOR ───────────────────────────────────────
+// The gap this closes: a payment notification from a domain that is not on the
+// allowlist was filed as ordinary mail — no record, no refusal, nobody told. A
+// bank paying the shop that nobody has heard of is the silent loss this whole
+// feature exists to prevent, and it is worse than a refusal, because a refusal
+// is at least a row somebody can act on.
+describe("routing — three answers, because 'not a candidate' hid two of them", () => {
+  it("a batch report is the card path's, whoever sent it", () => {
+    expect(eftMessageRoute({ fromAddress: "NoReplyTransReport@fnb.co.za", subject: "Banking Report for Batch 16 of Terminal 67377843" })).toBe("card");
+  });
+  it("an allowlisted bank is the reader's", () => {
+    expect(eftMessageRoute({ fromAddress: "noreply@standardbank.co.za", subject: "Payment confirmation" })).toBe("bank");
+    expect(eftMessageRoute({ fromAddress: "alerts@secure.fnb.co.za", subject: "Payment notification" })).toBe("bank");
+  });
+  it("anyone else is a STRANGER — no longer silently nobody's", () => {
+    // Discovery is the case that prompted this: a real SA bank, no reader, not
+    // on the allowlist, and until now completely invisible.
+    expect(eftMessageRoute({ fromAddress: "noreply@discoverybank.co.za", subject: "Payment Notification" })).toBe("stranger");
+    expect(eftMessageRoute({ fromAddress: "news@shopify.com", subject: "hello" })).toBe("stranger");
+    expect(eftMessageRoute({ fromAddress: null, subject: "x" })).toBe("stranger");
+    // The parent-of-allowlisted direction stays OUT of "bank" — it must never
+    // be the way an attacker gets read (see domainAllowlisted).
+    expect(eftMessageRoute({ fromAddress: "x@co.za", subject: "Payment" })).toBe("stranger");
+  });
+  it("isEftCandidate still answers exactly what it always did", () => {
+    // Kept in terms of the route so the two can never drift apart.
+    for (const c of [
+      { fromAddress: "noreply@standardbank.co.za", subject: "Payment confirmation", expected: true },
+      { fromAddress: "NoReplyTransReport@fnb.co.za", subject: "Banking Report for Batch 16 of Terminal 1", expected: false },
+      { fromAddress: "noreply@discoverybank.co.za", subject: "Payment Notification", expected: false },
+    ]) {
+      expect(isEftCandidate(c), c.fromAddress).toBe(c.expected);
+    }
+  });
+});
+
+describe("which stranger mail is worth a row", () => {
+  const looks = (o) => looksLikeStrangerPayment(o);
+
+  it("a cue in the SUBJECT is enough — that is where a bank puts it", () => {
+    expect(looks({ subject: "Payment Notification", bodyText: "", attachmentNames: [] })).toBe(true);
+    expect(looks({ subject: "Proof of payment", bodyText: "", attachmentNames: [] })).toBe(true);
+  });
+
+  it("a cue in an ATTACHMENT NAME is enough — and it has to be", () => {
+    // Standard Bank's own notification body says only "please open the attached
+    // PDF file". A body-only test would go silent on exactly the layout most
+    // banks use, which is the failure this whole thing is about.
+    expect(looks({
+      subject: "FW: document", bodyText: "Please open the attached PDF file.",
+      attachmentNames: ["PaymentConfirmation.pdf"],
+    })).toBe(true);
+  });
+
+  it("…and reading the NAME is not opening the file", () => {
+    // Nothing here takes bytes. The signal is envelope metadata, which is the
+    // only thing about an unauthenticated stranger this poller will touch.
+    expect(looks({ subject: "", bodyText: "", attachmentNames: ["Payment Notification.pdf"] })).toBe(true);
+  });
+
+  it("the BODY needs both a cue and an amount — one alone is a newsletter", () => {
+    expect(looks({ subject: "hello", bodyText: "our payment terms have changed", attachmentNames: [] })).toBe(false);
+    expect(looks({ subject: "hello", bodyText: "now only R199.00 a month", attachmentNames: [] })).toBe(false);
+    expect(looks({ subject: "hello", bodyText: "a payment of R750.00 was made", attachmentNames: [] })).toBe(true);
+  });
+
+  it("plain mail from a stranger stays ordinary mail", () => {
+    expect(looks({ subject: "Your invoice is ready", bodyText: "log in to view", attachmentNames: [] })).toBe(false);
+    expect(looks({ subject: "", bodyText: "", attachmentNames: [] })).toBe(false);
+    expect(looks({})).toBe(false);
+  });
+});
+
+describe("the unknown-bank record", () => {
+  const message = {
+    receivedAt: 1788207000000, messageId: "<x@discoverybank.co.za>",
+    from: "Discovery Bank <noreply@discoverybank.co.za>", subject: "Payment Notification",
+  };
+  const record = unknownBankRecord({
+    message, fromDomain: "discoverybank.co.za",
+    rawText: "A payment of R750.00 was made to your account from account 1234567890.",
+    at: 1788207100000,
+  });
+
+  it("names the domain, in the reason and on its own field", () => {
+    expect(record.fromDomain).toBe("discoverybank.co.za");
+    expect(record.reason).toContain("discoverybank.co.za");
+    expect(record.reason).toMatch(/add its domain to EFT_ALLOWED_DOMAINS/);
+  });
+
+  it("is NOT a failed authentication — the two mean different things", () => {
+    // refused-auth: a message CLAIMED a bank we know and failed verification.
+    // unknown-bank: nobody claimed anything, so nothing was checked. Filing one
+    // as the other would either cry forgery about a bank the owner simply has
+    // not set up, or hide a forgery among them.
+    expect(record.outcome).toBe("unknown-bank");
+    expect(record.auth.verdict).toBe("not-checked");
+    expect(record.auth.detail).toMatch(/nothing was authenticated and nothing was read/);
+  });
+
+  it("carries NOTHING that could be settled against", () => {
+    // No reader ran, so there is no amount, no reference and no account. It is
+    // structurally impossible for this row to become money.
+    expect(record.amountCents).toBeUndefined();
+    expect(record.status).toBeUndefined();
+    expect(record.reference).toBeUndefined();
+    expect(record.accountTail).toBeUndefined();
+    expect(record.destination).toBeUndefined();
+    expect(record.reader).toBe(null);
+  });
+
+  it("keeps the sender's words, struck out and kept SHORT", () => {
+    // A stranger's raw text is a lead, not evidence: enough to recognise the
+    // bank, not a wall of someone else's page. Account digits go, as everywhere.
+    expect(record.rawText).not.toContain("1234567890");
+    expect(record.rawText.length).toBeLessThanOrEqual(UNKNOWN_BANK_RAW_LIMIT);
+    const long = unknownBankRecord({ message, fromDomain: "x.co.za", rawText: "y".repeat(5000), at: 1 });
+    expect(long.rawText.length).toBeLessThanOrEqual(UNKNOWN_BANK_RAW_LIMIT);
+    // …and shorter than a known bank's refusal keeps (4000).
+    expect(UNKNOWN_BANK_RAW_LIMIT).toBeLessThan(4000);
+  });
+
+  it("an unreadable sender still leaves a row rather than nothing", () => {
+    const nameless = unknownBankRecord({ message, fromDomain: null, rawText: "hi", at: 1 });
+    expect(nameless.outcome).toBe("unknown-bank");
+    expect(nameless.reason).toContain("an unreadable address");
+  });
+});
+
+// ─── WHAT THE STRANGER PATH IS NOT ALLOWED TO DO ─────────────────────────────
+// The record is pure and tested above; the DISCIPLINE around it lives in the
+// poller, which cannot be unit-tested (it is IMAP and a database). So its one
+// function is read as source, and the three things it must never do are pinned
+// here — each of them a security property, not a preference:
+//
+//   it must not AUTHENTICATE       a verdict on a domain we do not know is a
+//                                  claim we have no business making, and it
+//                                  would file an unset-up bank as a forgery.
+//   it must not OPEN AN ATTACHMENT rendering a PDF from an unauthenticated
+//                                  stranger is the one thing this poller has
+//                                  always refused to do.
+//   it must not PARSE              no reader, so no amount, no reference, no
+//                                  account — nothing that could ever settle.
+const POLLER = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "email-poller.mjs"), "utf8");
+
+describe("the stranger path stays a bystander", () => {
+  const body = (() => {
+    const from = POLLER.indexOf("async function noteStrangerPayment");
+    expect(from, "noteStrangerPayment has been renamed — this scan must follow it").toBeGreaterThan(-1);
+    const end = POLLER.indexOf("\n}\n", from);
+    const text = POLLER.slice(from, end);
+    expect(text.length, "the slice must actually cover the function").toBeGreaterThan(400);
+    return text;
+  })();
+
+  it("never authenticates — it makes no claim about a domain it does not know", () => {
+    expect(body).not.toMatch(/authenticationVerdict/);
+  });
+
+  it("never opens an attachment", () => {
+    expect(body, "no PDF rendering").not.toMatch(/pdfToLines|renderPdf|planMessage/);
+    // The names, off the envelope, are all it may read.
+    expect(body).toMatch(/attachments \|\| \[\]\)\.map\(\(a\) => a\?\.filename/);
+  });
+
+  it("never offers the document to a reader", () => {
+    expect(body).not.toMatch(/selectReader|EFT_READERS|eftPoolRecord|accountVerdict/);
+  });
+
+  it("writes create-only — a replay lands on the same node and finds it there", () => {
+    expect(body).toMatch(/poolWriteDecision\(existing, record\)/);
+    expect(body).toMatch(/eftMessageKey\(/);
+  });
+
+  it("CONSUMES NOTHING — noting a message must not cost the message", () => {
+    // A batch report forwarded from someone's own address with an edited
+    // subject is a stranger too. If this path claimed the message or marked it
+    // read, the slip inside would be lost — silently, which is the exact
+    // failure this change exists to end. It writes its row and hands the
+    // message back to the ordinary route.
+    expect(body, "no read flag").not.toMatch(/messageFlagsAdd/);
+    expect(body, "no ledger claim").not.toMatch(/SEEN_PATH/);
+    expect(POLLER, "…and the caller carries on rather than returning").toMatch(
+      /await noteStrangerPayment\([^)]*\);\s*\n\s*return null;/);
+  });
+
+  it("is reached only for a stranger, and a batch report never reaches it", () => {
+    expect(POLLER).toMatch(/if \(route === "card"\) return null;/);
+    expect(POLLER).toMatch(/if \(route === "stranger"\) \{/);
+  });
+
+  it("stays silent about ordinary mail from a stranger", () => {
+    expect(body).toMatch(/if \(!looksLikeStrangerPayment\([\s\S]{0,120}\)\) return;/);
+  });
+
+  it("counts what it noted, so a run says so out loud", () => {
+    expect(POLLER).toMatch(/eftUnknownBank: unknownBankThisRun/);
+    expect(POLLER).toMatch(/from a bank not set up — see \/eft_pool/);
   });
 });
