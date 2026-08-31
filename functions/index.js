@@ -3603,6 +3603,20 @@ exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 //   firebase deploy --only functions:syncCardReconClaim
 exports.syncCardReconClaim = require("./cardRecon/cardReconClaim.js").syncCardReconClaim;
 
+// ─── EFT POOL — the till's window on an owner-only node ──────────────────────
+// /eft_pool (payment notifications the mailbox poller verified) is owner-only
+// by rule; the POS settles EFT sales against it through these callables, which
+// read with the Admin SDK and return only the search's projection — staff
+// never gain client read on other customers' payment data. eftPoolSettle is
+// the consume-once transition (unmatched → used, exactly one till wins);
+// eftPoolReverse is the owner's unwind that keeps both records. Decisions are
+// pure in lib/eft-settle.cjs; the two-tills race is pinned in
+// test/eft-pool-settle.test.cjs.
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse
+exports.eftPoolSearch = require("./eftPool/eftPool.js").eftPoolSearch;
+exports.eftPoolSettle = require("./eftPool/eftPool.js").eftPoolSettle;
+exports.eftPoolReverse = require("./eftPool/eftPool.js").eftPoolReverse;
+
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the
 // owner-armed map that says what each category keeps at each location, and when

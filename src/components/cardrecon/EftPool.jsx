@@ -11,8 +11,13 @@
 // the /eft_pool rule is not live, and the panel says so instead of showing an
 // empty feed that reads as good news.
 //
-// NOTHING READS THE POOL BUT THIS. No matching, no cashier surface, no release
-// — those are later sessions. Four outcomes, four different actions:
+// THE CASHIER SURFACE EXISTS NOW (marathon-pos-app, via the eftPoolSearch /
+// eftPoolSettle callables — never a client read on this node): a recorded
+// payment moves unmatched → used when a till settles a sale against it, and
+// this panel shows the settlement (slip, cashier, customer, when) on the row.
+// REVERSING one is the owner's act alone and happens here: the settlement is
+// kept whole under `reversals` on the record — both records survive, never a
+// silent unwind. Four outcomes, four different actions:
 //
 //   recorded         a verified payment INTO ONE OF THE SHOP'S OWN ACCOUNTS,
 //                    waiting unmatched. Nothing to do yet.
@@ -27,9 +32,12 @@
 //                    yet listed.
 import React, { useEffect, useState } from "react";
 import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
-import { database } from "../../firebase";
+import { httpsCallable } from "firebase/functions";
+import { database, functions } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { S, fmtTime } from "./cardReconStyles";
+
+const eftPoolReverseFn = httpsCallable(functions, "eftPoolReverse");
 
 const FEED_SIZE = 25;
 
@@ -47,6 +55,30 @@ export default function EftPool() {
   const [denied, setDenied] = useState(false);
   const [broken, setBroken] = useState(null);
   const [open, setOpen] = useState(null);
+  // Reversal flow: which record has the reason box open, the typed reason,
+  // in-flight flag and the last error — reversal is deliberate, two taps and
+  // a written reason that stays on the record for ever.
+  const [revFor, setRevFor] = useState(null);
+  const [revReason, setRevReason] = useState("");
+  const [revBusy, setRevBusy] = useState(false);
+  const [revErr, setRevErr] = useState(null);
+
+  async function reverse(id) {
+    if (revBusy) return;
+    setRevBusy(true);
+    setRevErr(null);
+    try {
+      await eftPoolReverseFn({ poolKey: id, reason: revReason.trim() });
+      // The onValue listener repaints the row from the database — the record,
+      // not this component, is the truth about what happened.
+      setRevFor(null);
+      setRevReason("");
+    } catch (e) {
+      setRevErr(e?.message || "The reversal did not go through.");
+    } finally {
+      setRevBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!isSuperAdmin) return undefined;
@@ -101,6 +133,10 @@ export default function EftPool() {
     .sort((a, b) => (b.at || 0) - (a.at || 0));
   const refusedCount = rows.filter((r) => r.outcome !== "recorded").length;
   const recordedCount = rows.length - refusedCount;
+  // Settled but never linked to a sale — a till crash between settling and
+  // completing, OR a sale that committed and only the slip link failed. Either
+  // way it needs eyes: this is the one state the till cannot repair itself.
+  const stuckCount = rows.filter((r) => r.status === "used" && r.used && !r.used.sale).length;
 
   return (
     <div style={S.card}>
@@ -109,12 +145,13 @@ export default function EftPool() {
         <div style={{ fontSize: 12, color: refusedCount ? "#FFB3B3" : "rgba(233,238,255,.5)", fontWeight: refusedCount ? 800 : 600 }}>
           {/* These counts describe THE TAIL SHOWN, never the whole pool — the
               read is bounded at FEED_SIZE and the pool grows for ever. */}
+          {stuckCount ? `${stuckCount} used with NO SALE ATTACHED · ` : ""}
           {refusedCount ? `${refusedCount} refused (last ${rows.length})` : `${recordedCount} recorded (last ${rows.length})`}
         </div>
       </div>
       <div style={{ ...S.sub, fontSize: 12, marginTop: 4 }}>
-        Payment notifications from customers' banks, verified, account-checked and pooled. Nothing
-        matches or releases against these yet.
+        Payment notifications from customers' banks, verified, account-checked and pooled. Tills
+        settle EFT sales against these; a used payment shows its slip, cashier and customer here.
       </div>
       {rows.length === 0 && (
         <div style={{ ...S.sub, fontSize: 12.5, marginTop: 10 }}>No payment notifications have arrived yet.</div>
@@ -150,12 +187,74 @@ export default function EftPool() {
                 </span>
                 <span style={{ display: "block", fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 3 }}>
                   {r.outcome === "recorded"
-                    ? `${r.payer || "payer not named"} · ${r.status}`
+                    ? (r.status === "used" && r.used
+                        ? `USED ${fmtTime(r.used.at)} · slip ${r.used.sale?.receiptNumber || "not attached"} · ${r.used.cashierName || "cashier unknown"}${r.used.customerName ? ` · ${r.used.customerName}` : ""}`
+                        : `${r.payer || "payer not named"} · ${r.status}${r.reversals ? ` · ${Object.keys(r.reversals).length} reversal(s)` : ""}`)
                     : r.from || "unknown sender"}
                 </span>
               </button>
               {open === r.id && (
                 <div style={{ marginTop: 8, display: "grid", gap: 5 }}>
+                  {r.status === "used" && r.used && (
+                    <div style={{ fontSize: 12, lineHeight: 1.5, color: "rgba(233,238,255,.75)" }}>
+                      Settled {fmtTime(r.used.at)} by {r.used.cashierName || "an unknown cashier"}
+                      {/* A payment bigger than the sale it settled: the whole
+                          payment is consumed, and the difference must be
+                          VISIBLE here — it is money the customer overpaid. */}
+                      {Number.isInteger(r.used.appliedCents) && Number.isInteger(r.amountCents) && r.used.appliedCents < r.amountCents
+                        ? ` — applied ${fmtRands(r.used.appliedCents)} of ${fmtRands(r.amountCents)} (customer overpaid by ${fmtRands(r.amountCents - r.used.appliedCents)})`
+                        : ""}
+                      {r.used.tillId ? ` (${r.used.storeId || "?"} / ${r.used.tillId})` : ""}
+                      {r.used.customerName ? ` for ${r.used.customerName}` : ""} —
+                      {r.used.sale
+                        ? ` sale ${r.used.sale.saleId}, slip ${r.used.sale.receiptNumber || "—"}`
+                        : " no sale attached — either the sale never completed, OR it completed and only the slip link failed. Check Sale History for a matching sale before reversing; reversing frees the payment to be used again."}
+                      {revFor !== r.id ? (
+                        <button type="button" disabled={revBusy}
+                                onClick={() => { setRevFor(r.id); setRevReason(""); setRevErr(null); }}
+                                style={{ display: "block", marginTop: 6, font: "inherit", fontSize: 12, color: "#FFB3B3",
+                                         background: "none", border: "1px solid rgba(255,107,107,.4)", borderRadius: 8,
+                                         padding: "4px 10px", cursor: "pointer" }}>
+                          Reverse this settlement…
+                        </button>
+                      ) : (
+                        <span style={{ display: "grid", gap: 5, marginTop: 6 }}>
+                          {/* The callable retains 300 chars — cap the input so
+                              no part of an audit reason is silently dropped. */}
+                          <input value={revReason} onChange={(e) => setRevReason(e.target.value)}
+                                 maxLength={300}
+                                 placeholder="Why — this stays on the record"
+                                 style={{ font: "inherit", fontSize: 12, padding: "5px 8px", borderRadius: 8,
+                                          border: "1px solid rgba(255,255,255,.15)", background: "rgba(0,0,0,.25)", color: "inherit" }} />
+                          <span style={{ display: "flex", gap: 6 }}>
+                            <button type="button" disabled={revBusy || !revReason.trim()} onClick={() => reverse(r.id)}
+                                    style={{ font: "inherit", fontSize: 12, fontWeight: 700, color: "#FFB3B3",
+                                             background: "rgba(255,107,107,.12)", border: "1px solid rgba(255,107,107,.5)",
+                                             borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
+                              {revBusy ? "Reversing…" : "Confirm reverse"}
+                            </button>
+                            <button type="button" disabled={revBusy} onClick={() => { setRevFor(null); setRevErr(null); }}
+                                    style={{ font: "inherit", fontSize: 12, color: "rgba(233,238,255,.6)",
+                                             background: "none", border: "1px solid rgba(255,255,255,.15)",
+                                             borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
+                              Keep it
+                            </button>
+                          </span>
+                          {revErr && <span style={{ fontSize: 12, color: "#FFB3B3" }}>{revErr}</span>}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {r.reversals && (
+                    <div style={{ fontSize: 11.5, lineHeight: 1.5, color: "rgba(233,238,255,.55)" }}>
+                      {Object.entries(r.reversals).sort(([a], [b]) => Number(a) - Number(b)).map(([ts, v]) => (
+                        <div key={ts}>
+                          Reversed {fmtTime(Number(ts))}: was settled by {v.cashierName || "?"}
+                          {v.sale?.receiptNumber ? ` (slip ${v.sale.receiptNumber})` : ""} — {v.reason || "no reason recorded"}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {r.reason && (
                     <div style={{ fontSize: 12, lineHeight: 1.45, color: "#FFB3B3" }}>{r.reason}</div>
                   )}
