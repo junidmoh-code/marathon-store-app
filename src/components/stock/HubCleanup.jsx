@@ -46,7 +46,7 @@ import { buildLinkSuggestions, codeSuggestions, TIER_SCORES } from "../../utils/
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
-  buildLeftovers, buildFinishedLines, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
+  buildLeftovers, buildFinishedLines, buildUnregisteredElsewhere, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
   DISPLAY_STORES, DISPLAY_STORE_LABELS,
@@ -976,6 +976,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     if (!hubStock || !identity.ready || !allStock) return [];
     return buildFinishedLines({ hub, products, hubStock, registered, allStock, identityMap: identity.map });
   }, [hub, products, hubStock, registered, allStock, identity.map, identity.ready]);
+  // THE THIRD SECTION (owner spec 2026-08-31, BUG 2): every unregistered
+  // footwear product the other two lists structurally cannot carry — stock only
+  // outside the cleanup hubs, or no cells at all. 174 products live on
+  // 2026-08-31, visible in NO list before this.
+  const unregisteredElsewhere = useMemo(() => {
+    if (!hubStock || !identity.ready || !allStock) return [];
+    return buildUnregisteredElsewhere({ hub, products, hubStock, registered, allStock, identityMap: identity.map });
+  }, [hub, products, hubStock, registered, allStock, identity.map, identity.ready]);
   const deactivatedRows = useMemo(
     () => buildDeactivatedRows({ products, allStock }),
     [products, allStock]);
@@ -1532,6 +1540,58 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                         </div>
                       </div>
                     </div>
+                    <div style={{ marginTop: 10 }}>
+                      <BigButton tone="ghost" disabled={busy} onClick={() => doDeactivate(product)}>
+                        ⏸ Deactivate — finished line, stop refills &amp; ordering
+                      </BigButton>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* ── UNREGISTERED, NOT HELD HERE (owner spec 2026-08-31) ────────
+                The hole: buildLeftovers needs stock AT THIS HUB and
+                buildFinishedLines needs zero EVERYWHERE, so an unregistered
+                product holding stock only at PE/Trophy/Pine/Hub 3 — or holding
+                no cells at all — was in NEITHER list, and therefore in no list
+                this app renders. */}
+            {allStock && !leftoversUnknown && unregisteredElsewhere.length > 0 && (
+              <>
+                <div style={{ marginTop: 18, fontSize: 14, fontWeight: 800, color: BLUE_L }}>
+                  Unregistered, not held here · {unregisteredElsewhere.length}
+                </div>
+                <div style={{ fontSize: 12.5, color: GRAY, marginTop: -6 }}>
+                  No style code, no claim, no label alias — and nothing on this hub's floor, so the
+                  list above cannot show them. Their stock sits elsewhere, or they hold none at all.
+                </div>
+                {unregisteredElsewhere.map(({ product, net, cellLocs, locations }) => (
+                  <div key={product.id}
+                       style={{ background: "rgba(12,16,30,.6)", border: "1px dashed rgba(120,150,255,.35)", borderRadius: 18, padding: 16 }}>
+                    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
+                        <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>
+                          {net > 0
+                            ? `${net} unit${net === 1 ? "" : "s"} — none of it here`
+                            : cellLocs.length
+                              ? `No stock · cells at ${cellLocs.map((l) => labelFor(l, registry)).join(", ")}`
+                              : "No stock and no cells anywhere"}
+                        </div>
+                      </div>
+                    </div>
+                    {(locations || []).length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, margin: "10px 0 0" }}>
+                        {locations.map(({ loc, qty }) => (
+                          <span key={loc} style={{ fontSize: 12.5, fontWeight: 800, padding: "6px 10px", borderRadius: 10,
+                                                   fontVariantNumeric: "tabular-nums",
+                                                   background: "rgba(74,127,255,.1)", border: "1px solid rgba(74,127,255,.32)", color: BLUE_L }}>
+                            {labelFor(loc, registry)} · {qty}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ marginTop: 10 }}>
                       <BigButton tone="ghost" disabled={busy} onClick={() => doDeactivate(product)}>
                         ⏸ Deactivate — finished line, stop refills &amp; ordering

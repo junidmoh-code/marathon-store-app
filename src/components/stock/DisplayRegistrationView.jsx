@@ -20,6 +20,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { CARD, BORDER, BLUE, BLUE_L, FONT } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { isDeactivated } from "../../utils/deactivation";
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import { lookupBarcode } from "./hubCleanupStore";
 import { useDisplaySlots, useDisplayRegister } from "./useStock";
@@ -58,7 +59,9 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
   // SNEAKERS ONLY (owner ask, 2026-08-26): the display walls hold footwear —
   // clothing, perfume and accessories never appear here, by search or by scan.
   const results = useMemo(
-    () => (query.trim() ? searchProducts(products, query, { limit: 12, predicate: isFootwearProduct }) : []),
+    // A DEACTIVATED product is not offered: registering a display for a retired
+    // line puts it back in front of customers. (Owner spec 2026-08-31.)
+    () => (query.trim() ? searchProducts(products, query, { limit: 12, predicate: (p) => isFootwearProduct(p) && !isDeactivated(p) }) : []),
     [products, query]
   );
 

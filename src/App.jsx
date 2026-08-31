@@ -7,7 +7,8 @@ import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
-import { isDeactivated, orderSizeOut, REACTIVATED_EVENT } from "./utils/deactivation";
+import { isDeactivated, orderSizeOut, browsableProducts, REACTIVATED_EVENT } from "./utils/deactivation";
+import { ProductActionsButton, DeactivatedChip } from "./components/stock/ProductActions.jsx";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
@@ -7475,7 +7476,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
 // Renders one clothing product with per-size qty steppers. Each card owns its
 // own draft qty state. Tapping "Add to Cart" reports cart lines back to the
 // parent (one per non-zero size) and resets the draft to zeros.
-function ClothingCard({ product, onAdd, onViewPhoto }) {
+function ClothingCard({ product, onAdd, onViewPhoto, allProducts = [] }) {
   const sizes = Array.isArray(product.sizes) ? product.sizes : [];
   // Initial state: every available size starts at 0.
   const [qty, setQty] = useState(() => sizes.reduce((m, s) => (m[s] = 0, m), {}));
@@ -7514,7 +7515,12 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
           )}
         </div>
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:8 }}>{product.name}</div>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginBottom:8 }}>
+            <div style={{ flex:1, minWidth:0, fontSize:15, fontWeight:700, color:"#fff" }}>
+              {product.name}{isDeactivated(product) && <DeactivatedChip small />}
+            </div>
+            <ProductActionsButton product={product} products={allProducts} style={{ flexShrink:0 }} />
+          </div>
           <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
             {sizes.map(sz => {
               const n = qty[sz] || 0;
@@ -8182,6 +8188,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         </button>
                       )}
                       <Photo p={p} />
+                      {/* Deactivate / reactivate / merge, right on the card the
+                          operator is looking at (owner spec 2026-08-31).
+                          Renders nothing for a non-admin. */}
+                      <ProductActionsButton product={p} products={products}
+                                            style={{ position: "absolute", top: 8, left: 8, zIndex: 3 }} />
                     </div>
                     <div className="ad-body">
                       <div className="ad-name">{p.name}
@@ -8893,6 +8904,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     }),
   [products, wantsClothing, effectiveStoreMode]);
 
+  // ── THE DEACTIVATION READ (owner spec 2026-08-31, BUG 1) ───────────────────
+  // `base` stays the FULL universe because it is the SEARCH pool: a typed query
+  // must still find a deactivated product (marked), so the operator can act on
+  // the copy they are looking at. `browse` is what the GRID renders with no
+  // query — and a finished line is not on offer there. One pair of memos feeds
+  // BOTH the phone grid (`filtered` below) and the desktop overlay (which takes
+  // `products={browse}` + `searchResults={filtered}`), so neither can drift.
+  const browse = useMemo(() => browsableProducts(base), [base]);
+
   // Fuzzy search (Fuse.js): typo- and case-tolerant matching over name +
   // category. Rebuilt only when `base` changes (memoised — fine for ~1.2k
   // products). Tuned to surface close matches ("avryn"/"avrn"/"avryen" →
@@ -8915,7 +8935,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const deferredSearch = useDeferredValue(search);
   const filtered = useMemo(() => {
     const q = deferredSearch.trim();
-    if (!q) return base;
+    if (!q) return browse;   // no query = browsing: deactivated products are not on offer
     // BARCODE / SKU match — typing or SCANNING a product code finds the product
     // directly, not just its name. Matches the product-level barcode + sku and any
     // per-size code (products/{id}/barcodes/{sizeKey}, carried on the product). Exact
@@ -8942,7 +8962,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc)));
     }
     return merge(fuse.search(q).map(r => r.item));
-  }, [deferredSearch, base, fuse]);
+  }, [deferredSearch, base, browse, fuse]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
@@ -9480,7 +9500,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       )}
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
-          products={base} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
+          products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
@@ -9780,7 +9800,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         // Responsive: 1 column on a phone, 2 on iPad (see .mc-grid-refill above).
         <div className="mc-grid-refill" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => (
-            <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} />
+            <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} allProducts={products} />
           ))}
         </div>
       ) : (
@@ -9818,8 +9838,15 @@ function AssistantView({ products, onExit, orders = [] }) {
                     </span>
                   )}
                 </div>
+                {/* ADMIN ACTIONS ON THE CARD ITSELF (owner spec 2026-08-31):
+                    deactivate / reactivate / merge, right where the product is
+                    seen. Renders nothing for a non-admin. */}
+                <ProductActionsButton product={p} products={products}
+                                      style={{ position:"absolute", top:8, left:8, zIndex:2 }} />
                 <div style={{ padding:"12px 13px 14px" }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>{p.name}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>
+                    {p.name}{isDeactivated(p) && <DeactivatedChip small />}
+                  </div>
                   {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
                     <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
                       R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
@@ -9827,7 +9854,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
                   )}
-                  <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
+                  <div style={{ fontSize:13, fontWeight:500, color: isDeactivated(p) ? "#B9C0D4" : "#4A7FFF" }}>
+                    {isDeactivated(p) ? "Deactivated — no sizes on offer" : "Tap to add →"}
+                  </div>
                 </div>
                 <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
                               background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",

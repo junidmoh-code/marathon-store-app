@@ -23,6 +23,7 @@ import { database, auth } from "../../firebase";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { categoryPolicyLocs } from "./solvePlan";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 // Approved standard runs — owner policy 2026-07-13 (corrected same day):
 //   STORES (marathon-pe, trophy) — REDUCED run: both stores were full before
@@ -83,6 +84,10 @@ export function computeUnintroduced(allStock, allTargets, productsById, dests = 
     for (const pid of Object.keys(allStock?.[loc] || {})) {
       if (seen.has(pid)) continue;
       if (!isClothing(productsById.get(pid))) continue;
+      // A DEACTIVATED product is a finished line: introducing it would write
+      // standard-run targets and hand it straight back to the engine, which is
+      // the one thing deactivation exists to stop. (Owner spec 2026-08-31.)
+      if (isDeactivated(productsById.get(pid))) continue;
       if (dests.some((d) => allTargets?.[d]?.[pid])) continue; // introduced somewhere
       // CATEGORY-MAPPED = ALREADY GOVERNED (2026-08-13). The category policy
       // arms a product with no row at all, so "no explicit row" no longer

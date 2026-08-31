@@ -165,9 +165,12 @@ describe("source pins — the call sites exist", () => {
     const hc = src("./HubCleanup.jsx");
     expect(hc).toContain("{allStock && deactivatedRows.length > 0 && (");
   });
-  it("HubCleanup renders Deactivate on leftover AND finished-line cards, and Reactivate", () => {
+  // THREE since 2026-08-31: leftovers, finished lines, and the new
+  // "Unregistered, not held here" section (the 174 products that were in no
+  // list at all — see buildUnregisteredElsewhere).
+  it("HubCleanup renders Deactivate on leftover, finished-line AND not-held-here cards, and Reactivate", () => {
     const hc = src("./HubCleanup.jsx");
-    expect(hc.split("doDeactivate(product)").length - 1).toBe(2);
+    expect(hc.split("doDeactivate(product)").length - 1).toBe(3);
     expect(hc).toContain("doReactivate(product)");
   });
 });

@@ -509,6 +509,54 @@ export function buildFinishedLines({ hub, products = [], hubStock = {}, register
   return out;
 }
 
+// ── UNREGISTERED, NOT HELD HERE — THE HOLE THE OWNER FOUND ───────────────────
+// (Owner spec 2026-08-31, BUG 2.) An unregistered product could be absent from
+// the Leftovers tab ENTIRELY. Two doors were open, and every product that fell
+// through one of them was invisible in every list this app renders:
+//
+//   1. buildLeftovers requires stock AT THIS HUB (`hubStock[p.id]` + hubQty>0),
+//      and buildFinishedLines requires zero EVERYWHERE — so an unregistered
+//      product holding its stock only at PE / Trophy / Pine / Hub 3 matched
+//      NEITHER. Live census 2026-08-31: 60 products, mostly the Pine soccer
+//      boots (one holds 24 units at marathon-pine).
+//   2. buildFinishedLines bails on `!cellLocs.length` — so an unregistered
+//      product with NO cells anywhere at all matched neither either. Live
+//      census: 114 products.
+//
+// 174 products, none of them registered, none of them visible. This builder is
+// the third section that closes both doors: EVERY unregistered footwear product
+// the other two lists do not already carry, with the locations it sits at (and
+// `net` — which may be positive, zero or negative) so the operator can see what
+// they are deciding about. Same identity rule, same fail-soft direction: the
+// absence of evidence keeps a product listed, never hides it.
+export function buildUnregisteredElsewhere({ hub, products = [], hubStock = {}, registered = {}, allStock = null, identityMap = null }) {
+  if (!allStock) return [];   // needs the network view to know where the stock is
+  const registeredPids = new Set(Object.values(registered || {}).map((r) => r && r.productId).filter(Boolean));
+  const out = [];
+  for (const p of products) {
+    if (!p || !p.id || isMergedAway(p) || !productIsFootwear(p)) continue;
+    if (isDeactivated(p)) continue;
+    if (registeredPids.has(p.id)) continue;
+    if (isRegistered(p, identityMap)) continue;
+    // Already a LEFTOVER card at this hub — this section is what the other two
+    // miss, never a duplicate of what is already on screen.
+    if (totalQty(hubStock[p.id]) > 0) continue;
+    let net = 0;
+    const cellLocs = [];
+    for (const [loc, prods] of Object.entries(allStock)) {
+      if (!prods?.[p.id]) continue;
+      cellLocs.push(loc);
+      net += totalQty(prods[p.id]);
+    }
+    // Already a FINISHED LINE card — cells exist and they are all empty.
+    if (cellLocs.length && net <= 0) continue;
+    out.push({ product: p, cellLocs, net, locations: locationsHolding(p.id, allStock) });
+  }
+  // Most units first — the biggest pile of stock nobody can see, at the top.
+  out.sort((a, b) => b.net - a.net || String(a.product.name || "").localeCompare(String(b.product.name || "")));
+  return out;
+}
+
 // ── DEACTIVATED ──────────────────────────────────────────────────────────────
 // EVERY deactivated product, stock-holders first — the visibility guarantee:
 // a deactivated product holding stock anywhere must never be silently lost.
