@@ -3603,6 +3603,67 @@ exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 //   firebase deploy --only functions:syncCardReconClaim
 exports.syncCardReconClaim = require("./cardRecon/cardReconClaim.js").syncCardReconClaim;
 
+// ─── CARD RECON — cardReconHealthScan (the poller's dead-man switch) ─────────
+// On 2026-08-31 the Mac mini's launchd silently stopped firing the mailbox
+// poller at 01:16 — no error, no reboot — and payments sat unread for nine
+// hours because the only witness was a heartbeat panel the owner has to open.
+// This scan is the poller's voice when the poller has none: it runs on
+// Google's scheduler (never on the mini — an alarm must not run on the
+// machinery it watches), reads the heartbeat the poller writes every tick at
+// /card_batch_poll_status, and when it has been silent for 15+ minutes prints
+// the CARD_RECON_ALARM marker that Cloud Monitoring turns into an email
+// (scripts/cardrecon/install-cardrecon-alarm.mjs — the same machinery as the
+// social engine's silence alarm). One email per outage, a reminder every six
+// hours while it lasts, and the decision itself is pure and tested
+// (lib/poller-health.cjs, test/poller-health.test.cjs).
+//
+// THE MARKER IS LOAD-BEARING: renaming the string in pollerAlarmLine without
+// re-running the installer disconnects the alarm while every green check
+// stays green. The installer's --verify pins the two together.
+//   firebase deploy --only functions:cardReconHealthScan
+const { assessPollerHealth } = require("./lib/poller-health.cjs");
+
+function pollerAlarmLine(verdict) {
+  const silence = verdict.staleMinutes === null
+    ? "has NEVER written a heartbeat"
+    : `has not ticked for ${verdict.staleMinutes} minutes`;
+  return `CARD_RECON_ALARM The card recon mailbox poller ${silence}. `
+    + `Card slips AND EFT payment notifications are NOT being read. `
+    + `Check the Mac mini: is it on and on the network? Then: `
+    + `launchctl kickstart -k gui/501/com.marathon.cardreconpoll — `
+    + `and read ~/marathon-store-app/logs/card-recon-poll.log.`;
+}
+
+exports.cardReconHealthScan = onSchedule(
+  { schedule: "*/10 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 },
+  async () => {
+    const db = admin.database();
+    const [beatSnap, healthSnap] = await Promise.all([
+      db.ref("card_batch_poll_status/lastRunAt").once("value"),
+      db.ref("card_batch_poll_health").once("value"),
+    ]);
+    const health = healthSnap.val() || {};
+    const verdict = assessPollerHealth({
+      nowMs: Date.now(),
+      lastRunAt: beatSnap.val(),
+      lastAlarm: health.lastAlarm || null,
+    });
+    // Written on EVERY run, healthy or not — a watchdog that only writes when
+    // it is unhappy is indistinguishable from a watchdog that has stopped.
+    const update = { checkedAt: Date.now(), ok: verdict.ok, staleMinutes: verdict.staleMinutes };
+    if (verdict.alarm) update.lastAlarm = { at: Date.now(), signature: verdict.signature };
+    if (verdict.ok && health.lastAlarm) update.lastAlarm = null; // recovery: the next outage is new
+    await db.ref("card_batch_poll_health").update(update);
+    if (verdict.alarm) {
+      console.error(pollerAlarmLine(verdict));
+    } else if (verdict.recovered) {
+      console.log(`cardReconHealthScan: the poller is back (heartbeat ${verdict.staleMinutes} min old) — the outage alerted on is over.`);
+    } else {
+      console.log(`cardReconHealthScan: ${verdict.ok ? "ok" : `stale ${verdict.staleMinutes} min (already alerted)`}`);
+    }
+  },
+);
+
 // ─── EFT POOL — the till's window on an owner-only node ──────────────────────
 // /eft_pool (payment notifications the mailbox poller verified) is owner-only
 // by rule; the POS settles EFT sales against it through these callables, which
