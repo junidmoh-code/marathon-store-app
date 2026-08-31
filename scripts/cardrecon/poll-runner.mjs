@@ -31,9 +31,12 @@ const code = await runTick({
   // A message count above zero is what proves there was work. Anything on
   // stderr settles it too — see the runner.
   busyWhen: (text) => {
-    const m = text.match(/·\s*(\d+)\s*unread message/);
+    // "unprocessed", not "unread": the poller now scans by the PROCESSED
+    // ledger, because the owner's phone marks mail read before the poller
+    // sees it. The regex must track the poller's own line.
+    const m = text.match(/·\s*(\d+)\s*unprocessed message/);
     return !!(m && Number(m[1]) > 0);
   },
-  idleLine: "tick: no unread mail in the recon mailbox",
+  idleLine: "tick: nothing unprocessed in the recon mailbox",
 });
 process.exit(code);
