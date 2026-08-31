@@ -942,7 +942,7 @@ nothing — and the panel checks it first:
 * the poller ran minutes ago and nothing came in → **nothing is said**. An alarm
   here is the kind that teaches people to ignore alarms.
 * the mailbox has not been checked for an hour → **"the poller has stopped. Any
-  batch report emailed since is sitting unread."** Even when the feed looks
+  batch report emailed since is sitting unprocessed."** Even when the feed looks
   recent.
 
 Three nodes go into the rules, not two: without the heartbeat, "no refusals"
@@ -1100,7 +1100,7 @@ ssh marathonclub@100.64.186.78 'tail -40 ~/marathon-store-app/logs/card-recon-po
 ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json /opt/homebrew/bin/node scripts/cardrecon/email-poller.mjs --dry-run'
 ```
 
-A tick with no unread mail logs one line, so a quiet log still proves the
+A tick with nothing unprocessed logs one line, so a quiet log still proves the
 schedule is alive. Refused slips surface in the **Card recon tab → Emailed
 slips**, in red, at the top.
 

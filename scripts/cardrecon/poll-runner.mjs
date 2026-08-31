@@ -6,7 +6,7 @@
 // scripts/lib/launchdRunner.mjs — so the machine has one way of running
 // scheduled work rather than a third.
 //
-// A tick with no unread mail exits in under a second having made zero capture
+// A tick with nothing unprocessed exits in seconds having made zero capture
 // calls, and logs one line, so a quiet log still proves the schedule is alive.
 //
 // CREDENTIALS are not this file's business: the poller reads them from the

@@ -514,8 +514,16 @@ describe("groupEftPayments", () => {
 
 describe("eftPaymentKey", () => {
   const base = "a".repeat(40);
-  it("a single-payment message keeps the message key (old records stay reachable)", () => {
+  it("an OK parse is keyed by content identity even when it is the only group — a crash-retry whose sibling document flapped must land on the SAME key", () => {
     const [g] = groupEftPayments([doc("A", okParse())]);
+    const alone = eftPaymentKey(base, g, 1);
+    const [g2] = groupEftPayments([doc("A", okParse()), doc("B", okParse({ bankRef: "9" }))]);
+    expect(alone).toBe(eftPaymentKey(base, g2, 2)); // same payment, same key, any group count
+    expect(alone).toMatch(/^[0-9a-f]{40}$/);
+    expect(alone).not.toBe(base);
+  });
+  it("a message's ONLY refusal keeps the message key (a refusal is about the message)", () => {
+    const [g] = groupEftPayments([doc("broken", { ok: false, reason: "x" })]);
     expect(eftPaymentKey(base, g, 1)).toBe(base);
   });
   it("multi-payment keys are 40-hex, deterministic, distinct per payment", () => {

@@ -56,3 +56,18 @@ test("recovery is reported so the log tells a whole story", () => {
   assert.equal(v.ok, true);
   assert.equal(v.recovered, true);
 });
+
+test("a FRACTIONAL heartbeat (serverNowMs carries RTDB's float offset) is a beat, not 'never'", () => {
+  const v = assessPollerHealth({ nowMs: NOW, lastRunAt: NOW - 120000.4180001, lastAlarm: null });
+  assert.equal(v.ok, true);
+  assert.equal(v.alarm, false);
+});
+
+test("exact boundaries: 15 minutes IS stale; six hours IS reminder time", () => {
+  const atBoundary = assessPollerHealth({ nowMs: NOW, lastRunAt: NOW - POLLER_STALE_MS, lastAlarm: null });
+  assert.equal(atBoundary.ok, false);
+  assert.equal(atBoundary.alarm, true);
+  const lastRunAt = NOW - POLLER_STALE_MS - 60000;
+  const reminder = assessPollerHealth({ nowMs: NOW + POLLER_REALARM_MS, lastRunAt, lastAlarm: { at: NOW, signature: String(lastRunAt) } });
+  assert.equal(reminder.alarm, true);
+});

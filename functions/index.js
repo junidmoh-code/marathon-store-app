@@ -3630,7 +3630,7 @@ function pollerAlarmLine(verdict) {
   return `CARD_RECON_ALARM The card recon mailbox poller ${silence}. `
     + `Card slips AND EFT payment notifications are NOT being read. `
     + `Check the Mac mini: is it on and on the network? Then: `
-    + `launchctl kickstart -k gui/501/com.marathon.cardreconpoll — `
+    + `launchctl kickstart -k gui/$(id -u)/com.marathon.cardreconpoll — `
     + `and read ~/marathon-store-app/logs/card-recon-poll.log.`;
 }
 

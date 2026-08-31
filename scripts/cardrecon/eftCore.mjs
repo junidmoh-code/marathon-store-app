@@ -613,15 +613,29 @@ export function groupEftPayments(parsedDocs) {
 }
 
 /**
- * The pool node for one payment of a multi-payment message: derived from the
- * message's own key plus the payment's identity, 40 hex chars like every pool
- * key (the POS callable refuses any other shape). A SINGLE-payment message
- * keeps the message key itself — the shape every record written before
- * batching existed already has, so replays of old messages still land on
- * their existing records.
+ * The pool node for one payment: 40 hex chars like every pool key (the POS
+ * callable refuses any other shape).
+ *
+ * AN OK PARSE IS KEYED BY ITS CONTENT IDENTITY, ALWAYS — never by how many
+ * groups the message happened to yield THIS run. A count-dependent key was
+ * unstable across a crash-retry: a batched message read as two payments, one
+ * written, then retried on a tick where the other PDF transiently failed
+ * extraction, would re-derive groupCount 1 and write the SAME bank payment a
+ * second time under the message key — two independently settleable records
+ * for one deposit. Content identity is what a replay reproduces regardless of
+ * its siblings' luck. (Adversarial review, this PR. Records written before
+ * batching sit under message keys, are ledger-done, and can never re-enter
+ * processing — nothing replays into them.)
+ *
+ * REFUSALS keep the message key when they are the message's only group: a
+ * refusal is about the MESSAGE ("no reader for this"), its text can carry
+ * transient placeholders, and a duplicated refusal row would be noise where a
+ * duplicated payment is money.
  */
 export function eftPaymentKey(baseKey, group, groupCount) {
+  if (group.parse?.ok) {
+    return createHash("sha256").update(`${baseKey}|doc|ok:${paymentIdentity(group.parse)}`).digest("hex").slice(0, 40);
+  }
   if (groupCount === 1) return baseKey;
-  const identity = group.parse?.ok ? `ok:${paymentIdentity(group.parse)}` : `bad:${group.rawText}`;
-  return createHash("sha256").update(`${baseKey}|doc|${identity}`).digest("hex").slice(0, 40);
+  return createHash("sha256").update(`${baseKey}|doc|bad:${group.rawText}`).digest("hex").slice(0, 40);
 }

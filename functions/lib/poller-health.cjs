@@ -29,9 +29,16 @@ const POLLER_REALARM_MS = 6 * 60 * 60 * 1000;
  * @returns {{ok:boolean, staleMinutes:number|null, alarm:boolean, signature:string|null, recovered:boolean}}
  */
 function assessPollerHealth({ nowMs, lastRunAt, lastAlarm }) {
-  const hasBeat = Number.isInteger(lastRunAt);
+  // isFinite, NOT isInteger: the poller stamps serverNowMs(), which carries
+  // RTDB's serverTimeOffset — routinely FRACTIONAL milliseconds. An integer
+  // check would read a healthy float heartbeat as "never ticked" and alarm
+  // for ever. (Adversarial review, this PR.)
+  const hasBeat = Number.isFinite(lastRunAt);
   const ageMs = hasBeat ? nowMs - lastRunAt : null;
-  const ok = hasBeat && ageMs <= POLLER_STALE_MS;
+  // STRICT boundaries, on purpose: exactly 15 minutes old IS stale (outage
+  // detection must not slip a check cycle), and exactly six hours since the
+  // last alarm IS reminder time. (CodeRabbit, this PR.)
+  const ok = hasBeat && ageMs < POLLER_STALE_MS;
   if (ok) {
     // `recovered` says an alarm went out for an outage that is now over — the
     // scan logs it (info, not the marker) so the log tells a whole story.
@@ -41,7 +48,7 @@ function assessPollerHealth({ nowMs, lastRunAt, lastAlarm }) {
   // constant one — "never" is one outage, however long it lasts.
   const signature = hasBeat ? String(lastRunAt) : "never";
   const alreadyAlarmed = lastAlarm?.signature === signature;
-  const alarm = !alreadyAlarmed || (nowMs - (lastAlarm?.at ?? 0) > POLLER_REALARM_MS);
+  const alarm = !alreadyAlarmed || (nowMs - (lastAlarm?.at ?? 0) >= POLLER_REALARM_MS);
   return {
     ok: false,
     staleMinutes: hasBeat ? Math.round(ageMs / 60000) : null,

@@ -29,10 +29,12 @@
       unnoticed. If this agent is ever wanted on a machine in another zone,
       convert the hours by hand — do not assume the label.
 
-    · RunAtLoad is FALSE, unlike the reconciler. Loading the agent — after a
-      reboot, or while installing it — must not fire a post. Nothing here is
-      urgent enough to justify a publish at an unscheduled moment, and a
-      surprise post to a live Instagram account is not recoverable.
+    · RunAtLoad is FALSE historically — but note that KeepAlive (below)
+      starts the job at load REGARDLESS, so the plist no longer guarantees
+      "loading never fires a tick". The guarantee that matters lives in the
+      runner itself: a tick publishes only what is approved AND due, so a
+      tick at load is identical to the tick two minutes later. That
+      slot-gating, not this key, is what keeps a surprise post impossible.
 
     · A missed fire (the mini was asleep or off at the scheduled time) is run by launchd as
       soon as it wakes. That is the behaviour we want: an approved post goes

@@ -133,6 +133,9 @@ async function ensureMetric() {
   if (existing.ok) {
     if (VERIFY) {
       if (existing.data.filter !== METRIC_FILTER) return fail(`metric ${METRIC} exists but its filter has drifted:\n  ${existing.data.filter}`);
+      // A DISABLED metric generates no points — every green field above with
+      // this flag set is a dead alarm wearing a tick. (CodeRabbit, this PR.)
+      if (existing.data.disabled === true) return fail(`metric ${METRIC} exists but is DISABLED — no log line can ever open an incident`);
       log(`✓ log metric ${METRIC}`);
       return existing.data;
     }
@@ -149,11 +152,26 @@ async function ensureMetric() {
 }
 
 // ── 2. the email channel ─────────────────────────────────────────────────────
+/** Every page of a Monitoring list call — a match on page two must not lead
+ *  to a duplicate resource being created. (CodeRabbit, this PR.) */
+async function listAll(base, field) {
+  const out = [];
+  let pageToken = null;
+  for (let page = 0; page < 20; page++) {
+    const res = await api(pageToken ? `${base}?pageToken=${encodeURIComponent(pageToken)}` : base);
+    if (!res.ok) return { ok: false, res };
+    out.push(...(res.data[field] || []));
+    pageToken = res.data.nextPageToken;
+    if (!pageToken) break;
+  }
+  return { ok: true, items: out };
+}
+
 async function ensureChannel() {
   const base = `https://monitoring.googleapis.com/v3/projects/${PROJECT}/notificationChannels`;
-  const list = await api(base);
-  if (!list.ok) return fail(`could not list notification channels: ${JSON.stringify(list.data)}`);
-  const found = (list.data.notificationChannels || [])
+  const list = await listAll(base, "notificationChannels");
+  if (!list.ok) return fail(`could not list notification channels: ${JSON.stringify(list.res.data)}`);
+  const found = list.items
     .find((c) => c.type === "email" && c.labels?.email_address === RECIPIENT);
   if (found) {
     // A channel Google has told us is UNVERIFIED delivers nothing, so --verify
@@ -298,9 +316,9 @@ function policyDrift(live, want) {
 
 async function ensurePolicy(channelName) {
   const base = `https://monitoring.googleapis.com/v3/projects/${PROJECT}/alertPolicies`;
-  const list = await api(base);
-  if (!list.ok) return fail(`could not list alert policies: ${JSON.stringify(list.data)}`);
-  const found = (list.data.alertPolicies || []).find((p) => p.displayName === POLICY_NAME);
+  const list = await listAll(base, "alertPolicies");
+  if (!list.ok) return fail(`could not list alert policies: ${JSON.stringify(list.res.data)}`);
+  const found = list.items.find((p) => p.displayName === POLICY_NAME);
   if (found) {
     if (VERIFY) {
       // EVERY field this script sets, not the three most obvious ones. A
@@ -350,7 +368,13 @@ async function emitTestAlarm() {
     method: "POST",
     body: {
       logName: `projects/${PROJECT}/logs/run.googleapis.com%2Fstderr`,
-      resource: { type: "cloud_run_revision", labels: { service_name: "cardreconhealthscan", project_id: PROJECT, location: "europe-west1" } },
+      resource: { type: "cloud_run_revision", labels: {
+        service_name: "cardreconhealthscan", project_id: PROJECT, location: "europe-west1",
+        // The full label set the resource type declares — an entries:write
+        // with missing labels can be refused as invalid. The metric filter
+        // only reads service_name; these two just make the entry legal.
+        revision_name: "manual-test", configuration_name: "cardreconhealthscan",
+      } },
       entries: [{
         severity: "ERROR",
         textPayload: `${MARKER} TEST — this is install-cardrecon-alarm.mjs --test proving the alarm reaches an inbox. Nothing is wrong.`,

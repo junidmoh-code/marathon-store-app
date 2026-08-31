@@ -31,9 +31,11 @@
 //   1. A CLAIM at /card_batch_intake_seen/{messageKey}, taken in a transaction
 //      before any work. A claim a killed run left behind is retaken after
 //      STALE_CLAIM_MS, so a SIGKILL costs a delay and never a lost slip.
-//   2. The message is flagged \Seen in the mailbox, and only UNSEEN mail is
-//      searched — so the mailbox itself remembers, and a lost database claim
-//      does not mean re-reading a year of mail.
+//   2. A LOCAL CACHE of ledger-confirmed keys (and uid markers), so a lost
+//      database claim does not mean re-reading a fortnight of mail every
+//      tick. \Seen is still SET after processing, as politeness to the
+//      human's inbox — but never consulted: the owner reads this mailbox on
+//      their phone, and the read-flag is theirs, not this program's memory.
 // The duplicate-batch refusal downstream is a third, and it is the owner's
 // instruction that it must not be the only one. It is not.
 //
@@ -430,6 +432,7 @@ async function run() {
   // tried to forge a payment. Different alarms for different people.
   let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftErrors = 0;
   let scannedSoFar = 0;
+  let windowCount = 0;
   try {
     const lock = await client.getMailboxLock(cfg.mailbox);
     try {
@@ -456,6 +459,7 @@ async function run() {
           candidates.push({ uid: msg.uid, messageId: msg.envelope?.messageId ?? null });
         }
       }
+      windowCount = candidates.length;
       const cache = loadProcessedCache(cfg.lookbackDays);
       // A second cache marker keyed by the mailbox's OWN identity for the
       // message (uidValidity + uid), learned whenever a message reaches a
@@ -541,7 +545,10 @@ async function run() {
   // already recorded, and the next tick writes it again.
   try {
     await db.ref(STATUS_PATH).set({
-      lastRunAt: serverNowMs(), scanned, processed, recorded, refused, unrelated,
+      // `scanned` = messages this tick actually took on (was "unread found"
+      // before the processed-ledger scan); `window` = everything the lookback
+      // held, so the two together say how much of the mailbox is settled.
+      lastRunAt: serverNowMs(), scanned, window: windowCount, processed, recorded, refused, unrelated,
       // The EFT reader beats on the same heart: counts only, never a figure —
       // this node is readable by every card_recon holder.
       eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount,
@@ -669,11 +676,11 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     //     what stops it being re-downloaded every tick for ever.
     //
     //   ANOTHER RUN IS HOLDING IT — including a run that DIED holding it. That
-    //     claim goes stale in 30 minutes and the next tick is supposed to
-    //     retake it — but only if the search still returns it, and the search
-    //     only returns UNSEEN mail. Marking it read here would hide it from
-    //     the very tick that was going to rescue it, and the slip would sit in
-    //     the mailbox unread by anything for ever.
+    //     claim goes stale in 30 minutes and the next tick retakes it: the
+    //     scan filters by the LEDGER, a held claim is not "done", so the
+    //     message stays visible to the rescue tick. (The read-flag stopped
+    //     mattering when the scan stopped consulting it — but it is still only
+    //     set on done outcomes, so the human's inbox tells the same story.)
     if (claim.done && !cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
     return { ...empty, done: claim.done && !cfg.dryRun };
   }
@@ -757,9 +764,12 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
 // UNREAD, so the next tick retries; \Seen is only ever set below, after the
 // outcome is durably in the database.
 
-// One message is never worth unbounded PDF rendering. A notification is one
-// PDF; two tolerates a duplicate attach.
-const MAX_EFT_PDFS = 3;
+// One message is never worth unbounded PDF rendering. Standard Bank BATCHES
+// payments — several PDFs on one email is now the expected shape, not a
+// duplicate-attach tolerance — so the ceiling is what a real batch could
+// plausibly carry. Past it, each unrendered PDF still leaves a refusal row
+// (see the unreadable-documents guard in handleEftMessage), never silence.
+const MAX_EFT_PDFS = 8;
 
 async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, uidValidity, size }) {
   // mailparser can fail to resolve a From ADDRESS a human would read fine; the
@@ -933,6 +943,22 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       .filter((x) => x.r);
     if (claimed.length >= 1) {
       const parsedDocs = claimed.map((x) => ({ ...x, p: x.r.parse(x.d.lines) }));
+      // ── AN UNREADABLE SIBLING IS A REFUSAL ROW, NEVER SILENCE ──────────────
+      // Placeholder documents (lines: null — a corrupt or password-protected
+      // PDF, or one past MAX_EFT_PDFS) cannot be offered to a reader, and
+      // before this guard they simply fell out of `offered` — so a batched
+      // message with three readable payments and one broken PDF recorded
+      // three, marked the message done, and the fourth was lost with nothing
+      // to show it ever existed. Each unreadable document now refuses
+      // alongside its readable siblings: the payment may be inside it, and a
+      // red row a person can chase beats a silence nobody can.
+      // (CodeRabbit, this PR.)
+      for (const d of documents.filter((x) => x.lines === null)) {
+        parsedDocs.push({
+          d, r: null,
+          p: { ok: false, reason: `An attachment on this message could not be read — a payment may be inside it. ${clip(d.text, 200)}` },
+        });
+      }
       const groups = groupEftPayments(parsedDocs);
       for (const group of groups) {
         const account = group.parse.ok
