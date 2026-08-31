@@ -93,7 +93,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the card recon screens read exactly five nodes, and each is named here on purpose", () => {
+  it("the card recon screens read exactly three nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -116,33 +116,16 @@ describe("the store app is capture-only", () => {
     //                          hours ago is the most dangerous thing this panel
     //                          could imply.
     //
-    //   eft_pool               the EFT payment pool — the second reader on the
-    //                          same mailbox. UNLIKE the other three this node
-    //                          carries figures (amounts, payers, references),
-    //                          which is why its rule is OWNER-ONLY like
-    //                          /card_batches, and why EftPool.jsx renders null
-    //                          for anyone but the super-admin: the panel exists
-    //                          so a payment that silently fails to land — or a
-    //                          forgery attempt — is seen by the one person who
-    //                          can act on it. Managers never see it, and the
-    //                          rule refuses them anyway.
-    //
-    //   eft_unallocated        the remainders of consumed EFT payments that
-    //                          settled sales with NO customer attached — money
-    //                          the shop owes someone it cannot yet name. Read
-    //                          WHOLE, deliberately: resolving an entry (the
-    //                          owner allocates it to a customer, or reverses
-    //                          the settlement) removes it, so the node is the
-    //                          owner's open backlog, small by construction —
-    //                          and a hold that aged out of a bounded tail
-    //                          would be exactly the silently-vanished money
-    //                          this feature exists to prevent. Owner-only by
-    //                          rule AND by render, same as /eft_pool: it is
-    //                          rendered inside EftPool.jsx, behind the same
-    //                          isSuperAdmin gate.
+    // The EFT pool used to be read here too (/eft_pool, /eft_unallocated).
+    // It is not any more: that panel is owner work — unallocated money, giving
+    // a remainder to a customer, reversing a settlement — and it moved to
+    // marathon-pos-app → Reports → EFT payments, behind RequireAdmin, in POS
+    // PR #289. This app reads neither node, and if either name appears in this
+    // list again it means an owner-only surface has been put back on a
+    // manager's handset.
     //
     // Everything else about a slip still goes to the callable and comes back as
-    // an acknowledgement. A SIXTH node appearing here is a change of policy and
+    // an acknowledgement. A FOURTH node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
     // EVERY file in the feature, not one of them: the emailed-slip panel is its
     // own file now, and a scan naming a single file goes stale the moment
@@ -158,7 +141,7 @@ describe("the store app is capture-only", () => {
     // feed — and the same node read twice is still one node. What this pins is
     // the SET of nodes this feature touches, which is the thing that must not
     // grow quietly.
-    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals", "eft_pool", "eft_unallocated"]);
+    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals"]);
   });
 
   it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
@@ -214,14 +197,13 @@ describe("the store app is capture-only", () => {
     // card-batch material leaking to a manager's handset.
     let scanned = 0;
     for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
-      // THE CAPTURE SCREEN IS NO LONGER EXEMPT. It used to render the slip in
-      // the manager's own hand — the review step, where a total and a purchases
-      // figure were legitimately shown so the OCR could be checked against the
-      // paper. That step is gone: the reading happens server-side and the
-      // manager is told recorded or not-recorded and nothing else, so the
-      // screen has no business naming a money field and is scanned like every
-      // other file here. EftPool.jsx remains the one exemption, argued above.
-      if (!/\.jsx?$/.test(file) || /\.test\./.test(file) || file === "EftPool.jsx") continue;
+      // NOTHING IN THIS DIRECTORY IS EXEMPT ANY MORE, and that is the point of
+      // where the feature has got to. The capture screen used to render the
+      // slip in the manager's own hand (the review step, since deleted), and
+      // EftPool.jsx used to render EFT amounts under an owner-only render gate
+      // — it moved to the POS reports tab, where the owner works. What is left
+      // here is capture, and capture handles no money field at all.
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file)) continue;
       scanned++;
       const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const token of forbidden) {
@@ -229,28 +211,24 @@ describe("the store app is capture-only", () => {
       }
     }
     expect(scanned, "the scan found no files — it is passing on nothing").toBeGreaterThan(1);
-    // The scan is only worth anything if it CAN fail, so prove the tokens are
-    // findable in this directory: the EFT pool — the one exempt file — renders
-    // amounts, and it is exempt precisely because it is owner-gated in render.
-    // (The control used to be the capture screen's review section. That section
-    // no longer exists, and an anchor pointed at deleted code is an assertion
-    // that passes on nothing.)
-    const exempt = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EftPool.jsx"), "utf8"));
-    expect(exempt, "the exempt panel still renders a money field — if this fails the scan above proves nothing").toMatch(/\bamountCents\b/);
+    // The scan is only worth anything if it CAN fail, so prove the patterns
+    // match real code that exists in this repo. The anchor is the SERVER's
+    // card-recon module, which legitimately computes and stores every one of
+    // these figures — and which is not going away, unlike the two client files
+    // this control used to point at (a deleted review section, then a panel
+    // that moved repos). An anchor aimed at code that can be deleted is an
+    // assertion that quietly starts passing on nothing.
+    const server = readFileSync(resolve(root, "functions/cardRecon/cardRecon.js"), "utf8");
+    expect(server, "the server still names the figures this scan forbids on the client")
+      .toMatch(/\btotalCents\b/);
   });
 
-  it("the EFT pool panel is owner-gated in render and reads a bounded tail", () => {
-    // The panel above is EXEMPT from the money scan on the strength of exactly
-    // these two properties, so they are pinned: nobody but the super-admin gets
-    // a render at all (the rule refuses everyone else anyway — this keeps the
-    // panel from teaching managers to ignore a permanent warning), and the
-    // pool — which grows by a record per payment for ever — is read as a tail.
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EftPool.jsx"), "utf8"));
-    expect(code, "the render gate must exist").toMatch(/if \(!isSuperAdmin\) return null/);
-    const at = code.indexOf("eft_pool");
-    expect(at, "the pool read has moved — this scan must follow it").toBeGreaterThan(-1);
-    expect(code.slice(at, at + 200)).toMatch(/limitToLast/);
-  });
+  // The EFT pool panel's own owner-gate test went with the panel: it is now
+  // marathon-pos-app's src/reports/eftpool/__tests__/EftPoolTab.gate.test.jsx,
+  // which pins BOTH gates there (the RequireAdmin route and the component's own
+  // isSuperAdmin check, including that a non-owner opens no subscription).
+  // Nothing in this app reads the pool any more — the allow-list above is what
+  // enforces that here.
 
   it("the silence notice is recomputed while the screen sits open", () => {
     // THE ONE THING THIS PANEL EXISTS TO SAY is that the mailbox has stopped
