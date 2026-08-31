@@ -3673,10 +3673,14 @@ exports.cardReconHealthScan = onSchedule(
 // eftPoolReverse is the owner's unwind that keeps both records. Decisions are
 // pure in lib/eft-settle.cjs; the two-tills race is pinned in
 // test/eft-pool-settle.test.cjs.
-//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse
+// The remainder of a partially-applied payment becomes store credit (or a
+// visible /eft_unallocated hold); eftRemainderScan is the 5-minute sweep that
+// finishes any remainder whose follow-up IO crashed — pending never means lost.
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan
 exports.eftPoolSearch = require("./eftPool/eftPool.js").eftPoolSearch;
 exports.eftPoolSettle = require("./eftPool/eftPool.js").eftPoolSettle;
 exports.eftPoolReverse = require("./eftPool/eftPool.js").eftPoolReverse;
+exports.eftRemainderScan = require("./eftPool/eftPool.js").eftRemainderScan;
 
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the

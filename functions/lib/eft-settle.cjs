@@ -292,6 +292,25 @@ function reverseDecision(current, { at, by, reason }) {
 }
 
 /**
+ * What eftRemainderScan does with one /eft_pending_remainders breadcrumb.
+ * Breadcrumbs are written BEFORE the attach/allocate transaction, so their
+ * existence proves nothing by itself — the pool record decides:
+ *   "wait"    the breadcrumb is fresh; the callable that wrote it is probably
+ *             still finishing. Touch nothing.
+ *   "finish"  a stamped remainder is still pending — the follow-up IO crashed;
+ *             re-run finishRemainder.
+ *   "clear"   there is nothing to finish (no remainder was stamped, the plan
+ *             already reached a terminal state, or the settlement was reversed
+ *             — the reverse cleans its own claim). Remove the breadcrumb.
+ */
+function pendingRemainderScanAction(breadcrumb, record, nowMs, minAgeMs) {
+  const at = Number.isInteger(breadcrumb?.at) ? breadcrumb.at : 0;
+  if (nowMs - at < minAgeMs) return "wait";
+  if (record?.status === "used" && record.used?.remainder?.status === "pending") return "finish";
+  return "clear";
+}
+
+/**
  * The transaction update function the callable hands to the Admin SDK,
  * wrapping one decision — PURE and here so the null-first-call handling is
  * itself under test (test/eft-pool-settle.test.cjs), not just reasoned about:
@@ -321,4 +340,5 @@ function poolTransactionStep(decide, capture) {
 module.exports = {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
+  pendingRemainderScanAction,
 };

@@ -488,3 +488,26 @@ test("a retried release (till timed out after the first landed) is a success, no
   // A DIFFERENT attempt still gets the honest refusal.
   assert.equal(release({ attemptId: "P-zz", at: 7002, reason: "x" }).ok, false);
 });
+
+// ── THE SCAN'S DECISION — a breadcrumb proves nothing; the record decides ────
+test("pendingRemainderScanAction: wait fresh, finish pending, clear everything else", () => {
+  const { pendingRemainderScanAction: scan } = require("../lib/eft-settle.cjs");
+  const MIN = 120000;
+  const pendingRec = recorded({
+    status: "used", amountCents: 10000,
+    used: { at: 5000, appliedCents: 3000, remainder: { cents: 7000, disposition: "credit", status: "pending" } },
+  });
+  // Fresh breadcrumb: the live callable is still working — touch nothing.
+  assert.equal(scan({ at: 1000000 }, pendingRec, 1000000 + MIN - 1, MIN), "wait");
+  // Stale + still pending: the follow-up IO crashed — finish it.
+  assert.equal(scan({ at: 1000000 }, pendingRec, 1000000 + MIN, MIN), "finish");
+  // Stale with a terminal plan, no remainder, a reversed settlement, or a
+  // record that vanished: clear the breadcrumb.
+  const issued = recorded({ status: "used", used: { at: 5000, appliedCents: 3000, remainder: { cents: 7000, disposition: "credit", status: "issued" } } });
+  assert.equal(scan({ at: 1000000 }, issued, 2000000, MIN), "clear");
+  assert.equal(scan({ at: 1000000 }, recorded(), 2000000, MIN), "clear");        // unmatched again (reversed)
+  assert.equal(scan({ at: 1000000 }, recorded({ status: "used", used: { at: 5000, appliedCents: 55000 } }), 2000000, MIN), "clear"); // no remainder stamped
+  assert.equal(scan({ at: 1000000 }, null, 2000000, MIN), "clear");
+  // A malformed breadcrumb (no `at`) is treated as stale, not immortal.
+  assert.equal(scan({}, issued, 2000000, MIN), "clear");
+});

@@ -58,7 +58,7 @@ function describeRemainder(rem, fallbackCents) {
   const amt = fmtRands(rem.cents);
   if (rem.disposition === "credit") {
     if (rem.status === "issued") return `${amt} issued as store credit to ${rem.customerName || "the customer"} (${rem.creditId})`;
-    return `${amt} BECOMING store credit for ${rem.customerName || "the customer"} — not issued yet; the POS sweep or a retried attach finishes it`;
+    return `${amt} BECOMING store credit for ${rem.customerName || "the customer"} — not issued yet; the remainder scan finishes it within minutes`;
   }
   if (rem.status === "held") return `${amt} HELD UNALLOCATED — no customer on the sale; assign one below`;
   return `${amt} unallocated and NOT YET HELD (the follow-up write is pending)`;
