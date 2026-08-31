@@ -243,10 +243,135 @@ const fnb = {
   },
 };
 
+// ─── CAPITEC ─────────────────────────────────────────────────────────────────
+// Built from a REAL Capitec "Payment Notification" PDF (fixture in
+// eftBanks.test.mjs, sanitised). Layout, verbatim from pdfText:
+//
+//   Payment Notification
+//   SkyQR reference: 504f-614a-494a          ← IGNORED, deliberately; see below
+//   Capitec Bank
+//   31/08/2026
+//   Please take note that Sicelo made a payment to your account. …
+//   Notification number 599784               ← the BANK's own id
+//   Payment date 20/04/2026 10:15            ← DAY-FIRST
+//   Beneficiary name Marathon
+//   Bank name First National Bank            ← the DESTINATION bank (ours)
+//   Account number 62903776625               ← UNMASKED; see below
+//   Branch 250655
+//   Payment type Immediate Payment
+//   Amount R750.00
+//   Payment reference S MKHUMBUZI            ← what the PAYER typed
+//
+// THE QR CODE IS IGNORED, AND THAT IS A SECURITY DECISION, not an omission.
+// The document carries a "SkyQR reference" whose code links to Capitec's site.
+// Following a link out of a document to confirm the payment it describes would
+// mean letting the document vouch for itself — a forged PDF would carry a
+// forged link. Origin is proved by ONE thing here and it happens before any of
+// this runs: Gmail's DKIM verdict on the message, checked against the bank's
+// own domain (eftCore.mjs, authVerdict). Nothing in a document body ever
+// vouches for it, so the QR line is read as text and used for nothing.
+//
+// CAPITEC PRINTS THE DESTINATION ACCOUNT IN FULL, where Standard Bank and FNB
+// print it masked. Nothing special happens here: the reader returns what the
+// document says and the pool masks it on the way in (maskAccountValue keeps
+// four digits), and the stored raw text is struck out by redactAccountDigits.
+// The allowlist check only ever compares the last four either way.
+//
+// THE DATE IS DAY-FIRST. "20/04/2026" is 20 April: SA convention, and this
+// document's own header prints "31/08/2026", which can only be day-first. That
+// is converted here into the ISO shape parseBankTimestamp already accepts
+// rather than teaching the shared parser a shape whose meaning depends on
+// which bank printed it — the ambiguous half of the year (04/05) would then be
+// read day-first for every bank, including any that prints month-first. A
+// misread here costs a DISPLAYED date and nothing else: bankTs is carried on
+// the record for a person to read, no money and no matching depends on it, and
+// a payment whose date will not parse still lands (receivedAt carries it).
+const CAPITEC_DAY_FIRST = /^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}:\d{2}(?::\d{2})?))?$/;
+function capitecTimestamp(value) {
+  const m = CAPITEC_DAY_FIRST.exec(String(value ?? "").trim());
+  if (!m) return null;
+  const [, dd, mm, yyyy, time] = m;
+  // parseBankTimestamp does the rest of the validating — including refusing a
+  // phantom date like 31/02, which it catches by round-tripping.
+  return parseBankTimestamp(`${yyyy}-${mm}-${dd}${time ? ` ${time.slice(0, 5)}` : ""}`);
+}
+
+const capitec = {
+  id: "capitec",
+  domain: "capitecbank.co.za",
+  /** Content, not sender: the title, the confirmation sentence, and the
+   *  labelled amount. All three, so a Capitec statement or a marketing letter
+   *  carrying the bank's name claims nothing. */
+  detect(lines) {
+    const has = (re) => lines.some((l) => re.test(l));
+    return has(/^Payment Notification$/i)
+      && has(/made a payment to your account/i)
+      && has(/^Amount\s+/i);
+  },
+  parse(lines) {
+    const take = (re, what) => labelledLine(lines, re, what);
+
+    // ONE PAYMENT PER DOCUMENT, counted on the bank's own notification number
+    // — the same rule the other two readers keep, and for the same reason: a
+    // reprint and two identical payments are indistinguishable from here, so
+    // more than one block refuses and a person decides.
+    const blocks = lines.filter((l) => /^Notification number\s+/i.test(l)).length;
+    if (blocks > 1) {
+      return { ok: false, reason: `This document holds ${blocks} payment blocks — a reprint and two identical payments cannot be told apart here. Handle it by hand.` };
+    }
+
+    // THE AMOUNT — required, exact, single.
+    const amount = take(/^Amount\s+(.+)$/i, "Amount line");
+    if (!amount.ok) return { ok: false, reason: `Capitec notification: ${amount.why}.` };
+    if (amount.value === null) return { ok: false, reason: "Capitec notification carries no Amount line." };
+    const amountCents = parseRandsToCents(amount.value);
+    if (amountCents === null) {
+      return { ok: false, reason: `Capitec Amount line reads "${clip(amount.value, 60)}", which does not parse exactly as a rand amount.` };
+    }
+    if (amountCents <= 0) return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
+
+    // THE DESTINATION ACCOUNT — required: the allowlist check depends on it,
+    // and a notification that stops printing it must refuse loudly rather than
+    // sail past the one check that keeps other people's payments out.
+    const account = take(/^Account number\s+(\S+)\s*$/i, "Account number");
+    if (!account.ok) return { ok: false, reason: `Capitec notification: ${account.why}.` };
+    if (account.value === null) return { ok: false, reason: "No Account number could be read from this Capitec notification (the line may be absent, or merged with another column) — the destination account cannot be checked." };
+
+    // "Payment reference" is what the PAYER typed — the matching key.
+    // "Notification number" is Capitec's own id; kept apart, like Standard
+    // Bank's two references.
+    const reference = take(/^Payment reference\s+(.+)$/i, "Payment reference");
+    if (!reference.ok) return { ok: false, reason: `Capitec notification: ${reference.why}.` };
+    const bankRef = take(/^Notification number\s+(.+)$/i, "Notification number");
+    if (!bankRef.ok) return { ok: false, reason: `Capitec notification: ${bankRef.why}.` };
+    const beneficiaryName = take(/^Beneficiary name\s+(.+)$/i, "Beneficiary name");
+    const destBankName = take(/^Bank name\s+(.+)$/i, "Bank name");
+
+    // "Please take note that Sicelo made a payment to your account." — the
+    // payer, in prose. Optional: a payment with no payer line still lands.
+    const payer = labelledLine(lines, /take note that\s+(.+?)\s+made a payment to your account/i, "payer sentence");
+
+    const when = take(/^Payment date\s+(.+)$/i, "Payment date");
+    const bankTs = when.ok && when.value ? capitecTimestamp(when.value) : null;
+
+    return {
+      ok: true,
+      amountCents,
+      reference: clip(reference.value, 140),
+      payer: payer.ok && payer.value ? clip(redactAccountDigits(payer.value), 120) : null,
+      bankTs,
+      bankRef: clip(bankRef.value, 60),
+      beneficiaryName: beneficiaryName.ok ? clip(beneficiaryName.value, 120) : null,
+      destBankName: destBankName.ok ? clip(destBankName.value, 60) : null,
+      accountMask: clip(account.value, 40),
+    };
+  },
+};
+
 // ─── THE REGISTRY ────────────────────────────────────────────────────────────
 // Adding a bank = adding a reader here + its domain to EFT_ALLOWED_DOMAINS in
 // eftCore.mjs. Nothing else changes.
-export const EFT_READERS = [standardBank, fnb];
+export const EFT_READERS = [standardBank, fnb, capitec];
 
 /**
  * Which reader claims this document, by CONTENT. The sending domain narrows
