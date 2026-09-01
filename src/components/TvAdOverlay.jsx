@@ -46,13 +46,13 @@ export default function TvAdOverlay() {
           muted
           loop
           playsInline
-          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       ) : (
         <img
           src={settings.mediaUrl}
           alt="Ad"
-          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       )}
     </div>

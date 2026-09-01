@@ -7,7 +7,7 @@
 // product box-photo upload: uploadBytes → getDownloadURL → write the URL).
 import { useEffect, useState } from "react";
 import { ref, update } from "firebase/database";
-import { ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../firebase";
 import { useTvAdSettings } from "../utils/tvAdSettings";
 
@@ -30,6 +30,8 @@ function fieldStamp() {
 export default function TvAdSettingsCard({ onExit }) {
   const settings = useTvAdSettings();
   const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [error, setError] = useState("");
   const [intervalInput, setIntervalInput] = useState("");
   const [durationInput, setDurationInput] = useState("");
@@ -45,6 +47,7 @@ export default function TvAdSettingsCard({ onExit }) {
     e.target.value = "";
     if (!file) return;
     setError("");
+    setConfirmRemove(false);
     setUploading(true);
     try {
       const { mediaUrl, mediaType } = await uploadTvAd(file);
@@ -53,6 +56,24 @@ export default function TvAdSettingsCard({ onExit }) {
       setError(err?.message || "Upload failed.");
     } finally {
       setUploading(false);
+    }
+  };
+
+  const removeAd = async () => {
+    if (!settings?.mediaUrl) return;
+    if (!confirmRemove) { setConfirmRemove(true); return; }
+    setConfirmRemove(false);
+    setError("");
+    setRemoving(true);
+    try {
+      const ext = settings.mediaType === "video" ? "mp4" : "jpg";
+      try { await deleteObject(storageRef(storage, `tv_ads/current.${ext}`)); }
+      catch { /* already gone or never existed at this ext — fine, RTDB is the source of truth for what's live */ }
+      await update(ref(database, "settings/tvAd"), { mediaUrl: "", mediaType: "image", enabled: false, ...fieldStamp() });
+    } catch (err) {
+      setError(err?.message || "Remove failed.");
+    } finally {
+      setRemoving(false);
     }
   };
 
@@ -130,14 +151,32 @@ export default function TvAdSettingsCard({ onExit }) {
             <div style={{ fontSize: 11.5, color: "rgba(255,255,255,0.4)", marginTop: 8 }}>
               {settings.updatedAt ? `Last changed ${new Date(settings.updatedAt).toLocaleString()}${settings.updatedBy ? ` by ${settings.updatedBy}` : ""}` : "Never changed."}
             </div>
-            <label style={{
-              display: "inline-block", marginTop: 12, padding: "9px 16px", borderRadius: 8, cursor: "pointer",
-              background: "#4A7FFF", color: "#fff", fontWeight: 700, fontSize: 13.5,
-              opacity: uploading ? 0.6 : 1, pointerEvents: uploading ? "none" : "auto",
-            }}>
-              {uploading ? "Uploading…" : "Upload image or video"}
-              <input type="file" accept="image/*,video/*" onChange={onFile} disabled={uploading} style={{ display: "none" }} />
-            </label>
+            <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+              <label style={{
+                display: "inline-block", padding: "9px 16px", borderRadius: 8, cursor: "pointer",
+                background: "#4A7FFF", color: "#fff", fontWeight: 700, fontSize: 13.5,
+                opacity: uploading ? 0.6 : 1, pointerEvents: uploading ? "none" : "auto",
+              }}>
+                {uploading ? "Uploading…" : "Upload image or video"}
+                <input type="file" accept="image/*,video/*" onChange={onFile} disabled={uploading} style={{ display: "none" }} />
+              </label>
+              {settings.mediaUrl && (
+                <button
+                  type="button"
+                  onClick={removeAd}
+                  disabled={removing}
+                  style={{
+                    padding: "9px 16px", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13.5,
+                    background: confirmRemove ? "#EF4444" : "rgba(239,68,68,0.12)",
+                    color: confirmRemove ? "#fff" : "#F87171",
+                    border: confirmRemove ? "none" : "1px solid rgba(239,68,68,0.3)",
+                    opacity: removing ? 0.6 : 1,
+                  }}
+                >
+                  {removing ? "Removing…" : confirmRemove ? "Tap again to confirm" : "Remove ad"}
+                </button>
+              )}
+            </div>
             {error && <div style={{ color: "#F87171", fontSize: 12.5, marginTop: 8 }}>{error}</div>}
           </div>
 
