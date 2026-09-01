@@ -70,6 +70,11 @@ const promisedFresh = mergePromised(
 // A nowMs EVERY dated promise is fresh against: promiseFresh tests
 // nowMs − t <= window, so the unbounded counterfactual needs a far-PAST
 // clock (a far-future one ages everything out — CodeRabbit, PR #545).
+// The 1,000-day horizon is not truly unbounded (a promise older than
+// ~1,014 days would still age out), but /orders retention is bounded by
+// daily order-number reuse at ~a month observed (oldest record ever
+// seen: 31 days), and the node itself is younger than 1,000 days — the
+// horizon is ~30× the retention it has to cover.
 const FAR_PAST = now - 1000 * 86400000;
 const promisedAll = mergePromised(
   readyPromisedByCell(orders, "hub1", productsById, FAR_PAST),
