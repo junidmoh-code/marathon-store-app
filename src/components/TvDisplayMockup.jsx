@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import TvSpecialsRail from "./TvSpecialsRail";
+import TvAdOverlay from "./TvAdOverlay";
 import shoebox    from "../assets/tv/shoebox.png";
 import yeezy     from "../assets/tv/header-shoe.png";
 import jumpman   from "../assets/tv/jumpman.png";
@@ -761,6 +762,7 @@ export default function TvDisplayMockup({ orders: liveProp, specials, onExit }) 
           <span style={{ color: "#fff", fontSize: 20, lineHeight: 1, fontWeight: 300 }}>✕</span>
         </button>
       )}
+      <TvAdOverlay/>
     </div>
     </>
   );
