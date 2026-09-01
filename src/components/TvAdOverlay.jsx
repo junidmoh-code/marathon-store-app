@@ -23,8 +23,8 @@ function useAdOverlayVisible(active, hiddenMs, visibleMs) {
 export default function TvAdOverlay() {
   const settings = useTvAdSettings();
   const active = !!(settings && settings.enabled && settings.mediaUrl);
-  const hiddenMs = active ? settings.intervalMinutes * 60_000 : 0;
-  const visibleMs = active ? settings.durationMinutes * 60_000 : 0;
+  const hiddenMs = active ? settings.intervalSeconds * 1_000 : 0;
+  const visibleMs = active ? settings.durationSeconds * 1_000 : 0;
   const visible = useAdOverlayVisible(active, hiddenMs, visibleMs);
 
   if (!active || !visible) return null;
