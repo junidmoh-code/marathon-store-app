@@ -8804,9 +8804,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Ready promises PLUS pending display pulls: an incoming displayPairRequest
   // order claims a known unit whose slot is already tombstoned, so the tile
   // must not read as plain shelf stock during that window.
+  // The hourly tick keeps the ghost-promise bound honest on an idle device:
+  // promiseFresh reads the clock inside the memo, so without a time term in
+  // the deps a promise crossing the age boundary mid-session would only be
+  // re-judged when some unrelated /orders write fires the listener.
+  const [promiseTick, setPromiseTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPromiseTick(v => v + 1), 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
   const hub1Promised = useMemo(
     () => mergePromised(readyPromisedByCell(orders, "hub1", productsById), pendingDisplayPullsByCell(orders, productsById)),
-    [orders, productsById]
+    [orders, productsById, promiseTick]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -9060,10 +9069,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // way (owner report 2026-09-01: Lacoste Powercourt size 8, counted at Hub 1
   // that morning, ✕ on the picker — the one unit was promised to a ready
   // order placed minutes earlier). Same inputs as sneakerOut, kept apart.
-  const sneakerOutWhy = (p, s) => ({
-    ...cellBlockInfo({ cells: hub1CellsState.cells, promised: hub1Promised, productId: p.id, size: s }),
-    inCart: sneakerInCart(p.id, s),
-  });
+  const sneakerOutWhy = (p, s) =>
+    cellBlockInfo({ cells: hub1CellsState.cells, promised: hub1Promised, productId: p.id, size: s });
   // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
   // Marked, not blocked: the tile keeps its number, gains a corner display
   // icon + warning tint, and tapping it offers "Request display pair" instead

@@ -65,14 +65,22 @@ export const promisedKey = (productId, size) => `${productId}::${stockSizeKey(St
 // the "Lacoste Powercourt size 8" class of false ✕ (3 cells were blocked by
 // promises from exactly one month before; 7 of the 14 blocked cells were
 // stale). So a promise now has a shelf life: an order whose readyAt (fallback
-// createdAt) is older than this window no longer books a cell. Seven days
-// covers every real collection lag observed (the live 3–7-day bucket held 2
-// orders; >7d were all month-old ghosts) — a genuinely uncollected order past
-// the window errs toward showing availability, the same direction every other
-// partial-input rule in this file already leans. An order with NO parseable
-// timestamp keeps subtracting (it cannot be aged; erring ✕-ward there keeps
-// the pre-2026-09 behaviour for legacy shapes).
-export const READY_PROMISE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// createdAt) is older than this window no longer books a cell.
+//
+// WHY 14 DAYS. The live age histogram had a clean empty band: every real
+// collection happened inside 7 days (<1d: 28, 1–3d: 9, 3–7d: 2), every
+// record past it was ≥30 days old (15) — ghosts. 14 days sits in the middle
+// of that dead zone: it still expires every observed ghost while doubling
+// the margin for a genuinely slow collector the sample was too thin to show.
+// BOTH failure directions, stated: a promise expiring on a genuinely
+// uncollected order re-shows availability — the warehouse then finds the
+// shelf short and marks the new order out-of-stock, the visible pre-#446
+// path, never a silent double-sell (the pair itself is at the shop, not on
+// the hub shelf). A ghost kept too long keeps the false ✕ this bound exists
+// to kill. An order with NO parseable timestamp keeps subtracting (it cannot
+// be aged; erring ✕-ward there keeps the pre-2026-09 behaviour for legacy
+// shapes).
+export const READY_PROMISE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Is this order's promise inside the freshness window? Exported so the
 // display-pull promise map (displayPairCore) ages by the SAME rule.
@@ -128,9 +136,7 @@ export function availableUnits(cellQty, promised = 0) {
 // space-padded " 8" under "_8" — indexing by the raw catalogue size read
 // both as qty 0 and produced a false ✕ (adversarial review, PR #446).
 export function cellAvailability({ cells, promised, productId, size }) {
-  const cell = cells?.[productId]?.[decodedCellKey(String(size))];
-  const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
-  return availableUnits(qty, promised?.[promisedKey(productId, size)] || 0);
+  return cellBlockInfo({ cells, promised, productId, size }).available;
 }
 
 // WHY a cell reads as unavailable — same inputs, the parts kept apart:
@@ -141,6 +147,11 @@ export function cellAvailability({ cells, promised, productId, size }) {
 // reserved for an uncollected order" look identical as an ✕, and staff read
 // the second as "this size doesn't exist" (owner report 2026-09-01, Lacoste
 // Powercourt size 8 — counted stock, ✕ tile). The note needs the split.
+// cellAvailability above is DEFINED as this split's `available` — one copy of
+// the arithmetic, per this module's own header rule.
+// NOTE: like every helper here, this does not know whether the cells map has
+// settled — callers gate on their read state (the screens gate via
+// sneakerOut) before treating booked:0 as "truly empty".
 export function cellBlockInfo({ cells, promised, productId, size }) {
   const cell = cells?.[productId]?.[decodedCellKey(String(size))];
   const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
