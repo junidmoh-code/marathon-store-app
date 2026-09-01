@@ -65,6 +65,7 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
 import SocialView from "./components/social/SocialView";
+import TvAdSettingsCard from "./components/TvAdSettingsCard";
 import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
 // The photo regenerator's vocabulary and call-shaping, shared with the same
 // tool on the Shopify product page so the two can never offer different fixes
@@ -331,7 +332,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", TV_AD: "tv_ad" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2690,6 +2691,16 @@ const RoleIcons = {
       <line x1="6" y1="15" x2="11" y2="15"/>
     </svg>
   ),
+  tv_ad: (
+    // A TV screen with a play triangle: the queue board's monitor shape (see
+    // Display's screen-on-a-stand) with a play glyph inside, standing in for
+    // the ad creative it pops up over the board.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="14" rx="2"/>
+      <path d="M8 22h8M12 18v4"/>
+      <path d="M10.5 8.5l5 3-5 3z" fill="#4A7FFF" stroke="none"/>
+    </svg>
+  ),
   barcodes: (
     // A barcode. Six thin full-height rules at uneven spacing — deliberately not
     // the Insights chart's three fat bottom-aligned bars, which is the only
@@ -2918,6 +2929,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // Junid or a stockRole admin. The route below re-checks the same gate.
   const socialVisible = isSuperAdmin || homePerm?.stockRole === "admin";
 
+  // TV Ad — writes /settings/tvAd, which the TV screen overlay reads live.
+  // Same identity as Social/Shopify: super-admin or stockRole admin, matching
+  // the console write rule on /settings/tvAd.
+  const tvAdVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
   const groups = [
@@ -2981,6 +2997,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
       hasPermission(ROLE_TO_PERMISSION[ROLES.CARD_RECON]) && { key:"card_recon", icon:RoleIcons.card_recon, name:"Card Recon", desc:"Batch slip capture · variance", onClick:()=>onSelect(ROLES.CARD_RECON) },
+      tvAdVisible && { key:"tv_ad", icon:RoleIcons.tv_ad, name:"TV Ad", desc:"Overlay creative · schedule", onClick:()=>onSelect(ROLES.TV_AD) },
       // AI Studio — super-admin sees every tool; `photo_generation` sees the
       // Photo Studio and NOTHING else (the view filters its own tool list, and
       // the description below changes to match so the card never promises a tab
@@ -18002,6 +18019,8 @@ function AppInner() {
   const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin" || hasPermission("shopify_publish");
   // Social route — the same identities the /social_posts console rule accepts.
   const socialRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
+  // TV Ad route — same identities the /settings/tvAd console write rule accepts.
+  const tvAdRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
   // AI Studio route — super-admin, or a `photo_generation` holder (who gets the
   // Photo Studio tool only; AiStudioView decides that, not this gate).
   const aiStudioRouteOpen = isSuperAdmin || hasPermission("photo_generation");
@@ -18070,9 +18089,10 @@ function AppInner() {
     // Social obeys the same rule — a role persisted before a permission change
     // must not strand the user on a view they can no longer read.
     if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
+    if (role === ROLES.TV_AD && !tvAdRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, shopifyRouteOpen, socialRouteOpen, aiStudioRouteOpen, permRecord]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -18351,6 +18371,10 @@ function AppInner() {
   // approval itself at the moment of sending.
   else if (role === ROLES.SOCIAL) view = socialRouteOpen
     ? <SocialView products={products} onExit={() => setRole(null)} />
+    : null;
+  // TV Ad — writes /settings/tvAd only; the TV screen overlay reads it live.
+  else if (role === ROLES.TV_AD) view = tvAdRouteOpen
+    ? <TvAdSettingsCard onExit={() => setRole(null)} />
     : null;
   // ── ENGINE POLICY — GATE 2 OF 3: THE ROUTE ────────────────────────────────
   // Evaluated INDEPENDENTLY of the tile. A persisted role in localStorage, a
