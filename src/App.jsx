@@ -7868,11 +7868,17 @@ function sneakerBlockNoteText(size, w) {
   // note must not name a reason it cannot distinguish (adversarial review).
   // The hold is SHORT (20-minute collection deadline, owner directive
   // 2026-09-01) and the note says so — staff should retry, not give up.
+  // EXCEPT a block explained only by a display-pair pull claim (w.pullOnly):
+  // that lane holds for up to 48h, and calling it a 20-minute hold would be
+  // false (CodeRabbit, #546).
   if (!w || w.booked <= 0) return `Size ${sz} isn't available at Hub 1 right now — it can't be ordered.`;
-  if (w.available <= 0)
+  if (w.available <= 0) {
+    if (w.pullOnly)
+      return `Size ${sz} at Hub 1 is claimed by a pending display-pair request — it can't be ordered.`;
     return w.booked === 1
       ? `Hub 1's only size ${sz} is reserved for another customer's order (20-minute hold) — try again shortly.`
       : `All ${w.booked} of size ${sz} at Hub 1 are reserved for other customers' orders (20-minute hold) — try again shortly.`;
+  }
   return `Your cart already has all ${w.available} of size ${sz} that Hub 1 can give out.`;
 }
 
@@ -8827,9 +8833,20 @@ function AssistantView({ products, onExit, orders = [] }) {
     const t = setInterval(() => setPromiseTick(v => v + 1), 60 * 1000);
     return () => clearInterval(t);
   }, []);
-  const hub1Promised = useMemo(
-    () => mergePromised(readyPromisedByCell(orders, "hub1", productsById), pendingDisplayPullsByCell(orders, productsById)),
+  // The two maps stay reachable SEPARATELY: the ✕ note names the 20-minute
+  // collection hold only when a ready promise is involved — a pull claim
+  // lives 48h and must not be miscalled a 20-minute hold (CodeRabbit, #546).
+  const hub1ReadyPromised = useMemo(
+    () => readyPromisedByCell(orders, "hub1", productsById),
     [orders, productsById, promiseTick]
+  );
+  const hub1PullPromised = useMemo(
+    () => pendingDisplayPullsByCell(orders, productsById),
+    [orders, productsById, promiseTick]
+  );
+  const hub1Promised = useMemo(
+    () => mergePromised(hub1ReadyPromised, hub1PullPromised),
+    [hub1ReadyPromised, hub1PullPromised]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -9083,8 +9100,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   // way (owner report 2026-09-01: Lacoste Powercourt size 8, counted at Hub 1
   // that morning, ✕ on the picker — the one unit was promised to a ready
   // order placed minutes earlier). Same inputs as sneakerOut, kept apart.
-  const sneakerOutWhy = (p, s) =>
-    cellBlockInfo({ cells: hub1CellsState.cells, promised: hub1Promised, productId: p.id, size: s });
+  // pullOnly: the block is explained ENTIRELY by a pending display-pair
+  // pull claim (48h lane) — the note must not call that a 20-minute hold.
+  const sneakerOutWhy = (p, s) => ({
+    ...cellBlockInfo({ cells: hub1CellsState.cells, promised: hub1Promised, productId: p.id, size: s }),
+    pullOnly: !(hub1ReadyPromised[promisedKey(p.id, s)] > 0) && hub1PullPromised[promisedKey(p.id, s)] > 0,
+  });
   // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
   // Marked, not blocked: the tile keeps its number, gains a corner display
   // icon + warning tint, and tapping it offers "Request display pair" instead
