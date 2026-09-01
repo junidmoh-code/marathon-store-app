@@ -58,22 +58,37 @@ for (const o of orders) {
 }
 console.log("orders:", orders.length, JSON.stringify(byStatus, null, 1));
 
-// THE MISMATCH: hub1 footwear cells with qty > 0 that the resolver reads ✕.
-const promised = mergePromised(
-  readyPromisedByCell(orders, "hub1", productsById),
-  pendingDisplayPullsByCell(orders, productsById),
+// THE MISMATCH, both worlds (CodeRabbit, PR #545): the FRESH map is what the
+// app now subtracts (aged through promiseFresh — the census must agree with
+// the resolver, so the classification calls promiseFresh itself rather than
+// re-deriving a threshold); the ALL map is the pre-fix counterfactual, so the
+// ghost measurement is "cells the bound freed", never a mislabelled blocker.
+const promisedFresh = mergePromised(
+  readyPromisedByCell(orders, "hub1", productsById, now),
+  pendingDisplayPullsByCell(orders, productsById, now),
+);
+const FAR_FUTURE = now + 1000 * 86400000;   // a nowMs no promise can be stale against
+const promisedAll = mergePromised(
+  readyPromisedByCell(orders, "hub1", productsById, FAR_FUTURE),
+  pendingDisplayPullsByCell(orders, productsById, FAR_FUTURE),
 );
 const readyHub1 = orders.filter((o) => o.status === "ready" && (o.hub || "hub1") === "hub1");
 const pulls = orders.filter((o) => ["incoming", "coming_tomorrow"].includes(o.status) && o.displayPairRequest === true);
+const { promiseFresh } = await import("../src/components/stock/availabilityCore.js");
 const promiseAges = {};
 for (const o of [...readyHub1, ...pulls]) {
   if (!o.productId) continue;
   const key = promisedKey(o.productId, o.sentSize ?? o.size ?? "");
   const d = ageDays(o);
-  (promiseAges[key] ||= []).push({ id: o.id, status: o.status, days: d == null ? null : Math.round(d * 10) / 10 });
+  (promiseAges[key] ||= []).push({ id: o.id, status: o.status, fresh: promiseFresh(o, now), days: d == null ? null : Math.round(d * 10) / 10 });
 }
+// Attribution per cell lists only the orders that CONTRIBUTE to that map —
+// fresh orders for a live blocker, every order for the counterfactual.
+const contributors = (key, freshOnly) =>
+  (promiseAges[key] || []).filter((a) => !freshOnly || a.fresh);
 let cellsWithStock = 0;
-const blocked = [];
+const blocked = [];       // blocked TODAY, by fresh promises — by design
+const freedGhosts = [];   // blocked pre-fix only — the population the bound freed
 for (const [pid, bySize] of Object.entries(hub1Snap.val() || {})) {
   const p = productsById[pid];
   if (!p || !isFootwearProduct(p)) continue;
@@ -83,15 +98,17 @@ for (const [pid, bySize] of Object.entries(hub1Snap.val() || {})) {
     cellsWithStock++;
     const raw = decodeSizeKey(k);
     const key = `${pid}::${stockSizeKey(raw)}`;
-    const prom = promised[key] || 0;
-    if (qty - prom <= 0) blocked.push({ pid, name: p.name, size: raw, qty, promised: prom, orders: promiseAges[key] || [] });
+    if (qty - (promisedFresh[key] || 0) <= 0)
+      blocked.push({ pid, name: p.name, size: raw, qty, promised: promisedFresh[key] || 0, orders: contributors(key, true) });
+    else if (qty - (promisedAll[key] || 0) <= 0)
+      freedGhosts.push({ pid, name: p.name, size: raw, qty, promised: promisedAll[key] || 0, orders: contributors(key, false) });
   }
 }
-const stale = blocked.filter((b) => b.orders.some((a) => (a.days ?? 0) > 7));
 console.log(`\nhub1 footwear cells with qty>0: ${cellsWithStock}`);
-console.log(`reading ✕ despite stock: ${blocked.length} cells / ${new Set(blocked.map((b) => b.pid)).size} products`);
-console.log(`of those, blocked by a promise OLDER than 7 days (certain ghosts): ${stale.length}`);
-for (const b of blocked) console.log(` ${b.name} [${b.size}] qty=${b.qty} promised=${b.promised} ← ${JSON.stringify(b.orders)}`);
-writeFileSync("picker-promise-mismatch.json", JSON.stringify({ ranAt: new Date().toISOString(), byStatus, blocked }, null, 1));
+console.log(`✕ today, by FRESH promises (by design): ${blocked.length} cells / ${new Set(blocked.map((b) => b.pid)).size} products`);
+console.log(`✕ only WITHOUT the freshness bound (ghosts the bound frees): ${freedGhosts.length} cells / ${new Set(freedGhosts.map((b) => b.pid)).size} products`);
+for (const b of blocked) console.log(` [blocked] ${b.name} [${b.size}] qty=${b.qty} promised=${b.promised} ← ${JSON.stringify(b.orders)}`);
+for (const b of freedGhosts) console.log(` [freed]   ${b.name} [${b.size}] qty=${b.qty} promised=${b.promised} ← ${JSON.stringify(b.orders)}`);
+writeFileSync("picker-promise-mismatch.json", JSON.stringify({ ranAt: new Date().toISOString(), byStatus, blocked, freedGhosts }, null, 1));
 console.log("\nwrote picker-promise-mismatch.json");
 process.exit(0);
