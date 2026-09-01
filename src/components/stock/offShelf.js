@@ -35,6 +35,7 @@
 import { ref, child, get } from "firebase/database";
 import { database } from "../../firebase";
 import { isFootwearProduct } from "./missingFootwearCore";
+import { promiseFresh } from "./availabilityCore";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { loadDisplaySlots, slotsForCell } from "./displaySlots";
 import { HUB_COUNT_ROOT } from "../../config/hubSneakerCount";
@@ -70,6 +71,12 @@ export async function loadOffShelfSources(hub, productsById) {
   const readyCells = {};
   for (const [orderId, o] of Object.entries(orders || {})) {
     if (!o || o.status !== "ready") continue;
+    // The ghost-promise bound (2026-09-01, shared with availabilityCore):
+    // /orders keeps a record until its daily number is reused, so a month-old
+    // "ready" order — collected long ago, only the status write missed —
+    // would keep telling the counter its unit is off-shelf and make the
+    // EXPECTED number understate the real shelf forever.
+    if (!promiseFresh(o)) continue;
     if ((o.placedAtHub || o.hub) !== hub) continue;
     const p = productsById && productsById.get ? productsById.get(o.productId) : null;
     if (!p || !isFootwearProduct(p)) continue;
