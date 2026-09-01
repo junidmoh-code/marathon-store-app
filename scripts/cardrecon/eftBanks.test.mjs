@@ -460,3 +460,158 @@ describe("a forwarded sample is a format, never a payment", () => {
     expect(authenticationVerdict(forwarded).pass).toBe(false);
   });
 });
+
+// ─── ABSA ────────────────────────────────────────────────────────────────────
+// THE FIXTURE IS THE REAL R80 PAYMENT of 2026-09-01 — the owner paid the shop
+// from his own Absa account so the format would exist. These are the exact
+// lines pdfText.js extracted from Absa.pdf, SANITISED for a public repo
+// (the payer's name, the bank's transaction number, the destination account,
+// the branch code and the support phone numbers), structure verbatim —
+// including the three BARE labels whose values sit on the following line.
+const REAL_ABSA_PDF_LINES = [
+  "01 September 2026",
+  "Notice of Payment",
+  "Dear Marathon club",
+  "Subject: Notice Of Payment: Marathon club",
+  "Please be advised that MR J SOAP made a payment to your account as indicated below.",
+  "Transaction number: 80D2F2AB5A-1",
+  "Payment date:",
+  "2026-09-01",
+  "Payment made by: MR J SOAP",
+  "Payment made to:",
+  "Marathon club",
+  "Beneficiary bank name: FIRST NATIONAL BANK",
+  "Beneficiary account number: 62900004321",
+  "Bank branch code: 250655",
+  "For the amount of: 80.00",
+  "Immediate payment:",
+  "N",
+  "Reference on beneficiary statement: test",
+  "View your account to confirm that you have received this payment as the following applies to online banking",
+  "payments into non-ABSA and Absa Vehicle and Asset Finance bank accounts.",
+  "• Payments made on weekdays before 15:30 will be credited to the receiving bank account by midnight of the same day.",
+  "If you have made an incorrect internet banking payment, please send an email to digital@absa.co.za",
+  "Yours sincerely",
+  "General Manager: Digital Channels",
+  "Absa Bank Limited Reg No 1986/000000/06 Authorised Financial Services and Registered Credit Provider Reg No NCRCP7 Company Information: www.absa.co.za",
+];
+
+const ab = EFT_READERS.find((r) => r.id === "absa");
+
+describe("the Absa reader — built from the real R80 payment", () => {
+  it("selectReader picks it for the real document from the real domain", () => {
+    expect(selectReader({ fromDomain: "absa.co.za", lines: REAL_ABSA_PDF_LINES })?.id).toBe("absa");
+    expect(selectReader({ fromDomain: "ibreply.absa.co.za", lines: REAL_ABSA_PDF_LINES })?.id).toBe("absa");
+  });
+
+  it("an Absa layout from another bank's domain is nobody's", () => {
+    expect(selectReader({ fromDomain: "capitecbank.co.za", lines: REAL_ABSA_PDF_LINES })).toBe(null);
+  });
+
+  it("…and no other reader claims it, nor it theirs", () => {
+    for (const other of EFT_READERS.filter((r) => r.id !== "absa")) {
+      expect(other.detect(REAL_ABSA_PDF_LINES), `${other.id} must not claim it`).toBe(false);
+    }
+    expect(ab.detect(REAL_CAPITEC_PDF_LINES), "Capitec's is not Absa's").toBe(false);
+    expect(ab.detect(REAL_SB_PDF_LINES), "Standard Bank's is not Absa's").toBe(false);
+  });
+
+  it("does not claim a batch-report-shaped document", () => {
+    expect(ab.detect(["BATCH REPORT", "TERMINAL ID 0000HP1X", "BATCH NUMBER (#494)"])).toBe(false);
+  });
+
+  it("reads every field of the real document exactly", () => {
+    expect(ab.parse(REAL_ABSA_PDF_LINES)).toEqual({
+      ok: true,
+      // "80.00", with no R in front of it.
+      amountCents: 8000,
+      // What the PAYER typed, not Absa's own transaction number.
+      reference: "test",
+      payer: "MR J SOAP",
+      // 2026-09-01, no time printed: midnight SAST = 22:00 UTC the day before.
+      bankTs: Date.UTC(2026, 7, 31, 22, 0, 0),
+      bankRef: "80D2F2AB5A-1",
+      // A BARE label whose value is on the following line.
+      beneficiaryName: "Marathon club",
+      destBankName: "FIRST NATIONAL BANK",
+      accountMask: "62900004321",
+    });
+  });
+
+  it("reads a bare label's value from the NEXT line — the mirror of FNB's", () => {
+    // Three of them in the real document: Payment date, Payment made to, and
+    // Immediate payment. If this direction ever flipped, the date would read as
+    // the label above it and the beneficiary as "Payment made to:".
+    const parsed = ab.parse(REAL_ABSA_PDF_LINES);
+    expect(parsed.beneficiaryName).toBe("Marathon club");
+    expect(parsed.bankTs).not.toBe(null);
+  });
+
+  it("a bare label followed by ANOTHER label reads as absent, never as that label", () => {
+    // The layout has shifted, and guessing would file one field's LABEL as
+    // another field's value. Asserted on a field where the wrong answer is
+    // VISIBLE: a null date is also what an unparseable date gives, so the date
+    // alone cannot tell the two apart.
+    const shifted = REAL_ABSA_PDF_LINES.map((l) => (l === "Marathon club" ? "Bank branch code: 250655" : l));
+    const parsed = ab.parse(shifted);
+    expect(parsed.beneficiaryName, "the next label is not the beneficiary's name").toBe(null);
+    const dateShifted = REAL_ABSA_PDF_LINES.map((l) => (l === "2026-09-01" ? "Bank branch code: 250655" : l));
+    expect(ab.parse(dateShifted).bankTs).toBe(null);
+  });
+
+  it("does not claim an Absa document that is not a payment notice", () => {
+    // The title and the sentence are not enough on their own: Absa writes to
+    // its customers about payments constantly. The labelled amount is what says
+    // MONEY CAME IN, and all three must agree before this reader touches it.
+    expect(ab.detect([
+      "01 September 2026",
+      "Notice of Payment",
+      "Please be advised that MR J SOAP made a payment to your account, which has been REVERSED.",
+      "No funds have been transferred.",
+    ])).toBe(false);
+  });
+
+  it("refuses when the amount is missing — never a payment of nothing", () => {
+    const lines = REAL_ABSA_PDF_LINES.filter((l) => !/^For the amount of:/.test(l));
+    expect(ab.parse(lines)).toEqual({ ok: false, reason: "Absa notification carries no amount line." });
+  });
+
+  it("refuses an amount that does not parse exactly", () => {
+    const lines = REAL_ABSA_PDF_LINES.map((l) => (l.startsWith("For the amount of:") ? "For the amount of: 8O.00" : l));
+    expect(ab.parse(lines).ok).toBe(false);
+    expect(ab.parse(lines).reason).toMatch(/does not parse exactly as a rand amount/);
+  });
+
+  it("refuses two different amounts — a layout it does not understand", () => {
+    const lines = [...REAL_ABSA_PDF_LINES, "For the amount of: 90.00"];
+    expect(ab.parse(lines).ok).toBe(false);
+    expect(ab.parse(lines).reason).toMatch(/appears 2 times with different values/);
+  });
+
+  it("refuses without the destination account — the allowlist check depends on it", () => {
+    const lines = REAL_ABSA_PDF_LINES.filter((l) => !/^Beneficiary account number:/.test(l));
+    expect(ab.parse(lines).ok).toBe(false);
+    expect(ab.parse(lines).reason).toMatch(/destination account cannot be checked/);
+  });
+
+  it("refuses a document with two transaction numbers rather than picking one", () => {
+    const doubled = [...REAL_ABSA_PDF_LINES, "Transaction number: 80D2F2AB5A-2"];
+    expect(ab.parse(doubled).ok).toBe(false);
+    expect(ab.parse(doubled).reason).toMatch(/2 payment blocks/);
+  });
+
+  it("a date it cannot read costs the date and nothing else", () => {
+    const lines = REAL_ABSA_PDF_LINES.map((l) => (l === "2026-09-01" ? "sometime tuesday" : l));
+    const parsed = ab.parse(lines);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.bankTs).toBe(null);
+    expect(parsed.amountCents).toBe(8000);
+  });
+
+  it("keeps the payer's typed reference and the bank's own number apart", () => {
+    const parsed = ab.parse(REAL_ABSA_PDF_LINES);
+    expect(parsed.reference).toBe("test");
+    expect(parsed.bankRef).toBe("80D2F2AB5A-1");
+    expect(parsed.reference).not.toBe(parsed.bankRef);
+  });
+});

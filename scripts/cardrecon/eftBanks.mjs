@@ -368,10 +368,137 @@ const capitec = {
   },
 };
 
+// ─── ABSA ────────────────────────────────────────────────────────────────────
+// Built from the REAL R80 payment of 2026-09-01 (the owner paid the shop from
+// his own Absa account to produce the format). Layout, verbatim from pdfText:
+//
+//   Notice of Payment
+//   Please be advised that MR JM ATUGAR made a payment to your account …
+//   Transaction number: 80D2F2AB5A-1        ← the BANK's own id
+//   Payment date:                           ← BARE label…
+//   2026-09-01                              ← …value on the NEXT line
+//   Payment made by: MR JM ATUGAR           ← inline value
+//   Payment made to:
+//   Marathon club
+//   Beneficiary bank name: FIRST NATIONAL BANK
+//   Beneficiary account number: 62903776625 ← UNMASKED, like Capitec's
+//   Bank branch code: 250655
+//   For the amount of: 80.00                ← NO currency mark
+//   Immediate payment:
+//   N
+//   Reference on beneficiary statement: test  ← what the PAYER typed
+//
+// TWO LAYOUTS IN ONE DOCUMENT, and that is the whole difficulty. Some labels
+// carry their value after the colon; others are bare, with the value on the
+// FOLLOWING line. It is FNB's problem mirrored — FNB's bare labels take the
+// line BEFORE, Absa's take the line AFTER — so it gets its own reader rather
+// than a shared one that would have to guess which direction a bank means.
+// A bare label whose next line is itself a label reads as ABSENT, never as
+// that label's text: a layout this has never seen must refuse, not guess.
+//
+// THE AMOUNT CARRIES NO "R". parseRandsToCents accepts a bare figure ("80.00")
+// and still refuses anything mangled — the currency mark is optional there,
+// never skipped over, so "USD 80.00" would still refuse rather than read as
+// eighty rand.
+//
+// NOT USED, AND WORTH KNOWING: "Immediate payment: N" says the money may only
+// land by midnight rather than at once. Every bank's notification carries some
+// version of that caveat (Standard Bank: "up to one business day"), and the
+// pool has always treated a notification as evidence of an INSTRUCTION, not of
+// cleared funds — so this reader does not smuggle it into a field the record
+// has no place for. If it should gate settling, that is a record-shape change
+// and a decision, not a parser detail.
+const ABSA_LABELISH = /.+:\s*$|.+:\s.+/;
+function absaLabelValue(lines, re, what) {
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]);
+    if (!m) continue;
+    let value = (m[1] ?? "").trim();
+    if (!value) {
+      // Bare label: the value is the NEXT line — unless that line is itself a
+      // label, which means the layout shifted.
+      const next = (lines[i + 1] ?? "").trim();
+      value = next && !ABSA_LABELISH.test(next) ? next : "";
+    }
+    if (value) hits.push(value);
+  }
+  const distinct = [...new Set(hits)];
+  if (distinct.length > 1) return { ok: false, why: `the ${what} appears ${distinct.length} times with different values` };
+  return { ok: true, value: distinct[0] ?? null };
+}
+
+const absa = {
+  id: "absa",
+  domain: "absa.co.za",
+  /** Content, not sender: Absa's own title, the confirmation sentence and the
+   *  labelled amount. All three, so an Absa statement or a fee letter carrying
+   *  the bank's name claims nothing. */
+  detect(lines) {
+    const has = (re) => lines.some((l) => re.test(l));
+    return has(/^Notice of Payment$/i)
+      && has(/made a payment to your account/i)
+      && has(/^For the amount of:/i);
+  },
+  parse(lines) {
+    const take = (re, what) => absaLabelValue(lines, re, what);
+
+    // ONE PAYMENT PER DOCUMENT, counted on the bank's own transaction number —
+    // the same rule the other readers keep: a reprint and two identical
+    // payments are indistinguishable from here, so more than one refuses.
+    const blocks = lines.filter((l) => /^Transaction number:/i.test(l)).length;
+    if (blocks > 1) {
+      return { ok: false, reason: `This document holds ${blocks} payment blocks — a reprint and two identical payments cannot be told apart here. Handle it by hand.` };
+    }
+
+    // THE AMOUNT — required, exact, single.
+    const amount = take(/^For the amount of:\s*(.*)$/i, "amount line");
+    if (!amount.ok) return { ok: false, reason: `Absa notification: ${amount.why}.` };
+    if (amount.value === null) return { ok: false, reason: "Absa notification carries no amount line." };
+    const amountCents = parseRandsToCents(amount.value);
+    if (amountCents === null) {
+      return { ok: false, reason: `Absa amount line reads "${clip(amount.value, 60)}", which does not parse exactly as a rand amount.` };
+    }
+    if (amountCents <= 0) return { ok: false, reason: "The amount is zero or negative — not an incoming payment." };
+
+    // THE DESTINATION ACCOUNT — required: the allowlist check depends on it.
+    const account = take(/^Beneficiary account number:\s*(.*)$/i, "Beneficiary account number");
+    if (!account.ok) return { ok: false, reason: `Absa notification: ${account.why}.` };
+    if (!account.value) return { ok: false, reason: "No Beneficiary account number could be read from this Absa notification — the destination account cannot be checked." };
+
+    // "Reference on beneficiary statement" is what the PAYER typed — the
+    // matching key. "Transaction number" is Absa's own id; kept apart.
+    const reference = take(/^Reference on beneficiary statement:\s*(.*)$/i, "Reference on beneficiary statement");
+    if (!reference.ok) return { ok: false, reason: `Absa notification: ${reference.why}.` };
+    const bankRef = take(/^Transaction number:\s*(.*)$/i, "Transaction number");
+    if (!bankRef.ok) return { ok: false, reason: `Absa notification: ${bankRef.why}.` };
+    const beneficiaryName = take(/^Payment made to:\s*(.*)$/i, "Payment made to");
+    const destBankName = take(/^Beneficiary bank name:\s*(.*)$/i, "Beneficiary bank name");
+    const payer = take(/^Payment made by:\s*(.*)$/i, "Payment made by");
+
+    // "Payment date:" then "2026-09-01" — a shape parseBankTimestamp already
+    // knows. Optional: receivedAt carries the record if it will not read.
+    const when = take(/^Payment date:\s*(.*)$/i, "Payment date");
+    const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
+
+    return {
+      ok: true,
+      amountCents,
+      reference: reference.value ? clip(reference.value, 140) : null,
+      payer: payer.ok && payer.value ? clip(redactAccountDigits(payer.value), 120) : null,
+      bankTs,
+      bankRef: bankRef.value ? clip(bankRef.value, 60) : null,
+      beneficiaryName: beneficiaryName.ok && beneficiaryName.value ? clip(beneficiaryName.value, 120) : null,
+      destBankName: destBankName.ok && destBankName.value ? clip(destBankName.value, 60) : null,
+      accountMask: clip(account.value, 40),
+    };
+  },
+};
+
 // ─── THE REGISTRY ────────────────────────────────────────────────────────────
 // Adding a bank = adding a reader here + its domain to EFT_ALLOWED_DOMAINS in
 // eftCore.mjs. Nothing else changes.
-export const EFT_READERS = [standardBank, fnb, capitec];
+export const EFT_READERS = [standardBank, fnb, capitec, absa];
 
 /**
  * Which reader claims this document, by CONTENT. The sending domain narrows
