@@ -47,6 +47,7 @@
 // Pure module — no firebase imports; callers feed it data they already hold.
 
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
+import { serverNowMs } from "../../utils/serverTime";
 import { isFootwearProduct } from "./missingFootwearCore";
 export { isFootwearProduct };
 
@@ -55,17 +56,60 @@ export { isFootwearProduct };
 // caller can reach from either a raw size or a stored key.
 export const promisedKey = (productId, size) => `${productId}::${stockSizeKey(String(size))}`;
 
+// ─── THE GHOST-PROMISE BOUND (2026-09-01) ────────────────────────────────────
+// /orders is keyed by the DAILY order number, so a record survives until some
+// later day's volume reaches its number again — measured 2026-09-01: 166
+// "ready" records live, 56 of them older than 30 days. A ready order that was
+// physically collected weeks ago (the till sale already moved the cell; only
+// the status write was missed) still subtracts here, and because nothing ever
+// expires it, the size reads ✕ FOREVER while real stock sits on the shelf —
+// the "Lacoste Powercourt size 8" class of false ✕ (3 cells were blocked by
+// promises from exactly one month before; 7 of the 14 blocked cells were
+// stale). So a promise now has a shelf life: an order whose readyAt (fallback
+// createdAt) is older than this window no longer books a cell.
+//
+// WHY 14 DAYS. The live age histogram had a clean empty band: every real
+// collection happened inside 7 days (<1d: 28, 1–3d: 9, 3–7d: 2), every
+// record past it was ≥30 days old (15) — ghosts. 14 days sits in the middle
+// of that dead zone: it still expires every observed ghost while doubling
+// the margin for a genuinely slow collector the sample was too thin to show.
+// BOTH failure directions, stated: a promise expiring on a genuinely
+// uncollected order re-shows availability — the warehouse then finds the
+// shelf short and marks the new order out-of-stock, the visible pre-#446
+// path, never a silent double-sell (the pair itself is at the shop, not on
+// the hub shelf). A ghost kept too long keeps the false ✕ this bound exists
+// to kill. An order with NO parseable timestamp keeps subtracting (it cannot
+// be aged; erring ✕-ward there keeps the pre-2026-09 behaviour for legacy
+// shapes).
+export const READY_PROMISE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+// Is this order's promise inside the freshness window? Exported so the
+// display-pull promise map (displayPairCore) ages by the SAME rule.
+// serverNowMs, not Date.now(): the stamps being aged were written through
+// serverNowIso, and a till whose clock runs ahead (the documented 2026-07-17
+// failure) would otherwise silently expire FRESH promises fleet-wide.
+// serverTime is deliberately dependency-free, so the no-firebase purity of
+// this module holds. readyAt is preferred but an unparseable readyAt (an
+// "" default exists in the wild) falls THROUGH to createdAt, not to "keep".
+export function promiseFresh(order, nowMs = serverNowMs()) {
+  let t = Date.parse(order?.readyAt ?? "");
+  if (!Number.isFinite(t)) t = Date.parse(order?.createdAt ?? "");
+  if (!Number.isFinite(t)) return true;   // un-ageable — keep the promise
+  return nowMs - t <= READY_PROMISE_MAX_AGE_MS;
+}
+
 // The ready-but-uncollected promises booked at `loc`, from an /orders slice
 // (array of order records — whatever slice this device is allowed to read).
 // Footwear only — see the header. Returns { "pid::sizeKey": units }.
 //
 // `hubOf` mirrors the app's orderInHub convention: hub3/hubC live in
 // placedAtHub, everything else defaults through `hub` to hub1.
-export function readyPromisedByCell(orders, loc, productsById) {
+export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNowMs()) {
   const out = {};
   if (!loc) return out;
   for (const o of orders || []) {
     if (!o || o.status !== "ready") continue;
+    if (!promiseFresh(o, nowMs)) continue;   // ghost record — see the bound above
     // EXACTLY the app's orderInHub rule (App.jsx): hub3/hubC read placedAtHub
     // ONLY; every other hub reads `hub` (defaulted hub1). A looser
     // `placedAtHub || hub` here booked a {placedAtHub:"hub1", hub:"hub2"}
@@ -100,7 +144,26 @@ export function availableUnits(cellQty, promised = 0) {
 // space-padded " 8" under "_8" — indexing by the raw catalogue size read
 // both as qty 0 and produced a false ✕ (adversarial review, PR #446).
 export function cellAvailability({ cells, promised, productId, size }) {
+  return cellBlockInfo({ cells, promised, productId, size }).available;
+}
+
+// WHY a cell reads as unavailable — same inputs, the parts kept apart:
+//   booked    — clamped on-hand quantity (what a count would find)
+//   promised  — units spoken for by ready-but-uncollected orders
+//   available — the resolver's answer (availableUnits of the two)
+// Exists for the ✕-tile explanation: "none here" and "the last one is
+// reserved for an uncollected order" look identical as an ✕, and staff read
+// the second as "this size doesn't exist" (owner report 2026-09-01, Lacoste
+// Powercourt size 8 — counted stock, ✕ tile). The note needs the split.
+// cellAvailability above is DEFINED as this split's `available` — one copy of
+// the arithmetic, per this module's own header rule.
+// NOTE: like every helper here, this does not know whether the cells map has
+// settled — callers gate on their read state (the screens gate via
+// sneakerOut) before treating booked:0 as "truly empty".
+export function cellBlockInfo({ cells, promised, productId, size }) {
   const cell = cells?.[productId]?.[decodedCellKey(String(size))];
   const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
-  return availableUnits(qty, promised?.[promisedKey(productId, size)] || 0);
+  const booked = Math.max(Number(qty) || 0, 0);
+  const spoken = Math.max(Number(promised?.[promisedKey(productId, size)]) || 0, 0);
+  return { booked, promised: spoken, available: availableUnits(booked, spoken) };
 }

@@ -90,7 +90,7 @@ import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from ".
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, isFootwearProduct, promisedKey } from "./components/stock/availabilityCore";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -7855,6 +7855,25 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // which is what made typing in the search box lag. A screenful is ~12-20 cards.
 const AD_PAGE = 60;
 
+// The ✕-note text for a Hub 1 sneaker size — WHY the hub can't give it out.
+// Three ✕ causes that looked identical and read as "this size doesn't exist"
+// (owner report 2026-09-01, Lacoste Powercourt size 8): the cell truly has
+// nothing; the cell has stock but every unit is reserved for a ready-but-
+// uncollected order; or this cart already holds everything the hub can give.
+// `w` is sneakerOutWhy's { booked, promised, available, inCart }.
+function sneakerBlockNoteText(size, w) {
+  const sz = formatSize(size);
+  // "another customer's order", not "awaiting collection": the promised
+  // scalar merges ready promises WITH pending display-pair pulls, and the
+  // note must not name a reason it cannot distinguish (adversarial review).
+  if (!w || w.booked <= 0) return `Size ${sz} isn't available at Hub 1 right now — it can't be ordered.`;
+  if (w.available <= 0)
+    return w.booked === 1
+      ? `Hub 1's only size ${sz} is reserved for another customer's order — it can't be ordered.`
+      : `All ${w.booked} of size ${sz} at Hub 1 are reserved for other customers' orders — none can be ordered.`;
+  return `Your cart already has all ${w.available} of size ${sz} that Hub 1 can give out.`;
+}
+
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
@@ -7862,7 +7881,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel, sneakerOut, sneakerDisplayOnly, sneakerDisplayInfo }) {
+                            hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayOnly, sneakerDisplayInfo }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
   // clothing catalog with live per-size availability at the serving CR hub
@@ -8247,7 +8266,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               const dInfo = !clothingOrder && !out && !isDeactivated(p) ? sneakerDisplayInfo?.(p, sz) : null;
                               return (
                                 <button key={sz} className="ad-sz" disabled={out}
-                                  title={out ? (isDeactivated(p) ? "Deactivated — finished line" : `Not available at ${servingHubLabel}`)
+                                  title={out ? (isDeactivated(p) ? "Deactivated — finished line"
+                                      : clothingOrder ? `Not available at ${servingHubLabel}`
+                                      // Sneaker ✕: name the real reason — a cell
+                                      // whose stock is reserved for an uncollected
+                                      // order must not read as "doesn't exist".
+                                      : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
                                     : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
                                     : dInfo ? "This size is on a display" : undefined}
                                   style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
@@ -8395,7 +8419,21 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         more than the hub can still cover. Live: recomputes
                         remaining (hub minus cart) every render and hides once
                         more is addable than when it was raised. */}
-                    {(clothingOrder || isDeactivated(qv)) && qvNa && (() => {
+                    {qvNa && (clothingOrder || isDeactivated(qv) || qvNa.snk) && (() => {
+                      // Sneaker ✕ note (2026-09-01): raised by tapping a ✕
+                      // tile; says WHY (empty vs reserved vs already-in-cart)
+                      // instead of leaving "reserved" indistinguishable from
+                      // "doesn't exist". Self-hides once the size frees up.
+                      if (qvNa.snk && !isDeactivated(qv)) {
+                        // Belt on the toggle's clear: partner mode lifts the
+                        // ✕, so the note must never outlive it either way.
+                        if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
+                        return (
+                          <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                            {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
+                          </div>
+                        );
+                      }
                       const have = hubQty(qv.id, qvNa.size);
                       const rem = have - clothingInCart(qv.id, qvNa.size);
                       // Deactivation is not a stock condition — its note never
@@ -8447,7 +8485,10 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                 setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(null);
                                 return;
                               }
-                              if (out) { if (clothingOrder || isDeactivated(qv)) setQvNa({ size: sz, left: 0 }); return; }
+                              // A sneaker ✕ tap raises the why-note (snk flag)
+                              // instead of dying silently — reserved stock
+                              // otherwise reads as "size doesn't exist".
+                              if (out) { setQvNa(clothingOrder || isDeactivated(qv) ? { size: sz, left: 0 } : { size: sz, left: 0, snk: true }); return; }
                               if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                               // A plain size selection drops any display-pair
                               // claim — it belongs to the prompted size only.
@@ -8502,7 +8543,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     {/* A MANUAL toggle (either direction) drops any display-pair
                         claim — that claim is only ever minted by the prompt
                         button, and must never ride a hand-made partner line. */}
-                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); }}
+                    {/* The toggle also drops any sneaker ✕ note: partner mode
+                        lifts every ✕, and a note still saying "can't be
+                        ordered" above a now-selectable size contradicts the
+                        screen (adversarial review). */}
+                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); setQvNa(null); }}
                             style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                      border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
                                      background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
@@ -8768,9 +8813,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Ready promises PLUS pending display pulls: an incoming displayPairRequest
   // order claims a known unit whose slot is already tombstoned, so the tile
   // must not read as plain shelf stock during that window.
+  // The hourly tick keeps the ghost-promise bound honest on an idle device:
+  // promiseFresh reads the clock inside the memo, so without a time term in
+  // the deps a promise crossing the age boundary mid-session would only be
+  // re-judged when some unrelated /orders write fires the listener.
+  const [promiseTick, setPromiseTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPromiseTick(v => v + 1), 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
   const hub1Promised = useMemo(
     () => mergePromised(readyPromisedByCell(orders, "hub1", productsById), pendingDisplayPullsByCell(orders, productsById)),
-    [orders, productsById]
+    [orders, productsById, promiseTick]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -9018,6 +9072,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sneakerOut = (p, s) =>
     sneakerServedByHub1(p) && hub1CellsState.settled && !hub1CellsState.error
     && !!s && sneakerAvail(p.id, s) <= sneakerInCart(p.id, s);
+  // WHY that ✕ — booked vs reserved vs in-cart, for the explanatory note. An
+  // ✕ whose cell holds real stock reserved for an uncollected order looked
+  // identical to "this size doesn't exist", and staff read it exactly that
+  // way (owner report 2026-09-01: Lacoste Powercourt size 8, counted at Hub 1
+  // that morning, ✕ on the picker — the one unit was promised to a ready
+  // order placed minutes earlier). Same inputs as sneakerOut, kept apart.
+  const sneakerOutWhy = (p, s) =>
+    cellBlockInfo({ cells: hub1CellsState.cells, promised: hub1Promised, productId: p.id, size: s });
   // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
   // Marked, not blocked: the tile keeps its number, gains a corner display
   // icon + warning tint, and tapping it offers "Request display pair" instead
@@ -9530,7 +9592,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -9920,7 +9982,20 @@ function AssistantView({ products, onExit, orders = [] }) {
                 than the hub can still cover. Live: it recomputes remaining
                 (hub qty minus cart) every render and hides the moment more
                 stock is actually addable than when it was raised. */}
-            {((selected.productType || "sneaker") === "clothing" || isDeactivated(selected)) && naNote && (() => {
+            {naNote && ((selected.productType || "sneaker") === "clothing" || isDeactivated(selected) || naNote.snk) && (() => {
+              // Sneaker ✕ note (2026-09-01) — the phone-sheet twin of the
+              // quick-view's: tapping a ✕ tile says WHY (empty vs reserved
+              // vs already-in-cart). Self-hides once the size frees up.
+              if (naNote.snk && !isDeactivated(selected)) {
+                // Belt on the toggle's clear: partner mode lifts the ✕, so
+                // the note must never outlive it either way.
+                if (pendingDisplayPartner || !sneakerOut(selected, naNote.size)) return null;
+                return (
+                  <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
+                    {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
+                  </div>
+                );
+              }
               const have = hubQty(selected.id, naNote.size);
               const rem = have - clothingInCart(selected.id, naNote.size);
               // A deactivated product's note never self-hides on stock — stock
@@ -10006,7 +10081,10 @@ function AssistantView({ products, onExit, orders = [] }) {
                 const dispInfo = !clothing && !out && !isDeactivated(selected)
                   ? sneakerDisplayInfo(selected, s) : null;
                 return (
-                  <button key={s} disabled={snkOut && pendingSize !== s}
+                  // No `disabled` on a ✕ tile: the tap must land so it can
+                  // raise the why-note below (selection is still blocked by
+                  // the `out` guard in the handler). aria keeps the truth.
+                  <button key={s} aria-disabled={out && pendingSize !== s}
                     onClick={() => {
                       // Tapping the ALREADY-SELECTED size deselects it — a
                       // mis-tapped size was otherwise stuck (owner bug report
@@ -10022,7 +10100,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                         setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize("");
                         return;
                       }
-                      if (out) { if (clothing || isDeactivated(selected)) setNaNote({ size: s, left: 0 }); return; }
+                      // A sneaker ✕ tap raises the why-note (snk flag) —
+                      // reserved stock must not read as "size doesn't exist".
+                      if (out) { setNaNote(clothing || isDeactivated(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
                       if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
                       // A plain size selection drops any display-pair claim —
                       // the claim belongs to the size the prompt was about.
@@ -10072,6 +10152,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   setPendingDisplayPartner(v => !v);
                   if (pendingDisplayPair) setPendingSize("");
                   setPendingDisplayPair(null);
+                  // Partner mode lifts every ✕ — a lingering "can't be
+                  // ordered" note would contradict the now-selectable tiles.
+                  setNaNote(null);
                 }}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Request Display Partner
