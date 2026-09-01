@@ -7863,11 +7863,14 @@ const AD_PAGE = 60;
 // `w` is sneakerOutWhy's { booked, promised, available, inCart }.
 function sneakerBlockNoteText(size, w) {
   const sz = formatSize(size);
+  // "another customer's order", not "awaiting collection": the promised
+  // scalar merges ready promises WITH pending display-pair pulls, and the
+  // note must not name a reason it cannot distinguish (adversarial review).
   if (!w || w.booked <= 0) return `Size ${sz} isn't available at Hub 1 right now — it can't be ordered.`;
   if (w.available <= 0)
     return w.booked === 1
-      ? `Hub 1's only size ${sz} is reserved for an order awaiting collection — it can't be ordered.`
-      : `All ${w.booked} of size ${sz} at Hub 1 are reserved for orders awaiting collection — none can be ordered.`;
+      ? `Hub 1's only size ${sz} is reserved for another customer's order — it can't be ordered.`
+      : `All ${w.booked} of size ${sz} at Hub 1 are reserved for other customers' orders — none can be ordered.`;
   return `Your cart already has all ${w.available} of size ${sz} that Hub 1 can give out.`;
 }
 
@@ -8422,7 +8425,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       // instead of leaving "reserved" indistinguishable from
                       // "doesn't exist". Self-hides once the size frees up.
                       if (qvNa.snk && !isDeactivated(qv)) {
-                        if (!sneakerOut?.(qv, qvNa.size)) return null;
+                        // Belt on the toggle's clear: partner mode lifts the
+                        // ✕, so the note must never outlive it either way.
+                        if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
                         return (
                           <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
                             {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
@@ -8538,7 +8543,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     {/* A MANUAL toggle (either direction) drops any display-pair
                         claim — that claim is only ever minted by the prompt
                         button, and must never ride a hand-made partner line. */}
-                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); }}
+                    {/* The toggle also drops any sneaker ✕ note: partner mode
+                        lifts every ✕, and a note still saying "can't be
+                        ordered" above a now-selectable size contradicts the
+                        screen (adversarial review). */}
+                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); setQvNa(null); }}
                             style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                      border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
                                      background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
@@ -9978,7 +9987,9 @@ function AssistantView({ products, onExit, orders = [] }) {
               // quick-view's: tapping a ✕ tile says WHY (empty vs reserved
               // vs already-in-cart). Self-hides once the size frees up.
               if (naNote.snk && !isDeactivated(selected)) {
-                if (!sneakerOut(selected, naNote.size)) return null;
+                // Belt on the toggle's clear: partner mode lifts the ✕, so
+                // the note must never outlive it either way.
+                if (pendingDisplayPartner || !sneakerOut(selected, naNote.size)) return null;
                 return (
                   <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
                     {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
@@ -10141,6 +10152,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   setPendingDisplayPartner(v => !v);
                   if (pendingDisplayPair) setPendingSize("");
                   setPendingDisplayPair(null);
+                  // Partner mode lifts every ✕ — a lingering "can't be
+                  // ordered" note would contradict the now-selectable tiles.
+                  setNaNote(null);
                 }}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Request Display Partner

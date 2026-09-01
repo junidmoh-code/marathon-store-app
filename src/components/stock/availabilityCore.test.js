@@ -163,6 +163,20 @@ describe("readyPromisedByCell — the ghost-promise bound", () => {
     expect(at(READY_PROMISE_MAX_AGE_MS)).toBe(1);
     expect(at(READY_PROMISE_MAX_AGE_MS + 1)).toBeUndefined();
   });
+  it("a fresh readyAt outranks a stale createdAt — the promise clock starts at ready", () => {
+    // Ordered 20 days ago, only marked ready an hour ago: the collection
+    // window opened at READY, so the promise is fresh.
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", createdAt: iso(20 * 86400000), readyAt: iso(3600000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m["p1::7"]).toBe(1);
+  });
+  it('an unparseable readyAt ("" default in the wild) falls THROUGH to createdAt, not to "keep forever"', () => {
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: "", createdAt: iso(31 * 86400000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m).toEqual({});
+  });
   it("an un-ageable order (no timestamps) keeps its promise — legacy shapes stay ✕-ward", () => {
     const m = readyPromisedByCell(
       [{ status: "ready", productId: "p1", size: "7", hub: "hub1" }],

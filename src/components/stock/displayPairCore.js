@@ -43,6 +43,7 @@
 
 import { slotIsLive } from "./displaySlots";
 import { isFootwearProduct, promisedKey, availableUnits, promiseFresh } from "./availabilityCore";
+import { serverNowMs } from "../../utils/serverTime";
 
 // Live display units per hub cell — TWO sources, one map:
 //
@@ -117,7 +118,7 @@ export function displayOnly(avail, displayUnits) {
 // measured (2026-09-01) — a dead pull claim must not ✕ a restocked cell
 // forever any more than a dead ready order may.
 const PENDING_PULL_STATUSES = new Set(["incoming", "coming_tomorrow"]);
-export function pendingDisplayPullsByCell(orders, productsById, nowMs = Date.now()) {
+export function pendingDisplayPullsByCell(orders, productsById, nowMs = serverNowMs()) {
   const out = {};
   for (const o of orders || []) {
     if (!o || !PENDING_PULL_STATUSES.has(o.status) || o.displayPairRequest !== true) continue;

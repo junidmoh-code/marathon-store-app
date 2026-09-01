@@ -47,6 +47,7 @@
 // Pure module — no firebase imports; callers feed it data they already hold.
 
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
+import { serverNowMs } from "../../utils/serverTime";
 import { isFootwearProduct } from "./missingFootwearCore";
 export { isFootwearProduct };
 
@@ -84,8 +85,15 @@ export const READY_PROMISE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Is this order's promise inside the freshness window? Exported so the
 // display-pull promise map (displayPairCore) ages by the SAME rule.
-export function promiseFresh(order, nowMs = Date.now()) {
-  const t = Date.parse(order?.readyAt ?? order?.createdAt ?? "");
+// serverNowMs, not Date.now(): the stamps being aged were written through
+// serverNowIso, and a till whose clock runs ahead (the documented 2026-07-17
+// failure) would otherwise silently expire FRESH promises fleet-wide.
+// serverTime is deliberately dependency-free, so the no-firebase purity of
+// this module holds. readyAt is preferred but an unparseable readyAt (an
+// "" default exists in the wild) falls THROUGH to createdAt, not to "keep".
+export function promiseFresh(order, nowMs = serverNowMs()) {
+  let t = Date.parse(order?.readyAt ?? "");
+  if (!Number.isFinite(t)) t = Date.parse(order?.createdAt ?? "");
   if (!Number.isFinite(t)) return true;   // un-ageable — keep the promise
   return nowMs - t <= READY_PROMISE_MAX_AGE_MS;
 }
@@ -96,7 +104,7 @@ export function promiseFresh(order, nowMs = Date.now()) {
 //
 // `hubOf` mirrors the app's orderInHub convention: hub3/hubC live in
 // placedAtHub, everything else defaults through `hub` to hub1.
-export function readyPromisedByCell(orders, loc, productsById, nowMs = Date.now()) {
+export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNowMs()) {
   const out = {};
   if (!loc) return out;
   for (const o of orders || []) {
