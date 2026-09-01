@@ -10583,9 +10583,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     for (const p of products || []) if (p?.id) m[p.id] = p;
     return m;
   }, [products]);
+  // nowTick (30s, server-anchored) is both the clock passed in AND a dep:
+  // with the 20-minute collection deadline (owner directive 2026-09-01) a
+  // promise crossing the boundary must be re-judged on a QUIET tab too, not
+  // only when some /orders write fires the listener — the same staleness the
+  // assistant view's promiseTick closes for hub1Promised.
   const whPromised = useMemo(
-    () => readyPromisedByCell(orders, selectedHub, whProductsById),
-    [orders, selectedHub, whProductsById]
+    () => readyPromisedByCell(orders, selectedHub, whProductsById, nowTick),
+    [orders, selectedHub, whProductsById, nowTick]
   );
   const depletedCards = useMemo(
     () => selectedHub === "hub1"
