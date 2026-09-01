@@ -8813,13 +8813,16 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Ready promises PLUS pending display pulls: an incoming displayPairRequest
   // order claims a known unit whose slot is already tombstoned, so the tile
   // must not read as plain shelf stock during that window.
-  // The hourly tick keeps the ghost-promise bound honest on an idle device:
+  // The MINUTE tick keeps the collection deadline honest on an idle device:
   // promiseFresh reads the clock inside the memo, so without a time term in
-  // the deps a promise crossing the age boundary mid-session would only be
-  // re-judged when some unrelated /orders write fires the listener.
+  // the deps a promise crossing the 20-minute deadline (owner directive
+  // 2026-09-01) would only be re-judged when some unrelated /orders write
+  // fired the listener — a quiet screen would hold the ✕ past the deadline.
+  // 60s granularity means a size frees at most a minute late; the recompute
+  // is one pass over the in-memory orders array, no read.
   const [promiseTick, setPromiseTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setPromiseTick(v => v + 1), 60 * 60 * 1000);
+    const t = setInterval(() => setPromiseTick(v => v + 1), 60 * 1000);
     return () => clearInterval(t);
   }, []);
   const hub1Promised = useMemo(

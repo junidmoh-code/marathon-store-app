@@ -150,11 +150,20 @@ describe("readyPromisedByCell — the ghost-promise bound", () => {
     ];
     expect(readyPromisedByCell(ghosts, "hub1", PRODUCTS, NOW)).toEqual({});
   });
-  it("a fresh ready order books exactly as before", () => {
+  it("the deadline IS twenty minutes — the owner's number, pinned literally", () => {
+    expect(READY_PROMISE_MAX_AGE_MS).toBe(20 * 60 * 1000);
+  });
+  it("a fresh ready order (5 minutes) books exactly as before", () => {
     const m = readyPromisedByCell(
-      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(3600000) }],
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(5 * 60000) }],
       "hub1", PRODUCTS, NOW);
     expect(m["p1::7"]).toBe(1);
+  });
+  it("an uncollected order past the 20-minute deadline frees its size (owner directive 2026-09-01)", () => {
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(21 * 60000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m).toEqual({});
   });
   it("the boundary: inside the window counts, past it does not", () => {
     const at = (msAgo) => readyPromisedByCell(
@@ -163,11 +172,11 @@ describe("readyPromisedByCell — the ghost-promise bound", () => {
     expect(at(READY_PROMISE_MAX_AGE_MS)).toBe(1);
     expect(at(READY_PROMISE_MAX_AGE_MS + 1)).toBeUndefined();
   });
-  it("a fresh readyAt outranks a stale createdAt — the promise clock starts at ready", () => {
-    // Ordered 20 days ago, only marked ready an hour ago: the collection
-    // window opened at READY, so the promise is fresh.
+  it("a fresh readyAt outranks a stale createdAt — the collection clock starts at ready", () => {
+    // Ordered this morning, only marked ready five minutes ago: the
+    // 20-minute collection window opened at READY, so the promise is fresh.
     const m = readyPromisedByCell(
-      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", createdAt: iso(20 * 86400000), readyAt: iso(3600000) }],
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", createdAt: iso(6 * 3600000), readyAt: iso(5 * 60000) }],
       "hub1", PRODUCTS, NOW);
     expect(m["p1::7"]).toBe(1);
   });
@@ -195,24 +204,30 @@ describe("readyPromisedByCell — the ghost-promise bound", () => {
 //   • the same record gone stale (its daily key never reused) must NOT keep
 //     blocking the size — that was the bug class this pins against.
 describe("regression — counted stock vs picker ✕ (Lacoste Powercourt shape)", () => {
-  const NOW = Date.parse("2026-09-01T12:00:00.000Z");
   const LACOSTE = { id: "p1779610355274", category: "Footwear", productType: "sneaker" };
   const BY_ID = { [LACOSTE.id]: LACOSTE };
   // The live cell shape: numeric size keys 6..11, size 8 holding the counted 1.
   const cells = { [LACOSTE.id]: { 6: { qty: 3 }, 7: { qty: 2 }, 8: { qty: 1 }, 9: { qty: 1 }, 10: { qty: 2 }, 11: { qty: 2 } } };
   const order113 = { status: "ready", productId: LACOSTE.id, size: "8", hub: "hub1", placedAtHub: "hub1", readyAt: "2026-09-01T10:19:11.147Z" };
-  it("fresh ready order: the last pair reads ✕ BY DESIGN, and the why-split says reserved", () => {
-    const promised = readyPromisedByCell([order113], "hub1", BY_ID, NOW);
+  it("inside the 20-minute window: the last pair reads ✕, and the why-split says reserved", () => {
+    const AT_10_30 = Date.parse("2026-09-01T10:30:00.000Z");   // 11 min after ready
+    const promised = readyPromisedByCell([order113], "hub1", BY_ID, AT_10_30);
     expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: "8" })).toBe(0);
     expect(cellBlockInfo({ cells, promised, productId: LACOSTE.id, size: "8" }))
       .toEqual({ booked: 1, promised: 1, available: 0 });
   });
-  it("the same record a month stale: size 8 is available again (the bug class)", () => {
-    const promised = readyPromisedByCell([{ ...order113, readyAt: "2026-08-01T10:19:11.147Z" }], "hub1", BY_ID, NOW);
+  it("uncollected past the deadline (the live report was at ~12:00, 101 min after ready): size 8 is orderable", () => {
+    const AT_NOON = Date.parse("2026-09-01T12:00:00.000Z");
+    const promised = readyPromisedByCell([order113], "hub1", BY_ID, AT_NOON);
+    expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: "8" })).toBe(1);
+  });
+  it("a month-stale ghost record never blocks (the original bug class)", () => {
+    const promised = readyPromisedByCell([{ ...order113, readyAt: "2026-08-01T10:19:11.147Z" }], "hub1", BY_ID, Date.parse("2026-09-01T12:00:00.000Z"));
     expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: "8" })).toBe(1);
   });
   it("every other counted size stays available throughout", () => {
-    const promised = readyPromisedByCell([order113], "hub1", BY_ID, NOW);
+    const AT_10_30 = Date.parse("2026-09-01T10:30:00.000Z");
+    const promised = readyPromisedByCell([order113], "hub1", BY_ID, AT_10_30);
     for (const [sz, want] of [["6", 3], ["7", 2], ["9", 1], ["10", 2], ["11", 2]])
       expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: sz })).toBe(want);
   });

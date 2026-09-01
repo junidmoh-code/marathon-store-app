@@ -68,34 +68,34 @@ export const promisedKey = (productId, size) => `${productId}::${stockSizeKey(St
 // stale). So a promise now has a shelf life: an order whose readyAt (fallback
 // createdAt) is older than this window no longer books a cell.
 //
-// WHY 14 DAYS. The live age histogram had a clean empty band: every real
-// collection happened inside 7 days (<1d: 28, 1–3d: 9, 3–7d: 2), every
-// record past it was ≥30 days old (15) — ghosts. 14 days sits in the middle
-// of that dead zone: it still expires every observed ghost while doubling
-// the margin for a genuinely slow collector the sample was too thin to show.
-// BOTH failure directions, stated: a promise expiring on a genuinely
-// uncollected order re-shows availability — the warehouse then finds the
-// shelf short and marks the new order out-of-stock, the visible pre-#446
-// path, never a silent double-sell (the pair itself is at the shop, not on
-// the hub shelf). A ghost kept too long keeps the false ✕ this bound exists
-// to kill. An order with NO parseable timestamp keeps subtracting (it cannot
-// be aged; erring ✕-ward there keeps the pre-2026-09 behaviour for legacy
-// shapes).
-export const READY_PROMISE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+// TWENTY MINUTES — OWNER DIRECTIVE, 2026-09-01 (supersedes the 14-day window
+// #545 shipped with, same day): "don't reserve anything for anyone — if the
+// item is not collected in 15 minutes you can allow it to be ordered; 20
+// minutes is the deadline." A ready order holds its size for 20 minutes from
+// readyAt; past that the size is orderable again, deliberately — collections
+// here are same-visit, not layby. The failure direction is stated and
+// accepted: a slower collector's pair can be ordered by someone else, and the
+// warehouse resolves it on the shelf (the visible out-of-stock path, never a
+// silent double-sell — the pair itself is at the shop, not on the hub shelf).
+// An order with NO parseable timestamp keeps subtracting (it cannot be aged;
+// erring ✕-ward keeps the legacy-shape behaviour).
+export const READY_PROMISE_MAX_AGE_MS = 20 * 60 * 1000;
 
-// Is this order's promise inside the freshness window? Exported so the
-// display-pull promise map (displayPairCore) ages by the SAME rule.
+// Is this order's promise inside the freshness window? `maxAgeMs` lets a
+// caller with a DIFFERENT lane age by its own deadline (displayPairCore's
+// pull claims must survive "coming tomorrow"; the 20-minute collection
+// deadline is a READY-lane rule only).
 // serverNowMs, not Date.now(): the stamps being aged were written through
 // serverNowIso, and a till whose clock runs ahead (the documented 2026-07-17
 // failure) would otherwise silently expire FRESH promises fleet-wide.
 // serverTime is deliberately dependency-free, so the no-firebase purity of
 // this module holds. readyAt is preferred but an unparseable readyAt (an
 // "" default exists in the wild) falls THROUGH to createdAt, not to "keep".
-export function promiseFresh(order, nowMs = serverNowMs()) {
+export function promiseFresh(order, nowMs = serverNowMs(), maxAgeMs = READY_PROMISE_MAX_AGE_MS) {
   let t = Date.parse(order?.readyAt ?? "");
   if (!Number.isFinite(t)) t = Date.parse(order?.createdAt ?? "");
   if (!Number.isFinite(t)) return true;   // un-ageable — keep the promise
-  return nowMs - t <= READY_PROMISE_MAX_AGE_MS;
+  return nowMs - t <= maxAgeMs;
 }
 
 // The ready-but-uncollected promises booked at `loc`, from an /orders slice
