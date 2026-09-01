@@ -55,17 +55,45 @@ export { isFootwearProduct };
 // caller can reach from either a raw size or a stored key.
 export const promisedKey = (productId, size) => `${productId}::${stockSizeKey(String(size))}`;
 
+// ─── THE GHOST-PROMISE BOUND (2026-09-01) ────────────────────────────────────
+// /orders is keyed by the DAILY order number, so a record survives until some
+// later day's volume reaches its number again — measured 2026-09-01: 166
+// "ready" records live, 56 of them older than 30 days. A ready order that was
+// physically collected weeks ago (the till sale already moved the cell; only
+// the status write was missed) still subtracts here, and because nothing ever
+// expires it, the size reads ✕ FOREVER while real stock sits on the shelf —
+// the "Lacoste Powercourt size 8" class of false ✕ (3 cells were blocked by
+// promises from exactly one month before; 7 of the 14 blocked cells were
+// stale). So a promise now has a shelf life: an order whose readyAt (fallback
+// createdAt) is older than this window no longer books a cell. Seven days
+// covers every real collection lag observed (the live 3–7-day bucket held 2
+// orders; >7d were all month-old ghosts) — a genuinely uncollected order past
+// the window errs toward showing availability, the same direction every other
+// partial-input rule in this file already leans. An order with NO parseable
+// timestamp keeps subtracting (it cannot be aged; erring ✕-ward there keeps
+// the pre-2026-09 behaviour for legacy shapes).
+export const READY_PROMISE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Is this order's promise inside the freshness window? Exported so the
+// display-pull promise map (displayPairCore) ages by the SAME rule.
+export function promiseFresh(order, nowMs = Date.now()) {
+  const t = Date.parse(order?.readyAt ?? order?.createdAt ?? "");
+  if (!Number.isFinite(t)) return true;   // un-ageable — keep the promise
+  return nowMs - t <= READY_PROMISE_MAX_AGE_MS;
+}
+
 // The ready-but-uncollected promises booked at `loc`, from an /orders slice
 // (array of order records — whatever slice this device is allowed to read).
 // Footwear only — see the header. Returns { "pid::sizeKey": units }.
 //
 // `hubOf` mirrors the app's orderInHub convention: hub3/hubC live in
 // placedAtHub, everything else defaults through `hub` to hub1.
-export function readyPromisedByCell(orders, loc, productsById) {
+export function readyPromisedByCell(orders, loc, productsById, nowMs = Date.now()) {
   const out = {};
   if (!loc) return out;
   for (const o of orders || []) {
     if (!o || o.status !== "ready") continue;
+    if (!promiseFresh(o, nowMs)) continue;   // ghost record — see the bound above
     // EXACTLY the app's orderInHub rule (App.jsx): hub3/hubC read placedAtHub
     // ONLY; every other hub reads `hub` (defaulted hub1). A looser
     // `placedAtHub || hub` here booked a {placedAtHub:"hub1", hub:"hub2"}
@@ -103,4 +131,20 @@ export function cellAvailability({ cells, promised, productId, size }) {
   const cell = cells?.[productId]?.[decodedCellKey(String(size))];
   const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
   return availableUnits(qty, promised?.[promisedKey(productId, size)] || 0);
+}
+
+// WHY a cell reads as unavailable — same inputs, the parts kept apart:
+//   booked    — clamped on-hand quantity (what a count would find)
+//   promised  — units spoken for by ready-but-uncollected orders
+//   available — the resolver's answer (availableUnits of the two)
+// Exists for the ✕-tile explanation: "none here" and "the last one is
+// reserved for an uncollected order" look identical as an ✕, and staff read
+// the second as "this size doesn't exist" (owner report 2026-09-01, Lacoste
+// Powercourt size 8 — counted stock, ✕ tile). The note needs the split.
+export function cellBlockInfo({ cells, promised, productId, size }) {
+  const cell = cells?.[productId]?.[decodedCellKey(String(size))];
+  const qty = cell && typeof cell.qty === "number" ? cell.qty : 0;
+  const booked = Math.max(Number(qty) || 0, 0);
+  const spoken = Math.max(Number(promised?.[promisedKey(productId, size)]) || 0, 0);
+  return { booked, promised: spoken, available: availableUnits(booked, spoken) };
 }

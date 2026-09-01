@@ -124,6 +124,22 @@ describe("pendingDisplayPullsByCell — the incoming-order claim", () => {
     expect(merged["p1::6"]).toBe(2);
     expect(merged["p1::5_5"]).toBe(1);
   });
+  // The ghost-promise bound (2026-09-01): /orders keeps records until their
+  // daily number is reused, so a dead pull claim aged past the shared
+  // freshness window (availabilityCore.promiseFresh) must stop ✕-ing the
+  // restocked cell — same rule, same window as ready promises.
+  it("a stale pull claim expires; a fresh or un-ageable one keeps its claim", () => {
+    const NOW = Date.parse("2026-09-01T12:00:00.000Z");
+    const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
+    const m = pendingDisplayPullsByCell([
+      { status: "incoming", displayPairRequest: true, productId: "p1", size: "6", createdAt: iso(31 * 86400000) },  // ghost
+      { status: "incoming", displayPairRequest: true, productId: "p1", size: "7", createdAt: iso(3600000) },        // fresh
+      { status: "incoming", displayPairRequest: true, productId: "p1", size: "8" },                                 // no ts — kept
+    ], PRODUCTS, NOW);
+    expect(m["p1::6"]).toBeUndefined();
+    expect(m["p1::7"]).toBe(1);
+    expect(m["p1::8"]).toBe(1);
+  });
 });
 
 describe("displaySlotStoreFor — whose slot the order clears / refills", () => {

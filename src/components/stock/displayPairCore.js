@@ -42,7 +42,7 @@
 // Pure module — no firebase; callers feed it data they already hold.
 
 import { slotIsLive } from "./displaySlots";
-import { isFootwearProduct, promisedKey, availableUnits } from "./availabilityCore";
+import { isFootwearProduct, promisedKey, availableUnits, promiseFresh } from "./availabilityCore";
 
 // Live display units per hub cell — TWO sources, one map:
 //
@@ -111,11 +111,17 @@ export function displayOnly(avail, displayUnits) {
 // claimed — dropping it un-✕'d the tile and invited a second pull of the same
 // unit. Ready orders are already netted by readyPromisedByCell (the maps are
 // disjoint by status). Same key space, same footwear-only rule.
+// Aged by the SAME freshness bound as ready promises (promiseFresh /
+// READY_PROMISE_MAX_AGE_MS): /orders keeps records until their daily number
+// is reused, and 69% of live "incoming" records were older than 7 days when
+// measured (2026-09-01) — a dead pull claim must not ✕ a restocked cell
+// forever any more than a dead ready order may.
 const PENDING_PULL_STATUSES = new Set(["incoming", "coming_tomorrow"]);
-export function pendingDisplayPullsByCell(orders, productsById) {
+export function pendingDisplayPullsByCell(orders, productsById, nowMs = Date.now()) {
   const out = {};
   for (const o of orders || []) {
     if (!o || !PENDING_PULL_STATUSES.has(o.status) || o.displayPairRequest !== true) continue;
+    if (!promiseFresh(o, nowMs)) continue;
     if (!o.productId) continue;
     const p = productsById ? productsById[o.productId] : null;
     if (!p || !isFootwearProduct(p)) continue;
