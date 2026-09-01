@@ -125,9 +125,10 @@ describe("pendingDisplayPullsByCell — the incoming-order claim", () => {
     expect(merged["p1::5_5"]).toBe(1);
   });
   // The ghost-promise bound (2026-09-01): /orders keeps records until their
-  // daily number is reused, so a dead pull claim aged past the shared
-  // freshness window (availabilityCore.promiseFresh) must stop ✕-ing the
-  // restocked cell — same rule, same window as ready promises.
+  // daily number is reused, so a dead pull claim aged past the PULL lane's
+  // own window (PULL_CLAIM_MAX_AGE_MS, 48h — a coming_tomorrow claim must
+  // survive overnight; the 20-minute collection deadline is a ready-lane
+  // rule) must stop ✕-ing the restocked cell.
   it("a stale pull claim expires; a fresh or un-ageable one keeps its claim", () => {
     const NOW = Date.parse("2026-09-01T12:00:00.000Z");
     const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
@@ -139,6 +140,13 @@ describe("pendingDisplayPullsByCell — the incoming-order claim", () => {
     expect(m["p1::6"]).toBeUndefined();
     expect(m["p1::7"]).toBe(1);
     expect(m["p1::8"]).toBe(1);
+  });
+  it("the lane split: a pull claim outlives the 20-minute READY deadline (coming_tomorrow must survive overnight)", () => {
+    const NOW = Date.parse("2026-09-01T12:00:00.000Z");
+    const m = pendingDisplayPullsByCell([
+      { status: "coming_tomorrow", displayPairRequest: true, productId: "p1", size: "9", createdAt: new Date(NOW - 20 * 3600000).toISOString() },   // 20h — dead under the ready rule, alive here
+    ], PRODUCTS, NOW);
+    expect(m["p1::9"]).toBe(1);
   });
 });
 
