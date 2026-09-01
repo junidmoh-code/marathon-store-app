@@ -67,10 +67,13 @@ const promisedFresh = mergePromised(
   readyPromisedByCell(orders, "hub1", productsById, now),
   pendingDisplayPullsByCell(orders, productsById, now),
 );
-const FAR_FUTURE = now + 1000 * 86400000;   // a nowMs no promise can be stale against
+// A nowMs EVERY dated promise is fresh against: promiseFresh tests
+// nowMs − t <= window, so the unbounded counterfactual needs a far-PAST
+// clock (a far-future one ages everything out — CodeRabbit, PR #545).
+const FAR_PAST = now - 1000 * 86400000;
 const promisedAll = mergePromised(
-  readyPromisedByCell(orders, "hub1", productsById, FAR_FUTURE),
-  pendingDisplayPullsByCell(orders, productsById, FAR_FUTURE),
+  readyPromisedByCell(orders, "hub1", productsById, FAR_PAST),
+  pendingDisplayPullsByCell(orders, productsById, FAR_PAST),
 );
 const readyHub1 = orders.filter((o) => o.status === "ready" && (o.hub || "hub1") === "hub1");
 const pulls = orders.filter((o) => ["incoming", "coming_tomorrow"].includes(o.status) && o.displayPairRequest === true);
