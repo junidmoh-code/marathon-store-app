@@ -33,14 +33,18 @@ export default function TvAdSettingsCard({ onExit }) {
   const [removing, setRemoving] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [error, setError] = useState("");
-  const [intervalInput, setIntervalInput] = useState("");
-  const [durationInput, setDurationInput] = useState("");
+  const [intervalMinInput, setIntervalMinInput] = useState("");
+  const [intervalSecInput, setIntervalSecInput] = useState("");
+  const [durationMinInput, setDurationMinInput] = useState("");
+  const [durationSecInput, setDurationSecInput] = useState("");
 
   useEffect(() => {
     if (!settings) return;
-    setIntervalInput(String(settings.intervalMinutes));
-    setDurationInput(String(settings.durationMinutes));
-  }, [settings?.intervalMinutes, settings?.durationMinutes]); // eslint-disable-line react-hooks/exhaustive-deps
+    setIntervalMinInput(String(Math.floor(settings.intervalSeconds / 60)));
+    setIntervalSecInput(String(settings.intervalSeconds % 60));
+    setDurationMinInput(String(Math.floor(settings.durationSeconds / 60)));
+    setDurationSecInput(String(settings.durationSeconds % 60));
+  }, [settings?.intervalSeconds, settings?.durationSeconds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onFile = async (e) => {
     const file = e.target.files?.[0];
@@ -83,15 +87,21 @@ export default function TvAdSettingsCard({ onExit }) {
   };
 
   const commitInterval = async () => {
-    const n = Math.max(1, Math.round(Number(intervalInput) || 0));
-    setIntervalInput(String(n));
-    await update(ref(database, "settings/tvAd"), { intervalMinutes: n, ...fieldStamp() });
+    const min = Math.max(0, Math.round(Number(intervalMinInput) || 0));
+    const sec = Math.max(0, Math.min(59, Math.round(Number(intervalSecInput) || 0)));
+    const totalSeconds = Math.max(1, min * 60 + sec);
+    setIntervalMinInput(String(Math.floor(totalSeconds / 60)));
+    setIntervalSecInput(String(totalSeconds % 60));
+    await update(ref(database, "settings/tvAd"), { intervalSeconds: totalSeconds, ...fieldStamp() });
   };
 
   const commitDuration = async () => {
-    const n = Math.max(1, Math.round(Number(durationInput) || 0));
-    setDurationInput(String(n));
-    await update(ref(database, "settings/tvAd"), { durationMinutes: n, ...fieldStamp() });
+    const min = Math.max(0, Math.round(Number(durationMinInput) || 0));
+    const sec = Math.max(0, Math.min(59, Math.round(Number(durationSecInput) || 0)));
+    const totalSeconds = Math.max(1, min * 60 + sec);
+    setDurationMinInput(String(Math.floor(totalSeconds / 60)));
+    setDurationSecInput(String(totalSeconds % 60));
+    await update(ref(database, "settings/tvAd"), { durationSeconds: totalSeconds, ...fieldStamp() });
   };
 
   const loaded = !!settings;
@@ -180,25 +190,45 @@ export default function TvAdSettingsCard({ onExit }) {
             {error && <div style={{ color: "#F87171", fontSize: 12.5, marginTop: 8 }}>{error}</div>}
           </div>
 
-          <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 12, padding: 16, display: "flex", gap: 16 }}>
-            <label style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginBottom: 6 }}>Every (minutes)</div>
-              <input
-                type="number" min="1" value={intervalInput}
-                onChange={(e) => setIntervalInput(e.target.value)}
-                onBlur={commitInterval}
-                style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)", color: "#fff" }}
-              />
-            </label>
-            <label style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginBottom: 6 }}>For (minutes)</div>
-              <input
-                type="number" min="1" value={durationInput}
-                onChange={(e) => setDurationInput(e.target.value)}
-                onBlur={commitDuration}
-                style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)", color: "#fff" }}
-              />
-            </label>
+          <div style={{ background: "rgba(255,255,255,0.05)", borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginBottom: 6 }}>Every</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="number" min="0" value={intervalMinInput} aria-label="Interval minutes"
+                  onChange={(e) => setIntervalMinInput(e.target.value)}
+                  onBlur={commitInterval}
+                  style={{ width: 70, boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)", color: "#fff" }}
+                />
+                <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>min</span>
+                <input
+                  type="number" min="0" max="59" value={intervalSecInput} aria-label="Interval seconds"
+                  onChange={(e) => setIntervalSecInput(e.target.value)}
+                  onBlur={commitInterval}
+                  style={{ width: 70, boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)", color: "#fff" }}
+                />
+                <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>sec</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 12.5, color: "rgba(255,255,255,0.6)", marginBottom: 6 }}>For</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="number" min="0" value={durationMinInput} aria-label="Duration minutes"
+                  onChange={(e) => setDurationMinInput(e.target.value)}
+                  onBlur={commitDuration}
+                  style={{ width: 70, boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)", color: "#fff" }}
+                />
+                <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>min</span>
+                <input
+                  type="number" min="0" max="59" value={durationSecInput} aria-label="Duration seconds"
+                  onChange={(e) => setDurationSecInput(e.target.value)}
+                  onBlur={commitDuration}
+                  style={{ width: 70, boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(0,0,0,0.3)", color: "#fff" }}
+                />
+                <span style={{ fontSize: 12.5, color: "rgba(255,255,255,0.5)" }}>sec</span>
+              </div>
+            </div>
           </div>
 
         </div>
