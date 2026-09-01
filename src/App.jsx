@@ -7866,11 +7866,13 @@ function sneakerBlockNoteText(size, w) {
   // "another customer's order", not "awaiting collection": the promised
   // scalar merges ready promises WITH pending display-pair pulls, and the
   // note must not name a reason it cannot distinguish (adversarial review).
+  // The hold is SHORT (20-minute collection deadline, owner directive
+  // 2026-09-01) and the note says so — staff should retry, not give up.
   if (!w || w.booked <= 0) return `Size ${sz} isn't available at Hub 1 right now — it can't be ordered.`;
   if (w.available <= 0)
     return w.booked === 1
-      ? `Hub 1's only size ${sz} is reserved for another customer's order — it can't be ordered.`
-      : `All ${w.booked} of size ${sz} at Hub 1 are reserved for other customers' orders — none can be ordered.`;
+      ? `Hub 1's only size ${sz} is reserved for another customer's order (20-minute hold) — try again shortly.`
+      : `All ${w.booked} of size ${sz} at Hub 1 are reserved for other customers' orders (20-minute hold) — try again shortly.`;
   return `Your cart already has all ${w.available} of size ${sz} that Hub 1 can give out.`;
 }
 
