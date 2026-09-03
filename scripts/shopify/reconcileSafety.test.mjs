@@ -20,6 +20,29 @@ import { readFileSync } from "fs";
 const SRC = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
 const lines = SRC.split("\n");
 
+// Brace-match a block so a guard can assert CONTAINMENT rather than "appears
+// later in the file". Strings and comments are skipped, because a brace inside
+// either would otherwise close the block early and make the guard lie.
+function blockAt(src, openIndex) {
+  let depth = 0;
+  for (let i = openIndex; i < src.length; i++) {
+    const c = src[i];
+    if (c === "/" && src[i + 1] === "/") { i = src.indexOf("\n", i); if (i < 0) break; continue; }
+    if (c === "/" && src[i + 1] === "*") { i = src.indexOf("*/", i) + 1; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      for (i++; i < src.length; i++) {
+        if (src[i] === "\\") { i++; continue; }
+        if (src[i] === quote) break;
+      }
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) return { start: openIndex, end: i }; }
+  }
+  throw new Error("unbalanced block");
+}
+
 describe("failSafeUnpublish reports whether it worked", () => {
   it("returns true only on a clean unpublish, and false on BOTH failure modes", () => {
     const body = SRC.slice(SRC.indexOf("const failSafeUnpublish"), SRC.indexOf("const refuse ="));
@@ -185,15 +208,21 @@ describe("no whole-node read on the scheduled path", () => {
   });
 
   it("a --pids run never tells the scheduler it is caught up", () => {
-    // Pinned as a POSITION, not a character distance: the earlier version of
-    // this guard allowed 600 characters between the gate and the call, so a
-    // comment added inside the block failed it while the contract was intact.
-    // The contract is that the ONE state write happens under the gate.
+    // Pinned as CONTAINMENT, not as a character distance and not as a mere
+    // file position. The first version of this guard allowed 600 characters
+    // between the gate and the call, so adding a comment inside the block
+    // failed it while the contract was intact; the second only asserted the
+    // call came LATER in the file, which would still pass if the write were
+    // moved out from under the gate entirely — the exact regression it
+    // exists to catch. So the block is delimited by brace matching and the
+    // call must fall inside it.
     const gate = SRC.indexOf("if (COMMIT && !ONLY) {");
     expect(gate).toBeGreaterThan(-1);
+    const body = blockAt(SRC, SRC.indexOf("{", gate));
     const calls = [...SRC.matchAll(/await writeReconcileState\(/g)].map((m) => m.index);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toBeGreaterThan(gate);
+    expect(calls[0]).toBeGreaterThan(body.start);
+    expect(calls[0]).toBeLessThan(body.end);
   });
 });
 

@@ -3,7 +3,7 @@
 // gid validation, and planIdMapWrite's create / noop / merge / refuse matrix —
 // the idempotency contract the live writer rides on.
 import { describe, it, expect } from "vitest";
-import { buildMapping, planIdMapWrite, claimKeyFor, planClaim } from "./idMap.mjs";
+import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct } from "./idMap.mjs";
 
 const gid = {
   product: (n) => `gid://shopify/Product/${n}`,
@@ -117,5 +117,89 @@ describe("planClaim", () => {
     const plan = planClaim("p2", "p1");
     expect(plan.action).toBe("refuse");
     expect(plan.refusal).toMatch(/already claimed by record p2/);
+  });
+});
+
+// ── The claim, exercised for REAL against a fake RTDB ────────────────────────
+// The pure planClaim matrix above says what SHOULD happen; these say that
+// claimShopifyProduct does it, through the transaction semantics that actually
+// bite. The one that bites hardest: an RTDB transaction callback's first
+// invocation is not guaranteed the server value — it can fire against a stale
+// local cache — and returning `undefined` from it aborts ONE-SHOT, with no
+// server round trip and no retry. Taking that abort as proof of a conflict
+// would fail a publish over an owner the server does not have.
+//
+// The fake models exactly that: `cached` is what the first callback invocation
+// sees, `server` is the truth. A real RTDB transaction would re-run the
+// callback against the server value on a WRITE conflict — but an abort is not
+// a write, so it never gets that far. That asymmetry is the bug.
+function fakeDb({ cached, server, mine = null }) {
+  const state = { server, mine, sets: [], callbackValues: [], transactions: 0, claimReads: 0 };
+  let firstTransaction = true;
+  const node = (path) => ({
+    async get() {
+      if (path === "shopify_sync/_claims/_builtAt") return { val: () => 1 };
+      if (path.endsWith("/shopifyProductId")) return { val: () => state.mine };
+      if (path.startsWith("shopify_sync/_claims/")) { state.claimReads += 1; return { val: () => state.server }; }
+      throw new Error(`unexpected get: ${path}`);
+    },
+    async set(v) { state.sets.push([path, v]); state.mine = v; },
+    async transaction(fn) {
+      state.transactions += 1;
+      // First invocation sees the (possibly stale) cache; later ones see truth.
+      const seen = firstTransaction ? cached : state.server;
+      firstTransaction = false;
+      state.callbackValues.push(seen);
+      const out = fn(seen);
+      if (out === undefined) return { committed: false, snapshot: { val: () => seen } };
+      state.server = out;
+      return { committed: true, snapshot: { val: () => out } };
+    },
+  });
+  return { ref: (p) => node(p), state };
+}
+
+describe("claimShopifyProduct does not mistake a one-shot abort for a conflict", () => {
+  const GID = gid.product(9339656536213);
+
+  it("a STALE cached owner does not refuse a claim the server has free", async () => {
+    // The cache still holds a claim that was released; the server has null.
+    const db = fakeDb({ cached: "p2", server: null });
+    await expect(claimShopifyProduct(db, "p1", GID)).resolves.toBeUndefined();
+    // It re-read the claim from the server, then retried; the second pass claimed it.
+    expect(db.state.claimReads).toBe(1);
+    expect(db.state.transactions).toBe(2);
+    expect(db.state.server).toBe("p1");
+    expect(db.state.sets).toEqual([["shopify_sync/p1/shopifyProductId", GID]]);
+  });
+
+  it("a REAL conflict still throws, and does not spin", async () => {
+    // Cache and server agree: another record holds it.
+    const db = fakeDb({ cached: "p2", server: "p2" });
+    await expect(claimShopifyProduct(db, "p1", GID))
+      .rejects.toThrow(/already claimed by record p2/);
+    // It DID confirm against the server rather than trusting the abort —
+    // and, the server agreeing, it threw without re-running the transaction.
+    // That is the bound: one confirming read, no second write attempt, no spin.
+    expect(db.state.claimReads).toBe(1);
+    expect(db.state.transactions).toBe(1);
+    expect(db.state.sets).toEqual([]);
+  });
+
+  it("a claim this record already holds is held, not refused, and writes nothing new", async () => {
+    const db = fakeDb({ cached: "p1", server: "p1", mine: GID });
+    await expect(claimShopifyProduct(db, "p1", GID)).resolves.toBeUndefined();
+    expect(db.state.transactions).toBe(1);
+    // The pointer already exists — writing it again is a needless write.
+    expect(db.state.sets).toEqual([]);
+  });
+
+  it("a record that already maps a DIFFERENT gid is refused before it takes a claim", async () => {
+    const db = fakeDb({ cached: null, server: null, mine: gid.product(111) });
+    await expect(claimShopifyProduct(db, "p1", GID))
+      .rejects.toThrow(/record already maps to/);
+    // Refused BEFORE the transaction — it must not take a claim it would then
+    // have to give back.
+    expect(db.state.transactions).toBe(0);
   });
 });
