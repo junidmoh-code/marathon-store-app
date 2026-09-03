@@ -502,6 +502,19 @@ for (const { pid, want } of capped) {
         // Releases only if the index still names THIS record; a drifted entry
         // naming someone else is left alone rather than freed under them.
         try { await releaseClaim(db, pid, mapNode.shopifyProductId); } catch { /* index entry may predate the claim index */ }
+        // RE-READ BEFORE DELETING. `mapNode` was read earlier in this tick and
+        // the Shopify round trip above takes time, so what is proved absent is
+        // the product this record mapped THEN. If the record has since been
+        // re-adopted onto a live product — round-trip.mjs and adopt.mjs both do
+        // that by hand, outside this loop's single-flight lock — removing the
+        // node here would delete a good, fresh mapping on the strength of a
+        // deletion check performed against a different product.
+        const stillMapped = (await db.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val();
+        if (stillMapped !== mapNode.shopifyProductId) {
+          console.log(`  ${pid} was re-mapped to ${stillMapped || "nothing"} while Shopify was being asked about ${mapNode.shopifyProductId} — leaving the new mapping alone`);
+          results.push({ pid, ok: false, why: "record was re-mapped mid-run; nothing removed, will re-evaluate next tick" });
+          continue;
+        }
         await db.ref(`shopify_sync/${pid}`).remove();
         await confirmLiveState(db, pid, "off", UPDATED_BY, {
           clearAdminUrl: true,
@@ -1181,7 +1194,12 @@ if (sweepDue) {
     // hours overnight, on the strength of a sweep that declined to do anything.
     // Before the cadence existed this retried every tick, so the refusal cost
     // two minutes; it must not now cost three hours.
-    sweepRan = !sweep.skipped;
+    // A CAPPED sweep has not finished either. It says so in the line below —
+    // "the next tick continues" — and before this branch added a cadence that
+    // was simply true. Stamping lastSweepAt on a capped run makes the message a
+    // lie: the remaining documents would wait 30 minutes, or 3 hours overnight,
+    // rather than the next tick. Leave it unstamped and the promise holds.
+    sweepRan = !sweep.skipped && !sweep.capped;
     if (sweep.skipped) {
       // already warned
     } else if (sweep.missing || sweep.orphans) {

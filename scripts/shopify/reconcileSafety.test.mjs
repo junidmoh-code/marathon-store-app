@@ -384,12 +384,15 @@ describe("the one-expression fixes stay fixed", () => {
 // minutes. (Found independently by two reviewers.)
 describe("lastSweepAt records repair, not attendance", () => {
   it("sweepRan is taken from the result, and only after the sweep returned", () => {
-    expect(SRC).toMatch(/sweepRan = !sweep\.skipped;/);
+    // Pinned as "derived from the result", not as one exact expression — the
+    // capped case was added to it later and broke a literal match while the
+    // contract it guards was intact.
+    expect(SRC).toMatch(/sweepRan = !sweep\.skipped/);
     expect(SRC).not.toMatch(/sweepRan = true;/);
     // Order matters: it must be read from the call's result, so the assignment
     // has to come after the call.
     const call = SRC.indexOf("const sweep = await sweepSearchIndex(");
-    const assign = SRC.indexOf("sweepRan = !sweep.skipped;");
+    const assign = SRC.indexOf("sweepRan = !sweep.skipped");
     expect(call).toBeGreaterThan(-1);
     expect(assign).toBeGreaterThan(call);
   });
@@ -424,5 +427,38 @@ describe("the sweep is triggered by applied work, not by attempts", () => {
     const gate = SRC.slice(SRC.indexOf("const sweepDue ="), SRC.indexOf("let sweepRan"));
     expect(gate).toContain('scanMode === "full"');
     expect(gate).toContain("fullScanIntervalMs(runStartedAt)");
+  });
+});
+
+// ─── UNFINISHED WORK DOES NOT RECORD ITSELF AS FINISHED ──────────────────────
+// Two places where the cadence this branch introduced could turn "carry on next
+// tick" into "carry on in three hours" without anyone noticing, because the
+// message says one thing and the schedule does another.
+describe("a capped sweep leaves itself due", () => {
+  it("sweepRan excludes a capped run as well as a skipped one", () => {
+    // The log line below it promises "the next tick continues". Before the
+    // cadence that was simply true; stamping lastSweepAt makes it a lie.
+    expect(SRC).toMatch(/sweepRan = !sweep\.skipped && !sweep\.capped;/);
+  });
+
+  it("and the message it must not contradict is still there", () => {
+    expect(SRC).toContain("per-run cap; the next tick continues");
+  });
+});
+
+describe("the deleted-product cleanup re-reads before it deletes", () => {
+  it("removes the map only if the record still maps the gid Shopify was asked about", () => {
+    // productIsAbsent proves a PRODUCT is gone. The record can be re-adopted
+    // onto a different, live product while that round trip is in flight —
+    // round-trip.mjs and adopt.mjs both do that by hand, outside this loop's
+    // single-flight lock — and deleting then destroys a good mapping.
+    const off = SRC.slice(SRC.indexOf("const gone = await productIsAbsent"));
+    const scoped = off.slice(0, off.indexOf("results.push({ pid, ok: true"));
+    expect(scoped).toMatch(/const stillMapped = /);
+    // The guard must come BEFORE the removal, or it guards nothing.
+    const guard = scoped.indexOf("stillMapped !== mapNode.shopifyProductId");
+    const remove = scoped.indexOf("`shopify_sync/${pid}`).remove()");
+    expect(guard).toBeGreaterThan(-1);
+    expect(remove).toBeGreaterThan(guard);
   });
 });
