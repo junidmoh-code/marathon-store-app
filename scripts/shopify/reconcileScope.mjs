@@ -154,6 +154,40 @@ export function nextRetrySet({ previous = {}, attempted = [], failedPids = [], n
   return trimmed;
 }
 
+// ── The watermark must not step over work the cap did not reach ─────────────
+// A tick applies at most MAX_APPLY products. Everything else in the worklist is
+// deferred — and a deferred node's `updatedAt` did NOT move, so the next window
+// would only contain it if the watermark stays behind it.
+//
+// It used to be carried in the retry set instead, which failed at scale in two
+// ways at once. The retry set is capped at MAX_RETRY_PIDS, so a backlog larger
+// than the cap plus the retry cap was simply dropped and left to the next full
+// scan — up to 3 hours overnight, against 2 minutes before this branch. And
+// because the trim keeps the NEWEST entries and every deferred pid shares one
+// timestamp, a single bulk deferral evicted every standing failure from the
+// retry set at a stroke.
+//
+// Holding the watermark fixes both, and is the more honest mechanism: the
+// watermark's whole job is to say "everything before here is done", and while a
+// deferred node exists that is not true. The window re-returns the backlog each
+// tick and it drains MAX_APPLY at a time, which is exactly what happened before
+// the branch. Retry pids are excluded from the calculation — their `updatedAt`
+// is by definition stale, so letting one drag the watermark back would widen
+// every subsequent window for as long as it kept failing. Those stay in the
+// retry set, which is what it is for.
+export function nextWatermark({ runStartedAt, unapplied = [], previousWatermark = null }) {
+  if (!unapplied.length) return runStartedAt;
+  const stamps = unapplied.map((n) => Number(n?.updatedAt));
+  // A node with no usable `updatedAt` cannot be located by any window. Do not
+  // advance at all rather than guess a bound that might step over it; a null
+  // previous watermark means the next tick takes a full scan, which is the
+  // correct, expensive, safe answer.
+  if (stamps.some((t) => !Number.isFinite(t))) return previousWatermark;
+  // One millisecond before the oldest unfinished node, so that node is inside
+  // the next window rather than exactly on its edge.
+  return Math.min(runStartedAt, Math.min(...stamps) - 1);
+}
+
 // The refusal above, recognised. Matched on the two things RTDB always says —
 // "index" and the field name — rather than on the whole sentence, which is a
 // library string and not a contract.

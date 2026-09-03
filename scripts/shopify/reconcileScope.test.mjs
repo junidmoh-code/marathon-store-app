@@ -4,7 +4,7 @@
 // silently never publishes", so they are written as the failure they prevent.
 import { describe, it, expect } from "vitest";
 import {
-  sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, isMissingIndexError,
+  sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, nextWatermark, isMissingIndexError,
   readChangedPublishNodes,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
@@ -125,13 +125,20 @@ describe("isMissingIndexError — RTDB refuses an unindexed query, it does not s
 // pids as attempted, a SILENT skip would be worse still: the pid would drain
 // out of the retry set and never be tried again.
 describe("readChangedPublishNodes", () => {
+  // The fake RECORDS what the query was built with. It used to discard both
+  // arguments, which meant the one thing this whole module exists for — that
+  // the tick asks for a WINDOW and not the whole node — was pinned by nothing:
+  // deleting `.startAt(since)` (a silent return to reading everything, every
+  // tick) left every test green, and so did ordering by any other field.
   function db({ window: win = {}, points = {} }) {
+    const calls = { orderByChild: null, startAt: null, startAtCalled: false };
     return {
+      calls,
       ref(path) {
         if (path === "shopify_publish") {
           const q = {
-            orderByChild: () => q,
-            startAt: () => q,
+            orderByChild: (f) => { calls.orderByChild = f; return q; },
+            startAt: (v) => { calls.startAt = v; calls.startAtCalled = true; return q; },
             get: async () => ({ val: () => win }),
           };
           return q;
@@ -169,5 +176,78 @@ describe("readChangedPublishNodes", () => {
 
   it("still refuses a bad product id — that is a bug, not a blip", async () => {
     await expect(readChangedPublishNodes(db({}), { since: 1, retryPids: ["a/b"] })).rejects.toThrow();
+  });
+});
+
+// ── The window is a WINDOW ───────────────────────────────────────────────────
+// The saving is entirely in these two calls. Without them the query is a
+// whole-node read wearing a query's clothes, at the old price, and every other
+// test in this file still passes.
+describe("the worklist query itself", () => {
+  function recordingDb() {
+    const calls = { orderByChild: null, startAt: null, startAtCalled: false };
+    const q = {
+      orderByChild: (f) => { calls.orderByChild = f; return q; },
+      startAt: (v) => { calls.startAt = v; calls.startAtCalled = true; return q; },
+      get: async () => ({ val: () => ({}) }),
+    };
+    return { calls, ref: () => q };
+  }
+
+  it("orders by updatedAt and starts at the window, not at the beginning", async () => {
+    const db = recordingDb();
+    await readChangedPublishNodes(db, { since: 1_700_000_000_000, retryPids: [] });
+    // The field is the watermark the page stamps. Any other field silently
+    // returns the wrong rows.
+    expect(db.calls.orderByChild).toBe("updatedAt");
+    // startAt is what makes it a window. Its absence is a whole-node read.
+    expect(db.calls.startAtCalled).toBe(true);
+    expect(db.calls.startAt).toBe(1_700_000_000_000);
+  });
+});
+
+// ── The watermark does not step over work the cap did not reach ──────────────
+// The failure this prevents, in full: the owner queues 150 intents. The tick
+// applies 25 and defers 125. When the leftovers rode the retry set, that set
+// was capped at 50, so 75 products were dropped outright — their updatedAt
+// never moved, so no later window could find them, and only a full scan would:
+// 30 minutes by day, THREE HOURS overnight, against the ~12 minutes the same
+// backlog took before this branch existed.
+describe("nextWatermark", () => {
+  const RUN = 1_700_000_000_000;
+
+  it("advances to the run start when everything was applied", () => {
+    expect(nextWatermark({ runStartedAt: RUN, unapplied: [] })).toBe(RUN);
+  });
+
+  it("stays one millisecond behind the OLDEST unfinished node", () => {
+    const w = nextWatermark({
+      runStartedAt: RUN,
+      unapplied: [{ updatedAt: RUN - 5_000 }, { updatedAt: RUN - 60_000 }, { updatedAt: RUN - 900 }],
+    });
+    expect(w).toBe(RUN - 60_000 - 1);
+  });
+
+  it("a 150-intent backlog is still draining, not dropped, after the retry cap would have lost it", () => {
+    // 125 deferred, all stamped at the same moment — the shape that used to
+    // collapse into 50 retry slots.
+    const stamped = Array.from({ length: 125 }, () => ({ updatedAt: RUN - 1_000 }));
+    const w = nextWatermark({ runStartedAt: RUN, unapplied: stamped });
+    // The next window starts before them, so every one of the 125 is in it.
+    expect(w).toBeLessThan(RUN - 1_000);
+    expect(stamped.every((n) => n.updatedAt > w)).toBe(true);
+  });
+
+  it("does NOT advance when an unfinished node has no usable updatedAt", () => {
+    // No window can locate such a node, so guessing a bound risks stepping over
+    // it. Holding the previous watermark (or none at all, forcing a full scan)
+    // is the safe answer.
+    expect(nextWatermark({ runStartedAt: RUN, unapplied: [{ updatedAt: undefined }], previousWatermark: 123 })).toBe(123);
+    expect(nextWatermark({ runStartedAt: RUN, unapplied: [{}], previousWatermark: null })).toBe(null);
+    expect(nextWatermark({ runStartedAt: RUN, unapplied: [{ updatedAt: "soon" }], previousWatermark: 5 })).toBe(5);
+  });
+
+  it("never advances past the run start even if a node claims a future stamp", () => {
+    expect(nextWatermark({ runStartedAt: RUN, unapplied: [{ updatedAt: RUN + 999_999 }] })).toBe(RUN);
   });
 });

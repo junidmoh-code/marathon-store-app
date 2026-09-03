@@ -195,11 +195,17 @@ describe("no whole-node read on the scheduled path", () => {
     expect(SRC).toMatch(/readChangedPublishNodes/);
   });
 
-  it("the watermark advances to when the run STARTED, never to now", () => {
+  it("the watermark never advances to now, and never past unfinished work", () => {
     // Advancing to "now" would step over any intent written while the run was
-    // in flight — a product that silently never publishes.
-    expect(SRC).toMatch(/watermark: runStartedAt/);
+    // in flight. Advancing past work the per-run cap did not reach would step
+    // over that too — a deferred node's updatedAt does not move, so only the
+    // watermark staying behind it puts it in the next window.
     expect(SRC).not.toMatch(/watermark: Date\.now\(\)/);
+    expect(SRC).toMatch(/watermark: nextWatermark\(\{ runStartedAt, unapplied,/);
+    // `unapplied` must be the cap's leftovers, minus retry pids (whose stale
+    // updatedAt would drag the watermark back and widen every later window).
+    expect(SRC).toMatch(/const unapplied = worklist\.slice\(capped\.length\)/);
+    expect(SRC).toMatch(/\.filter\(\(w\) => !retryPids\.includes\(w\.pid\)\)/);
   });
 
   it("work the run could not finish is carried, because its node's updatedAt did not move", () => {
@@ -283,7 +289,11 @@ describe("the retry set drains", () => {
     // The deferred set and the carried list must agree on what the cap missed,
     // or a pid could be dropped as attempted while never having been tried.
     expect(block).toMatch(/const deferred = new Set\(worklist\.slice\(capped\.length\)/);
-    expect(block).toMatch(/\.\.\.deferred,/);
+    // Cap-deferred work rides the WATERMARK now, not the retry set — putting
+    // it in the retry set meant a backlog bigger than the two caps together was
+    // dropped, and one bulk deferral evicted every standing failure from it.
+    expect(block).toMatch(/const carried = results\.filter\(\(r\) => !r\.ok\)\.map\(\(r\) => r\.pid\);/);
+    expect(block).not.toMatch(/\.\.\.deferred,/);
   });
 
   it("a retry pid whose own read failed is NOT counted as evaluated", () => {

@@ -65,7 +65,7 @@ import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_R
 // obtained WITHOUT a whole-node read. See reconcileScope.mjs for the watermark
 // contract and its three backstops.
 import {
-  planScan, nextRetrySet, fullScanIntervalMs, isMissingIndexError,
+  planScan, nextRetrySet, nextWatermark, fullScanIntervalMs, isMissingIndexError,
   readReconcileState, writeReconcileState,
   readChangedPublishNodes, readLivePids, makeStockLocationResolver,
 } from "./reconcileScope.mjs";
@@ -1196,13 +1196,25 @@ const emptyToNull = (o) => (o && Object.keys(o).length ? o : null);
 if (COMMIT && !ONLY) {
   // Two kinds of unfinished work must survive to the next tick, and NEITHER
   // moved its node's `updatedAt`, so neither would reappear in the next window
-  // on its own: a product whose apply failed, and a product the per-run cap
-  // never got to. Both ride the retry set.
+  // on its own: a product whose apply FAILED, and a product the per-run CAP
+  // never got to. They are carried by different mechanisms, on purpose.
+  //
+  //   · a failure rides the RETRY SET. Its `updatedAt` is stale by definition,
+  //     so no window will ever find it again; it is read by id every tick.
+  //   · cap-deferred work rides the WATERMARK, which simply does not advance
+  //     past it. Putting it in the retry set instead — which this branch did at
+  //     first — breaks twice over at scale: the retry set is capped, so a
+  //     backlog bigger than the two caps together was dropped and left to the
+  //     next full scan (3 hours, overnight); and since the trim keeps the
+  //     newest and every deferred pid shares one timestamp, one bulk deferral
+  //     evicted every standing failure at a stroke.
   const deferred = new Set(worklist.slice(capped.length).map((w) => w.pid));
-  const carried = [
-    ...results.filter((r) => !r.ok).map((r) => r.pid),
-    ...deferred,
-  ];
+  const carried = results.filter((r) => !r.ok).map((r) => r.pid);
+  // Retry pids are excluded: their `updatedAt` is stale, so one of them would
+  // drag the watermark back and widen every window for as long as it failed.
+  const unapplied = worklist.slice(capped.length)
+    .filter((w) => !retryPids.includes(w.pid))
+    .map((w) => w.node);
   // A retry pid is EVALUATED even when it never reaches the worklist. Its node
   // is read individually every tick, and that read can find the node deleted,
   // or find it already in the state it wants — in which case it produces no
@@ -1216,7 +1228,7 @@ if (COMMIT && !ONLY) {
     ...retryPids.filter((pid) => !deferred.has(pid) && !unreadable.has(pid)),
   ])];
   await writeReconcileState(db, {
-    watermark: runStartedAt,
+    watermark: nextWatermark({ runStartedAt, unapplied, previousWatermark: scanState?.watermark ?? null }),
     retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),
     ...(scanMode === "full" ? { lastFullScanAt: runStartedAt } : {}),
     ...(sweepRan ? { lastSweepAt: runStartedAt } : {}),
