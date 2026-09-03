@@ -163,7 +163,7 @@ describe("the script-side off write", () => {
 // ─── THE BANDWIDTH CONTRACT, ASSERTED THE SAME WAY ───────────────────────────
 // This loop was measured on 3 Sep 2026 at 45–79% of ALL traffic in the
 // database — ~$87–160/month — for a shop where most ticks have nothing to do
-// (docs/bandwidth-capture-sept.md). The three lines that caused it are the
+// (docs/SHOPIFY-SYNC.md §9). The three lines that caused it are the
 // three easiest lines in the world to write back in, so they are pinned here.
 describe("no whole-node read on the scheduled path", () => {
   it("the location names for the inventory read come from a SHALLOW resolver, never from all of /stock", () => {

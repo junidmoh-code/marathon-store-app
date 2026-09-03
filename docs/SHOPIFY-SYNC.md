@@ -360,7 +360,10 @@ theme's existing hero buttons:
 
 ## 9. The reconcile loop's bandwidth (3 Sep 2026)
 
-`docs/bandwidth-capture-sept.md` measured the Mac mini's reconcile loop at
+The 3 Sep bandwidth capture (`docs/bandwidth-capture-sept.md`, which lands with
+PR #550 — until that merges the file is on the `docs/bandwidth-capture-sept`
+branch, and the figures it supports are repeated in full below) measured the Mac
+mini's reconcile loop at
 **45–79% of all traffic in the Realtime Database in every profiler hour
 captured** — ~$87–160/month, 24/7, for a shop where most two-minute ticks have
 nothing to do. Three lines caused nearly all of it. What changed, and what it
@@ -391,7 +394,7 @@ Live rules today carry `".indexOn": ["state"]`. **Add `"updatedAt"`:**
 **RTDB does not sort an unindexed query — it refuses it.** Verified against the
 live database on 3 Sep 2026:
 
-```
+```text
 Index not defined, add ".indexOn": "updatedAt", for path "/shopify_publish", to the rules
 ```
 

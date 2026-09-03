@@ -92,7 +92,7 @@ export function planIdMapWrite(existing, mapping) {
 // anticipated ("handfuls; revisit with a reverse index when the sync goes
 // catalogue-wide"). The sync went catalogue-wide: 3 Sep profiling measured
 // ~1 MB per root transaction, three of them per created product, 22.5 MB in a
-// single hour (docs/bandwidth-capture-sept.md). This is that reverse index.
+// single hour (docs/SHOPIFY-SYNC.md §9). This is that reverse index.
 //
 //   /shopify_sync/_claims/{numeric Shopify product id} = productId
 //
@@ -112,6 +112,15 @@ const CLAIMS_BUILT_KEY = "_builtAt";
 // to stay polite to the database, large enough that a few thousand keys finish
 // inside a single two-minute tick.
 const CLAIM_BACKFILL_CONCURRENCY = 25;
+
+// ── Which keys under /shopify_sync are product records ───────────────────────
+// The node holds product records keyed by product id, alongside this module's
+// own bookkeeping siblings. There used to be exactly one (`_collections`) and
+// callers hardcoded `k !== "_collections"`; this branch added `_reconcile` and
+// `_claims`, which would have walked straight through those filters and been
+// processed as if they were products. The rule is the PREFIX, and it lives
+// here once so the next sibling does not have to be added in five places.
+export const isProductRecordKey = (key) => typeof key === "string" && !key.startsWith("_");
 
 // A gid is "gid://shopify/Product/9339656536213". The trailing digits are the
 // key. Anything else is not a Product gid and never reaches here — buildMapping
@@ -140,7 +149,7 @@ export async function ensureClaimIndex(db) {
   const index = {};
   let n = 0;
   for (const [pid, node] of Object.entries(all)) {
-    if (pid.startsWith("_")) continue;
+    if (!isProductRecordKey(pid)) continue;
     const gid = node?.shopifyProductId;
     if (typeof gid !== "string" || !gid.startsWith("gid://shopify/Product/")) continue;
     index[claimKeyFor(gid)] = pid;
@@ -228,7 +237,24 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
   // leaves an index entry naming this record and no mapping — the next attempt
   // by the SAME record finds "held" and completes; an attempt by any other
   // record is still refused, which is the direction that matters.
-  if (!mineGid) await db.ref(`shopify_sync/${productId}/shopifyProductId`).set(shopifyProductId);
+  // A TRANSACTION, not a set(). `mineGid` was read before the claim was taken,
+  // so a plain set() here would overwrite a different gid written in between —
+  // exactly the double-mapping the read at the top of this function refuses,
+  // reintroduced at the bottom. Commit only into an empty slot or onto the same
+  // gid; anything else aborts and is reported, leaving the other writer's value
+  // alone. (The claim itself is already ours, and is released by the caller's
+  // failure path.)
+  if (!mineGid) {
+    let clash = null;
+    await db.ref(`shopify_sync/${productId}/shopifyProductId`).transaction((cur) => {
+      if (cur == null || cur === shopifyProductId) return shopifyProductId;
+      clash = cur;
+      return undefined;
+    });
+    if (clash) {
+      throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${clash}`);
+    }
+  }
 }
 
 // Release a claim. Used only where a mapping is being removed because Shopify

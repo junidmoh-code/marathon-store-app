@@ -6,7 +6,8 @@
 // the search-index sweep could learn which products are live. The node is
 // 1.9–2.2 MB. That is ~3.1 GB/day of RTDB download, measured at 45–79% of ALL
 // traffic in the database in every profiler hour captured on 3 Sep
-// (docs/bandwidth-capture-sept.md), for a shop where the overwhelming majority
+// (docs/SHOPIFY-SYNC.md §9; the underlying capture is docs/bandwidth-capture-sept.md,
+// which arrives with PR #550), for a shop where the overwhelming majority
 // of ticks have nothing to do.
 //
 // Nothing here changes WHAT the reconciler publishes. It changes only how it

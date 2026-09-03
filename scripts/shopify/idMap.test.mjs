@@ -3,7 +3,7 @@
 // gid validation, and planIdMapWrite's create / noop / merge / refuse matrix —
 // the idempotency contract the live writer rides on.
 import { describe, it, expect } from "vitest";
-import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct, releaseClaim, ensureClaimIndex } from "./idMap.mjs";
+import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct, releaseClaim, ensureClaimIndex, isProductRecordKey } from "./idMap.mjs";
 
 const gid = {
   product: (n) => `gid://shopify/Product/${n}`,
@@ -145,6 +145,16 @@ function fakeDb({ cached, server, mine = null }) {
     },
     async set(v) { state.sets.push([path, v]); state.mine = v; },
     async transaction(fn) {
+      // The record's own gid pointer is a DIFFERENT node from the claim, with
+      // no stale-cache game to play — it is written once, at the end, under a
+      // transaction so a gid written in between is not overwritten.
+      if (path.endsWith("/shopifyProductId")) {
+        const out = fn(state.mine);
+        if (out === undefined) return { committed: false, snapshot: { val: () => state.mine } };
+        state.sets.push([path, out]);
+        state.mine = out;
+        return { committed: true, snapshot: { val: () => out } };
+      }
       state.transactions += 1;
       // First invocation sees the (possibly stale) cache; later ones see truth.
       const seen = firstTransaction ? cached : state.server;
@@ -192,6 +202,27 @@ describe("claimShopifyProduct does not mistake a one-shot abort for a conflict",
     expect(db.state.transactions).toBe(1);
     // The pointer already exists — writing it again is a needless write.
     expect(db.state.sets).toEqual([]);
+  });
+
+  it("a gid written into our pointer AFTER the pre-check does not get overwritten", async () => {
+    // mineGid is read BEFORE the claim is taken. A plain set() at the end would
+    // clobber whatever landed in between — reintroducing at the bottom of this
+    // function the exact double-mapping the read at the top refuses.
+    const db = fakeDb({ cached: null, server: null });
+    let preCheckDone = false;
+    const inner = db.ref;
+    db.ref = (path) => {
+      if (path.endsWith("/shopifyProductId")) {
+        // First touch is the pre-check read (must still see null); the race
+        // lands between it and the write.
+        if (preCheckDone) db.state.mine = gid.product(999);
+        preCheckDone = true;
+      }
+      return inner(path);
+    };
+    await expect(claimShopifyProduct(db, "p1", GID))
+      .rejects.toThrow(/record already maps to gid:\/\/shopify\/Product\/999/);
+    expect(db.state.mine).toBe(gid.product(999));   // the other writer's value survives
   });
 
   it("a record that already maps a DIFFERENT gid is refused before it takes a claim", async () => {
@@ -345,5 +376,29 @@ describe("ensureClaimIndex", () => {
     const res = await ensureClaimIndex(db);
     expect(res).toEqual({ built: false });
     expect(db.state.writes).toEqual([]);
+  });
+});
+
+// ── The bookkeeping siblings are excluded by PREFIX, not by name ─────────────
+// /shopify_sync holds product records beside this module's own siblings. There
+// used to be exactly one (`_collections`) and callers hardcoded a name compare;
+// adding `_reconcile` and `_claims` would have walked straight through those
+// filters and been processed as products.
+describe("isProductRecordKey", () => {
+  it("rejects every bookkeeping sibling, present and future", () => {
+    for (const k of ["_collections", "_reconcile", "_claims", "_builtAt", "_anythingLater"]) {
+      expect(isProductRecordKey(k)).toBe(false);
+    }
+  });
+
+  it("accepts ordinary product ids", () => {
+    for (const k of ["-NabcDEF123", "p1", "9339656536213"]) {
+      expect(isProductRecordKey(k)).toBe(true);
+    }
+  });
+
+  it("is not fooled by a non-string key", () => {
+    expect(isProductRecordKey(undefined)).toBe(false);
+    expect(isProductRecordKey(null)).toBe(false);
   });
 });

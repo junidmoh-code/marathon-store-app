@@ -1153,8 +1153,12 @@ const sweepDue = scanMode === "full" ||
   results.length > 0 ||
   runStartedAt - sweptRecently >= fullScanIntervalMs(runStartedAt);
 let sweepRan = false;
-try {
-  if (!sweepDue) throw new Error("__not_due__");
+// A plain conditional, not a sentinel exception. "Not due" is a schedule, not a
+// failure, and routing it through throw meant the catch below had to tell the
+// two apart by comparing an error MESSAGE — which leaves the catch describing
+// every genuine sweep error as something it must first prove is not the
+// sentinel.
+if (sweepDue) try {
   const liveNow = scanMode === "full"
     ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
     : await readLivePids(db, { meter });
@@ -1173,9 +1177,7 @@ try {
     );
   }
 } catch (e) {
-  if (String(e?.message) !== "__not_due__") {
-    console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
-  }
+  console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
 }
 
 // RTDB stores no empty object — writing `{}` deletes the key, which is exactly

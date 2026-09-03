@@ -238,7 +238,8 @@ cd ~/marathon-store-app && node scripts/shopify/reconcile-runner.mjs
 rather than a longer interval — worth revisiting past a few thousand reviewed
 products, not before." It got there: **3,832 nodes, ~2.2 MB, read TWICE per
 tick**, measured on 3 Sep 2026 at 45–79% of all traffic in the database
-(`docs/bandwidth-capture-sept.md`). The indexed query it predicted is now
+(`docs/SHOPIFY-SYNC.md` §9; the raw capture is `docs/bandwidth-capture-sept.md`,
+which lands with PR #550). The indexed query it predicted is now
 built — see `docs/SHOPIFY-SYNC.md` §9.
 
 `reconcile.mjs` still exits *before* minting a Shopify token when there is no
