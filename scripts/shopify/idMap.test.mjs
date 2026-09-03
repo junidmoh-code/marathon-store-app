@@ -3,7 +3,7 @@
 // gid validation, and planIdMapWrite's create / noop / merge / refuse matrix —
 // the idempotency contract the live writer rides on.
 import { describe, it, expect } from "vitest";
-import { buildMapping, planIdMapWrite } from "./idMap.mjs";
+import { buildMapping, planIdMapWrite, claimKeyFor, planClaim } from "./idMap.mjs";
 
 const gid = {
   product: (n) => `gid://shopify/Product/${n}`,
@@ -85,5 +85,37 @@ describe("planIdMapWrite — idempotency contract", () => {
     const existing = JSON.parse(JSON.stringify(mapping));
     existing.variants["6"].shopifyVariantId = gid.variant(999);
     expect(() => planIdMapWrite(existing, mapping)).toThrow(/refusing to overwrite variant 6/);
+  });
+});
+
+// ── The claim index ──────────────────────────────────────────────────────────
+// The uniqueness guarantee moved off a whole-node transaction and onto one
+// child of /shopify_sync/_claims. These are the two pure pieces that decide it.
+describe("claimKeyFor", () => {
+  it("keys on the numeric id, because a gid cannot be an RTDB path segment", () => {
+    expect(claimKeyFor(gid.product(9339656536213))).toBe("9339656536213");
+  });
+
+  it("refuses anything that is not a Product gid rather than inventing a key", () => {
+    expect(() => claimKeyFor(gid.variant(1))).toThrow(/Product gid/);
+    expect(() => claimKeyFor("9339656536213")).toThrow(/Product gid/);
+    expect(() => claimKeyFor(null)).toThrow(/Product gid/);
+    expect(() => claimKeyFor("gid://shopify/Product/12ab")).toThrow(/Product gid/);
+  });
+});
+
+describe("planClaim", () => {
+  it("claims a gid nobody holds", () => {
+    expect(planClaim(null, "p1")).toEqual({ action: "claim" });
+  });
+
+  it("treats a claim this record already holds as held, not as a conflict", () => {
+    expect(planClaim("p1", "p1")).toEqual({ action: "held" });
+  });
+
+  it("REFUSES a gid another record holds — the guarantee the root transaction existed for", () => {
+    const plan = planClaim("p2", "p1");
+    expect(plan.action).toBe("refuse");
+    expect(plan.refusal).toMatch(/already claimed by record p2/);
   });
 });

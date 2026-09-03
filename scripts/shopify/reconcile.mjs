@@ -58,9 +58,16 @@ import {
   networkTotals, requireSingleLocation, setAvailable,
   TRACKED_VARIANT, untrackedVariants, enforceTracking,
 } from "./inventory.mjs";
-import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
+import { buildMapping, writeIdMap, claimShopifyProduct, releaseClaim } from "./idMap.mjs";
 import { adoptionVerdict, requestFreshName } from "./adopt.mjs";
 import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_REASON } from "./publishNode.mjs";
+// Scoped reading — the worklist, the live set and the /stock location keys, all
+// obtained WITHOUT a whole-node read. See reconcileScope.mjs for the watermark
+// contract and its three backstops.
+import {
+  planScan, nextRetrySet, fullScanIntervalMs, readReconcileState, writeReconcileState,
+  readChangedPublishNodes, readLivePids, makeStockLocationResolver,
+} from "./reconcileScope.mjs";
 // Storefront collections. The map is repo data (collectionMap.mjs); the gids
 // are read from /shopify_sync/_collections and NEVER guessed — a product joins
 // a collection that already exists or joins none. Nothing here creates a
@@ -90,6 +97,11 @@ if (pidIdx !== -1 && (!pidArg || pidArg.startsWith("--"))) {
   process.exit(2);
 }
 const ONLY = pidArg ? new Set(pidArg.split(",")) : null;
+// Force a whole-node scan on a commit tick. The scheduler never passes it; it
+// exists so a person can prove, in one command, that the incremental path is
+// not hiding work from them — and so the before/after byte figures in the PR
+// could be measured against the SAME code.
+const FULL = flags.includes("--full");
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -102,8 +114,38 @@ const db = admin.database();
 // never reached state "live" is confirmed off — nothing is on the storefront.
 const confirmedOn = (node) => node?.state === "live" && node?.liveState === "on";
 
+// ── What this run cost, in bytes ─────────────────────────────────────────────
+// Approximate (serialized JSON length, not wire bytes: RTDB REST does not gzip
+// and the SDK framing is small, so it is within a few percent) and reported on
+// every commit run. A loop that was 45–79% of the whole database's traffic gets
+// to say out loud what it spends.
+let rtdbBytes = 0;
+const meter = (label, val) => {
+  const n = val == null ? 4 : JSON.stringify(val).length;
+  rtdbBytes += n;
+  if (n >= 100_000) console.log(`  rtdb: ${label} — ${n.toLocaleString()} B`);
+};
+
+// Location keys for the inventory read, memoised for the life of the process.
+const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
+
 // ── Worklist: every node whose intent differs from its confirmed state ───────
-const all = await readAllPublishNodes(db);
+// A DRY RUN always reads everything: it is a person asking "what is outstanding
+// across the whole shop?", and answering that from a five-minute window would
+// be a lie. Only the scheduled commit tick reads incrementally.
+const runStartedAt = Date.now();
+const scanState = COMMIT ? await readReconcileState(db) : null;
+const scan = COMMIT && !ONLY
+  ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
+  : { mode: "full", since: null, why: ONLY ? "--pids" : "dry run" };
+const retryPids = Object.keys(scanState?.retry || {});
+const all = scan.mode === "incremental"
+  ? await readChangedPublishNodes(db, { since: scan.since, retryPids, meter })
+  : await (async () => { const v = await readAllPublishNodes(db); meter("shopify_publish (whole node)", v); return v; })();
+if (COMMIT) {
+  console.log(`scan: ${scan.mode} (${scan.why})` +
+    (scan.mode === "incremental" ? ` · ${Object.keys(all).length} node(s) in window, ${retryPids.length} retry` : ""));
+}
 const worklist = [];
 const skippedLegacy = [];
 for (const [pid, node] of Object.entries(all)) {
@@ -166,6 +208,19 @@ if (!COMMIT) {
   }
   console.log(`\ndry run — nothing written, Shopify untouched. Re-run with --commit to apply (cap ${MAX_APPLY}/run).`);
   process.exit(0);
+}
+
+// Does Shopify agree this product is gone? Asked ONLY to decide whether a
+// userErrors refusal is a permanent "it was deleted" or a transient failure to
+// be retried. A query that itself fails answers "not gone" — the safe answer,
+// because it leaves the intent standing.
+async function productIsAbsent(gid) {
+  try {
+    const q = await graphql(`query ($id: ID!) { product(id: $id) { id } }`, { id: gid });
+    return q?.product == null;
+  } catch {
+    return false;
+  }
 }
 
 // ── Commit path ──────────────────────────────────────────────────────────────
@@ -389,7 +444,37 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const errs = res.publishableUnpublish.userErrors;
-      if (errs?.length) { results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` }); continue; }
+      if (errs?.length) {
+        // ── THE PRODUCT MAY SIMPLY BE GONE ──────────────────────────────────
+        // "Resource does not exist" against the product id means the listing
+        // was deleted in the Shopify admin. Retrying that forever is what the
+        // old code did: five records refused this way on 30 Aug 2026 and were
+        // still being retried 1,367 ticks later — every two minutes, day and
+        // night, five futile GraphQL mutations a tick, and every tick counted
+        // as a working tick so nothing downstream could ever back off.
+        //
+        // "Off" is already the truth for a product that does not exist, so
+        // confirm it — but only after ASKING SHOPIFY, never by pattern-matching
+        // the error text alone. If the product really is absent the stale ID
+        // map is removed too (with its claim), because a map pointing at a
+        // deleted product makes the record impossible to publish again.
+        const gone = await productIsAbsent(mapNode.shopifyProductId);
+        if (!gone) {
+          results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` });
+          continue;
+        }
+        console.log(`  ${mapNode.shopifyProductId} no longer exists on Shopify — clearing the stale ID map and confirming off`);
+        try { await releaseClaim(db, mapNode.shopifyProductId); } catch { /* index entry may predate the claim index */ }
+        await db.ref(`shopify_sync/${pid}`).remove();
+        await confirmLiveState(db, pid, "off", UPDATED_BY, {
+          clearAdminUrl: true,
+          offReason: "no_shopify_product",
+          offDetail: "the Shopify product this record mapped to no longer exists — confirmed off and the stale mapping removed",
+        });
+        await unindexProduct(db, pid, "off");
+        results.push({ pid, ok: true, note: "confirmed off (the mapped Shopify product had been deleted)" });
+        continue;
+      }
       // Off the shelf means out of the aisles: the product LEAVES every managed
       // collection. It is not archived, not deleted, and its ID map survives —
       // switching it back on re-joins it from the map. A collection built by
@@ -817,7 +902,10 @@ for (const { pid, want } of capped) {
     // Inventory at the moment it starts mattering to customers — from a FRESH
     // read of this product's cells (a sale mid-run must not be re-listed).
     const finalMap = (await db.ref(`shopify_sync/${pid}`).get()).val();
-    const locNames = Object.keys((await db.ref("stock").get()).val() || {});
+    // Ten location keys, resolved ONCE per process from a SHALLOW read. This
+    // line used to pull the whole of /stock — 6,204,009 measured bytes — for
+    // every single product published.
+    const locNames = await stockLocationKeys();
     const tree = {};
     for (const loc of locNames) {
       const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
@@ -1016,10 +1104,24 @@ for (const { pid, want } of capped) {
 // on 2026-08-17 the index held 200 documents against 373 live products — 46% of
 // the storefront unfindable, none of it for want of identity. Every commit run
 // now reconciles the two sets. See searchIndexWrite.mjs for the cost argument.
+// The sweep is DRIFT REPAIR, not the primary path: the per-product hooks above
+// keep the index in step within one tick of any state change. Running it every
+// two minutes bought nothing and cost a second whole-node read each time, so it
+// now runs when this tick actually applied something, or on the same cadence
+// the full scan uses (30 min by day, 3 h overnight).
+// Its live set comes from `.indexOn: ["state"]`, which the live rules ALREADY
+// carry — or, on a full-scan tick, from the map already in hand, for free.
+const sweptRecently = Number(scanState?.lastSweepAt) || 0;
+const sweepDue = scan.mode === "full" ||
+  results.length > 0 ||
+  runStartedAt - sweptRecently >= fullScanIntervalMs(runStartedAt);
+let sweepRan = false;
 try {
-  const liveNow = Object.entries(await readAllPublishNodes(db))
-    .filter(([, n]) => n?.state === "live" && n?.liveState === "on")
-    .map(([p]) => p);
+  if (!sweepDue) throw new Error("__not_due__");
+  const liveNow = scan.mode === "full"
+    ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
+    : await readLivePids(db, { meter });
+  sweepRan = true;
   const sweep = await sweepSearchIndex(db, admin.app(), {
     livePids: liveNow,
     buildDoc: (pid) => buildSearchDocFor(pid),
@@ -1034,8 +1136,41 @@ try {
     );
   }
 } catch (e) {
-  console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
+  if (String(e?.message) !== "__not_due__") {
+    console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
+  }
 }
+
+// RTDB stores no empty object — writing `{}` deletes the key, which is exactly
+// what an empty retry set should do, but the Admin SDK refuses `{}` in an
+// update payload. Say `null` and mean it.
+const emptyToNull = (o) => (o && Object.keys(o).length ? o : null);
+
+// ── Persist the scan state ───────────────────────────────────────────────────
+// Only a COMMIT run that scanned the whole shop (or scanned a window) may move
+// the watermark, and it moves to the moment this run STARTED — never to "now",
+// so an intent written while the run was in flight lands in the next window
+// instead of being stepped over. `--pids` runs deliberately touch nothing: they
+// are a surgical human command and must not tell the scheduler it is caught up.
+if (COMMIT && !ONLY) {
+  const attempted = capped.map((w) => w.pid);
+  // Two kinds of unfinished work must survive to the next tick, and NEITHER
+  // moved its node's `updatedAt`, so neither would reappear in the next window
+  // on its own: a product whose apply failed, and a product the per-run cap
+  // never got to. Both ride the retry set.
+  const carried = [
+    ...results.filter((r) => !r.ok).map((r) => r.pid),
+    ...worklist.slice(capped.length).map((w) => w.pid),
+  ];
+  await writeReconcileState(db, {
+    watermark: runStartedAt,
+    retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),
+    ...(scan.mode === "full" ? { lastFullScanAt: runStartedAt } : {}),
+    ...(sweepRan ? { lastSweepAt: runStartedAt } : {}),
+    updatedAt: runStartedAt,
+  });
+}
+console.log(`rtdb read this run: ~${rtdbBytes.toLocaleString()} B`);
 
 // ── Report ───────────────────────────────────────────────────────────────────
 console.log("\n══ RECONCILE REPORT ══");

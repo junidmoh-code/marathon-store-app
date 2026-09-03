@@ -28,6 +28,9 @@
 //   • same size key with different IDs, or a different shopifyProductId
 //                                          → REFUSE loudly (human decision)
 import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
+// Paged reader — the claim-index backfill reads the existing map in bounded
+// pages rather than in one whole-node request.
+import { readMapPaged } from "../lib/rtdbPaged.mjs";
 
 // rows: [{ size, variantId, inventoryItemId }] with the ORIGINAL catalogue
 // size token ("5.5", "M", "_") — never a Shopify display value like "One Size".
@@ -82,52 +85,109 @@ export function planIdMapWrite(existing, mapping) {
   return newKeys.length ? { action: "merge", newKeys } : { action: "noop" };
 }
 
-// Atomically claim a Shopify product for ONE record: a single transaction on
-// the /shopify_sync parent verifies no other node references the gid AND
-// writes this record's pending {shopifyProductId} pointer — closing the
-// scan-then-write race two concurrent runs would otherwise have. The parent
-// transaction moves the whole node; fine at this slice's scale (handfuls),
-// revisit with a reverse index when the sync goes catalogue-wide. Throws if
-// the gid is already claimed elsewhere or this record maps to a different gid.
+// ── The claim index: /shopify_sync/_claims ───────────────────────────────────
+// The uniqueness guarantee below — "no OTHER record already maps this Shopify
+// product" — used to be enforced by a TRANSACTION ON THE /shopify_sync ROOT.
+// That is correct and it was affordable at the scale the original comment
+// anticipated ("handfuls; revisit with a reverse index when the sync goes
+// catalogue-wide"). The sync went catalogue-wide: 3 Sep profiling measured
+// ~1 MB per root transaction, three of them per created product, 22.5 MB in a
+// single hour (docs/bandwidth-capture-sept.md). This is that reverse index.
+//
+//   /shopify_sync/_claims/{numeric Shopify product id} = productId
+//
+// The claim is still ATOMIC and still made against the server's value — it is
+// a transaction, just on ONE child instead of the whole map. A numeric key is
+// used because a gid contains slashes and cannot be an RTDB path segment.
+//
+// The index is built ONCE, from a PAGED read (never a whole-node read), the
+// first time a claim is made after this code ships; a sentinel records that it
+// happened. Until it is built the index is empty and would call every existing
+// gid unclaimed — hence the backfill is a precondition of the first claim, not
+// a lazy nicety.
+const CLAIMS_PATH = "shopify_sync/_claims";
+const CLAIMS_BUILT_KEY = "_builtAt";
+
+// A gid is "gid://shopify/Product/9339656536213". The trailing digits are the
+// key. Anything else is not a Product gid and never reaches here — buildMapping
+// already refuses it — but this throws rather than inventing a key.
+export function claimKeyFor(shopifyProductId) {
+  const m = /^gid:\/\/shopify\/Product\/(\d+)$/.exec(String(shopifyProductId || ""));
+  if (!m) throw new Error(`not a Shopify Product gid: ${shopifyProductId}`);
+  return m[1];
+}
+
+// Pure: what the claim transaction must do given the index entry it found.
+//   → { action: "claim" | "held" | "refuse", refusal? }
+export function planClaim(currentOwner, productId) {
+  if (currentOwner == null) return { action: "claim" };
+  if (currentOwner === productId) return { action: "held" };
+  return { action: "refuse", refusal: `already claimed by record ${currentOwner}` };
+}
+
+export async function ensureClaimIndex(db) {
+  const built = (await db.ref(`${CLAIMS_PATH}/${CLAIMS_BUILT_KEY}`).get()).val();
+  if (built) return { built: false };
+  // One paged pass over the existing map. Keys beginning with "_" are this
+  // module's own bookkeeping siblings (_collections, _reconcile, _claims) and
+  // are never product records.
+  const all = await readMapPaged(db, "shopify_sync", { pageSize: 300 });
+  const index = {};
+  let n = 0;
+  for (const [pid, node] of Object.entries(all)) {
+    if (pid.startsWith("_")) continue;
+    const gid = node?.shopifyProductId;
+    if (typeof gid !== "string" || !gid.startsWith("gid://shopify/Product/")) continue;
+    index[claimKeyFor(gid)] = pid;
+    n += 1;
+  }
+  index[CLAIMS_BUILT_KEY] = Date.now();
+  await db.ref(CLAIMS_PATH).update(index);
+  return { built: true, entries: n };
+}
+
+// Atomically claim a Shopify product for ONE record. Two guarantees, unchanged
+// from the root-transaction version:
+//   · no other record may map this gid (the transaction on the claim child);
+//   · this record may not already map a DIFFERENT gid (checked against its own
+//     node, a single small read).
+// Throws with the same wording as before if either is violated; on success the
+// record's pending {shopifyProductId} pointer exists, exactly as before.
 export async function claimShopifyProduct(db, productId, shopifyProductId) {
   assertSafeSegment(productId, "productId");
-  for (let attempt = 0; ; attempt++) {
-    let refusal = null;
-    const result = await db.ref("shopify_sync").transaction((all) => {
-      refusal = null;
-      const nodes = all || {};
-      for (const [pid, node] of Object.entries(nodes)) {
-        if (pid !== productId && node?.shopifyProductId === shopifyProductId) {
-          refusal = `already claimed by record ${pid}`;
-          return undefined; // abort
-        }
-      }
-      const mine = nodes[productId];
-      if (mine && mine.shopifyProductId !== shopifyProductId) {
-        refusal = `record already maps to ${mine.shopifyProductId}`;
-        return undefined;
-      }
-      if (mine) return all; // claim already held — commit unchanged
-      return { ...nodes, [productId]: { shopifyProductId } };
-    });
-    if (refusal) {
-      // Same stale-local-cache caveat as writeIdMap: confirm once against the
-      // server before treating the refusal as real.
-      if (attempt === 0) {
-        const server = (await db.ref("shopify_sync").get()).val() || {};
-        const clash = Object.entries(server).find(
-          ([pid, node]) =>
-            (pid !== productId && node?.shopifyProductId === shopifyProductId) ||
-            (pid === productId && node?.shopifyProductId !== shopifyProductId)
-        );
-        if (!clash) continue;
-        throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
-      }
-      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
-    }
-    if (!result.committed) throw new Error("claim transaction did not commit");
-    return;
+  const key = claimKeyFor(shopifyProductId);
+  await ensureClaimIndex(db);
+
+  // This record's own pointer first — a record that already maps elsewhere must
+  // be refused before it can take a claim it would then have to give back.
+  const mineGid = (await db.ref(`shopify_sync/${productId}/shopifyProductId`).get()).val();
+  if (mineGid && mineGid !== shopifyProductId) {
+    throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${mineGid}`);
   }
+
+  let refusal = null;
+  const result = await db.ref(`${CLAIMS_PATH}/${key}`).transaction((cur) => {
+    refusal = null;
+    const plan = planClaim(cur, productId);
+    if (plan.action === "refuse") { refusal = plan.refusal; return undefined; }
+    if (plan.action === "held") return cur;
+    return productId;
+  });
+  if (refusal) throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
+  if (!result.committed) throw new Error("claim transaction did not commit");
+
+  // The durable pointer. Written AFTER the claim so a crash between the two
+  // leaves an index entry naming this record and no mapping — the next attempt
+  // by the SAME record finds "held" and completes; an attempt by any other
+  // record is still refused, which is the direction that matters.
+  if (!mineGid) await db.ref(`shopify_sync/${productId}/shopifyProductId`).set(shopifyProductId);
+}
+
+// Release a claim. Used only where a mapping is being removed because Shopify
+// says the product does not exist — leaving the index entry behind would block
+// the gid forever for a product that is gone.
+export async function releaseClaim(db, shopifyProductId) {
+  await db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`).remove();
 }
 
 // db = admin.database(). Returns the plan it executed.

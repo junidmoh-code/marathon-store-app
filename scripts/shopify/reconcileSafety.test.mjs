@@ -136,3 +136,64 @@ describe("the script-side off write", () => {
     }
   });
 });
+
+// ─── THE BANDWIDTH CONTRACT, ASSERTED THE SAME WAY ───────────────────────────
+// This loop was measured on 3 Sep 2026 at 45–79% of ALL traffic in the
+// database — ~$87–160/month — for a shop where most ticks have nothing to do
+// (docs/bandwidth-capture-sept.md). The three lines that caused it are the
+// three easiest lines in the world to write back in, so they are pinned here.
+describe("no whole-node read on the scheduled path", () => {
+  it("the location names for the inventory read come from a SHALLOW resolver, never from all of /stock", () => {
+    // The line that was there: Object.keys((await db.ref("stock").get()).val())
+    // — 6,204,009 measured bytes, per product, to learn ten strings.
+    expect(SRC).not.toMatch(/db\.ref\(\s*["'`]stock["'`]\s*\)\s*\.get\(\)/);
+    expect(SRC).toMatch(/const locNames = await stockLocationKeys\(\)/);
+  });
+
+  it("the search-index sweep does not re-read the whole publish node", () => {
+    // It used to call readAllPublishNodes a SECOND time, purely to learn which
+    // products are live — 1.9–2.2 MB, every two minutes, all night.
+    const sweep = SRC.slice(SRC.indexOf("SEARCH-INDEX SWEEP"));
+    expect(sweep).not.toMatch(/readAllPublishNodes/);
+    expect(sweep).toMatch(/readLivePids|Object\.entries\(all\)/);
+  });
+
+  it("a commit tick's worklist is scoped, and a dry run's is not", () => {
+    // The dry run answers "what is outstanding across the whole shop?" and must
+    // keep reading everything; only the scheduled tick reads a window.
+    expect(SRC).toMatch(/const scan = COMMIT && !ONLY/);
+    expect(SRC).toMatch(/readChangedPublishNodes/);
+  });
+
+  it("the watermark advances to when the run STARTED, never to now", () => {
+    // Advancing to "now" would step over any intent written while the run was
+    // in flight — a product that silently never publishes.
+    expect(SRC).toMatch(/watermark: runStartedAt/);
+    expect(SRC).not.toMatch(/watermark: Date\.now\(\)/);
+  });
+
+  it("work the run could not finish is carried, because its node's updatedAt did not move", () => {
+    expect(SRC).toMatch(/worklist\.slice\(capped\.length\)/);
+    expect(SRC).toMatch(/results\.filter\(\(r\) => !r\.ok\)\.map\(\(r\) => r\.pid\)/);
+  });
+
+  it("a --pids run never tells the scheduler it is caught up", () => {
+    expect(SRC).toMatch(/if \(COMMIT && !ONLY\) \{[\s\S]{0,600}?writeReconcileState/);
+  });
+});
+
+describe("a deleted Shopify product is not retried forever", () => {
+  it("the userErrors branch asks Shopify whether the product is gone before confirming off", () => {
+    // Five records refused with 'Resource does not exist' on 30 Aug 2026 were
+    // still being retried 1,367 ticks later, every two minutes, day and night.
+    // The SECOND occurrence — the first belongs to failSafeUnpublish.
+    const first = SRC.indexOf("const errs = res.publishableUnpublish.userErrors");
+    const off = SRC.slice(SRC.indexOf("const errs = res.publishableUnpublish.userErrors", first + 1));
+    expect(off.slice(0, 3000)).toMatch(/await productIsAbsent\(mapNode\.shopifyProductId\)/);
+  });
+
+  it("productIsAbsent answers 'not gone' when it cannot ask — the answer that keeps the intent standing", () => {
+    const body = SRC.slice(SRC.indexOf("async function productIsAbsent"));
+    expect(body.slice(0, 600)).toMatch(/catch \{\s*return false;\s*\}/);
+  });
+});

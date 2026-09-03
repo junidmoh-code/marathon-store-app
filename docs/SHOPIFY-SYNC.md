@@ -355,3 +355,72 @@ theme's existing hero buttons:
 
 - Home → "Shop now" → Sneakers (7) → Boots Shell Green
 - Home → "View collection" → Collections → Caps & Hats (4) → Red Sox fitted cap
+
+---
+
+## 9. The reconcile loop's bandwidth (3 Sep 2026)
+
+`docs/bandwidth-capture-sept.md` measured the Mac mini's reconcile loop at
+**45–79% of all traffic in the Realtime Database in every profiler hour
+captured** — ~$87–160/month, 24/7, for a shop where most two-minute ticks have
+nothing to do. Three lines caused nearly all of it. What changed, and what it
+did *not* change:
+
+| Was | Now | Where |
+|---|---|---|
+| whole `/shopify_publish` (1.9–2.2 MB) to build the worklist, **every tick** | an `updatedAt` window, with a full scan on a cadence as backstop | `reconcileScope.mjs`, `reconcile.mjs` |
+| whole `/shopify_publish` **again** for the search-index sweep, every tick | the `state`-indexed live query, and only when the sweep is due or the tick applied something | `reconcileScope.readLivePids` |
+| whole `/stock` (6,204,009 B) **per product published**, to learn ten location names | one shallow key read, memoised per process | `reconcileScope.makeStockLocationResolver` |
+| a transaction on the **`/shopify_sync` root** (~1 MB each) to prove a gid is unclaimed | a transaction on one child of `/shopify_sync/_claims` | `idMap.mjs` |
+
+Nothing about what the reconciler publishes changed. The compliance gate, the
+fail-safe unpublish discipline, the per-run cap, the intent contract and the
+claim's atomicity are all exactly as they were.
+
+### 9.1 The index to paste (console rules, not `database.rules.json`)
+
+The incremental worklist queries `/shopify_publish` ordered by `updatedAt`.
+Live rules today carry `".indexOn": ["state"]`. **Add `"updatedAt"`:**
+
+```json
+"shopify_publish": {
+  ".indexOn": ["state", "updatedAt"]
+}
+```
+
+Until it is pasted the query still returns the **correct** rows — RTDB sorts
+server-side over the whole node and warns on the console — so the loop is
+correct either way; it just keeps paying the old price for the worklist read.
+Everything else in the table above saves immediately.
+
+### 9.2 The bookkeeping node
+
+`/shopify_sync/_reconcile` — `{ watermark, lastFullScanAt, lastSweepAt, retry }`.
+`/shopify_sync` is `.read: false, .write: false` in live rules, so this is
+server-only by construction and no rule change is needed for it, nor for
+`/shopify_sync/_claims`.
+
+### 9.3 What the watermark will not miss
+
+- A run advances the watermark to the moment it **started**, never to "now", so
+  an intent written mid-run lands in the next window.
+- A window starts five minutes **before** the watermark.
+- A product whose apply failed, or that the per-run cap did not reach, does not
+  move its node's `updatedAt` — both are carried by id in `retry` and read
+  individually every tick until they clear.
+- A full scan runs every 30 minutes (3 hours between 23:00 and 07:00 SAST), on
+  the first run after the state node is lost, when the watermark is ahead of the
+  server clock, and on `--full`.
+- The **dry run** (`reconcile.mjs` with no `--commit`) always reads everything.
+  It answers "what is outstanding across the whole shop?" and a five-minute
+  window would be a lie.
+
+### 9.4 A deleted Shopify product no longer retries forever
+
+Five records refused with `publishableUnpublish userErrors: Resource does not
+exist` on 30 Aug 2026 and were **still being retried 1,367 ticks later** — five
+futile GraphQL mutations every two minutes, and every tick counted as a working
+tick, so nothing downstream could ever back off. The off path now asks Shopify
+whether the product exists; if it genuinely does not, it confirms off, removes
+the stale ID map and releases its claim. A query that itself fails answers "not
+gone", which leaves the intent standing.
