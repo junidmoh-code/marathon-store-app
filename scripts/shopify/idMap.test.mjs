@@ -223,6 +223,11 @@ describe("claimShopifyProduct does not mistake a one-shot abort for a conflict",
     await expect(claimShopifyProduct(db, "p1", GID))
       .rejects.toThrow(/record already maps to gid:\/\/shopify\/Product\/999/);
     expect(db.state.mine).toBe(gid.product(999));   // the other writer's value survives
+    // AND the claim taken moments earlier is handed back. Holding it would
+    // block this gid for every other record permanently: nothing else releases
+    // a claim except the deleted-product path, and that only runs for a record
+    // whose own map still points at the gid — which this one no longer does.
+    expect(db.state.server).toBe(null);
   });
 
   it("a record that already maps a DIFFERENT gid is refused before it takes a claim", async () => {

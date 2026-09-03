@@ -242,8 +242,7 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
   // exactly the double-mapping the read at the top of this function refuses,
   // reintroduced at the bottom. Commit only into an empty slot or onto the same
   // gid; anything else aborts and is reported, leaving the other writer's value
-  // alone. (The claim itself is already ours, and is released by the caller's
-  // failure path.)
+  // alone.
   if (!mineGid) {
     let clash = null;
     await db.ref(`shopify_sync/${productId}/shopifyProductId`).transaction((cur) => {
@@ -252,6 +251,13 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
       return undefined;
     });
     if (clash) {
+      // GIVE THE CLAIM BACK. It was taken a few lines above and this record is
+      // now known to map somewhere else, so holding it would block the gid for
+      // every other record forever — a leak with no way back, because nothing
+      // else releases a claim except the deleted-product path, and that only
+      // runs for a record whose own map still points at the gid. The release is
+      // ownership-checked, so it can only ever free the entry we just made.
+      try { await releaseClaim(db, productId, shopifyProductId); } catch { /* leave it rather than mask the clash */ }
       throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${clash}`);
     }
   }
