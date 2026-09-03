@@ -36,7 +36,11 @@ import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
 import { FONT, BG, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen } from "./ui";
 import { StatCard, DetailShell, ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import RefillQueue from "./RefillQueue";
-import MoveExcess from "./MoveExcess";
+// The store-source clothing excess screen (MoveExcess) is NOT deleted — it
+// stays mounted at Stock → Move Excess (StockView.jsx:112). This tab is now the
+// sneakers-only hub → Central screen; hub clothing excess returns here by
+// flipping config/refillEngine/excessClothingEnabled, with no code change.
+import ExcessHubToCentral from "./ExcessHubToCentral";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
@@ -445,8 +449,8 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "excess":
         return (
-          <DetailShell title="Excess Rebalance" sub="Above target — one tap auto-splits: network needs → Hub 2, true surplus → Central" count={count("excess")} onBack={back}>
-            <MoveExcess products={products} actorRole={actorRole} />
+          <DetailShell title="Excess Inventory" count={count("excess")} onBack={back}>
+            <ExcessHubToCentral products={products} actorRole={actorRole} />
           </DetailShell>
         );
       case "intransit":
