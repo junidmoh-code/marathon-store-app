@@ -214,8 +214,11 @@ describe("the opened card", () => {
     tree.unmount();
   });
 
-  // THE SAFETY INVARIANT. MUTATION-PROVED: raising the stepper's `max` above
-  // the size's excess (or dropping the re-clamp in `transfer`) fails this.
+  // THE SAFETY INVARIANT. MUTATION-PROVED against the clamp that actually
+  // holds it: removing qtyFor's `Math.min(s.excess, …)` fails this with
+  // "Transfer 10 units". Loosening SizeStepperChip's `max` alone does NOT
+  // fail it — qtyFor re-clamps on read — so that layer is redundant, and this
+  // test is deliberately written to exercise the one that matters.
   it("can NEVER raise a size above its excess", async () => {
     const tree = render();
     openCard(tree, "Nike Air Force 1 White");

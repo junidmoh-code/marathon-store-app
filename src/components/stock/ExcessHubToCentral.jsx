@@ -18,11 +18,21 @@
 // happen. Nothing about the excess MATH changed.
 //
 // ── THE CLAMP ────────────────────────────────────────────────────────────────
-// A stepper's max is that size's computed excess — 6 can be sent as 5, 1 or 0,
-// never as 7. Going above the excess would pull the cell BELOW its Keep
-// number, which is the invariant this whole screen exists to protect. The
-// clamp lives in SizeStepperChip (healthWidgets.jsx:171-173, min 0 / max) and
-// again in the transfer path, so a bad edit cannot reach applyMovement.
+// A size can be sent as 5 of 6, or 1, or 0 — never as 7. Going above the
+// excess would pull the cell BELOW its Keep number, which is the invariant
+// this whole screen exists to protect.
+//
+// Three layers enforce it, and only ONE of them is load-bearing. Stated
+// plainly because mutation testing proved the difference:
+//   1. SizeStepperChip's `max` (healthWidgets.jsx:171-173). REDUNDANT —
+//      loosening it changes nothing, because layer 2 re-clamps on read.
+//   2. qtyFor's `Math.min(s.excess, …)`. LOAD-BEARING — this is the one the
+//      tests kill when it is removed, and the one that also defuses a stale
+//      edit left over from a larger excess earlier in the session.
+//   3. the re-clamp in `transfer`. REDUNDANT while layer 2 holds; kept as the
+//      last gate in front of applyMovement, since this is the function that
+//      actually moves stock.
+// Redundant is not useless — but do not mistake layer 1 or 3 for the guard.
 //
 // DATA: computeHubSneakerExcess() (excessComputation.js) — the excess math is
 // not reimplemented here. Clothing excess comes from computeHubClothingExcess(),
