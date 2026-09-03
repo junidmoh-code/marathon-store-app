@@ -244,13 +244,33 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
   // gid; anything else aborts and is reported, leaving the other writer's value
   // alone.
   if (!mineGid) {
+    // THIRD PLACE IN THIS FILE with the same hazard, and it earns the same
+    // guard: aborting with `undefined` never reaches the server, and the first
+    // callback invocation may see a stale local cache. An unconfirmed clash
+    // here is the most expensive false alarm of the three — it does not merely
+    // refuse, it GIVES THE CLAIM BACK first, so a phantom gid in the cache
+    // would hand away a claim this record legitimately holds and then refuse
+    // the publish citing a mapping the server does not have.
+    const ptr = db.ref(`shopify_sync/${productId}/shopifyProductId`);
     let clash = null;
-    await db.ref(`shopify_sync/${productId}/shopifyProductId`).transaction((cur) => {
-      clash = null;   // same rule: only the LAST invocation's verdict counts
-      if (cur == null || cur === shopifyProductId) return shopifyProductId;
-      clash = cur;
-      return undefined;
-    });
+    for (let attempt = 0; ; attempt++) {
+      clash = null;
+      await ptr.transaction((cur) => {
+        clash = null;   // same rule: only the LAST invocation's verdict counts
+        if (cur == null || cur === shopifyProductId) return shopifyProductId;
+        clash = cur;
+        return undefined;
+      });
+      if (!clash) break;
+      // Confirm once. If the server says the slot is free or already ours, the
+      // abort was against a stale cache — run the transaction again, for real.
+      if (attempt === 0) {
+        const onServer = (await ptr.get()).val();
+        if (onServer == null || onServer === shopifyProductId) continue;
+        clash = onServer;   // report what the SERVER holds, not what the cache did
+      }
+      break;
+    }
     if (clash) {
       // GIVE THE CLAIM BACK. It was taken a few lines above and this record is
       // now known to map somewhere else, so holding it would block the gid for

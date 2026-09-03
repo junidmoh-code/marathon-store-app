@@ -133,9 +133,10 @@ describe("planClaim", () => {
 // sees, `server` is the truth. A real RTDB transaction would re-run the
 // callback against the server value on a WRITE conflict — but an abort is not
 // a write, so it never gets that far. That asymmetry is the bug.
-function fakeDb({ cached, server, mine = null }) {
+function fakeDb({ cached, server, mine = null, pointerCached }) {
   const state = { server, mine, sets: [], callbackValues: [], transactions: 0, claimReads: 0 };
   let firstTransaction = true;
+  let firstPointer = true;
   const node = (path) => ({
     async get() {
       if (path === "shopify_sync/_claims/_builtAt") return { val: () => 1 };
@@ -149,8 +150,13 @@ function fakeDb({ cached, server, mine = null }) {
       // no stale-cache game to play — it is written once, at the end, under a
       // transaction so a gid written in between is not overwritten.
       if (path.endsWith("/shopifyProductId")) {
-        const out = fn(state.mine);
-        if (out === undefined) return { committed: false, snapshot: { val: () => state.mine } };
+        // `pointerCached` models a stale FIRST view of the pointer node, the
+        // same way `cached` does for the claim. An abort is one-shot, so that
+        // first view is the only one the callback ever sees.
+        const seen = firstPointer && pointerCached !== undefined ? pointerCached : state.mine;
+        firstPointer = false;
+        const out = fn(seen);
+        if (out === undefined) return { committed: false, snapshot: { val: () => seen } };
         state.sets.push([path, out]);
         state.mine = out;
         return { committed: true, snapshot: { val: () => out } };
@@ -482,5 +488,31 @@ describe("releaseClaim confirms a decline before accepting it", () => {
     const db = claimsDb({}, { cached: null });
     await expect(releaseClaim(db, "p1", GID)).resolves.toBe("absent");
     expect(db.state.gets).toBe(1);
+  });
+});
+
+// ── The pointer clash is confirmed too — the third place with this hazard ────
+// This is the most expensive false alarm of the three. An unconfirmed clash
+// does not merely refuse: it GIVES THE CLAIM BACK first. So a phantom gid in
+// the local cache would hand away a claim this record legitimately holds and
+// then refuse the publish citing a mapping the server does not have.
+describe("claimShopifyProduct confirms a pointer clash before acting on it", () => {
+  const GID = gid.product(9339656536213);
+
+  it("a stale cached gid does not cost the record its claim", async () => {
+    // Cache says the pointer holds 999; the server says it is empty.
+    const db = fakeDb({ cached: null, server: null, mine: null, pointerCached: gid.product(999) });
+    await expect(claimShopifyProduct(db, "p1", GID)).resolves.toBeUndefined();
+    expect(db.state.mine).toBe(GID);        // the pointer really was written
+    expect(db.state.server).toBe("p1");     // and the claim was NOT given back
+  });
+
+  it("a real clash still refuses, and reports what the SERVER holds", async () => {
+    const db = fakeDb({ cached: null, server: null, mine: null, pointerCached: gid.product(999) });
+    // Make the server agree with the stale view: a genuine conflict.
+    db.state.mine = gid.product(999);
+    await expect(claimShopifyProduct(db, "p1", GID))
+      .rejects.toThrow(/record already maps to gid:\/\/shopify\/Product\/999/);
+    expect(db.state.server).toBe(null);     // claim handed back, as it must be
   });
 });
