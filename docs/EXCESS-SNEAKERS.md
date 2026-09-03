@@ -382,3 +382,87 @@ policy for a specific size, e.g. a discontinued colourway):
 No row anywhere in this set has a nonzero `target` — there is no
 "hand-tuned per-product sneaker target" anywhere in the live data; every
 per-product row that exists is strictly a **shutoff**, never a boost.
+
+---
+
+## Phase 2: Arm result (2026-09-03)
+
+Written live via `scripts/arm-hub2-sneaker-policy.mjs --execute`, which goes
+through `applyCategoryPolicy` — the deployed Engine Policy card's own write
+path (`functions/lib/category-policy-write.cjs`): drift-checked before and
+immediately before the mutation, history entry written first
+(`engine_policy_history/-P0a44cqvWkarNMUmzze`), post-write read-back
+verified. Only the `hub2` key was added to
+`config/refillEngine/categoryPolicy/sneakers`; `hub1` was passed through
+byte-identical (verified: `hub1` after the write is character-for-character
+the same object read before it). `/stock_targets` was not touched.
+`database.rules.json` was not touched. Numbers came from the owner's own
+already-entered Hub 2 run at
+`config/refillEngine/policyGroups/footwear-all.policy.hub2.sizes` — not
+invented — with `carriedOnly: true` added to match Hub 1's shape (the group
+snapshot doesn't carry that flag; the live `hub1` entry does).
+
+### Before / after, sizes 3–13
+
+| Size | Hub 1 target/reorderPt (before) | Hub 1 (after) | Hub 2 target/reorderPt (before) | Hub 2 (after) |
+|---|---|---|---|---|
+| 3 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 4 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 5 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 5.5 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 6 | 3 / 1 | 3 / 1 (unchanged) | unarmed (null) | **3 / 1** |
+| 7 | 3 / 1 | 3 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 8 | 3 / 1 | 3 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 9 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 10 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 11 | 2 / 1 | 2 / 1 (unchanged) | unarmed (null) | **2 / 1** |
+| 12 | unarmed (null) | unarmed (null, unchanged) | unarmed (null) | **2 / 1** |
+| 13 | unarmed (null) | unarmed (null, unchanged) | unarmed (null) | **2 / 1** |
+
+Note sizes 7 and 8: Hub 1's *own* live entry (target 3) has drifted from the
+footwear-all group's hub1 snapshot (target 2) since the group was last
+written (2026-08-22) — expected, since Hub 1's policy has been edited by
+hand since then. Hub 2 was armed with Hub 2's own screen numbers from the
+group, not Hub 1's current numbers, per the task's instruction not to invent
+values.
+
+**No size 3–13 gap.** The group's hub2 leg covers all twelve size keys Hub 1
+uses plus 12 and 13 (which Hub 1 itself doesn't arm) — every size Hub 1 has
+armed is also covered for Hub 2. Hub 2 is now armed on *more* sizes than
+Hub 1 (12 and 13 additionally), which is a genuine feature of the numbers
+the owner already entered, not an invented addition.
+
+Post-write verification: re-read `config/refillEngine/categoryPolicy/sneakers`
+has exactly the three keys `perSize`, `hub1`, `hub2` — no shop key
+(`marathon-pe`, `trophy`, `pine`) exists at that node, and a direct read of
+each confirmed `null`. `config/refillEngine/policyGroups/footwear-all.armed`
+is still `false` — the group played no role beyond being the numbers
+source; it remains inert scaffolding, unreachable while `categoryPolicy.sneakers`
+owns the category.
+
+Uncapped-preview scale for the Hub 2 leg alone (from `applyCategoryPolicy`'s
+own `buildPreview`, throttled by the live `maxIntentsPerRun`/
+`maxFootwearIntentsPerRun` caps rather than the uncapped methodology used in
+the Phase 1 projection table above): 305 request lines / 403 units on the
+resulting scan.
+
+### Disarm — one action, no code change, no deploy
+
+Removes exactly the `hub2` key, leaving `hub1` and `perSize` untouched:
+
+```
+curl -X DELETE "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app/config/refillEngine/categoryPolicy/sneakers/hub2.json?access_token=$(gcloud auth print-access-token)"
+```
+
+or, as an admin-SDK one-liner (same credential pattern as every script in
+this repo):
+
+```js
+node -e "require('firebase-admin').initializeApp({credential:require('firebase-admin').credential.applicationDefault(),databaseURL:'https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app'}); require('firebase-admin').database().ref('config/refillEngine/categoryPolicy/sneakers/hub2').remove().then(()=>process.exit(0));"
+```
+
+Full rollback (Hub 2 back to whatever it was — `undefined` — recorded in
+`~/hub2-sneaker-policy-rollback-2026-09-03.json`, written by the arming
+script before it wrote anything) is the same operation: this task's `before`
+had no `hub2` key at all, so "restore before" and "delete hub2" are the
+identical action.
