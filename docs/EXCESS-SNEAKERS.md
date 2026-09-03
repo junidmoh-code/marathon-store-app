@@ -466,3 +466,107 @@ Full rollback (Hub 2 back to whatever it was — `undefined` — recorded in
 script before it wrote anything) is the same operation: this task's `before`
 had no `hub2` key at all, so "restore before" and "delete hub2" are the
 identical action.
+
+---
+
+## Commit 3: hub-source + sneakers-group excess computation (2026-09-03)
+
+Pure computation module — no RTDB writes, no UI wiring (that's Commit 4). New
+file: `src/components/stock/excessComputation.js`.
+
+### The formula, exactly as implemented
+
+```
+excess  = onHand - target(Keep) - unitsReservedByOpenOutboundRefillRequestsFromThatHub
+movable = max(0, excess)                 — a move never takes a cell below Keep
+a card only exists when movable >= 1
+```
+
+- `resolveTarget` is NOT reimplemented a second time. `excessComputation.js:97`
+  calls the existing mirror already in `src/components/stock/seatingCore.js`
+  (itself a documented, differential-fuzzed mirror of
+  `functions/lib/refill-engine.cjs resolveTarget`, proven in Commit-3's own
+  ad-hoc live sanity check to agree with the engine's real precedence). A size
+  the engine does not arm (`resolveTarget` → `null`) never produces a card —
+  `excessComputation.js:127`.
+- **Explicit-row exclusion** (`excessComputation.js:128`): `resolveTarget`
+  always tries the explicit `/stock_targets/{loc}/{pid}/{sizeKey}` row first
+  and stamps `source: "explicit"` when one exists. This file treats that
+  source as "no card, ever" — Hub 1's 124 kill-switch rows (Phase 1, all
+  explicit `target: 0`) are excluded entirely, not used as `target = 0` in
+  the subtraction. Verified against live data: 0 leaks across all rows found
+  at either hub's `/stock_targets`.
+- **Displays**: `onHand` is `cell.qty` — nothing else. Per `displaySlots.js`,
+  a registered display unit stays booked at its hub's `/stock` cell (the slot
+  is informational only, "moves no quantity"), so it is already counted as
+  available stock automatically; this module never reads
+  `/settings/displaySlots`, so it can never subtract one.
+- **Reservation netting** (`excessComputation.js:101-113`,
+  `reservedByHubFromOpenRequests`): sums `qty` over `/refill_requests` records
+  with `status: "open"` whose FULFILLING hub — `r.source` or
+  `r.createdFrom.source` (`functions/refill-scan.cjs:738-742` is the write
+  shape) — matches the hub being evaluated. This is `requestingLocation`'s
+  opposite: `requestingLocation` is the destination the request is FOR, never
+  the source it nets against. Same field precedence `refillQueueCore.js:1244`
+  already uses for its own "by" lookup.
+- **Deactivated products** are skipped (`isDeactivated`, matching
+  `MoveExcess.jsx:127`'s existing guard) — a finished line never gets an
+  excess card.
+
+### Sneakers group (unconditional)
+
+`SNEAKER_CATEGORY_KEYS` (`excessComputation.js:73-76`) = `boots`,
+`designer-shoes`, `kids-shoes`, `loafers`, `running-shoes`, `slides`,
+`sneakers` — the same seven categories as the `footwear-all` policy group.
+`computeHubSneakerExcess()` runs the formula at `hub1` + `hub2`
+(`EXCESS_HUB_LOCATIONS`, `excessComputation.js:67`) with no flag — this is
+live the moment Commit 4 wires a UI to it.
+
+Live sanity check (ad-hoc script, run against `marathon-club-default-rtdb`,
+not committed — deleted after use, per instructions): **802 size-lines / 1,936
+movable units** across hub1 (399 lines / 921 units) + hub2 (403 lines / 1,015
+units) today, with reservation netting applied and the explicit-row leak
+check returning 0. These numbers are close to, but not identical to, Phase
+1's uncapped projection (967 / 906 units) — the differences are expected:
+Phase 1 did not net open refill-request reservations, and Hub 1's own live
+targets have drifted slightly since (sizes 7/8, noted in Phase 2 above).
+
+### Clothing (off by default)
+
+Same `computeHubExcess` core, exposed via `computeHubClothingExcess()`
+(`excessComputation.js:158-168`), gated by
+**`config/refillEngine/excessClothingEnabled`** — same fail-safe grammar as
+the existing `ruleBasedTargets`/`footwearTargets` switches:
+`true` = on everywhere, `{ hub1: true, hub2: false }` = per-location (an
+absent location is OFF), anything else (absent / `false` / garbled) = OFF.
+**Absent today → OFF → zero clothing cards from this path**, flippable live
+with no code change or deploy. (The pre-existing hub2 clothing excess inside
+`MoveExcess.jsx`'s own inline computation is untouched and unrelated to this
+flag — see below.)
+
+### What was and wasn't touched
+
+- **New file only**: `src/components/stock/excessComputation.js`. `git diff
+  --stat` against the branch point shows exactly one new, untracked file —
+  nothing in `MoveExcess.jsx`, `applyMovement.js`, the refill-request-raising
+  path, or store-source excess logic changed.
+- `MoveExcess.jsx`'s `SOURCES` array (`hub2`, `marathon-pe`, `trophy`) was
+  **deliberately left untouched** in this commit, despite the "add hub1"
+  suggestion in the task brief: that array also drives `MoveExcess.jsx`'s
+  OWN pre-existing inline clothing-excess loop (store-style two-leg split,
+  `STORE_EXCESS_MIN`), which is a DIFFERENT formula than this file's. Adding
+  `"hub1"` there today would immediately route Hub 1's clothing stock through
+  that store-style computation — a real behaviour change to the existing tab,
+  which the task's hard constraint explicitly rules out ("do NOT touch …
+  store-source excess logic"). Wiring Hub 1 (and this new module) into the UI
+  is Commit 4's job; that commit should add a hub1/hub2-specific card path
+  that calls `computeHubSneakerExcess`/`computeHubClothingExcess` rather than
+  routing hub1 through the existing `SOURCES` loop.
+- `applyMovement.js` has no location allow-list to begin with (confirmed
+  Phase 1: "no enum/allow-list on the location values") — `transfer_out`
+  already accepts `from: "hub1"` today with zero code change. Nothing needed
+  there.
+- No `database.rules.json` change: `config/refillEngine`, `/stock/{hub}`,
+  `/stock_targets/{hub}`, and `/refill_requests` are already read by existing
+  app code (`useEngineConfig`, `useStockCells`, `useStockTargets`,
+  `useRefillRequests`), so no new rule was needed for this module's reads.
