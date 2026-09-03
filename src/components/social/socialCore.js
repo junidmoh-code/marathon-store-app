@@ -43,6 +43,11 @@ export const PLATFORMS = [
     captionMax: 2200,
     mediaMax: 10,
     video: true,
+    // Instagram renders NO tappable link in a feed caption — a URL there is
+    // dead text a shopper has to retype, and it reads like a broken post. So
+    // the product URL is dropped and replaced by a pointer to the bio link,
+    // which is the one link Instagram does honour. See BIO_NOTE.
+    linkStyle: "bio",
   },
   {
     key: "facebook",
@@ -52,6 +57,9 @@ export const PLATFORMS = [
     captionMax: 5000,
     mediaMax: 10,
     video: true,
+    // Facebook DOES linkify a URL in the message body, so the product link
+    // goes in whole and is tappable straight to the product page.
+    linkStyle: "url",
   },
   {
     key: "tiktok",
@@ -63,6 +71,9 @@ export const PLATFORMS = [
     titleMax: 150,
     mediaMax: 35,
     video: true,
+    // TikTok's description linkifies for a business account, and there is room
+    // for the URL, so it is treated like Facebook.
+    linkStyle: "url",
   },
 ];
 
@@ -430,6 +441,40 @@ export function captionWithLink(caption, link) {
   return body ? `${body}\n\n${url}` : url;
 }
 
+// ── THE INSTAGRAM LINE ───────────────────────────────────────────────────────
+// Instagram is the only platform here that will not linkify a caption, and it
+// is the one driving the most traffic. Pasting the product URL in anyway was
+// the old behaviour and it produced posts ending in a long dead string that a
+// shopper cannot tap — which is a large part of why they DM instead.
+//
+// So Instagram gets this line instead of the URL. The bio link points at the
+// Shop the Feed collection (scripts/social/shop-the-feed.mjs), which is kept
+// in sync with exactly these posts, so "link in bio" resolves to the product
+// that was just posted rather than to a homepage the shopper has to search.
+export const BIO_NOTE = "🔗 Shop this — link in bio";
+
+// Whether a caption already tells the reader where the link is. The generator
+// writes this line by itself often enough ("Shop both online — link in bio")
+// that appending ours unconditionally would double it up.
+const MENTIONS_BIO = /link in bio/i;
+
+/**
+ * The Instagram form: the product URL is REPLACED by the bio pointer.
+ *
+ * A post with no link gets nothing added — a bio pointer on a post that is not
+ * selling anything sends people to a page that does not feature it.
+ */
+export function captionWithBioNote(caption, link) {
+  const body = String(caption || "").trim();
+  const url = String(link || "").trim();
+  if (!url) return body;
+  // A URL the generator inlined mid-sentence is stripped, so the caption never
+  // carries an untappable link on Instagram whatever wrote it.
+  const cleaned = body.split(url).join("").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  if (MENTIONS_BIO.test(cleaned)) return cleaned;
+  return cleaned ? `${cleaned}\n\n${BIO_NOTE}` : BIO_NOTE;
+}
+
 /**
  * What actually gets sent to one platform.
  *   instagram / facebook → { caption }
@@ -441,7 +486,10 @@ export function captionWithLink(caption, link) {
 export function captionFor(post, platformKey) {
   const p = platform(platformKey);
   if (!p) throw new Error(`unknown platform: ${platformKey}`);
-  const full = captionWithLink(post && post.caption, post && post.link);
+  const full =
+    p.linkStyle === "bio"
+      ? captionWithBioNote(post && post.caption, post && post.link)
+      : captionWithLink(post && post.caption, post && post.link);
   if (platformKey === "tiktok") {
     return {
       title: truncateWords(String((post && post.caption) || "").trim(), p.titleMax),
