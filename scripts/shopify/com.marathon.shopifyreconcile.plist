@@ -21,6 +21,16 @@
   is checked out at /Users/marathonclub/marathon-store-app — change BOTH the
   ProgramArguments path and WorkingDirectory if it lives elsewhere.
 
+  NODE PATH: /opt/homebrew/bin/node, which is where Homebrew puts it on Apple
+  silicon — and where it actually is on the mini. This file said
+  /usr/local/bin/node (the Intel location) until 2026-09-03; nothing on the
+  mini has that path, so the agent AS COMMITTED HERE would never have started.
+  It only ran because the installed copy in ~/Library/LaunchAgents had been
+  corrected by hand and the two then drifted. Verified against the machine
+  before changing. Check `which node` on the target before installing this
+  anywhere else; launchd has no PATH of its own and a wrong absolute path
+  fails silently, as a job that is loaded and simply never runs.
+
   CREDENTIALS: nothing secret belongs in this file (it is committed to the
   repo). Shopify credentials are read from the git-ignored .env at the repo
   root; Firebase Admin uses Application Default Credentials, pointed at by
@@ -31,7 +41,7 @@
   <key>Label</key><string>com.marathon.shopifyreconcile</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>/opt/homebrew/bin/node</string>
     <string>/Users/marathonclub/marathon-store-app/scripts/shopify/reconcile-runner.mjs</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>

@@ -256,6 +256,17 @@ The expensive drift-repair passes (full scan, search-index sweep) run every
 30 minutes, and every 3 hours between 23:00 and 07:00 SAST. The **tick** stays
 at two minutes: a publish pressed at 23:40 still goes out at 23:42.
 
+**A trap worth knowing about, found 3 Sep 2026.** The plist committed in this
+repo named `/usr/local/bin/node` — the Intel Homebrew location. The mini is
+Apple silicon and has node at `/opt/homebrew/bin/node`; nothing is at the Intel
+path. The agent ran anyway only because the *installed* copy in
+`~/Library/LaunchAgents` had been corrected by hand at some point, after which
+the two copies drifted and the repo's version was never right. The repo copy is
+corrected now. **launchd has no PATH of its own**, so a wrong absolute path in
+`ProgramArguments` does not error — the job loads, appears in `launchctl list`,
+and simply never runs. Check `which node` on the target before installing this
+anywhere else.
+
 **Updating the code on the mini:**
 
 ```sh
