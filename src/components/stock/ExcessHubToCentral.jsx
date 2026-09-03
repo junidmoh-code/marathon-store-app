@@ -155,26 +155,26 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
     if (movedKeys.has(card.key) || leavingKeys.has(card.key)) return;
     const lines = card.sizes.map((s) => ({ size: s.size, qty: s.qty }));
 
+    // The card starts fading immediately, but it is only RETIRED once the
+    // write has actually landed. The exit animation and the move are awaited
+    // TOGETHER: retiring on a bare timer would race the result and re-hide a
+    // card whose move had already failed.
     setLeavingKeys((prev) => new Set(prev).add(card.key));
-    window.setTimeout(() => {
-      setMovedKeys((prev) => new Set(prev).add(card.key));
-      setLeavingKeys((prev) => { const n = new Set(prev); n.delete(card.key); return n; });
-    }, EXIT_MS);
+    const animated = new Promise((resolve) => setTimeout(resolve, EXIT_MS));
 
-    doMove(card.pid, lines, card.loc, "central").then((moved) => {
-      if (!moved.length) {
-        // Nothing moved — put the card straight back rather than leave the
-        // operator believing a move happened.
-        setMovedKeys((prev) => { const n = new Set(prev); n.delete(card.key); return n; });
-        setLeavingKeys((prev) => { const n = new Set(prev); n.delete(card.key); return n; });
-        return;
-      }
+    Promise.all([doMove(card.pid, lines, card.loc, "central"), animated]).then(([moved]) => {
+      // Committing both in one handler lets React batch them, so a retired
+      // card goes straight from faded to unmounted with no flash.
+      setLeavingKeys((prev) => { const n = new Set(prev); n.delete(card.key); return n; });
+      if (!moved.length) return;   // nothing moved — the card simply fades back in
+      setMovedKeys((prev) => new Set(prev).add(card.key));
+
       const total = moved.reduce((t, s) => t + s.qty, 0);
       // A new move supersedes the previous one's Undo (which becomes final)
       // rather than blocking the screen for five seconds.
       setUndo((prev) => {
-        if (prev) window.clearTimeout(prev.timer);
-        const timer = window.setTimeout(
+        if (prev) clearTimeout(prev.timer);
+        const timer = setTimeout(
           () => setUndo((u) => (u && u.key === card.key ? null : u)), UNDO_MS,
         );
         return { key: card.key, hub: card.loc, pid: card.pid, lines: moved, total, timer };
@@ -184,7 +184,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
 
   const undoNow = useCallback(() => {
     if (!undo) return;
-    window.clearTimeout(undo.timer);
+    clearTimeout(undo.timer);
     const u = undo;
     setUndo(null);
     doMove(u.pid, u.lines, "central", u.hub).then(() => {
@@ -192,7 +192,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
     });
   }, [undo, doMove]);
 
-  useEffect(() => () => { if (undo) window.clearTimeout(undo.timer); }, [undo]);
+  useEffect(() => () => { if (undo) clearTimeout(undo.timer); }, [undo]);
 
   // ── fixed-row-height windowing ───────────────────────────────────────────
   const scrollerRef = useRef(null);
