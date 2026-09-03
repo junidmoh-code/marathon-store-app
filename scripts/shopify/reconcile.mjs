@@ -65,7 +65,8 @@ import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_R
 // obtained WITHOUT a whole-node read. See reconcileScope.mjs for the watermark
 // contract and its three backstops.
 import {
-  planScan, nextRetrySet, fullScanIntervalMs, readReconcileState, writeReconcileState,
+  planScan, nextRetrySet, fullScanIntervalMs, isMissingIndexError,
+  readReconcileState, writeReconcileState,
   readChangedPublishNodes, readLivePids, makeStockLocationResolver,
 } from "./reconcileScope.mjs";
 // Storefront collections. The map is repo data (collectionMap.mjs); the gids
@@ -139,12 +140,35 @@ const scan = COMMIT && !ONLY
   ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
   : { mode: "full", since: null, why: ONLY ? "--pids" : "dry run" };
 const retryPids = Object.keys(scanState?.retry || {});
-const all = scan.mode === "incremental"
-  ? await readChangedPublishNodes(db, { since: scan.since, retryPids, meter })
-  : await (async () => { const v = await readAllPublishNodes(db); meter("shopify_publish (whole node)", v); return v; })();
+const readWholeNode = async () => {
+  const v = await readAllPublishNodes(db);
+  meter("shopify_publish (whole node)", v);
+  return v;
+};
+let scanMode = scan.mode;
+let scanWhy = scan.why;
+let all;
+if (scanMode === "incremental") {
+  try {
+    all = await readChangedPublishNodes(db, { since: scan.since, retryPids, meter });
+  } catch (e) {
+    // The index is not optional to RTDB: an unindexed orderByChild is REFUSED,
+    // not silently sorted. Falling back to the whole-node read keeps this tick
+    // correct at exactly the price it used to pay — and says so, every tick,
+    // until somebody pastes the index.
+    if (!isMissingIndexError(e, "updatedAt")) throw e;
+    console.error('  ⚠ /shopify_publish has no ".indexOn": "updatedAt" — this tick fell back to reading the WHOLE node ' +
+      "(~2 MB, the old cost). Paste the index from docs/SHOPIFY-SYNC.md §9.1 to make it cheap; nothing else needs changing.");
+    scanMode = "full";
+    scanWhy = "no updatedAt index — fell back";
+    all = await readWholeNode();
+  }
+} else {
+  all = await readWholeNode();
+}
 if (COMMIT) {
-  console.log(`scan: ${scan.mode} (${scan.why})` +
-    (scan.mode === "incremental" ? ` · ${Object.keys(all).length} node(s) in window, ${retryPids.length} retry` : ""));
+  console.log(`scan: ${scanMode} (${scanWhy})` +
+    (scanMode === "incremental" ? ` · ${Object.keys(all).length} node(s) in window, ${retryPids.length} retry` : ""));
 }
 const worklist = [];
 const skippedLegacy = [];
@@ -1112,13 +1136,13 @@ for (const { pid, want } of capped) {
 // Its live set comes from `.indexOn: ["state"]`, which the live rules ALREADY
 // carry — or, on a full-scan tick, from the map already in hand, for free.
 const sweptRecently = Number(scanState?.lastSweepAt) || 0;
-const sweepDue = scan.mode === "full" ||
+const sweepDue = scanMode === "full" ||
   results.length > 0 ||
   runStartedAt - sweptRecently >= fullScanIntervalMs(runStartedAt);
 let sweepRan = false;
 try {
   if (!sweepDue) throw new Error("__not_due__");
-  const liveNow = scan.mode === "full"
+  const liveNow = scanMode === "full"
     ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
     : await readLivePids(db, { meter });
   sweepRan = true;
@@ -1165,7 +1189,7 @@ if (COMMIT && !ONLY) {
   await writeReconcileState(db, {
     watermark: runStartedAt,
     retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),
-    ...(scan.mode === "full" ? { lastFullScanAt: runStartedAt } : {}),
+    ...(scanMode === "full" ? { lastFullScanAt: runStartedAt } : {}),
     ...(sweepRan ? { lastSweepAt: runStartedAt } : {}),
     updatedAt: runStartedAt,
   });

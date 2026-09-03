@@ -233,13 +233,27 @@ scheduled run):
 cd ~/marathon-store-app && node scripts/shopify/reconcile-runner.mjs
 ```
 
-**Cost of an idle tick.** `reconcile.mjs` reads `/shopify_publish`, finds no
-unapplied intent and exits *before* minting a Shopify token — so an idle tick
-is one RTDB read plus a node boot, 720 times a day. That read is the whole
-`/shopify_publish` node; it is small today (one record per reviewed product)
-but grows with the catalogue. If it ever matters, the fix is an indexed query
+**Cost of an idle tick.** This paragraph used to say the read "is small today
+… but grows with the catalogue. If it ever matters, the fix is an indexed query
 rather than a longer interval — worth revisiting past a few thousand reviewed
-products, not before.
+products, not before." It got there: **3,832 nodes, ~2.2 MB, read TWICE per
+tick**, measured on 3 Sep 2026 at 45–79% of all traffic in the database
+(`docs/bandwidth-capture-sept.md`). The indexed query it predicted is now
+built — see `docs/SHOPIFY-SYNC.md` §9.
+
+`reconcile.mjs` still exits *before* minting a Shopify token when there is no
+unapplied intent, so an idle tick is a node boot plus:
+
+- **~8 bytes**, once `".indexOn": ["state", "updatedAt"]` is on
+  `/shopify_publish` in the console rules (§9.1 of that doc);
+- **~2.2 MB** until then — RTDB *refuses* an unindexed query rather than
+  sorting it, so the tick falls back to the old whole-node read and logs a line
+  saying so on every tick. That line is the reminder; it goes away when the
+  index is pasted, with no code change.
+
+The expensive drift-repair passes (full scan, search-index sweep) run every
+30 minutes, and every 3 hours between 23:00 and 07:00 SAST. The **tick** stays
+at two minutes: a publish pressed at 23:40 still goes out at 23:42.
 
 **Updating the code on the mini:**
 
@@ -248,4 +262,6 @@ ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && git pull && npm ci --
 ```
 
 No launchd reload is needed — each tick spawns a fresh node process, so the
-next tick picks the new code up.
+next tick picks the new code up. **There is no auto-pull**: on 3 Sep 2026 the
+mini was found sitting on `main` at #540 while `main` was at #549, nine merged
+PRs behind. If a fix is not visible on the mini, this command is why.

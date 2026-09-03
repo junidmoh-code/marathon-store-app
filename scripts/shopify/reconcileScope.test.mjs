@@ -4,7 +4,7 @@
 // silently never publishes", so they are written as the failure they prevent.
 import { describe, it, expect } from "vitest";
 import {
-  sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet,
+  sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, isMissingIndexError,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
 
@@ -99,5 +99,20 @@ describe("nextRetrySet — unfinished work outlives the window that cannot see i
     expect(next.new).toBe(now);
     expect(next.old0).toBeUndefined();
     expect(next[`old${MAX_RETRY_PIDS - 1}`]).toBeDefined();
+  });
+});
+
+describe("isMissingIndexError — RTDB refuses an unindexed query, it does not sort it", () => {
+  it("recognises the live refusal verbatim", () => {
+    // Verified against the live database, 3 Sep 2026.
+    const err = new Error('Index not defined, add ".indexOn": "updatedAt", for path "/shopify_publish", to the rules');
+    expect(isMissingIndexError(err, "updatedAt")).toBe(true);
+  });
+
+  it("does not swallow an unrelated failure, or a refusal about a DIFFERENT field", () => {
+    expect(isMissingIndexError(new Error("permission_denied at /shopify_publish"), "updatedAt")).toBe(false);
+    expect(isMissingIndexError(new Error("network error"), "updatedAt")).toBe(false);
+    const other = new Error('Index not defined, add ".indexOn": "state", for path "/shopify_publish", to the rules');
+    expect(isMissingIndexError(other, "updatedAt")).toBe(false);
   });
 });

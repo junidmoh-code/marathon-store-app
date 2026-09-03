@@ -388,10 +388,27 @@ Live rules today carry `".indexOn": ["state"]`. **Add `"updatedAt"`:**
 }
 ```
 
-Until it is pasted the query still returns the **correct** rows — RTDB sorts
-server-side over the whole node and warns on the console — so the loop is
-correct either way; it just keeps paying the old price for the worklist read.
-Everything else in the table above saves immediately.
+**RTDB does not sort an unindexed query — it refuses it.** Verified against the
+live database on 3 Sep 2026:
+
+```
+Index not defined, add ".indexOn": "updatedAt", for path "/shopify_publish", to the rules
+```
+
+So the refusal is caught and the tick falls back to the whole-node read it did
+before — correct, at exactly the old price, and it says so in the log on every
+tick until the index is pasted. Everything else in the table above saves
+immediately, with or without it.
+
+Measured, per tick (3 Sep, `/shopify_publish` = 3,832 nodes, mean 696 B/node):
+
+| | before | after, no index | after, index pasted |
+|---|---:|---:|---:|
+| idle tick | ~4.4 MB | ~2.2 MB | **~8 B** |
+| per product published | +6,204,009 B (`/stock`) + ~3 MB (`/shopify_sync` root txn) | +100 B | +100 B |
+| search-index sweep live set | 2.2 MB, every tick | 747,434 B, on a cadence | 747,434 B, on a cadence |
+| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~85 MB** |
+| **per month at $1/GB** | **~$96 idle, $160 busy** | ~$48 | **~$2.60** |
 
 ### 9.2 The bookkeeping node
 

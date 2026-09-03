@@ -35,11 +35,13 @@
 //
 //   IT DEGRADES TO TODAY'S COST, NEVER WORSE. The incremental query needs
 //   `.indexOn: ["state", "updatedAt"]` on /shopify_publish; live rules today
-//   carry only "state". Without the index RTDB still returns the CORRECT rows
-//   — it just sorts server-side over the whole node and charges for it, which
-//   is exactly what the old code paid unconditionally. So this is safe to ship
-//   before the index is pasted, and the saving lands the moment it is. The
-//   rule to paste is printed in the PR and in docs/SHOPIFY-SYNC.md.
+//   carry only "state". RTDB does NOT quietly sort an unindexed query
+//   server-side — it REFUSES it outright ("Index not defined, add
+//   .indexOn: \"updatedAt\"..."), verified against the live database on
+//   3 Sep 2026. So the refusal is caught and the tick falls back to the whole-
+//   node scan it did before: correct, at exactly the old price, and LOUD about
+//   why. Paste the index (docs/SHOPIFY-SYNC.md §9.1) and the saving lands with
+//   no code change.
 //
 //   CADENCE APPLIES TO THE EXPENSIVE PART, NOT THE TICK. The tick stays at two
 //   minutes: a publish pressed at 23:40 must still go out at 23:42. What backs
@@ -140,6 +142,14 @@ export function nextRetrySet({ previous = {}, attempted = [], failedPids = [], n
   const trimmed = {};
   for (const pid of kept) trimmed[pid] = next[pid];
   return trimmed;
+}
+
+// The refusal above, recognised. Matched on the two things RTDB always says —
+// "index" and the field name — rather than on the whole sentence, which is a
+// library string and not a contract.
+export function isMissingIndexError(err, field) {
+  const m = String(err?.message || err).toLowerCase();
+  return m.includes("index") && m.includes(String(field).toLowerCase());
 }
 
 // ── RTDB readers ─────────────────────────────────────────────────────────────

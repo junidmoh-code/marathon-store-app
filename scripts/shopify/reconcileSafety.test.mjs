@@ -158,6 +158,13 @@ describe("no whole-node read on the scheduled path", () => {
     expect(sweep).toMatch(/readLivePids|Object\.entries\(all\)/);
   });
 
+  it("a missing index falls back to the OLD whole-node read, loudly, rather than throwing", () => {
+    // RTDB refuses an unindexed orderByChild outright — it does not sort it
+    // server-side. Verified against the live database, 3 Sep 2026.
+    expect(SRC).toMatch(/isMissingIndexError\(e, "updatedAt"\)/);
+    expect(SRC).toMatch(/if \(!isMissingIndexError\(e, "updatedAt"\)\) throw e;/);
+  });
+
   it("a commit tick's worklist is scoped, and a dry run's is not", () => {
     // The dry run answers "what is outstanding across the whole shop?" and must
     // keep reading everything; only the scheduled tick reads a window.
