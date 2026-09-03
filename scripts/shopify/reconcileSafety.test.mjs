@@ -279,10 +279,16 @@ describe("the retry set drains", () => {
   it("attempted counts every evaluated retry pid except those the cap deferred", () => {
     const gate = SRC.indexOf("if (COMMIT && !ONLY) {");
     const block = SRC.slice(gate, SRC.indexOf("\n}\n", gate));
-    expect(block).toMatch(/retryPids\.filter\(\(pid\) => !deferred\.has\(pid\)\)/);
+    expect(block).toMatch(/retryPids\.filter\(\(pid\) => !deferred\.has\(pid\) && !unreadable\.has\(pid\)\)/);
     // The deferred set and the carried list must agree on what the cap missed,
     // or a pid could be dropped as attempted while never having been tried.
     expect(block).toMatch(/const deferred = new Set\(worklist\.slice\(capped\.length\)/);
     expect(block).toMatch(/\.\.\.deferred,/);
+  });
+
+  it("a retry pid whose own read failed is NOT counted as evaluated", () => {
+    // Otherwise one transient blip drops a product from the retry set for good.
+    expect(SRC).toMatch(/onUnreadable: \(pid, e\) =>/);
+    expect(SRC).toMatch(/unreadable\.add\(pid\)/);
   });
 });

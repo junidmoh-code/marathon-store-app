@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, isMissingIndexError,
+  readChangedPublishNodes,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
 
@@ -114,5 +115,59 @@ describe("isMissingIndexError — RTDB refuses an unindexed query, it does not s
     expect(isMissingIndexError(new Error("network error"), "updatedAt")).toBe(false);
     const other = new Error('Index not defined, add ".indexOn": "state", for path "/shopify_publish", to the rules');
     expect(isMissingIndexError(other, "updatedAt")).toBe(false);
+  });
+});
+
+// ── One flaky retry read must not cost the whole tick ────────────────────────
+// The window read is the cheap half; the retry pids are read one at a time.
+// Letting a transient error on one of them propagate would abandon everything
+// the window already found — and, because the caller counts evaluated retry
+// pids as attempted, a SILENT skip would be worse still: the pid would drain
+// out of the retry set and never be tried again.
+describe("readChangedPublishNodes", () => {
+  function db({ window: win = {}, points = {} }) {
+    return {
+      ref(path) {
+        if (path === "shopify_publish") {
+          const q = {
+            orderByChild: () => q,
+            startAt: () => q,
+            get: async () => ({ val: () => win }),
+          };
+          return q;
+        }
+        const pid = path.replace("shopify_publish/", "");
+        return {
+          get: async () => {
+            const v = points[pid];
+            if (v instanceof Error) throw v;
+            return { val: () => v ?? null };
+          },
+        };
+      },
+    };
+  }
+
+  it("reports an unreadable retry pid instead of throwing, and still returns the window", async () => {
+    const seen = [];
+    const nodes = await readChangedPublishNodes(
+      db({ window: { a: { desiredState: "on" } }, points: { b: new Error("ECONNRESET"), c: { desiredState: "off" } } }),
+      { since: 1, retryPids: ["b", "c"], onUnreadable: (pid) => seen.push(pid) },
+    );
+    // The window's work survives the blip, and so does the readable retry.
+    expect(Object.keys(nodes).sort()).toEqual(["a", "c"]);
+    expect(seen).toEqual(["b"]);
+  });
+
+  it("does not re-read a retry pid the window already returned", async () => {
+    let reads = 0;
+    const base = db({ window: { a: { desiredState: "on" } }, points: { a: { desiredState: "on" } } });
+    const counting = { ref: (p) => { if (p !== "shopify_publish") reads += 1; return base.ref(p); } };
+    await readChangedPublishNodes(counting, { since: 1, retryPids: ["a"] });
+    expect(reads).toBe(0);
+  });
+
+  it("still refuses a bad product id — that is a bug, not a blip", async () => {
+    await expect(readChangedPublishNodes(db({}), { since: 1, retryPids: ["a/b"] })).rejects.toThrow();
   });
 });

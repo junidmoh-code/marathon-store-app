@@ -115,10 +115,19 @@ export function planScan({ state, nowMs, force = false }) {
   if (nowMs - lastFull >= due) {
     return { mode: "full", since: null, why: `full scan due (${Math.round(due / 60000)} min cadence)` };
   }
-  // A watermark from the future is a skewed clock, not a valid window: fall
-  // back to a full scan rather than silently skipping everything.
+  // A watermark from the FUTURE is not a valid window: fall back to a full scan
+  // rather than silently skipping everything.
+  //
+  // Be honest about what this catches. `nowMs` is the reconciler's own clock —
+  // the same clock that wrote the watermark — so this sees a discontinuous jump
+  // (a corrupted state write, a clock stepped backwards, a state node restored
+  // from an older copy) and NOT a steady skew, where both sides drift together
+  // and the comparison stays true. Steady skew is covered instead by the thing
+  // that does not depend on the clock at all: the full-scan cadence, which
+  // bounds the worst case at 30 minutes by day and 3 hours overnight no matter
+  // what the clock believes.
   if (watermark > nowMs + WATERMARK_OVERLAP_MS) {
-    return { mode: "full", since: null, why: "watermark is ahead of the server clock" };
+    return { mode: "full", since: null, why: "watermark is ahead of this machine's clock" };
   }
   return { mode: "incremental", since: watermark - WATERMARK_OVERLAP_MS, why: "watermark" };
 }
@@ -173,7 +182,7 @@ export async function writeReconcileState(db, patch) {
 //
 // `meter` is called with each snapshot value so the run can report what it
 // actually cost; bandwidth this loop spends is the whole point of the module.
-export async function readChangedPublishNodes(db, { since, retryPids = [], meter = () => {} }) {
+export async function readChangedPublishNodes(db, { since, retryPids = [], meter = () => {}, onUnreadable = () => {} }) {
   const q = db.ref("shopify_publish").orderByChild("updatedAt").startAt(since);
   const snap = await q.get();
   const val = snap.val() || {};
@@ -182,12 +191,24 @@ export async function readChangedPublishNodes(db, { since, retryPids = [], meter
   // A failed product's node was not written, so its updatedAt did not move and
   // the window above cannot contain it. Read those by id — one small read each,
   // bounded by MAX_RETRY_PIDS.
+  //
+  // ONE FLAKY POINT READ MUST NOT COST THE WHOLE TICK. Without the catch, a
+  // transient error on any single retry pid propagates out of here, is not a
+  // missing-index error, and takes down the entire run — including all the
+  // work the window already found and could have applied. It also matters that
+  // the caller HEARS about it: an unreadable pid was not evaluated, and the
+  // caller counts evaluated retry pids as attempted, so a silent skip would
+  // drop it from the retry set and it would never be tried again.
   for (const pid of retryPids) {
     if (nodes[pid] !== undefined) continue;
-    assertSafeSegment(pid, "productId");
-    const one = (await db.ref(`shopify_publish/${pid}`).get()).val();
-    meter(`shopify_publish/${pid} (retry)`, one);
-    if (one) nodes[pid] = one;
+    assertSafeSegment(pid, "productId");   // a bad id is a bug, not a blip
+    try {
+      const one = (await db.ref(`shopify_publish/${pid}`).get()).val();
+      meter(`shopify_publish/${pid} (retry)`, one);
+      if (one) nodes[pid] = one;
+    } catch (e) {
+      onUnreadable(pid, e);
+    }
   }
   return nodes;
 }

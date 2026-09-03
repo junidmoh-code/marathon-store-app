@@ -148,9 +148,20 @@ const readWholeNode = async () => {
 let scanMode = scan.mode;
 let scanWhy = scan.why;
 let all;
+// Retry pids whose individual read failed this tick. They were NOT evaluated,
+// so they must not be counted as attempted below — otherwise a transient blip
+// would quietly drop a product from the retry set and it would never be tried
+// again.
+const unreadable = new Set();
 if (scanMode === "incremental") {
   try {
-    all = await readChangedPublishNodes(db, { since: scan.since, retryPids, meter });
+    all = await readChangedPublishNodes(db, {
+      since: scan.since, retryPids, meter,
+      onUnreadable: (pid, e) => {
+        unreadable.add(pid);
+        console.error(`  ⚠ could not read retry pid ${pid} (${String(e?.message || e)}) — kept for the next tick`);
+      },
+    });
   } catch (e) {
     // The index is not optional to RTDB: an unindexed orderByChild is REFUSED,
     // not silently sorted. Falling back to the whole-node read keeps this tick
@@ -1198,7 +1209,7 @@ if (COMMIT && !ONLY) {
   // genuinely deferred is held back, and it is carried instead.
   const attempted = [...new Set([
     ...capped.map((w) => w.pid),
-    ...retryPids.filter((pid) => !deferred.has(pid)),
+    ...retryPids.filter((pid) => !deferred.has(pid) && !unreadable.has(pid)),
   ])];
   await writeReconcileState(db, {
     watermark: runStartedAt,
