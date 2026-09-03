@@ -462,3 +462,19 @@ describe("the deleted-product cleanup re-reads before it deletes", () => {
     expect(remove).toBeGreaterThan(guard);
   });
 });
+
+// ─── WHAT COUNTS AS "UNFINISHED" IS A DELIBERATE LIST ────────────────────────
+// skipped and capped get another attempt on the next tick because another
+// attempt gets further. A removal-ceiling `refused` does not: the additions
+// were applied and the removals will refuse again on identical input, so
+// re-sweeping every two minutes only reprints the message at the cost of the
+// 747 KB live-set read. Pinned so that "add refused to the list" is a decision
+// someone makes on purpose rather than a tidy-up.
+describe("the unfinished-sweep list is exactly skipped and capped", () => {
+  it("does not treat a removal-ceiling refusal as unfinished", () => {
+    const line = SRC.slice(SRC.indexOf("sweepRan = !sweep."), SRC.indexOf("\n", SRC.indexOf("sweepRan = !sweep.")));
+    expect(line).toContain("!sweep.skipped");
+    expect(line).toContain("!sweep.capped");
+    expect(line).not.toContain("refused");
+  });
+});

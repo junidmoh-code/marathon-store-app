@@ -1199,6 +1199,15 @@ if (sweepDue) {
     // was simply true. Stamping lastSweepAt on a capped run makes the message a
     // lie: the remaining documents would wait 30 minutes, or 3 hours overnight,
     // rather than the next tick. Leave it unstamped and the promise holds.
+    // `refused` is deliberately NOT in this list (reviewed and declined,
+    // PR #551). A removal-ceiling refusal is not unfinished work that the next
+    // tick would finish: the additions were all applied, and the removals will
+    // refuse again on identical input. Re-sweeping every two minutes would buy
+    // nothing and cost the 747 KB live-set read each time, to reprint the same
+    // message. Its own text says what actually clears it — a human running
+    // build-search-index.mjs — and the cadence is the right interval at which
+    // to keep saying so. `capped` and `skipped` are different: those really do
+    // get further on the next attempt.
     sweepRan = !sweep.skipped && !sweep.capped;
     if (sweep.skipped) {
       // already warned

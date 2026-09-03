@@ -186,6 +186,29 @@ export async function ensureClaimIndex(db) {
   return { built: true, entries: n, filled, kept };
 }
 
+// WHY THERE IS NO LOCK AROUND THIS FUNCTION (reviewed and declined, PR #551).
+// A reviewer asked for per-product serialisation so that no concurrent call can
+// commit a pointer during the gap between the claim and the pointer write. The
+// gap is real; it does not need a lock, because the losing writer resolves it
+// correctly on its own. Worst interleaving, two processes A and B on the same
+// record P with different gids G1 and G2, both past the pre-check:
+//
+//   A: claim G1               → claims/G1 = P        (atomic, own key)
+//   B: claim G2               → claims/G2 = P        (atomic, own key, no contention)
+//   A: pointer txn cur=null   → writes G1            (atomic, commits)
+//   B: pointer txn cur=G1≠G2  → clash; confirms against the server; releases
+//                               its own G2 claim (ownership-checked) and throws
+//
+//   Final: claims/G1 = P, pointer = G1, claims/G2 gone. A wins, B refuses
+//   cleanly, nothing is corrupt. Symmetric if B's pointer lands first.
+//
+// The same gid for two different records is serialised by the transaction on
+// the single claim key, so one of them refuses. Both invariants therefore hold
+// without a lock — and a distributed lock in a script whose scheduled path is
+// already single-flight would add a stale-lock failure mode that is worse than
+// the race it closes. The one residual is a release that itself fails, which is
+// logged loudly and named as needing a manual clear.
+//
 // Atomically claim a Shopify product for ONE record. Two guarantees, unchanged
 // from the root-transaction version:
 //   · no other record may map this gid (the transaction on the claim child);
