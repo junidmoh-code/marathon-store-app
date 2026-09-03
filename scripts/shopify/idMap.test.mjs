@@ -3,6 +3,7 @@
 // gid validation, and planIdMapWrite's create / noop / merge / refuse matrix —
 // the idempotency contract the live writer rides on.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
 import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct, releaseClaim, ensureClaimIndex, isProductRecordKey } from "./idMap.mjs";
 
 const gid = {
@@ -515,4 +516,41 @@ describe("claimShopifyProduct confirms a pointer clash before acting on it", () 
       .rejects.toThrow(/record already maps to gid:\/\/shopify\/Product\/999/);
     expect(db.state.server).toBe(null);     // claim handed back, as it must be
   });
+});
+
+// ── The class of bug, not just its three instances ──────────────────────────
+// Three separate transactions in idMap.mjs express "no" by returning
+// `undefined`, and all three were written without a confirmation before someone
+// noticed. An abort is the one transaction outcome that never reaches the
+// server, so the value the callback judged may have been a stale local cache —
+// which means EVERY such abort needs a confirming read before its verdict is
+// acted on. This guard fails when a fourth one is added without it.
+describe("every abort in idMap.mjs is confirmed against the server", () => {
+  const SRC = readFileSync(new URL("./idMap.mjs", import.meta.url), "utf8");
+
+  // Every function that owns a transaction which can abort.
+  const OWNERS = ["claimShopifyProduct", "releaseClaim", "writeIdMap"];
+
+  it("the count of aborts is known, so a new one cannot arrive unnoticed", () => {
+    const aborts = (SRC.match(/return undefined;/g) || []).length;
+    // Two in claimShopifyProduct (the claim's refusal, and the pointer clash),
+    // two in releaseClaim (absent, held-by-other — one confirmation covers
+    // both), one in writeIdMap's conflict. A change to this number is the
+    // prompt to check the new one confirms too, and only then update the count.
+    expect(aborts).toBe(5);
+  });
+
+  for (const fn of OWNERS) {
+    it(`${fn} confirms with a fresh server read and bounds the retry`, () => {
+      const start = SRC.indexOf(`export async function ${fn}`);
+      expect(start).toBeGreaterThan(-1);
+      const body = SRC.slice(start, SRC.indexOf("\n}\n", start));
+      // It aborts...
+      expect(body).toContain("return undefined;");
+      // ...and every abort path re-reads before believing it...
+      expect(body).toMatch(/\.get\(\)\)\.val\(\)/);
+      // ...exactly once, so a genuine conflict cannot spin.
+      expect(body).toMatch(/attempt === 0/);
+    });
+  }
 });
