@@ -302,3 +302,75 @@ describe("the retry set drains", () => {
     expect(SRC).toMatch(/unreadable\.add\(pid\)/);
   });
 });
+
+// ─── THE INTERPRETER LAUNCHD WILL ACTUALLY SPAWN ─────────────────────────────
+// This file named /usr/local/bin/node — the Intel Homebrew prefix — from the
+// day it was committed (2026-08-14, #368) until 2026-09-03. The mini is Apple
+// silicon and has nothing at that path, so the agent AS COMMITTED HERE would
+// never have started; it ran only because the installed copy in
+// ~/Library/LaunchAgents had been corrected by hand, after which the two
+// drifted and nobody looked again.
+//
+// It went unnoticed for three weeks for one reason: nothing referenced this
+// plist from a test. The sibling social agent had exactly this regression in
+// PR #421 and came away with a test (scripts/social/socialSchedule.test.mjs);
+// this one did not, and so stayed broken. Same four assertions, here.
+//
+// launchd does not search PATH and does not report a missing program. A wrong
+// absolute path produces a job that loads, lists, and silently never runs —
+// the worst shape a failure can take for something nobody watches.
+describe("the reconcile agent's interpreter", () => {
+  const PLIST = readFileSync(new URL("./com.marathon.shopifyreconcile.plist", import.meta.url), "utf8");
+  const program = PLIST.match(/<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/)?.[1];
+
+  it("is an absolute path — launchd does not search PATH", () => {
+    expect(program).toBeTruthy();
+    expect(program.startsWith("/")).toBe(true);
+  });
+
+  it("is NOT the Intel-era path, which does not exist on this machine", () => {
+    expect(program).not.toBe("/usr/local/bin/node");
+  });
+
+  it("is the same interpreter the social agent names — one machine, one node", () => {
+    expect(program).toBe("/opt/homebrew/bin/node");
+  });
+
+  it("does not put a non-existent directory first on PATH", () => {
+    // Nothing here resolves node (that is absolute), but a child process
+    // shelling out to git or npm would search it.
+    const path = PLIST.match(/<key>PATH<\/key><string>([^<]+)<\/string>/)?.[1];
+    expect(path).toBeTruthy();
+    expect(path.split(":")[0]).toBe("/opt/homebrew/bin");
+  });
+});
+
+// ─── THE EASIEST LINES IN THE WORLD TO WRITE BACK IN ─────────────────────────
+// Two fixes in this branch live in a single expression each, in files with no
+// behavioural seam. Reverting either leaves every other test green, so they are
+// pinned the way the rest of this file pins things: by reading the source.
+describe("the one-expression fixes stay fixed", () => {
+  it("the sweep is gated on being DUE, not run every tick", () => {
+    // Deleting the gate returns the loop to a 747 KB live-set read every two
+    // minutes, all night — half of what this branch set out to remove.
+    expect(SRC).toMatch(/if \(sweepDue\) \{/);
+    expect(SRC).toMatch(/const sweepDue = /);
+  });
+
+  it("both /shopify_sync consumers filter siblings by PREFIX, not by name", () => {
+    // `k !== "_collections"` was correct when _collections was the only
+    // sibling. This branch adds _reconcile and _claims; a name compare lets
+    // them through to be processed as products.
+    for (const f of ["backfill-inventory-tracking.mjs", "sync-collections.mjs"]) {
+      const src = readFileSync(new URL(`./${f}`, import.meta.url), "utf8");
+      expect(src, `${f} must import the shared predicate`).toMatch(/isProductRecordKey/);
+      expect(src, `${f} must not compare sibling names`).not.toMatch(/!==\s*"_collections"/);
+    }
+  });
+
+  it("a failed claim hand-back is reported, not swallowed in silence", () => {
+    const idmap = readFileSync(new URL("./idMap.mjs", import.meta.url), "utf8");
+    const body = idmap.slice(idmap.indexOf("export async function claimShopifyProduct"));
+    expect(body.slice(0, body.indexOf("\n}\n"))).toMatch(/could not release claim/);
+  });
+});

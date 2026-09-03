@@ -47,7 +47,11 @@
   <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <!-- Homebrew's arm64 prefix FIRST: /usr/local/bin is the Intel prefix and
+         does not exist on this machine. Nothing here resolves `node` (that is
+         an absolute path above), but a child process shelling out to git or
+         npm would otherwise search a dead directory first. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
   <!-- Every 2 minutes (owner spec). A tick with nothing to do exits in under a

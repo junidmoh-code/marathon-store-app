@@ -258,7 +258,16 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
       // else releases a claim except the deleted-product path, and that only
       // runs for a record whose own map still points at the gid. The release is
       // ownership-checked, so it can only ever free the entry we just made.
-      try { await releaseClaim(db, productId, shopifyProductId); } catch { /* leave it rather than mask the clash */ }
+      try {
+        await releaseClaim(db, productId, shopifyProductId);
+      } catch (e) {
+        // Swallowed so the clash below is what surfaces — but NOT silently.
+        // If this release fails, the exact leak this branch exists to prevent
+        // has happened, and the clash message names the OTHER gid, not the one
+        // stranded. Without this line, recovering means deducing which key is
+        // stuck from a message that does not mention it.
+        console.error(`  ⚠ could not release claim ${claimKeyFor(shopifyProductId)} after a pointer clash (${String(e?.message || e)}) — that claim key is now stranded and will block this gid until it is cleared by hand`);
+      }
       throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${clash}`);
     }
   }

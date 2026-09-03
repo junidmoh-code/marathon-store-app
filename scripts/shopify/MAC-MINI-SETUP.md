@@ -57,8 +57,13 @@ npm ci --prefix functions
 which node && node --version
 ```
 
-If `which node` is not `/usr/local/bin/node`, update the first
-`ProgramArguments` string in the plist to the real path.
+The plist names `/opt/homebrew/bin/node`, which is where Homebrew puts it on
+Apple silicon and where it is on this mini. **If `which node` says anything
+else, update the first `ProgramArguments` string in the plist to the real
+path** — launchd does not search `PATH`, so a wrong absolute path does not
+error: the job loads, appears in `launchctl list`, and silently never runs.
+(This file used to name the Intel path, `/usr/local/bin/node`. See the note in
+"Cost of an idle tick" below for how long that went unnoticed.)
 
 ---
 
