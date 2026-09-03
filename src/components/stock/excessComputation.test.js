@@ -189,6 +189,20 @@ describe("a move leaves the cell at exactly Keep, never below", () => {
     const stock = { hub1: { af1: cells({ 9: -4 }) } };
     expect(computeHubSneakerExcess(ctxOf(stock), NONE)).toEqual([]);
   });
+
+  // MUTATION-PROVED: dropping `Math.max(0, excess)` fails this. The default
+  // `movable < 1` filter hides a negative from the screen, so the clamp is
+  // only observable through a caller that asks for zero-unit rows — but a
+  // NEGATIVE movable is a move instruction pointing the wrong way, and no
+  // caller of this module may ever be handed one.
+  it("never reports a negative movable, even for a caller that wants zero rows", () => {
+    const stock = { hub1: { af1: cells({ 9: 1 }) } };     // 1 on hand vs Keep 2
+    const rows = computeHubExcess(ctxOf(stock), NONE, {
+      groupFilter: isSneakerGroupProduct, minMovable: 0,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].excess).toBe(0);                       // clamped, never −1
+  });
 });
 
 describe("excess below 1 never renders", () => {
