@@ -47,11 +47,18 @@
 // ── RESERVATION NETTING ──────────────────────────────────────────────────────
 // "Open outbound refill request FROM this hub" = a /refill_requests record
 // with status "open" whose FULFILLING location is this hub — that is
-// `r.source` (compat) or `r.createdFrom.source` (current engine write shape,
-// functions/refill-scan.cjs:738-742), never `r.requestingLocation` (the
-// DESTINATION the request is FOR). Same field precedence already used by
-// refillQueueCore.js:1244 for the rejection-ledger "by" lookup — kept
-// consistent here rather than invented.
+// `r.source` (compat), `r.createdFrom.source` (current engine write shape,
+// functions/refill-scan.cjs:738-742), or failing both the route configured for
+// the requesting location, `config.routes[r.requestingLocation]`. NEVER
+// `r.requestingLocation` itself, which is the DESTINATION the request is FOR.
+//
+// That third leg matters: it is the engine's OWN precedence
+// (refill-engine.cjs:1244, `rr.source || rr.createdFrom?.source ||
+// routes[rr.requestingLocation]`). Matching only the first two would silently
+// drop any request carrying neither field — a legacy row, or a hand-made
+// request — from the netting, inflating that hub's excess and letting the same
+// physical units be sent to Central while still promised to a shop. Mirroring
+// the engine exactly is the whole point of this lookup.
 //
 // ── GROUPS ───────────────────────────────────────────────────────────────────
 // Sneakers group (owner's "footwear-all" policy group, functions/lib/
@@ -99,11 +106,11 @@ export function clothingExcessEnabled(config, dest) {
 // Builds a `${hub}|${pid}|${sizeKey}` -> qty map from already-open refill
 // requests (pass the result of useRefillRequests("open"), the SAME hook
 // MoveExcess.jsx already subscribes with — no new whole-node read pattern).
-export function reservedByHubFromOpenRequests(openRequests) {
+export function reservedByHubFromOpenRequests(openRequests, routes = {}) {
   const out = new Map();
   for (const r of openRequests || []) {
     if (!r || r.status !== "open" || r.shadow) continue;
-    const src = r.source || r.createdFrom?.source;
+    const src = r.source || r.createdFrom?.source || routes?.[r.requestingLocation];
     if (!src || !r.productId || r.size == null) continue;
     const k = `${src}|${r.productId}|${engineSizeKey(r.size)}`;
     out.set(k, (out.get(k) || 0) + (Number(r.qty) || 0));

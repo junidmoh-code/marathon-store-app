@@ -146,6 +146,29 @@ describe("reservation netting — an open outbound request reduces excess", () =
     expect(rows.find((r) => r.loc === "hub2").excess).toBe(1);   // netted
   });
 
+  // MUTATION-PROVED: dropping the `routes[r.requestingLocation]` leg fails
+  // this. It is the engine's own third fallback (refill-engine.cjs:1244); a
+  // request carrying neither source field would otherwise vanish from the
+  // netting and the same units could be sent to Central while still promised
+  // to a shop.
+  it("falls back to the configured route when the request names no source", () => {
+    const stock = { hub1: { af1: cells({ 9: 5 }) } };
+    const legacy = { id: "r9", status: "open", productId: "af1", size: "9", qty: 2, requestingLocation: "marathon-pe" };
+    const routes = { "marathon-pe": "hub1" };
+    expect(computeHubSneakerExcess(ctxOf(stock), reservedByHubFromOpenRequests([legacy], routes))[0].excess).toBe(1);
+    // …and with no route configured it is simply not attributed to any hub.
+    expect(computeHubSneakerExcess(ctxOf(stock), reservedByHubFromOpenRequests([legacy]))[0].excess).toBe(3);
+  });
+
+  it("prefers an explicit source over the configured route", () => {
+    const stock = { hub1: { af1: cells({ 9: 5 }) }, hub2: { af1: cells({ 9: 5 }) } };
+    const r = { id: "r9", status: "open", productId: "af1", size: "9", qty: 2,
+                requestingLocation: "marathon-pe", source: "hub2" };
+    const rows = computeHubSneakerExcess(ctxOf(stock), reservedByHubFromOpenRequests([r], { "marathon-pe": "hub1" }));
+    expect(rows.find((x) => x.loc === "hub1").excess).toBe(3);   // route NOT used
+    expect(rows.find((x) => x.loc === "hub2").excess).toBe(1);   // explicit source wins
+  });
+
   it("ignores requests that are not open, and requests for another size", () => {
     const stock = { hub1: { af1: cells({ 9: 5 }) } };
     const reserved = reservedByHubFromOpenRequests([

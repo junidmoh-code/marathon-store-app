@@ -37,9 +37,11 @@ vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toI
 // exact prior cell state" real claims rather than argument-shape assertions.
 let ledger = {};
 let failMoves = false;
+let failOneSize = null;   // one size rejected, the rest land — the partial-failure race
 const cellOf = (loc, pid, size) => ledger[`${loc}|${pid}|${size}`] ?? 0;
 const applyMovementMock = vi.fn(async (m) => {
   if (failMoves) return { ok: false, reason: "PERMISSION_DENIED" };
+  if (failOneSize && m.size === failOneSize) return { ok: false, reason: "insufficient_stock" };
   if (m.type !== "transfer_out") return { ok: false, reason: `unexpected type ${m.type}` };
   const from = `${m.from}|${m.productId}|${m.size}`;
   const to = `${m.to}|${m.productId}|${m.size}`;
@@ -110,6 +112,7 @@ beforeEach(() => {
     for (const [pid, bySize] of Object.entries(byPid))
       for (const [size, cell] of Object.entries(bySize)) ledger[`${loc}|${pid}|${size}`] = cell.qty;
   failMoves = false;
+  failOneSize = null;
   applyMovementMock.mockClear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -285,6 +288,41 @@ describe("a failed move is never presented as a success", () => {
     click(moveButtonFor(tree, 5));
     await settle();
     expect(buttonNamed(tree, "Undo")).toBeFalsy();
+    tree.unmount();
+  });
+
+  // The dangerous case, and the one an all-succeed/all-fail pair misses: a
+  // concurrent sale empties one size between render and tap, so ONE line is
+  // rejected and the other lands. Retiring the whole card would hide the
+  // rejected size's real units — the optimistic hide is keyed by product, and
+  // the failed size still resolves a row on every scan, so the liveKeys
+  // cleanup would never bring it back for the rest of the session.
+  // MUTATION-PROVED: relaxing `moved.length === lines.length` back to
+  // `moved.length` retires the card and fails this.
+  it("keeps the card on screen when only SOME of its sizes moved", async () => {
+    failOneSize = "10";                       // size 9 lands, size 10 is rejected
+    const tree = render();
+    click(moveButtonFor(tree, 5));
+    await settle();
+
+    expect(cellOf("hub1", "af1", "9")).toBe(2);    // the good line really moved
+    expect(cellOf("hub1", "af1", "10")).toBe(4);   // the rejected one did not
+    // The card is still there, showing the units that are genuinely still over.
+    expect(screenText(tree)).toContain("Nike Air Force 1 White");
+    tree.unmount();
+  });
+
+  it("offers Undo for only the line that actually moved", async () => {
+    failOneSize = "10";
+    const tree = render();
+    click(moveButtonFor(tree, 5));
+    await settle();
+    click(buttonNamed(tree, "Undo"));
+    await settle();
+    // Size 9 is put back; size 10 was never moved, so it is left alone.
+    expect(cellOf("hub1", "af1", "9")).toBe(5);
+    expect(cellOf("hub1", "af1", "10")).toBe(4);
+    expect(cellOf("central", "af1", "9")).toBe(0);
     tree.unmount();
   });
 });

@@ -30,9 +30,9 @@
 // applyMovement({type:"transfer_out", from, to, ...}), exactly as
 // MoveExcess.jsx:286-292 does with to:"central". No second movement path, no
 // direct stock-cell write. applyMovement RESOLVES { ok, reason } rather than
-// throwing on a rejected write, so every line's result is inspected: a card
-// only stays retired if at least one of its lines actually moved, and Undo
-// only reverses the lines that really did.
+// throwing on a rejected write, so every line's result is inspected: a card is
+// retired only when EVERY one of its lines landed, and Undo only reverses the
+// lines that really moved.
 //
 // VIRTUALIZATION: no react-window/react-virtual in this codebase (checked
 // package.json + src) — a hand-rolled fixed-row-height windowed list is used
@@ -72,7 +72,12 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
     return out;
   }, [products]);
 
-  const reserved = useMemo(() => reservedByHubFromOpenRequests(openRequests), [openRequests]);
+  // config.routes gives the engine's third fallback for "which hub fulfils
+  // this request" — see reservedByHubFromOpenRequests.
+  const reserved = useMemo(
+    () => reservedByHubFromOpenRequests(openRequests, config?.routes),
+    [openRequests, config],
+  );
 
   const [hub, setHub] = useState(EXCESS_HUB_LOCATIONS[0] || "hub1");
   // Cards retired this session (optimistic — hides instantly, ahead of the live
@@ -167,7 +172,14 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
       // card goes straight from faded to unmounted with no flash.
       setLeavingKeys((prev) => { const n = new Set(prev); n.delete(card.key); return n; });
       if (!moved.length) return;   // nothing moved — the card simply fades back in
-      setMovedKeys((prev) => new Set(prev).add(card.key));
+
+      // ONLY a card whose every line landed is retired. On a PARTIAL failure
+      // the card must stay on screen: the optimistic hide is keyed by product,
+      // and the failed size still resolves a row on every scan, so the liveKeys
+      // cleanup below would never fire for it — real, unmoved units would go
+      // invisible for the rest of the session. Leaving the card up lets the
+      // live recompute redraw it with exactly the sizes that are still over.
+      if (moved.length === lines.length) setMovedKeys((prev) => new Set(prev).add(card.key));
 
       const total = moved.reduce((t, s) => t + s.qty, 0);
       // A new move supersedes the previous one's Undo (which becomes final)
@@ -187,6 +199,11 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
     clearTimeout(undo.timer);
     const u = undo;
     setUndo(null);
+    // movedKeys is cleared whatever the reversal returns, deliberately. Once
+    // the key is gone the card is a pure function of live stock again, so a
+    // reversal that only partly landed redraws as whatever is ACTUALLY on the
+    // shelf. Holding the card back on a failed reversal would be the unsafe
+    // direction — it would hide real units behind a stale optimistic flag.
     doMove(u.pid, u.lines, "central", u.hub).then(() => {
       setMovedKeys((prev) => { const n = new Set(prev); n.delete(u.key); return n; });
     });
