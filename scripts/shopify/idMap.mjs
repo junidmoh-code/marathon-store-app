@@ -246,6 +246,7 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
   if (!mineGid) {
     let clash = null;
     await db.ref(`shopify_sync/${productId}/shopifyProductId`).transaction((cur) => {
+      clash = null;   // same rule: only the LAST invocation's verdict counts
       if (cur == null || cur === shopifyProductId) return shopifyProductId;
       clash = cur;
       return undefined;
@@ -276,8 +277,16 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
 // A transaction that removes ONLY our own entry keeps it. Returns what it did.
 export async function releaseClaim(db, productId, shopifyProductId) {
   assertSafeSegment(productId, "productId");
+  // `outcome` is reset at the TOP of every invocation, like `refusal` and
+  // `clash` elsewhere in this file. The callback may run more than once — the
+  // first against a local cache, again against the server value on a conflict —
+  // and only the last invocation describes what happened. Setting it without
+  // clearing it lets an earlier invocation's verdict survive into the answer:
+  // a first pass seeing null ("absent") followed by a real release would still
+  // report "absent", and the caller logs that as "nothing to do".
   let outcome = "released";
   await db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`).transaction((cur) => {
+    outcome = "released";
     if (cur == null) { outcome = "absent"; return cur; }
     if (cur !== productId) { outcome = "held-by-other"; return cur; }
     return null;   // null DELETES the key, which is the release

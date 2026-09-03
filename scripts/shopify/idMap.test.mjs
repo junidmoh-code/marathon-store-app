@@ -407,3 +407,33 @@ describe("isProductRecordKey", () => {
     expect(isProductRecordKey(null)).toBe(false);
   });
 });
+
+// ── A retried transaction reports the LAST invocation, not the first ─────────
+// An RTDB transaction callback may run several times — once against the local
+// cache, again against the server value on a conflict. Only the final one
+// describes what happened, so any verdict the callback records must be cleared
+// at the top of every invocation or an earlier pass's answer survives into it.
+describe("releaseClaim reports the final invocation's verdict", () => {
+  const GID = gid.product(9339656536213);
+  const KEY = "9339656536213";
+
+  it("a first pass against a stale empty cache does not report 'absent' for a real release", async () => {
+    let first = true;
+    const claims = { [KEY]: "p1" };
+    const db = {
+      ref: () => ({
+        async transaction(fn) {
+          // Invocation 1: stale cache says the key is empty.
+          fn(first ? null : claims[KEY]);
+          first = false;
+          // Invocation 2: the server value — this is the one that counts.
+          const out = fn(claims[KEY]);
+          if (out === null) delete claims[KEY];
+          return { committed: true, snapshot: { val: () => out } };
+        },
+      }),
+    };
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
+    expect(KEY in claims).toBe(false);
+  });
+});
