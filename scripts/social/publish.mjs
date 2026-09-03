@@ -48,6 +48,7 @@ import {
 import { readSecret, credentialStatus } from "./secrets.mjs";
 import { publishInstagram, publishFacebook, publishFacebookStory, metaPreflight } from "./meta.mjs";
 import { ensureReelVideo } from "./reel-media.mjs";
+import { refreshShopTheFeed } from "./shop-the-feed.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -583,6 +584,28 @@ async function main() {
         // run is the backstop for exactly this.
         warn(`  ✗ could not release the claim on ${post.id}: ${releaseErr && releaseErr.message} — the next run reclaims it.`);
       }
+    }
+  }
+
+  // ── THE BIO LINK FOLLOWS THE FEED ──────────────────────────────────────────
+  // Instagram gives a caption no tappable link, so every post that just went
+  // out says "link in bio" — and that link has to already be showing the thing
+  // it just promised. Refreshing here, in the same run, is what makes that
+  // true; a separate scheduled job would leave a window where the bio page
+  // still showed yesterday's products.
+  //
+  // IT MUST NEVER FAIL THE RUN. The posts are already live on Instagram and
+  // Facebook by this point; a Shopify hiccup, an expired Shopify token or a
+  // checkout without the Shopify credentials must not mark a successful
+  // publish as failed, and must not cause a retry that double-posts. It is a
+  // warning and nothing more — the next post's run reconciles the whole list
+  // from scratch anyway, so a skipped refresh is self-healing.
+  if (posted > 0 && !DRY_RUN) {
+    try {
+      await refreshShopTheFeed(db, { commit: true });
+    } catch (err) {
+      warn(`  ⚠ Shop the Feed was not refreshed: ${err && err.message}`);
+      warn(`  ⚠ the posts are live; the bio page will catch up on the next run.`);
     }
   }
 
