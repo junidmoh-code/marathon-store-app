@@ -154,8 +154,14 @@ export function isMissingIndexError(err, field) {
 
 // ── RTDB readers ─────────────────────────────────────────────────────────────
 
-export async function readReconcileState(db) {
-  return (await db.ref(RECONCILE_STATE_PATH).get()).val() || null;
+// METERED like every other read. It is small, but an idle tick is now mostly
+// THIS read, so leaving it out would make the loop's own "rtdb read this run"
+// line under-report the very number this work exists to report. A meter that
+// quietly omits the biggest remaining item is worse than no meter.
+export async function readReconcileState(db, { meter = () => {} } = {}) {
+  const val = (await db.ref(RECONCILE_STATE_PATH).get()).val() || null;
+  meter("shopify_sync/_reconcile (scan state)", val);
+  return val;
 }
 
 export async function writeReconcileState(db, patch) {

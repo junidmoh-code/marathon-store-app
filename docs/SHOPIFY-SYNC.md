@@ -400,15 +400,31 @@ before — correct, at exactly the old price, and it says so in the log on every
 tick until the index is pasted. Everything else in the table above saves
 immediately, with or without it.
 
-Measured, per tick (3 Sep, `/shopify_publish` = 3,832 nodes, mean 696 B/node):
+Per tick (3 Sep, `/shopify_publish` = 3,832 nodes, mean 696 B/node).
 
-| | before | after, no index | after, index pasted |
+**Read the column headings.** Only the *before* column is measured on the live
+system — from the profiler capture, against the code that was actually running.
+The two *after* columns are **projections** computed from the same measured node
+sizes and counts. They cannot be measurements: the code in this branch has never
+run on the mini (it has no auto-pull — see `MAC-MINI-SETUP.md`), and the
+`updatedAt` index is deliberately not pasted yet. The first real figure will come
+from the loop's own `rtdb read this run:` line once both of those happen, and
+this table should be corrected against it.
+
+| | before (measured) | after, no index (projected) | after, index pasted (projected) |
 |---|---:|---:|---:|
-| idle tick | ~4.4 MB | ~2.2 MB | **~8 B** |
+| idle tick | ~4.4 MB | ~2.2 MB | **~100 B** |
 | per product published | +6,204,009 B (`/stock`) + ~3 MB (`/shopify_sync` root txn) | +100 B | +100 B |
 | search-index sweep live set | 2.2 MB, every tick | 747,434 B, on a cadence | 747,434 B, on a cadence |
-| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~85 MB** |
-| **per month at $1/GB** | **~$96 idle, $160 busy** | ~$48 | **~$2.60** |
+| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~90 MB** |
+| **per month at $1/GB** | **~$96 idle, $160 busy** | ~$48 | **~$2.70** |
+
+The idle tick is ~100 B rather than the ~8 B an earlier draft of this table
+claimed. An empty `updatedAt` window really is a handful of bytes, but the tick
+also reads its own scan state at `/shopify_sync/_reconcile`, and with the index
+pasted that read *is* the idle tick. It was not being counted: `readReconcileState`
+was the one read in the loop with no `meter()` call, so the figure the loop
+printed about itself omitted its largest remaining item. It is metered now.
 
 ### 9.1a What this work itself cost to read
 
@@ -419,10 +435,13 @@ than it saves is not a saving.
 |---|---:|---|
 | the two profiler hours (3 Sep) | **694 B** | measured — the profiler attributed it, two `/users/{uid}` reads (`docs/bandwidth-capture-sept.md` §2c) |
 | verifying the `updatedAt` index refusal | a refusal, not a payload | RTDB rejected the query and returned an error string; no rows were transferred |
-| everything else (node counts, byte sizes, live/blocked split) | 0 | taken from the profiler output already captured, and from paged/shallow reads already written for other scripts — no whole-node read was issued to investigate a whole-node read |
+| node counts, byte sizes, the live/blocked split | not separately metered | read out of the profiler capture that was already taken, not re-queried. Where a figure needed the database, it came from a paged or shallow read — no whole-node read was issued to investigate a whole-node read |
 
-Against a measured ~3.2 GB/day before, the investigation paid for itself inside
-the first minute.
+The middle row is the honest one: a refused query still costs a round trip and an
+error string, just not a payload. The bottom row is *not* a claim of literally
+zero bytes — it is a claim that no read was issued **for this investigation**
+beyond the 694 B the profiler attributed to it. Against a measured ~3.2 GB/day
+before, the investigation paid for itself inside the first minute either way.
 
 ### 9.2 The bookkeeping node
 
@@ -456,6 +475,17 @@ whether the product exists; if it genuinely does not, it confirms off, removes
 the stale ID map and releases its claim. A query that itself fails answers "not
 gone", which leaves the intent standing.
 
+**This one is not purely a cost change, and should be accepted as such.**
+Everything else in §9 changes only what the loop *reads*. This changes what it
+*writes*: on this path it now removes `/shopify_sync/{pid}` and releases the
+claim, where before it wrote nothing to the ID map on an off. The storefront
+outcome is identical — the product is off either way, because Shopify has
+already deleted it — but the record's mapping is now cleared rather than left
+pointing at a product that no longer exists. That is the point: a record still
+mapped to a deleted product can never be published again, which is the state the
+five stuck records were in. The release is ownership-checked, so it can only
+free a claim this record itself holds.
+
 ### 9.5 Who started this loop, when, and whether anyone meant it to run all night
 
 Asked because "it runs 24/7" is only a defect if nobody decided it should.
@@ -478,9 +508,28 @@ Asked because "it runs 24/7" is only a defect if nobody decided it should.
   was chosen and the 24/7 part came free with the mechanism.
 
 **What was cut, and what deliberately was not.** The tick stays at two minutes,
-day and night, because the reason for two minutes is unchanged: the site must
-not keep selling something that has gone, and a publish or unpublish pressed at
-23:40 must go out at 23:42. What backs off overnight is the expensive
+day and night — but for a narrower reason than the obvious one, and the
+difference is worth stating because the obvious one is wrong.
+
+> **The tick does not keep a live product's stock in step with the shops.**
+> The worklist is built purely from `desiredState` against the confirmed state
+> (`reconcile.mjs`): a product that is already live and whose stock has since
+> changed does not enter it, and no inventory mutation is sent for it. The only
+> `inventorySetQuantities` call happens on the ON path, at the moment a product
+> is published. So "the site must not keep selling something that has gone" is
+> not a description of what this two-minute loop provides — a sale in the shop
+> does not reach Shopify through it at all.
+>
+> What the two-minute tick actually buys is **latency on a publish or unpublish
+> press**: someone takes a product off at 23:40 and it is off the storefront at
+> 23:42. That is a real requirement and it is why the tick was left alone.
+
+Flagged rather than acted on: closing the stock gap above is a separate piece of
+work with its own risk, and this change is a cost change. Cutting the tick
+further is also the owner's call, not this branch's — and with the index pasted
+an idle tick is ~100 B, so there is no longer any cost pressure to cut it.
+
+What backs off overnight is the expensive
 *drift-repair* work — the full scan and the search-index sweep — from every
 30 minutes to every 3 hours between 23:00 and 07:00 SAST. That window is
 deliberately narrower than the measured dead one (01:00–08:00, from the mini's

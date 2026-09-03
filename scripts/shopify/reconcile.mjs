@@ -135,7 +135,7 @@ const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
 // across the whole shop?", and answering that from a five-minute window would
 // be a lie. Only the scheduled commit tick reads incrementally.
 const runStartedAt = Date.now();
-const scanState = COMMIT ? await readReconcileState(db) : null;
+const scanState = COMMIT ? await readReconcileState(db, { meter }) : null;
 const scan = COMMIT && !ONLY
   ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
   : { mode: "full", since: null, why: ONLY ? "--pids" : "dry run" };
