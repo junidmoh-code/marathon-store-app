@@ -250,8 +250,17 @@ built — see `docs/SHOPIFY-SYNC.md` §9.
 `reconcile.mjs` still exits *before* minting a Shopify token when there is no
 unapplied intent, so an idle tick is a node boot plus:
 
-- **~8 bytes**, once `".indexOn": ["state", "updatedAt"]` is on
-  `/shopify_publish` in the console rules (§9.1 of that doc);
+- **~100 bytes**, once `".indexOn": ["state", "updatedAt"]` is on
+  `/shopify_publish` in the console rules (§9.1 of that doc). An empty
+  `updatedAt` window really is a handful of bytes, but the tick also reads its
+  own scan state at `/shopify_sync/_reconcile`, and once the index is pasted
+  that read *is* the idle tick. (An earlier draft of this line said ~8 bytes,
+  counting only the window: `readReconcileState` was the one read in the loop
+  with no `meter()` call, so the loop's own report left out its largest
+  remaining item. It is metered now, and the figure the tick prints includes
+  it.) A tick with retries pending also does **one point read per retry pid**,
+  up to 50, and every commit tick *writes* the scan state once — 720 writes a
+  day, which is a write cost, not a download one;
 - **~2.2 MB** until then — RTDB *refuses* an unindexed query rather than
   sorting it, so the tick falls back to the old whole-node read and logs a line
   saying so on every tick. That line is the reminder; it goes away when the
