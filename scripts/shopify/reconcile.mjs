@@ -1158,26 +1158,28 @@ let sweepRan = false;
 // two apart by comparing an error MESSAGE — which leaves the catch describing
 // every genuine sweep error as something it must first prove is not the
 // sentinel.
-if (sweepDue) try {
-  const liveNow = scanMode === "full"
-    ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
-    : await readLivePids(db, { meter });
-  sweepRan = true;
-  const sweep = await sweepSearchIndex(db, admin.app(), {
-    livePids: liveNow,
-    buildDoc: (pid) => buildSearchDocFor(pid),
-  });
-  if (sweep.skipped) {
-    // already warned
-  } else if (sweep.missing || sweep.orphans) {
-    console.log(
-      `\nsearch index: ${liveNow.length} live · +${sweep.indexed} indexed, -${sweep.removed} removed` +
-      (sweep.capped ? ` · ${sweep.missing - sweep.indexed} still missing (per-run cap; the next tick continues)` : "") +
-      (sweep.failed ? ` · ${sweep.failed} failed` : "")
-    );
+if (sweepDue) {
+  try {
+    const liveNow = scanMode === "full"
+      ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
+      : await readLivePids(db, { meter });
+    sweepRan = true;
+    const sweep = await sweepSearchIndex(db, admin.app(), {
+      livePids: liveNow,
+      buildDoc: (pid) => buildSearchDocFor(pid),
+    });
+    if (sweep.skipped) {
+      // already warned
+    } else if (sweep.missing || sweep.orphans) {
+      console.log(
+        `\nsearch index: ${liveNow.length} live · +${sweep.indexed} indexed, -${sweep.removed} removed` +
+        (sweep.capped ? ` · ${sweep.missing - sweep.indexed} still missing (per-run cap; the next tick continues)` : "") +
+        (sweep.failed ? ` · ${sweep.failed} failed` : "")
+      );
+    }
+  } catch (e) {
+    console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
   }
-} catch (e) {
-  console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
 }
 
 // RTDB stores no empty object — writing `{}` deletes the key, which is exactly
