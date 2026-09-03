@@ -381,7 +381,16 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
 function Card({ card, open, busy, locked, hubLabel, qtyFor, chosen, onToggle, onQty, onTransfer }) {
   return (
     <div style={{ ...GLASS, padding: open ? "10px 12px 12px" : "10px 12px", boxSizing: "border-box" }}>
-      <div onClick={onToggle} role="button" aria-expanded={open}
+      {/* role="button" without tabIndex/keys would make the whole transfer
+          flow pointer-only — the steppers and Transfer button render only once
+          a card is open. (CodeRabbit, PR #548.) */}
+      <div onClick={onToggle} role="button" aria-expanded={open} tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+            e.preventDefault();      // Space must toggle the card, not scroll
+            onToggle();
+          }
+        }}
         style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer", height: 50 }}>
         <div style={{ width: 50, height: 50, borderRadius: 11, flexShrink: 0, overflow: "hidden", background: "rgba(60,110,255,.1)" }}>
           {card.photo && <img src={card.photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />}

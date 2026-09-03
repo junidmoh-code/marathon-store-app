@@ -162,6 +162,21 @@ describe("the list", () => {
     tree.unmount();
   });
 
+  // The steppers and the Transfer button exist only inside an OPEN card, so a
+  // header that cannot be reached by keyboard makes the entire transfer flow
+  // pointer-only. MUTATION-PROVED: removing tabIndex or the key handler fails
+  // this.
+  it("opens by keyboard as well as by pointer", () => {
+    const tree = render();
+    const header = headerFor(tree, "Nike Air Force 1 White");
+    expect(header.props.tabIndex).toBe(0);
+    act(() => { header.props.onKeyDown({ key: "Enter", preventDefault() {} }); });
+    expect(transferButton(tree)).toBeTruthy();
+    act(() => { header.props.onKeyDown({ key: " ", preventDefault() {} }); });
+    expect(transferButton(tree)).toBeFalsy();     // Space toggles it shut again
+    tree.unmount();
+  });
+
   it("opens one card at a time — opening another closes the first", () => {
     const tree = render();
     openCard(tree, "Nike Air Force 1 White");
