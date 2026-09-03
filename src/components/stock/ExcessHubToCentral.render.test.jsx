@@ -322,6 +322,25 @@ describe("transferring", () => {
     tree.unmount();
   });
 
+  // Only one transfer runs at a time (the `busyKey` guard), so the OTHER
+  // cards' buttons must LOOK unavailable rather than silently doing nothing
+  // when pressed.
+  // MUTATION-PROVED: dropping `locked` from the button's disabled test leaves
+  // the second card's Transfer enabled and fails this.
+  it("locks every Transfer button while one transfer is in flight", async () => {
+    const tree = render();
+    openCard(tree, "Nike Air Force 1 White");
+    click(transferButton(tree));                 // in flight — not settled yet
+    openCard(tree, "Timberland 6-Inch Wheat");
+    expect(transferButton(tree).props.disabled).toBe(true);
+
+    // The boot card is already open; once the first transfer settles its
+    // button becomes usable again without touching it.
+    await settle();
+    expect(transferButton(tree).props.disabled).toBe(false);
+    tree.unmount();
+  });
+
   it("gives each line a distinct idempotency key", async () => {
     const tree = render();
     openCard(tree, "Nike Air Force 1 White");

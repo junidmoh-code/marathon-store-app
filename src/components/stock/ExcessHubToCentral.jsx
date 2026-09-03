@@ -298,7 +298,13 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
   while (end < cards.length && offsets[end] < scrollTop + viewportH) end++;
   const from = Math.max(0, start - OVERSCAN);
   const to = Math.min(cards.length, end + OVERSCAN);
-  const visible = cards.slice(from, to);
+  // The OPEN card is always rendered, even when scrolled out of the window.
+  // openRef only attaches to a mounted card, so unmounting the open one would
+  // strand openH at its last value and mis-position every card after it. One
+  // extra off-screen card is cheaper than a stale offsets table.
+  const indices = [];
+  for (let i = from; i < to; i++) indices.push(i);
+  if (openIdx >= 0 && (openIdx < from || openIdx >= to)) indices.push(openIdx);
 
   return (
     <div>
@@ -326,8 +332,8 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
 
       <div ref={scrollerRef} style={{ height: "calc(100vh - 260px)", minHeight: 320, overflowY: "auto", position: "relative" }}>
         <div style={{ height: totalH, position: "relative" }}>
-          {visible.map((c, i) => {
-            const idx = from + i;
+          {indices.map((idx) => {
+            const c = cards[idx];
             const isOpen = c.key === openKey;
             return (
               <div key={c.key}
@@ -340,7 +346,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
                   pointerEvents: leavingKeys.has(c.key) ? "none" : "auto",
                 }}>
                 <Card
-                  card={c} open={isOpen} busy={busyKey === c.key}
+                  card={c} open={isOpen} busy={busyKey === c.key} locked={!!busyKey}
                   hubLabel={HUB_LABEL[c.loc] || c.loc}
                   qtyFor={qtyFor} chosen={chosenTotal(c)}
                   onToggle={() => setOpenKey(isOpen ? null : c.key)}
@@ -372,7 +378,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
   );
 }
 
-function Card({ card, open, busy, hubLabel, qtyFor, chosen, onToggle, onQty, onTransfer }) {
+function Card({ card, open, busy, locked, hubLabel, qtyFor, chosen, onToggle, onQty, onTransfer }) {
   return (
     <div style={{ ...GLASS, padding: open ? "10px 12px 12px" : "10px 12px", boxSizing: "border-box" }}>
       <div onClick={onToggle} role="button" aria-expanded={open}
@@ -408,7 +414,7 @@ function Card({ card, open, busy, hubLabel, qtyFor, chosen, onToggle, onQty, onT
               />
             ))}
           </div>
-          <button onClick={onTransfer} disabled={busy || chosen <= 0}
+          <button onClick={onTransfer} disabled={busy || locked || chosen <= 0}
             style={{
               marginTop: 12, width: "100%", padding: "12px 14px", borderRadius: 12, fontFamily: FONT,
               border: `1px solid ${chosen > 0 ? "rgba(74,222,128,.5)" : "rgba(255,255,255,.12)"}`,
