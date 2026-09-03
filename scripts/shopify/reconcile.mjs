@@ -488,7 +488,9 @@ for (const { pid, want } of capped) {
           continue;
         }
         console.log(`  ${mapNode.shopifyProductId} no longer exists on Shopify — clearing the stale ID map and confirming off`);
-        try { await releaseClaim(db, mapNode.shopifyProductId); } catch { /* index entry may predate the claim index */ }
+        // Releases only if the index still names THIS record; a drifted entry
+        // naming someone else is left alone rather than freed under them.
+        try { await releaseClaim(db, pid, mapNode.shopifyProductId); } catch { /* index entry may predate the claim index */ }
         await db.ref(`shopify_sync/${pid}`).remove();
         await confirmLiveState(db, pid, "off", UPDATED_BY, {
           clearAdminUrl: true,

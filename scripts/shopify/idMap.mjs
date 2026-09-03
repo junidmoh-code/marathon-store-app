@@ -108,6 +108,11 @@ export function planIdMapWrite(existing, mapping) {
 const CLAIMS_PATH = "shopify_sync/_claims";
 const CLAIMS_BUILT_KEY = "_builtAt";
 
+// How many backfill entries are written at once. One-time cost; small enough
+// to stay polite to the database, large enough that a few thousand keys finish
+// inside a single two-minute tick.
+const CLAIM_BACKFILL_CONCURRENCY = 25;
+
 // A gid is "gid://shopify/Product/9339656536213". The trailing digits are the
 // key. Anything else is not a Product gid and never reaches here — buildMapping
 // already refuses it — but this throws rather than inventing a key.
@@ -141,9 +146,35 @@ export async function ensureClaimIndex(db) {
     index[claimKeyFor(gid)] = pid;
     n += 1;
   }
-  index[CLAIMS_BUILT_KEY] = Date.now();
-  await db.ref(CLAIMS_PATH).update(index);
-  return { built: true, entries: n };
+  // FILL GAPS, NEVER OVERWRITE. The obvious shape here is one bulk
+  // `update(index)`, and it is wrong: the paged read above is not a snapshot,
+  // so a claim legitimately committed while it was in flight is not in
+  // `index`, and a plain update() is last-writer-wins — it would revert that
+  // fresh claim to whatever the stale page said. The old root transaction was
+  // correct under any overlap and this must be too, or the move to a child
+  // index is a downgrade of the one guarantee it exists to provide.
+  //
+  // So each entry goes in under its own transaction that writes ONLY into an
+  // empty slot. A key someone else has already claimed is left exactly as it
+  // is: this is a backfill of history, and anything with a live owner is by
+  // definition more current than the page we read.
+  //
+  // Bounded concurrency because this is a one-time pass over a few thousand
+  // keys and the tick that runs it holds the single-flight lock.
+  const entries = Object.entries(index);
+  let filled = 0, kept = 0;
+  for (let i = 0; i < entries.length; i += CLAIM_BACKFILL_CONCURRENCY) {
+    await Promise.all(entries.slice(i, i + CLAIM_BACKFILL_CONCURRENCY).map(async ([key, owner]) => {
+      const res = await db.ref(`${CLAIMS_PATH}/${key}`).transaction((cur) => (cur == null ? owner : cur));
+      if (res.snapshot?.val() === owner) filled += 1; else kept += 1;
+    }));
+  }
+  // The sentinel goes in LAST and on its own. Written first (or in the same
+  // payload), a crash midway would leave the index part-built and permanently
+  // marked done — and a missing entry is a gid nothing holds, which is the one
+  // way a second record could claim a product that is already mapped.
+  await db.ref(`${CLAIMS_PATH}/${CLAIMS_BUILT_KEY}`).set(Date.now());
+  return { built: true, entries: n, filled, kept };
 }
 
 // Atomically claim a Shopify product for ONE record. Two guarantees, unchanged
@@ -203,8 +234,23 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
 // Release a claim. Used only where a mapping is being removed because Shopify
 // says the product does not exist — leaving the index entry behind would block
 // the gid forever for a product that is gone.
-export async function releaseClaim(db, shopifyProductId) {
-  await db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`).remove();
+//
+// OWNERSHIP IS CHECKED, not assumed. An unconditional remove() frees the slot
+// whoever holds it, so if the index had drifted — a legacy entry, or a claim
+// re-pointed by another record — this would quietly release a claim a
+// different, still-live product legitimately holds, and the gid could then be
+// double-claimed with nothing left to stop it. The uniqueness guarantee is the
+// entire reason this index exists; it must not be undone by a cleanup path.
+// A transaction that removes ONLY our own entry keeps it. Returns what it did.
+export async function releaseClaim(db, productId, shopifyProductId) {
+  assertSafeSegment(productId, "productId");
+  let outcome = "released";
+  await db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`).transaction((cur) => {
+    if (cur == null) { outcome = "absent"; return cur; }
+    if (cur !== productId) { outcome = "held-by-other"; return cur; }
+    return null;   // null DELETES the key, which is the release
+  });
+  return outcome;
 }
 
 // db = admin.database(). Returns the plan it executed.

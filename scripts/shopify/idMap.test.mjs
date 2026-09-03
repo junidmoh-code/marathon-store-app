@@ -3,7 +3,7 @@
 // gid validation, and planIdMapWrite's create / noop / merge / refuse matrix —
 // the idempotency contract the live writer rides on.
 import { describe, it, expect } from "vitest";
-import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct } from "./idMap.mjs";
+import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct, releaseClaim, ensureClaimIndex } from "./idMap.mjs";
 
 const gid = {
   product: (n) => `gid://shopify/Product/${n}`,
@@ -201,5 +201,149 @@ describe("claimShopifyProduct does not mistake a one-shot abort for a conflict",
     // Refused BEFORE the transaction — it must not take a claim it would then
     // have to give back.
     expect(db.state.transactions).toBe(0);
+  });
+});
+
+// ── releaseClaim frees OUR slot, never someone else's ────────────────────────
+// It is a cleanup path, and a cleanup path that can free a claim a live product
+// holds would undo the single guarantee the claim index exists to give.
+function claimsDb(initial) {
+  const claims = { ...initial };
+  return {
+    claims,
+    ref: (path) => {
+      const key = path.replace("shopify_sync/_claims/", "");
+      return {
+        async transaction(fn) {
+          const out = fn(key in claims ? claims[key] : null);
+          if (out === undefined) return { committed: false, snapshot: { val: () => claims[key] ?? null } };
+          if (out === null) delete claims[key];
+          else claims[key] = out;
+          return { committed: true, snapshot: { val: () => out } };
+        },
+      };
+    },
+  };
+}
+
+describe("releaseClaim", () => {
+  const GID = gid.product(9339656536213);
+  const KEY = "9339656536213";
+
+  it("releases a claim this record holds", async () => {
+    const db = claimsDb({ [KEY]: "p1" });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
+    expect(KEY in db.claims).toBe(false);
+  });
+
+  it("REFUSES to release a claim another record holds", async () => {
+    const db = claimsDb({ [KEY]: "p2" });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("held-by-other");
+    // Untouched — freeing it would let a third record double-claim a product
+    // p2 is legitimately live on.
+    expect(db.claims[KEY]).toBe("p2");
+  });
+
+  it("is a no-op on a claim that is already gone", async () => {
+    const db = claimsDb({});
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("absent");
+    expect(db.claims).toEqual({});
+  });
+});
+
+// ── The one-time backfill fills gaps and never overwrites ────────────────────
+// The paged read it derives from is not a snapshot. A claim committed while it
+// was in flight is absent from the derived map, and a bulk update() would
+// revert it — silently downgrading the guarantee the old root transaction gave
+// unconditionally.
+describe("ensureClaimIndex", () => {
+  function backfillDb({ syncNodes, claims = {} }) {
+    const state = { claims: { ...claims }, sentinelWrittenAfter: null, writes: [] };
+    const keys = Object.keys(syncNodes).sort();
+    return {
+      state,
+      ref(path) {
+        if (path === "shopify_sync") {
+          const page = (from, limit) => {
+            const slice = keys.filter((k) => (from ? k >= from : true)).slice(0, limit);
+            return {
+              val: () => Object.fromEntries(slice.map((k) => [k, syncNodes[k]])),
+              forEach: (cb) => { for (const k of slice) cb({ key: k }); },
+              child: (k) => ({ val: () => syncNodes[k] }),
+            };
+          };
+          const q = { _from: null, _limit: 500 };
+          const api = {
+            orderByKey: () => api,
+            limitToFirst: (n) => { q._limit = n; return api; },
+            startAt: (k) => { q._from = k; return api; },
+            once: async () => page(q._from, q._limit),
+          };
+          return api;
+        }
+        if (path === "shopify_sync/_claims/_builtAt") {
+          return {
+            get: async () => ({ val: () => state.claims._builtAt ?? null }),
+            set: async (v) => { state.claims._builtAt = v; state.sentinelWrittenAfter = state.writes.length; },
+          };
+        }
+        const key = path.replace("shopify_sync/_claims/", "");
+        return {
+          async transaction(fn) {
+            const out = fn(key in state.claims ? state.claims[key] : null);
+            state.writes.push(key);
+            if (out !== undefined) state.claims[key] = out;
+            return { committed: out !== undefined, snapshot: { val: () => out } };
+          },
+        };
+      },
+    };
+  }
+
+  it("does NOT overwrite a claim that committed while the paged read was in flight", async () => {
+    // The page says gid 111 belongs to p1. Reality has moved on: p3 claimed it.
+    const db = backfillDb({
+      syncNodes: { p1: { shopifyProductId: gid.product(111) }, p2: { shopifyProductId: gid.product(222) } },
+      claims: { 111: "p3" },
+    });
+    const res = await ensureClaimIndex(db);
+    expect(res.built).toBe(true);
+    // p3 keeps it. A bulk update() would have written "p1" here and locked p3
+    // out of a product it legitimately holds.
+    expect(db.state.claims["111"]).toBe("p3");
+    // The genuinely missing one is filled.
+    expect(db.state.claims["222"]).toBe("p2");
+    expect(res.filled).toBe(1);
+    expect(res.kept).toBe(1);
+  });
+
+  it("writes the sentinel LAST, so a crash midway cannot mark a part-built index done", async () => {
+    const db = backfillDb({
+      syncNodes: { p1: { shopifyProductId: gid.product(111) }, p2: { shopifyProductId: gid.product(222) } },
+    });
+    await ensureClaimIndex(db);
+    expect(db.state.sentinelWrittenAfter).toBe(2);   // both entries already in
+  });
+
+  it("skips bookkeeping siblings and records with no Shopify mapping", async () => {
+    const db = backfillDb({
+      syncNodes: {
+        _collections: { anything: 1 },
+        _reconcile: { watermark: 1 },
+        p1: { shopifyProductId: gid.product(111) },
+        p2: {},
+        p3: { shopifyProductId: "not-a-gid" },
+      },
+    });
+    const res = await ensureClaimIndex(db);
+    expect(res.entries).toBe(1);
+    expect(Object.keys(db.state.claims).filter((k) => k !== "_builtAt")).toEqual(["111"]);
+  });
+
+  it("does nothing at all once the sentinel is set", async () => {
+    const db = backfillDb({ syncNodes: { p1: { shopifyProductId: gid.product(111) } }, claims: { _builtAt: 123 } });
+    const res = await ensureClaimIndex(db);
+    expect(res).toEqual({ built: false });
+    expect(db.state.writes).toEqual([]);
   });
 });
