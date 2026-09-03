@@ -374,3 +374,33 @@ describe("the one-expression fixes stay fixed", () => {
     expect(body.slice(0, body.indexOf("\n}\n"))).toMatch(/could not release claim/);
   });
 });
+
+// ─── A SWEEP THAT REFUSED DID NOT RUN ────────────────────────────────────────
+// sweepSearchIndex returns `{skipped: true}` WITHOUT throwing on both its
+// refusals — an empty live set, and an index it could not list. Neither did any
+// repair, so neither may stamp lastSweepAt: doing so suppresses the next
+// attempt for 30 minutes, or 3 hours overnight, on the strength of a sweep that
+// declined to act. Before this branch added a cadence, a refusal cost two
+// minutes. (Found independently by two reviewers.)
+describe("lastSweepAt records repair, not attendance", () => {
+  it("sweepRan is taken from the result, and only after the sweep returned", () => {
+    expect(SRC).toMatch(/sweepRan = !sweep\.skipped;/);
+    expect(SRC).not.toMatch(/sweepRan = true;/);
+    // Order matters: it must be read from the call's result, so the assignment
+    // has to come after the call.
+    const call = SRC.indexOf("const sweep = await sweepSearchIndex(");
+    const assign = SRC.indexOf("sweepRan = !sweep.skipped;");
+    expect(call).toBeGreaterThan(-1);
+    expect(assign).toBeGreaterThan(call);
+  });
+
+  it("a live-set read that throws still leaves the sweep un-stamped", () => {
+    // readLivePids is awaited BEFORE the assignment, so a throw there skips it
+    // entirely and sweepRan stays false — the behaviour the old sentinel had.
+    const block = SRC.slice(SRC.indexOf("if (sweepDue) {"));
+    const live = block.indexOf("readLivePids");
+    const assign = block.indexOf("sweepRan =");
+    expect(live).toBeGreaterThan(-1);
+    expect(assign).toBeGreaterThan(live);
+  });
+});

@@ -1163,11 +1163,18 @@ if (sweepDue) {
     const liveNow = scanMode === "full"
       ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
       : await readLivePids(db, { meter });
-    sweepRan = true;
     const sweep = await sweepSearchIndex(db, admin.app(), {
       livePids: liveNow,
       buildDoc: (pid) => buildSearchDocFor(pid),
     });
+    // Only a sweep that actually REPAIRED counts as having run. sweepSearchIndex
+    // returns `skipped` without throwing on both its refusals — an empty live
+    // set, and an index it could not list — and neither did any repair. Stamping
+    // lastSweepAt on those would suppress the next attempt for 30 minutes, or 3
+    // hours overnight, on the strength of a sweep that declined to do anything.
+    // Before the cadence existed this retried every tick, so the refusal cost
+    // two minutes; it must not now cost three hours.
+    sweepRan = !sweep.skipped;
     if (sweep.skipped) {
       // already warned
     } else if (sweep.missing || sweep.orphans) {
