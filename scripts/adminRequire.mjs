@@ -13,9 +13,14 @@
 // found via git's common dir. Fail with an instruction rather than a stack.
 import { createRequire } from "module";
 import { execSync } from "child_process";
+import { fileURLToPath, pathToFileURL } from "url";
 
 export function adminRequire(importMetaUrl) {
-  const here = new URL(".", importMetaUrl);
+  // fileURLToPath / pathToFileURL rather than .pathname: a URL pathname
+  // percent-encodes, so a checkout under a path with a space would hand git a
+  // cwd containing "%20" and fail before the fallback could be tried.
+  // (CodeRabbit, PR #547.)
+  const here = fileURLToPath(new URL(".", importMetaUrl));
   const bases = [new URL("../functions/package.json", importMetaUrl)];
 
   try {
@@ -23,9 +28,9 @@ export function adminRequire(importMetaUrl) {
     // this clone's own .git. Either way its parent is the checkout holding the
     // one npm install.
     const gitDir = execSync("git rev-parse --path-format=absolute --git-common-dir", {
-      cwd: here.pathname, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+      cwd: here, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    bases.push(new URL(`file://${gitDir.replace(/\/\.git\/?$/, "")}/functions/package.json`));
+    bases.push(pathToFileURL(`${gitDir.replace(/\/\.git\/?$/, "")}/functions/package.json`));
   } catch { /* not a git checkout — the repo-relative base is all there is */ }
 
   for (const base of bases) {

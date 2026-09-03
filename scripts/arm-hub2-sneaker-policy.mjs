@@ -33,10 +33,11 @@
 //
 // Usage:  node scripts/arm-hub2-sneaker-policy.mjs [--execute]
 import { adminRequire } from "./adminRequire.mjs";
+import { fileURLToPath } from "url";
 import { writeFileSync } from "fs";
 const require = adminRequire(import.meta.url);
 const admin = require("firebase-admin");
-const { applyCategoryPolicy } = require(new URL("../functions/lib/category-policy-write.cjs", import.meta.url).pathname);
+const { applyCategoryPolicy } = require(fileURLToPath(new URL("../functions/lib/category-policy-write.cjs", import.meta.url)));
 
 const EXECUTE = process.argv.includes("--execute");
 const ADMIN_EMAIL = "gunidmoh@gmail.com"; // same super-admin constant used by arm-hub1-sneaker-tranche.mjs
