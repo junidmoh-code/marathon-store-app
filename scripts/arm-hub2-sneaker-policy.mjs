@@ -32,9 +32,9 @@
 // object) lands on disk before anything is written.
 //
 // Usage:  node scripts/arm-hub2-sneaker-policy.mjs [--execute]
-import { createRequire } from "module";
+import { adminRequire } from "./adminRequire.mjs";
 import { writeFileSync } from "fs";
-const require = createRequire("file:///Users/junidmohammed/Documents/marathon-store-app/functions/package.json");
+const require = adminRequire(import.meta.url);
 const admin = require("firebase-admin");
 const { applyCategoryPolicy } = require(new URL("../functions/lib/category-policy-write.cjs", import.meta.url).pathname);
 

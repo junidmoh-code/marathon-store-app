@@ -1,6 +1,6 @@
 // One-shot read-only probe, Phase 2 step 1-2 of the Hub 2 sneaker arming task.
-import { createRequire } from "module";
-const require = createRequire("file:///Users/junidmohammed/Documents/marathon-store-app/functions/package.json");
+import { adminRequire } from "./adminRequire.mjs";
+const require = adminRequire(import.meta.url);
 const admin = require("firebase-admin");
 
 admin.initializeApp({

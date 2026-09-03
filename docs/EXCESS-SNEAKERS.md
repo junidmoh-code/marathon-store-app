@@ -451,10 +451,17 @@ resulting scan.
 Removes exactly the `hub2` key, leaving `hub1` and `perSize` untouched:
 
 ```
-curl -X DELETE "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app/config/refillEngine/categoryPolicy/sneakers/hub2.json?access_token=$(gcloud auth print-access-token)"
+firebase database:remove /config/refillEngine/categoryPolicy/sneakers/hub2 --project marathon-club
 ```
 
-or, as an admin-SDK one-liner (same credential pattern as every script in
+An earlier draft of this doc gave a `curl` variant carrying
+`?access_token=$(gcloud auth print-access-token)`. It has been removed
+deliberately: an OAuth token in a URL query string is copied into shell
+history, proxy logs and server access logs, so it must never be the documented
+way to run this. The Firebase CLI above and the Admin SDK below both
+authenticate out of band.
+
+Or, as an admin-SDK one-liner (same credential pattern as every script in
 this repo):
 
 ```js
