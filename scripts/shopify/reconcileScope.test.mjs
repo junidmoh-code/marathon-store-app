@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, nextWatermark, isMissingIndexError,
-  readChangedPublishNodes,
+  readChangedPublishNodes, readLivePids,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
 
@@ -249,5 +249,40 @@ describe("nextWatermark", () => {
 
   it("never advances past the run start even if a node claims a future stamp", () => {
     expect(nextWatermark({ runStartedAt: RUN, unapplied: [{ updatedAt: RUN + 999_999 }] })).toBe(RUN);
+  });
+});
+
+// ── The `state` index has no fallback, so it gets a message worth reading ────
+// §9.1 asks a person to paste an index into the console by hand. The plausible
+// slip is REPLACING ["state"] with ["updatedAt"] rather than adding to it —
+// which removes the index this query needs, rots the search index behind one
+// generic warning per tick, and breaks the publishing page's own `state`
+// queries, with nothing connecting those symptoms to the paste that caused them.
+describe("readLivePids when the state index is missing", () => {
+  const refusal = () => { throw new Error('Index not defined, add ".indexOn": "state", for path "/shopify_publish", to the rules'); };
+  const db = (get) => ({ ref: () => ({ orderByChild: () => ({ equalTo: () => ({ get }) }) }) });
+
+  it("names the actual mistake and both index entries", async () => {
+    await expect(readLivePids(db(refusal))).rejects.toThrow(/\["state", "updatedAt"\]/);
+    await expect(readLivePids(db(refusal))).rejects.toThrow(/replaced "state" instead of joining it/);
+  });
+
+  it("does not swallow an unrelated failure as an index problem", async () => {
+    const boom = () => { throw new Error("ECONNRESET"); };
+    await expect(readLivePids(db(boom))).rejects.toThrow(/ECONNRESET/);
+  });
+});
+
+// ── releaseClaim's two decline paths write nothing ───────────────────────────
+describe("releaseClaim declines without writing", () => {
+  it("aborts rather than committing the value that was already there", async () => {
+    const seen = [];
+    const db = (cur) => ({ ref: () => ({ async transaction(fn) { seen.push(fn(cur)); return { committed: false, snapshot: { val: () => cur } }; } }) });
+    const { releaseClaim } = await import("./idMap.mjs");
+    const GID = "gid://shopify/Product/9339656536213";
+    await releaseClaim(db(null), "p1", GID);          // absent
+    await releaseClaim(db("p2"), "p1", GID);          // held by another record
+    // `undefined` is RTDB's abort. `cur` would have been a write.
+    expect(seen).toEqual([undefined, undefined]);
   });
 });

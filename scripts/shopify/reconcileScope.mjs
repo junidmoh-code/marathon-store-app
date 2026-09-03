@@ -253,7 +253,28 @@ export async function readChangedPublishNodes(db, { since, retryPids = [], meter
 // and downloads only the live nodes rather than the whole node. liveState is
 // filtered here because the index is on `state` alone.
 export async function readLivePids(db, { meter = () => {} } = {}) {
-  const snap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").get();
+  let snap;
+  try {
+    snap = await db.ref("shopify_publish").orderByChild("state").equalTo("live").get();
+  } catch (e) {
+    // `state` has been indexed for a long time, so this query is safe today.
+    // The reason it gets a guard anyway is that §9.1 asks a person to paste an
+    // index into the console by hand, and the plausible slip is REPLACING
+    // ["state"] with ["updatedAt"] rather than adding to it. That takes the
+    // index this query depends on away, and without this branch the failure
+    // would be one generic warning line per tick while the search index rots
+    // indefinitely — and the publishing page's own `state` queries break too,
+    // with nothing connecting the two symptoms to the paste that caused them.
+    if (isMissingIndexError(e, "state")) {
+      throw new Error(
+        'the "state" index is GONE from /shopify_publish — the console rules ' +
+        'must list BOTH: ".indexOn": ["state", "updatedAt"]. If "updatedAt" was ' +
+        'just pasted, it replaced "state" instead of joining it. The search ' +
+        'index cannot be repaired until this is put back'
+      );
+    }
+    throw e;
+  }
   const val = snap.val() || {};
   meter("shopify_publish (state=live)", val);
   return Object.entries(val).filter(([, n]) => n?.liveState === "on").map(([pid]) => pid);

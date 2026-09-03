@@ -296,8 +296,12 @@ export async function releaseClaim(db, productId, shopifyProductId) {
   let outcome = "released";
   await db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`).transaction((cur) => {
     outcome = "released";
-    if (cur == null) { outcome = "absent"; return cur; }
-    if (cur !== productId) { outcome = "held-by-other"; return cur; }
+    // `undefined` ABORTS with no write. Returning `cur` on these two paths
+    // committed a write of the value that was already there — a pointless
+    // round trip and a change event on a key nothing changed, from a function
+    // whose whole job on those paths is to decline.
+    if (cur == null) { outcome = "absent"; return undefined; }
+    if (cur !== productId) { outcome = "held-by-other"; return undefined; }
     return null;   // null DELETES the key, which is the release
   });
   return outcome;
