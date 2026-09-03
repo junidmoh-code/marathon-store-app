@@ -432,19 +432,26 @@ printed about itself omitted its largest remaining item. It is metered now.
 ### 9.1a What this work itself cost to read
 
 Worth stating, because an investigation into read cost that quietly spends more
-than it saves is not a saving.
+than it saves is not a saving — and worth stating in full, because there are two
+different numbers here and the small one is not the answer.
 
 | | RTDB bytes | How it is known |
 |---|---:|---|
-| the two profiler hours (3 Sep) | **694 B** | measured — the profiler attributed it, two `/users/{uid}` reads (`docs/bandwidth-capture-sept.md` §2c) |
-| verifying the `updatedAt` index refusal | a refusal, not a payload | RTDB rejected the query and returned an error string; no rows were transferred |
-| node counts, byte sizes, the live/blocked split | not separately metered | read out of the profiler capture that was already taken, not re-queried. Where a figure needed the database, it came from a paged or shallow read — no whole-node read was issued to investigate a whole-node read |
+| attributed to this investigation *inside the two profiler hours* | **694 B** | measured — the profiler named the client, two `/users/{uid}` reads (`docs/bandwidth-capture-sept.md` §2c) |
+| the whole investigation, profiler hours and outside them | **~0.9 MB** | shallow key counts, ten sampled `/shopify_publish` nodes read individually, one `state=live` query, the live rules |
+| verifying the `updatedAt` index refusal | a refusal, not a payload | RTDB rejected the query and returned an error string; no rows transferred |
 
-The middle row is the honest one: a refused query still costs a round trip and an
-error string, just not a payload. The bottom row is *not* a claim of literally
-zero bytes — it is a claim that no read was issued **for this investigation**
-beyond the 694 B the profiler attributed to it. Against a measured ~3.2 GB/day
-before, the investigation paid for itself inside the first minute either way.
+**~0.9 MB is the honest figure.** The 694 B is only what happened to fall inside
+the two captured hours, and quoting it alone would be picking the flattering
+window. Nearly all of the 0.9 MB is one `state=live` query — the same query the
+sweep now uses, run once to confirm it returns what the whole-node read used to.
+
+The rule the investigation held to was not "spend nothing" but **no whole-node
+read** — including to investigate a whole-node read. Every figure above came from
+a shallow, paged, or indexed read, or from the profiler capture already taken.
+
+Against a measured ~3.2 GB/day before, ~0.9 MB is about 24 seconds of what the
+loop was spending.
 
 ### 9.2 The bookkeeping node
 
