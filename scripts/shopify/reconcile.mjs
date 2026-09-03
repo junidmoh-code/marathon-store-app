@@ -1149,8 +1149,15 @@ for (const { pid, want } of capped) {
 // Its live set comes from `.indexOn: ["state"]`, which the live rules ALREADY
 // carry — or, on a full-scan tick, from the map already in hand, for free.
 const sweptRecently = Number(scanState?.lastSweepAt) || 0;
+// APPLIED work, not merely results. The sweep repairs drift caused by a state
+// CHANGE, and an apply that failed changed nothing — so `results.length > 0`
+// made a persistently failing product re-trigger the 747 KB live-set read every
+// two minutes, day and night, which is precisely the standing-failure shape
+// this branch found already live (five records refused for 1,367 consecutive
+// ticks). A failure keeps its place in the retry set; it does not earn a sweep.
+const appliedSomething = results.some((r) => r.ok);
 const sweepDue = scanMode === "full" ||
-  results.length > 0 ||
+  appliedSomething ||
   runStartedAt - sweptRecently >= fullScanIntervalMs(runStartedAt);
 let sweepRan = false;
 // A plain conditional, not a sentinel exception. "Not due" is a schedule, not a

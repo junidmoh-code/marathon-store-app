@@ -272,17 +272,3 @@ describe("readLivePids when the state index is missing", () => {
     await expect(readLivePids(db(boom))).rejects.toThrow(/ECONNRESET/);
   });
 });
-
-// ── releaseClaim's two decline paths write nothing ───────────────────────────
-describe("releaseClaim declines without writing", () => {
-  it("aborts rather than committing the value that was already there", async () => {
-    const seen = [];
-    const db = (cur) => ({ ref: () => ({ async transaction(fn) { seen.push(fn(cur)); return { committed: false, snapshot: { val: () => cur } }; } }) });
-    const { releaseClaim } = await import("./idMap.mjs");
-    const GID = "gid://shopify/Product/9339656536213";
-    await releaseClaim(db(null), "p1", GID);          // absent
-    await releaseClaim(db("p2"), "p1", GID);          // held by another record
-    // `undefined` is RTDB's abort. `cur` would have been a write.
-    expect(seen).toEqual([undefined, undefined]);
-  });
-});

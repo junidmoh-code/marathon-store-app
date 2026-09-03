@@ -293,18 +293,38 @@ export async function releaseClaim(db, productId, shopifyProductId) {
   // clearing it lets an earlier invocation's verdict survive into the answer:
   // a first pass seeing null ("absent") followed by a real release would still
   // report "absent", and the caller logs that as "nothing to do".
-  let outcome = "released";
-  await db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`).transaction((cur) => {
-    outcome = "released";
-    // `undefined` ABORTS with no write. Returning `cur` on these two paths
-    // committed a write of the value that was already there — a pointless
-    // round trip and a change event on a key nothing changed, from a function
-    // whose whole job on those paths is to decline.
-    if (cur == null) { outcome = "absent"; return undefined; }
-    if (cur !== productId) { outcome = "held-by-other"; return undefined; }
-    return null;   // null DELETES the key, which is the release
-  });
-  return outcome;
+  // `undefined` ABORTS without a write — which is right for a path whose job is
+  // to decline, and which brings with it the same hazard claimShopifyProduct
+  // guards above: the abort is ONE-SHOT, and the callback's first invocation is
+  // not guaranteed the server value. A stale cache reading null, or reading a
+  // different owner, would abort and report "absent" / "held-by-other" for a
+  // claim the server really does hold for us — and the claim would silently NOT
+  // be released, which is the leak this function exists to prevent.
+  //
+  // (The earlier version returned `cur` here. That committed a needless write,
+  // but it also forced a server round trip, so it was accidentally safe. Making
+  // it abort without adding this confirmation traded a wasted write for a
+  // correctness bug.)
+  //
+  // So a decline is CONFIRMED against a fresh server read, once. A genuinely
+  // absent or other-owned claim reads the same twice and the decline stands.
+  const ref = db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`);
+  for (let attempt = 0; ; attempt++) {
+    let outcome = "released";
+    await ref.transaction((cur) => {
+      // Reset at the TOP of every invocation, like `refusal` and `clash`
+      // elsewhere in this file: the callback may run more than once and only
+      // the last invocation describes what happened.
+      outcome = "released";
+      if (cur == null) { outcome = "absent"; return undefined; }
+      if (cur !== productId) { outcome = "held-by-other"; return undefined; }
+      return null;   // null DELETES the key, which is the release
+    });
+    if (outcome !== "released" && attempt === 0 && (await ref.get()).val() === productId) {
+      continue;   // the abort was against a stale cache; the claim IS ours
+    }
+    return outcome;
+  }
 }
 
 // db = admin.database(). Returns the plan it executed.

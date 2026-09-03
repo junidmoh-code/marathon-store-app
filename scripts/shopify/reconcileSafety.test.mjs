@@ -404,3 +404,25 @@ describe("lastSweepAt records repair, not attendance", () => {
     expect(assign).toBeGreaterThan(live);
   });
 });
+
+// ─── A FAILURE DOES NOT EARN A SWEEP ─────────────────────────────────────────
+// The sweep repairs drift caused by a state CHANGE. An apply that failed
+// changed nothing, so gating on "there were results" let a persistently failing
+// product re-trigger the 747 KB live-set read every two minutes, day and night.
+// That is exactly the standing-failure shape this branch found already live:
+// five records refused for 1,367 consecutive ticks.
+describe("the sweep is triggered by applied work, not by attempts", () => {
+  it("gates on results that SUCCEEDED", () => {
+    expect(SRC).toMatch(/const appliedSomething = results\.some\(\(r\) => r\.ok\);/);
+    const gate = SRC.slice(SRC.indexOf("const sweepDue ="), SRC.indexOf("let sweepRan"));
+    expect(gate).toContain("appliedSomething");
+    // The bare count is what let a failure trigger it.
+    expect(gate).not.toMatch(/results\.length > 0/);
+  });
+
+  it("still sweeps on a full scan and on the elapsed cadence", () => {
+    const gate = SRC.slice(SRC.indexOf("const sweepDue ="), SRC.indexOf("let sweepRan"));
+    expect(gate).toContain('scanMode === "full"');
+    expect(gate).toContain("fullScanIntervalMs(runStartedAt)");
+  });
+});

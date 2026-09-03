@@ -243,16 +243,26 @@ describe("claimShopifyProduct does not mistake a one-shot abort for a conflict",
 // ── releaseClaim frees OUR slot, never someone else's ────────────────────────
 // It is a cleanup path, and a cleanup path that can free a claim a live product
 // holds would undo the single guarantee the claim index exists to give.
-function claimsDb(initial) {
+function claimsDb(initial, { cached } = {}) {
   const claims = { ...initial };
+  const state = { claims, gets: 0 };
+  let firstCallback = true;
   return {
     claims,
+    state,
     ref: (path) => {
       const key = path.replace("shopify_sync/_claims/", "");
+      const server = () => (key in claims ? claims[key] : null);
       return {
+        // The confirming read always sees the SERVER value.
+        async get() { state.gets += 1; return { val: server }; },
         async transaction(fn) {
-          const out = fn(key in claims ? claims[key] : null);
-          if (out === undefined) return { committed: false, snapshot: { val: () => claims[key] ?? null } };
+          // `cached` models what the first invocation sees when the local cache
+          // is stale. An abort is one-shot, so that first view is the only one.
+          const seen = firstCallback && cached !== undefined ? cached : server();
+          firstCallback = false;
+          const out = fn(seen);
+          if (out === undefined) return { committed: false, snapshot: { val: () => seen } };
           if (out === null) delete claims[key];
           else claims[key] = out;
           return { committed: true, snapshot: { val: () => out } };
@@ -435,5 +445,42 @@ describe("releaseClaim reports the final invocation's verdict", () => {
     };
     await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
     expect(KEY in claims).toBe(false);
+  });
+});
+
+// ── A decline is confirmed against the server, like every other decline here ─
+// Making releaseClaim abort (rather than commit `cur`) removed a needless write
+// and re-introduced the one-shot-abort hazard: the abort never reaches the
+// server, so a stale cache could report "absent" for a claim the server holds
+// for us — and the claim would silently not be released, which is the exact
+// leak this function exists to prevent.
+describe("releaseClaim confirms a decline before accepting it", () => {
+  const GID = gid.product(9339656536213);
+  const KEY = "9339656536213";
+
+  it("a stale EMPTY cache does not abandon a claim the server holds for us", async () => {
+    const db = claimsDb({ [KEY]: "p1" }, { cached: null });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
+    expect(db.state.gets).toBe(1);      // it checked
+    expect(KEY in db.claims).toBe(false);  // and then really released it
+  });
+
+  it("a stale OTHER-OWNER cache does not abandon it either", async () => {
+    const db = claimsDb({ [KEY]: "p1" }, { cached: "p2" });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
+    expect(KEY in db.claims).toBe(false);
+  });
+
+  it("a genuine other-owner reads the same twice and the decline stands", async () => {
+    const db = claimsDb({ [KEY]: "p2" }, { cached: "p2" });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("held-by-other");
+    expect(db.claims[KEY]).toBe("p2");
+    expect(db.state.gets).toBe(1);      // confirmed once, then stopped
+  });
+
+  it("a genuinely absent claim confirms once and does not loop", async () => {
+    const db = claimsDb({}, { cached: null });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("absent");
+    expect(db.state.gets).toBe(1);
   });
 });
