@@ -570,3 +570,87 @@ flag — see below.)
   `/stock_targets/{hub}`, and `/refill_requests` are already read by existing
   app code (`useEngineConfig`, `useStockCells`, `useStockTargets`,
   `useRefillRequests`), so no new rule was needed for this module's reads.
+
+---
+
+## Commit 4 — the UI tab (`ExcessHubToCentral.jsx`)
+
+`src/components/stock/ExcessHubToCentral.jsx` (new) replaces what the Inventory
+Health **Excess Inventory** tab renders (`HealthView.jsx:447-451`, `case
+"excess"`). `MoveExcess` is **not deleted** — it stays mounted at Stock → Move
+Excess (`StockView.jsx:112`), so the store-source clothing screen is fully
+preserved; only `HealthView`'s import of it was dropped as now-unused.
+
+### To spec
+
+| Spec | Implementation |
+|---|---|
+| Header stated once | `"Hub 1 → Central"` / `"Hub 2 → Central"`, tracking the segmented control |
+| Segmented control | Hub 1 / Hub 2, drives `locations: [hub]` into the computation |
+| One count pill | `"N products · M units"` for the selected hub |
+| Card per product per hub | single column, sorted by total movable units desc (name as tiebreak) |
+| Square photo left | `p.photoUrl`, 50×50, `objectFit: cover` — same field `MoveExcess.jsx:161` uses |
+| One-line truncated name | `whiteSpace: nowrap` + `textOverflow: ellipsis`, no second line, no category, no reason |
+| Size chips `"9 · 2"` | one chip per armed size with movable excess, sorted by `sizeRank` |
+| Circular total button, right | 46px circle showing the card total; tap moves **every** size on the card |
+| No confirmation dialog | tap goes straight to `applyMovement` |
+| Card animates out, pill decrements | 200ms opacity/scale exit, then the key joins `movedKeys` |
+| 5-second Undo, same path | bottom pill; reverses via `applyMovement` `transfer_out` central → hub |
+| No tooltips/banners/helper text | none rendered; the `DetailShell` `sub` sentence was removed too |
+| Virtualised | fixed-row-height windowing, `ROW_HEIGHT = 78`, `OVERSCAN = 6` |
+| Marathon Glass, no new palette | `GLASS`, `GRAY`, `GREEN`, `BLUE_L`, `FONT` from `./ui` |
+
+### Movement path
+
+The **same** action the existing excess button calls — identical shape to
+`MoveExcess.jsx:286-292`:
+
+```js
+applyMovement({ type: "transfer_out", productId, size, qty,
+                from: hub, to: "central", actorRole,
+                reason: "excess_rebalance",
+                movementId: `${batchId}_${pid}_${encodeSizeKey(size)}_${from}_${to}`,
+                link: { transferId: batchId } })
+```
+
+No second movement path and no direct `/stock` write. `batchId` is derived from
+`serverNowMs()`, not `Date.now()`. Because `movementId` embeds `from`/`to`, the
+Undo leg is a distinct idempotency key and can never collapse into the original
+movement.
+
+**`applyMovement` resolves `{ ok, reason }` — it does not throw on a rejected
+write.** Every line's `ok` is inspected, which drives three behaviours:
+a card is only retired if at least one line actually moved; if *nothing* moved
+the card is put straight back rather than silently vanishing; and Undo reverses
+**only the lines that really moved**, never the ones that failed.
+
+### Undo
+
+Tapping a card sets `undo = { key, hub, pid, lines: <moved lines>, total }` with
+a 5s timer. `Undo` replays those exact lines back through `applyMovement` as
+`transfer_out` central → hub and un-retires the card. A **new** move supersedes
+the previous Undo (previous timer cleared, its move becomes final) rather than
+locking the screen for five seconds.
+
+### Optimistic-hide correctness
+
+`movedKeys` hides a card ahead of the live RTDB round trip. An effect drops a
+key as soon as the recomputed rows no longer contain it — otherwise a product
+that legitimately went back above target later in the session would stay
+invisible.
+
+### Clothing flag, wired
+
+The screen renders `computeHubSneakerExcess(...)` **plus**
+`computeHubClothingExcess(...)`. The latter self-gates on
+`config/refillEngine/excessClothingEnabled` and returns `[]` while that key is
+absent/false — so clothing contributes **zero** cards today and returns by
+flipping one RTDB key, with no code change and no deploy.
+
+### Known follow-up (not in scope)
+
+The Inventory Health home tile's `count("excess")` still comes from the
+server-computed `/stock_exceptions/latest` scan, which is the older
+network-wide "above target" figure — it does not yet equal this tab's
+sneakers-only hub count. The tab's own pill is authoritative. Changing the
+server exception scan is a separate, server-side change.
