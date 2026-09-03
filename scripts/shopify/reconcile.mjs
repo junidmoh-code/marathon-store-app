@@ -1177,15 +1177,27 @@ const emptyToNull = (o) => (o && Object.keys(o).length ? o : null);
 // instead of being stepped over. `--pids` runs deliberately touch nothing: they
 // are a surgical human command and must not tell the scheduler it is caught up.
 if (COMMIT && !ONLY) {
-  const attempted = capped.map((w) => w.pid);
   // Two kinds of unfinished work must survive to the next tick, and NEITHER
   // moved its node's `updatedAt`, so neither would reappear in the next window
   // on its own: a product whose apply failed, and a product the per-run cap
   // never got to. Both ride the retry set.
+  const deferred = new Set(worklist.slice(capped.length).map((w) => w.pid));
   const carried = [
     ...results.filter((r) => !r.ok).map((r) => r.pid),
-    ...worklist.slice(capped.length).map((w) => w.pid),
+    ...deferred,
   ];
+  // A retry pid is EVALUATED even when it never reaches the worklist. Its node
+  // is read individually every tick, and that read can find the node deleted,
+  // or find it already in the state it wants — in which case it produces no
+  // worklist entry, so `capped` never names it. Counting only `capped` as
+  // attempted would leave such a pid in the retry set for good: read every
+  // tick forever, holding one of the bounded slots against a real failure that
+  // needs it. Evaluated counts as attempted; only a pid the per-run cap
+  // genuinely deferred is held back, and it is carried instead.
+  const attempted = [...new Set([
+    ...capped.map((w) => w.pid),
+    ...retryPids.filter((pid) => !deferred.has(pid)),
+  ])];
   await writeReconcileState(db, {
     watermark: runStartedAt,
     retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),

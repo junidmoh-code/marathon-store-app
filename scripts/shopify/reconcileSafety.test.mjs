@@ -185,7 +185,15 @@ describe("no whole-node read on the scheduled path", () => {
   });
 
   it("a --pids run never tells the scheduler it is caught up", () => {
-    expect(SRC).toMatch(/if \(COMMIT && !ONLY\) \{[\s\S]{0,600}?writeReconcileState/);
+    // Pinned as a POSITION, not a character distance: the earlier version of
+    // this guard allowed 600 characters between the gate and the call, so a
+    // comment added inside the block failed it while the contract was intact.
+    // The contract is that the ONE state write happens under the gate.
+    const gate = SRC.indexOf("if (COMMIT && !ONLY) {");
+    expect(gate).toBeGreaterThan(-1);
+    const calls = [...SRC.matchAll(/await writeReconcileState\(/g)].map((m) => m.index);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBeGreaterThan(gate);
   });
 });
 
@@ -202,5 +210,50 @@ describe("a deleted Shopify product is not retried forever", () => {
   it("productIsAbsent answers 'not gone' when it cannot ask — the answer that keeps the intent standing", () => {
     const body = SRC.slice(SRC.indexOf("async function productIsAbsent"));
     expect(body.slice(0, 600)).toMatch(/catch \{\s*return false;\s*\}/);
+  });
+});
+
+// ─── A ONE-SHOT TRANSACTION ABORT IS NOT EVIDENCE ────────────────────────────
+// Returning `undefined` from an RTDB transaction callback aborts WITHOUT a
+// server round trip, and the callback's first invocation is not guaranteed the
+// server value — it may fire against a stale local cache. Both refusal paths
+// in idMap.mjs therefore CONFIRM against a fresh read before they throw.
+// writeIdMap has always done this; claimShopifyProduct did not until CodeRabbit
+// pointed at the asymmetry on PR #551. A false refusal here is a product that
+// silently fails to publish over a conflict that does not exist.
+describe("idMap refusals are confirmed against the server, not against a cache", () => {
+  const IDMAP = readFileSync(new URL("./idMap.mjs", import.meta.url), "utf8");
+
+  it("the claim refusal re-reads before throwing, and retries once", () => {
+    const body = IDMAP.slice(IDMAP.indexOf("export async function claimShopifyProduct"));
+    const scoped = body.slice(0, body.indexOf("\n}\n"));
+    expect(scoped).toMatch(/planClaim\(\(await ref\.get\(\)\)\.val\(\), productId\)/);
+    // Bounded: the re-read happens on the FIRST abort only, so a genuine
+    // conflict throws on the second pass rather than spinning.
+    expect(scoped).toMatch(/attempt === 0/);
+  });
+
+  it("writeIdMap keeps the same discipline", () => {
+    const body = IDMAP.slice(IDMAP.indexOf("export async function writeIdMap"));
+    const scoped = body.slice(0, body.indexOf("\n}\n"));
+    expect(scoped).toMatch(/planIdMapWrite\(\(await ref\.get\(\)\)\.val\(\), mapping\)/);
+    expect(scoped).toMatch(/attempt === 0/);
+  });
+});
+
+// ─── A RESOLVED RETRY LEAVES THE RETRY SET ───────────────────────────────────
+// Retry pids are read individually every tick. One whose node was deleted, or
+// which now needs no action, produces no worklist entry — so counting only
+// `capped` as attempted would hold it in the bounded retry set for good,
+// re-read every two minutes forever and crowding out a real failure.
+describe("the retry set drains", () => {
+  it("attempted counts every evaluated retry pid except those the cap deferred", () => {
+    const gate = SRC.indexOf("if (COMMIT && !ONLY) {");
+    const block = SRC.slice(gate, SRC.indexOf("\n}\n", gate));
+    expect(block).toMatch(/retryPids\.filter\(\(pid\) => !deferred\.has\(pid\)\)/);
+    // The deferred set and the carried list must agree on what the cap missed,
+    // or a pid could be dropped as attempted while never having been tried.
+    expect(block).toMatch(/const deferred = new Set\(worklist\.slice\(capped\.length\)/);
+    expect(block).toMatch(/\.\.\.deferred,/);
   });
 });

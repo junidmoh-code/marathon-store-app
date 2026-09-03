@@ -165,16 +165,33 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
     throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${mineGid}`);
   }
 
-  let refusal = null;
-  const result = await db.ref(`${CLAIMS_PATH}/${key}`).transaction((cur) => {
-    refusal = null;
-    const plan = planClaim(cur, productId);
-    if (plan.action === "refuse") { refusal = plan.refusal; return undefined; }
-    if (plan.action === "held") return cur;
-    return productId;
-  });
-  if (refusal) throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
-  if (!result.committed) throw new Error("claim transaction did not commit");
+  // Same one-shot-abort hazard writeIdMap guards below, and for the same
+  // reason: returning `undefined` aborts the transaction WITHOUT a server
+  // round trip, and the update function's first invocation is not guaranteed
+  // the server value — it may fire against a stale local cache. A refusal
+  // taken at face value there would report "already claimed by record X"
+  // about an owner the server no longer has (a released claim, a claim this
+  // very record holds), and the product would fail to publish for a conflict
+  // that does not exist. So a refusal is CONFIRMED against a fresh server read
+  // before it is thrown, and the transaction retried once if the server value
+  // does not refuse. A real conflict reads the same twice and still throws.
+  const ref = db.ref(`${CLAIMS_PATH}/${key}`);
+  for (let attempt = 0; ; attempt++) {
+    let refusal = null;
+    const result = await ref.transaction((cur) => {
+      refusal = null;
+      const plan = planClaim(cur, productId);
+      if (plan.action === "refuse") { refusal = plan.refusal; return undefined; }
+      if (plan.action === "held") return cur;
+      return productId;
+    });
+    if (refusal) {
+      if (attempt === 0 && planClaim((await ref.get()).val(), productId).action !== "refuse") continue;
+      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
+    }
+    if (!result.committed) throw new Error("claim transaction did not commit");
+    break;
+  }
 
   // The durable pointer. Written AFTER the claim so a crash between the two
   // leaves an index entry naming this record and no mapping — the next attempt
