@@ -410,6 +410,20 @@ Measured, per tick (3 Sep, `/shopify_publish` = 3,832 nodes, mean 696 B/node):
 | **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~85 MB** |
 | **per month at $1/GB** | **~$96 idle, $160 busy** | ~$48 | **~$2.60** |
 
+### 9.1a What this work itself cost to read
+
+Worth stating, because an investigation into read cost that quietly spends more
+than it saves is not a saving.
+
+| | RTDB bytes | How it is known |
+|---|---:|---|
+| the two profiler hours (3 Sep) | **694 B** | measured — the profiler attributed it, two `/users/{uid}` reads (`docs/bandwidth-capture-sept.md` §2c) |
+| verifying the `updatedAt` index refusal | a refusal, not a payload | RTDB rejected the query and returned an error string; no rows were transferred |
+| everything else (node counts, byte sizes, live/blocked split) | 0 | taken from the profiler output already captured, and from paged/shallow reads already written for other scripts — no whole-node read was issued to investigate a whole-node read |
+
+Against a measured ~3.2 GB/day before, the investigation paid for itself inside
+the first minute.
+
 ### 9.2 The bookkeeping node
 
 `/shopify_sync/_reconcile` — `{ watermark, lastFullScanAt, lastSweepAt, retry }`.
@@ -441,3 +455,38 @@ tick, so nothing downstream could ever back off. The off path now asks Shopify
 whether the product exists; if it genuinely does not, it confirms off, removes
 the stale ID map and releases its claim. A query that itself fails answers "not
 gone", which leaves the intent standing.
+
+### 9.5 Who started this loop, when, and whether anyone meant it to run all night
+
+Asked because "it runs 24/7" is only a defect if nobody decided it should.
+
+- **What starts it.** A user LaunchAgent on the Mac mini,
+  `com.marathon.shopifyreconcile`, in `~/Library/LaunchAgents`. It runs
+  `scripts/shopify/reconcile-runner.mjs`, which takes a lockfile, runs one tick
+  and exits. Nothing else invokes the reconciler on a schedule.
+- **When it was introduced.** 14 Aug 2026, PR #368 (`93c5fe4`), the same PR that
+  shipped the per-product publishing page. The plist header records the cadence
+  as *owner spec 2026-08-14*.
+- **Changed once since.** 31 Aug 2026, PR #531 (`7006bd5`): `StartInterval 120`
+  became `KeepAlive` + `ThrottleInterval 120`, after launchd silently stopped
+  firing every `StartInterval` agent on that machine at 01:16. The cadence did
+  not change; only what survives a launchd wedge did.
+- **Was continuous operation intended?** The *two-minute cadence* was specified.
+  Round-the-clock running was never a separate decision — it is what a plain
+  `StartInterval`/`KeepAlive` agent does, and no one weighed it against a shop
+  that trades about ten hours a day. So the honest answer is that the interval
+  was chosen and the 24/7 part came free with the mechanism.
+
+**What was cut, and what deliberately was not.** The tick stays at two minutes,
+day and night, because the reason for two minutes is unchanged: the site must
+not keep selling something that has gone, and a publish or unpublish pressed at
+23:40 must go out at 23:42. What backs off overnight is the expensive
+*drift-repair* work — the full scan and the search-index sweep — from every
+30 minutes to every 3 hours between 23:00 and 07:00 SAST. That window is
+deliberately narrower than the measured dead one (01:00–08:00, from the mini's
+own log 18 Aug – 3 Sep, in which every overnight "working" tick was a stuck
+retry, not real intent), so a late-evening publish and an early-morning one both
+still get the daytime cadence.
+
+The precedent is the refill scan, which backs its cadence off the same way for
+the same reason: cut the sweep, never the thing a customer is waiting on.
