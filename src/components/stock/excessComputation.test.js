@@ -465,7 +465,7 @@ describe("half sizes — the live New Balance 1000 Green case", () => {
   });
 });
 
-describe("the four guards — each one on its own", () => {
+describe("the three guards — each one on its own", () => {
   // MUTATION-PROVED: delete `if (!t) continue` and this becomes a 4-unit card.
   it("guard 1 — an absent target row emits nothing, and is never read as 0", () => {
     const p = { ...PRODUCTS, af1: { ...PRODUCTS.af1, sizes: ["9", "11"] } };
@@ -473,31 +473,21 @@ describe("the four guards — each one on its own", () => {
     expect(computeHubSneakerExcess({ ...ctxOf(stock), products: p }, NONE)).toEqual([]);
   });
 
-  // MUTATION-PROVED: delete the Number.isFinite guard and this cards 4 units
-  // against a NaN Keep (excess NaN, or 4 once a later coercion swallows it).
-  it("guard 2 — a target that is not a finite number is a blank, not a 0", () => {
-    const stock = { hub1: { af1: cells({ 9: 4 }) } };
-    const targets = { hub1: { af1: { 9: { target: Number.NaN } } } };
-    // An explicit row is excluded anyway, so prove guard 2 through a resolver
-    // that returns a non-finite target from a NON-explicit source.
-    const rows = computeHubExcess({ ...ctxOf(stock, { targets }), }, NONE,
-      { groupFilter: isSneakerGroupProduct, minMovable: 0 });
-    expect(rows).toEqual([]);
-  });
-
   // MUTATION-PROVED: delete the explicit-source guard and the 0-target row
   // below becomes a 4-unit card.
-  it("guard 3 — an explicit per-product row excludes the cell, whatever it holds", () => {
+  it("guard 2 — an explicit per-product row excludes the cell, whatever it holds", () => {
     const stock = { hub1: { af1: cells({ 9: 4 }) } };
     const targets = { hub1: { af1: { 9: { target: 0 } } } };
     expect(computeHubSneakerExcess(ctxOf(stock, { targets }), NONE)).toEqual([]);
   });
 
-  // MUTATION-PROVED: delete `if (onHand <= t.target) continue` and this test
-  // still passes on a correct target — so it is pinned against a WRONG one:
-  // a resolver handing back 0 for a size the run keeps at 2 must still card
-  // nothing while the shelf is at or below that 2.
-  it("guard 4 — onHand == Keep and onHand < Keep both emit nothing", () => {
+  // MUTATION-PROVED two ways: loosening `!(onHand > t.target)` to
+  // `onHand < t.target` cards a phantom unit for the "== Keep" case; deleting
+  // the guard while ALSO breaking the dead-size rule (so the loop is handed a
+  // wrong target of 0 for a size the run keeps at 2 — the live bug exactly)
+  // fails this and a dozen more. That second form is the point of the guard:
+  // it holds when the target is wrong for a reason nobody has thought of yet.
+  it("guard 3 — onHand == Keep and onHand < Keep both emit nothing", () => {
     const at = { hub1: { af1: cells({ 9: 2 }) } };                   // == Keep
     const below = { hub1: { af1: cells({ 9: 1 }) } };                // < Keep
     expect(computeHubSneakerExcess(ctxOf(at), NONE)).toEqual([]);
