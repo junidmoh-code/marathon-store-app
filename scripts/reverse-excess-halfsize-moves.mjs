@@ -81,6 +81,13 @@ const CONFLICT_RETRIES = 5;
 // evidence, which is the point of them being constants.
 const INCIDENT_FROM = "2026-09-03T11:35:00.000Z";
 const INCIDENT_TO   = "2026-09-04T12:00:00.000Z";
+// Compared as INSTANTS, never as text. applyMovement stores a caller-supplied
+// `ts` unchanged and no rule enforces UTC formatting, so an offset timestamp
+// ("2026-09-03T13:35:54+02:00") sorts differently as a string than it does in
+// time — and a lexical window would then admit or exclude a move by its
+// spelling. (CodeRabbit, PR #552.)
+const INCIDENT_FROM_MS = Date.parse(INCIDENT_FROM);
+const INCIDENT_TO_MS   = Date.parse(INCIDENT_TO);
 
 admin.initializeApp({
   credential: admin.credential.applicationDefault(),
@@ -183,10 +190,12 @@ async function applyTransferAdmin({ movementId, productId, size, qty, from, to, 
     const sizeKey = encodeSizeKey(m.size);
     const note = (why, extra = {}) => skipped.push({ id: m.id, productId: m.productId, size: m.size, why, ...extra });
 
-    // Outside the window the live Keep is not evidence about this move.
-    const ts = String(m.ts || "");
-    if (!(ts >= INCIDENT_FROM && ts <= INCIDENT_TO)) {
-      note("outside the incident window — the live Keep is not evidence about this move", { ts });
+    // Outside the window the live Keep is not evidence about this move. An
+    // unparseable timestamp is OUTSIDE by definition — this tool never guesses
+    // when a movement happened.
+    const tsMs = Date.parse(m.ts);
+    if (!Number.isFinite(tsMs) || tsMs < INCIDENT_FROM_MS || tsMs > INCIDENT_TO_MS) {
+      note("outside the incident window — the live Keep is not evidence about this move", { ts: m.ts ?? null });
       continue;
     }
 
@@ -246,9 +255,18 @@ async function applyTransferAdmin({ movementId, productId, size, qty, from, to, 
       movementId: p.movementId, productId: p.productId, size: p.size, qty: p.reverseQty,
       from: "central", to: p.hub, nowIso,
     });
-    console.log(res.ok
-      ? `  ✓ ${p.name} ${p.size} ×${p.reverseQty}${res.idempotent ? " (already applied)" : ""} — ${JSON.stringify(res.before || {})} → ${JSON.stringify(res.after || {})}`
-      : `  ✗ ${p.name} ${p.size} — ${res.reason}`);
+    // A FAILED LEG STOPS THE RUN. Carrying on would leave a partial recovery
+    // behind an exit code of 0 — and post_write_verification_failed in
+    // particular means this process no longer knows what is on the shelf, which
+    // is the one state in which it must not keep moving stock. Every leg is
+    // idempotent by movement id, so the fix is to resolve the failure and
+    // re-run: what already landed is skipped. (CodeRabbit, PR #552.)
+    if (!res.ok) {
+      console.error(`  ✗ ${p.name} ${p.size} — ${res.reason} ${JSON.stringify(res)}`);
+      console.error("STOPPED. Nothing after this line was attempted; re-run once the cause is understood.");
+      process.exit(1);
+    }
+    console.log(`  ✓ ${p.name} ${p.size} ×${p.reverseQty}${res.idempotent ? " (already applied)" : ""} — ${JSON.stringify(res.before || {})} → ${JSON.stringify(res.after || {})}`);
   }
   process.exit(0);
 })();
