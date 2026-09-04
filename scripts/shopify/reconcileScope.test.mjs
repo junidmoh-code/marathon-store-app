@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, nextWatermark, isMissingIndexError,
+  NIGHT_START_HOUR, NIGHT_END_HOUR,
   readChangedPublishNodes, readLivePids, removeMappingIfUnchanged,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
@@ -19,11 +20,38 @@ describe("the clock", () => {
     expect(sastHour(at("2026-09-03T23:30:00Z"))).toBe(1); // wraps past midnight
   });
 
-  it("calls 23:00–07:00 SAST overnight and nothing else", () => {
-    expect(isOvernight(at("2026-09-03T21:30:00Z"))).toBe(true);  // 23:30 SAST
+  it("calls 01:00–07:00 SAST overnight and nothing else", () => {
+    expect(isOvernight(at("2026-09-03T23:00:00Z"))).toBe(true);  // 01:00 SAST
     expect(isOvernight(at("2026-09-03T03:00:00Z"))).toBe(true);  // 05:00 SAST
+    expect(isOvernight(at("2026-09-03T04:59:00Z"))).toBe(true);  // 06:59 SAST
     expect(isOvernight(at("2026-09-03T05:30:00Z"))).toBe(false); // 07:30 SAST
     expect(isOvernight(at("2026-09-03T18:00:00Z"))).toBe(false); // 20:00 SAST
+  });
+
+  // The measured busy hours, held as tests rather than as a comment. 23:00 was
+  // classified as overnight by an earlier draft and is the single BUSIEST
+  // publishing hour in the mini's log; 00:00 is active too. Backing drift
+  // repair off 6× at those hours is the regression this pins.
+  it("does NOT call the two busiest publishing hours overnight", () => {
+    expect(isOvernight(at("2026-09-03T21:30:00Z"))).toBe(false); // 23:30 SAST
+    expect(isOvernight(at("2026-09-03T22:30:00Z"))).toBe(false); // 00:30 SAST
+    expect(fullScanIntervalMs(at("2026-09-03T21:30:00Z"))).toBe(FULL_SCAN_DAY_MS);
+  });
+
+  // isOvernight is written for both window shapes because the boundaries are
+  // measured numbers that may move. The single `>= start || < end` form is
+  // correct only when the window wraps midnight; with a non-wrapping window it
+  // is true at EVERY hour, which would silently pin the loop to the 3-hour
+  // drift cadence for ever. Assert the window is not the whole day.
+  it("never calls every hour of the day overnight, whatever the boundaries", () => {
+    const midnightUtc = at("2026-09-03T00:00:00Z");
+    const hours = Array.from({ length: 24 }, (_, i) => isOvernight(midnightUtc + i * 3600000));
+    expect(hours.filter(Boolean).length).toBe(
+      NIGHT_START_HOUR > NIGHT_END_HOUR
+        ? 24 - NIGHT_START_HOUR + NIGHT_END_HOUR
+        : NIGHT_END_HOUR - NIGHT_START_HOUR);
+    expect(hours.some((x) => x === false)).toBe(true);
+    expect(hours.some((x) => x === true)).toBe(true);
   });
 
   it("backs the full scan off overnight and not by day", () => {

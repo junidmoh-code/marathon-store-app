@@ -468,7 +468,7 @@ server-only by construction and no rule change is needed for it, nor for
 - A product whose apply failed, or that the per-run cap did not reach, does not
   move its node's `updatedAt` — both are carried by id in `retry` and read
   individually every tick until they clear.
-- A full scan runs every 30 minutes (3 hours between 23:00 and 07:00 SAST), on
+- A full scan runs every 30 minutes (3 hours between 01:00 and 07:00 SAST), on
   the first run after the state node is lost, when the watermark is ahead of the
   server clock, and on `--full`.
 - The **dry run** (`reconcile.mjs` with no `--commit`) always reads everything.
@@ -541,11 +541,29 @@ an idle tick is ~100 B, so there is no longer any cost pressure to cut it.
 
 What backs off overnight is the expensive
 *drift-repair* work — the full scan and the search-index sweep — from every
-30 minutes to every 3 hours between 23:00 and 07:00 SAST. That window is
-deliberately narrower than the measured dead one (01:00–08:00, from the mini's
-own log 18 Aug – 3 Sep, in which every overnight "working" tick was a stuck
-retry, not real intent), so a late-evening publish and an early-morning one both
-still get the daytime cadence.
+30 minutes to every 3 hours between **01:00 and 07:00 SAST**.
+
+That window is the measured dead one, and it was corrected on 4 Sep after being
+measured a second time. From the mini's own log (18 Aug – 4 Sep, ~7,000 ticks),
+counting the *unapplied intent* figure each tick reports:
+
+| SAST hour | what the log shows |
+|---|---|
+| 01:00–06:00 | of 165 ticks carrying any intent, **164 reported exactly five** — the flat floor of a stuck record set, not work. One tick in ~800 carried real intent. Genuinely dead. |
+| 07:00 | a handful of real ticks; the edge, and it gets the **daytime** cadence |
+| 09:00–16:00 | quiet — the shop trades, nobody publishes |
+| 20:00–23:00 | the busy block, 4–6× the daytime rate |
+| **23:00** | the **single busiest publishing hour measured**, in both the stuck and the pre-stuck period, with a genuine spread of intent counts (1,2,3,4,5,6,7,8,9,11,16) rather than a flat floor. 00:00 is active too. |
+
+An earlier draft of this change started the night at 23:00 and justified it as
+"narrower than the measured dead window" — the opposite of true at its own start
+boundary. It backed drift repair off 6× at the two hours with the most work to
+repair. Publishing latency was never affected (the two-minute tick is what a
+press waits on), but the backstop was asleep at the busiest time.
+
+The correction costs ~3.3 extra full scans a night — 23:00–01:00 now runs the
+30-minute cadence — about **9.7 MB a night, ~$0.29 a month**, against a ~$93/month
+saving.
 
 The precedent is the refill scan, which backs its cadence off the same way for
 the same reason: cut the sweep, never the thing a customer is waiting on.

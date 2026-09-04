@@ -73,11 +73,27 @@ export const WATERMARK_OVERLAP_MS = 5 * 60 * 1000;
 export const FULL_SCAN_DAY_MS = 30 * 60 * 1000;
 export const FULL_SCAN_NIGHT_MS = 3 * 60 * 60 * 1000;
 
-// SAST boundaries of "overnight". 23:00–07:00 is deliberately wider than the
-// shop's trading day and narrower than the measured dead window (01:00–08:00),
-// so a late evening publish and an early morning one both still get the day
-// cadence.
-export const NIGHT_START_HOUR = 23;
+// SAST boundaries of "overnight" — the window in which drift repair backs off.
+// Set from the mini's own log (18 Aug – 4 Sep, ~7,000 ticks), NOT from an
+// assumption about trading hours, because the two disagree.
+//
+// 01:00–06:00 is genuinely dead: of 165 ticks in that window carrying any
+// unapplied intent, 164 reported exactly FIVE — the constant floor of a stuck
+// record set, not work. One tick in ~800 carried real intent.
+//
+// 23:00 IS NOT. It is the single BUSIEST publishing hour measured, in both the
+// stuck and the pre-stuck period, and its intent counts are a genuine spread
+// (1,2,3,4,5,6,7,8,9,11,16) rather than a flat floor. 00:00 is active too.
+// An earlier draft of this file started the night at 23:00 and justified it as
+// "narrower than the measured dead window" — which was the opposite of true at
+// its own start boundary: it backed drift repair off 6× at the exact hour with
+// the most work to repair. The window now matches what was measured.
+//
+// The cost of the correction is ~3.3 extra full scans a night (23:00–01:00 at
+// the 30-minute cadence instead of the 3-hour one), ~9.7 MB/night, ~$0.29 a
+// month — against a ~$93/month saving, for the backstop being awake during
+// peak publishing.
+export const NIGHT_START_HOUR = 1;
 export const NIGHT_END_HOUR = 7;
 
 // How many failed products the retry set will carry. A failure that outlives
@@ -92,9 +108,19 @@ export function sastHour(nowMs) {
   return Math.floor(((nowMs / 3600000) + 2) % 24);
 }
 
+// The window is [NIGHT_START_HOUR, NIGHT_END_HOUR) in SAST. It is written to
+// survive BOTH shapes, because the boundaries are measured numbers and a later
+// measurement may move them back across midnight: a window that wraps (start >
+// end, e.g. 23→7) is the OR of its two halves, one that does not (start < end,
+// e.g. 1→7) is the AND. The single `>= start || < end` form the earlier draft
+// used is only correct for the wrapping shape — with start=1 it is true for
+// every hour of the day, which would have put the loop on the 3-hour drift
+// cadence permanently and silently.
 export function isOvernight(nowMs) {
   const h = sastHour(nowMs);
-  return h >= NIGHT_START_HOUR || h < NIGHT_END_HOUR;
+  return NIGHT_START_HOUR > NIGHT_END_HOUR
+    ? (h >= NIGHT_START_HOUR || h < NIGHT_END_HOUR)
+    : (h >= NIGHT_START_HOUR && h < NIGHT_END_HOUR);
 }
 
 export function fullScanIntervalMs(nowMs) {

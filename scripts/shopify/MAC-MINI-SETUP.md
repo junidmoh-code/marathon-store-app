@@ -272,8 +272,10 @@ unapplied intent, so an idle tick is a node boot plus:
   index is pasted, with no code change.
 
 The expensive drift-repair passes (full scan, search-index sweep) run every
-30 minutes, and every 3 hours between 23:00 and 07:00 SAST. The **tick** stays
-at two minutes: a publish pressed at 23:40 still goes out at 23:42.
+30 minutes, and every 3 hours between 01:00 and 07:00 SAST — the window the
+mini's own log measures as dead. 23:00 is the *busiest* publishing hour and gets
+the daytime cadence (see `docs/SHOPIFY-SYNC.md` §9). The **tick** stays at two
+minutes either way: a publish pressed at 23:40 still goes out at 23:42.
 
 **A trap worth knowing about, found 3 Sep 2026.** The plist committed in this
 repo named `/usr/local/bin/node` — the Intel Homebrew location. The mini is
