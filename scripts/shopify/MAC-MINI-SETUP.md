@@ -147,8 +147,13 @@ launchctl load  ~/Library/LaunchAgents/com.marathon.shopifyreconcile.plist
 launchctl list | grep shopifyreconcile     # expect a line ending in the label
 ```
 
-`RunAtLoad` fires the first tick immediately; `StartInterval 120` fires every 2
-minutes thereafter.
+`RunAtLoad` fires the first tick immediately. After that the cadence comes from
+`KeepAlive` plus `ThrottleInterval 120`, **not** from `StartInterval` — launchd
+respawns the runner on every exit, no sooner than every 2 minutes, and the
+runner does one tick and exits. (It was `StartInterval 120` until 31 Aug 2026,
+when launchd silently stopped firing every `StartInterval` agent on this machine
+at 01:16 — PR #531. Diagnosing against `StartInterval` now means looking for a
+key that is not installed.)
 
 **Reboot survival:** a LaunchAgent in `~/Library/LaunchAgents` is loaded
 automatically at every login of that user — the same property that keeps

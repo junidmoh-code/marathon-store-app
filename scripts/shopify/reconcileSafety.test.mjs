@@ -517,3 +517,28 @@ describe("an unfinished sweep clears its timestamp", () => {
     }
   });
 });
+
+// ─── THE RUNBOOK DESCRIBES THE PLIST THAT IS ACTUALLY INSTALLED ──────────────
+// MAC-MINI-SETUP.md described `StartInterval 120` for three weeks after #531
+// replaced it with KeepAlive + ThrottleInterval, so anyone diagnosing the agent
+// was looking for a key that is not there. Same class as the node-path drift:
+// the doc and the plist are two copies of one fact and nothing held them level.
+describe("the setup guide and the plist agree on the schedule", () => {
+  const PLIST = readFileSync(new URL("./com.marathon.shopifyreconcile.plist", import.meta.url), "utf8");
+  const DOC = readFileSync(new URL("./MAC-MINI-SETUP.md", import.meta.url), "utf8");
+
+  it("the plist schedules by KeepAlive + ThrottleInterval, not StartInterval", () => {
+    expect(PLIST).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
+    expect(PLIST).toMatch(/<key>ThrottleInterval<\/key><integer>120<\/integer>/);
+    expect(PLIST).not.toMatch(/<key>StartInterval<\/key>/);
+  });
+
+  it("the guide names those keys and does not present StartInterval as current", () => {
+    expect(DOC).toContain("ThrottleInterval 120");
+    // It may mention StartInterval historically — but only alongside the note
+    // that it is no longer what runs, never as the live cadence.
+    if (DOC.includes("StartInterval")) {
+      expect(DOC).toMatch(/\*\*not\*\* from `StartInterval`|was `StartInterval 120` until/);
+    }
+  });
+});
