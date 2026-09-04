@@ -39,10 +39,25 @@
 // on the resolved target, not merely on the cases somebody thought to write
 // down. If the engine changes, that test goes red before this screen can lie.
 //
+// ── THE ONE DELIBERATE DIVERGENCE (2026-09-04, docs/EXCESS-55-INVESTIGATION.md)
+// A half size has two spellings: the catalogue's "5.5" and the stored RTDB key
+// "5_5". The engine only ever holds the stored shape in its cell maps and only
+// ever compares the raw shape against the catalogue, so it never has to
+// reconcile them. The BROWSER holds both — useStockCells decodes /stock's keys
+// on the way in — so this file reconciles them in two helpers, cellAt and
+// productCarriesSize, and every lookup on this path goes through one of them.
+// For engine-shaped input the answers are byte-identical (the encoded key is
+// tried first, and the catalogue comparison is normalised on BOTH sides), which
+// is what the differential fuzz pins; the divergence is one-directional and
+// strictly additive — this file also answers correctly when it is handed the
+// spelling the engine never sees.
+//
 // ── encodeSizeKey IS THE ENGINE'S, NOT src/utils/sizeKey.js ──────────────────
 // They differ: the engine trims and maps "" → "_", the client encoder returns
 // "" unchanged. Target resolution is the engine's question, so the engine's
 // encoder is the one that answers it. Pinned by the same differential test.
+
+import { decodeSizeKey } from "../../utils/sizeKey";
 
 // ── engine primitives, mirrored ──────────────────────────────────────────────
 
@@ -173,16 +188,69 @@ export function categoryPolicyEntry(config, products, stock, pid, dest) {
     policySource: r.source, groupKey: r.groupKey };
 }
 
+// ── THE ONE CELL LOOKUP — BOTH SPELLINGS OF A HALF SIZE ──────────────────────
+//
+// /stock stores an RTDB-safe key ("5_5"); useStockCells DECODES it on the way
+// into every screen ("5.5", useStock.js decodeByProduct). Both spellings are
+// therefore live in the browser, and every lookup on this path has to answer
+// the same question whichever one it is handed.
+//
+// This is the ONE place that reconciles them. Nothing else in this file — and
+// nothing in excessComputation.js — may index a cell map by a size directly:
+// they all come through here, so targets, cells, the size run and the excess
+// loop cannot drift apart again.
+//
+// WHY IT DOES NOT BREAK THE MIRROR. The engine only ever sees the stored,
+// encoded shape, and the encoded key is tried FIRST — so for engine-shaped
+// input this returns exactly what refill-engine.cjs returns, which is what the
+// differential fuzz in seatingCore.test.js pins. The decoded fallback is
+// strictly additional, and it exists because the browser genuinely holds the
+// other shape.
+//
+// THE BUG IT CLOSES (docs/EXCESS-55-INVESTIGATION.md). sizeUnitsAnywhere asked
+// a DECODED map for the ENCODED key "5_5", read zero, and the dead-size rule
+// below then handed back target 0 for a size whose policy row says 2 — turning
+// every unit of every half-size hub cell into "excess".
+export function cellAt(stock, loc, pid, size) {
+  const bySize = stock?.[loc]?.[pid];
+  if (!bySize) return null;
+  const ek = engineSizeKey(size);
+  if (bySize[ek] != null) return bySize[ek];
+  const dk = decodeSizeKey(ek);            // "5_5" -> "5.5"; whole sizes unchanged
+  return dk !== ek && bySize[dk] != null ? bySize[dk] : null;
+}
+
+// The on-hand of one cell, clamped: a negative counted cell reads as 0
+// everywhere on this path (refill-engine.cjs:409 — a count error must not arm
+// a size, and it must not create excess either).
+export function cellQtyAt(stock, loc, pid, size) {
+  return avail(num(cellAt(stock, loc, pid, size)?.qty));
+}
+
 // refill-engine.cjs:409 — negative counted cells clamp to 0: a count error must
 // not arm a size.
 function sizeUnitsAnywhere(stock, pid, size) {
-  const k = engineSizeKey(size);
   let n = 0;
-  for (const loc of Object.keys(stock || {})) n += avail(num(stock[loc]?.[pid]?.[k]?.qty));
+  for (const loc of Object.keys(stock || {})) n += cellQtyAt(stock, loc, pid, size);
   return n;
 }
 
 const productSizes = (products, pid) => (products?.[pid]?.sizes || []).map(String);
+
+// ── CATALOGUE MEMBERSHIP, ASKED IN ONE KEY SPACE ─────────────────────────────
+// The same reconciliation cellAt does for cells, for the "does this product
+// declare this size" gate. A caller may hold the raw catalogue spelling
+// ("5.5"), the stored/encoded one ("5_5", which is what an explicit-row key or
+// a cell key IS), or a padded one (" 8"); the catalogue itself only ever holds
+// the raw. Comparing the two strings directly answers "no" for a half size
+// whenever the caller came in through a KEY — which silently unarms 5.5 and
+// leaves its cells unjudged. Both sides are put through engineSizeKey so the
+// question is asked once, in one space. (rawSizeOf below already compares this
+// way; this is the same comparison, promoted to the gate that needs it.)
+function productCarriesSize(products, pid, size) {
+  const k = engineSizeKey(size);
+  return productSizes(products, pid).some((s) => engineSizeKey(s) === k);
+}
 
 // refill-engine.cjs:416
 function categoryPolicyTarget(config, products, stock, dest, pid, size) {
@@ -204,14 +272,14 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
     const row = entry.sizes[engineSizeKey(size)];
     if (!isObj(row)) return null;
     if (typeof row.target !== "number" || !Number.isFinite(row.target) || row.target <= 0) return null;
-    if (!productSizes(products, pid).includes(String(size))) return null;
+    if (!productCarriesSize(products, pid, size)) return null;
     return shape(sizeUnitsAnywhere(stock, pid, size) > 0 ? row.target : 0, row.minQty, row.reorderPoint);
   }
   if (!entry.perSize) {
     return engineSizeKey(size) === "_" ? shaped(entry.target) : null;
   }
   if (engineSizeKey(size) === "_") return null;
-  if (!productSizes(products, pid).includes(String(size))) return null;
+  if (!productCarriesSize(products, pid, size)) return null;
   return shaped(sizeUnitsAnywhere(stock, pid, size) > 0 ? entry.target : 0);
 }
 
@@ -240,7 +308,7 @@ export function resolveTarget({ targets, config, products, stock }, dest, pid, s
   // Evaluated BEFORE the clothing kill switch — a shared early return would
   // couple the two switches, which is exactly what having two is for.
   if (footwearTargetsEnabled(config, dest) && isFootwear(fp) && storeCarries(stock, dest, pid)) {
-    if (productSizes(products, pid).includes(size)) {
+    if (productCarriesSize(products, pid, size)) {
       const run = config?.footwearRunByLocation?.[dest] || {};
       const t = run[engineSizeKey(size)];
       if (typeof t === "number" && t > 0) {
@@ -257,8 +325,7 @@ export function resolveTarget({ targets, config, products, stock }, dest, pid, s
   if (!ruleTargetsEnabled(config, dest)) return null;
   const p = products?.[pid];
   if (isClothing(p) && storeCarries(stock, dest, pid)) {
-    const sizes = productSizes(products, pid);
-    if (sizes.includes(size)) {
+    if (productCarriesSize(products, pid, size)) {
       const subT = typeof size === "string" && size.trim() !== ""
         ? subcategoryRun(config, products, pid, dest)
         : null;
