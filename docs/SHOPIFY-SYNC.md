@@ -452,18 +452,63 @@ mean is reported here as a sample and used for nothing. An earlier draft printed
 the sample as the *basis* for the table while every row was computed from 2.2 MB,
 which is why the day and month rows did not reconcile with the stated premise.
 
-**Read the column headings.** Only the *before* column is measured on the live
-system — from the profiler capture, against the code that was actually running.
-The two *after* columns are **projections** computed from the same measured node
-sizes and counts. They cannot be measurements: the code in this branch has never
-run on the mini (it has no auto-pull — see `MAC-MINI-SETUP.md`), and the
-`updatedAt` index is deliberately not pasted yet. The first real figure will come
-from the loop's own `rtdb read this run:` line once both of those happen, and
-this table should be corrected against it.
+### Measured on the mini, 4 Sep 2026 20:32–20:34 SAST, after the merge
 
-| | before (measured) | after, no index (projected) | after, index pasted (projected) |
+The table below was written before this code had ever run. It has now run, and
+the loop's own `rtdb read this run:` line says what it costs. **The middle column
+is no longer a projection — it is measured**, and it corroborates the capture it
+was derived from:
+
+| | measured |
+|---|---:|
+| whole `/shopify_publish` node | **2,227,258 B** |
+| tick, index NOT pasted (fell back to the whole-node read) | **2,228,189 B** |
+| first run, full scan by design (no watermark yet) | 2,227,262 B |
+
+Two things fall out of that, and both are worth stating.
+
+**The saving is already half-delivered, without the index.** The old code read the
+whole node *twice* every tick — once for the worklist, once more for the
+search-index sweep. `2 × 2,227,258 = 4,454,516 B`, and the capture put the idle
+tick at 4.43 MB (133 MB/h ÷ 30 ticks) by an entirely independent route. The two
+agree to within 0.5%. One of those reads is now gone whatever the rules say, so
+the tick is **halved on merge** — ~$48/month — with the rest behind the paste.
+
+**The fallback does what §9.1 promises.** The tick with no index printed:
+
+```text
+⚠ /shopify_publish has no ".indexOn": "updatedAt" — this tick fell back to
+  reading the WHOLE node (~2 MB, the old cost). Paste the index from
+  docs/SHOPIFY-SYNC.md §9.1 to make it cheap; nothing else needs changing.
+scan: full (no updatedAt index — fell back)
+rtdb read this run: ~2,228,189 B
+```
+
+Correct, at the old price for that one read, and loud. The `~100 B` idle tick in
+the right-hand column remains a projection until the index is pasted.
+
+**Also measured that run: the stuck-record loop ended.** The five records that had
+been refusing `publishableUnpublish` every two minutes since 30 Aug were
+confirmed off on the first tick of the new code, and the launchd job's last exit
+code went from `1` to `0`. That first tick was a *fresh process with a cold
+cache* — the exact condition under which the version of
+`removeMappingIfUnchanged` first written for this branch would have reported
+"re-mapped mid-run" and made no progress for ever (§9.4a).
+
+**Read the column headings.** They changed on 4 Sep, when this code first ran.
+
+- *before* — **measured**, from the profiler capture, against the code that was
+  really running at the time.
+- *after, no index* — **measured** on the mini at 20:34 SAST, 4 Sep: the tick
+  reported `~2,228,189 B` (see above). This is what the loop costs today.
+- *after, index pasted* — still a **projection**, and it stays one until
+  `"updatedAt"` is added to `/shopify_publish`'s `.indexOn` in the console
+  (§9.1). That paste is the only thing outstanding; the mini is already on
+  this code.
+
+| | before (measured) | after, no index (**measured**) | after, index pasted (projected) |
 |---|---:|---:|---:|
-| idle tick | ~4.4 MB | ~2.2 MB | **~100 B** |
+| idle tick | ~4.4 MB | **2,228,189 B** | **~100 B** |
 | per product published | +6,204,009 B (`/stock`) + ~1 MB (`/shopify_sync` root txn) | +100 B | +100 B |
 | search-index sweep live set | 2.2 MB, every tick | **0 — never read** (see below) | 747,434 B, on a cadence |
 | **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~88 MB** |
@@ -477,7 +522,7 @@ paragraph forgot while claiming "the only expensive ticks are the full scans":
 |---|---|---:|
 | full scans | night is 01:00–07:00 (§9.5), so 18 daytime hours ÷ 30 min = 36, plus 6 night hours ÷ 3 h = 2 → **38 scans**, each one whole-node read at 2.2 MB (a sweep landing on a full-scan tick reuses it free) | 83.6 MB |
 | sweeps on *incremental* ticks | `sweepDue` is also true when a tick **applied** something, and on an incremental tick the live set costs a `readLivePids` at 747,434 B. At ~7.5 publishes a day landing in ~6 ticks | 4.5 MB |
-| idle ticks | the remaining ~682 × ~100 B | 0.07 MB |
+| non-full-scan ticks | the remaining ~682 × ~100 B. This includes the ~6 sweep ticks in the row above — what is counted here is their scan-state read, and their 747,434 B live-set read is priced separately rather than twice | 0.07 MB |
 | | **total** | **~88 MB** |
 
 `88 MB × 30 = 2.6 GB`, at $1/GB, **~$2.65 a month**.
