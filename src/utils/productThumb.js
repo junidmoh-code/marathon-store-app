@@ -293,3 +293,49 @@ export async function writeProductThumb(productId, sourceBlob, deps = {}) {
     return { ok: false, reason: err?.message || String(err), staleRemoved };
   }
 }
+
+/**
+ * Write the thumbnail for an APPROVED AI photo proposal.
+ *
+ * WHY THIS IS NOT JUST writeProductThumb WITH A FETCH IN FRONT OF IT
+ * Approving a proposal points products/{id}/photoUrl at
+ * products/{id}/photo_proposal_{token}.jpg and leaves products/{id}/photo.jpg
+ * standing — the original is kept, not overwritten. But the offline thumbnail
+ * has exactly ONE path per product, and every one in the bucket was generated
+ * from photo.jpg. So an approval used to leave the shop showing the clean
+ * white-background photo online and every till showing the ORIGINAL, with
+ * nothing to ever correct it: a thumbnail is only revisited when photo.jpg
+ * changes, and an approval does not change photo.jpg. Measured 2026-09-04:
+ * 522 live products in exactly that state.
+ *
+ * THE DOWNLOAD FAILING IS NOT THE SAME AS THE WRITE FAILING, and this is the
+ * whole reason the download is not just injected into writeProductThumb.
+ * writeProductThumb's terminal-failure leg DELETES the thumbnail it could not
+ * replace — right when a photo has genuinely been replaced, because the
+ * standing file is then provably wrong and blank-and-repairable beats
+ * wrong-and-silent. But if we could not even READ the new photo, nothing about
+ * the bucket has changed: the product still has a thumbnail of its original
+ * photo, which is no more wrong than it was a second ago. Destroying it would
+ * turn a failed download into a blank square on every till. So a download
+ * failure returns early and touches nothing.
+ *
+ * Best-effort by contract, like every other thumbnail write: it never throws.
+ * An approval is the operator's decision about which photo the shop shows, and
+ * a derived ~15 KB file must never be able to refuse it.
+ */
+export async function writeApprovedThumbFromUrl(productId, proposedUrl, deps = {}) {
+  const { download, upload, remove, warn = (...a) => console.warn(...a), write = writeProductThumb } = deps;
+  if (!productId) return { ok: false, reason: "no product id" };
+  if (!proposedUrl) return { ok: false, reason: "no proposal url" };
+  if (typeof download !== "function") return { ok: false, reason: "no download function" };
+
+  let blob;
+  try {
+    blob = await download(proposedUrl);
+  } catch (err) {
+    warn("approved proposal thumbnail: could not download the proposal:", err);
+    return { ok: false, reason: err?.message || String(err), downloadFailed: true };
+  }
+  if (!blob) return { ok: false, reason: "proposal download produced no blob", downloadFailed: true };
+  return write(productId, blob, { upload, remove });
+}
