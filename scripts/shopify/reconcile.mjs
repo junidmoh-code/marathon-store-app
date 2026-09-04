@@ -1173,6 +1173,14 @@ const sweepDue = scanMode === "full" ||
   appliedSomething ||
   runStartedAt - sweptRecently >= fullScanIntervalMs(runStartedAt);
 let sweepRan = false;
+// RAN BUT DID NOT FINISH — a different thing from "did not run". Leaving
+// lastSweepAt at its previous value is NOT enough to make the next tick sweep,
+// because the sweep does not only run when the cadence has elapsed: it also
+// runs whenever the tick applied something. So a capped sweep triggered by an
+// apply, with a recent lastSweepAt, would sit until the cadence caught up —
+// 30 minutes, or 3 hours overnight — while its own log line promised the next
+// tick. Unfinished CLEARS lastSweepAt instead, which makes the next tick due.
+let sweepUnfinished = false;
 // A plain conditional, not a sentinel exception. "Not due" is a schedule, not a
 // failure, and routing it through throw meant the catch below had to tell the
 // two apart by comparing an error MESSAGE — which leaves the catch describing
@@ -1209,6 +1217,7 @@ if (sweepDue) {
     // to keep saying so. `capped` and `skipped` are different: those really do
     // get further on the next attempt.
     sweepRan = !sweep.skipped && !sweep.capped;
+    sweepUnfinished = Boolean(sweep.skipped || sweep.capped);
     if (sweep.skipped) {
       // already warned
     } else if (sweep.missing || sweep.orphans) {
@@ -1219,6 +1228,9 @@ if (sweepDue) {
       );
     }
   } catch (e) {
+    // A sweep that threw did not repair anything either, and before the cadence
+    // it would have been retried in two minutes. Keep that.
+    sweepUnfinished = true;
     console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
   }
 }
@@ -1272,7 +1284,10 @@ if (COMMIT && !ONLY) {
     watermark: nextWatermark({ runStartedAt, unapplied, previousWatermark: scanState?.watermark ?? null }),
     retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),
     ...(scanMode === "full" ? { lastFullScanAt: runStartedAt } : {}),
-    ...(sweepRan ? { lastSweepAt: runStartedAt } : {}),
+    // Three states, not two: finished (stamp it), ran-unfinished (CLEAR it, so
+    // the next tick is due regardless of cadence), and never ran because it was
+    // not due (leave it alone — clearing there would sweep every tick forever).
+    ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
     updatedAt: runStartedAt,
   });
 }

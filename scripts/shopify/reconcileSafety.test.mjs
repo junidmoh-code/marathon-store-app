@@ -478,3 +478,42 @@ describe("the unfinished-sweep list is exactly skipped and capped", () => {
     expect(line).not.toContain("refused");
   });
 });
+
+// ─── "RAN BUT DID NOT FINISH" IS NOT "DID NOT RUN" ───────────────────────────
+// Leaving lastSweepAt at its previous value does NOT make the next tick sweep,
+// because the sweep does not only run when the cadence has elapsed — it also
+// runs whenever the tick applied something. A capped sweep triggered by an
+// apply, with a recent lastSweepAt, would therefore sit until the cadence
+// caught up (30 min, or 3 h overnight) while its own log line promised the next
+// tick. This was my own wrong reasoning until a reviewer walked the case.
+describe("an unfinished sweep clears its timestamp", () => {
+  it("distinguishes three states, not two", () => {
+    const block = SRC.slice(SRC.indexOf("if (COMMIT && !ONLY) {"));
+    const scoped = block.slice(0, block.indexOf("\n}\n"));
+    // finished → stamp; unfinished → CLEAR (so the next tick is due whatever
+    // the cadence says); never ran → leave alone.
+    expect(scoped).toMatch(/sweepRan \? \{ lastSweepAt: runStartedAt \} : sweepUnfinished \? \{ lastSweepAt: null \} : \{\}/);
+  });
+
+  it("skipped, capped and a throw all count as unfinished", () => {
+    expect(SRC).toMatch(/sweepUnfinished = Boolean\(sweep\.skipped \|\| sweep\.capped\);/);
+    // The catch must set it too — a sweep that threw repaired nothing, and
+    // before the cadence it would have been retried in two minutes.
+    const cat = SRC.slice(SRC.indexOf("} catch (e) {", SRC.indexOf("const sweep = await sweepSearchIndex(")));
+    expect(cat.slice(0, 400)).toMatch(/sweepUnfinished = true;/);
+  });
+
+  it("a sweep that was never due does not clear it", () => {
+    // Clearing when not due would make every tick sweep, for ever — the exact
+    // cost this branch removed.
+    const decl = SRC.slice(SRC.indexOf("let sweepUnfinished = false;"));
+    expect(decl.slice(0, 200)).toContain("false");
+    // It is only ever set inside the `if (sweepDue)` block.
+    const gate = SRC.indexOf("if (sweepDue) {");
+    const gateEnd = SRC.indexOf("\n}\n", gate);
+    for (const m of SRC.matchAll(/sweepUnfinished = (?!false)/g)) {
+      expect(m.index).toBeGreaterThan(gate);
+      expect(m.index).toBeLessThan(gateEnd);
+    }
+  });
+});

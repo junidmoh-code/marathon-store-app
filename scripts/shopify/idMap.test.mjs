@@ -508,13 +508,28 @@ describe("claimShopifyProduct confirms a pointer clash before acting on it", () 
     expect(db.state.server).toBe("p1");     // and the claim was NOT given back
   });
 
-  it("a real clash still refuses, and reports what the SERVER holds", async () => {
+  it("a real clash still refuses, and hands the claim back", async () => {
+    // The pre-check MUST see an empty pointer, or this never reaches the
+    // pointer transaction at all — it throws at the top of the function and
+    // the test passes for the wrong reason, which is exactly what an earlier
+    // version of it did. So the race is staged after the pre-check read, and
+    // both the cache and the server then agree on the conflicting gid.
     const db = fakeDb({ cached: null, server: null, mine: null, pointerCached: gid.product(999) });
-    // Make the server agree with the stale view: a genuine conflict.
-    db.state.mine = gid.product(999);
+    let preCheckDone = false;
+    const inner = db.ref;
+    db.ref = (path) => {
+      if (path.endsWith("/shopifyProductId")) {
+        if (preCheckDone) db.state.mine = gid.product(999);   // the server, too
+        preCheckDone = true;
+      }
+      return inner(path);
+    };
     await expect(claimShopifyProduct(db, "p1", GID))
       .rejects.toThrow(/record already maps to gid:\/\/shopify\/Product\/999/);
-    expect(db.state.server).toBe(null);     // claim handed back, as it must be
+    // It got past the pre-check and really did take the claim — then gave it
+    // back. A null here with the claim never taken would prove nothing.
+    expect(db.state.transactions).toBeGreaterThan(0);
+    expect(db.state.server).toBe(null);
   });
 });
 
