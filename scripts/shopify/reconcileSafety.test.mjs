@@ -201,7 +201,11 @@ describe("no whole-node read on the scheduled path", () => {
     // over that too — a deferred node's updatedAt does not move, so only the
     // watermark staying behind it puts it in the next window.
     expect(SRC).not.toMatch(/watermark: Date\.now\(\)/);
-    expect(SRC).toMatch(/watermark: nextWatermark\(\{ runStartedAt, unapplied,/);
+    // Computed into `watermark` and written from there — the value is inspected
+    // in between so a watermark that cannot advance is reported rather than
+    // silently costing the old price on every tick.
+    expect(SRC).toMatch(/const watermark = nextWatermark\(\{ runStartedAt, unapplied,/);
+    expect(SRC).toMatch(/await writeReconcileState\(db, \{\n\s*watermark,/);
     // `unapplied` must be the cap's leftovers, minus retry pids (whose stale
     // updatedAt would drag the watermark back and widen every later window).
     expect(SRC).toMatch(/const unapplied = worklist\.slice\(capped\.length\)/);
@@ -603,5 +607,20 @@ describe("the incremental window's two silent contracts", () => {
     // same eviction already fixed for cap-deferred work.
     expect(SRC).toMatch(/results\.push\(\{ pid, ok: false, blocked: true,/);
     expect(SRC).toMatch(/const carried = results\.filter\(\(r\) => !r\.ok && !r\.blocked\)/);
+  });
+});
+
+// ── The loop must say when it has stopped being incremental ────────────────
+// A watermark that cannot advance degrades to the whole-node read on every
+// tick — correct, at exactly the old price, and completely silent, because the
+// log line for a full scan looks the same either way. This is the failure this
+// branch would never notice about itself.
+describe("a watermark that cannot advance is reported, not swallowed", () => {
+  it("the tick warns and names how many nodes are responsible", () => {
+    expect(SRC).toMatch(/the watermark did not advance/);
+    expect(SRC).toMatch(/carry no usable updatedAt/);
+    // Guarded on the VALUE, not on a mode flag: null, 0 and a negative
+    // watermark all mean the same thing to planScan and all have to warn.
+    expect(SRC).toMatch(/if \(!\(Number\(watermark\) > 0\)\)/);
   });
 });

@@ -1342,8 +1342,29 @@ if (COMMIT && !ONLY) {
     ...capped.map((w) => w.pid),
     ...retryPids.filter((pid) => !deferred.has(pid) && !unreadable.has(pid)),
   ])];
+  // SAY SO WHEN THE WATERMARK DOES NOT ADVANCE. Two ways this loop can quietly
+  // stop being incremental and nobody would know, because both LOOK like a
+  // healthy full scan in the log:
+  //   · a node in the backlog carries no usable `updatedAt`, so nextWatermark
+  //     refuses to guess a bound and returns the previous one — correct, but if
+  //     that previous one is null the next tick takes a full scan, and the tick
+  //     after that, for as long as the node sits there;
+  //   · a node stamped 0 (or negative) drags the watermark to -1, which
+  //     planScan reads as "no watermark recorded" and answers with a full scan,
+  //     for ever.
+  // Neither is a correctness bug — both degrade to exactly the old behaviour —
+  // but they are the failure this branch would never notice, so the tick names
+  // the node responsible instead of silently paying the old price.
+  const watermark = nextWatermark({ runStartedAt, unapplied, previousWatermark: scanState?.watermark ?? null });
+  if (!(Number(watermark) > 0)) {
+    const culprits = unapplied.filter((n) => !(Number(n?.updatedAt) > 0)).length;
+    console.error(`  ⚠ the watermark did not advance (${JSON.stringify(watermark)})` +
+      (culprits ? ` — ${culprits} node(s) in the backlog carry no usable updatedAt.` : ".") +
+      " Every tick until this clears reads the WHOLE node, at the old price. A full scan will still apply the work;" +
+      " what is lost is the cheap window, silently, so it is said out loud here.");
+  }
   await writeReconcileState(db, {
-    watermark: nextWatermark({ runStartedAt, unapplied, previousWatermark: scanState?.watermark ?? null }),
+    watermark,
     retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),
     ...(scanMode === "full" ? { lastFullScanAt: runStartedAt } : {}),
     // Three states, not two: finished (stamp it), ran-unfinished (CLEAR it, so
