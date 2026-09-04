@@ -58,6 +58,7 @@
 import { createRequire } from "module";
 import { graphql } from "../shopify/client.mjs";
 import { requireOnlineStorePublication, publishToOnlineStore } from "../shopify/collections.mjs";
+import { missingShopifyCredentials } from "../shopify/env.mjs";
 
 // firebase-admin is loaded inside main(), not here. The two exported decisions
 // below are pure and are imported by the test; a module-level require would
@@ -231,6 +232,22 @@ export function planFeedMembership(currentGids, desiredGids) {
  */
 export async function refreshShopTheFeed(db, { commit = false } = {}) {
   const COMMIT = commit;
+
+  // ── NOT CONFIGURED HERE IS A LEGITIMATE STATE ──────────────────────────────
+  // The publisher calls this at the end of a run that has ALREADY posted, and
+  // its checkout may have no Shopify credentials at all — that was true of the
+  // Mac mini until 2026-09-04. Checking up front, and throwing a plain Error,
+  // means the publisher's catch turns this into a warning instead of the run
+  // dying. It also stops us spending an RTDB query before finding out.
+  const missing = missingShopifyCredentials();
+  if (missing.length) {
+    throw new Error(
+      `Shop the Feed needs the Shopify credentials and this checkout has none ` +
+        `(${missing.join(", ")}). The posts are unaffected; add a .env at the ` +
+        `repo root to let the bio collection refresh.`
+    );
+  }
+
   log(`\nShop the Feed — ${COMMIT ? "COMMIT" : "DRY RUN (pass --commit to apply)"}\n`);
 
   // One bounded indexed query. Never the whole node.
