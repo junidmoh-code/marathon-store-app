@@ -342,6 +342,21 @@
 
     <main id="MainContent" class="content-for-layout focus-none" role="main" tabindex="-1">
       {{ content_for_layout }}
+
+      {%- comment -%}
+        ── THE IN-APP BROWSER EXIT, ON THE CART PAGE ONLY ─────────────────────
+        Hooked from the layout rather than from a cart section because `theme/`
+        in this repo is a curated SUBSET of the live theme and carries no cart
+        section to edit. Gating on the template keeps it to the one page that
+        matters: the last surface this theme controls before Shopify checkout
+        hands the shopper to PayFast, off-site.
+
+        It renders inside <main> so it inherits the page's own type and colour
+        rather than floating over the layout.
+      {%- endcomment -%}
+      {%- if template contains 'cart' -%}
+        {%- render 'open-in-browser' -%}
+      {%- endif -%}
     </main>
 
     {% sections 'footer-group' %}
