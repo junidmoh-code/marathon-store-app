@@ -500,9 +500,17 @@ for (const { pid, want } of capped) {
           continue;
         }
         console.log(`  ${mapNode.shopifyProductId} no longer exists on Shopify — clearing the stale ID map and confirming off`);
-        // Releases only if the index still names THIS record; a drifted entry
-        // naming someone else is left alone rather than freed under them.
-        try { await releaseClaim(db, pid, mapNode.shopifyProductId); } catch { /* index entry may predate the claim index */ }
+        // MAPPING FIRST, CLAIM SECOND, and the order is load-bearing.
+        //
+        // The claim index exists to guarantee one Shopify product is mapped by
+        // at most one record. Freeing the claim before removing the mapping
+        // opens a window — a `changed` verdict, a thrown error, a kill -9
+        // between the two lines — in which the record still names the gid while
+        // nothing protects it, so a second record can claim and map the same
+        // product. That is the one invariant the index provides, given away for
+        // nothing. The other order leaks at worst a claim with no mapping,
+        // which blocks a gid that no longer exists and says so in the log.
+        //
         // RE-READ BEFORE DELETING. `mapNode` was read earlier in this tick and
         // the Shopify round trip above takes time, so what is proved absent is
         // the product this record mapped THEN. If the record has since been
@@ -510,14 +518,36 @@ for (const { pid, want } of capped) {
         // that by hand, outside this loop's single-flight lock — removing the
         // node here would delete a good, fresh mapping on the strength of a
         // deletion check performed against a different product.
-        // ONE operation, and its verdict comes from the transaction result —
-        // never from a flag set inside a callback RTDB may invoke more than
-        // once. See removeMappingIfUnchanged for what that flag got wrong.
+        // ONE operation, whose verdict comes from the committed snapshot —
+        // never from `committed` alone and never from a flag set inside a
+        // callback RTDB may invoke more than once. See removeMappingIfUnchanged.
         const outcome = await removeMappingIfUnchanged(db, pid, mapNode.shopifyProductId);
         if (outcome !== "removed") {
-          console.log(`  ${pid} no longer maps ${mapNode.shopifyProductId} — it was re-mapped or cleared while Shopify was being asked about it; nothing removed`);
-          results.push({ pid, ok: false, why: "record changed mid-run; nothing removed, will re-evaluate next tick" });
+          // Say which of the two it was. "contended" means the SERVER STILL
+          // AGREES the record maps this gid and the write simply did not land —
+          // reporting that as "it was re-mapped" would send someone looking for
+          // a re-adoption that never happened.
+          const why = outcome === "changed"
+            ? `no longer maps ${mapNode.shopifyProductId} — it was re-mapped or cleared while Shopify was being asked about it; nothing removed`
+            : `still maps ${mapNode.shopifyProductId} but the removal did not commit — nothing removed, retrying next tick`;
+          console.log(`  ${pid} ${why}`);
+          results.push({ pid, ok: false, why: `${why} (will re-evaluate next tick)` });
           continue;
+        }
+        // Only now is the gid unreferenced, so the claim can go. Releases only
+        // if the index still names THIS record; a drifted entry naming someone
+        // else is left alone rather than freed under them. A release that does
+        // not land leaves a claim on a gid whose Shopify product is deleted —
+        // harmless to the storefront, but it would block a future re-use of
+        // that gid, so it is named in the log rather than swallowed.
+        let released = "contended";
+        try {
+          released = await releaseClaim(db, pid, mapNode.shopifyProductId);
+        } catch (e) {
+          console.error(`  ⚠ could not release the claim on ${mapNode.shopifyProductId} for ${pid} (${String(e?.message || e)}) — clear it by hand if that gid is ever re-used`);
+        }
+        if (released === "contended") {
+          console.error(`  ⚠ the claim on ${mapNode.shopifyProductId} for ${pid} did not release — clear it by hand if that gid is ever re-used`);
         }
         await confirmLiveState(db, pid, "off", UPDATED_BY, {
           clearAdminUrl: true,

@@ -322,12 +322,21 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
       // cheap insurance against one transient error. Whatever happens, the
       // CLASH is what gets thrown: it is what the caller needs to act on, and
       // a release failure must not replace it with a different error.
+      // THE OUTCOME IS NOT ONLY THE EXCEPTION. releaseClaim does not throw when
+      // it declines — it RETURNS "absent" / "held-by-other" / "contended". The
+      // first version of this block hardened only the throwing path, so the
+      // likelier failure ("contended": the write did not land, our claim is
+      // still there) left the claim stranded with nothing logged at all. Only
+      // "contended" is a leak of OUR claim: "absent" means there is nothing to
+      // free and "held-by-other" means it is not ours to free.
       let releaseError = null;
       for (let tries = 0; tries < 2; tries++) {
         try {
-          await releaseClaim(db, productId, shopifyProductId);
-          releaseError = null;
-          break;
+          const outcome = await releaseClaim(db, productId, shopifyProductId);
+          releaseError = outcome === "contended"
+            ? new Error("release did not commit")
+            : null;
+          if (!releaseError) break;
         } catch (e) {
           releaseError = e;
         }
@@ -372,29 +381,48 @@ export async function releaseClaim(db, productId, shopifyProductId) {
   // be released, which is the leak this function exists to prevent.
   //
   // (The earlier version returned `cur` here. That committed a needless write,
-  // but it also forced a server round trip, so it was accidentally safe. Making
-  // it abort without adding this confirmation traded a wasted write for a
-  // correctness bug.)
+  // but it also forced a server round trip, so it was "accidentally safe".)
   //
-  // So a decline is CONFIRMED against a fresh server read, once. A genuinely
-  // absent or other-owned claim reads the same twice and the decline stands.
+  // IT WAS NOT AN ACCIDENT — it was the only mechanism there is, and the
+  // version that replaced it with an abort plus a confirming read was broken.
+  // There is no way to warm the cache the callback reads: `runTransaction` runs
+  // it synchronously against `repoGetLatestState()` before any server data can
+  // arrive and, on `undefined`, unwatches and completes without asking the
+  // server; `get()` removes its own registration afterwards, so it leaves
+  // nothing cached ("only active queries are cached"). Both checked against the
+  // installed @firebase/database. See reconcileScope.mjs `removeMappingIfUnchanged`
+  // for the line numbers and the full trace.
+  //
+  // On a fresh process — every tick — `cur` was null, the callback aborted with
+  // "absent", the confirming read found the claim IS ours, the retry saw null
+  // again and returned "absent" anyway. The claim was silently never released,
+  // which is precisely the leak this function exists to prevent, and the caller
+  // logs "absent" as nothing to do.
+  //
+  // THE RULE, and it is mechanical: AN ABORT MUST BE UNREACHABLE FROM
+  // `cur == null`. ensureClaimIndex's backfill above already obeys it
+  // (`cur == null ? owner : cur`); so do the claim and pointer transactions,
+  // whose null branches WRITE. These two declines are the only places that got
+  // it backwards, and a source guard below now keeps it that way.
+  //
+  // So: never abort. A decline writes `cur` back unchanged, which forces the
+  // round trip and re-invokes the callback with the real value, and the verdict
+  // that matters — "someone else holds it" — is read off the COMMITTED
+  // SNAPSHOT rather than a flag.
   const ref = db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`);
-  for (let attempt = 0; ; attempt++) {
-    let outcome = "released";
-    await ref.transaction((cur) => {
-      // Reset at the TOP of every invocation, like `refusal` and `clash`
-      // elsewhere in this file: the callback may run more than once and only
-      // the last invocation describes what happened.
-      outcome = "released";
-      if (cur == null) { outcome = "absent"; return undefined; }
-      if (cur !== productId) { outcome = "held-by-other"; return undefined; }
-      return null;   // null DELETES the key, which is the release
-    });
-    if (outcome !== "released" && attempt === 0 && (await ref.get()).val() === productId) {
-      continue;   // the abort was against a stale cache; the claim IS ours
-    }
-    return outcome;
-  }
+  // Only ever used to tell "there was nothing to release" apart from "released
+  // it", both of which commit with the key absent. It is safe to read a latch
+  // HERE and nowhere else in this function: with no abort, the callback's last
+  // invocation is by definition the committed one. The verdict that can cost
+  // something does not come from it.
+  let sawAbsent = false;
+  const res = await ref.transaction((cur) => {
+    sawAbsent = cur == null;
+    return (cur == null || cur === productId) ? null : cur;
+  });
+  if (!res.committed) return "contended";
+  if (res.snapshot.val() != null) return "held-by-other";
+  return sawAbsent ? "absent" : "released";
 }
 
 // db = admin.database(). Returns the plan it executed.

@@ -250,10 +250,17 @@ describe("claimShopifyProduct does not mistake a one-shot abort for a conflict",
 // ── releaseClaim frees OUR slot, never someone else's ────────────────────────
 // It is a cleanup path, and a cleanup path that can free a claim a live product
 // holds would undo the single guarantee the claim index exists to give.
+// A FAITHFUL transaction fake. The version this replaced modelled a local cache
+// that warmed after one call, so the second transaction was guaranteed the
+// server value — which asserted by construction the property the real SDK does
+// NOT provide, and let a broken releaseClaim pass. What @firebase/database does:
+// the callback runs against the local cache; `undefined` aborts there with no
+// server contact and no second invocation; a `get()` leaves nothing cached; only
+// a WRITE reaches the server, and only then is the callback re-invoked with the
+// true value. So `cached` is what the cache shows on EVERY call — it never warms.
 function claimsDb(initial, { cached } = {}) {
   const claims = { ...initial };
-  const state = { claims, gets: 0 };
-  let firstCallback = true;
+  const state = { claims, gets: 0, aborts: 0, invocations: 0 };
   return {
     claims,
     state,
@@ -261,18 +268,29 @@ function claimsDb(initial, { cached } = {}) {
       const key = path.replace("shopify_sync/_claims/", "");
       const server = () => (key in claims ? claims[key] : null);
       return {
-        // The confirming read always sees the SERVER value.
         async get() { state.gets += 1; return { val: server }; },
         async transaction(fn) {
-          // `cached` models what the first invocation sees when the local cache
-          // is stale. An abort is one-shot, so that first view is the only one.
-          const seen = firstCallback && cached !== undefined ? cached : server();
-          firstCallback = false;
-          const out = fn(seen);
-          if (out === undefined) return { committed: false, snapshot: { val: () => seen } };
+          const seen = cached !== undefined ? cached : server();
+          state.invocations += 1;
+          let out = fn(seen);
+          if (out === undefined) {
+            state.aborts += 1;
+            return { committed: false, snapshot: { val: () => seen } };
+          }
+          // It wanted to write, so the server is reached. If what the callback
+          // saw was not what the server holds, the SDK re-invokes with the
+          // truth before committing.
+          if (seen !== server()) {
+            state.invocations += 1;
+            out = fn(server());
+            if (out === undefined) {
+              state.aborts += 1;
+              return { committed: false, snapshot: { val: () => server() } };
+            }
+          }
           if (out === null) delete claims[key];
           else claims[key] = out;
-          return { committed: true, snapshot: { val: () => out } };
+          return { committed: true, snapshot: { val: () => (key in claims ? claims[key] : null) } };
         },
       };
     },
@@ -486,34 +504,52 @@ describe("releaseClaim reports the final invocation's verdict", () => {
 // server, so a stale cache could report "absent" for a claim the server holds
 // for us — and the claim would silently not be released, which is the exact
 // leak this function exists to prevent.
-describe("releaseClaim confirms a decline before accepting it", () => {
+// ── releaseClaim never aborts, because an abort here strands a claim ─────────
+// A stranded claim blocks that Shopify product for EVERY record, permanently,
+// with only a hand repair. The version that aborted on a decline and then
+// "confirmed with a fresh read" could not work: on a fresh process the cache is
+// empty, the callback aborted with "absent", the read found the claim IS ours,
+// the retry saw an empty cache again, and it returned "absent" anyway — the
+// claim silently never released, which is the leak this function exists to
+// prevent. These drive the cold cache that never warms.
+describe("releaseClaim never abandons a claim to a cold cache", () => {
   const GID = gid.product(9339656536213);
   const KEY = "9339656536213";
 
-  it("a stale EMPTY cache does not abandon a claim the server holds for us", async () => {
+  it("a cache that is EMPTY and stays empty still releases the claim", async () => {
     const db = claimsDb({ [KEY]: "p1" }, { cached: null });
     await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
-    expect(db.state.gets).toBe(1);      // it checked
-    expect(KEY in db.claims).toBe(false);  // and then really released it
+    expect(KEY in db.claims).toBe(false);
+    expect(db.state.aborts).toBe(0);        // it reached the server
+    expect(db.state.invocations).toBe(2);   // cold view, then the true value
   });
 
-  it("a stale OTHER-OWNER cache does not abandon it either", async () => {
+  it("a cache naming another owner does not abandon it either", async () => {
     const db = claimsDb({ [KEY]: "p1" }, { cached: "p2" });
     await expect(releaseClaim(db, "p1", GID)).resolves.toBe("released");
     expect(KEY in db.claims).toBe(false);
+    expect(db.state.aborts).toBe(0);
   });
 
-  it("a genuine other-owner reads the same twice and the decline stands", async () => {
+  it("a genuine other-owner is declined from the COMMITTED SNAPSHOT, and left alone", async () => {
     const db = claimsDb({ [KEY]: "p2" }, { cached: "p2" });
     await expect(releaseClaim(db, "p1", GID)).resolves.toBe("held-by-other");
     expect(db.claims[KEY]).toBe("p2");
-    expect(db.state.gets).toBe(1);      // confirmed once, then stopped
   });
 
-  it("a genuinely absent claim confirms once and does not loop", async () => {
+  it("a genuinely absent claim says so without aborting", async () => {
     const db = claimsDb({}, { cached: null });
     await expect(releaseClaim(db, "p1", GID)).resolves.toBe("absent");
-    expect(db.state.gets).toBe(1);
+    expect(db.state.aborts).toBe(0);
+  });
+
+  // The one outcome that means OUR claim may still be standing. It must be
+  // distinguishable, because it is the only one the caller has to log.
+  it("says 'contended' — never 'released' — when the write does not land", async () => {
+    const db = claimsDb({ [KEY]: "p1" });
+    db.ref = () => ({ async transaction() { return { committed: false, snapshot: { val: () => "p1" } }; } });
+    await expect(releaseClaim(db, "p1", GID)).resolves.toBe("contended");
+    expect(db.claims[KEY]).toBe("p1");
   });
 });
 
@@ -558,39 +594,62 @@ describe("claimShopifyProduct confirms a pointer clash before acting on it", () 
   });
 });
 
-// ── The class of bug, not just its three instances ──────────────────────────
-// Three separate transactions in idMap.mjs express "no" by returning
-// `undefined`, and all three were written without a confirmation before someone
-// noticed. An abort is the one transaction outcome that never reaches the
-// server, so the value the callback judged may have been a stale local cache —
-// which means EVERY such abort needs a confirming read before its verdict is
-// acted on. This guard fails when a fourth one is added without it.
-describe("every abort in idMap.mjs is confirmed against the server", () => {
+// ── The class of bug, stated mechanically ───────────────────────────────────
+// Four rounds of review found the same bug four times in this file, and the
+// rule that was written down after the third one — "confirm every abort with a
+// fresh server read and retry once" — DOES NOT WORK. It cannot: there is no way
+// to warm the cache the callback reads. `runTransaction` runs the callback
+// synchronously against the local cache and, on `undefined`, unwatches and
+// completes without ever contacting the server; `get()` removes its own
+// registration, so it leaves nothing behind. Both verified in the installed
+// @firebase/database. The retry saw exactly what the first attempt saw.
+//
+// THE RULE THAT DOES WORK, and it is checkable: AN ABORT MUST BE UNREACHABLE
+// FROM `cur == null`. A fresh process — every tick, launchd spawns a new node —
+// always presents `cur == null`, so any branch that aborts there is a branch
+// that can never reach the server. Returning a value instead (even `cur`
+// unchanged) forces the round trip and re-invokes the callback with the truth.
+// ensureClaimIndex's backfill already obeyed this (`cur == null ? owner : cur`).
+//
+// Asserted BEHAVIOURALLY below, by driving each transaction-owning function
+// through a cache that is empty and never warms, because a source-text guard
+// cannot tell a correct verdict from a latched one — that is exactly how the
+// broken version passed its own guard.
+describe("no transaction in idMap.mjs aborts against a cold cache", () => {
   const SRC = readFileSync(new URL("./idMap.mjs", import.meta.url), "utf8");
-
-  // Every function that owns a transaction which can abort.
-  const OWNERS = ["claimShopifyProduct", "releaseClaim", "writeIdMap"];
+  const GID = gid.product(9339656536213);
+  const KEY = "9339656536213";
 
   it("the count of aborts is known, so a new one cannot arrive unnoticed", () => {
     const aborts = (SRC.match(/return undefined;/g) || []).length;
-    // Two in claimShopifyProduct (the claim's refusal, and the pointer clash),
-    // two in releaseClaim (absent, held-by-other — one confirmation covers
-    // both), one in writeIdMap's conflict. A change to this number is the
-    // prompt to check the new one confirms too, and only then update the count.
-    expect(aborts).toBe(5);
+    // Two in claimShopifyProduct (the claim's refusal, and the pointer clash) and
+    // one in writeIdMap's conflict — all three sit on branches a null `cur`
+    // cannot reach, which the tests below prove. releaseClaim used to hold two
+    // more and no longer aborts at all. A change to this number is the prompt to
+    // check the new one against the rule, and only then update the count.
+    expect(aborts).toBe(3);
   });
 
-  for (const fn of OWNERS) {
-    it(`${fn} confirms with a fresh server read and bounds the retry`, () => {
-      const start = SRC.indexOf(`export async function ${fn}`);
-      expect(start).toBeGreaterThan(-1);
-      const body = SRC.slice(start, SRC.indexOf("\n}\n", start));
-      // It aborts...
-      expect(body).toContain("return undefined;");
-      // ...and every abort path re-reads before believing it...
-      expect(body).toMatch(/\.get\(\)\)\.val\(\)/);
-      // ...exactly once, so a genuine conflict cannot spin.
-      expect(body).toMatch(/attempt === 0/);
-    });
-  }
+  it("releaseClaim reaches the server on a cold cache", async () => {
+    const db = claimsDb({ [KEY]: "p1" }, { cached: null });
+    await releaseClaim(db, "p1", GID);
+    expect(db.state.aborts).toBe(0);
+  });
+
+  it("claimShopifyProduct takes the claim on a cold cache instead of refusing", async () => {
+    // Cache empty everywhere; the server has the claim free. The claim and
+    // pointer transactions both WRITE on their null branch, so both round-trip.
+    const db = fakeDb({ cached: null, server: null, mine: null });
+    await expect(claimShopifyProduct(db, "p1", GID)).resolves.toBeUndefined();
+    expect(db.state.server).toBe("p1");
+    expect(db.state.mine).toBe(GID);
+  });
+
+  it("writeIdMap creates on a cold cache instead of aborting", async () => {
+    // planIdMapWrite(null, mapping) is a "create" — it does not throw, so the
+    // null branch writes. This is what keeps writeIdMap's abort unreachable
+    // from a cold cache, and it is the property the other two were missing.
+    const plan = planIdMapWrite(null, { shopifyProductId: GID, variants: {} });
+    expect(plan.action).toBe("create");
+  });
 });

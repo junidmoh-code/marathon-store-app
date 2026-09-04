@@ -237,24 +237,55 @@ export function nextWatermark({ runStartedAt, unapplied = [], previousWatermark 
 //     caller confirmed the record OFF on a removal that had not happened —
 //     leaving a live, published product with the system recording it as off.
 //
-// And an abort is CONFIRMED before it is believed, the same way every abort in
-// idMap.mjs is: a cold-cache abort is retried once against a warmed cache, so
-// "changed" is only ever returned when the server really disagrees.
+// AND IT NEVER ABORTS, which is the part a "confirm the abort with a read"
+// retry could not deliver. The first version of this function aborted whenever
+// the local value did not match, then read the server and retried "against a
+// warmed cache". There is no such warming. Checked against the SDK actually
+// installed here (@firebase/database, index.node.cjs.js):
 //
-//   → "removed" | "changed" (someone else re-mapped or cleared it)
+//   · `runTransaction` attaches a value listener and then IMMEDIATELY runs the
+//     callback against `repoGetLatestState()` — the local cache, synchronously,
+//     before any server data can arrive. On `undefined` it calls
+//     `transaction.unwatcher()` and completes with committed=false. The server
+//     is never asked (index.node.cjs.js:14381, 11633-11643).
+//   · `get()` does NOT leave the value behind to warm it. `repoGetValue` adds a
+//     registration, applies the server overwrite, and then calls
+//     `syncTreeRemoveEventRegistration` — "only active queries are cached", and
+//     after the read there is no active query (11364-11400).
+//
+// So on a fresh process — which is EVERY tick, launchd spawns a new node — the
+// callback saw `cur == null`, aborted, read the server, saw the gid still
+// there, retried, saw `null` again, and returned "changed". The caller then
+// declined to confirm off, the pid went back in the retry set, and the same
+// futile unpublish went out every two minutes for ever: the exact 1,367-tick
+// loop this branch exists to end, rebuilt inside its own fix.
+//
+// The rule that actually holds, and the one ensureClaimIndex's backfill in
+// idMap.mjs already followed: AN ABORT MUST BE UNREACHABLE FROM `cur == null`.
+// Returning `cur` instead writes the value back unchanged, which forces the
+// server round trip and re-invokes the callback with the real value. It is the
+// property releaseClaim's comment calls "accidentally safe" — it is not an
+// accident, it is the only mechanism RTDB gives you.
+//
+// The verdict then comes from the COMMITTED SNAPSHOT, not from `committed`
+// alone and not from a flag: after a removal the node is gone, after a decline
+// it still holds someone else's mapping.
+//
+//   → "removed"   the mapping this run checked is gone (or was already gone)
+//     "changed"   the record now maps somewhere else — do NOT confirm off
+//     "contended" the write did not land; nothing was changed, try next tick
 export async function removeMappingIfUnchanged(db, productId, expectedGid) {
   assertSafeSegment(productId, "productId");
   const ref = db.ref(`shopify_sync/${productId}`);
-  for (let attempt = 0; ; attempt++) {
-    const res = await ref.transaction((cur) =>
-      (cur?.shopifyProductId === expectedGid ? null : undefined));
-    if (res.committed) return "removed";
-    // Aborted. That may only mean the callback ran against a stale local cache,
-    // which is not evidence of anything — ask the server.
-    const onServer = (await ref.child("shopifyProductId").get()).val();
-    if (onServer !== expectedGid) return "changed";
-    if (attempt > 0) return "changed";   // bounded: never spin
-  }
+  // `cur == null` deletes a node that is already absent — a no-op that still
+  // goes to the server, which is exactly what is wanted. It also answers the
+  // "someone cleared it first" case as "removed", which is both true and the
+  // safe direction: there is no mapping left, so confirming off is correct and
+  // the caller finishes in one tick instead of retrying for ever.
+  const res = await ref.transaction((cur) =>
+    (cur == null || cur.shopifyProductId === expectedGid) ? null : cur);
+  if (!res.committed) return "contended";
+  return res.snapshot.val() == null ? "removed" : "changed";
 }
 
 // The refusal above, recognised. Matched on the two things RTDB always says —

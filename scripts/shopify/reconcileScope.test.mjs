@@ -301,41 +301,68 @@ describe("readLivePids when the state index is missing", () => {
   });
 });
 
-// ── The stale-map removal, driven through a multi-invocation transaction ─────
-// The version this replaced set a `removed` flag INSIDE the callback and read
-// it afterwards. RTDB may invoke that callback more than once — the first time
-// against a local cache — so the flag was wrong in both directions. Both are
-// reproduced here, because a source guard cannot see either.
-function txnDb({ cache, server, onDelete = () => {} }) {
-  const state = { server, deleted: false, serverReads: 0 };
-  const views = cache === undefined ? [] : [cache];        // stale first views
-  const node = (path) => ({
+// ── The stale-map removal, driven through a faithful transaction fake ────────
+// Two versions of this function have now been wrong, and the SECOND was wrong
+// because THIS FAKE was wrong. It modelled `views.shift()`, so the second
+// transaction call was guaranteed to see the server value — it asserted by
+// construction the "the retry runs against a warmed cache" property that the
+// real SDK does not provide, and the broken code passed.
+//
+// What @firebase/database actually does, checked in node_modules:
+//   · the callback runs synchronously against the LOCAL CACHE, before any
+//     server data can arrive;
+//   · returning `undefined` aborts there and then — the server is NEVER asked,
+//     and no later invocation happens;
+//   · a `get()` afterwards does NOT leave the value cached (it removes its own
+//     registration), so the next transaction starts just as cold;
+//   · only a WRITE goes to the server, and only then is the callback re-invoked
+//     with the true value.
+//
+// So `cache` here is what the local cache shows on EVERY call. It never warms.
+// A fake that cannot express "the cache stays cold" cannot catch the bug.
+function txnDb({ cache, server, staysCold = true }) {
+  const state = { server, deleted: false, serverReads: 0, invocations: 0, aborts: 0 };
+  let warmed = false;
+  const view = () => (cache === undefined || (warmed && !staysCold) ? state.server : cache);
+  const apply = (out) => {
+    if (out === null) { state.server = null; state.deleted = true; }
+    else state.server = out;
+  };
+  const node = () => ({
     async transaction(fn) {
-      // THE ABORT IS ONE-SHOT. Returning `undefined` cancels the transaction
-      // then and there — the SDK does NOT go on to re-invoke the callback with
-      // the server value. It only re-invokes after a WRITE that lost a race.
-      // That asymmetry is the entire hazard being modelled: a stale first view
-      // that aborts never gets corrected.
-      const first = views.length ? views.shift() : state.server;
-      let out = fn(first === undefined ? null : first);
-      if (out === undefined) return { committed: false, snapshot: { val: () => first ?? null } };
-      // It wanted to write; the SDK re-runs it against the server value.
-      if (first !== state.server) {
-        out = fn(state.server === undefined ? null : state.server);
-        if (out === undefined) return { committed: false, snapshot: { val: () => state.server } };
+      const local = view();
+      state.invocations += 1;
+      let out = fn(local === undefined ? null : local);
+      if (out === undefined) {
+        // ONE-SHOT. No server contact, no second invocation, cache untouched.
+        state.aborts += 1;
+        return { committed: false, snapshot: { val: () => local ?? null } };
       }
-      state.deleted = true; state.server = null; onDelete();
-      return { committed: true, snapshot: { val: () => null } };
+      // It wanted to write, so it goes to the server. If what the callback saw
+      // was not what the server holds, the SDK re-invokes with the true value.
+      if (local !== state.server) {
+        state.invocations += 1;
+        out = fn(state.server === undefined ? null : state.server);
+        if (out === undefined) {
+          state.aborts += 1;
+          return { committed: false, snapshot: { val: () => state.server ?? null } };
+        }
+      }
+      warmed = true;
+      apply(out);
+      return { committed: true, snapshot: { val: () => state.server ?? null } };
     },
+    async get() { state.serverReads += 1; return { val: () => state.server ?? null }; },
     child: () => ({
       async get() { state.serverReads += 1; return { val: () => (state.server ? state.server.shopifyProductId : null) }; },
     }),
   });
-  return { state, ref: (p) => node(p) };
+  return { state, ref: () => node() };
 }
 
 describe("removeMappingIfUnchanged", () => {
   const GID = "gid://shopify/Product/9339656536213";
+  const OTHER = "gid://shopify/Product/999";
 
   it("removes the record when the mapping is unchanged", async () => {
     const db = txnDb({ server: { shopifyProductId: GID, variants: {} } });
@@ -343,45 +370,52 @@ describe("removeMappingIfUnchanged", () => {
     expect(db.state.deleted).toBe(true);
   });
 
-  it("a COLD CACHE does not become a permanent no-op", async () => {
-    // The first invocation sees null (nothing cached), which does not match, so
-    // the callback aborts — WITHOUT the server ever being consulted. The old
-    // code read its flag, saw false, reported "changed" and moved on; the stale
-    // map was therefore never removed and the very same tick repeated for ever,
-    // which is the 1,367-tick loop this branch exists to end.
+  // THE REGRESSION THAT MATTERS. On a fresh process — every tick, launchd
+  // spawns a new node — the cache is empty and STAYS empty across a confirming
+  // read. The version that aborted here returned "changed" for ever: the stale
+  // map was never removed, the caller never confirmed off, and the same futile
+  // unpublish went out every two minutes. The 1,367-tick loop, rebuilt inside
+  // its own fix. Nothing may abort out of the `cur == null` branch.
+  it("a COLD CACHE THAT NEVER WARMS still removes the mapping", async () => {
     const db = txnDb({ cache: null, server: { shopifyProductId: GID } });
     await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("removed");
     expect(db.state.deleted).toBe(true);
-    expect(db.state.serverReads).toBeGreaterThan(0);   // it asked before believing the abort
+    expect(db.state.aborts).toBe(0);          // it never aborted, so the server was reached
+    expect(db.state.invocations).toBe(2);     // cold view, then the true value
   });
 
+  // THE OTHER DIRECTION, and the one that would diverge what is published: a
+  // stale cache that MATCHES while the server has been re-mapped. Confirming
+  // off here leaves a live, published product recorded as off with the intent
+  // consumed, so no later tick retries.
   it("a WARM BUT STALE cache does not report a removal that did not happen", async () => {
-    // First invocation matches the old gid (sets the old flag), the server has
-    // since been re-mapped, so the real invocation aborts. The old code kept
-    // the flag from the first pass and confirmed the record OFF — leaving a
-    // live, published product with the system recording it as off.
-    const db = txnDb({ cache: { shopifyProductId: GID }, server: { shopifyProductId: "gid://shopify/Product/999" } });
+    const db = txnDb({ cache: { shopifyProductId: GID }, server: { shopifyProductId: OTHER } });
     await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("changed");
     expect(db.state.deleted).toBe(false);
-    expect(db.state.server).toEqual({ shopifyProductId: "gid://shopify/Product/999" });
+    expect(db.state.server).toEqual({ shopifyProductId: OTHER });
   });
 
-  it("reports 'changed' when the record was cleared entirely", async () => {
+  // A record cleared by someone else has no mapping left to remove, so "off" is
+  // already true and confirming it is correct. Answering "changed" would send
+  // the caller round again every tick with nothing left to do.
+  it("treats an already-cleared record as removed, not as a reason to retry", async () => {
     const db = txnDb({ server: null });
-    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("changed");
-    expect(db.state.deleted).toBe(false);
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("removed");
   });
 
-  it("is bounded — a server that keeps disagreeing does not spin", async () => {
+  it("says 'contended' — never 'removed' — when the write does not land", async () => {
+    const db = txnDb({ server: { shopifyProductId: GID } });
+    db.ref = () => ({ async transaction() { return { committed: false, snapshot: { val: () => null } }; } });
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("contended");
+  });
+
+  it("makes exactly one transaction call — there is no retry loop to spin", async () => {
     let calls = 0;
-    const db = txnDb({ cache: { shopifyProductId: GID }, server: { shopifyProductId: GID }, onDelete: () => { calls += 1; } });
-    // Force every transaction to abort while the server keeps saying it matches.
-    db.ref = () => ({
-      async transaction() { calls += 1; return { committed: false, snapshot: { val: () => null } }; },
-      child: () => ({ async get() { return { val: () => GID }; } }),
-    });
-    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("changed");
-    expect(calls).toBe(2);   // one retry, then it stops
+    const db = txnDb({ server: { shopifyProductId: GID } });
+    const inner = db.ref();
+    db.ref = () => ({ transaction: (fn) => { calls += 1; return inner.transaction(fn); } });
+    await removeMappingIfUnchanged(db, "p1", GID);
+    expect(calls).toBe(1);
   });
 
   it("refuses a malformed product id", async () => {
