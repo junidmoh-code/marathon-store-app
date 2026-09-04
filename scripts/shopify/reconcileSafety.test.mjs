@@ -343,8 +343,14 @@ describe("the reconcile agent's interpreter", () => {
   it("does not put a non-existent directory first on PATH", () => {
     // Nothing here resolves node (that is absolute), but a child process
     // shelling out to git or npm would search it.
-    const path = PLIST.match(/<key>PATH<\/key><string>([^<]+)<\/string>/)?.[1];
-    expect(path).toBeTruthy();
+    // `\s*`, like the ProgramArguments, KeepAlive and ThrottleInterval patterns
+    // in this file. `plutil -convert xml1` puts a key and its value on separate
+    // lines, so requiring them adjacent means a plist round-tripped through
+    // plutil — the normal way to edit one — matches nothing, `path` is
+    // undefined, and this fails on FORMATTING while reporting the contract as
+    // broken. A guard that cries wolf about the wrong thing is worse than none.
+    const path = PLIST.match(/<key>PATH<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
+    expect(path, "PATH not found in the plist — check the formatting, not the contract").toBeTruthy();
     expect(path.split(":")[0]).toBe("/opt/homebrew/bin");
   });
 });
