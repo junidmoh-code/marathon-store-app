@@ -91,13 +91,21 @@ export function planIdMapWrite(existing, mapping) {
 // That is correct and it was affordable at the scale the original comment
 // anticipated ("handfuls; revisit with a reverse index when the sync goes
 // catalogue-wide"). The sync went catalogue-wide: 3 Sep profiling measured
-// ~1 MB per root transaction, three of them per created product, 22.5 MB in a
-// single hour (docs/SHOPIFY-SYNC.md §9). This is that reverse index.
+// ~1 MB per root transaction, ONE per created product (reconcile.mjs's adopt
+// and create branches are mutually exclusive, so a product takes one or the
+// other, never both). An earlier note here said THREE, which the code never
+// supported and which inflated the table in docs/SHOPIFY-SYNC.md until it was
+// corrected. This is that reverse index.
 //
 //   /shopify_sync/_claims/{numeric Shopify product id} = productId
 //
-// The claim is still ATOMIC and still made against the server's value — it is
-// a transaction, just on ONE child instead of the whole map. A numeric key is
+// The claim is still made ATOMICALLY, against the server's value — it is a
+// transaction, just on ONE child instead of the whole map. It is NOT, however,
+// everything the root transaction was: that wrote the uniqueness check and the
+// durable pointer in a single commit, and these are two, and it checked
+// uniqueness against /shopify_sync itself rather than a derived index. Both
+// residuals are set out with their real cost in docs/SHOPIFY-SYNC.md §9 —
+// neither is a divergence, and neither is left implied. A numeric key is
 // used because a gid contains slashes and cannot be an RTDB path segment.
 //
 // The index is built ONCE, from a PAGED read (never a whole-node read), the
@@ -176,9 +184,12 @@ export async function ensureClaimIndex(db) {
     // later run re-examines it. One line from the malformed-gid case that was
     // just fixed, and the one with a publish-blocking consequence.
     //
-    // Resolved deterministically — the lowest pid wins, so a re-run reaches the
-    // same answer — and BOTH sides are named, because the repair is a person
-    // deciding which record should own the product.
+    // Resolved deterministically — the first pid in LEXICOGRAPHIC order wins, so
+    // a re-run reaches the same answer whichever page came back first. That is
+    // not the numerically lowest ("p10" sorts before "p9"); determinism is the
+    // property relied on here, not the identity of the winner, which is exactly
+    // why BOTH sides are named — the repair is a person deciding which record
+    // should own the product.
     if (index[key] != null && index[key] !== pid) {
       const [keep, drop] = [index[key], pid].sort();
       console.error(`  ⚠ ${index[key]} and ${pid} BOTH map ${gid} — that is a double mapping the claim index cannot represent. ` +
@@ -319,21 +330,28 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
   // wrote the uniqueness check and the pointer in a single commit, and these are
   // two.
   //
-  // Be exact about what a crash between them costs, because an earlier version
-  // of this comment was not. It said "the next attempt by the SAME record finds
-  // 'held' and completes" — true on the ADOPT path, false on the CREATE path,
-  // which is the one that gets here. A record with no pointer takes the create
-  // branch again and makes a NEW draft with a NEW gid; it never comes back for
-  // the old one. So the claim on the old gid is stranded.
+  // Be exact about what a crash between them costs. TWO earlier versions of this
+  // comment were not, in opposite directions, and the second was mine.
   //
-  // What that actually costs, compared with the old code: nothing on the
-  // storefront, and no divergence. A crash a few lines earlier — between
-  // productSet and the mapping write — left the identical orphan draft under
-  // the root transaction too, and the title-duplicate guard catches it either
-  // way and refuses with a message a person can act on. The ONLY new residual
-  // is one stranded key in _claims, blocking a gid that is an orphan draft
-  // nobody should map. It surfaces if someone later adopts that draft by hand,
-  // and the refusal above diagnoses itself when they do.
+  // It first said the next attempt by the SAME record "finds 'held' and
+  // completes", which reads as if nothing could go wrong at all. I replaced that
+  // with the claim that a record with no pointer creates a NEW draft and never
+  // returns for the old gid. That is ALSO wrong, and reconcile.mjs says so ten
+  // lines above its own create branch: probeHandleOwner(payload.handle) runs
+  // BEFORE the create, buildHandle is deterministic so the orphan still holds
+  // the wanted handle, and adoptionVerdict returns ok for exactly what a crashed
+  // productSet leaves behind — a draft with no stock, on no sales channel. The
+  // orphan is ADOPTED, planClaim then finds "held", and the pointer is written.
+  // Same gid, no second draft, no stranded key. The normal case RECOVERS.
+  //
+  // So the residual is narrower again: it needs the handle to have MOVED between
+  // ticks (a rename), or adoptionVerdict to refuse for some other reason. Even
+  // then nothing on the storefront differs and nothing diverges — a crash a few
+  // lines earlier, between productSet and the mapping write, left the identical
+  // orphan under the root transaction too. The one new residual is a key in
+  // _claims blocking a gid that is an orphan draft nobody should map. It
+  // surfaces only if someone later adopts that draft by hand, and the refusal
+  // above diagnoses itself when they do.
   //
   // An attempt by any OTHER record is still refused throughout, which is the
   // direction that matters and is the invariant the index exists to hold.
@@ -387,9 +405,13 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
       // a release failure must not replace it with a different error.
       // THE OUTCOME IS NOT ONLY THE EXCEPTION. releaseClaim does not throw when
       // it declines — it RETURNS "absent" / "held-by-other" / "contended". The
-      // first version of this block hardened only the throwing path, so the
-      // likelier failure ("contended": the write did not land, our claim is
-      // still there) left the claim stranded with nothing logged at all. Only
+      // first version of this block hardened only the throwing path, so a
+      // "contended" decline (the write did not land, our claim is still there)
+      // left the claim stranded with nothing logged at all. Now that nothing
+      // aborts, that outcome is RARE rather than likely — a resolved
+      // committed:false is close to unreachable, the Admin SDK rejecting on
+      // max-retry instead — but it is the one branch on which a claim leaks, so
+      // it is handled rather than assumed away. Only
       // "contended" is a leak of OUR claim: "absent" means there is nothing to
       // free and "held-by-other" means it is not ours to free.
       let releaseError = null;

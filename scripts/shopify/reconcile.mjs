@@ -552,13 +552,14 @@ for (const { pid, want } of capped) {
         // callback RTDB may invoke more than once. See removeMappingIfUnchanged.
         const outcome = await removeMappingIfUnchanged(db, pid, mapNode.shopifyProductId);
         if (outcome !== "removed") {
-          // Say which of the two it was. "contended" means the SERVER STILL
-          // AGREES the record maps this gid and the write simply did not land —
-          // reporting that as "it was re-mapped" would send someone looking for
-          // a re-adoption that never happened.
-          const why = outcome === "changed"
-            ? `no longer maps ${mapNode.shopifyProductId} — it was re-mapped or cleared while Shopify was being asked about it; nothing removed`
-            : `still maps ${mapNode.shopifyProductId} but the removal did not commit — nothing removed, retrying next tick`;
+          // Say WHICH of the three it was. They send a reader to three different
+          // places, and an earlier version printed the "re-mapped" line for all
+          // of them — which would have someone hunting for an adoption that
+          // never happened.
+          const why = {
+            changed: `no longer maps ${mapNode.shopifyProductId} — it was re-mapped while Shopify was being asked about it; nothing removed`,
+            absent: `had its whole ID map cleared while Shopify was being asked about it — nothing removed, and NOT confirmed off: a record with no mapping is settled by the no-mapping branch on the next tick, which is the one place that can see whether it has since been re-adopted`,
+          }[outcome] || `still maps ${mapNode.shopifyProductId} but the removal did not commit — nothing removed, retrying next tick`;
           console.log(`  ${pid} ${why}`);
           results.push({ pid, ok: false, why: `${why} (will re-evaluate next tick)` });
           continue;

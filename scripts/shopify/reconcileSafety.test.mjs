@@ -600,9 +600,19 @@ describe("the incremental window's two silent contracts", () => {
     // And nothing else in the run may reach for the raw clock: every derived
     // stamp (the watermark, lastFullScanAt, lastSweepAt, the retry timestamps)
     // has to come from that one corrected value.
-    const body = SRC.slice(SRC.indexOf("const runStartedAt"));
+    //
+    // COMMENTS STRIPPED FIRST. The first version of this guard matched
+    // `Date.now()` anywhere after the declaration, so it passed only because the
+    // two comments that EXPLAIN the fix happen to sit above it. Any future
+    // comment mentioning Date.now() below that point would have failed the test
+    // while reporting the contract as broken — the same "fails on prose, blames
+    // the contract" defect as the plist PATH regex fixed a few tests above.
+    const code = SRC
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n").map((l) => l.replace(/\/\/.*$/, "")).join("\n");
+    const body = code.slice(code.indexOf("const runStartedAt"));
     const raw = [...body.matchAll(/Date\.now\(\)/g)];
-    expect(raw, "no raw Date.now() after the corrected clock is established").toHaveLength(0);
+    expect(raw, "no raw Date.now() in CODE after the corrected clock is established").toHaveLength(0);
   });
 
   it("a REFUSED product does not take a slot in the retry set", () => {

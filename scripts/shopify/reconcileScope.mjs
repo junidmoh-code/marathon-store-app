@@ -62,12 +62,32 @@ import { shallowKeys } from "../lib/rtdbPaged.mjs";
 
 export const RECONCILE_STATE_PATH = "shopify_sync/_reconcile";
 
-// How far BEFORE the recorded watermark an incremental window starts. Covers
-// the gap between a browser's `serverNowMs()` stamp and the moment the write
-// lands, plus any residual skew. Cheap insurance: the extra rows a five-minute
-// overlap returns are a handful, and every one of them is skipped in a
-// microsecond by the desired-vs-confirmed test.
-export const WATERMARK_OVERLAP_MS = 5 * 60 * 1000;
+// How far BEFORE the recorded watermark an incremental window starts.
+//
+// A SKEW ALLOWANCE, NOT A JITTER ALLOWANCE — that distinction is why this is an
+// hour and not the five minutes it started as. The reconciler's own clock is
+// server-corrected now (reconcile.mjs, `serverNowMs`), so the two sides of the
+// comparison share a domain. The remaining gap is on the WRITING side, and
+// src/utils/serverTime.js names its own limits: the offset is measured once at
+// the socket handshake and never resynced, so a device whose clock changes
+// mid-session keeps a stale correction, and a press before the handshake
+// completes stamps the raw device clock.
+//
+// That hole is ASYMMETRIC, which is the useful part. A device running FAST
+// stamps `updatedAt` in the future: the row sits inside every window from now
+// on and costs a microsecond in the desired-vs-confirmed test. A device running
+// SLOW stamps it in the PAST, behind the bound, and the window never sees it —
+// the press then waits for the next full scan (30 min, 3 h overnight) instead
+// of two minutes. Nothing is lost either way; what is lost is the two-minute
+// promise, silently.
+//
+// So the overlap is sized for a wrong clock rather than for a slow write. An
+// hour covers every plausible client skew — a tablet on the wrong timezone
+// offset is the realistic case — and costs almost nothing: the extra rows are
+// the handful of nodes touched in the preceding hour (~20 × 696 B ≈ 14 KB on a
+// busy evening), every one discarded immediately. Trading 14 KB for the
+// difference between two minutes and three hours is not a close call.
+export const WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
 
 // Full-scan cadence. Daytime is the drift-repair interval the search-index
 // sweep was really written for; overnight it backs off because there is
@@ -273,21 +293,55 @@ export function nextWatermark({ runStartedAt, unapplied = [], previousWatermark 
 // alone and not from a flag: after a removal the node is gone, after a decline
 // it still holds someone else's mapping.
 //
-//   → "removed"   the mapping this run checked is gone (or was already gone)
-//     "changed"   the record now maps somewhere else — do NOT confirm off
-//     "contended" the write did not land; nothing was changed, try next tick
+// AN ALREADY-ABSENT NODE IS ITS OWN ANSWER, not "removed". A first version of
+// this collapsed the two, reasoning that there is no mapping left so confirming
+// off is correct, and that answering otherwise would make the caller retry for
+// ever. The second half was simply false — the caller would finish on the NEXT
+// tick, where `mapNode.shopifyProductId` is absent and the record confirms off
+// through its own branch — so the collapse bought one tick.
+//
+// What it cost is a divergence, through a window the strict version closed.
+// Someone repairing a bad mapping by hand does `delete /shopify_sync/{pid}`
+// and then re-adds it, outside this loop's single-flight lock, which is what
+// round-trip.mjs, adopt.mjs and the console are all for:
+//
+//   1. the tick reads mapNode (old gid) and Shopify says that product is gone;
+//   2. the person deletes /shopify_sync/{pid};
+//   3. this sees `cur == null` and, collapsed, answers "removed";
+//   4. the caller confirms the record OFF and unindexes it;
+//   5. the person's re-adoption onto a LIVE product lands.
+//
+// The record now maps a live, published product while /shopify_publish records
+// it off with its intent satisfied, so no later tick revisits it. That is the
+// divergence this branch is not allowed to cause, traded for one tick.
+//
+//   → "removed"   the mapping this run checked was there, and is now gone
+//     "changed"   the record maps something else — do NOT confirm off
+//     "absent"    there was no mapping to remove; also do NOT confirm off, and
+//                 the next tick resolves it through the no-mapping branch
+//     "contended" the write did not land (see below) — nothing changed
 export async function removeMappingIfUnchanged(db, productId, expectedGid) {
   assertSafeSegment(productId, "productId");
   const ref = db.ref(`shopify_sync/${productId}`);
-  // `cur == null` deletes a node that is already absent — a no-op that still
-  // goes to the server, which is exactly what is wanted. It also answers the
-  // "someone cleared it first" case as "removed", which is both true and the
-  // safe direction: there is no mapping left, so confirming off is correct and
-  // the caller finishes in one tick instead of retrying for ever.
-  const res = await ref.transaction((cur) =>
-    (cur == null || cur.shopifyProductId === expectedGid) ? null : cur);
+  // The latch is legitimate here for the same reason it is in releaseClaim: with
+  // no abort, the callback's last invocation is the committed one. It only ever
+  // separates two outcomes that BOTH commit with the node absent, and the
+  // verdict that could cost something ("changed") is read off the snapshot.
+  let sawAbsent = false;
+  const res = await ref.transaction((cur) => {
+    sawAbsent = cur == null;
+    return (cur == null || cur.shopifyProductId === expectedGid) ? null : cur;
+  });
+  // Belt and braces: with nothing returning `undefined`, a resolved
+  // committed:false is unreachable — the SDK REJECTS on max-retry, permission
+  // and disconnect (repoRerunTransactionQueue resolves committed:false only for
+  // abortReason "nodata", i.e. a callback that returned undefined). So the real
+  // failure here is a THROW, which the caller's per-product catch turns into
+  // "retry next tick". This branch is kept because it costs nothing, not
+  // because it is expected.
   if (!res.committed) return "contended";
-  return res.snapshot.val() == null ? "removed" : "changed";
+  if (res.snapshot.val() != null) return "changed";
+  return sawAbsent ? "absent" : "removed";
 }
 
 // The refusal above, recognised. Matched on the two things RTDB always says —

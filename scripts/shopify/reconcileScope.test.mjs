@@ -3,9 +3,10 @@
 // looks at. These are the tests that stand between "cheap" and "a product that
 // silently never publishes", so they are written as the failure they prevent.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
 import {
   sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, nextWatermark, isMissingIndexError,
-  NIGHT_START_HOUR, NIGHT_END_HOUR,
+  NIGHT_START_HOUR, NIGHT_END_HOUR, WATERMARK_OVERLAP_MS,
   readChangedPublishNodes, readLivePids, removeMappingIfUnchanged,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
@@ -94,9 +95,18 @@ describe("planScan — an incremental tick may never be the reason work is misse
     expect(planScan({ state, nowMs: now }).since).toBe(now - 60_000 - WATERMARK_OVERLAP_MS);
   });
 
+  // Expressed in terms of WATERMARK_OVERLAP_MS, not a literal hour. The literal
+  // was one hour, which silently became the exact boundary when the overlap was
+  // widened to an hour — the test then failed on the constant rather than on the
+  // rule, which is not what it is for. Stated as the relationship, it survives
+  // the constant moving again.
   it("falls back to a full scan when the watermark is ahead of the clock", () => {
-    const skewed = { watermark: now + 60 * 60 * 1000, lastFullScanAt: now - 1000 };
+    const skewed = { watermark: now + WATERMARK_OVERLAP_MS + 1, lastFullScanAt: now - 1000 };
     expect(planScan({ state: skewed, nowMs: now }).mode).toBe("full");
+    // ...and a watermark inside the overlap is NOT treated as skew: that is the
+    // ordinary case the overlap exists for.
+    const inside = { watermark: now + WATERMARK_OVERLAP_MS - 1, lastFullScanAt: now - 1000 };
+    expect(planScan({ state: inside, nowMs: now }).mode).toBe("incremental");
   });
 });
 
@@ -395,12 +405,23 @@ describe("removeMappingIfUnchanged", () => {
     expect(db.state.server).toEqual({ shopifyProductId: OTHER });
   });
 
-  // A record cleared by someone else has no mapping left to remove, so "off" is
-  // already true and confirming it is correct. Answering "changed" would send
-  // the caller round again every tick with nothing left to do.
-  it("treats an already-cleared record as removed, not as a reason to retry", async () => {
+  // A RECORD CLEARED BY SOMEONE ELSE IS NOT A REMOVAL WE PERFORMED, and the
+  // difference is a divergence. Collapsing the two into "removed" saves exactly
+  // one tick and opens this: a person deletes /shopify_sync/{pid} to repair a
+  // bad mapping, this answers "removed", the caller confirms the record OFF and
+  // unindexes it, and the person's re-adoption onto a LIVE product then lands —
+  // leaving a live published product recorded off with its intent satisfied, so
+  // nothing revisits it. The caller must not confirm off on this verdict.
+  it("does NOT report an already-cleared record as a removal it performed", async () => {
     const db = txnDb({ server: null });
-    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("removed");
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("absent");
+  });
+
+  // ...and the caller must treat it as such. Source-pinned, because reconcile.mjs
+  // is top-level-await and cannot be imported.
+  it("the caller confirms off ONLY on 'removed'", () => {
+    const SRC = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
+    expect(SRC).toMatch(/if \(outcome !== "removed"\) \{/);
   });
 
   it("says 'contended' — never 'removed' — when the write does not land", async () => {
