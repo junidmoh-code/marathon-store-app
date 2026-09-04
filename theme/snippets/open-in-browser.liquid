@@ -76,7 +76,13 @@
           // {browser: standard, escaped: no}.
           if (M.isArrivalStamp(existing.escaped)) return;
 
-          stamp({ browser: source, escaped: "no" });
+          // Only stamp the default when NOTHING has been recorded yet.
+          // Guarding arrivals alone let a later page view overwrite
+          // `tapped-android-chrome` / `copied-link` with "no", erasing the
+          // engagement the funnel report counts.
+          if (M.shouldWriteDefaultStamp(existing.escaped)) {
+            stamp({ browser: source, escaped: "no" });
+          }
           if (source === "standard") return;
 
           var root = document.getElementById("marathon-inapp-root");

@@ -97,6 +97,24 @@
   }
 
   /**
+   * A line a cart permalink cannot faithfully carry.
+   *
+   * A permalink is only <variantId>:<qty>. It cannot express line item
+   * PROPERTIES (engraving, a gift note, a size chart choice) and it cannot
+   * express a SELLING PLAN (subscription / try-before-you-buy). Handing over a
+   * basket that silently drops either one is worse than not handing it over:
+   * the shopper arrives with something that looks right, buys it, and gets the
+   * wrong thing.
+   */
+  function lineIsPermalinkSafe(item) {
+    if (!item) return false;
+    if (item.selling_plan_allocation) return false;
+    var p = item.properties;
+    if (p && typeof p === "object" && Object.keys(p).length > 0) return false;
+    return true;
+  }
+
+  /**
    * The hand-off URL: a CART PERMALINK carrying the attribution with it.
    *
    * Two things were proved by driving the live store before this was written:
@@ -112,7 +130,12 @@
    * quietly reads zero.
    */
   function handoffUrl(origin, items, source) {
-    var parts = (items || [])
+    var list = items || [];
+    // Suppress the whole hand-off rather than move a basket we would corrupt.
+    for (var n = 0; n < list.length; n++) {
+      if (!lineIsPermalinkSafe(list[n])) return null;
+    }
+    var parts = list
       .filter(function (i) { return i && i.id && i.quantity; })
       .map(function (i) { return i.id + ":" + i.quantity; });
     if (!parts.length) return null;
@@ -136,6 +159,20 @@
     return typeof escaped === "string" && escaped.indexOf("arrived-from") === 0;
   }
 
+  /**
+   * Should the default `escaped: "no"` stamp be written at all?
+   *
+   * Only when nothing has been recorded yet. The first version guarded only
+   * ARRIVALS, which meant a shopper who tapped "Open in Chrome"
+   * (`tapped-android-chrome`) or copied the link (`copied-link`) and then came
+   * back to /cart — a quantity change, a reload, the back button — had that
+   * engagement overwritten with "no". Those are exactly the events the funnel
+   * report counts, so the measurement would have erased its own signal.
+   */
+  function shouldWriteDefaultStamp(escaped) {
+    return escaped === undefined || escaped === null || escaped === "";
+  }
+
   var api = {
     isInAppBrowser: isInAppBrowser,
     inAppSource: inAppSource,
@@ -143,6 +180,8 @@
     androidIntentUrl: androidIntentUrl,
     handoffUrl: handoffUrl,
     isArrivalStamp: isArrivalStamp,
+    shouldWriteDefaultStamp: shouldWriteDefaultStamp,
+    lineIsPermalinkSafe: lineIsPermalinkSafe,
     IN_APP_TOKENS: IN_APP_TOKENS,
   };
 

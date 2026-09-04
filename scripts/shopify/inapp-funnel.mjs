@@ -37,13 +37,28 @@ const bucket = (browser) => {
   return "in-app";
 };
 
+// ── PAGING MUST NOT TRUNCATE SILENTLY ────────────────────────────────────────
+// This used to stop after 20 pages. At limit=250 that is 5,000 rows, after
+// which it returned a SHORT list with no error — and a funnel report that
+// quietly understates conversion is worse than one that fails loudly, because
+// nobody knows to distrust it.
+//
+// It now runs until Shopify stops handing back a `next` link, and throws on a
+// repeated cursor, which is the shape a paging bug takes when it loops.
 async function pageAll(path, key) {
   const out = [];
   let url = path;
-  for (let i = 0; i < 20; i++) {
+  const seen = new Set();
+  while (url) {
+    if (seen.has(url)) {
+      throw new Error(
+        `REST paging repeated a cursor on ${key} after ${out.length} rows — ` +
+          `refusing to return partial data.`
+      );
+    }
+    seen.add(url);
     const { body, next } = await rest(url);
     out.push(...(body[key] || []));
-    if (!next) break;
     url = next;
   }
   return out;

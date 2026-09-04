@@ -12,7 +12,27 @@
 import { getAccessToken, invalidateToken } from "./token.mjs";
 import { requireShop } from "./env.mjs";
 
-export const REST_VERSION = "2025-01";
+// PINNED to a supported version. 2025-01 was retired on 1 January 2026, and
+// Shopify does not error on a retired version — it silently "falls forward" to
+// the oldest supported one. Proved against the live store on 2026-09-04:
+// requesting 2025-01 came back `x-shopify-api-version: 2025-10`, so the code
+// said one contract and the API served another. Both `orders.json` and
+// `checkouts.json` were confirmed present on 2026-07 before pinning here.
+export const REST_VERSION = "2026-07";
+
+// A served version that is not the one we asked for means this constant has
+// aged out. Warn once rather than let the contract drift unnoticed again.
+let versionWarned = false;
+function checkServedVersion(res) {
+  const served = res.headers.get("X-Shopify-API-Version");
+  if (served && served !== REST_VERSION && !versionWarned) {
+    versionWarned = true;
+    console.warn(
+      `Shopify served REST ${served} but this client asked for ${REST_VERSION} — ` +
+        `the pinned version has been retired. Update REST_VERSION in scripts/shopify/adminRest.mjs.`
+    );
+  }
+}
 
 /** Parse the `Link: <url>; rel="next"` header Shopify pages with. */
 export function nextFromLink(link) {
@@ -54,6 +74,7 @@ export async function rest(pathOrUrl) {
     if (!res.ok) {
       throw new Error(`REST ${res.status} on ${url.replace(/\?.*$/, "")}`);
     }
+    checkServedVersion(res);
     return { body: await res.json(), next: nextFromLink(res.headers.get("Link")) };
   }
   throw new Error(`REST gave up after 5 attempts on ${url.replace(/\?.*$/, "")}`);

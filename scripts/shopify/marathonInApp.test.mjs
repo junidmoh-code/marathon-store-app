@@ -120,6 +120,55 @@ describe("handoffUrl — the basket AND the attribution have to travel", () => {
   });
 });
 
+// ── FOUND BY CODERABBIT ON PR #557, AND ALL FOUR WERE REAL ──────────────────
+describe("a basket the permalink cannot carry is not handed over at all", () => {
+  it("refuses a line with custom properties rather than dropping them", () => {
+    const items = [{ id: 1, quantity: 1, properties: { Engraving: "JM" } }];
+    expect(M.handoffUrl("https://x", items, "facebook")).toBe(null);
+  });
+  it("refuses a subscription line — permalinks cannot express a selling plan", () => {
+    const items = [{ id: 1, quantity: 1, selling_plan_allocation: { selling_plan: { id: 9 } } }];
+    expect(M.handoffUrl("https://x", items, "facebook")).toBe(null);
+  });
+  it("refuses the WHOLE basket if any single line is unsafe", () => {
+    const items = [
+      { id: 1, quantity: 1 },
+      { id: 2, quantity: 1, properties: { Note: "gift" } },
+    ];
+    expect(M.handoffUrl("https://x", items, "facebook")).toBe(null);
+  });
+  it("an empty properties object is still safe — Shopify sends {} for plain lines", () => {
+    const items = [{ id: 1, quantity: 1, properties: {} }];
+    expect(M.handoffUrl("https://x", items, "facebook")).toContain("/cart/1:1");
+  });
+  it("null properties are safe", () => {
+    expect(M.handoffUrl("https://x", [{ id: 1, quantity: 1, properties: null }], "facebook"))
+      .toContain("/cart/1:1");
+  });
+});
+
+describe("shouldWriteDefaultStamp — must not erase a recorded escape", () => {
+  it("writes the default only when nothing is recorded", () => {
+    expect(M.shouldWriteDefaultStamp(undefined)).toBe(true);
+    expect(M.shouldWriteDefaultStamp(null)).toBe(true);
+    expect(M.shouldWriteDefaultStamp("")).toBe(true);
+  });
+  // The bug: a shopper taps Chrome, comes back to /cart, and the engagement
+  // the funnel report counts is overwritten with "no".
+  it("never overwrites a tapped Chrome button", () => {
+    expect(M.shouldWriteDefaultStamp("tapped-android-chrome")).toBe(false);
+  });
+  it("never overwrites a copied link", () => {
+    expect(M.shouldWriteDefaultStamp("copied-link")).toBe(false);
+  });
+  it("never overwrites an arrival", () => {
+    expect(M.shouldWriteDefaultStamp("arrived-from-facebook")).toBe(false);
+  });
+  it("does not re-write an existing default either", () => {
+    expect(M.shouldWriteDefaultStamp("no")).toBe(false);
+  });
+});
+
 describe("isArrivalStamp — an arrival must never be clobbered", () => {
   it("recognises an arrival", () => {
     expect(M.isArrivalStamp("arrived-from-facebook")).toBe(true);
