@@ -466,17 +466,21 @@ this table should be corrected against it.
 | idle tick | ~4.4 MB | ~2.2 MB | **~100 B** |
 | per product published | +6,204,009 B (`/stock`) + ~1 MB (`/shopify_sync` root txn) | +100 B | +100 B |
 | search-index sweep live set | 2.2 MB, every tick | **0 — never read** (see below) | 747,434 B, on a cadence |
-| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~84 MB** |
-| **per month at $1/GB** | **~$96 idle, ~$145 busy** | ~$48 | **~$2.50** |
+| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~88 MB** |
+| **per month at $1/GB** | **~$96 at the idle rate** (see below) | ~$48 | **~$2.65** |
 
 **Where the after-index day figure comes from**, so it can be checked rather
-than trusted. With the index pasted, the only expensive ticks are the full
-scans. The night window is 01:00–07:00 (§9.5), so: 18 daytime hours at the
-30-minute cadence = 36 scans, plus 6 night hours at the 3-hour cadence = 2, so
-**38 full scans a day**. Each reads the whole node once, at 2.2 MB, and a sweep
-landing on a full-scan tick reuses that read for free. `38 × 2.2 MB ≈ 84 MB`.
-The other 682 ticks are ~100 B each, about 68 KB in total — a rounding error.
-`84 MB × 30 = 2.5 GB`, at $1/GB, **~$2.50 a month**.
+than trusted. Three terms, and the third is the one an earlier draft of this
+paragraph forgot while claiming "the only expensive ticks are the full scans":
+
+| term | working | per day |
+|---|---|---:|
+| full scans | night is 01:00–07:00 (§9.5), so 18 daytime hours ÷ 30 min = 36, plus 6 night hours ÷ 3 h = 2 → **38 scans**, each one whole-node read at 2.2 MB (a sweep landing on a full-scan tick reuses it free) | 83.6 MB |
+| sweeps on *incremental* ticks | `sweepDue` is also true when a tick **applied** something, and on an incremental tick the live set costs a `readLivePids` at 747,434 B. At ~7.5 publishes a day landing in ~6 ticks | 4.5 MB |
+| idle ticks | the remaining ~682 × ~100 B | 0.07 MB |
+| | **total** | **~88 MB** |
+
+`88 MB × 30 = 2.6 GB`, at $1/GB, **~$2.65 a month**.
 
 **Why the sweep row is 0 in the middle column.** With no `updatedAt` index every
 tick falls back to `scanMode = "full"`, and on a full scan the sweep takes the
@@ -484,12 +488,20 @@ live set from the whole-node read it already has — `readLivePids` is never
 called at all. The middle column previously repeated the right-hand column's
 747,434 B, which overstated the no-index cost.
 
-**Why `~$145 busy` and not the `$160` an earlier draft gave.** $160 was never
-derived anywhere. Building it up instead: $96 is the idle floor; a busy day adds
-the `/stock` read per product published (6.2 MB × ~7.5 publishes ≈ 47 MB) and
-the root claim transactions (~22.5 MB/h in the captured busy hour). That lands
-near **$145**, and it is shown here so the next reader can argue with the
-inputs rather than with a number that appeared from nowhere.
+**About the "busy" figure — it is measured, and this table stops trying to
+re-derive it.** `~$96` above is arithmetic: 720 idle ticks × 4.4 MB. The
+**$87–160/month** band comes from the profiler capture itself
+(`docs/bandwidth-capture-sept.md`), which measured the loop at 45–79% of all
+database traffic across its captured hours; the spread is how busy the shop was.
+That band is a **measurement** and needs no derivation.
+
+Two attempts to build a "busy" number from parts have now been wrong here — one
+gave $160 from nowhere, and its replacement gave $145 from inputs that add to
+$113.60 and that contradicted each other (22.5 MB/h of claim transactions only
+made sense under the "three per created product" premise this table has since
+dropped; at one ~1 MB transaction per created product and ~7.5 publishes a day
+it is ~7.5 MB, not 540 MB). Rather than a third attempt, the honest row is the
+idle floor, computed, plus the capture's measured band, cited.
 
 The idle tick is ~100 B rather than the ~8 B an earlier draft of this table
 claimed. An empty `updatedAt` window really is a handful of bytes, but the tick

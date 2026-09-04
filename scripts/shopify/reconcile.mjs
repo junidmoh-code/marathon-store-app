@@ -570,14 +570,18 @@ for (const { pid, want } of capped) {
         // not land leaves a claim on a gid whose Shopify product is deleted —
         // harmless to the storefront, but it would block a future re-use of
         // that gid, so it is named in the log rather than swallowed.
-        let released = "contended";
+        // ONE warning, not two. releaseClaim no longer aborts, so a resolved
+        // `committed: false` — the "contended" verdict — is unreachable by
+        // construction: the SDK resolves that way only when the callback
+        // returned `undefined`, and rejects on max-retry, permission and
+        // disconnect instead. The REAL failure here is a throw. An earlier
+        // shape guarded both and printed both messages for the single failure
+        // that can actually happen.
         try {
-          released = await releaseClaim(db, pid, mapNode.shopifyProductId);
+          const released = await releaseClaim(db, pid, mapNode.shopifyProductId);
+          if (released === "contended") throw new Error("the release did not commit");
         } catch (e) {
-          console.error(`  ⚠ could not release the claim on ${mapNode.shopifyProductId} for ${pid} (${String(e?.message || e)}) — clear it by hand if that gid is ever re-used`);
-        }
-        if (released === "contended") {
-          console.error(`  ⚠ the claim on ${mapNode.shopifyProductId} for ${pid} did not release — clear it by hand if that gid is ever re-used`);
+          console.error(`  ⚠ could not release the claim on ${mapNode.shopifyProductId} for ${pid} (${String(e?.message || e)}) — that claim key is stranded; clear it by hand if that gid is ever re-used`);
         }
         await confirmLiveState(db, pid, "off", UPDATED_BY, {
           clearAdminUrl: true,

@@ -114,6 +114,9 @@ export function planIdMapWrite(existing, mapping) {
 // gid unclaimed — hence the backfill is a precondition of the first claim, not
 // a lazy nicety.
 const CLAIMS_PATH = "shopify_sync/_claims";
+// Underscore-prefixed like the sentinel, so it can never collide with a claim
+// key (claimKeyFor only ever produces digits).
+export const CLAIMS_CONFLICTS_KEY = "_conflicts";
 const CLAIMS_BUILT_KEY = "_builtAt";
 
 // How many backfill entries are written at once. One-time cost; small enough
@@ -156,6 +159,13 @@ export async function ensureClaimIndex(db) {
   const all = await readMapPaged(db, "shopify_sync", { pageSize: 300 });
   const index = {};
   let n = 0;
+  // Double mappings found while building. They are PERSISTED, not merely
+  // logged: the sentinel means this backfill runs exactly once in the lifetime
+  // of the database, so a warning printed here is one line in a launchd stderr
+  // log that nothing will ever mention again — and a double mapping is a live
+  // divergence generator (one record's off-intent unpublishes the product the
+  // other is still recorded live on). Written where a person can find it later.
+  const conflicts = {};
   for (const [pid, node] of Object.entries(all)) {
     if (!isProductRecordKey(pid)) continue;
     const gid = node?.shopifyProductId;
@@ -192,8 +202,14 @@ export async function ensureClaimIndex(db) {
     // should own the product.
     if (index[key] != null && index[key] !== pid) {
       const [keep, drop] = [index[key], pid].sort();
-      console.error(`  ⚠ ${index[key]} and ${pid} BOTH map ${gid} — that is a double mapping the claim index cannot represent. ` +
-        `Indexing ${keep}; ${drop} will be refused this gid until one of them is re-pointed by hand.`);
+      // Careful about the wording: the backfill writes fill-if-empty, so if the
+      // key is ALREADY held (by a partial earlier run, possibly by `drop`) that
+      // owner stands and this preference does not apply. Say what is proposed,
+      // not what is guaranteed.
+      console.error(`  ⚠ ${index[key]} and ${pid} BOTH map ${gid} — a double mapping the claim index cannot represent. ` +
+        `Proposing ${keep}; the other will be refused this gid until one of them is re-pointed by hand ` +
+        `(an owner already recorded for this key wins over both).`);
+      conflicts[key] = { gid: String(gid), records: [keep, drop], seenAt: Date.now() };
       index[key] = keep;
       continue;
     }
@@ -227,8 +243,17 @@ export async function ensureClaimIndex(db) {
   // payload), a crash midway would leave the index part-built and permanently
   // marked done — and a missing entry is a gid nothing holds, which is the one
   // way a second record could claim a product that is already mapped.
+  // Conflicts BEFORE the sentinel, for the same reason the entries go before it:
+  // the sentinel means "this has been done", and it must not be able to mean
+  // that while the record of what was found is missing.
+  if (Object.keys(conflicts).length) {
+    await db.ref(`${CLAIMS_PATH}/${CLAIMS_CONFLICTS_KEY}`).update(conflicts);
+    console.error(`  ⚠ ${Object.keys(conflicts).length} double mapping(s) recorded at ` +
+      `${CLAIMS_PATH}/${CLAIMS_CONFLICTS_KEY} — each is one Shopify product two records both map, ` +
+      `and until one of each pair is re-pointed the loser cannot publish.`);
+  }
   await db.ref(`${CLAIMS_PATH}/${CLAIMS_BUILT_KEY}`).set(Date.now());
-  return { built: true, entries: n, filled, kept };
+  return { built: true, entries: n, filled, kept, conflicts: Object.keys(conflicts).length };
 }
 
 // WHY THERE IS NO LOCK AROUND THIS FUNCTION (reviewed and declined, PR #551).
@@ -273,16 +298,33 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
     throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${mineGid}`);
   }
 
-  // Same one-shot-abort hazard writeIdMap guards below, and for the same
-  // reason: returning `undefined` aborts the transaction WITHOUT a server
-  // round trip, and the update function's first invocation is not guaranteed
-  // the server value — it may fire against a stale local cache. A refusal
-  // taken at face value there would report "already claimed by record X"
-  // about an owner the server no longer has (a released claim, a claim this
-  // very record holds), and the product would fail to publish for a conflict
-  // that does not exist. So a refusal is CONFIRMED against a fresh server read
-  // before it is thrown, and the transaction retried once if the server value
-  // does not refuse. A real conflict reads the same twice and still throws.
+  // THE RULE, AND ITS PREMISE — written together, because the rule alone is not
+  // sufficient and the next person to edit this file needs both.
+  //
+  //   RULE: an abort must be unreachable from `cur == null`.
+  //   WHY IT WORKS: a cold cache presents null on the FIRST invocation, so that
+  //     invocation writes; the write carries the hash of the pre-write state;
+  //     the server rejects it if reality differs; and by then the value listener
+  //     runTransaction attached has delivered the truth, so the re-invocation —
+  //     and any abort it takes — is on real server data.
+  //   PREMISE: that "a fresh process presents null" is true of THIS file, not of
+  //     the API. It holds because nothing here registers a persistent `on()`
+  //     listener, every read is a `get()` (which evicts its own registration),
+  //     and the transactions are awaited sequentially so no local write is in
+  //     flight over the same path. Break any of those — add a watchdog listener,
+  //     or overlap two transactions on nested paths — and a warm-but-stale
+  //     non-null view can reach an abort branch again, with no round trip.
+  //
+  // This claim transaction obeys the rule: `planClaim(null, …)` is "claim", so
+  // the null branch WRITES. The refusal below is therefore only ever reached on
+  // a re-invocation holding server data.
+  //
+  // The confirming read that follows is kept as belt and braces, not as the
+  // mechanism. An earlier draft of this file presented "confirm every abort with
+  // a fresh read and retry once" as THE discipline; it is not implementable —
+  // there is no way to warm the cache the callback reads — and two functions
+  // that relied on it (removeMappingIfUnchanged, releaseClaim) never worked.
+  // See reconcileScope.mjs for the SDK trace.
   const ref = db.ref(`${CLAIMS_PATH}/${key}`);
   for (let attempt = 0; ; attempt++) {
     let refusal = null;
@@ -362,13 +404,18 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
   // gid; anything else aborts and is reported, leaving the other writer's value
   // alone.
   if (!mineGid) {
-    // THIRD PLACE IN THIS FILE with the same hazard, and it earns the same
-    // guard: aborting with `undefined` never reaches the server, and the first
-    // callback invocation may see a stale local cache. An unconfirmed clash
-    // here is the most expensive false alarm of the three — it does not merely
-    // refuse, it GIVES THE CLAIM BACK first, so a phantom gid in the cache
+    // The same rule, and this one obeys it too: `cur == null` returns
+    // shopifyProductId, so the null branch WRITES and the clash below can only
+    // be reached on a re-invocation holding server data. That matters most
+    // here, because this abort is the expensive one — it does not merely
+    // refuse, it GIVES THE CLAIM BACK first, so a phantom gid in a stale cache
     // would hand away a claim this record legitimately holds and then refuse
     // the publish citing a mapping the server does not have.
+    //
+    // Worth naming the one path that keeps the premise true here: `ptr` is
+    // shopify_sync/{pid}/shopifyProductId, which is `get()`-read ~100 lines
+    // above. It is safe only because `get()` evicts its own registration. If
+    // that ever becomes an `on()`, this branch can see a warm stale value.
     const ptr = db.ref(`shopify_sync/${productId}/shopifyProductId`);
     let clash = null;
     for (let attempt = 0; ; attempt++) {

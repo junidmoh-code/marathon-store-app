@@ -352,6 +352,9 @@ describe("ensureClaimIndex", () => {
           };
           return api;
         }
+        if (path === "shopify_sync/_claims/_conflicts") {
+          return { update: async (v) => { state.conflicts = { ...(state.conflicts || {}), ...v }; } };
+        }
         if (path === "shopify_sync/_claims/_builtAt") {
           return {
             get: async () => ({ val: () => state.claims._builtAt ?? null }),
@@ -464,6 +467,14 @@ describe("ensureClaimIndex", () => {
       expect(line, "the clash must be reported").toBeTruthy();
       expect(line).toContain("p9");
       expect(line).toContain("p2");
+      // ...and PERSISTED. The sentinel means this backfill runs once ever, so a
+      // line of stderr is not a record: a double mapping is a live divergence
+      // generator (one record's off-intent unpublishes the product the other is
+      // still recorded live on) and has to be discoverable afterwards.
+      expect(db.state.conflicts, "the conflict must outlive the run that found it").toBeTruthy();
+      const rec = db.state.conflicts["9339656536213"];
+      expect(rec.records.sort()).toEqual(["p2", "p9"]);
+      expect(rec.gid).toBe(GID);
     } finally { spy.mockRestore(); }
   });
 });
@@ -671,6 +682,22 @@ describe("no transaction in idMap.mjs aborts against a cold cache", () => {
   const SRC = readFileSync(new URL("./idMap.mjs", import.meta.url), "utf8");
   const GID = gid.product(9339656536213);
   const KEY = "9339656536213";
+
+  // THE PREMISE, next to the count, because the count is what a future editor
+  // reads. "A cold cache presents null on the first invocation" is true of THIS
+  // file, not of the API: it holds because nothing here registers a persistent
+  // `on()` listener, every read is a `get()` (which evicts its own
+  // registration), and transactions are awaited sequentially so no local write
+  // is in flight over the same path. Break one of those and a warm-but-stale
+  // NON-null view can reach an abort branch again, with no round trip and
+  // nothing failing. Asserted, so breaking the premise breaks a test.
+  it("the premise the rule rests on still holds: no persistent listeners here", () => {
+    expect(SRC).not.toMatch(/\.on\(\s*["']value["']/);
+    expect(SRC).not.toMatch(/\bonValue\(/);
+    // Every read is a get() — the form that evicts and therefore leaves the
+    // next transaction's first view cold.
+    expect(SRC).not.toMatch(/\.once\(/);
+  });
 
   it("the count of aborts is known, so a new one cannot arrive unnoticed", () => {
     const aborts = (SRC.match(/return undefined;/g) || []).length;
