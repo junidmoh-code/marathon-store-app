@@ -692,11 +692,42 @@ describe("no transaction in idMap.mjs aborts against a cold cache", () => {
   // NON-null view can reach an abort branch again, with no round trip and
   // nothing failing. Asserted, so breaking the premise breaks a test.
   it("the premise the rule rests on still holds: no persistent listeners here", () => {
-    expect(SRC).not.toMatch(/\.on\(\s*["']value["']/);
-    expect(SRC).not.toMatch(/\bonValue\(/);
-    // Every read is a get() — the form that evicts and therefore leaves the
-    // next transaction's first view cold.
+    // THE WHOLE DEPENDENCY CHAIN, not just this file. The premise is about the
+    // PROCESS: a listener registered anywhere leaves a warm default view that a
+    // later transaction's first invocation can read. idMap.mjs imports
+    // readMapPaged from ../lib/rtdbPaged.mjs and calls it inside
+    // ensureClaimIndex, immediately before transactions on DESCENDANTS of the
+    // very path it read — so a guard that stopped at this file could not see
+    // the one place most likely to change, and rtdbPaged.mjs's own header says
+    // it is shared with the customer census and the merge runner, whose authors
+    // will never read this rule.
+    const PAGED = readFileSync(new URL("../lib/rtdbPaged.mjs", import.meta.url), "utf8");
+    for (const [name, src] of [["idMap.mjs", SRC], ["lib/rtdbPaged.mjs", PAGED]]) {
+      // Any `.on(` at all — child_added registers a persistent view exactly as
+      // onValue does, and the first version of this guard matched only "value".
+      expect(src, `${name} must not register a persistent listener`).not.toMatch(/\.on\(/);
+      expect(src, `${name} must not register a persistent listener`)
+        .not.toMatch(/\bon(Value|Child[A-Za-z]+)\(/);
+    }
+    // idMap.mjs itself reads only with get(), the form that evicts its own
+    // registration and therefore leaves the next transaction's view cold.
+    //
+    // NOTE FOR ANYONE TRYING TO HARMONISE THIS WITH publishNode.mjs, which
+    // REQUIRES `.once("value")`: the two rules are opposite on purpose. Here the
+    // point is that `get()` evicts, which is what keeps this file's cold-cache
+    // premise true. There the path is `/.info`, a client-synthesised tree the
+    // SDK reaches only through the EVENT registration path — `get()` on it
+    // throws. Same API, different trees, and making either file match the other
+    // breaks it. See serverClock.test.mjs.
     expect(SRC).not.toMatch(/\.once\(/);
+    // rtdbPaged.mjs DOES use once("value") — legitimately, because it is on a
+    // LIMITED query. A tagged, non-default view does not populate the complete
+    // default-view cache a transaction reads from. That is the property being
+    // relied on, so it is the property asserted: no read there may be a plain
+    // whole-ref once().
+    expect(PAGED).toMatch(/limitToFirst\(/);
+    expect(PAGED, "a bare ref().once() in rtdbPaged would warm a default view")
+      .not.toMatch(/ref\([^)]*\)\.once\(/);
   });
 
   it("the count of aborts is known, so a new one cannot arrive unnoticed", () => {

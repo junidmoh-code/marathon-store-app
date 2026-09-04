@@ -133,7 +133,7 @@ const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
 
 // ── Worklist: every node whose intent differs from its confirmed state ───────
 // A DRY RUN always reads everything: it is a person asking "what is outstanding
-// across the whole shop?", and answering that from a five-minute window would
+// across the whole shop?", and answering that from a narrow window would
 // be a lie. Only the scheduled commit tick reads incrementally.
 // THE SERVER'S CLOCK, NOT THIS MACHINE'S — and the whole saving depends on it.
 // The watermark is compared against `updatedAt`, and every writer of that field
@@ -150,7 +150,10 @@ const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
 // scan — 30 minutes by day, 3 hours overnight — instead of two minutes. Silent,
 // because an empty window is indistinguishable from a quiet shop.
 //
-// The five-minute overlap covers residual jitter between a browser's stamp and
+// The overlap covers what remains on the WRITING side — see
+// WATERMARK_OVERLAP_MS, which is an hour and is a SKEW allowance, not the
+// jitter allowance an earlier version of this paragraph described. It covers
+// the gap between a browser's stamp and
 // the write landing. It cannot cover a clock domain, and reading it as if it
 // could was the mistake. planScan takes the same corrected clock, so the
 // "watermark ahead of the clock" guard and the cadence compare like with like.

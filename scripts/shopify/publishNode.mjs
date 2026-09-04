@@ -120,7 +120,24 @@ let offsetMs = null;
 // subscribes with `onValue` (App.jsx), which takes the event path and works.
 export async function serverNowMs(db) {
   if (offsetMs === null) {
-    try { offsetMs = Number((await db.ref(".info/serverTimeOffset").once("value")).val()) || 0; }
+    // BOUNDED. `once("value")` on /.info does not resolve with a placeholder —
+    // the info tree raises no null event on initial data and serverTimeOffset is
+    // written only when the connection handshake completes — so it WAITS. That
+    // is what makes it correct (no premature 0 to swallow), and it is also why
+    // it must not be waited on for ever: this is the first awaited RTDB call in
+    // a reconcile tick, so a connection that never comes up would hang the tick
+    // with the catch below unable to fire, and the loud degrade written for
+    // exactly this case never printing. A launchd-wedged mini is not
+    // hypothetical here. Ten seconds, then degrade the same way any other
+    // failure degrades: loudly, on this machine's clock, never blocking a
+    // take-down.
+    try {
+      offsetMs = Number(await Promise.race([
+        db.ref(".info/serverTimeOffset").once("value").then((s) => s.val()),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("timed out after 10s waiting for the connection handshake")), 10_000).unref?.()),
+      ])) || 0;
+    }
     catch (e) {
       // Degrades to this machine's clock rather than blocking a take-down —
       // right, and it must not be SILENT. The reconciler's incremental window

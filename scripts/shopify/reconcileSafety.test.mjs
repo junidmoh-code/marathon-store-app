@@ -15,7 +15,9 @@
 // the source. It is coarse by nature; it is also the only thing standing
 // between this discipline and the next well-meaning edit.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
+import { spawnSync } from "child_process";
+import { join } from "path";
 
 const SRC = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
 const lines = SRC.split("\n");
@@ -638,5 +640,30 @@ describe("a watermark that cannot advance is reported, not swallowed", () => {
     // Guarded on the VALUE, not on a mode flag: null, 0 and a negative
     // watermark all mean the same thing to planScan and all have to warn.
     expect(SRC).toMatch(/if \(!\(Number\(watermark\) > 0\)\)/);
+  });
+});
+
+// ── A green suite must not conceal a file the runtime rejects ───────────────
+// Vitest transforms each file with esbuild, which TOLERATES things plain node
+// does not. A duplicate `import` binding in reconcileScope.test.mjs — added
+// while widening a constant — made that file a SyntaxError under `node`, and
+// all 135 tests went on passing and hiding it. The scripts in this directory
+// are run BY node, on the Mac mini, unattended, every two minutes; a parse
+// error there is a loop that stops with a stack trace in a log nobody reads.
+//
+// Same shape as this repo's "never a regex lookbehind in src/" rule: the tool
+// that builds it is more permissive than the runtime that runs it, so the
+// runtime has to get a vote.
+describe("every script in this directory parses under plain node", () => {
+  it("node --check passes on all of them, tests included", () => {
+    const dir = new URL(".", import.meta.url).pathname;
+    const files = readdirSync(dir).filter((f) => f.endsWith(".mjs"));
+    expect(files.length).toBeGreaterThan(20);
+    const broken = [];
+    for (const f of files) {
+      const r = spawnSync(process.execPath, ["--check", join(dir, f)], { encoding: "utf8" });
+      if (r.status !== 0) broken.push(`${f}: ${String(r.stderr).split("\n").find((l) => /Error/.test(l)) || "failed"}`);
+    }
+    expect(broken, `these files do not parse under node:\n${broken.join("\n")}`).toEqual([]);
   });
 });

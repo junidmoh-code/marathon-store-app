@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import {
   sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, nextWatermark, isMissingIndexError,
-  NIGHT_START_HOUR, NIGHT_END_HOUR, WATERMARK_OVERLAP_MS,
+  NIGHT_START_HOUR, NIGHT_END_HOUR, WATERMARK_FUTURE_TOLERANCE_MS,
   readChangedPublishNodes, readLivePids, removeMappingIfUnchanged,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
@@ -95,17 +95,18 @@ describe("planScan — an incremental tick may never be the reason work is misse
     expect(planScan({ state, nowMs: now }).since).toBe(now - 60_000 - WATERMARK_OVERLAP_MS);
   });
 
-  // Expressed in terms of WATERMARK_OVERLAP_MS, not a literal hour. The literal
-  // was one hour, which silently became the exact boundary when the overlap was
-  // widened to an hour — the test then failed on the constant rather than on the
-  // rule, which is not what it is for. Stated as the relationship, it survives
-  // the constant moving again.
+  // Expressed in terms of the constant, not a literal. The literal was one hour,
+  // which silently became the exact boundary when the lookback was widened — the
+  // test then failed on a constant rather than on the rule, which is not what it
+  // is for. And it is deliberately WATERMARK_FUTURE_TOLERANCE_MS, not the
+  // lookback: pinning this to the lookback would codify a coupling between two
+  // quantities that only ever shared a name, and make decoupling them fight a
+  // test.
   it("falls back to a full scan when the watermark is ahead of the clock", () => {
-    const skewed = { watermark: now + WATERMARK_OVERLAP_MS + 1, lastFullScanAt: now - 1000 };
+    const skewed = { watermark: now + WATERMARK_FUTURE_TOLERANCE_MS + 1, lastFullScanAt: now - 1000 };
     expect(planScan({ state: skewed, nowMs: now }).mode).toBe("full");
-    // ...and a watermark inside the overlap is NOT treated as skew: that is the
-    // ordinary case the overlap exists for.
-    const inside = { watermark: now + WATERMARK_OVERLAP_MS - 1, lastFullScanAt: now - 1000 };
+    // ...and one inside the tolerance is ordinary skew, not corruption.
+    const inside = { watermark: now + WATERMARK_FUTURE_TOLERANCE_MS - 1, lastFullScanAt: now - 1000 };
     expect(planScan({ state: inside, nowMs: now }).mode).toBe("incremental");
   });
 });

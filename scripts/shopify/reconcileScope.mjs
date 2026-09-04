@@ -89,6 +89,21 @@ export const RECONCILE_STATE_PATH = "shopify_sync/_reconcile";
 // difference between two minutes and three hours is not a close call.
 export const WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
 
+// SEPARATE FROM THE OVERLAP, because they are different questions that only
+// shared a name. The overlap asks "how far back should the window reach to
+// survive a wrong clock on the WRITING side"; this asks "how far into the
+// future may a stored watermark be before it is corruption rather than skew".
+//
+// They were the same constant until the overlap was widened to an hour for the
+// first question — which silently widened the second by 12x, so a watermark up
+// to an hour ahead was accepted as ordinary instead of triggering an immediate
+// full scan. Nothing could be MISSED either way (`since = watermark - overlap`
+// is still <= now), but the band of corrupt values that produce a near-empty
+// window instead of instant recovery grew from five minutes to an hour, and
+// recovery leaned on the full-scan cadence instead. Five minutes here is the
+// tolerance that was actually reasoned about.
+export const WATERMARK_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+
 // Full-scan cadence. Daytime is the drift-repair interval the search-index
 // sweep was really written for; overnight it backs off because there is
 // nothing to drift from — no one is publishing.
@@ -175,7 +190,7 @@ export function planScan({ state, nowMs, force = false }) {
   // that does not depend on the clock at all: the full-scan cadence, which
   // bounds the worst case at 30 minutes by day and 3 hours overnight no matter
   // what the clock believes.
-  if (watermark > nowMs + WATERMARK_OVERLAP_MS) {
+  if (watermark > nowMs + WATERMARK_FUTURE_TOLERANCE_MS) {
     return { mode: "full", since: null, why: "watermark is ahead of this machine's clock" };
   }
   return { mode: "incremental", since: watermark - WATERMARK_OVERLAP_MS, why: "watermark" };

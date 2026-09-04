@@ -545,7 +545,13 @@ server-only by construction and no rule change is needed for it, nor for
 
 - A run advances the watermark to the moment it **started**, never to "now", so
   an intent written mid-run lands in the next window.
-- A window starts five minutes **before** the watermark.
+- A window starts **an hour** before the watermark. That is a *skew* allowance,
+  not a jitter one: the reconciler's clock is server-corrected, but a browser's
+  offset is measured once at the socket handshake, so a device whose clock is
+  wrong stamps `updatedAt` in the past and a narrow window would miss the press.
+  The extra rows are a handful and every one is discarded immediately.
+  (A watermark in the *future* is a separate question with its own five-minute
+  tolerance — past that it is corruption, and the tick takes a full scan.)
 - A product whose apply failed, or that the per-run cap did not reach, does not
   move its node's `updatedAt` — both are carried by id in `retry` and read
   individually every tick until they clear.
@@ -553,7 +559,7 @@ server-only by construction and no rule change is needed for it, nor for
   the first run after the state node is lost, when the watermark is ahead of the
   server clock, and on `--full`.
 - The **dry run** (`reconcile.mjs` with no `--commit`) always reads everything.
-  It answers "what is outstanding across the whole shop?" and a five-minute
+  It answers "what is outstanding across the whole shop?" and any bounded
   window would be a lie.
 
 ### 9.4 A deleted Shopify product no longer retries forever
