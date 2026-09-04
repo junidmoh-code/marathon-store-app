@@ -21,6 +21,16 @@
   is checked out at /Users/marathonclub/marathon-store-app — change BOTH the
   ProgramArguments path and WorkingDirectory if it lives elsewhere.
 
+  NODE PATH: /opt/homebrew/bin/node, which is where Homebrew puts it on Apple
+  silicon — and where it actually is on the mini. This file said
+  /usr/local/bin/node (the Intel location) until 2026-09-03; nothing on the
+  mini has that path, so the agent AS COMMITTED HERE would never have started.
+  It only ran because the installed copy in ~/Library/LaunchAgents had been
+  corrected by hand and the two then drifted. Verified against the machine
+  before changing. Check `which node` on the target before installing this
+  anywhere else; launchd has no PATH of its own and a wrong absolute path
+  fails silently, as a job that is loaded and simply never runs.
+
   CREDENTIALS: nothing secret belongs in this file (it is committed to the
   repo). Shopify credentials are read from the git-ignored .env at the repo
   root; Firebase Admin uses Application Default Credentials, pointed at by
@@ -31,13 +41,17 @@
   <key>Label</key><string>com.marathon.shopifyreconcile</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>/opt/homebrew/bin/node</string>
     <string>/Users/marathonclub/marathon-store-app/scripts/shopify/reconcile-runner.mjs</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <!-- Homebrew's arm64 prefix FIRST: /usr/local/bin is the Intel prefix and
+         does not exist on this machine. Nothing here resolves `node` (that is
+         an absolute path above), but a child process shelling out to git or
+         npm would otherwise search a dead directory first. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
   <!-- Every 2 minutes (owner spec). A tick with nothing to do exits in under a

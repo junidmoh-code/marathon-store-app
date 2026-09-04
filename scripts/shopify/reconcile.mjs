@@ -58,9 +58,18 @@ import {
   networkTotals, requireSingleLocation, setAvailable,
   TRACKED_VARIANT, untrackedVariants, enforceTracking,
 } from "./inventory.mjs";
-import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
+import { buildMapping, writeIdMap, claimShopifyProduct, releaseClaim } from "./idMap.mjs";
 import { adoptionVerdict, requestFreshName } from "./adopt.mjs";
-import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_REASON } from "./publishNode.mjs";
+import { readAllPublishNodes, confirmLiveState, markBlocked, serverNowMs, KEEP_EXISTING_OFF_REASON } from "./publishNode.mjs";
+// Scoped reading — the worklist, the live set and the /stock location keys, all
+// obtained WITHOUT a whole-node read. See reconcileScope.mjs for the watermark
+// contract and its three backstops.
+import {
+  planScan, nextRetrySet, nextWatermark, fullScanIntervalMs, isMissingIndexError,
+  removeMappingIfUnchanged,
+  readReconcileState, writeReconcileState,
+  readChangedPublishNodes, readLivePids, makeStockLocationResolver,
+} from "./reconcileScope.mjs";
 // Storefront collections. The map is repo data (collectionMap.mjs); the gids
 // are read from /shopify_sync/_collections and NEVER guessed — a product joins
 // a collection that already exists or joins none. Nothing here creates a
@@ -90,6 +99,11 @@ if (pidIdx !== -1 && (!pidArg || pidArg.startsWith("--"))) {
   process.exit(2);
 }
 const ONLY = pidArg ? new Set(pidArg.split(",")) : null;
+// Force a whole-node scan on a commit tick. The scheduler never passes it; it
+// exists so a person can prove, in one command, that the incremental path is
+// not hiding work from them — and so the before/after byte figures in the PR
+// could be measured against the SAME code.
+const FULL = flags.includes("--full");
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -102,8 +116,96 @@ const db = admin.database();
 // never reached state "live" is confirmed off — nothing is on the storefront.
 const confirmedOn = (node) => node?.state === "live" && node?.liveState === "on";
 
+// ── What this run cost, in bytes ─────────────────────────────────────────────
+// Approximate (serialized JSON length, not wire bytes: RTDB REST does not gzip
+// and the SDK framing is small, so it is within a few percent) and reported on
+// every commit run. A loop that was 45–79% of the whole database's traffic gets
+// to say out loud what it spends.
+let rtdbBytes = 0;
+const meter = (label, val) => {
+  const n = val == null ? 4 : JSON.stringify(val).length;
+  rtdbBytes += n;
+  if (n >= 100_000) console.log(`  rtdb: ${label} — ${n.toLocaleString()} B`);
+};
+
+// Location keys for the inventory read, memoised for the life of the process.
+const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
+
 // ── Worklist: every node whose intent differs from its confirmed state ───────
-const all = await readAllPublishNodes(db);
+// A DRY RUN always reads everything: it is a person asking "what is outstanding
+// across the whole shop?", and answering that from a narrow window would
+// be a lie. Only the scheduled commit tick reads incrementally.
+// THE SERVER'S CLOCK, NOT THIS MACHINE'S — and the whole saving depends on it.
+// The watermark is compared against `updatedAt`, and every writer of that field
+// stamps it with serverNowMs(): the page through src/utils/serverTime.js, the
+// scripts through publishNode.mjs, whose own comment says why ("a skewed clock
+// on the Mac mini writes a value the rule would have refused"). So the codebase
+// already treats this machine's clock as untrustworthy — and an incremental
+// window built from `Date.now()` was the one comparison that ignored the
+// correction, putting the bound and the values in DIFFERENT CLOCK DOMAINS.
+//
+// A mini running more than WATERMARK_OVERLAP_MS ahead of the database would
+// have produced an empty window on every tick: nothing older than the bound
+// exists, so every publish and unpublish press would wait for the next FULL
+// scan — 30 minutes by day, 3 hours overnight — instead of two minutes. Silent,
+// because an empty window is indistinguishable from a quiet shop.
+//
+// The overlap covers what remains on the WRITING side — see
+// WATERMARK_OVERLAP_MS, which is an hour and is a SKEW allowance, not the
+// jitter allowance an earlier version of this paragraph described. It covers
+// the gap between a browser's stamp and
+// the write landing. It cannot cover a clock domain, and reading it as if it
+// could was the mistake. planScan takes the same corrected clock, so the
+// "watermark ahead of the clock" guard and the cadence compare like with like.
+// One cached read of .info/serverTimeOffset per process; it degrades to
+// Date.now() if that fails, which is exactly today's behaviour.
+const runStartedAt = await serverNowMs(db);
+const scanState = COMMIT ? await readReconcileState(db, { meter }) : null;
+const scan = COMMIT && !ONLY
+  ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
+  : { mode: "full", since: null, why: ONLY ? "--pids" : "dry run" };
+const retryPids = Object.keys(scanState?.retry || {});
+const readWholeNode = async () => {
+  const v = await readAllPublishNodes(db);
+  meter("shopify_publish (whole node)", v);
+  return v;
+};
+let scanMode = scan.mode;
+let scanWhy = scan.why;
+let all;
+// Retry pids whose individual read failed this tick. They were NOT evaluated,
+// so they must not be counted as attempted below — otherwise a transient blip
+// would quietly drop a product from the retry set and it would never be tried
+// again.
+const unreadable = new Set();
+if (scanMode === "incremental") {
+  try {
+    all = await readChangedPublishNodes(db, {
+      since: scan.since, retryPids, meter,
+      onUnreadable: (pid, e) => {
+        unreadable.add(pid);
+        console.error(`  ⚠ could not read retry pid ${pid} (${String(e?.message || e)}) — kept for the next tick`);
+      },
+    });
+  } catch (e) {
+    // The index is not optional to RTDB: an unindexed orderByChild is REFUSED,
+    // not silently sorted. Falling back to the whole-node read keeps this tick
+    // correct at exactly the price it used to pay — and says so, every tick,
+    // until somebody pastes the index.
+    if (!isMissingIndexError(e, "updatedAt")) throw e;
+    console.error('  ⚠ /shopify_publish has no ".indexOn": "updatedAt" — this tick fell back to reading the WHOLE node ' +
+      "(~2 MB, the old cost). Paste the index from docs/SHOPIFY-SYNC.md §9.1 to make it cheap; nothing else needs changing.");
+    scanMode = "full";
+    scanWhy = "no updatedAt index — fell back";
+    all = await readWholeNode();
+  }
+} else {
+  all = await readWholeNode();
+}
+if (COMMIT) {
+  console.log(`scan: ${scanMode} (${scanWhy})` +
+    (scanMode === "incremental" ? ` · ${Object.keys(all).length} node(s) in window, ${retryPids.length} retry` : ""));
+}
 const worklist = [];
 const skippedLegacy = [];
 for (const [pid, node] of Object.entries(all)) {
@@ -166,6 +268,19 @@ if (!COMMIT) {
   }
   console.log(`\ndry run — nothing written, Shopify untouched. Re-run with --commit to apply (cap ${MAX_APPLY}/run).`);
   process.exit(0);
+}
+
+// Does Shopify agree this product is gone? Asked ONLY to decide whether a
+// userErrors refusal is a permanent "it was deleted" or a transient failure to
+// be retried. A query that itself fails answers "not gone" — the safe answer,
+// because it leaves the intent standing.
+async function productIsAbsent(gid) {
+  try {
+    const q = await graphql(`query ($id: ID!) { product(id: $id) { id } }`, { id: gid });
+    return q?.product == null;
+  } catch {
+    return false;
+  }
 }
 
 // ── Commit path ──────────────────────────────────────────────────────────────
@@ -323,7 +438,15 @@ const refuse = async (pid, why, { tookDown = false, blockedHandle = null } = {})
   // the storefront, so it must not be answering searches with a link to it.
   // No-ops when it was never indexed, which is the common case.
   await unindexProduct(db, pid, "blocked");
-  results.push({ pid, ok: false, why: `blocked: ${why}` });
+  // `blocked: true` marks this as a REFUSAL rather than a failure, and the
+  // retry set must not carry it — markBlocked has already consumed
+  // `desiredState`, so this record cannot re-enter the worklist and retrying it
+  // every two minutes would achieve nothing. Worse, refusals share one
+  // timestamp and the retry trim keeps the NEWEST, so a burst of them (the cap
+  // is 25, the retry set holds 50) would evict standing failures that do need
+  // the per-tick retry — the same eviction that was fixed for cap-deferred work
+  // and left open here.
+  results.push({ pid, ok: false, blocked: true, why: `blocked: ${why}` });
 };
 
 // Which storefront collection this record belongs in — and it SAYS SO, loudly,
@@ -389,7 +512,95 @@ for (const { pid, want } of capped) {
         { mutation: true }
       );
       const errs = res.publishableUnpublish.userErrors;
-      if (errs?.length) { results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` }); continue; }
+      if (errs?.length) {
+        // ── THE PRODUCT MAY SIMPLY BE GONE ──────────────────────────────────
+        // "Resource does not exist" against the product id means the listing
+        // was deleted in the Shopify admin. Retrying that forever is what the
+        // old code did: five records refused this way on 30 Aug 2026 and were
+        // still being retried 1,367 ticks later — every two minutes, day and
+        // night, five futile GraphQL mutations a tick, and every tick counted
+        // as a working tick so nothing downstream could ever back off.
+        //
+        // "Off" is already the truth for a product that does not exist, so
+        // confirm it — but only after ASKING SHOPIFY, never by pattern-matching
+        // the error text alone. If the product really is absent the stale ID
+        // map is removed too (with its claim), because a map pointing at a
+        // deleted product makes the record impossible to publish again.
+        const gone = await productIsAbsent(mapNode.shopifyProductId);
+        if (!gone) {
+          results.push({ pid, ok: false, why: `publishableUnpublish userErrors: ${JSON.stringify(errs)}` });
+          continue;
+        }
+        console.log(`  ${mapNode.shopifyProductId} no longer exists on Shopify — clearing the stale ID map and confirming off`);
+        // MAPPING FIRST, CLAIM SECOND, and the order is load-bearing.
+        //
+        // The claim index exists to guarantee one Shopify product is mapped by
+        // at most one record. Freeing the claim before removing the mapping
+        // opens a window — a `changed` verdict, a thrown error, a kill -9
+        // between the two lines — in which the record still names the gid while
+        // nothing protects it, so a second record can claim and map the same
+        // product. That is the one invariant the index provides, given away for
+        // nothing. The other order leaks at worst a claim with no mapping,
+        // which blocks a gid that no longer exists and says so in the log.
+        //
+        // RE-READ BEFORE DELETING. `mapNode` was read earlier in this tick and
+        // the Shopify round trip above takes time, so what is proved absent is
+        // the product this record mapped THEN. If the record has since been
+        // re-adopted onto a live product — round-trip.mjs and adopt.mjs both do
+        // that by hand, outside this loop's single-flight lock — removing the
+        // node here would delete a good, fresh mapping on the strength of a
+        // deletion check performed against a different product.
+        // ONE operation, whose verdict comes from the committed snapshot —
+        // never from `committed` alone and never from a flag set inside a
+        // callback RTDB may invoke more than once. See removeMappingIfUnchanged.
+        const outcome = await removeMappingIfUnchanged(db, pid, mapNode.shopifyProductId);
+        if (outcome !== "removed") {
+          // Say WHICH of the three it was. They send a reader to three different
+          // places, and an earlier version printed the "re-mapped" line for all
+          // of them — which would have someone hunting for an adoption that
+          // never happened.
+          // EXHAUSTIVE, not defaulted. A `|| <contended text>` fallback would
+          // silently label any future fifth verdict "the removal did not
+          // commit" — a specific, wrong claim about the state of the database,
+          // which is worse than admitting the verdict is unrecognised.
+          const WHY = {
+            changed: `no longer maps ${mapNode.shopifyProductId} — it was re-mapped while Shopify was being asked about it; nothing removed`,
+            absent: `had its whole ID map cleared while Shopify was being asked about it — nothing removed, and NOT confirmed off: a record with no mapping is settled by the no-mapping branch on the next tick, which re-reads and so can see whether it has since been re-adopted`,
+            contended: `still maps ${mapNode.shopifyProductId} but the removal did not commit — nothing removed, retrying next tick`,
+          };
+          const why = WHY[outcome] || `could not have its stale mapping removed (unrecognised verdict ${JSON.stringify(outcome)}) — nothing removed, and NOT confirmed off`;
+          console.log(`  ${pid} ${why}`);
+          results.push({ pid, ok: false, why: `${why} (will re-evaluate next tick)` });
+          continue;
+        }
+        // Only now is the gid unreferenced, so the claim can go. Releases only
+        // if the index still names THIS record; a drifted entry naming someone
+        // else is left alone rather than freed under them. A release that does
+        // not land leaves a claim on a gid whose Shopify product is deleted —
+        // harmless to the storefront, but it would block a future re-use of
+        // that gid, so it is named in the log rather than swallowed.
+        // ONE warning, not two. releaseClaim no longer aborts, so a resolved
+        // `committed: false` — the "contended" verdict — is unreachable by
+        // construction: the SDK resolves that way only when the callback
+        // returned `undefined`, and rejects on max-retry, permission and
+        // disconnect instead. The REAL failure here is a throw. An earlier
+        // shape guarded both and printed both messages for the single failure
+        // that can actually happen.
+        try {
+          const released = await releaseClaim(db, pid, mapNode.shopifyProductId);
+          if (released === "contended") throw new Error("the release did not commit");
+        } catch (e) {
+          console.error(`  ⚠ could not release the claim on ${mapNode.shopifyProductId} for ${pid} (${String(e?.message || e)}) — that claim key is stranded; clear it by hand if that gid is ever re-used`);
+        }
+        await confirmLiveState(db, pid, "off", UPDATED_BY, {
+          clearAdminUrl: true,
+          offReason: "no_shopify_product",
+          offDetail: "the Shopify product this record mapped to no longer exists — confirmed off and the stale mapping removed",
+        });
+        await unindexProduct(db, pid, "off");
+        results.push({ pid, ok: true, note: "confirmed off (the mapped Shopify product had been deleted)" });
+        continue;
+      }
       // Off the shelf means out of the aisles: the product LEAVES every managed
       // collection. It is not archived, not deleted, and its ID map survives —
       // switching it back on re-joins it from the map. A collection built by
@@ -817,7 +1028,10 @@ for (const { pid, want } of capped) {
     // Inventory at the moment it starts mattering to customers — from a FRESH
     // read of this product's cells (a sale mid-run must not be re-listed).
     const finalMap = (await db.ref(`shopify_sync/${pid}`).get()).val();
-    const locNames = Object.keys((await db.ref("stock").get()).val() || {});
+    // Ten location keys, resolved ONCE per process from a SHALLOW read. This
+    // line used to pull the whole of /stock — 6,204,009 measured bytes — for
+    // every single product published.
+    const locNames = await stockLocationKeys();
     const tree = {};
     for (const loc of locNames) {
       const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
@@ -1016,26 +1230,165 @@ for (const { pid, want } of capped) {
 // on 2026-08-17 the index held 200 documents against 373 live products — 46% of
 // the storefront unfindable, none of it for want of identity. Every commit run
 // now reconciles the two sets. See searchIndexWrite.mjs for the cost argument.
-try {
-  const liveNow = Object.entries(await readAllPublishNodes(db))
-    .filter(([, n]) => n?.state === "live" && n?.liveState === "on")
-    .map(([p]) => p);
-  const sweep = await sweepSearchIndex(db, admin.app(), {
-    livePids: liveNow,
-    buildDoc: (pid) => buildSearchDocFor(pid),
-  });
-  if (sweep.skipped) {
-    // already warned
-  } else if (sweep.missing || sweep.orphans) {
-    console.log(
-      `\nsearch index: ${liveNow.length} live · +${sweep.indexed} indexed, -${sweep.removed} removed` +
-      (sweep.capped ? ` · ${sweep.missing - sweep.indexed} still missing (per-run cap; the next tick continues)` : "") +
-      (sweep.failed ? ` · ${sweep.failed} failed` : "")
-    );
+// The sweep is DRIFT REPAIR, not the primary path: the per-product hooks above
+// keep the index in step within one tick of any state change. Running it every
+// two minutes bought nothing and cost a second whole-node read each time, so it
+// now runs when this tick actually applied something, or on the same cadence
+// the full scan uses (30 min by day, 3 h overnight).
+// Its live set comes from `.indexOn: ["state"]`, which the live rules ALREADY
+// carry — or, on a full-scan tick, from the map already in hand, for free.
+const sweptRecently = Number(scanState?.lastSweepAt) || 0;
+// APPLIED work, not merely results. The sweep repairs drift caused by a state
+// CHANGE, and an apply that failed changed nothing — so `results.length > 0`
+// made a persistently failing product re-trigger the 747 KB live-set read every
+// two minutes, day and night, which is precisely the standing-failure shape
+// this branch found already live (five records refused for 1,367 consecutive
+// ticks). A failure keeps its place in the retry set; it does not earn a sweep.
+const appliedSomething = results.some((r) => r.ok);
+const sweepDue = scanMode === "full" ||
+  appliedSomething ||
+  runStartedAt - sweptRecently >= fullScanIntervalMs(runStartedAt);
+let sweepRan = false;
+// RAN BUT DID NOT FINISH — a different thing from "did not run". Leaving
+// lastSweepAt at its previous value is NOT enough to make the next tick sweep,
+// because the sweep does not only run when the cadence has elapsed: it also
+// runs whenever the tick applied something. So a capped sweep triggered by an
+// apply, with a recent lastSweepAt, would sit until the cadence caught up —
+// 30 minutes, or 3 hours overnight — while its own log line promised the next
+// tick. Unfinished CLEARS lastSweepAt instead, which makes the next tick due.
+let sweepUnfinished = false;
+// A plain conditional, not a sentinel exception. "Not due" is a schedule, not a
+// failure, and routing it through throw meant the catch below had to tell the
+// two apart by comparing an error MESSAGE — which leaves the catch describing
+// every genuine sweep error as something it must first prove is not the
+// sentinel.
+if (sweepDue) {
+  try {
+    const liveNow = scanMode === "full"
+      ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
+      : await readLivePids(db, { meter });
+    const sweep = await sweepSearchIndex(db, admin.app(), {
+      livePids: liveNow,
+      buildDoc: (pid) => buildSearchDocFor(pid),
+    });
+    // Only a sweep that actually REPAIRED counts as having run. sweepSearchIndex
+    // returns `skipped` without throwing on both its refusals — an empty live
+    // set, and an index it could not list — and neither did any repair. Stamping
+    // lastSweepAt on those would suppress the next attempt for 30 minutes, or 3
+    // hours overnight, on the strength of a sweep that declined to do anything.
+    // Before the cadence existed this retried every tick, so the refusal cost
+    // two minutes; it must not now cost three hours.
+    // A CAPPED sweep has not finished either. It says so in the line below —
+    // "the next tick continues" — and before this branch added a cadence that
+    // was simply true. Stamping lastSweepAt on a capped run makes the message a
+    // lie: the remaining documents would wait 30 minutes, or 3 hours overnight,
+    // rather than the next tick. Leave it unstamped and the promise holds.
+    // `refused` is deliberately NOT in this list (reviewed and declined,
+    // PR #551). A removal-ceiling refusal is not unfinished work that the next
+    // tick would finish: the additions were all applied, and the removals will
+    // refuse again on identical input. Re-sweeping every two minutes would buy
+    // nothing and cost the 747 KB live-set read each time, to reprint the same
+    // message. Its own text says what actually clears it — a human running
+    // build-search-index.mjs — and the cadence is the right interval at which
+    // to keep saying so. `capped` and `skipped` are different: those really do
+    // get further on the next attempt.
+    sweepRan = !sweep.skipped && !sweep.capped;
+    sweepUnfinished = Boolean(sweep.skipped || sweep.capped);
+    if (sweep.skipped) {
+      // already warned
+    } else if (sweep.missing || sweep.orphans) {
+      console.log(
+        `\nsearch index: ${liveNow.length} live · +${sweep.indexed} indexed, -${sweep.removed} removed` +
+        (sweep.capped ? ` · ${sweep.missing - sweep.indexed} still missing (per-run cap; the next tick continues)` : "") +
+        (sweep.failed ? ` · ${sweep.failed} failed` : "")
+      );
+    }
+  } catch (e) {
+    // A sweep that threw did not repair anything either, and before the cadence
+    // it would have been retried in two minutes. Keep that.
+    sweepUnfinished = true;
+    console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
   }
-} catch (e) {
-  console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
 }
+
+// RTDB stores no empty object — writing `{}` deletes the key, which is exactly
+// what an empty retry set should do, but the Admin SDK refuses `{}` in an
+// update payload. Say `null` and mean it.
+const emptyToNull = (o) => (o && Object.keys(o).length ? o : null);
+
+// ── Persist the scan state ───────────────────────────────────────────────────
+// Only a COMMIT run that scanned the whole shop (or scanned a window) may move
+// the watermark, and it moves to the moment this run STARTED — never to "now",
+// so an intent written while the run was in flight lands in the next window
+// instead of being stepped over. `--pids` runs deliberately touch nothing: they
+// are a surgical human command and must not tell the scheduler it is caught up.
+if (COMMIT && !ONLY) {
+  // Two kinds of unfinished work must survive to the next tick, and NEITHER
+  // moved its node's `updatedAt`, so neither would reappear in the next window
+  // on its own: a product whose apply FAILED, and a product the per-run CAP
+  // never got to. They are carried by different mechanisms, on purpose.
+  //
+  //   · a failure rides the RETRY SET. Its `updatedAt` is stale by definition,
+  //     so no window will ever find it again; it is read by id every tick.
+  //   · cap-deferred work rides the WATERMARK, which simply does not advance
+  //     past it. Putting it in the retry set instead — which this branch did at
+  //     first — breaks twice over at scale: the retry set is capped, so a
+  //     backlog bigger than the two caps together was dropped and left to the
+  //     next full scan (3 hours, overnight); and since the trim keeps the
+  //     newest and every deferred pid shares one timestamp, one bulk deferral
+  //     evicted every standing failure at a stroke.
+  const deferred = new Set(worklist.slice(capped.length).map((w) => w.pid));
+  const carried = results.filter((r) => !r.ok && !r.blocked).map((r) => r.pid);
+  // Retry pids are excluded: their `updatedAt` is stale, so one of them would
+  // drag the watermark back and widen every window for as long as it failed.
+  const unapplied = worklist.slice(capped.length)
+    .filter((w) => !retryPids.includes(w.pid))
+    .map((w) => w.node);
+  // A retry pid is EVALUATED even when it never reaches the worklist. Its node
+  // is read individually every tick, and that read can find the node deleted,
+  // or find it already in the state it wants — in which case it produces no
+  // worklist entry, so `capped` never names it. Counting only `capped` as
+  // attempted would leave such a pid in the retry set for good: read every
+  // tick forever, holding one of the bounded slots against a real failure that
+  // needs it. Evaluated counts as attempted; only a pid the per-run cap
+  // genuinely deferred is held back, and it is carried instead.
+  const attempted = [...new Set([
+    ...capped.map((w) => w.pid),
+    ...retryPids.filter((pid) => !deferred.has(pid) && !unreadable.has(pid)),
+  ])];
+  // SAY SO WHEN THE WATERMARK DOES NOT ADVANCE. Two ways this loop can quietly
+  // stop being incremental and nobody would know, because both LOOK like a
+  // healthy full scan in the log:
+  //   · a node in the backlog carries no usable `updatedAt`, so nextWatermark
+  //     refuses to guess a bound and returns the previous one — correct, but if
+  //     that previous one is null the next tick takes a full scan, and the tick
+  //     after that, for as long as the node sits there;
+  //   · a node stamped 0 (or negative) drags the watermark to -1, which
+  //     planScan reads as "no watermark recorded" and answers with a full scan,
+  //     for ever.
+  // Neither is a correctness bug — both degrade to exactly the old behaviour —
+  // but they are the failure this branch would never notice, so the tick names
+  // the node responsible instead of silently paying the old price.
+  const watermark = nextWatermark({ runStartedAt, unapplied, previousWatermark: scanState?.watermark ?? null });
+  if (!(Number(watermark) > 0)) {
+    const culprits = unapplied.filter((n) => !(Number(n?.updatedAt) > 0)).length;
+    console.error(`  ⚠ the watermark did not advance (${JSON.stringify(watermark)})` +
+      (culprits ? ` — ${culprits} node(s) in the backlog carry no usable updatedAt.` : ".") +
+      " Every tick until this clears reads the WHOLE node, at the old price. A full scan will still apply the work;" +
+      " what is lost is the cheap window, silently, so it is said out loud here.");
+  }
+  await writeReconcileState(db, {
+    watermark,
+    retry: emptyToNull(nextRetrySet({ previous: scanState?.retry, attempted, failedPids: carried, nowMs: runStartedAt })),
+    ...(scanMode === "full" ? { lastFullScanAt: runStartedAt } : {}),
+    // Three states, not two: finished (stamp it), ran-unfinished (CLEAR it, so
+    // the next tick is due regardless of cadence), and never ran because it was
+    // not due (leave it alone — clearing there would sweep every tick forever).
+    ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
+    updatedAt: runStartedAt,
+  });
+}
+console.log(`rtdb read this run: ~${rtdbBytes.toLocaleString()} B`);
 
 // ── Report ───────────────────────────────────────────────────────────────────
 console.log("\n══ RECONCILE REPORT ══");

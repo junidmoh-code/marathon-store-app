@@ -355,3 +355,302 @@ theme's existing hero buttons:
 
 - Home → "Shop now" → Sneakers (7) → Boots Shell Green
 - Home → "View collection" → Collections → Caps & Hats (4) → Red Sox fitted cap
+
+---
+
+## 9. The reconcile loop's bandwidth (3 Sep 2026)
+
+The 3 Sep bandwidth capture (`docs/bandwidth-capture-sept.md`, which lands with
+PR #550 — until that merges the file is on the `docs/bandwidth-capture-sept`
+branch, and the figures it supports are repeated in full below) measured the Mac
+mini's reconcile loop at
+**45–79% of all traffic in the Realtime Database in every profiler hour
+captured** — ~$87–160/month, 24/7, for a shop where most two-minute ticks have
+nothing to do. Three lines caused nearly all of it. What changed, and what it
+did *not* change:
+
+| Was | Now | Where |
+|---|---|---|
+| whole `/shopify_publish` (1.9–2.2 MB) to build the worklist, **every tick** | an `updatedAt` window, with a full scan on a cadence as backstop | `reconcileScope.mjs`, `reconcile.mjs` |
+| whole `/shopify_publish` **again** for the search-index sweep, every tick | the `state`-indexed live query, and only when the sweep is due or the tick applied something | `reconcileScope.readLivePids` |
+| whole `/stock` (6,204,009 B) **per product published**, to learn ten location names | one shallow key read, memoised per process | `reconcileScope.makeStockLocationResolver` |
+| a transaction on the **`/shopify_sync` root** (~1 MB each) to prove a gid is unclaimed | a transaction on one child of `/shopify_sync/_claims` | `idMap.mjs` |
+
+Nothing about what the reconciler publishes changed. The compliance gate, the
+fail-safe unpublish discipline, the per-run cap and the intent contract are all
+exactly as they were.
+
+**Two things about the claim are NOT exactly as they were**, and saying so is
+better than a blanket "atomicity unchanged" that the next reader would have to
+disprove.
+
+1. **The claim and the durable pointer are now two commits, not one.** The root
+   transaction wrote the uniqueness check and the mapping together. A process
+   killed between them now leaves a claim on a gid the record never maps. That
+   does not change anything on the storefront and it is not a divergence: the
+   orphan Shopify draft, and the title-duplicate guard that catches it and
+   refuses with an actionable message, happened under the root transaction too
+   for a crash a few lines earlier. The one new residual is a stranded key in
+   `_claims`. It blocks a gid that is an orphan draft nobody should map, and it
+   surfaces only if someone later adopts that draft by hand — at which point the
+   refusal says the owner does not map the gid, that the claim is stale, and
+   which key to clear.
+2. **A failed claim hand-back is not repaired automatically.** On a pointer
+   clash the claim taken moments earlier is given back; if that release itself
+   fails twice, the claim stays owned by a record that maps a different gid.
+   It is logged loudly, and a later claim on that gid diagnoses it — the refusal
+   reads the recorded owner's pointer, sees it does not map this gid, and names
+   the key to clear. It is **not** repaired automatically, on purpose: the
+   obvious repair ("the owner does not map this gid, so take the claim") cannot
+   tell a stranded claim from a record that has just taken its claim and not yet
+   written its pointer, and stealing there would put two records on one Shopify
+   product — the one thing the index exists to prevent. A durable retry queue
+   avoids that race only by adding an age threshold to separate "stranded" from
+   "in flight", which is new state and a new way to free a claim; it wants its
+   own change, not a ride-along.
+3. **Uniqueness is now checked against a derived index, not the source.** The
+   root transaction read `/shopify_sync` itself, so it was right even if an
+   index had drifted. `_claims` is only as complete as its backfill plus the
+   rule that nothing writes `shopifyProductId` except through
+   `claimShopifyProduct`. Every current writer does (`reconcile.mjs`,
+   `round-trip.mjs`; `writeIdMap` refuses to change an existing gid), but that
+   is convention, not enforcement — a console hand-edit or a future script
+   writing the field directly would create a record with no claim, after which a
+   second record could claim the same gid. The backfill now at least refuses to
+   collapse a double mapping silently: it names both records and leaves the
+   repair to a person.
+
+### 9.1 The index to paste (console rules, not `database.rules.json`)
+
+The incremental worklist queries `/shopify_publish` ordered by `updatedAt`.
+Live rules today carry `".indexOn": ["state"]`. **Add `"updatedAt"`:**
+
+```json
+"shopify_publish": {
+  ".indexOn": ["state", "updatedAt"]
+}
+```
+
+**RTDB does not sort an unindexed query — it refuses it.** Verified against the
+live database on 3 Sep 2026:
+
+```text
+Index not defined, add ".indexOn": "updatedAt", for path "/shopify_publish", to the rules
+```
+
+So the refusal is caught and the tick falls back to the whole-node read it did
+before — correct, at exactly the old price, and it says so in the log on every
+tick until the index is pasted. Everything else in the table above saves
+immediately, with or without it.
+
+**The two node sizes, and which one the table uses.** `/shopify_publish` holds
+**3,832 nodes**. The profiler measured the whole node at **1.9–2.2 MB**, and that
+is the figure every row below uses. A separate ten-node sample taken on 3 Sep
+averaged **696 B/node**, which would extrapolate to 2.67 MB — 21% higher. Ten
+nodes is a small sample and the profiler measured the real thing, so the sample
+mean is reported here as a sample and used for nothing. An earlier draft printed
+the sample as the *basis* for the table while every row was computed from 2.2 MB,
+which is why the day and month rows did not reconcile with the stated premise.
+
+**Read the column headings.** Only the *before* column is measured on the live
+system — from the profiler capture, against the code that was actually running.
+The two *after* columns are **projections** computed from the same measured node
+sizes and counts. They cannot be measurements: the code in this branch has never
+run on the mini (it has no auto-pull — see `MAC-MINI-SETUP.md`), and the
+`updatedAt` index is deliberately not pasted yet. The first real figure will come
+from the loop's own `rtdb read this run:` line once both of those happen, and
+this table should be corrected against it.
+
+| | before (measured) | after, no index (projected) | after, index pasted (projected) |
+|---|---:|---:|---:|
+| idle tick | ~4.4 MB | ~2.2 MB | **~100 B** |
+| per product published | +6,204,009 B (`/stock`) + ~1 MB (`/shopify_sync` root txn) | +100 B | +100 B |
+| search-index sweep live set | 2.2 MB, every tick | **0 — never read** (see below) | 747,434 B, on a cadence |
+| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~88 MB** |
+| **per month at $1/GB** | **~$96 at the idle rate** (see below) | ~$48 | **~$2.65** |
+
+**Where the after-index day figure comes from**, so it can be checked rather
+than trusted. Three terms, and the third is the one an earlier draft of this
+paragraph forgot while claiming "the only expensive ticks are the full scans":
+
+| term | working | per day |
+|---|---|---:|
+| full scans | night is 01:00–07:00 (§9.5), so 18 daytime hours ÷ 30 min = 36, plus 6 night hours ÷ 3 h = 2 → **38 scans**, each one whole-node read at 2.2 MB (a sweep landing on a full-scan tick reuses it free) | 83.6 MB |
+| sweeps on *incremental* ticks | `sweepDue` is also true when a tick **applied** something, and on an incremental tick the live set costs a `readLivePids` at 747,434 B. At ~7.5 publishes a day landing in ~6 ticks | 4.5 MB |
+| idle ticks | the remaining ~682 × ~100 B | 0.07 MB |
+| | **total** | **~88 MB** |
+
+`88 MB × 30 = 2.6 GB`, at $1/GB, **~$2.65 a month**.
+
+**Why the sweep row is 0 in the middle column.** With no `updatedAt` index every
+tick falls back to `scanMode = "full"`, and on a full scan the sweep takes the
+live set from the whole-node read it already has — `readLivePids` is never
+called at all. The middle column previously repeated the right-hand column's
+747,434 B, which overstated the no-index cost.
+
+**About the "busy" figure — it is measured, and this table stops trying to
+re-derive it.** `~$96` above is arithmetic: 720 idle ticks × 4.4 MB. The
+**$87–160/month** band comes from the profiler capture itself
+(`docs/bandwidth-capture-sept.md`), which measured the loop at 45–79% of all
+database traffic across its captured hours; the spread is how busy the shop was.
+That band is a **measurement** and needs no derivation.
+
+Two attempts to build a "busy" number from parts have now been wrong here — one
+gave $160 from nowhere, and its replacement gave $145 from inputs that add to
+$113.60 and that contradicted each other (22.5 MB/h of claim transactions only
+made sense under the "three per created product" premise this table has since
+dropped; at one ~1 MB transaction per created product and ~7.5 publishes a day
+it is ~7.5 MB, not 540 MB). Rather than a third attempt, the honest row is the
+idle floor, computed, plus the capture's measured band, cited.
+
+The idle tick is ~100 B rather than the ~8 B an earlier draft of this table
+claimed. An empty `updatedAt` window really is a handful of bytes, but the tick
+also reads its own scan state at `/shopify_sync/_reconcile`, and with the index
+pasted that read *is* the idle tick. It was not being counted: `readReconcileState`
+was the one read in the loop with no `meter()` call, so the figure the loop
+printed about itself omitted its largest remaining item. It is metered now.
+
+### 9.1a What this work itself cost to read
+
+Worth stating, because an investigation into read cost that quietly spends more
+than it saves is not a saving — and worth stating in full, because there are two
+different numbers here and the small one is not the answer.
+
+| | RTDB bytes | How it is known |
+|---|---:|---|
+| attributed to this investigation *inside the two profiler hours* | **694 B** | measured — the profiler named the client, two `/users/{uid}` reads (`docs/bandwidth-capture-sept.md` §2c) |
+| the whole investigation, profiler hours and outside them | **~0.9 MB** | shallow key counts, ten sampled `/shopify_publish` nodes read individually, one `state=live` query, the live rules |
+| verifying the `updatedAt` index refusal | a refusal, not a payload | RTDB rejected the query and returned an error string; no rows transferred |
+
+**~0.9 MB is the honest figure.** The 694 B is only what happened to fall inside
+the two captured hours, and quoting it alone would be picking the flattering
+window. Nearly all of the 0.9 MB is one `state=live` query — the same query the
+sweep now uses, run once to confirm it returns what the whole-node read used to.
+
+The rule the investigation held to was not "spend nothing" but **no whole-node
+read** — including to investigate a whole-node read. Every figure above came from
+a shallow, paged, or indexed read, or from the profiler capture already taken.
+
+Against a measured ~3.2 GB/day before, ~0.9 MB is about 24 seconds of what the
+loop was spending.
+
+### 9.2 The bookkeeping node
+
+`/shopify_sync/_reconcile` — `{ watermark, lastFullScanAt, lastSweepAt, retry }`.
+`/shopify_sync` is `.read: false, .write: false` in live rules, so this is
+server-only by construction and no rule change is needed for it, nor for
+`/shopify_sync/_claims`.
+
+### 9.3 What the watermark will not miss
+
+- A run advances the watermark to the moment it **started**, never to "now", so
+  an intent written mid-run lands in the next window.
+- A window starts **an hour** before the watermark. That is a *skew* allowance,
+  not a jitter one: the reconciler's clock is server-corrected, but a browser's
+  offset is measured once at the socket handshake, so a device whose clock is
+  wrong stamps `updatedAt` in the past and a narrow window would miss the press.
+  The extra rows are a handful and every one is discarded immediately.
+  (A watermark in the *future* is a separate question with its own five-minute
+  tolerance — past that it is corruption, and the tick takes a full scan.)
+- A product whose apply failed, or that the per-run cap did not reach, does not
+  move its node's `updatedAt` — both are carried by id in `retry` and read
+  individually every tick until they clear.
+- A full scan runs every 30 minutes (3 hours between 01:00 and 07:00 SAST), on
+  the first run after the state node is lost, when the watermark is ahead of the
+  server clock, and on `--full`.
+- The **dry run** (`reconcile.mjs` with no `--commit`) always reads everything.
+  It answers "what is outstanding across the whole shop?" and any bounded
+  window would be a lie.
+
+### 9.4 A deleted Shopify product no longer retries forever
+
+Five records refused with `publishableUnpublish userErrors: Resource does not
+exist` on 30 Aug 2026 and were **still being retried 1,367 ticks later** — five
+futile GraphQL mutations every two minutes, and every tick counted as a working
+tick, so nothing downstream could ever back off. The off path now asks Shopify
+whether the product exists; if it genuinely does not, it confirms off, removes
+the stale ID map and releases its claim. A query that itself fails answers "not
+gone", which leaves the intent standing.
+
+**This one is not purely a cost change, and should be accepted as such.**
+Everything else in §9 changes only what the loop *reads*. This changes what it
+*writes*: on this path it now removes `/shopify_sync/{pid}` and releases the
+claim, where before it wrote nothing to the ID map on an off. The storefront
+outcome is identical — the product is off either way, because Shopify has
+already deleted it — but the record's mapping is now cleared rather than left
+pointing at a product that no longer exists. That is the point: a record still
+mapped to a deleted product can never be published again, which is the state the
+five stuck records were in. The release is ownership-checked, so it can only
+free a claim this record itself holds.
+
+### 9.5 Who started this loop, when, and whether anyone meant it to run all night
+
+Asked because "it runs 24/7" is only a defect if nobody decided it should.
+
+- **What starts it.** A user LaunchAgent on the Mac mini,
+  `com.marathon.shopifyreconcile`, in `~/Library/LaunchAgents`. It runs
+  `scripts/shopify/reconcile-runner.mjs`, which takes a lockfile, runs one tick
+  and exits. Nothing else invokes the reconciler on a schedule.
+- **When it was introduced.** 14 Aug 2026, PR #368 (`93c5fe4`), the same PR that
+  shipped the per-product publishing page. The plist header records the cadence
+  as *owner spec 2026-08-14*.
+- **Changed once since.** 31 Aug 2026, PR #531 (`7006bd5`): `StartInterval 120`
+  became `KeepAlive` + `ThrottleInterval 120`, after launchd silently stopped
+  firing every `StartInterval` agent on that machine at 01:16. The cadence did
+  not change; only what survives a launchd wedge did.
+- **Was continuous operation intended?** The *two-minute cadence* was specified.
+  Round-the-clock running was never a separate decision — it is what a plain
+  `StartInterval`/`KeepAlive` agent does, and no one weighed it against a shop
+  that trades about ten hours a day. So the honest answer is that the interval
+  was chosen and the 24/7 part came free with the mechanism.
+
+**What was cut, and what deliberately was not.** The tick stays at two minutes,
+day and night — but for a narrower reason than the obvious one, and the
+difference is worth stating because the obvious one is wrong.
+
+> **The tick does not keep a live product's stock in step with the shops.**
+> The worklist is built purely from `desiredState` against the confirmed state
+> (`reconcile.mjs`): a product that is already live and whose stock has since
+> changed does not enter it, and no inventory mutation is sent for it. The only
+> `inventorySetQuantities` call happens on the ON path, at the moment a product
+> is published. So "the site must not keep selling something that has gone" is
+> not a description of what this two-minute loop provides — a sale in the shop
+> does not reach Shopify through it at all.
+>
+> What the two-minute tick actually buys is **latency on a publish or unpublish
+> press**: someone takes a product off at 23:40 and it is off the storefront at
+> 23:42. That is a real requirement and it is why the tick was left alone.
+
+Flagged rather than acted on: closing the stock gap above is a separate piece of
+work with its own risk, and this change is a cost change. Cutting the tick
+further is also the owner's call, not this branch's — and with the index pasted
+an idle tick is ~100 B, so there is no longer any cost pressure to cut it.
+
+What backs off overnight is the expensive
+*drift-repair* work — the full scan and the search-index sweep — from every
+30 minutes to every 3 hours between **01:00 and 07:00 SAST**.
+
+That window is the measured dead one, and it was corrected on 4 Sep after being
+measured a second time. From the mini's own log (18 Aug – 4 Sep, ~7,000 ticks),
+counting the *unapplied intent* figure each tick reports:
+
+| SAST hour | what the log shows |
+|---|---|
+| 01:00–06:00 | of 165 ticks carrying any intent, **164 reported exactly five** — the flat floor of a stuck record set, not work. One tick in ~800 carried real intent. Genuinely dead. |
+| 07:00 | a handful of real ticks; the edge, and it gets the **daytime** cadence |
+| 09:00–16:00 | quiet — the shop trades, nobody publishes |
+| 20:00–23:00 | the busy block, 4–6× the daytime rate |
+| **23:00** | the **single busiest publishing hour measured**, in both the stuck and the pre-stuck period, with a genuine spread of intent counts (1,2,3,4,5,6,7,8,9,11,16) rather than a flat floor. 00:00 is active too. |
+
+An earlier draft of this change started the night at 23:00 and justified it as
+"narrower than the measured dead window" — the opposite of true at its own start
+boundary. It backed drift repair off 6× at the two hours with the most work to
+repair. Publishing latency was never affected (the two-minute tick is what a
+press waits on), but the backstop was asleep at the busiest time.
+
+The correction costs ~3.3 extra full scans a night — 23:00–01:00 now runs the
+30-minute cadence — about **9.7 MB a night, ~$0.29 a month**, against a ~$93/month
+saving.
+
+The precedent is the refill scan, which backs its cadence off the same way for
+the same reason: cut the sweep, never the thing a customer is waiting on.

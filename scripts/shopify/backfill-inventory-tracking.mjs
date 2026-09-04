@@ -41,6 +41,7 @@ import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment, encodeSizeKey, stockSizeKey } from "../../src/utils/sizeKey.js";
 import { findSizeCollisions } from "./sizeOrder.mjs";
+import { isProductRecordKey } from "./idMap.mjs";
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable,
@@ -75,7 +76,7 @@ const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 const syncNodes = (await db.ref("shopify_sync").get()).val() || {};
 const publishNodes = await readAllPublishNodes(db);
 const mappedPids = Object.keys(syncNodes)
-  .filter((k) => k !== "_collections")
+  .filter(isProductRecordKey)   // _collections, _reconcile, _claims, and any future sibling
   .filter((pid) => !ONLY || ONLY.has(pid));
 const pids = mappedPids
   .filter((pid) => !LIVE_ONLY || confirmedOn(publishNodes[pid]))
