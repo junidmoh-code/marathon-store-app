@@ -377,8 +377,35 @@ did *not* change:
 | a transaction on the **`/shopify_sync` root** (~1 MB each) to prove a gid is unclaimed | a transaction on one child of `/shopify_sync/_claims` | `idMap.mjs` |
 
 Nothing about what the reconciler publishes changed. The compliance gate, the
-fail-safe unpublish discipline, the per-run cap, the intent contract and the
-claim's atomicity are all exactly as they were.
+fail-safe unpublish discipline, the per-run cap and the intent contract are all
+exactly as they were.
+
+**Two things about the claim are NOT exactly as they were**, and saying so is
+better than a blanket "atomicity unchanged" that the next reader would have to
+disprove.
+
+1. **The claim and the durable pointer are now two commits, not one.** The root
+   transaction wrote the uniqueness check and the mapping together. A process
+   killed between them now leaves a claim on a gid the record never maps. That
+   does not change anything on the storefront and it is not a divergence: the
+   orphan Shopify draft, and the title-duplicate guard that catches it and
+   refuses with an actionable message, happened under the root transaction too
+   for a crash a few lines earlier. The one new residual is a stranded key in
+   `_claims`. It blocks a gid that is an orphan draft nobody should map, and it
+   surfaces only if someone later adopts that draft by hand — at which point the
+   refusal says the owner does not map the gid, that the claim is stale, and
+   which key to clear.
+2. **Uniqueness is now checked against a derived index, not the source.** The
+   root transaction read `/shopify_sync` itself, so it was right even if an
+   index had drifted. `_claims` is only as complete as its backfill plus the
+   rule that nothing writes `shopifyProductId` except through
+   `claimShopifyProduct`. Every current writer does (`reconcile.mjs`,
+   `round-trip.mjs`; `writeIdMap` refuses to change an existing gid), but that
+   is convention, not enforcement — a console hand-edit or a future script
+   writing the field directly would create a record with no claim, after which a
+   second record could claim the same gid. The backfill now at least refuses to
+   collapse a double mapping silently: it names both records and leaves the
+   repair to a person.
 
 ### 9.1 The index to paste (console rules, not `database.rules.json`)
 
@@ -403,7 +430,14 @@ before — correct, at exactly the old price, and it says so in the log on every
 tick until the index is pasted. Everything else in the table above saves
 immediately, with or without it.
 
-Per tick (3 Sep, `/shopify_publish` = 3,832 nodes, mean 696 B/node).
+**The two node sizes, and which one the table uses.** `/shopify_publish` holds
+**3,832 nodes**. The profiler measured the whole node at **1.9–2.2 MB**, and that
+is the figure every row below uses. A separate ten-node sample taken on 3 Sep
+averaged **696 B/node**, which would extrapolate to 2.67 MB — 21% higher. Ten
+nodes is a small sample and the profiler measured the real thing, so the sample
+mean is reported here as a sample and used for nothing. An earlier draft printed
+the sample as the *basis* for the table while every row was computed from 2.2 MB,
+which is why the day and month rows did not reconcile with the stated premise.
 
 **Read the column headings.** Only the *before* column is measured on the live
 system — from the profiler capture, against the code that was actually running.
@@ -417,10 +451,32 @@ this table should be corrected against it.
 | | before (measured) | after, no index (projected) | after, index pasted (projected) |
 |---|---:|---:|---:|
 | idle tick | ~4.4 MB | ~2.2 MB | **~100 B** |
-| per product published | +6,204,009 B (`/stock`) + ~3 MB (`/shopify_sync` root txn) | +100 B | +100 B |
-| search-index sweep live set | 2.2 MB, every tick | 747,434 B, on a cadence | 747,434 B, on a cadence |
-| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~90 MB** |
-| **per month at $1/GB** | **~$96 idle, $160 busy** | ~$48 | **~$2.70** |
+| per product published | +6,204,009 B (`/stock`) + ~1 MB (`/shopify_sync` root txn) | +100 B | +100 B |
+| search-index sweep live set | 2.2 MB, every tick | **0 — never read** (see below) | 747,434 B, on a cadence |
+| **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~84 MB** |
+| **per month at $1/GB** | **~$96 idle, ~$145 busy** | ~$48 | **~$2.50** |
+
+**Where the after-index day figure comes from**, so it can be checked rather
+than trusted. With the index pasted, the only expensive ticks are the full
+scans. The night window is 01:00–07:00 (§9.5), so: 18 daytime hours at the
+30-minute cadence = 36 scans, plus 6 night hours at the 3-hour cadence = 2, so
+**38 full scans a day**. Each reads the whole node once, at 2.2 MB, and a sweep
+landing on a full-scan tick reuses that read for free. `38 × 2.2 MB ≈ 84 MB`.
+The other 682 ticks are ~100 B each, about 68 KB in total — a rounding error.
+`84 MB × 30 = 2.5 GB`, at $1/GB, **~$2.50 a month**.
+
+**Why the sweep row is 0 in the middle column.** With no `updatedAt` index every
+tick falls back to `scanMode = "full"`, and on a full scan the sweep takes the
+live set from the whole-node read it already has — `readLivePids` is never
+called at all. The middle column previously repeated the right-hand column's
+747,434 B, which overstated the no-index cost.
+
+**Why `~$145 busy` and not the `$160` an earlier draft gave.** $160 was never
+derived anywhere. Building it up instead: $96 is the idle floor; a busy day adds
+the `/stock` read per product published (6.2 MB × ~7.5 publishes ≈ 47 MB) and
+the root claim transactions (~22.5 MB/h in the captured busy hour). That lands
+near **$145**, and it is shown here so the next reader can argue with the
+inputs rather than with a number that appeared from nowhere.
 
 The idle tick is ~100 B rather than the ~8 B an earlier draft of this table
 claimed. An empty `updatedAt` window really is a handful of bytes, but the tick

@@ -47,9 +47,11 @@
 //   CADENCE APPLIES TO THE EXPENSIVE PART, NOT THE TICK. The tick stays at two
 //   minutes: a publish pressed at 23:40 must still go out at 23:42. What backs
 //   off overnight is the full scan and the search-index sweep — drift repair,
-//   not the primary path. Measured from the mini's own log (18 Aug – 3 Sep),
-//   genuine intent between 01:00 and 08:00 SAST is essentially nil; every
-//   overnight "working" tick in that window was a stuck retry.
+//   not the primary path. The window is 01:00–07:00 SAST, measured from the
+//   mini's own log (18 Aug – 4 Sep) and NOT assumed from trading hours — see
+//   NIGHT_START_HOUR below, where the measurement is set out. 23:00 and 00:00
+//   look like night and are two of the busiest publishing hours, so they get
+//   the daytime cadence.
 //
 // State lives at /shopify_sync/_reconcile. /shopify_sync is `.read: false,
 // .write: false` in the live rules — server-only, which is exactly right for a
