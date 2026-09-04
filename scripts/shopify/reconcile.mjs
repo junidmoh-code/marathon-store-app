@@ -559,10 +559,16 @@ for (const { pid, want } of capped) {
           // places, and an earlier version printed the "re-mapped" line for all
           // of them — which would have someone hunting for an adoption that
           // never happened.
-          const why = {
+          // EXHAUSTIVE, not defaulted. A `|| <contended text>` fallback would
+          // silently label any future fifth verdict "the removal did not
+          // commit" — a specific, wrong claim about the state of the database,
+          // which is worse than admitting the verdict is unrecognised.
+          const WHY = {
             changed: `no longer maps ${mapNode.shopifyProductId} — it was re-mapped while Shopify was being asked about it; nothing removed`,
-            absent: `had its whole ID map cleared while Shopify was being asked about it — nothing removed, and NOT confirmed off: a record with no mapping is settled by the no-mapping branch on the next tick, which is the one place that can see whether it has since been re-adopted`,
-          }[outcome] || `still maps ${mapNode.shopifyProductId} but the removal did not commit — nothing removed, retrying next tick`;
+            absent: `had its whole ID map cleared while Shopify was being asked about it — nothing removed, and NOT confirmed off: a record with no mapping is settled by the no-mapping branch on the next tick, which re-reads and so can see whether it has since been re-adopted`,
+            contended: `still maps ${mapNode.shopifyProductId} but the removal did not commit — nothing removed, retrying next tick`,
+          };
+          const why = WHY[outcome] || `could not have its stale mapping removed (unrecognised verdict ${JSON.stringify(outcome)}) — nothing removed, and NOT confirmed off`;
           console.log(`  ${pid} ${why}`);
           results.push({ pid, ok: false, why: `${why} (will re-evaluate next tick)` });
           continue;
