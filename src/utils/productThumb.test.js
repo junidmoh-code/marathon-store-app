@@ -159,9 +159,29 @@ describe("encodeThumbnail geometry — property fuzz", () => {
 
   it("holds the invariants for every source shape", async () => {
     const rand = seeded(20260904);
-    for (let i = 0; i < 2000; i++) {
-      const srcW = 1 + Math.floor(rand() * 6000);
-      const srcH = 1 + Math.floor(rand() * 6000);
+    // Uniform random shapes alone were NOT enough: removing the Math.max(1, …)
+    // floor survived a 2,000-case uniform fuzz, because the case that catches
+    // it (a source so wide and so short that its scaled height rounds to ZERO)
+    // is roughly one draw in a thousand. So the extreme aspect ratios that
+    // actually break things are drawn deliberately, and the exact boundaries
+    // are listed outright. A fuzz that only samples the middle is a slower
+    // spot-check. (Mutation-tested: each invariant below kills a mutant.)
+    const edges = [
+      [6000, 1], [4096, 3], [1200, 2], [301, 1], [300, 1], [299, 1],
+      [1, 6000], [1, 1], [300, 300], [301, 300], [8000, 12],
+    ];
+    for (let i = 0; i < 2000 + edges.length; i++) {
+      let srcW, srcH;
+      if (i < edges.length) {
+        [srcW, srcH] = edges[i];
+      } else if (i % 3 === 0) {
+        // A deliberately extreme ratio: very wide, only a few pixels tall.
+        srcW = 600 + Math.floor(rand() * 5400);
+        srcH = 1 + Math.floor(rand() * 12);
+      } else {
+        srcW = 1 + Math.floor(rand() * 6000);
+        srcH = 1 + Math.floor(rand() * 6000);
+      }
       let made = null;
       await encodeThumbnail({ size: 1 }, {
         loadImage: async () => ({ naturalWidth: srcW, naturalHeight: srcH }),
