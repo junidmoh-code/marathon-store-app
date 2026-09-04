@@ -104,7 +104,10 @@ const makeServer = (scratchDir) => createServer((req, res) => {
     const ext = extname(file);
     // An ES module served as image/jpeg is refused by the browser outright, so
     // the type is not a detail here — it is what makes the import work.
-    const type = ext === ".js" ? "text/javascript" : ext === ".html" ? "text/html" : "image/jpeg";
+    const type = ext === ".js" ? "text/javascript"
+      : ext === ".html" ? "text/html"
+      : ext === ".webp" ? "image/webp"
+      : "image/jpeg";
     res.writeHead(200, { "Content-Type": type }).end(body);
   } catch {
     res.writeHead(404).end("no");
@@ -174,8 +177,35 @@ try {
     const webp = join(scratch, `${id}.cwebp.webp`);
     execFileSync("cwebp", ["-quiet", "-q", "80", "-resize", String(targetWidth), "0", jpg, "-o", webp]);
     const cwebpBytes = readFileSync(webp).length;
+
+    // ── VERIFY BOTH LEGS, NOT JUST OURS ─────────────────────────────────────
+    // Asserting the BROWSER's width against the target says nothing about what
+    // cwebp actually produced — the flag was passed, not the output inspected.
+    // A different cwebp version, a changed default resize mode, or a typo'd
+    // flag would leave the two legs encoding different geometries again, and
+    // the script would print a confident byte ratio for the comparison it was
+    // built to prevent. So the cwebp object is DECODED and its real dimensions
+    // are checked against the browser's. (CodeRabbit, PR #553.)
+    const cwebpDims = await page.evaluate(async (base, productId) => {
+      const res = await fetch(`${base}/sample/${productId}.cwebp.webp`);
+      const bmp = await createImageBitmap(await res.blob());
+      try { return { width: bmp.width, height: bmp.height }; } finally { bmp.close(); }
+    }, origin, id);
+    // Width must be EXACT. Height is allowed to differ by one pixel, and does:
+    // the first run of this check found browser 300x405 against cwebp 300x406
+    // on a 599x809 source — the two encoders round the derived height
+    // differently (this module uses Math.round; cwebp's scaler does its own).
+    // One row of pixels cannot move a byte ratio and nothing downstream depends
+    // on an exact height, so it is recorded rather than treated as an error.
+    // Anything larger means the legs are resizing differently, which is what
+    // this check exists to catch.
+    const heightDrift = Math.abs(cwebpDims.height - browserResult.height);
     if (browserResult.width !== targetWidth) {
-      throw new Error(`${id}: legs disagree on width — browser ${browserResult.width}, cwebp ${targetWidth}`);
+      throw new Error(`${id}: browser encoded ${browserResult.width}px, target was ${targetWidth}px`);
+    }
+    if (cwebpDims.width !== browserResult.width || heightDrift > 1) {
+      throw new Error(`${id}: legs disagree on geometry — browser ${browserResult.width}x${browserResult.height}, `
+        + `cwebp ${cwebpDims.width}x${cwebpDims.height}. The byte ratio would be meaningless.`);
     }
 
     // (There was a second cwebp run here with -print_psnr. It measured
@@ -184,7 +214,8 @@ try {
     // number that answered no question this script asks.)
     rows.push({ id, srcKB: +(srcBytes.length / 1024).toFixed(1), cwebpKB: +(cwebpBytes / 1024).toFixed(1),
       browserKB: +(browserResult.bytes / 1024).toFixed(1), type: browserResult.type,
-      px: `${browserResult.width}x${browserResult.height}`, targetWidth,
+      px: `${browserResult.width}x${browserResult.height}`, targetWidth, heightDrift,
+      cwebpPx: `${cwebpDims.width}x${cwebpDims.height}`,
       srcPx: `${browserResult.srcWidth}x${browserResult.srcHeight}` });
     const r = rows[rows.length - 1];
     console.log(`  ${id}  src ${r.srcKB}KB  cwebp ${r.cwebpKB}KB  browser ${r.browserKB}KB (${r.px}, ${r.type})`);
@@ -210,7 +241,13 @@ console.log(`  browser / cwebp = ${ratio.toFixed(2)}x`);
 console.log(`  every browser encode is image/webp: ${rows.every((r) => r.type === "image/webp")}`);
 // NOT "is 300 wide": a source narrower than 300 is correctly left at its own
 // width. The property that matters is that both legs encoded the same pixels.
-console.log(`  every encode matched its target width: ${rows.every((r) => r.px.startsWith(`${r.targetWidth}x`))}`);
+// Every row that got this far had BOTH legs decoded and their real dimensions
+// compared — the run throws otherwise, so this line reports a checked fact.
+// Every row that got this far had BOTH objects decoded and their real
+// dimensions compared — the run throws otherwise — so these report checked
+// facts rather than a flag that was passed.
+console.log(`  both legs decoded to the same width, every row: ${rows.every((r) => r.px.startsWith(`${r.targetWidth}x`))}`);
+console.log(`  rows where the two encoders' heights differ by 1px: ${rows.filter((r) => r.heightDrift > 0).length}`);
 console.log(`  sources narrower than ${PHOTO_THUMB_MAX_EDGE}px in this sample: ${rows.filter((r) => r.targetWidth < PHOTO_THUMB_MAX_EDGE).length}`);
 // The RATIO is the finding. This sample's own mean is not a catalogue mean —
 // the whole existing set is already measured on the other side (5,016 objects,
