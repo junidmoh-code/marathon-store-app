@@ -107,32 +107,51 @@ describe("missingShopifyCredentials", () => {
 });
 
 // ── THE REGRESSION ITSELF ────────────────────────────────────────────────────
-// A stand-in for the publisher's shape: post first, then refresh, with the
-// refresh wrapped exactly as publish.mjs wraps it. Before the fix this test
-// could not even be WRITTEN — process.exit would have taken the test runner
-// down with it.
-describe("the publisher's shape", () => {
-  it("a credential-less refresh warns and the run still succeeds", async () => {
+// This calls the REAL refreshShopTheFeed — the function that actually died in
+// production. An earlier version of this block defined a local stand-in that
+// threw its own Error, and an adversarial review proved it was theatre by
+// restoring the process.exit(2) bug and watching it still pass. A guard that
+// passes with the bug present is worse than no guard, because it argues
+// against looking any further.
+//
+// The real function is safe to call with a null database handle: it checks the
+// credentials BEFORE it touches `db`, so nothing is dereferenced, and
+// shop-the-feed.mjs keeps its main() behind an `import.meta.url` guard, so
+// importing the module starts nothing.
+describe("the publisher's shape — against the real function", () => {
+  it("refreshShopTheFeed REJECTS rather than exiting when the checkout has no credentials", async () => {
+    // Under the old code this line called process.exit(2) and took the vitest
+    // worker down with it — the whole file would fail. That is the guard.
+    const { refreshShopTheFeed } = await import("../social/shop-the-feed.mjs");
+    await expect(refreshShopTheFeed(null, { commit: true })).rejects.toThrow(
+      /Shop the Feed needs the Shopify credentials/
+    );
+  });
+
+  it("names every missing credential, so the log says what to fix", async () => {
+    const { refreshShopTheFeed } = await import("../social/shop-the-feed.mjs");
+    await expect(refreshShopTheFeed(null, { commit: true })).rejects.toThrow(
+      /SHOPIFY_SHOP.*SHOPIFY_CLIENT_ID.*SHOPIFY_CLIENT_SECRET/
+    );
+  });
+
+  it("the publisher's own try/catch turns that rejection into a warning", async () => {
+    // publish.mjs's exact shape, with the REAL refresh inside it.
+    const { refreshShopTheFeed } = await import("../social/shop-the-feed.mjs");
     const warnings = [];
-    let posted = 1;
-
-    async function refreshLikeShopTheFeed() {
-      const missing = missingShopifyCredentials();
-      if (missing.length) throw new Error(`no credentials here (${missing.join(", ")})`);
-      return "refreshed";
-    }
-
     let failed = 0;
+    const posted = 1;
+
     if (posted > 0) {
       try {
-        await refreshLikeShopTheFeed();
+        await refreshShopTheFeed(null, { commit: true });
       } catch (err) {
         warnings.push(err.message);
       }
     }
 
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/no credentials here/);
-    expect(failed).toBe(0); // the run is a SUCCESS — this is the bug, fixed
+    expect(warnings[0]).toMatch(/Shop the Feed needs the Shopify credentials/);
+    expect(failed).toBe(0); // a run whose posts all succeeded is a SUCCESS
   });
 });
