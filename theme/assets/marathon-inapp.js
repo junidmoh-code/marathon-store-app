@@ -96,11 +96,53 @@
     );
   }
 
+  /**
+   * The hand-off URL: a CART PERMALINK carrying the attribution with it.
+   *
+   * Two things were proved by driving the live store before this was written:
+   *   1. /cart/<id>:<qty> does NOT land on the cart page — Shopify forwards it
+   *      straight to checkout. The destination browser therefore never runs
+   *      this script, so anything worth recording has to travel IN the URL.
+   *   2. ?attributes[k]=v on that permalink DOES attach to the destination
+   *      cart and persists (read back from /cart.js afterwards, from a page
+   *      that does not render the snippet).
+   *
+   * Without this the escaped shopper arrives with a new cookie, a new cart and
+   * no attribution: their order comes back `unstamped` and the measurement
+   * quietly reads zero.
+   */
+  function handoffUrl(origin, items, source) {
+    var parts = (items || [])
+      .filter(function (i) { return i && i.id && i.quantity; })
+      .map(function (i) { return i.id + ":" + i.quantity; });
+    if (!parts.length) return null;
+    return (
+      origin +
+      "/cart/" +
+      parts.join(",") +
+      "?attributes[browser]=" + encodeURIComponent(source) +
+      "&attributes[escaped]=" + encodeURIComponent("arrived-from-" + source)
+    );
+  }
+
+  /**
+   * An arrival stamp must never be overwritten by a later default stamp.
+   * Observed live: loading /cart in the destination browser replaced
+   * {browser: facebook, escaped: arrived-from-facebook} with
+   * {browser: standard, escaped: no}, erasing the only evidence the hand-off
+   * had worked.
+   */
+  function isArrivalStamp(escaped) {
+    return typeof escaped === "string" && escaped.indexOf("arrived-from") === 0;
+  }
+
   var api = {
     isInAppBrowser: isInAppBrowser,
     inAppSource: inAppSource,
     platform: platform,
     androidIntentUrl: androidIntentUrl,
+    handoffUrl: handoffUrl,
+    isArrivalStamp: isArrivalStamp,
     IN_APP_TOKENS: IN_APP_TOKENS,
   };
 

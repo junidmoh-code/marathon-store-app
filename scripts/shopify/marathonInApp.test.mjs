@@ -87,6 +87,56 @@ describe("platform — decides whether a button can work at all", () => {
   it("desktop is neither", () => expect(M.platform(UA.desktop)).toBe("other"));
 });
 
+// ── THE TWO GUARDS THAT COME FROM A REAL PRODUCTION FAILURE ─────────────────
+// Both of these were found by driving the live store, not by reading the code.
+//
+//   1. /cart/<id>:<qty> does NOT land on the cart page. Shopify forwards it
+//      straight to checkout, so the destination browser never runs our script
+//      and anything worth recording has to travel IN the URL.
+//   2. Loading /cart in the destination browser overwrote the arrival
+//      attributes with {browser: standard, escaped: no} — observed live.
+describe("handoffUrl — the basket AND the attribution have to travel", () => {
+  const items = [{ id: 47733373239445, quantity: 1 }, { id: 111, quantity: 2 }];
+  const url = M.handoffUrl("https://marathonclub.co.za", items, "facebook");
+
+  it("is a cart permalink, so the basket is rebuilt in the destination browser", () => {
+    expect(url).toContain("/cart/47733373239445:1,111:2");
+  });
+  it("carries the browser attribution, because the destination never runs our script", () => {
+    expect(url).toContain("attributes[browser]=facebook");
+  });
+  it("carries the arrival stamp, which is the 'it worked' signal", () => {
+    expect(url).toContain("attributes[escaped]=arrived-from-facebook");
+  });
+  it("returns null for an empty basket rather than a bare /cart/ link", () => {
+    expect(M.handoffUrl("https://x", [], "facebook")).toBe(null);
+    expect(M.handoffUrl("https://x", null, "facebook")).toBe(null);
+  });
+  it("skips malformed line items instead of emitting 'undefined:undefined'", () => {
+    const u = M.handoffUrl("https://x", [{ id: 5, quantity: 1 }, { id: null, quantity: 3 }], "instagram");
+    expect(u).toContain("/cart/5:1");
+    expect(u).not.toContain("null");
+    expect(u).not.toContain("undefined");
+  });
+});
+
+describe("isArrivalStamp — an arrival must never be clobbered", () => {
+  it("recognises an arrival", () => {
+    expect(M.isArrivalStamp("arrived-from-facebook")).toBe(true);
+    expect(M.isArrivalStamp("arrived-from-instagram")).toBe(true);
+  });
+  it("does not treat the default stamp as an arrival", () => {
+    expect(M.isArrivalStamp("no")).toBe(false);
+    expect(M.isArrivalStamp("tapped-android-chrome")).toBe(false);
+    expect(M.isArrivalStamp("copied-link")).toBe(false);
+  });
+  it("survives a missing or non-string value", () => {
+    expect(M.isArrivalStamp(undefined)).toBe(false);
+    expect(M.isArrivalStamp(null)).toBe(false);
+    expect(M.isArrivalStamp(123)).toBe(false);
+  });
+});
+
 describe("androidIntentUrl — must name Chrome explicitly", () => {
   const url = "https://marathonclub.co.za/cart";
   it("builds an intent:// URL", () =>

@@ -51,16 +51,6 @@
       } catch (e) {}
     }
 
-    /** /cart/<id>:<qty>,<id>:<qty> — rebuilds this basket in any browser. */
-    function permalinkFrom(cart) {
-      if (!cart || !cart.items || !cart.items.length) return null;
-      var parts = cart.items
-        .filter(function (i) { return i && i.id && i.quantity; })
-        .map(function (i) { return i.id + ":" + i.quantity; });
-      if (!parts.length) return null;
-      return window.location.origin + "/cart/" + parts.join(",");
-    }
-
     function start() {
       var M = window.MarathonInApp;
       if (!M) return;
@@ -68,29 +58,32 @@
       var source = M.inAppSource(ua);
       var plat = M.platform(ua);
 
-      // ── did they just arrive here FROM an in-app browser? ─────────────────
-      var arrived = null;
-      try {
-        arrived = new URLSearchParams(window.location.search).get("mc_from");
-      } catch (e) {}
-      if (arrived) {
-        stamp({ browser: source, escaped: "arrived-from-" + arrived });
-        return; // they are already out; do not nudge somebody who succeeded
-      }
-
-      stamp({ browser: source, escaped: "no" });
-      if (source === "standard") return;
-
-      var root = document.getElementById("marathon-inapp-root");
-      if (!root) return;
-
-      // The basket has to travel, so the destination is built from /cart.js.
+      // One read serves both jobs: deciding whether this cart already carries
+      // an arrival stamp, and building the hand-off from its real contents.
       fetch("/cart.js", { headers: { Accept: "application/json" } })
         .then(function (r) { return r.json(); })
         .then(function (cart) {
-          var target = permalinkFrom(cart);
+          var existing = (cart && cart.attributes) || {};
+
+          // ── NEVER CLOBBER AN ARRIVAL ─────────────────────────────────────
+          // A shopper who escaped arrives on a permalink carrying
+          // attributes[escaped]=arrived-from-<app>. Shopify forwards that
+          // permalink STRAIGHT TO CHECKOUT, so this script does not run on
+          // the way in — but it does run if they navigate back to the cart,
+          // and a blind default stamp there would erase the one fact the
+          // whole measurement depends on. Proven on the live store: without
+          // this guard the arrival attributes were overwritten with
+          // {browser: standard, escaped: no}.
+          if (M.isArrivalStamp(existing.escaped)) return;
+
+          stamp({ browser: source, escaped: "no" });
+          if (source === "standard") return;
+
+          var root = document.getElementById("marathon-inapp-root");
+          if (!root) return;
+
+          var target = M.handoffUrl(window.location.origin, cart.items, source);
           if (!target) return; // empty basket: nothing worth moving
-          target += (target.indexOf("?") === -1 ? "?" : "&") + "mc_from=" + encodeURIComponent(source);
           render(root, M, source, plat, target);
         })
         .catch(function () {});
