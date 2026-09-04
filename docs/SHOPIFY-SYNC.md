@@ -395,7 +395,20 @@ disprove.
    surfaces only if someone later adopts that draft by hand — at which point the
    refusal says the owner does not map the gid, that the claim is stale, and
    which key to clear.
-2. **Uniqueness is now checked against a derived index, not the source.** The
+2. **A failed claim hand-back is not repaired automatically.** On a pointer
+   clash the claim taken moments earlier is given back; if that release itself
+   fails twice, the claim stays owned by a record that maps a different gid.
+   It is logged loudly, and a later claim on that gid diagnoses it — the refusal
+   reads the recorded owner's pointer, sees it does not map this gid, and names
+   the key to clear. It is **not** repaired automatically, on purpose: the
+   obvious repair ("the owner does not map this gid, so take the claim") cannot
+   tell a stranded claim from a record that has just taken its claim and not yet
+   written its pointer, and stealing there would put two records on one Shopify
+   product — the one thing the index exists to prevent. A durable retry queue
+   avoids that race only by adding an age threshold to separate "stranded" from
+   "in flight", which is new state and a new way to free a claim; it wants its
+   own change, not a ride-along.
+3. **Uniqueness is now checked against a derived index, not the source.** The
    root transaction read `/shopify_sync` itself, so it was right even if an
    index had drifted. `_claims` is only as complete as its backfill plus the
    rule that nothing writes `shopifyProductId` except through
