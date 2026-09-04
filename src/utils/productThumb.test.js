@@ -143,3 +143,55 @@ describe("encodeThumbnail", () => {
     })).rejects.toThrow(/dimensions/);
   });
 });
+
+// ── PROPERTY FUZZ: the geometry, over 2,000 random source shapes ─────────────
+// The dimension maths is three lines and looks obviously right, which is
+// exactly the kind of code that is wrong at one edge (a 1px-tall panorama, a
+// 4:1 banner, a source 1px under the cap) and never noticed, because a
+// slightly wrong thumbnail still renders. So it is fuzzed rather than
+// spot-checked: same properties, thousands of inputs. Seeded, so a failure is
+// reproducible rather than a flake.
+describe("encodeThumbnail geometry — property fuzz", () => {
+  const seeded = (seed) => () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+
+  it("holds the invariants for every source shape", async () => {
+    const rand = seeded(20260904);
+    for (let i = 0; i < 2000; i++) {
+      const srcW = 1 + Math.floor(rand() * 6000);
+      const srcH = 1 + Math.floor(rand() * 6000);
+      let made = null;
+      await encodeThumbnail({ size: 1 }, {
+        loadImage: async () => ({ naturalWidth: srcW, naturalHeight: srcH }),
+        makeCanvas: (w, h) => { made = { w, h }; return { width: w, height: h, getContext: () => ({ drawImage: () => {} }) }; },
+        toBlob: async () => webpBlob(),
+      });
+      const ctx = `source ${srcW}x${srcH} -> ${made.w}x${made.h}`;
+      // 1. Never wider than the convention's 300px.
+      expect(made.w, ctx).toBeLessThanOrEqual(300);
+      // 2. Never upscaled — cwebp would, and it only wastes bytes.
+      expect(made.w, ctx).toBeLessThanOrEqual(srcW);
+      expect(made.h, ctx).toBeLessThanOrEqual(srcH);
+      // 3. Never a zero-dimension canvas: toBlob on a 0-wide canvas throws in
+      //    some browsers and yields a 1x1 in others, and both write junk to a
+      //    path the till will happily display.
+      expect(made.w, ctx).toBeGreaterThanOrEqual(1);
+      expect(made.h, ctx).toBeGreaterThanOrEqual(1);
+      // 4. Integers — a fractional canvas dimension is silently truncated.
+      expect(Number.isInteger(made.w), ctx).toBe(true);
+      expect(Number.isInteger(made.h), ctx).toBe(true);
+      // 5. Aspect ratio kept. Rounding to whole pixels moves the ratio by at
+      //    most half a pixel on each axis; anything beyond that is a bug, not
+      //    rounding. (Sources narrower than 300px are copied 1:1.)
+      if (srcW > 300) {
+        const expectedH = (srcH * 300) / srcW;
+        expect(Math.abs(made.h - Math.max(1, expectedH)), ctx).toBeLessThanOrEqual(1);
+        expect(made.w, ctx).toBe(300);
+      } else {
+        expect(made, ctx).toEqual({ w: srcW, h: srcH });
+      }
+    }
+  });
+});
