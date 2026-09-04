@@ -239,6 +239,12 @@ export async function refreshShopTheFeed(db, { commit = false } = {}) {
   // Mac mini until 2026-09-04. Checking up front, and throwing a plain Error,
   // means the publisher's catch turns this into a warning instead of the run
   // dying. It also stops us spending an RTDB query before finding out.
+  //
+  // This is a FAST PATH, not a complete precondition. It tests presence only:
+  // a SHOPIFY_SHOP pointing at some other store still passes here and is
+  // refused later by requireShop() inside graphql(). That refusal is now a
+  // throw as well, so the outcome is the same warning either way — and no
+  // credential reaches the wrong host on either path.
   const missing = missingShopifyCredentials();
   if (missing.length) {
     throw new Error(
