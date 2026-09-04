@@ -452,6 +452,49 @@ mean is reported here as a sample and used for nothing. An earlier draft printed
 the sample as the *basis* for the table while every row was computed from 2.2 MB,
 which is why the day and month rows did not reconcile with the stated premise.
 
+### Measured on the mini, 4 Sep 2026 20:32–20:34 SAST, after the merge
+
+The table below was written before this code had ever run. It has now run, and
+the loop's own `rtdb read this run:` line says what it costs. **The middle column
+is no longer a projection — it is measured**, and it corroborates the capture it
+was derived from:
+
+| | measured |
+|---|---:|
+| whole `/shopify_publish` node | **2,227,258 B** |
+| tick, index NOT pasted (fell back to the whole-node read) | **2,228,189 B** |
+| first run, full scan by design (no watermark yet) | 2,227,262 B |
+
+Two things fall out of that, and both are worth stating.
+
+**The saving is already half-delivered, without the index.** The old code read the
+whole node *twice* every tick — once for the worklist, once more for the
+search-index sweep. `2 × 2,227,258 = 4,454,516 B`, and the capture put the idle
+tick at 4.43 MB (133 MB/h ÷ 30 ticks) by an entirely independent route. The two
+agree to within 0.5%. One of those reads is now gone whatever the rules say, so
+the tick is **halved on merge** — ~$48/month — with the rest behind the paste.
+
+**The fallback does what §9.1 promises.** The tick with no index printed:
+
+```
+⚠ /shopify_publish has no ".indexOn": "updatedAt" — this tick fell back to
+  reading the WHOLE node (~2 MB, the old cost). Paste the index from
+  docs/SHOPIFY-SYNC.md §9.1 to make it cheap; nothing else needs changing.
+scan: full (no updatedAt index — fell back)
+rtdb read this run: ~2,228,189 B
+```
+
+Correct, at the old price for that one read, and loud. The `~100 B` idle tick in
+the right-hand column remains a projection until the index is pasted.
+
+**Also measured that run: the stuck-record loop ended.** The five records that had
+been refusing `publishableUnpublish` every two minutes since 30 Aug were
+confirmed off on the first tick of the new code, and the launchd job's last exit
+code went from `1` to `0`. That first tick was a *fresh process with a cold
+cache* — the exact condition under which the version of
+`removeMappingIfUnchanged` first written for this branch would have reported
+"re-mapped mid-run" and made no progress for ever (§9.4a).
+
 **Read the column headings.** Only the *before* column is measured on the live
 system — from the profiler capture, against the code that was actually running.
 The two *after* columns are **projections** computed from the same measured node
