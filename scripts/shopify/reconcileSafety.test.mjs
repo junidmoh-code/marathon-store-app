@@ -454,11 +454,16 @@ describe("the deleted-product cleanup re-reads before it deletes", () => {
     // single-flight lock — and deleting then destroys a good mapping.
     const off = SRC.slice(SRC.indexOf("const gone = await productIsAbsent"));
     const scoped = off.slice(0, off.indexOf("results.push({ pid, ok: true"));
-    // ONE OPERATION, not a check followed by a delete. A read-and-compare
-    // leaves a window between the two, which makes the guard decorative.
-    expect(scoped).toMatch(/cur\?\.shopifyProductId !== mapNode\.shopifyProductId\) return undefined;/);
-    // And the plain unconditional remove must be gone.
+    // ONE OPERATION, and it is delegated to removeMappingIfUnchanged so the
+    // behaviour can be tested for real (reconcileScope.test.mjs) rather than
+    // pinned as source text — the inline version this replaced read its verdict
+    // from a flag set inside the transaction callback, which a source guard
+    // cannot tell apart from a correct one.
+    expect(scoped).toMatch(/await removeMappingIfUnchanged\(db, pid, mapNode\.shopifyProductId\)/);
+    expect(scoped).toMatch(/if \(outcome !== "removed"\)/);
+    // The plain unconditional remove must be gone, and so must the flag shape.
     expect(scoped).not.toMatch(/`shopify_sync\/\$\{pid\}`\)\.remove\(\)/);
+    expect(scoped).not.toMatch(/removed = true;/);
   });
 });
 

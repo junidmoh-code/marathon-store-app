@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   sastHour, isOvernight, fullScanIntervalMs, planScan, nextRetrySet, nextWatermark, isMissingIndexError,
-  readChangedPublishNodes, readLivePids,
+  readChangedPublishNodes, readLivePids, removeMappingIfUnchanged,
   WATERMARK_OVERLAP_MS, FULL_SCAN_DAY_MS, FULL_SCAN_NIGHT_MS, MAX_RETRY_PIDS,
 } from "./reconcileScope.mjs";
 
@@ -270,5 +270,93 @@ describe("readLivePids when the state index is missing", () => {
   it("does not swallow an unrelated failure as an index problem", async () => {
     const boom = () => { throw new Error("ECONNRESET"); };
     await expect(readLivePids(db(boom))).rejects.toThrow(/ECONNRESET/);
+  });
+});
+
+// ── The stale-map removal, driven through a multi-invocation transaction ─────
+// The version this replaced set a `removed` flag INSIDE the callback and read
+// it afterwards. RTDB may invoke that callback more than once — the first time
+// against a local cache — so the flag was wrong in both directions. Both are
+// reproduced here, because a source guard cannot see either.
+function txnDb({ cache, server, onDelete = () => {} }) {
+  const state = { server, deleted: false, serverReads: 0 };
+  const views = cache === undefined ? [] : [cache];        // stale first views
+  const node = (path) => ({
+    async transaction(fn) {
+      // THE ABORT IS ONE-SHOT. Returning `undefined` cancels the transaction
+      // then and there — the SDK does NOT go on to re-invoke the callback with
+      // the server value. It only re-invokes after a WRITE that lost a race.
+      // That asymmetry is the entire hazard being modelled: a stale first view
+      // that aborts never gets corrected.
+      const first = views.length ? views.shift() : state.server;
+      let out = fn(first === undefined ? null : first);
+      if (out === undefined) return { committed: false, snapshot: { val: () => first ?? null } };
+      // It wanted to write; the SDK re-runs it against the server value.
+      if (first !== state.server) {
+        out = fn(state.server === undefined ? null : state.server);
+        if (out === undefined) return { committed: false, snapshot: { val: () => state.server } };
+      }
+      state.deleted = true; state.server = null; onDelete();
+      return { committed: true, snapshot: { val: () => null } };
+    },
+    child: () => ({
+      async get() { state.serverReads += 1; return { val: () => (state.server ? state.server.shopifyProductId : null) }; },
+    }),
+  });
+  return { state, ref: (p) => node(p) };
+}
+
+describe("removeMappingIfUnchanged", () => {
+  const GID = "gid://shopify/Product/9339656536213";
+
+  it("removes the record when the mapping is unchanged", async () => {
+    const db = txnDb({ server: { shopifyProductId: GID, variants: {} } });
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("removed");
+    expect(db.state.deleted).toBe(true);
+  });
+
+  it("a COLD CACHE does not become a permanent no-op", async () => {
+    // The first invocation sees null (nothing cached), which does not match, so
+    // the callback aborts — WITHOUT the server ever being consulted. The old
+    // code read its flag, saw false, reported "changed" and moved on; the stale
+    // map was therefore never removed and the very same tick repeated for ever,
+    // which is the 1,367-tick loop this branch exists to end.
+    const db = txnDb({ cache: null, server: { shopifyProductId: GID } });
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("removed");
+    expect(db.state.deleted).toBe(true);
+    expect(db.state.serverReads).toBeGreaterThan(0);   // it asked before believing the abort
+  });
+
+  it("a WARM BUT STALE cache does not report a removal that did not happen", async () => {
+    // First invocation matches the old gid (sets the old flag), the server has
+    // since been re-mapped, so the real invocation aborts. The old code kept
+    // the flag from the first pass and confirmed the record OFF — leaving a
+    // live, published product with the system recording it as off.
+    const db = txnDb({ cache: { shopifyProductId: GID }, server: { shopifyProductId: "gid://shopify/Product/999" } });
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("changed");
+    expect(db.state.deleted).toBe(false);
+    expect(db.state.server).toEqual({ shopifyProductId: "gid://shopify/Product/999" });
+  });
+
+  it("reports 'changed' when the record was cleared entirely", async () => {
+    const db = txnDb({ server: null });
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("changed");
+    expect(db.state.deleted).toBe(false);
+  });
+
+  it("is bounded — a server that keeps disagreeing does not spin", async () => {
+    let calls = 0;
+    const db = txnDb({ cache: { shopifyProductId: GID }, server: { shopifyProductId: GID }, onDelete: () => { calls += 1; } });
+    // Force every transaction to abort while the server keeps saying it matches.
+    db.ref = () => ({
+      async transaction() { calls += 1; return { committed: false, snapshot: { val: () => null } }; },
+      child: () => ({ async get() { return { val: () => GID }; } }),
+    });
+    await expect(removeMappingIfUnchanged(db, "p1", GID)).resolves.toBe("changed");
+    expect(calls).toBe(2);   // one retry, then it stops
+  });
+
+  it("refuses a malformed product id", async () => {
+    await expect(removeMappingIfUnchanged(txnDb({ server: null }), "a/b", GID)).rejects.toThrow();
   });
 });

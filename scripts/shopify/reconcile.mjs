@@ -66,6 +66,7 @@ import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_R
 // contract and its three backstops.
 import {
   planScan, nextRetrySet, nextWatermark, fullScanIntervalMs, isMissingIndexError,
+  removeMappingIfUnchanged,
   readReconcileState, writeReconcileState,
   readChangedPublishNodes, readLivePids, makeStockLocationResolver,
 } from "./reconcileScope.mjs";
@@ -509,18 +510,11 @@ for (const { pid, want } of capped) {
         // that by hand, outside this loop's single-flight lock — removing the
         // node here would delete a good, fresh mapping on the strength of a
         // deletion check performed against a different product.
-        // A TRANSACTION, not read-then-remove. The read-and-compare this
-        // replaced still left a window between the check and the delete; the
-        // condition and the removal have to be the same operation or the guard
-        // is decorative. Aborting is the safe direction here — it means "do not
-        // delete" — so a stale-cache abort costs one tick and nothing else.
-        let removed = false;
-        await db.ref(`shopify_sync/${pid}`).transaction((cur) => {
-          if (cur?.shopifyProductId !== mapNode.shopifyProductId) return undefined;
-          removed = true;
-          return null;   // null DELETES the record, which is the removal
-        });
-        if (!removed) {
+        // ONE operation, and its verdict comes from the transaction result —
+        // never from a flag set inside a callback RTDB may invoke more than
+        // once. See removeMappingIfUnchanged for what that flag got wrong.
+        const outcome = await removeMappingIfUnchanged(db, pid, mapNode.shopifyProductId);
+        if (outcome !== "removed") {
           console.log(`  ${pid} no longer maps ${mapNode.shopifyProductId} — it was re-mapped or cleared while Shopify was being asked about it; nothing removed`);
           results.push({ pid, ok: false, why: "record changed mid-run; nothing removed, will re-evaluate next tick" });
           continue;

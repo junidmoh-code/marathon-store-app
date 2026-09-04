@@ -188,6 +188,49 @@ export function nextWatermark({ runStartedAt, unapplied = [], previousWatermark 
   return Math.min(runStartedAt, Math.min(...stamps) - 1);
 }
 
+// ── Remove a stale ID map, and ONLY if it is still the one we checked ────────
+// The deleted-product path proves a Shopify product is gone and then clears the
+// record's mapping. Between the proof and the delete the record can be
+// re-adopted onto a live product (round-trip.mjs and adopt.mjs both do that by
+// hand, outside the scheduled run's single-flight lock), so the condition and
+// the delete have to be ONE operation.
+//
+// The verdict comes from `result.committed`, never from a flag set inside the
+// callback. RTDB may invoke that callback more than once — the first time
+// against a local cache — so a flag set on an early invocation survives into an
+// outcome that later aborted. An earlier version of this did exactly that and
+// was wrong in both directions:
+//
+//   · a COLD cache aborted on the first invocation, and an abort is one-shot —
+//     the server is never consulted. The flag stayed false, the caller reported
+//     "changed mid-run", and the stale mapping was never removed: the same tick
+//     repeated every two minutes for ever, which is the 1,367-tick loop this
+//     branch exists to end;
+//   · a WARM BUT STALE cache matched on the first invocation and set the flag,
+//     the real value then aborted the transaction, and the flag survived. The
+//     caller confirmed the record OFF on a removal that had not happened —
+//     leaving a live, published product with the system recording it as off.
+//
+// And an abort is CONFIRMED before it is believed, the same way every abort in
+// idMap.mjs is: a cold-cache abort is retried once against a warmed cache, so
+// "changed" is only ever returned when the server really disagrees.
+//
+//   → "removed" | "changed" (someone else re-mapped or cleared it)
+export async function removeMappingIfUnchanged(db, productId, expectedGid) {
+  assertSafeSegment(productId, "productId");
+  const ref = db.ref(`shopify_sync/${productId}`);
+  for (let attempt = 0; ; attempt++) {
+    const res = await ref.transaction((cur) =>
+      (cur?.shopifyProductId === expectedGid ? null : undefined));
+    if (res.committed) return "removed";
+    // Aborted. That may only mean the callback ran against a stale local cache,
+    // which is not evidence of anything — ask the server.
+    const onServer = (await ref.child("shopifyProductId").get()).val();
+    if (onServer !== expectedGid) return "changed";
+    if (attempt > 0) return "changed";   // bounded: never spin
+  }
+}
+
 // The refusal above, recognised. Matched on the two things RTDB always says —
 // "index" and the field name — rather than on the whole sentence, which is a
 // library string and not a contract.
