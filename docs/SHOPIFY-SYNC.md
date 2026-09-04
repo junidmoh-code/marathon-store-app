@@ -476,7 +476,7 @@ the tick is **halved on merge** — ~$48/month — with the rest behind the past
 
 **The fallback does what §9.1 promises.** The tick with no index printed:
 
-```
+```text
 ⚠ /shopify_publish has no ".indexOn": "updatedAt" — this tick fell back to
   reading the WHOLE node (~2 MB, the old cost). Paste the index from
   docs/SHOPIFY-SYNC.md §9.1 to make it cheap; nothing else needs changing.
@@ -495,18 +495,20 @@ cache* — the exact condition under which the version of
 `removeMappingIfUnchanged` first written for this branch would have reported
 "re-mapped mid-run" and made no progress for ever (§9.4a).
 
-**Read the column headings.** Only the *before* column is measured on the live
-system — from the profiler capture, against the code that was actually running.
-The two *after* columns are **projections** computed from the same measured node
-sizes and counts. They cannot be measurements: the code in this branch has never
-run on the mini (it has no auto-pull — see `MAC-MINI-SETUP.md`), and the
-`updatedAt` index is deliberately not pasted yet. The first real figure will come
-from the loop's own `rtdb read this run:` line once both of those happen, and
-this table should be corrected against it.
+**Read the column headings.** They changed on 4 Sep, when this code first ran.
 
-| | before (measured) | after, no index (projected) | after, index pasted (projected) |
+- *before* — **measured**, from the profiler capture, against the code that was
+  really running at the time.
+- *after, no index* — **measured** on the mini at 20:34 SAST, 4 Sep: the tick
+  reported `~2,228,189 B` (see above). This is what the loop costs today.
+- *after, index pasted* — still a **projection**, and it stays one until
+  `"updatedAt"` is added to `/shopify_publish`'s `.indexOn` in the console
+  (§9.1). That paste is the only thing outstanding; the mini is already on
+  this code.
+
+| | before (measured) | after, no index (**measured**) | after, index pasted (projected) |
 |---|---:|---:|---:|
-| idle tick | ~4.4 MB | ~2.2 MB | **~100 B** |
+| idle tick | ~4.4 MB | **2,228,189 B** | **~100 B** |
 | per product published | +6,204,009 B (`/stock`) + ~1 MB (`/shopify_sync` root txn) | +100 B | +100 B |
 | search-index sweep live set | 2.2 MB, every tick | **0 — never read** (see below) | 747,434 B, on a cadence |
 | **per day (720 ticks)** | **~3.2 GB** | ~1.6 GB | **~88 MB** |
