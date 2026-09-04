@@ -177,7 +177,18 @@ export function computeHubExcess(ctx, reserved, opts = {}) {
       const p = products?.[pid];
       if (!p || isDeactivated(p)) continue;
       if (groupFilter && !groupFilter(p)) continue;
+      // ONE ROW PER SIZE, WHATEVER THE MAP IS KEYED BY. A cell map that held
+      // both spellings of one size ("5_5" and "5.5" — the decoded client map
+      // cannot, but a hand-built or half-migrated one could) would otherwise
+      // iterate twice, resolve the same cell through cellQtyAt both times, and
+      // card the same units as two rows: a doubled total on the card and a
+      // second transfer line for stock that is not there. Keyed by the ENGINE
+      // key, which is the one identity both spellings collapse to.
+      const seenSizes = new Set();
       for (const size of Object.keys(bySize || {})) {
+        const sizeIdentity = engineSizeKey(size);
+        if (seenSizes.has(sizeIdentity)) continue;
+        seenSizes.add(sizeIdentity);
         const t = resolveTarget({ targets, config, products, stock }, loc, pid, size);
 
         // ── THE FOUR GUARDS, IN THE ORDER THEY MUST HOLD ────────────────────

@@ -10,6 +10,22 @@
 // This script sends back exactly the units that should never have moved, and
 // nothing else.
 //
+// ── THE INCIDENT WINDOW IS THE EVIDENCE BOUNDARY (CodeRabbit, PR #552) ───────
+// `keep` below is read from the LIVE category policy, and a Keep number can be
+// edited by the owner at any time. Measuring a HISTORICAL move against TODAY's
+// Keep is only sound while the policy has not moved underneath it — raise a
+// Keep from 2 to 4 next month and an old, perfectly legitimate move would start
+// looking like 2 units of "wrong". So the sweep is bounded to the window in
+// which the bug could actually have produced a card:
+//
+//   from  the first movement the Hub → Central screen ever wrote
+//   to    the deploy that fixed the resolver
+//
+// Both are constants, printed on every run, and a candidate outside them is
+// skipped with that reason rather than silently planned. This script is an
+// incident tool, not a standing reconciliation: it is deliberately unable to
+// reach a move it was not written for.
+//
 // ── WHAT IT REVERSES, AND BY HOW MUCH ────────────────────────────────────────
 // Evidence-driven, never a hardcoded list. It walks /stock_movements for
 // `reason == "excess_rebalance"` movements whose id starts with `exchc_` (the
@@ -57,6 +73,14 @@ const EXECUTE = process.argv.includes("--execute");
 const ACTOR = "system:excess-halfsize-reversal";
 const REASON = "excess_reversal";
 const CONFLICT_RETRIES = 5;
+
+// The window the bug could card in. FROM: the first exchc_ movement in the
+// ledger (the screen's first live use). TO: the hosting deploy that shipped the
+// resolver fix — anything after this was carded by the CORRECTED computation
+// and is legitimate by definition. Widening either bound means re-doing the
+// evidence, which is the point of them being constants.
+const INCIDENT_FROM = "2026-09-03T11:35:00.000Z";
+const INCIDENT_TO   = "2026-09-04T12:00:00.000Z";
 
 admin.initializeApp({
   credential: admin.credential.applicationDefault(),
@@ -117,6 +141,25 @@ async function applyTransferAdmin({ movementId, productId, size, qty, from, to, 
     if (stale) continue;                       // someone else wrote — recompute
 
     await db.ref().update(updates);
+
+    // POST-WRITE VERIFICATION. update() is a blind write — the Admin SDK
+    // bypasses the `v == data.v + 1` security rule that gives the CLIENT
+    // applyMovement its optimistic concurrency, and RTDB has no compare-and-set
+    // across two paths (a transaction would have to be taken on a common
+    // ancestor of both cells, i.e. /stock itself: a multi-megabyte read-modify-
+    // write of the whole network's stock, which trades a microsecond race for a
+    // multi-second one). So the window is narrowed by the re-read above and
+    // then CHECKED here: if either cell did not land on the computed quantity,
+    // the run stops loudly with the movement id, rather than reporting a
+    // success it cannot vouch for. Same reasoning, same shape, as
+    // applyMovementAdmin (scripts/lib/headwearCollapseCore.mjs).
+    for (let i = 0; i < cells.length; i++) {
+      const landed = await read(cells[i].path);
+      if (!landed || landed.qty !== cells[i].newQty || landed.mv !== mvId) {
+        return { ok: false, reason: "post_write_verification_failed", location: legs[i].loc,
+          expected: cells[i].newQty, live: landed?.qty ?? null, movementId: mvId };
+      }
+    }
     return { ok: true, movementId: mvId, before, after };
   }
   return { ok: false, reason: "conflict_retries_exhausted" };
@@ -133,11 +176,19 @@ async function applyTransferAdmin({ movementId, productId, size, qty, from, to, 
     .sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
 
   console.log(`exchc_ half-size moves to Central: ${candidates.length}`);
+  console.log(`incident window: ${INCIDENT_FROM} … ${INCIDENT_TO}`);
   const plan = [], skipped = [];
 
   for (const m of candidates) {
     const sizeKey = encodeSizeKey(m.size);
     const note = (why, extra = {}) => skipped.push({ id: m.id, productId: m.productId, size: m.size, why, ...extra });
+
+    // Outside the window the live Keep is not evidence about this move.
+    const ts = String(m.ts || "");
+    if (!(ts >= INCIDENT_FROM && ts <= INCIDENT_TO)) {
+      note("outside the incident window — the live Keep is not evidence about this move", { ts });
+      continue;
+    }
 
     // an Undo of this exact move (same batch, mirrored direction) already ran?
     const undoId = String(m.id).replace(/_([a-z0-9]+)_central$/, "_central_$1");

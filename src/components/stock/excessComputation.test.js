@@ -445,6 +445,15 @@ describe("half sizes — the live New Balance 1000 Green case", () => {
     expect(cellQtyAt(decoded, "hub2", "nb", "5_5")).toBe(5);         // both spellings
   });
 
+  it("cards ONE row when a map somehow holds both spellings of one size", () => {
+    // MUTATION-PROVED: remove the seenSizes de-duplication and this returns two
+    // identical 3-unit rows — a card totalling 6 units for a cell holding 5.
+    const both = { hub2: { nb: { "5_5": { qty: 5, v: 1 }, "5.5": { qty: 5, v: 1 } } } };
+    const rows = computeHubSneakerExcess({ ...ctx, stock: both }, NONE, { locations: ["hub2"] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ sizeKey: "5_5", onHand: 5, target: 2, excess: 3 });
+  });
+
   it("nets a half-size reservation through the same key shape", () => {
     // The open request carries the RAW size; the reservation map and the row
     // both key it "5_5". A mismatch here would leak promised units to Central.

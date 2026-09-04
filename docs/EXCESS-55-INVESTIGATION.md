@@ -31,7 +31,7 @@ The **deployed** bundle was checked too, not just the working tree:
 `https://marathon-club.web.app/assets/index-vdlukYGN.js` contains
 `computeHubExcess` and `resolveTarget` minified but expression-for-expression
 identical to `main` (`git log` also shows `excessComputation.js` untouched since
-#547). So live behaviour == the code in this repo.
+PR #547). So live behaviour == the code in this repo.
 
 ## 2. Target for every size 3-13 at Hub 2, for this product
 
