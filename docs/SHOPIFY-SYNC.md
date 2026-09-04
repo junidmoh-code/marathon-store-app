@@ -522,7 +522,7 @@ paragraph forgot while claiming "the only expensive ticks are the full scans":
 |---|---|---:|
 | full scans | night is 01:00–07:00 (§9.5), so 18 daytime hours ÷ 30 min = 36, plus 6 night hours ÷ 3 h = 2 → **38 scans**, each one whole-node read at 2.2 MB (a sweep landing on a full-scan tick reuses it free) | 83.6 MB |
 | sweeps on *incremental* ticks | `sweepDue` is also true when a tick **applied** something, and on an incremental tick the live set costs a `readLivePids` at 747,434 B. At ~7.5 publishes a day landing in ~6 ticks | 4.5 MB |
-| idle ticks | the remaining ~682 × ~100 B | 0.07 MB |
+| non-full-scan ticks | the remaining ~682 × ~100 B. This includes the ~6 sweep ticks in the row above — what is counted here is their scan-state read, and their 747,434 B live-set read is priced separately rather than twice | 0.07 MB |
 | | **total** | **~88 MB** |
 
 `88 MB × 30 = 2.6 GB`, at $1/GB, **~$2.65 a month**.
