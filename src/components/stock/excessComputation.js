@@ -71,7 +71,21 @@
 // garbled or unreadable config arms nothing). Off by default; flip the key
 // live with no deploy to turn it on, per-location or network-wide.
 
-import { resolveTarget, engineSizeKey, isClothing } from "./seatingCore";
+// ── HALF SIZES: ONE KEY SHAPE, ONE HELPER ────────────────────────────────────
+// The stock map this file is given comes from useStockCells(), which DECODES
+// /stock's RTDB-safe keys ("5_5" → "5.5"). Targets, the policy size run and the
+// engine all speak the ENCODED shape. Both spellings are reconciled in exactly
+// one place — seatingCore's cellAt/cellQtyAt — which resolveTarget's own
+// sizeUnitsAnywhere and this loop's onHand both go through. Nothing here may
+// index a cell map by a size directly.
+//
+// Before that helper existed, resolveTarget read "no units of 5.5 anywhere",
+// its dead-size rule returned target 0 instead of the row's 2, and every unit
+// of every half-size hub cell was carded as excess: 207 rows / 442 units across
+// the two hubs, and four moves that took a cell below its Keep.
+// See docs/EXCESS-55-INVESTIGATION.md.
+
+import { resolveTarget, engineSizeKey, isClothing, cellQtyAt } from "./seatingCore";
 import { isDeactivated } from "../../utils/deactivation";
 
 // The only hubs this feature touches — same closed list as HubCleanup
@@ -100,6 +114,27 @@ export function clothingExcessEnabled(config, dest) {
   if (v === true) return true;
   if (v && typeof v === "object" && !Array.isArray(v)) return v[dest] === true;
   return false;
+}
+
+// ── THE KILL SWITCH — config/refillEngine/excessEnabled ──────────────────────
+// ONE RTDB write hides every excess card, network-wide, with no code change and
+// no deploy. The grammar is deliberately the INVERSE of the arming switches
+// above: this is an off switch for a feature that is already live, so ABSENT
+// means ON. Anything else would turn the screen off the moment the key were
+// tidied away.
+//
+//   absent / true / garbled  → ON everywhere (today's behaviour)
+//   false                    → OFF everywhere — no card, at any hub
+//   { hub2: false }          → OFF at hub2 only; every other hub stays ON
+//
+// Read HERE, inside the computation, not in the screen: every caller of
+// computeHubExcess (sneakers, clothing, any future group) is covered by the one
+// gate, and a card cannot survive because a component forgot to ask.
+export function excessEnabledAt(config, loc) {
+  const v = config?.excessEnabled;
+  if (v === false) return false;
+  if (v && typeof v === "object" && !Array.isArray(v)) return v[loc] !== false;
+  return true;
 }
 
 // ── reservation netting ───────────────────────────────────────────────────────
@@ -136,17 +171,48 @@ export function computeHubExcess(ctx, reserved, opts = {}) {
   const out = [];
 
   for (const loc of locations) {
+    if (!excessEnabledAt(config, loc)) continue;   // the kill switch, per location
     const byProduct = stock?.[loc] || {};
     for (const [pid, bySize] of Object.entries(byProduct)) {
       const p = products?.[pid];
       if (!p || isDeactivated(p)) continue;
       if (groupFilter && !groupFilter(p)) continue;
-      for (const [size, cell] of Object.entries(bySize || {})) {
+      // ONE ROW PER SIZE, WHATEVER THE MAP IS KEYED BY. A cell map that held
+      // both spellings of one size ("5_5" and "5.5" — the decoded client map
+      // cannot, but a hand-built or half-migrated one could) would otherwise
+      // iterate twice, resolve the same cell through cellQtyAt both times, and
+      // card the same units as two rows: a doubled total on the card and a
+      // second transfer line for stock that is not there. Keyed by the ENGINE
+      // key, which is the one identity both spellings collapse to.
+      const seenSizes = new Set();
+      for (const size of Object.keys(bySize || {})) {
+        const sizeIdentity = engineSizeKey(size);
+        if (seenSizes.has(sizeIdentity)) continue;
+        seenSizes.add(sizeIdentity);
         const t = resolveTarget({ targets, config, products, stock }, loc, pid, size);
-        if (!t) continue;                    // unarmed — no Keep number, never a card
-        if (t.source === "explicit") continue; // explicit row — excluded entirely, any value
+
+        // ── THE FOUR GUARDS, IN THE ORDER THEY MUST HOLD ────────────────────
+        // Each one is load-bearing on its own; none is implied by the formula
+        // below, and each has a test that fails when it is deleted.
+        //
+        // 1. UNARMED IS NOT ZERO. No row resolved → no Keep number exists →
+        //    this cell is not judged here at all. A blank is a blank.
+        if (!t) continue;
+        // 2. A TARGET THAT IS NOT A FINITE NUMBER IS A BLANK, NOT A 0. Belt to
+        //    guard 1's braces: whatever a future resolver returns, only a real
+        //    number may be subtracted from a shelf count.
+        if (typeof t.target !== "number" || !Number.isFinite(t.target)) continue;
+        // 3. An EXPLICIT per-product row excludes the cell entirely, whatever
+        //    value it holds (see the header).
+        if (t.source === "explicit") continue;
+        // 4. onHand <= Keep → NEVER a card, under any code path. The formula
+        //    below already yields <= 0 here, but this states the invariant
+        //    where it can be read and killed by a test, instead of leaving it
+        //    as an emergent property of arithmetic.
+        const onHand = cellQtyAt(stock, loc, pid, size);
+        if (onHand <= t.target) continue;
+
         const sizeKey = engineSizeKey(size);
-        const onHand = Math.max(Number(cell?.qty) || 0, 0);
         const reservedQty = reserved?.get(`${loc}|${pid}|${sizeKey}`) || 0;
         const excess = onHand - t.target - reservedQty;
         const movable = Math.max(0, excess);

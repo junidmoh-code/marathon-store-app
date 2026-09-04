@@ -21,9 +21,11 @@ import {
   computeHubClothingExcess,
   reservedByHubFromOpenRequests,
   clothingExcessEnabled,
+  excessEnabledAt,
   isSneakerGroupProduct,
   EXCESS_HUB_LOCATIONS,
 } from "./excessComputation.js";
+import { resolveTarget, cellQtyAt } from "./seatingCore.js";
 
 // useStockCells() DECODES size keys, so a client-side cell map is keyed by the
 // raw size ("9"), not the stored key ("9"). /stock_targets stays ENCODED.
@@ -218,13 +220,18 @@ describe("a move leaves the cell at exactly Keep, never below", () => {
   // only observable through a caller that asks for zero-unit rows — but a
   // NEGATIVE movable is a move instruction pointing the wrong way, and no
   // caller of this module may ever be handed one.
+  //
+  // The negative is driven by RESERVATIONS here, not by a below-Keep shelf: a
+  // cell at or below Keep now leaves the loop before the subtraction at all
+  // (guard 4), which is the stronger invariant and has its own test below.
   it("never reports a negative movable, even for a caller that wants zero rows", () => {
-    const stock = { hub1: { af1: cells({ 9: 1 }) } };     // 1 on hand vs Keep 2
-    const rows = computeHubExcess(ctxOf(stock), NONE, {
+    const stock = { hub1: { af1: cells({ 9: 3 }) } };     // 3 on hand vs Keep 2
+    const reserved = new Map([["hub1|af1|9", 5]]);        // 5 already promised out
+    const rows = computeHubExcess(ctxOf(stock), reserved, {
       groupFilter: isSneakerGroupProduct, minMovable: 0,
     });
     expect(rows).toHaveLength(1);
-    expect(rows[0].excess).toBe(0);                       // clamped, never −1
+    expect(rows[0].excess).toBe(0);                       // clamped, never −4
   });
 });
 
@@ -371,5 +378,159 @@ describe("products that must never card", () => {
   it("skips a stock cell with no matching product record", () => {
     const stock = { hub1: { ghost: cells({ 9: 9 }) } };
     expect(computeHubSneakerExcess(ctxOf(stock), NONE)).toEqual([]);
+  });
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE HALF-SIZE INVERSION — docs/EXCESS-55-INVESTIGATION.md
+//
+// /stock stores "5_5"; useStockCells DECODES it to "5.5" before this module
+// ever sees it; the policy size run and /stock_targets stay ENCODED. Until the
+// two spellings were reconciled in ONE helper (seatingCore cellAt/cellQtyAt),
+// resolveTarget's sizeUnitsAnywhere read "no units of 5.5 anywhere on the
+// network", its dead-size rule returned target 0 instead of the row's 2, and a
+// hub cell holding 1 against a Keep of 2 was carded for its whole on-hand.
+//
+// MUTATION PROOF FOR THE WHOLE BLOCK: delete the decoded fallback in
+// seatingCore.cellAt (`return dk !== ek && ... ? bySize[dk] : null` → `return
+// null`) and the first four tests here fail. Delete guard 4 in computeHubExcess
+// (`if (onHand <= t.target) continue`) and "onHand == Keep" / "onHand < Keep"
+// still pass on the repaired lookup — which is exactly why BOTH the lookup and
+// the guard exist: the guard is what holds when a target is wrong for some
+// reason nobody has thought of yet.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("half sizes — the live New Balance 1000 Green case", () => {
+  // The live cells, Hub 2, 2026-09-04, as the screen receives them (decoded).
+  const NB = { id: "nb", name: "New Balance 1000 Green White", categoryKey: "sneakers",
+    sizes: ["3", "4", "5", "5.5", "6", "7", "8", "9", "10", "11"] };
+  // Hub 2's live sneaker run, ENCODED exactly as config/refillEngine holds it.
+  const RUN = { 3: KEEP(2), 4: KEEP(2), 5: KEEP(2), "5_5": KEEP(2), 6: KEEP(3),
+    7: KEEP(2), 8: KEEP(2), 9: KEEP(2), 10: KEEP(2), 11: KEEP(2) };
+  const CFG = { categoryPolicy: { sneakers: { perSize: true,
+    hub1: { carriedOnly: true, sizes: RUN }, hub2: { carriedOnly: true, sizes: RUN } } } };
+  const LIVE = cells({ 3: 1, 4: 1, 5: 0, "5.5": 1, 6: 0, 7: 2, 8: 0, 9: 1, 10: 2, 11: 1 });
+  const ctx = { products: { nb: NB }, stock: { hub2: { nb: LIVE } }, targets: {}, config: CFG };
+
+  it("cards NOTHING — size 5.5 holds 1 against a Keep of 2", () => {
+    expect(computeHubSneakerExcess(ctx, NONE, { locations: ["hub2"] })).toEqual([]);
+  });
+
+  it("resolves 5.5 to its real Keep of 2, not to 0", () => {
+    expect(resolveTarget(ctx, "hub2", "nb", "5.5")).toMatchObject({ target: 2, source: "category_policy" });
+  });
+
+  it("still cards a half size that is genuinely above Keep, at the right quantity", () => {
+    const over = { ...ctx, stock: { hub2: { nb: cells({ "5.5": 5 }) } } };
+    const rows = computeHubSneakerExcess(over, NONE, { locations: ["hub2"] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ size: "5.5", sizeKey: "5_5", onHand: 5, target: 2, excess: 3 });
+  });
+
+  it("round-trips one half-size key through targets, cells, the size run and the loop", () => {
+    // The SAME size reaches four lookups in three spellings and every one of
+    // them must land on the same cell and the same Keep:
+    //   catalogue "5.5" · stored cell "5_5" · decoded cell "5.5" · run row "5_5"
+    const stored  = { hub2: { nb: { "5_5": { qty: 5, v: 1 } } } };   // engine shape
+    const decoded = { hub2: { nb: { "5.5": { qty: 5, v: 1 } } } };   // client shape
+    const rowsStored  = computeHubSneakerExcess({ ...ctx, stock: stored }, NONE, { locations: ["hub2"] });
+    const rowsDecoded = computeHubSneakerExcess({ ...ctx, stock: decoded }, NONE, { locations: ["hub2"] });
+    expect(rowsStored).toHaveLength(1);
+    expect(rowsStored[0].sizeKey).toBe("5_5");
+    expect(rowsStored[0].target).toBe(2);
+    expect(rowsDecoded[0].sizeKey).toBe("5_5");
+    expect(rowsDecoded[0].target).toBe(2);
+    expect(cellQtyAt(stored, "hub2", "nb", "5.5")).toBe(5);          // one helper,
+    expect(cellQtyAt(decoded, "hub2", "nb", "5_5")).toBe(5);         // both spellings
+  });
+
+  it("cards ONE row when a map somehow holds both spellings of one size", () => {
+    // MUTATION-PROVED: remove the seenSizes de-duplication and this returns two
+    // identical 3-unit rows — a card totalling 6 units for a cell holding 5.
+    const both = { hub2: { nb: { "5_5": { qty: 5, v: 1 }, "5.5": { qty: 5, v: 1 } } } };
+    const rows = computeHubSneakerExcess({ ...ctx, stock: both }, NONE, { locations: ["hub2"] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ sizeKey: "5_5", onHand: 5, target: 2, excess: 3 });
+  });
+
+  it("nets a half-size reservation through the same key shape", () => {
+    // The open request carries the RAW size; the reservation map and the row
+    // both key it "5_5". A mismatch here would leak promised units to Central.
+    const reserved = reservedByHubFromOpenRequests(
+      [{ status: "open", productId: "nb", size: "5.5", qty: 2, source: "hub2" }], {});
+    const over = { ...ctx, stock: { hub2: { nb: cells({ "5.5": 5 }) } } };
+    const rows = computeHubSneakerExcess(over, reserved, { locations: ["hub2"] });
+    expect(rows[0].excess).toBe(1);        // 5 − Keep 2 − 2 promised out
+  });
+
+  it("hub1 and hub2 resolve identically for every size of the run", () => {
+    const both = { ...ctx, stock: { hub1: { nb: LIVE }, hub2: { nb: LIVE } } };
+    for (const size of NB.sizes) {
+      const a = resolveTarget(both, "hub1", "nb", size);
+      const b = resolveTarget(both, "hub2", "nb", size);
+      expect(b).toEqual(a);
+    }
+  });
+});
+
+describe("the three guards — each one on its own", () => {
+  // MUTATION-PROVED: delete `if (!t) continue` and this becomes a 4-unit card.
+  it("guard 1 — an absent target row emits nothing, and is never read as 0", () => {
+    const p = { ...PRODUCTS, af1: { ...PRODUCTS.af1, sizes: ["9", "11"] } };
+    const stock = { hub1: { af1: cells({ 11: 4 }) } };               // 11 is not in the run
+    expect(computeHubSneakerExcess({ ...ctxOf(stock), products: p }, NONE)).toEqual([]);
+  });
+
+  // MUTATION-PROVED: delete the explicit-source guard and the 0-target row
+  // below becomes a 4-unit card.
+  it("guard 2 — an explicit per-product row excludes the cell, whatever it holds", () => {
+    const stock = { hub1: { af1: cells({ 9: 4 }) } };
+    const targets = { hub1: { af1: { 9: { target: 0 } } } };
+    expect(computeHubSneakerExcess(ctxOf(stock, { targets }), NONE)).toEqual([]);
+  });
+
+  // MUTATION-PROVED two ways: loosening `!(onHand > t.target)` to
+  // `onHand < t.target` cards a phantom unit for the "== Keep" case; deleting
+  // the guard while ALSO breaking the dead-size rule (so the loop is handed a
+  // wrong target of 0 for a size the run keeps at 2 — the live bug exactly)
+  // fails this and a dozen more. That second form is the point of the guard:
+  // it holds when the target is wrong for a reason nobody has thought of yet.
+  it("guard 3 — onHand == Keep and onHand < Keep both emit nothing", () => {
+    const at = { hub1: { af1: cells({ 9: 2 }) } };                   // == Keep
+    const below = { hub1: { af1: cells({ 9: 1 }) } };                // < Keep
+    expect(computeHubSneakerExcess(ctxOf(at), NONE)).toEqual([]);
+    expect(computeHubSneakerExcess(ctxOf(below), NONE)).toEqual([]);
+    expect(computeHubExcess(ctxOf(at), NONE, { groupFilter: isSneakerGroupProduct, minMovable: 0 })).toEqual([]);
+    expect(computeHubExcess(ctxOf(below), NONE, { groupFilter: isSneakerGroupProduct, minMovable: 0 })).toEqual([]);
+  });
+});
+
+describe("the kill switch — config/refillEngine/excessEnabled", () => {
+  const stock = { hub1: { af1: cells({ 9: 9 }) }, hub2: { af1: cells({ 9: 9 }) } };
+
+  it("absent means ON — today's behaviour is unchanged", () => {
+    expect(excessEnabledAt(CONFIG, "hub1")).toBe(true);
+    expect(computeHubSneakerExcess(ctxOf(stock), NONE)).toHaveLength(2);
+  });
+
+  // MUTATION-PROVED: remove the `excessEnabledAt` line from the location loop
+  // and this test fails with 2 rows.
+  it("false hides every card at every hub", () => {
+    const config = { ...CONFIG, excessEnabled: false };
+    expect(computeHubSneakerExcess(ctxOf(stock, { config }), NONE)).toEqual([]);
+    expect(computeHubClothingExcess(ctxOf(stock, { config }), NONE)).toEqual([]);
+  });
+
+  it("{ hub2: false } hides hub2 only", () => {
+    const config = { ...CONFIG, excessEnabled: { hub2: false } };
+    const rows = computeHubSneakerExcess(ctxOf(stock, { config }), NONE);
+    expect(keys(rows)).toEqual(["hub1|af1|9"]);
+  });
+
+  it("a garbled value leaves the screen ON — an off switch must not fire by accident", () => {
+    for (const v of ["off", 0, [], null, undefined, true]) {
+      expect(excessEnabledAt({ excessEnabled: v }, "hub1")).toBe(true);
+    }
   });
 });
