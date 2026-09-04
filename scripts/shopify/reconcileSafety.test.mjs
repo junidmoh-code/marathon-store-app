@@ -519,26 +519,53 @@ describe("an unfinished sweep clears its timestamp", () => {
 });
 
 // ─── THE RUNBOOK DESCRIBES THE PLIST THAT IS ACTUALLY INSTALLED ──────────────
-// MAC-MINI-SETUP.md described `StartInterval 120` for three weeks after #531
-// replaced it with KeepAlive + ThrottleInterval, so anyone diagnosing the agent
-// was looking for a key that is not there. Same class as the node-path drift:
-// the doc and the plist are two copies of one fact and nothing held them level.
+// #531 replaced `StartInterval 120` with KeepAlive + ThrottleInterval on
+// 2026-08-31; MAC-MINI-SETUP.md went on describing StartInterval as the live
+// cadence until 2026-09-04, so anyone diagnosing the agent in that window was
+// looking for a key the plist does not contain. Same class as the node-path
+// drift below: the doc and the plist are two copies of one fact, and nothing
+// held them level.
 describe("the setup guide and the plist agree on the schedule", () => {
   const PLIST = readFileSync(new URL("./com.marathon.shopifyreconcile.plist", import.meta.url), "utf8");
   const DOC = readFileSync(new URL("./MAC-MINI-SETUP.md", import.meta.url), "utf8");
 
   it("the plist schedules by KeepAlive + ThrottleInterval, not StartInterval", () => {
+    // `\s*` between key and value on BOTH, because that is the formatting
+    // `plutil -convert xml1` produces and the style this file already uses
+    // elsewhere. Requiring them adjacent would fail a semantically identical
+    // plist.
     expect(PLIST).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
-    expect(PLIST).toMatch(/<key>ThrottleInterval<\/key><integer>120<\/integer>/);
+    expect(PLIST).toMatch(/<key>ThrottleInterval<\/key>\s*<integer>120<\/integer>/);
     expect(PLIST).not.toMatch(/<key>StartInterval<\/key>/);
   });
 
-  it("the guide names those keys and does not present StartInterval as current", () => {
+  it("the guide names the keys that are actually installed", () => {
     expect(DOC).toContain("ThrottleInterval 120");
-    // It may mention StartInterval historically — but only alongside the note
-    // that it is no longer what runs, never as the live cadence.
-    if (DOC.includes("StartInterval")) {
-      expect(DOC).toMatch(/\*\*not\*\* from `StartInterval`|was `StartInterval 120` until/);
+    expect(DOC).toContain("KeepAlive");
+  });
+
+  it("every mention of StartInterval sits inside the historical note", () => {
+    // POSITIONAL, not existential. The first version of this guard only asked
+    // whether a disclaimer existed SOMEWHERE in the file, which let a new wrong
+    // sentence appear anywhere else — "Stop the schedule" gaining "StartInterval
+    // 120 fires it again", say — while the original paragraph kept the test
+    // green. Every occurrence must fall inside the one paragraph that explains
+    // the key is gone.
+    const note = DOC.indexOf("It was `StartInterval 120` until");
+    expect(note, "the historical note must exist").toBeGreaterThan(-1);
+    const noteEnd = DOC.indexOf("\n\n", note);
+    // The paragraph that introduces it, plus the note itself.
+    const claim = DOC.indexOf("**not** from `StartInterval`");
+    expect(claim, "the live-cadence sentence must name what it is NOT").toBeGreaterThan(-1);
+    const allowed = [claim, note];
+    for (const m of DOC.matchAll(/StartInterval/g)) {
+      const inNote = m.index >= note && m.index <= noteEnd;
+      const inClaim = Math.abs(m.index - claim) < 60;
+      expect(
+        inNote || inClaim,
+        `StartInterval at offset ${m.index} is outside the historical note — the doc must never present it as the live cadence (allowed regions start at ${allowed.join(", ")})`
+      ).toBe(true);
     }
   });
 });
+
