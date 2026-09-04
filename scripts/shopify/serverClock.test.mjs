@@ -90,6 +90,33 @@ describe("serverNowMs actually reads the server's clock", () => {
     expect(db.calls.once).toBe(1);
   });
 
+  // A HANG IS NOT A FAILURE THE CATCH CAN SEE. `once("value")` on /.info does
+  // not fire until the connection handshake completes — which is precisely what
+  // makes the fix correct, since there is no premature 0 to swallow — and it
+  // therefore never throws if the connection never comes up. This is the FIRST
+  // awaited RTDB call in a reconcile tick, and a hung tick holds the runner's
+  // single-flight lock indefinitely (reconcile-runner.mjs is explicit that a
+  // live run is never interrupted, however slow). So it is bounded, and the
+  // bound falls into the same loud degrade as any other failure.
+  it("does not wait for ever on a connection that never comes up", async () => {
+    vi.useFakeTimers();
+    try {
+      const serverNowMs = await load();
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const never = { ref: () => ({ once: () => new Promise(() => {}) }) };
+      const p = serverNowMs(never);
+      await vi.advanceTimersByTimeAsync(11_000);
+      const t = await p;
+      // Degraded to the raw clock: the offset was 0, so the value is this
+      // machine's clock as at the moment the timer fired. Fake timers advance
+      // Date.now() as well, so the gap is the remaining 1s of the advance, not
+      // a correction — hence the tolerance rather than an equality.
+      expect(Math.abs(t - Date.now())).toBeLessThan(2000);
+      expect(spy.mock.calls.flat().join(" ")).toMatch(/timed out/);
+      spy.mockRestore();
+    } finally { vi.useRealTimers(); }
+  });
+
   // It must never block a take-down. A failing read degrades to the raw clock —
   // but LOUDLY, because a silent degrade is what hid the original bug.
   it("degrades to the raw clock when the offset cannot be read, and says so", async () => {
