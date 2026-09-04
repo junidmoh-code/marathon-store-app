@@ -102,7 +102,30 @@ const cur = node[".indexOn"];
 console.log("current .indexOn:", JSON.stringify(cur));
 console.log("new     .indexOn:", JSON.stringify(NEXT));
 
-if (JSON.stringify(cur) === JSON.stringify(NEXT)) { console.log("already applied — nothing to do"); process.exit(0); }
+// ── THE LOCK IS CHECKED BEFORE THE IDEMPOTENT EXIT, NOT AFTER ───────────────
+// This preflight used to sit below the "already applied" exit, which made the
+// script blind in exactly the state it will now spend the rest of its life in:
+// the index IS applied, so every future run takes the early exit — and would
+// have reported success while /shopify_sync sat unlocked. The whole reason
+// this script exists rather than a deploy is that deploying would drop that
+// lock, so a run that cannot see the lock is missing its own point.
+// Checked first, on every run, whatever else is or is not already done.
+// (CodeRabbit, PR #558.)
+const syncBefore = JSON.stringify(live.rules?.shopify_sync);
+if (syncBefore !== JSON.stringify({ ".read": false, ".write": false })) {
+  console.error(
+    `REFUSING: /shopify_sync is not the expected read/write lock.\n` +
+    `  expected: {".read":false,".write":false}\n` +
+    `  found:    ${syncBefore}\n` +
+    `Something has already regressed there. Fix that before touching the index.`,
+  );
+  process.exit(2);
+}
+
+if (JSON.stringify(cur) === JSON.stringify(NEXT)) {
+  console.log("already applied — nothing to do (and /shopify_sync is still locked)");
+  process.exit(0);
+}
 if (JSON.stringify(cur) !== JSON.stringify(EXPECTED) && !FORCE) {
   console.error(
     `\nREFUSING: the live .indexOn is not the one this script expects to extend.\n` +
@@ -110,13 +133,6 @@ if (JSON.stringify(cur) !== JSON.stringify(EXPECTED) && !FORCE) {
     `  found:    ${JSON.stringify(cur)}\n` +
     `Someone changed this. Read it, decide, and re-run with --force if you still mean to overwrite it.`,
   );
-  process.exit(2);
-}
-// Sanity: /shopify_sync must be locked before AND after. If it is not locked
-// now, something already regressed and this is not the script to be running.
-const syncBefore = JSON.stringify(live.rules?.shopify_sync);
-if (syncBefore !== JSON.stringify({ ".read": false, ".write": false })) {
-  console.error(`REFUSING: /shopify_sync is not the expected read/write lock: ${syncBefore}`);
   process.exit(2);
 }
 if (!APPLY) { console.log("dry run — re-run with --apply to write"); process.exit(0); }
