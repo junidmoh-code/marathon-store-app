@@ -5,6 +5,7 @@ import {
   PHOTO_THUMB_CONTENT_TYPE,
   PHOTO_THUMB_CACHE_CONTROL,
   PHOTO_THUMB_QUALITY,
+  writeApprovedThumbFromUrl,
 } from "./productThumb.js";
 
 const webpBlob = (size = 1234) => ({ type: "image/webp", size });
@@ -316,5 +317,54 @@ describe("encodeThumbnail geometry — property fuzz", () => {
         expect(made, ctx).toEqual({ w: srcW, h: srcH });
       }
     }
+  });
+});
+
+// ─── writeApprovedThumbFromUrl ────────────────────────────────────────────────
+// The one behaviour worth pinning above "it calls the writer": a download that
+// FAILS must leave the standing thumbnail alone. writeProductThumb deletes a
+// thumbnail it could not replace, which is right when the photo really was
+// replaced and wrong here — if we never read the new photo, the old thumbnail
+// is no more wrong than it was before, and deleting it turns a network blip
+// into a blank square on every till.
+describe("writeApprovedThumbFromUrl", () => {
+  const blob = { size: 123, type: "image/webp" };
+
+  it("downloads the proposal and hands it to the thumbnail writer", async () => {
+    const write = vi.fn().mockResolvedValue({ ok: true, path: "p", bytes: 1 });
+    const upload = vi.fn(); const remove = vi.fn();
+    const download = vi.fn().mockResolvedValue(blob);
+    const res = await writeApprovedThumbFromUrl("p1", "https://example/proposal.jpg", { download, upload, remove, write });
+    expect(download).toHaveBeenCalledWith("https://example/proposal.jpg");
+    expect(write).toHaveBeenCalledWith("p1", blob, { upload, remove });
+    expect(res.ok).toBe(true);
+  });
+
+  it("does NOT delete the standing thumbnail when the download fails", async () => {
+    const write = vi.fn();
+    const remove = vi.fn();
+    const download = vi.fn().mockRejectedValue(new Error("network"));
+    const res = await writeApprovedThumbFromUrl("p1", "https://example/proposal.jpg", {
+      download, upload: vi.fn(), remove, write, warn: () => {},
+    });
+    expect(res).toMatchObject({ ok: false, downloadFailed: true });
+    expect(write).not.toHaveBeenCalled();   // the delete lives inside write — never reached
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("treats a download that resolves with nothing the same way", async () => {
+    const write = vi.fn(); const remove = vi.fn();
+    const res = await writeApprovedThumbFromUrl("p1", "u", {
+      download: async () => null, upload: vi.fn(), remove, write, warn: () => {},
+    });
+    expect(res).toMatchObject({ ok: false, downloadFailed: true });
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("never throws on a missing id, url or download function", async () => {
+    await expect(writeApprovedThumbFromUrl("", "u", { download: async () => blob })).resolves.toMatchObject({ ok: false });
+    await expect(writeApprovedThumbFromUrl("p1", "", { download: async () => blob })).resolves.toMatchObject({ ok: false });
+    await expect(writeApprovedThumbFromUrl("p1", "u", {})).resolves.toMatchObject({ ok: false });
   });
 });
