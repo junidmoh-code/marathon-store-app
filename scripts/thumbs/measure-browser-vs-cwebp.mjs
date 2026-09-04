@@ -34,6 +34,8 @@ import { homedir, tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import puppeteer from "puppeteer";
 
+import { PHOTO_THUMB_MAX_EDGE } from "../../src/utils/productPhotoPaths.js";
+
 const BUCKET = "marathon-club.firebasestorage.app";
 const N = (() => {
   const n = Number((process.argv.find((a) => a.startsWith("--n=")) || "--n=12").slice(4));
@@ -134,20 +136,36 @@ try {
     const srcBytes = Buffer.from(await dl.arrayBuffer());
     writeFileSync(jpg, srcBytes);
 
-    // Leg A — the bulk generator's encoder, verbatim.
-    const webp = join(scratch, `${id}.cwebp.webp`);
-    execFileSync("cwebp", ["-quiet", "-q", "80", "-resize", "300", "0", jpg, "-o", webp]);
-    const cwebpBytes = readFileSync(webp).length;
-
-    // Leg B — THE MODULE THE APP SHIPS, in a real browser.
+    // Leg A — THE MODULE THE APP SHIPS, in a real browser. It runs first
+    // because it also reports the SOURCE dimensions, which leg B needs.
     const browserResult = await page.evaluate(async (base, productId) => {
       const { encodeThumbnail } = await import(`${base}/src/utils/productThumb.js`);
       const res = await fetch(`${base}/sample/${productId}.jpg`);
       const blob = await res.blob();
+      const source = await createImageBitmap(blob);
       const thumb = await encodeThumbnail(blob);
       const bmp = await createImageBitmap(thumb);
-      return { bytes: thumb.size, type: thumb.type, width: bmp.width, height: bmp.height };
+      return { bytes: thumb.size, type: thumb.type, width: bmp.width, height: bmp.height,
+        srcWidth: source.width, srcHeight: source.height };
     }, origin, id);
+
+    // Leg B — the bulk generator's encoder, at the SAME target width.
+    // generate.mjs passes `-resize 300 0`, and cwebp's default resize_mode is
+    // "always": it UPSCALES a source narrower than 300. encodeThumbnail
+    // deliberately does not (an upscaled thumbnail is only bigger, never
+    // better). That divergence is real and documented — but comparing an
+    // upscaled 300px cwebp object against a 180px browser object would not be
+    // measuring the ENCODERS, it would be measuring the resize policy, and it
+    // would report the browser as dramatically cheaper for exactly the photos
+    // where it is not. So both legs are given the same target width, and the
+    // script asserts they agreed. (CodeRabbit, PR #553.)
+    const targetWidth = Math.min(PHOTO_THUMB_MAX_EDGE, browserResult.srcWidth);
+    const webp = join(scratch, `${id}.cwebp.webp`);
+    execFileSync("cwebp", ["-quiet", "-q", "80", "-resize", String(targetWidth), "0", jpg, "-o", webp]);
+    const cwebpBytes = readFileSync(webp).length;
+    if (browserResult.width !== targetWidth) {
+      throw new Error(`${id}: legs disagree on width — browser ${browserResult.width}, cwebp ${targetWidth}`);
+    }
 
     // (There was a second cwebp run here with -print_psnr. It measured
     // cwebp against the SOURCE, not the browser against cwebp, and its output
@@ -155,7 +173,8 @@ try {
     // number that answered no question this script asks.)
     rows.push({ id, srcKB: +(srcBytes.length / 1024).toFixed(1), cwebpKB: +(cwebpBytes / 1024).toFixed(1),
       browserKB: +(browserResult.bytes / 1024).toFixed(1), type: browserResult.type,
-      px: `${browserResult.width}x${browserResult.height}` });
+      px: `${browserResult.width}x${browserResult.height}`, targetWidth,
+      srcPx: `${browserResult.srcWidth}x${browserResult.srcHeight}` });
     const r = rows[rows.length - 1];
     console.log(`  ${id}  src ${r.srcKB}KB  cwebp ${r.cwebpKB}KB  browser ${r.browserKB}KB (${r.px}, ${r.type})`);
   }
@@ -165,6 +184,12 @@ try {
   if (scratch) rmSync(scratch, { recursive: true, force: true });
 }
 
+// An empty run must not print a summary. With no rows the totals are NaN while
+// both `rows.every(...)` checks return TRUE — a measurement that measured
+// nothing, reporting that everything it did not measure was correct.
+// (CodeRabbit, PR #553.)
+if (rows.length === 0) throw new Error("measured nothing — every sample was skipped or failed");
+
 const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
 const ratio = sum((r) => r.browserKB) / sum((r) => r.cwebpKB);
 console.log(`\n${rows.length} photos`);
@@ -172,7 +197,10 @@ console.log(`  cwebp   total ${sum((r) => r.cwebpKB).toFixed(1)} KB  mean ${(sum
 console.log(`  browser total ${sum((r) => r.browserKB).toFixed(1)} KB  mean ${(sum((r) => r.browserKB) / rows.length).toFixed(1)} KB`);
 console.log(`  browser / cwebp = ${ratio.toFixed(2)}x`);
 console.log(`  every browser encode is image/webp: ${rows.every((r) => r.type === "image/webp")}`);
-console.log(`  every browser encode is 300px wide: ${rows.every((r) => r.px.startsWith("300x"))}`);
+// NOT "is 300 wide": a source narrower than 300 is correctly left at its own
+// width. The property that matters is that both legs encoded the same pixels.
+console.log(`  every encode matched its target width: ${rows.every((r) => r.px.startsWith(`${r.targetWidth}x`))}`);
+console.log(`  sources narrower than ${PHOTO_THUMB_MAX_EDGE}px in this sample: ${rows.filter((r) => r.targetWidth < PHOTO_THUMB_MAX_EDGE).length}`);
 // The RATIO is the finding. This sample's own mean is not a catalogue mean —
 // the whole existing set is already measured on the other side (5,016 objects,
 // 106.6 MB, POS src/offline/photoCache.js), so the honest projection applies
