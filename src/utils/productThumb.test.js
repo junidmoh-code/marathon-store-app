@@ -20,7 +20,7 @@ describe("writeProductThumb — where it writes", () => {
     expect(upload.mock.calls[0][0]).toBe("products/p1777895684767/thumb_300.webp");
   });
 
-  it("uploads as image/webp with a BOUNDED cache — the object is overwritten in place", async () => {
+  it("uploads as image/webp and ALWAYS REVALIDATES — the mirror reads a token-less URL", async () => {
     const upload = vi.fn().mockResolvedValue(undefined);
     await writeProductThumb("p1", { size: 1 }, { upload, encode: async () => webpBlob() });
     expect(upload.mock.calls[0][2]).toEqual({
@@ -28,8 +28,15 @@ describe("writeProductThumb — where it writes", () => {
       cacheControl: PHOTO_THUMB_CACHE_CONTROL,
     });
     expect(PHOTO_THUMB_CONTENT_TYPE).toBe("image/webp");
-    // Not immutable: a year-long cache would outlive the very next re-shoot.
+    // photo.jpg can afford a 7-day cap because its URL carries a token that
+    // changes when the object is replaced. The thumbnail is read by its
+    // DETERMINISTIC path, so the URL is identical before and after a re-shoot:
+    // any freshness lifetime at all lets a till keep serving the previous
+    // thumbnail and file it under the NEW content marker as current.
+    expect(PHOTO_THUMB_CACHE_CONTROL).toContain("max-age=0");
+    expect(PHOTO_THUMB_CACHE_CONTROL).toContain("must-revalidate");
     expect(PHOTO_THUMB_CACHE_CONTROL).not.toContain("immutable");
+    expect(PHOTO_THUMB_CACHE_CONTROL).not.toMatch(/max-age=[1-9]/);
   });
 
   it("a re-shoot REPLACES the thumbnail — same path, second write", async () => {

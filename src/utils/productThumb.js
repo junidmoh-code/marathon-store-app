@@ -16,6 +16,27 @@
 // app already has write access to (storage.rules: products/{allPaths=**}).
 // The thumbnail therefore exists the instant the photo does.
 //
+// IT RE-DECODES THE JPEG RATHER THAN REUSING THE UPLOAD'S CANVAS
+// Both call sites have a canvas in hand already, and a second toBlob() on it
+// would skip a decode. It is not reused deliberately: that canvas lives inside
+// two different chunks of App.jsx component code, and threading it out here
+// would restructure the very upload path this change is supposed to leave
+// alone — and would make this module untestable without a real canvas. So the
+// already-compressed JPEG blob is re-decoded into a canvas of its own. That is
+// also exactly what generate.mjs does (it starts from the uploaded photo.jpg),
+// so both writers carry the same JPEG generation loss and produce comparable
+// objects. The cost is one extra decode of an image already capped at 800px /
+// 200 KB, once per photo upload.
+//
+// A REMOVED PHOTO STILL LEAVES BOTH OBJECTS BEHIND
+// removePhoto() nulls photoUrl and deletes nothing from Storage — it never
+// deleted photo.jpg either, so this is not new. But it is worth naming here:
+// after this change, far more products have a thumbnail, so the till showing a
+// picture for a product whose photo was "removed" goes from rare to ordinary.
+// Fixing it means deleting BOTH objects in removePhoto, which is a change to a
+// different path with its own blast radius (an accidental delete is not
+// recoverable) — reported, not smuggled in here.
+//
 // THE PHOTO MATTERS MORE THAN THE THUMBNAIL
 // writeProductThumb NEVER throws and never rejects. Every failure — an image
 // that will not decode, a canvas that will not encode WebP, a Storage write
@@ -36,15 +57,43 @@ import {
   PHOTO_THUMB_MAX_EDGE,
 } from "./productPhotoPaths.js";
 
-// q80 — the same quality scripts/thumbs/generate.mjs passes cwebp (WEBP_QUALITY
-// = 80), so a thumbnail written here and one written there are the same object
-// at the same cost. The mirror's measured 106.6 MB full-catalogue budget was
-// derived at this quality.
+// q80 — the same NUMBER scripts/thumbs/generate.mjs passes cwebp (WEBP_QUALITY
+// = 80). It is deliberately not claimed to be the same encoder: canvas WebP is
+// the browser's own encoder on its own quality scale, not libwebp's, so the
+// two are comparable rather than identical. Measured on real catalogue photos
+// (scripts/thumbs/measure-browser-vs-cwebp.mjs, headless Chromium vs cwebp on
+// the same sources) before this shipped, because the mirror enforces its
+// budget in BYTES: a systematically fatter browser encode would eat the
+// measured 106.6 MB full-catalogue budget silently.
+//
+// MEASURED 2026-09-04, 12 real catalogue photos, headless Chromium running
+// THIS module against cwebp on the same sources: browser 19.1 KB mean vs cwebp
+// 18.4 KB mean — 1.04x, every output image/webp and exactly 300px wide. Full
+// catalogue projects to ~94 MB, inside the 106.6 MB the mirror was measured
+// against. Comparable, as claimed, and now on evidence rather than on the
+// number matching.
 export const PHOTO_THUMB_QUALITY = 0.8;
 export const PHOTO_THUMB_CONTENT_TYPE = "image/webp";
-// Bounded, NOT immutable — the thumbnail is overwritten in place on a re-shoot,
-// exactly like products/{id}/photo.jpg, whose 7-day cap this mirrors.
-export const PHOTO_THUMB_CACHE_CONTROL = "public, max-age=604800";
+// ── WHY THIS IS NOT products/{id}/photo.jpg's 7-DAY CAP ──────────────────────
+// photo.jpg can afford max-age=604800 because nothing reads it by a stable
+// URL: it is read through photoUrl, a TOKENISED download URL, and overwriting
+// the object mints a new token, so a re-shoot changes the URL and the HTTP
+// cache is bypassed. (The POS repo's photoContentMarker relies on exactly that
+// property — "its token changes when the Storage object is replaced".)
+//
+// The thumbnail has no such escape. The mirror reads it by its DETERMINISTIC,
+// token-less path — getBlob(storageRef(storage, productPhotoThumbPath(id))) —
+// which is the same URL before and after a re-shoot. A week-long max-age there
+// means: photo re-shot, photoUpdatedAt changes, the mirror's marker changes,
+// the mirror refetches… and the browser HTTP cache hands back the PREVIOUS
+// thumbnail, which then gets stored under the NEW marker as though it were
+// current, for up to seven days. "The thumbnail replaces in place" would be
+// true at the bucket and false at every till. (Fable, PR #553.)
+//
+// So: always revalidate. It costs nothing — the mirror only fetches when the
+// content marker actually changed, and the response is ~15 KB — and it is the
+// only value under which a re-shoot is guaranteed to reach the till.
+export const PHOTO_THUMB_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 // Decode a Blob to an <img>. The object URL is revoked as soon as the image has
 // decoded — the bitmap is already in memory by then.

@@ -15,7 +15,7 @@ const app = readFileSync(new URL("./App.jsx", import.meta.url), "utf8");
 // Line comments stripped for the "no hand-built path" checks below: the whole
 // point of those is that no CODE names a thumbnail path, while the comments
 // explaining the convention are expected to name it.
-const appCode = app.replace(/^\s*\/\/.*$/gm, "");
+const appCode = app.replace(/^\s*\/\/.*$/gm, "").replace(/\/\/[^\n"'`]*$/gm, "");
 
 test("App.jsx imports the shared path convention and the thumbnail writer", () => {
   expect(app).toContain('from "./utils/productPhotoPaths"');
