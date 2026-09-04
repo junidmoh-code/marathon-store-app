@@ -60,7 +60,7 @@ import {
 } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct, releaseClaim } from "./idMap.mjs";
 import { adoptionVerdict, requestFreshName } from "./adopt.mjs";
-import { readAllPublishNodes, confirmLiveState, markBlocked, KEEP_EXISTING_OFF_REASON } from "./publishNode.mjs";
+import { readAllPublishNodes, confirmLiveState, markBlocked, serverNowMs, KEEP_EXISTING_OFF_REASON } from "./publishNode.mjs";
 // Scoped reading — the worklist, the live set and the /stock location keys, all
 // obtained WITHOUT a whole-node read. See reconcileScope.mjs for the watermark
 // contract and its three backstops.
@@ -135,7 +135,28 @@ const stockLocationKeys = makeStockLocationResolver(admin.app(), { meter });
 // A DRY RUN always reads everything: it is a person asking "what is outstanding
 // across the whole shop?", and answering that from a five-minute window would
 // be a lie. Only the scheduled commit tick reads incrementally.
-const runStartedAt = Date.now();
+// THE SERVER'S CLOCK, NOT THIS MACHINE'S — and the whole saving depends on it.
+// The watermark is compared against `updatedAt`, and every writer of that field
+// stamps it with serverNowMs(): the page through src/utils/serverTime.js, the
+// scripts through publishNode.mjs, whose own comment says why ("a skewed clock
+// on the Mac mini writes a value the rule would have refused"). So the codebase
+// already treats this machine's clock as untrustworthy — and an incremental
+// window built from `Date.now()` was the one comparison that ignored the
+// correction, putting the bound and the values in DIFFERENT CLOCK DOMAINS.
+//
+// A mini running more than WATERMARK_OVERLAP_MS ahead of the database would
+// have produced an empty window on every tick: nothing older than the bound
+// exists, so every publish and unpublish press would wait for the next FULL
+// scan — 30 minutes by day, 3 hours overnight — instead of two minutes. Silent,
+// because an empty window is indistinguishable from a quiet shop.
+//
+// The five-minute overlap covers residual jitter between a browser's stamp and
+// the write landing. It cannot cover a clock domain, and reading it as if it
+// could was the mistake. planScan takes the same corrected clock, so the
+// "watermark ahead of the clock" guard and the cadence compare like with like.
+// One cached read of .info/serverTimeOffset per process; it degrades to
+// Date.now() if that fails, which is exactly today's behaviour.
+const runStartedAt = await serverNowMs(db);
 const scanState = COMMIT ? await readReconcileState(db, { meter }) : null;
 const scan = COMMIT && !ONLY
   ? planScan({ state: scanState, nowMs: runStartedAt, force: FULL })
@@ -414,7 +435,15 @@ const refuse = async (pid, why, { tookDown = false, blockedHandle = null } = {})
   // the storefront, so it must not be answering searches with a link to it.
   // No-ops when it was never indexed, which is the common case.
   await unindexProduct(db, pid, "blocked");
-  results.push({ pid, ok: false, why: `blocked: ${why}` });
+  // `blocked: true` marks this as a REFUSAL rather than a failure, and the
+  // retry set must not carry it — markBlocked has already consumed
+  // `desiredState`, so this record cannot re-enter the worklist and retrying it
+  // every two minutes would achieve nothing. Worse, refusals share one
+  // timestamp and the retry trim keeps the NEWEST, so a burst of them (the cap
+  // is 25, the retry set holds 50) would evict standing failures that do need
+  // the per-tick retry — the same eviction that was fixed for cap-deferred work
+  // and left open here.
+  results.push({ pid, ok: false, blocked: true, why: `blocked: ${why}` });
 };
 
 // Which storefront collection this record belongs in — and it SAYS SO, loudly,
@@ -1295,7 +1324,7 @@ if (COMMIT && !ONLY) {
   //     newest and every deferred pid shares one timestamp, one bulk deferral
   //     evicted every standing failure at a stroke.
   const deferred = new Set(worklist.slice(capped.length).map((w) => w.pid));
-  const carried = results.filter((r) => !r.ok).map((r) => r.pid);
+  const carried = results.filter((r) => !r.ok && !r.blocked).map((r) => r.pid);
   // Retry pids are excluded: their `updatedAt` is stale, so one of them would
   // drag the watermark back and widen every window for as long as it failed.
   const unapplied = worklist.slice(capped.length)

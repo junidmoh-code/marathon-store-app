@@ -210,7 +210,7 @@ describe("no whole-node read on the scheduled path", () => {
 
   it("work the run could not finish is carried, because its node's updatedAt did not move", () => {
     expect(SRC).toMatch(/worklist\.slice\(capped\.length\)/);
-    expect(SRC).toMatch(/results\.filter\(\(r\) => !r\.ok\)\.map\(\(r\) => r\.pid\)/);
+    expect(SRC).toMatch(/results\.filter\(\(r\) => !r\.ok && !r\.blocked\)\.map\(\(r\) => r\.pid\)/);
   });
 
   it("a --pids run never tells the scheduler it is caught up", () => {
@@ -292,7 +292,7 @@ describe("the retry set drains", () => {
     // Cap-deferred work rides the WATERMARK now, not the retry set — putting
     // it in the retry set meant a backlog bigger than the two caps together was
     // dropped, and one bulk deferral evicted every standing failure from it.
-    expect(block).toMatch(/const carried = results\.filter\(\(r\) => !r\.ok\)\.map\(\(r\) => r\.pid\);/);
+    expect(block).toMatch(/const carried = results\.filter\(\(r\) => !r\.ok && !r\.blocked\)\.map\(\(r\) => r\.pid\);/);
     expect(block).not.toMatch(/\.\.\.deferred,/);
   });
 
@@ -573,3 +573,35 @@ describe("the setup guide and the plist agree on the schedule", () => {
   });
 });
 
+
+// ── The two one-line contracts that would revert in silence ─────────────────
+// Both of these are a single expression in reconcile.mjs. Both fail QUIETLY if
+// reverted — no error, no wrong output, just work that arrives late or a retry
+// slot spent on something that can never succeed — so neither would be caught
+// by anything except a guard that names it.
+describe("the incremental window's two silent contracts", () => {
+  it("the watermark is taken from the SERVER clock, never this machine's", () => {
+    // `updatedAt` is stamped with serverNowMs() by every writer. A watermark
+    // from Date.now() puts the query bound in a different clock domain, and a
+    // mini running >5 min fast returns an EMPTY window on every tick — every
+    // publish press then waits for the next full scan (30 min, or 3 h
+    // overnight) instead of two minutes, with nothing in the log to say so.
+    expect(SRC).toMatch(/const runStartedAt = await serverNowMs\(db\)/);
+    // And nothing else in the run may reach for the raw clock: every derived
+    // stamp (the watermark, lastFullScanAt, lastSweepAt, the retry timestamps)
+    // has to come from that one corrected value.
+    const body = SRC.slice(SRC.indexOf("const runStartedAt"));
+    const raw = [...body.matchAll(/Date\.now\(\)/g)];
+    expect(raw, "no raw Date.now() after the corrected clock is established").toHaveLength(0);
+  });
+
+  it("a REFUSED product does not take a slot in the retry set", () => {
+    // markBlocked consumes desiredState, so a refusal can never re-enter the
+    // worklist — retrying it every two minutes achieves nothing. And because
+    // refusals all share one timestamp while the trim keeps the NEWEST, a burst
+    // of them evicts the standing failures the set exists to carry. This is the
+    // same eviction already fixed for cap-deferred work.
+    expect(SRC).toMatch(/results\.push\(\{ pid, ok: false, blocked: true,/);
+    expect(SRC).toMatch(/const carried = results\.filter\(\(r\) => !r\.ok && !r\.blocked\)/);
+  });
+});
