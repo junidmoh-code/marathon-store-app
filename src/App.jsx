@@ -13,6 +13,8 @@ import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/re
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
+import { productPhotoObjectPath } from "./utils/productPhotoPaths";
+import { writeProductThumb } from "./utils/productThumb";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
@@ -209,6 +211,16 @@ function compressImageFile(file, maxDim, maxBytes) {
     reader.readAsDataURL(file);
   });
 }
+
+// ── OFFLINE-MIRROR THUMBNAIL: the Storage leg ────────────────────────────────
+// The POS tills cache products/{id}/thumb_300.webp so till search shows
+// pictures with no network. Nothing generated one for a NEW photo until now —
+// see src/utils/productThumb.js for why this is a browser encode and not a
+// Storage trigger (the functions project is shared with marathon-pos-app).
+// writeProductThumb owns the path, the encode and the never-throw contract;
+// this is only "put these bytes there", bound to this app's Storage handle.
+const uploadThumbObject = (path, blob, metadata) =>
+  uploadBytes(storageRef(storage, path), blob, metadata);
 
 // Upload a sneaker's box photo → products/{id}/source_box.jpg + photoBoxUrl.
 // House-style sneaker generations attach it automatically so the AI reproduces
@@ -5681,11 +5693,17 @@ function AdminView({ products, orders, onExit }) {
 
       if (form.photoBlob) {
         // Upload compressed image to Firebase Storage; store only the HTTPS URL in RTDB.
-        const sRef = storageRef(storage, `products/${id}/photo.jpg`);
+        const sRef = storageRef(storage, productPhotoObjectPath(id));
         // Bounded cache (NOT immutable): products/{id}/photo.jpg is overwritten
         // in place when the photo is re-shot, so cap staleness at 7 days.
         await uploadBytes(sRef, form.photoBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
         photoUrl = await getDownloadURL(sRef);
+        // The offline-mirror thumbnail, written the instant the photo exists —
+        // otherwise this product is a blank square on every offline till until
+        // somebody re-runs the POS repo's generate.mjs by hand. Best-effort by
+        // contract: writeProductThumb never throws, so the product still saves
+        // if the encode or the write fails.
+        await writeProductThumb(id, form.photoBlob, { upload: uploadThumbObject });
       }
 
       // ── LABEL PHOTO ─────────────────────────────────────────────────────
@@ -6697,11 +6715,16 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
             if (candidate.length * 0.75 <= MAX_BYTES) { dataUrl = candidate; break; }
           }
           const blob = dataURLToBlob(dataUrl);
-          const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
+          const sRef = storageRef(storage, productPhotoObjectPath(product.id));
           // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
           // a re-shoot, so cap staleness at 7 days instead of a year.
           await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
           const url = await getDownloadURL(sRef);
+          // A re-shoot replaces BOTH objects: photo.jpg above and the offline
+          // thumbnail here, both at their deterministic paths, so a till can
+          // never keep serving a cached picture of the photo that was replaced.
+          // Never throws — a failed thumbnail must not fail the re-shoot.
+          await writeProductThumb(product.id, blob, { upload: uploadThumbObject });
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
           // a new upload, so approve() deliberately leaves it alone.
