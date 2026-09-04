@@ -509,13 +509,22 @@ for (const { pid, want } of capped) {
         // that by hand, outside this loop's single-flight lock — removing the
         // node here would delete a good, fresh mapping on the strength of a
         // deletion check performed against a different product.
-        const stillMapped = (await db.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val();
-        if (stillMapped !== mapNode.shopifyProductId) {
-          console.log(`  ${pid} was re-mapped to ${stillMapped || "nothing"} while Shopify was being asked about ${mapNode.shopifyProductId} — leaving the new mapping alone`);
-          results.push({ pid, ok: false, why: "record was re-mapped mid-run; nothing removed, will re-evaluate next tick" });
+        // A TRANSACTION, not read-then-remove. The read-and-compare this
+        // replaced still left a window between the check and the delete; the
+        // condition and the removal have to be the same operation or the guard
+        // is decorative. Aborting is the safe direction here — it means "do not
+        // delete" — so a stale-cache abort costs one tick and nothing else.
+        let removed = false;
+        await db.ref(`shopify_sync/${pid}`).transaction((cur) => {
+          if (cur?.shopifyProductId !== mapNode.shopifyProductId) return undefined;
+          removed = true;
+          return null;   // null DELETES the record, which is the removal
+        });
+        if (!removed) {
+          console.log(`  ${pid} no longer maps ${mapNode.shopifyProductId} — it was re-mapped or cleared while Shopify was being asked about it; nothing removed`);
+          results.push({ pid, ok: false, why: "record changed mid-run; nothing removed, will re-evaluate next tick" });
           continue;
         }
-        await db.ref(`shopify_sync/${pid}`).remove();
         await confirmLiveState(db, pid, "off", UPDATED_BY, {
           clearAdminUrl: true,
           offReason: "no_shopify_product",

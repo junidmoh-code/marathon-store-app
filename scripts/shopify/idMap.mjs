@@ -151,8 +151,22 @@ export async function ensureClaimIndex(db) {
   for (const [pid, node] of Object.entries(all)) {
     if (!isProductRecordKey(pid)) continue;
     const gid = node?.shopifyProductId;
-    if (typeof gid !== "string" || !gid.startsWith("gid://shopify/Product/")) continue;
-    index[claimKeyFor(gid)] = pid;
+    // SKIP, NEVER THROW. This filter used to be `startsWith("gid://shopify/
+    // Product/")`, which is looser than claimKeyFor's `\d+$` — so a single
+    // malformed value anywhere in the node ("…/Product/12ab", a trailing
+    // space, a variant gid) passed the filter and made claimKeyFor throw,
+    // taking the whole backfill down with it. The sentinel is written LAST, so
+    // that backfill would never complete: it would be retried on every tick,
+    // for ever, and every claim behind it would fail. One bad record must not
+    // be able to do that, so the test here is now exactly the one claimKeyFor
+    // applies, and anything failing it is skipped and named.
+    let key = null;
+    try { key = claimKeyFor(gid); } catch { /* not a product gid */ }
+    if (key === null) {
+      if (gid != null) console.error(`  ⚠ ${pid} has an unusable shopifyProductId (${JSON.stringify(gid)}) — not indexed; it can neither claim nor block a gid until this is corrected`);
+      continue;
+    }
+    index[key] = pid;
     n += 1;
   }
   // FILL GAPS, NEVER OVERWRITE. The obvious shape here is one bulk
@@ -301,15 +315,28 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
       // else releases a claim except the deleted-product path, and that only
       // runs for a record whose own map still points at the gid. The release is
       // ownership-checked, so it can only ever free the entry we just made.
-      try {
-        await releaseClaim(db, productId, shopifyProductId);
-      } catch (e) {
-        // Swallowed so the clash below is what surfaces — but NOT silently.
-        // If this release fails, the exact leak this branch exists to prevent
-        // has happened, and the clash message names the OTHER gid, not the one
-        // stranded. Without this line, recovering means deducing which key is
+      //
+      // Tried TWICE. The window is already narrow — a pointer clash and a
+      // failing release — but a stranded claim blocks the gid for every record
+      // permanently and the only repair is by hand, so a second attempt is
+      // cheap insurance against one transient error. Whatever happens, the
+      // CLASH is what gets thrown: it is what the caller needs to act on, and
+      // a release failure must not replace it with a different error.
+      let releaseError = null;
+      for (let tries = 0; tries < 2; tries++) {
+        try {
+          await releaseClaim(db, productId, shopifyProductId);
+          releaseError = null;
+          break;
+        } catch (e) {
+          releaseError = e;
+        }
+      }
+      if (releaseError) {
+        // Not silent. The clash message names the OTHER gid, not the one left
+        // stranded, so without this line recovering means deducing which key is
         // stuck from a message that does not mention it.
-        console.error(`  ⚠ could not release claim ${claimKeyFor(shopifyProductId)} after a pointer clash (${String(e?.message || e)}) — that claim key is now stranded and will block this gid until it is cleared by hand`);
+        console.error(`  ⚠ could not release claim ${claimKeyFor(shopifyProductId)} after a pointer clash (${String(releaseError?.message || releaseError)}) — that claim key is now stranded and will block this gid until it is cleared by hand`);
       }
       throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${clash}`);
     }

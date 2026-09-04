@@ -378,6 +378,31 @@ describe("ensureClaimIndex", () => {
     expect(db.state.sentinelWrittenAfter).toBe(2);   // both entries already in
   });
 
+  it("ONE malformed gid does not take the whole backfill down with it", async () => {
+    // The filter used to be startsWith("gid://shopify/Product/"), which is
+    // looser than claimKeyFor's `\d+$`. So a single bad value made claimKeyFor
+    // throw out of the loop — and because the sentinel is written LAST, that
+    // backfill would never complete: retried every tick for ever, with every
+    // claim behind it failing. One bad record must not be able to do that.
+    const db = backfillDb({
+      syncNodes: {
+        p1: { shopifyProductId: gid.product(111) },
+        bad1: { shopifyProductId: "gid://shopify/Product/12ab" },
+        bad2: { shopifyProductId: "gid://shopify/Product/333 " },
+        bad3: { shopifyProductId: gid.variant(444) },
+        p2: { shopifyProductId: gid.product(222) },
+      },
+    });
+    const res = await ensureClaimIndex(db);
+    expect(res.built).toBe(true);
+    // The good ones are indexed...
+    expect(db.state.claims["111"]).toBe("p1");
+    expect(db.state.claims["222"]).toBe("p2");
+    expect(res.entries).toBe(2);
+    // ...and the sentinel is set, so this never runs again.
+    expect(db.state.claims._builtAt).toBeTruthy();
+  });
+
   it("skips bookkeeping siblings and records with no Shopify mapping", async () => {
     const db = backfillDb({
       syncNodes: {
