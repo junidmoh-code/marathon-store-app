@@ -17,7 +17,8 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "fs";
 import { spawnSync } from "child_process";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 const SRC = readFileSync(new URL("./reconcile.mjs", import.meta.url), "utf8");
 const lines = SRC.split("\n");
@@ -656,7 +657,15 @@ describe("a watermark that cannot advance is reported, not swallowed", () => {
 // runtime has to get a vote.
 describe("every script in this directory parses under plain node", () => {
   it("node --check passes on all of them, tests included", () => {
-    const dir = new URL(".", import.meta.url).pathname;
+    // fileURLToPath, NOT `.pathname` — which is percent-encoded, so a checkout
+    // under a path containing a space or any non-ASCII character would resolve
+    // to files that do not exist and this guard would report EVERY file as
+    // broken. That is the third time in this file a check has been written to
+    // fail on the environment while blaming the contract (after the plist PATH
+    // regex and the Date.now() prose match), so the pattern is worth naming:
+    // a guard's own machinery must not be able to produce a false alarm about
+    // the thing it guards.
+    const dir = dirname(fileURLToPath(import.meta.url));
     const files = readdirSync(dir).filter((f) => f.endsWith(".mjs"));
     expect(files.length).toBeGreaterThan(20);
     const broken = [];

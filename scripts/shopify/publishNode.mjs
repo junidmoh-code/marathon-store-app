@@ -134,6 +134,12 @@ export async function serverNowMs(db) {
     try {
       offsetMs = Number(await Promise.race([
         db.ref(".info/serverTimeOffset").once("value").then((s) => s.val()),
+        // `.unref?.()` — and the optional call is LOAD-BEARING, do not
+        // "simplify" it: vitest's fake timers return a plain id with no unref,
+        // and the test that proves this bound works drives it with fake timers.
+        // The timer is deliberately not cleared on the happy path: unref'd, it
+        // cannot hold the event loop open or delay exit, so all it can do is
+        // reject an already-settled promise, which is a no-op.
         new Promise((_, reject) => setTimeout(
           () => reject(new Error("timed out after 10s waiting for the connection handshake")), 10_000).unref?.()),
       ])) || 0;
