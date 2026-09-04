@@ -2,7 +2,7 @@
 // Pure-function tests (no RTDB, no emulator): buildMapping's key encoding and
 // gid validation, and planIdMapWrite's create / noop / merge / refuse matrix —
 // the idempotency contract the live writer rides on.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import { buildMapping, planIdMapWrite, claimKeyFor, planClaim, claimShopifyProduct, releaseClaim, ensureClaimIndex, isProductRecordKey } from "./idMap.mjs";
 
@@ -442,6 +442,30 @@ describe("ensureClaimIndex", () => {
     expect(res).toEqual({ built: false });
     expect(db.state.writes).toEqual([]);
   });
+
+  // ── A double mapping in the EXISTING data ────────────────────────────────
+  // Two records mapping one gid is the state this index exists to prevent —
+  // and it is possible in what the backfill reads, because the index did not
+  // exist when that data was written. `index[key] = pid` alone is last-one-wins
+  // by iteration order: the loser keeps a legitimate mapping the index does not
+  // know about and is refused this gid for ever after, with the sentinel
+  // guaranteeing nothing ever looks again.
+  it("names both records on a double mapping instead of silently dropping one", async () => {
+    const warned = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m) => warned.push(String(m)));
+    try {
+      const GID = gid.product(9339656536213);
+      const db = backfillDb({ syncNodes: { p9: { shopifyProductId: GID }, p2: { shopifyProductId: GID } } });
+      await ensureClaimIndex(db);
+      // Lowest pid wins, so a re-run reaches the same answer rather than
+      // depending on which page the read happened to return first.
+      expect(db.state.claims["9339656536213"]).toBe("p2");
+      const line = warned.find((m) => m.includes("BOTH map"));
+      expect(line, "the clash must be reported").toBeTruthy();
+      expect(line).toContain("p9");
+      expect(line).toContain("p2");
+    } finally { spy.mockRestore(); }
+  });
 });
 
 // ── The bookkeeping siblings are excluded by PREFIX, not by name ─────────────
@@ -591,6 +615,34 @@ describe("claimShopifyProduct confirms a pointer clash before acting on it", () 
     // back. A null here with the claim never taken would prove nothing.
     expect(db.state.transactions).toBeGreaterThan(0);
     expect(db.state.server).toBe(null);
+  });
+
+  // ── A stale claim says so, instead of looking impossible ─────────────────
+  // The claim and the pointer are two commits. A run killed between them leaves
+  // a claim whose owner maps nothing — harmless until someone adopts that draft
+  // by hand months later and is refused citing a record that does not hold it.
+  it("a refusal whose owner does not map the gid names itself as stale and repairable", async () => {
+    const GID = gid.product(9339656536213);
+    const db = fakeDb({ cached: "p1", server: "p1", mine: null });
+    // p1 holds the claim but maps nothing — the crashed-run state.
+    const inner = db.ref;
+    db.ref = (path) => (path === "shopify_sync/p1/shopifyProductId"
+      ? { async get() { return { val: () => null }; } }
+      : inner(path));
+    await expect(claimShopifyProduct(db, "p2", GID)).rejects.toThrow(/this claim is stale/);
+    await expect(claimShopifyProduct(db, "p2", GID)).rejects.toThrow(/shopify_sync\/_claims\/9339656536213/);
+  });
+
+  it("a GENUINE conflict is not softened into a stale-claim note", async () => {
+    const GID = gid.product(9339656536213);
+    const db = fakeDb({ cached: "p1", server: "p1", mine: null });
+    const inner = db.ref;
+    db.ref = (path) => (path === "shopify_sync/p1/shopifyProductId"
+      ? { async get() { return { val: () => GID }; } }   // p1 really does map it
+      : inner(path));
+    const err = await claimShopifyProduct(db, "p2", GID).catch((e) => e);
+    expect(String(err)).toMatch(/already claimed by/);
+    expect(String(err)).not.toMatch(/stale/);
   });
 });
 

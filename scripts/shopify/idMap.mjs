@@ -166,6 +166,26 @@ export async function ensureClaimIndex(db) {
       if (gid != null) console.error(`  ⚠ ${pid} has an unusable shopifyProductId (${JSON.stringify(gid)}) — not indexed; it can neither claim nor block a gid until this is corrected`);
       continue;
     }
+    // A DUPLICATE IS NOT A TIE TO BE BROKEN SILENTLY. Two records mapping the
+    // same gid is exactly the state this index exists to make impossible — and
+    // it is possible in the data being read, because the index did not exist
+    // when that data was written. `index[key] = pid` alone is last-one-wins by
+    // Object.entries order: the loser keeps a legitimate mapping the index does
+    // not know about, is refused for ever afterwards with "already claimed by
+    // record X" about the gid it really holds, and the sentinel guarantees no
+    // later run re-examines it. One line from the malformed-gid case that was
+    // just fixed, and the one with a publish-blocking consequence.
+    //
+    // Resolved deterministically — the lowest pid wins, so a re-run reaches the
+    // same answer — and BOTH sides are named, because the repair is a person
+    // deciding which record should own the product.
+    if (index[key] != null && index[key] !== pid) {
+      const [keep, drop] = [index[key], pid].sort();
+      console.error(`  ⚠ ${index[key]} and ${pid} BOTH map ${gid} — that is a double mapping the claim index cannot represent. ` +
+        `Indexing ${keep}; ${drop} will be refused this gid until one of them is re-pointed by hand.`);
+      index[key] = keep;
+      continue;
+    }
     index[key] = pid;
     n += 1;
   }
@@ -264,16 +284,59 @@ export async function claimShopifyProduct(db, productId, shopifyProductId) {
     });
     if (refusal) {
       if (attempt === 0 && planClaim((await ref.get()).val(), productId).action !== "refuse") continue;
-      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
+      // IS THE CLAIM STILL BACKED BY A MAPPING? The claim and the durable
+      // pointer are two commits, not one — the root transaction this replaced
+      // wrote both together — so a process killed between them leaves a claim
+      // whose owning record maps nothing, or maps something else. On the create
+      // path that record does not recover the same gid: it creates a NEW draft
+      // next tick and the orphan is caught by the title-duplicate guard, which
+      // is the same outcome the old code gave for a crash a few lines earlier.
+      // What is new is that the key stays claimed for ever.
+      //
+      // The harm is small — it blocks one gid that is an orphan draft nobody
+      // should map — but it surfaces much later, as a deliberate adoption being
+      // refused for a reason that looks impossible. So the refusal diagnoses
+      // itself: one small read of the owner's pointer, on the refusal path
+      // only, turns "already claimed by record X" into a one-line repair.
+      let stale = "";
+      try {
+        const owner = String(refusal).match(/\bp[0-9]+\b/)?.[0];
+        if (owner && owner !== productId) {
+          const ownerGid = (await db.ref(`shopify_sync/${owner}/shopifyProductId`).get()).val();
+          if (ownerGid !== shopifyProductId) {
+            stale = ` — NOTE: ${owner} does not map ${shopifyProductId} (it maps ${JSON.stringify(ownerGid)}), so this claim is stale, left by a run that stopped between taking the claim and writing the pointer. Clearing ${CLAIMS_PATH}/${key} by hand releases it.`;
+          }
+        }
+      } catch { /* diagnosis is a nicety; never let it replace the refusal */ }
+      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}${stale}`);
     }
     if (!result.committed) throw new Error("claim transaction did not commit");
     break;
   }
 
-  // The durable pointer. Written AFTER the claim so a crash between the two
-  // leaves an index entry naming this record and no mapping — the next attempt
-  // by the SAME record finds "held" and completes; an attempt by any other
-  // record is still refused, which is the direction that matters.
+  // The durable pointer. Written AFTER the claim, and this is the one place the
+  // child index is genuinely WEAKER than the root transaction it replaced: that
+  // wrote the uniqueness check and the pointer in a single commit, and these are
+  // two.
+  //
+  // Be exact about what a crash between them costs, because an earlier version
+  // of this comment was not. It said "the next attempt by the SAME record finds
+  // 'held' and completes" — true on the ADOPT path, false on the CREATE path,
+  // which is the one that gets here. A record with no pointer takes the create
+  // branch again and makes a NEW draft with a NEW gid; it never comes back for
+  // the old one. So the claim on the old gid is stranded.
+  //
+  // What that actually costs, compared with the old code: nothing on the
+  // storefront, and no divergence. A crash a few lines earlier — between
+  // productSet and the mapping write — left the identical orphan draft under
+  // the root transaction too, and the title-duplicate guard catches it either
+  // way and refuses with a message a person can act on. The ONLY new residual
+  // is one stranded key in _claims, blocking a gid that is an orphan draft
+  // nobody should map. It surfaces if someone later adopts that draft by hand,
+  // and the refusal above diagnoses itself when they do.
+  //
+  // An attempt by any OTHER record is still refused throughout, which is the
+  // direction that matters and is the invariant the index exists to hold.
   // A TRANSACTION, not a set(). `mineGid` was read before the claim was taken,
   // so a plain set() here would overwrite a different gid written in between —
   // exactly the double-mapping the read at the top of this function refuses,
