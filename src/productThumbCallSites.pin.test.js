@@ -28,6 +28,7 @@ test("the add-product save writes a thumbnail from the same blob it uploaded", (
   const site = app.slice(idx, idx + 1200);
   expect(site).toContain("writeProductThumb(id, form.photoBlob");
   expect(site).toContain("upload: uploadThumbObject");
+  expect(site, "must pass the repair leg too").toContain("remove: removeThumbObject");
 });
 
 test("the re-shoot writes a thumbnail from the same blob it uploaded", () => {
@@ -36,6 +37,10 @@ test("the re-shoot writes a thumbnail from the same blob it uploaded", () => {
   const site = app.slice(idx, idx + 1200);
   expect(site).toContain("writeProductThumb(product.id, blob");
   expect(site).toContain("upload: uploadThumbObject");
+  // Without the repair leg, a re-shoot whose thumbnail write fails leaves the
+  // PREVIOUS photo's thumbnail standing under a marker every till believes is
+  // current — invisible, and permanent.
+  expect(site, "must pass the repair leg too").toContain("remove: removeThumbObject");
 });
 
 test("both call sites AWAIT the thumbnail write", () => {

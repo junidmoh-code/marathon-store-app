@@ -142,11 +142,22 @@ try {
       const { encodeThumbnail } = await import(`${base}/src/utils/productThumb.js`);
       const res = await fetch(`${base}/sample/${productId}.jpg`);
       const blob = await res.blob();
-      const source = await createImageBitmap(blob);
-      const thumb = await encodeThumbnail(blob);
-      const bmp = await createImageBitmap(thumb);
-      return { bytes: thumb.size, type: thumb.type, width: bmp.width, height: bmp.height,
-        srcWidth: source.width, srcHeight: source.height };
+      // Both bitmaps are closed as soon as their dimensions are read: --n takes
+      // any positive integer, and a long run that leaves decoded frames to the
+      // garbage collector is how a measurement starts measuring memory
+      // pressure instead of bytes. (CodeRabbit, PR #553.)
+      let source = null;
+      let bmp = null;
+      try {
+        source = await createImageBitmap(blob);
+        const thumb = await encodeThumbnail(blob);
+        bmp = await createImageBitmap(thumb);
+        return { bytes: thumb.size, type: thumb.type, width: bmp.width, height: bmp.height,
+          srcWidth: source.width, srcHeight: source.height };
+      } finally {
+        source?.close();
+        bmp?.close();
+      }
     }, origin, id);
 
     // Leg B — the bulk generator's encoder, at the SAME target width.

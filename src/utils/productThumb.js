@@ -220,13 +220,14 @@ export async function encodeThumbnail(sourceBlob, deps = {}) {
  * uploadBytes wrapper.
  */
 export async function writeProductThumb(productId, sourceBlob, deps = {}) {
-  const { upload, encode = encodeThumbnail, warn = (...a) => console.warn(...a), pause = defaultPause } = deps;
+  const { upload, remove, encode = encodeThumbnail, warn = (...a) => console.warn(...a), pause = defaultPause } = deps;
+  let path = null;
   try {
     if (!productId) return { ok: false, reason: "no product id" };
     if (!sourceBlob) return { ok: false, reason: "no source blob" };
     if (typeof upload !== "function") return { ok: false, reason: "no upload function" };
 
-    const path = productPhotoThumbPath(productId);
+    path = productPhotoThumbPath(productId);
     const blob = await encode(sourceBlob);
     const metadata = {
       contentType: PHOTO_THUMB_CONTENT_TYPE,
@@ -259,6 +260,36 @@ export async function writeProductThumb(productId, sourceBlob, deps = {}) {
     // next re-shoot or the next generate.mjs run, and that is strictly better
     // than a product that would not save.
     warn("product thumbnail not written (upload continues):", err);
-    return { ok: false, reason: err?.message || String(err) };
+
+    // ── A STALE THUMBNAIL IS WORSE THAN NO THUMBNAIL ────────────────────────
+    // Both call sites stamp photoUpdatedAt after this returns, whatever
+    // happened here — and they must: photoUpdatedAt is the upload time, and a
+    // photo WAS uploaded. But that stamp is also the mirror's content marker,
+    // so on a re-shoot whose thumbnail write failed for good, the PREVIOUS
+    // photo's thumbnail sits at the deterministic path recorded as current.
+    // Every till then shows a picture of the product's OLD photo — silently,
+    // and for ever, because a marker the till believes is current is never
+    // revisited. A MISSING thumbnail has recovery: the till records it missing
+    // and retries every 6 hours, and generate.mjs regenerates it (it keys on
+    // photo.jpg's generation, which has changed).
+    //
+    // So a terminal failure DELETES the object it could not replace, turning
+    // "silently wrong for ever" into "blank until repaired". There is no case
+    // where the standing thumbnail is still right: reaching here means the
+    // photo itself was replaced. Best-effort in its own right — a delete that
+    // fails changes nothing and must not throw either. (CodeRabbit, PR #553,
+    // and the same hole two other reviewers raised.)
+    let staleRemoved = false;
+    if (path && typeof remove === "function") {
+      try {
+        await remove(path);
+        staleRemoved = true;
+      } catch (removeErr) {
+        // Includes the ordinary case of there never having been one (a brand
+        // new product): storage/object-not-found, nothing to repair.
+        warn("stale thumbnail could not be removed:", removeErr);
+      }
+    }
+    return { ok: false, reason: err?.message || String(err), staleRemoved };
   }
 }
