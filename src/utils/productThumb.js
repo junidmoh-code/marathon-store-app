@@ -63,15 +63,27 @@ import {
 // two are comparable rather than identical. Measured on real catalogue photos
 // (scripts/thumbs/measure-browser-vs-cwebp.mjs, headless Chromium vs cwebp on
 // the same sources) before this shipped, because the mirror enforces its
-// budget in BYTES: a systematically fatter browser encode would eat the
-// measured 106.6 MB full-catalogue budget silently.
+// cache in BYTES: a systematically fatter browser encode would eat the
+// mirror's budget silently.
 //
-// MEASURED 2026-09-04, 12 real catalogue photos, headless Chromium running
-// THIS module against cwebp on the same sources: browser 19.1 KB mean vs cwebp
-// 18.4 KB mean — 1.04x, every output image/webp and exactly 300px wide. Full
-// catalogue projects to ~94 MB, inside the 106.6 MB the mirror was measured
-// against. Comparable, as claimed, and now on evidence rather than on the
-// number matching.
+// MEASURED 2026-09-04, 12 real catalogue photos, headless Chromium running THIS
+// module against cwebp on the same sources: browser 19.1 KB mean vs cwebp
+// 18.4 KB mean — a RATIO of 1.04x, every output image/webp and exactly 300px
+// wide. The ratio is the finding; this sample's own mean is NOT, and must not
+// be projected as one. The whole set is already measured on the other side:
+// 5,016 objects, 106.6 MB (POS photoCache.js), i.e. 21.3 KB mean — 14% above
+// this sample. A catalogue of browser-written thumbnails therefore projects to
+// 1.04 x 106.6 = ~111 MB, against PHOTO_CACHE_BYTE_BUDGET = 160 MB.
+// Comfortably inside the BUDGET, and deliberately not described as inside
+// 106.6 MB, which is a measurement of the existing set and not a ceiling —
+// reading it as one is how a catalogue ends up permanently over budget,
+// self-evicting.
+//
+// Measured in Chromium, which is what the script can drive. The uploading
+// fleet is iPad Safari and its ratio is UNMEASURED. Both are libwebp
+// underneath, so the difference is the resampler and the encoder settings
+// rather than a different codec: comparable, not identical, and the Safari
+// number is a gap in the evidence rather than a claim.
 export const PHOTO_THUMB_QUALITY = 0.8;
 export const PHOTO_THUMB_CONTENT_TYPE = "image/webp";
 // ── WHY THIS IS NOT products/{id}/photo.jpg's 7-DAY CAP ──────────────────────
@@ -91,9 +103,23 @@ export const PHOTO_THUMB_CONTENT_TYPE = "image/webp";
 // true at the bucket and false at every till. (Fable, PR #553.)
 //
 // So: always revalidate. It costs nothing — the mirror only fetches when the
-// content marker actually changed, and the response is ~15 KB — and it is the
-// only value under which a re-shoot is guaranteed to reach the till.
+// content marker actually changed, the response is ~15-30 KB, and an unchanged
+// object revalidates as a 304 — and it is the only value under which the HTTP
+// cache cannot WITHHOLD a re-shoot. Not "guaranteed to reach the till": that
+// also needs the write itself to have landed, which is what the single retry
+// below is for, and a write that fails twice still leaves the previous
+// thumbnail standing under an advanced marker.
+//
+// Verified live 2026-09-04: Firebase honours cacheControl on the ?alt=media
+// path (photo.jpg serves max-age=604800), the bulk-written thumbnails carry
+// Firebase's own default of private, max-age=0, and a conditional GET on one
+// returns 304. The 7-day value was the outlier here, not this one.
 export const PHOTO_THUMB_CACHE_CONTROL = "public, max-age=0, must-revalidate";
+
+// Long enough for a flapping connection to come back, short enough that nobody
+// watching a product save notices it.
+export const RETRY_DELAY_MS = 800;
+const defaultPause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Decode a Blob to an <img>. The object URL is revoked as soon as the image has
 // decoded — the bitmap is already in memory by then.
@@ -141,6 +167,19 @@ function canvasToBlob(canvas, type, quality) {
  * already narrower than 300px is re-encoded at its own size rather than
  * inflated, which cwebp would do and which only wastes bytes.
  *
+ * PHOTO_THUMB_MAX_EDGE IS A MISNOMER, AND IT IS THE POS REPO'S NAME.
+ * The HEIGHT IS NOT BOUNDED by 300. `cwebp -resize 300 0` sets the width and
+ * lets the height fall out of the aspect ratio, so every one of the 5,016
+ * thumbnails already in the bucket is 300 wide and whatever tall — the
+ * catalogue's portrait 600x800 photos are 300x400 objects, not 225x300. This
+ * copies that exactly, on purpose. "Fixing" the name by scaling to the longest
+ * edge would make this writer disagree with the bulk writer about what a
+ * thumbnail IS, silently, for every product photographed in portrait — the
+ * same class of drift the path convention exists to prevent — and it would
+ * invalidate the mirror's measured byte budget, which came from real cwebp
+ * output that already has this shape. The constant keeps its name so both
+ * repos keep saying the same word for the same thing. (Adversarial review.)
+ *
  * Throws on any failure, including a non-WebP encode. The caller
  * (writeProductThumb) is what turns that into a swallowed, logged no-op.
  */
@@ -181,7 +220,7 @@ export async function encodeThumbnail(sourceBlob, deps = {}) {
  * uploadBytes wrapper.
  */
 export async function writeProductThumb(productId, sourceBlob, deps = {}) {
-  const { upload, encode = encodeThumbnail, warn = (...a) => console.warn(...a) } = deps;
+  const { upload, encode = encodeThumbnail, warn = (...a) => console.warn(...a), pause = defaultPause } = deps;
   try {
     if (!productId) return { ok: false, reason: "no product id" };
     if (!sourceBlob) return { ok: false, reason: "no source blob" };
@@ -189,10 +228,30 @@ export async function writeProductThumb(productId, sourceBlob, deps = {}) {
 
     const path = productPhotoThumbPath(productId);
     const blob = await encode(sourceBlob);
-    await upload(path, blob, {
+    const metadata = {
       contentType: PHOTO_THUMB_CONTENT_TYPE,
       cacheControl: PHOTO_THUMB_CACHE_CONTROL,
-    });
+    };
+    // ── ONE RETRY, ON THE WRITE AND ONLY ON THE WRITE ───────────────────────
+    // A dropped write is not symmetrical with a missing one. Both call sites
+    // stamp photoUpdatedAt straight after this returns, and that stamp IS the
+    // mirror's content marker: once it advances, every till records "I have the
+    // current thumbnail for this product". So a RE-SHOOT whose thumbnail write
+    // failed leaves the PREVIOUS picture in the bucket, marked current, and
+    // nothing ever revisits it — where a never-written thumbnail is kinder,
+    // because the till records it missing and retries every 6 hours. The write
+    // is also the leg that fails TRANSIENTLY (a phone that lost signal for a
+    // second mid-save), so it gets one more go. The ENCODE is not retried: it
+    // fails deterministically — no WebP encoder, an image that will not decode
+    // — and a second attempt would only spend the operator's time failing
+    // identically. (Adversarial review, PR #553.)
+    try {
+      await upload(path, blob, metadata);
+    } catch (firstErr) {
+      warn("product thumbnail write failed, retrying once:", firstErr);
+      await pause(RETRY_DELAY_MS);
+      await upload(path, blob, metadata);
+    }
     return { ok: true, path, bytes: blob.size ?? null };
   } catch (err) {
     // Deliberately swallowed. The photo has already uploaded (or is about to);

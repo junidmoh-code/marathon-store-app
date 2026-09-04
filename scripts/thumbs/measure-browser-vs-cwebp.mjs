@@ -35,7 +35,13 @@ import { join, extname } from "node:path";
 import puppeteer from "puppeteer";
 
 const BUCKET = "marathon-club.firebasestorage.app";
-const N = Number((process.argv.find((a) => a.startsWith("--n=")) || "--n=12").slice(4));
+const N = (() => {
+  const n = Number((process.argv.find((a) => a.startsWith("--n=")) || "--n=12").slice(4));
+  // `--n=abc` used to become NaN and silently measure nothing, printing a
+  // confident summary over zero rows.
+  if (!Number.isInteger(n) || n < 1) throw new Error("--n= must be a positive integer");
+  return n;
+})();
 const ROOT = new URL("../..", import.meta.url).pathname;
 
 function accessToken() {
@@ -79,32 +85,47 @@ async function sampleOriginals(want) {
   return names.filter((_, i) => i % step === 0).slice(0, want);
 }
 
-const scratch = mkdtempSync(join(tmpdir(), "thumb-measure-"));
-const server = createServer((req, res) => {
+// EVERYTHING that must be cleaned up is created inside the try below, so a
+// failure in the listing, the auth or the browser launch cannot leave a temp
+// directory of downloaded photos behind on the machine.
+let scratch = null;
+let server = null;
+let browser = null;
+
+const makeServer = (scratchDir) => createServer((req, res) => {
   // Serves the repo (for the real ES module) and the scratch dir (for the
   // downloaded photos) so the module's own relative imports resolve.
   const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
-  const file = path.startsWith("/sample/") ? join(scratch, path.slice("/sample/".length)) : join(ROOT, path);
+  const file = path.startsWith("/sample/") ? join(scratchDir, path.slice("/sample/".length)) : join(ROOT, path);
   try {
     const body = readFileSync(file);
-    const type = extname(file) === ".js" ? "text/javascript" : "image/jpeg";
+    const ext = extname(file);
+    // An ES module served as image/jpeg is refused by the browser outright, so
+    // the type is not a detail here — it is what makes the import work.
+    const type = ext === ".js" ? "text/javascript" : ext === ".html" ? "text/html" : "image/jpeg";
     res.writeHead(200, { "Content-Type": type }).end(body);
   } catch {
     res.writeHead(404).end("no");
   }
 });
-await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const origin = `http://127.0.0.1:${server.address().port}`;
-
-const originals = await sampleOriginals(N);
-console.log(`sampling ${originals.length} product photos from ${BUCKET}\n`);
-
-const browser = await puppeteer.launch({ headless: "new" });
-const page = await browser.newPage();
-await page.goto(`${origin}/index.html`, { waitUntil: "domcontentloaded" }).catch(() => {});
 
 const rows = [];
 try {
+  scratch = mkdtempSync(join(tmpdir(), "thumb-measure-"));
+  server = makeServer(scratch);
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+
+  const originals = await sampleOriginals(N);
+  console.log(`sampling ${originals.length} product photos from ${BUCKET}\n`);
+
+  browser = await puppeteer.launch({ headless: "new" });
+  const page = await browser.newPage();
+  // Any same-origin document will do — the module is imported by URL, and the
+  // page itself runs nothing. It must load, though: from about:blank the
+  // dynamic import would be refused cross-origin.
+  await page.goto(`${origin}/index.html`, { waitUntil: "domcontentloaded" });
+
   for (const name of originals) {
     const id = /^products\/([^/]+)\/photo\.jpg$/.exec(name)[1];
     const jpg = join(scratch, `${id}.jpg`);
@@ -128,17 +149,20 @@ try {
       return { bytes: thumb.size, type: thumb.type, width: bmp.width, height: bmp.height };
     }, origin, id);
 
-    const dims = execFileSync("cwebp", ["-quiet", "-print_psnr", "-q", "80", "-resize", "300", "0", jpg, "-o", "/dev/null"], { encoding: "utf8" }).trim();
+    // (There was a second cwebp run here with -print_psnr. It measured
+    // cwebp against the SOURCE, not the browser against cwebp, and its output
+    // was stored and never printed — a whole extra encode per photo for a
+    // number that answered no question this script asks.)
     rows.push({ id, srcKB: +(srcBytes.length / 1024).toFixed(1), cwebpKB: +(cwebpBytes / 1024).toFixed(1),
       browserKB: +(browserResult.bytes / 1024).toFixed(1), type: browserResult.type,
-      px: `${browserResult.width}x${browserResult.height}`, psnr: dims });
+      px: `${browserResult.width}x${browserResult.height}` });
     const r = rows[rows.length - 1];
     console.log(`  ${id}  src ${r.srcKB}KB  cwebp ${r.cwebpKB}KB  browser ${r.browserKB}KB (${r.px}, ${r.type})`);
   }
 } finally {
-  await browser.close();
-  server.close();
-  rmSync(scratch, { recursive: true, force: true });
+  if (browser) await browser.close();
+  if (server) server.close();
+  if (scratch) rmSync(scratch, { recursive: true, force: true });
 }
 
 const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
@@ -149,4 +173,13 @@ console.log(`  browser total ${sum((r) => r.browserKB).toFixed(1)} KB  mean ${(s
 console.log(`  browser / cwebp = ${ratio.toFixed(2)}x`);
 console.log(`  every browser encode is image/webp: ${rows.every((r) => r.type === "image/webp")}`);
 console.log(`  every browser encode is 300px wide: ${rows.every((r) => r.px.startsWith("300x"))}`);
-console.log(`\n  full-catalogue projection at 5,039 photos: ${(sum((r) => r.browserKB) / rows.length * 5039 / 1024).toFixed(1)} MB`);
+// The RATIO is the finding. This sample's own mean is not a catalogue mean —
+// the whole existing set is already measured on the other side (5,016 objects,
+// 106.6 MB, POS src/offline/photoCache.js), so the honest projection applies
+// the ratio to THAT, and compares it with the mirror's actual ceiling.
+const MEASURED_SET_MB = 106.6;          // POS photoCache.js, 5,016 objects, 2026-09-03
+const MIRROR_BUDGET_MB = 160;           // PHOTO_CACHE_BYTE_BUDGET
+console.log(`\n  projection = ratio x the measured set, NOT this sample's mean:`);
+console.log(`    ${ratio.toFixed(2)}x * ${MEASURED_SET_MB} MB = ${(ratio * MEASURED_SET_MB).toFixed(1)} MB`);
+console.log(`    mirror budget ${MIRROR_BUDGET_MB} MB -> ${ratio * MEASURED_SET_MB < MIRROR_BUDGET_MB ? "INSIDE" : "OVER"}`);
+console.log(`  (measured in Chromium. The uploading fleet is iPad Safari: unmeasured.)`);

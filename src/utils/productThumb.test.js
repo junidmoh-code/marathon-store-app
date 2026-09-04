@@ -73,6 +73,41 @@ describe("writeProductThumb — the photo matters more than the thumbnail", () =
     expect(res.reason).toContain("storage/unauthorized");
   });
 
+  it("retries the WRITE once — a re-shoot's dropped upload leaves a stale thumbnail marked current", async () => {
+    // The asymmetry that earns the retry: both call sites stamp photoUpdatedAt
+    // right after this returns, and that stamp is the mirror's content marker.
+    // A never-written thumbnail is recorded missing and retried every 6h; a
+    // FAILED re-shoot write leaves the previous picture in place under a marker
+    // that now says "current", and nothing revisits it.
+    const upload = vi.fn()
+      .mockRejectedValueOnce(new Error("network dropped"))
+      .mockResolvedValueOnce(undefined);
+    const res = await writeProductThumb("p1", { size: 1 }, {
+      upload, encode: async () => webpBlob(), warn: () => {}, pause: async () => {},
+    });
+    expect(res.ok).toBe(true);
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(upload.mock.calls[1][0]).toBe("products/p1/thumb_300.webp");
+  });
+
+  it("gives up after the second write failure — it never throws and never loops", async () => {
+    const upload = vi.fn().mockRejectedValue(new Error("storage/unauthorized"));
+    const res = await writeProductThumb("p1", { size: 1 }, {
+      upload, encode: async () => webpBlob(), warn: () => {}, pause: async () => {},
+    });
+    expect(res.ok).toBe(false);
+    expect(upload).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry the encode — it fails deterministically, so a second go only wastes time", async () => {
+    const encode = vi.fn(async () => { throw new Error("browser encoded image/png, not WebP"); });
+    const upload = vi.fn();
+    const res = await writeProductThumb("p1", { size: 1 }, { upload, encode, warn: () => {}, pause: async () => {} });
+    expect(res.ok).toBe(false);
+    expect(encode).toHaveBeenCalledTimes(1);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
   it("never throws on a missing id, a missing blob or a missing uploader", async () => {
     const encode = vi.fn(async () => webpBlob());
     await expect(writeProductThumb(null, { size: 1 }, { upload: vi.fn(), encode })).resolves.toMatchObject({ ok: false });
@@ -157,6 +192,14 @@ describe("encodeThumbnail geometry — property fuzz", () => {
     return seed / 4294967296;
   };
 
+  // WHAT THIS FUZZ CANNOT SEE: drawImage is a mock, so it proves the three
+  // lines of dimension arithmetic and nothing about the pixels. A crop bug (a
+  // drawImage with the wrong source rectangle), a makeCanvas that never sets
+  // canvas.width/height, and the naturalWidth-vs-width fallback all pass it.
+  // The real canvas path is exercised only by
+  // scripts/thumbs/measure-browser-vs-cwebp.mjs, which runs this module in a
+  // real browser against cwebp — and which is not part of `npm test`, because
+  // it needs a network, a bucket and a browser.
   it("holds the invariants for every source shape", async () => {
     const rand = seeded(20260904);
     // Uniform random shapes alone were NOT enough: removing the Math.max(1, …)
@@ -169,6 +212,13 @@ describe("encodeThumbnail geometry — property fuzz", () => {
     const edges = [
       [6000, 1], [4096, 3], [1200, 2], [301, 1], [300, 1], [299, 1],
       [1, 6000], [1, 1], [300, 300], [301, 300], [8000, 12],
+      // PORTRAIT extremes. The height is deliberately NOT bounded by 300 —
+      // `cwebp -resize 300 0` sets the width only, so the catalogue's 600x800
+      // photos are 300x400 objects and every one of the 5,016 already in the
+      // bucket has that shape. These cases exist to pin that on purpose, so
+      // nobody "fixes" the MAX_EDGE misnomer by scaling to the longest edge and
+      // silently disagrees with the bulk writer about what a thumbnail is.
+      [600, 800], [301, 6000], [400, 4000], [302, 9000],
     ];
     for (let i = 0; i < 2000 + edges.length; i++) {
       let srcW, srcH;
@@ -207,7 +257,10 @@ describe("encodeThumbnail geometry — property fuzz", () => {
       //    rounding. (Sources narrower than 300px are copied 1:1.)
       if (srcW > 300) {
         const expectedH = (srcH * 300) / srcW;
-        expect(Math.abs(made.h - Math.max(1, expectedH)), ctx).toBeLessThanOrEqual(1);
+        // HALF a pixel, which is what Math.round actually guarantees — not 1.
+        // At <= 1 this invariant survived swapping round for floor, ceil and
+        // trunc, i.e. it was not testing the rounding at all. (Fable, PR #553.)
+        expect(Math.abs(made.h - Math.max(1, expectedH)), ctx).toBeLessThanOrEqual(0.5);
         expect(made.w, ctx).toBe(300);
       } else {
         expect(made, ctx).toEqual({ w: srcW, h: srcH });
