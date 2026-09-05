@@ -308,10 +308,18 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
 // share syncProduct and nothing else, so a bug in the marker bookkeeping cannot
 // disable the backstop and vice versa.
 //
-// COST. It rides the reconciler's existing sweep cadence, so it re-uses a live
-// set that tick has already read, and takes MAX_PER_RUN products from where it
-// stopped last time. Over a day it covers the whole shop several times. A
-// product with no drift costs ONE Shopify query and no mutation.
+// COST, AND HOW LONG A FULL PASS ACTUALLY TAKES. It rides the reconciler's
+// existing sweep cadence, so it re-uses a live set that tick has already read,
+// and takes MAX_PER_RUN (40) products from where it stopped last time. That
+// cadence is 30 minutes by day and 3 hours overnight, plus any tick that
+// applied an intent. At 1,152 live products that is ~29 sweeps, so a FULL PASS
+// IS ROUGHLY 14 DAYTIME HOURS — not "a few times a day", which is what this
+// comment said until the arithmetic was done. Sized deliberately: this is the
+// floor under a marker that never arrived, not the mechanism. The markers are
+// what make a movement reach Shopify in one tick.
+//
+// A product with no drift costs ONE Shopify query and no mutation, so a slice
+// of 40 on a healthy shop is 40 cheap reads and nothing else.
 //
 // THE CURSOR IS A PRODUCT ID, NOT AN OFFSET. An offset into a list whose length
 // changes silently skips or repeats products when a product goes live or comes
