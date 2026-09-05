@@ -83,6 +83,12 @@ import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 // CONFIRMS a state, so it tracks the storefront within one tick rather than
 // waiting for a rebuild. Best-effort by design — see searchIndexWrite.mjs.
 import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchIndexWrite.mjs";
+// The continuous inventory push. reconcile.mjs writes a product's quantity to
+// Shopify exactly once, when it goes live; this drains the dirty markers the
+// shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
+// its storefront quantity in step with the shops. Without it the shop was
+// offering 220 variants it had none of. See inventorySync.mjs.
+import { sweepDirty as sweepInventoryDirty } from "./inventorySync.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1309,6 +1315,50 @@ if (sweepDue) {
     sweepUnfinished = true;
     console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
   }
+}
+
+// ── The inventory sweep — the thing that stops an oversell ───────────────────
+// Runs on EVERY commit tick, including a tick with no intents to apply. That is
+// the point: intent ticks are rare and stock moves all day, and the whole
+// defect being closed here is that inventory was only ever written on an intent
+// tick. A tick with no markers costs one small read of /shopify_inventory_dirty
+// and does not mint a Shopify token.
+//
+// It is deliberately AFTER the applies and the search-index sweep: a product
+// that just went live in this same tick had its inventory written by the apply
+// path, so its marker (if any) finds no drift and costs one query.
+//
+// A failure here NEVER fails the tick. The markers of anything not pushed
+// survive by design, so the next tick retries; turning a Shopify blip into a
+// non-zero exit would banner the runner's log FAILED for work that is already
+// scheduled to happen again in two minutes.
+try {
+  const inv = await sweepInventoryDirty(db, graphql, {
+    commit: true,
+    // Answered per pid, not from a whole-node read: the sweep processes at most
+    // MAX_PER_RUN products, so this is at most 40 small reads, against the
+    // 747 KB the live-set query costs. On a quiet tick there are no markers and
+    // this is never called at all.
+    isLive: async (pid) => {
+      assertSafeSegment(pid, "productId");
+      const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+      return node?.state === "live" && node?.liveState === "on";
+    },
+    log: (line) => console.error(line),
+  });
+  if (inv.seen) {
+    console.log(
+      `\ninventory: ${inv.seen} marker(s) · ${inv.pushed} product(s) pushed · ${inv.cleared} cleared` +
+      (inv.kept ? ` · ${inv.kept} kept (not pushed — they retry)` : "") +
+      (inv.remaining ? ` · ${inv.remaining} still marked` : "")
+    );
+    for (const r of inv.results) {
+      if (r.ok === false) console.error(`  ⚠ inventory ${r.pid}: ${r.why}`);
+      else if (r.staleVariants?.length) console.error(`  ⚠ inventory ${r.pid}: ${r.staleVariants.length} variant(s) point at inventory items Shopify does not know — id map stale, the rest were corrected`);
+    }
+  }
+} catch (e) {
+  console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
 }
 
 // RTDB stores no empty object — writing `{}` deletes the key, which is exactly

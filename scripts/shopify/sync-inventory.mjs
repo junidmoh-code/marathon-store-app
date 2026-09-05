@@ -8,10 +8,20 @@
 // WITHOUT --commit NOTHING IS WRITTEN. It reads both sides and prints what
 // differs, which is how the 2026-08-27 drift was found in the first place.
 //
-// This is the manual door onto the same module the reconciler now sweeps with
-// every commit tick (see inventorySync.mjs). It exists for the one-off repair
-// and for answering "what does Shopify think it has right now" without waiting
-// for a tick.
+// ── WHAT IS AUTOMATIC AND WHAT IS NOT ───────────────────────────────────────
+// This file is the MANUAL door. The automatic half is the pair that landed with
+// it: the `shopifyInventoryDirty` Cloud Function marks a product when its stock
+// moves, and reconcile.mjs drains those markers on every COMMIT tick (the Mac
+// mini, every two minutes). So ordinary day-to-day drift corrects itself.
+//
+// Until PR #559 this comment claimed the sweep already existed when nothing on
+// main imported the module at all — an operator reading it would have believed
+// inventory was being corrected while 564 products sat drifted. It is spelled
+// out here because that is the failure mode of a comment about a wiring.
+//
+// The manual door still earns its place, for the one-off repair (`--all
+// --commit`, which is what closed the 2026-09-05 oversell), and for answering
+// "what does Shopify think it has right now" without waiting for a tick.
 import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
@@ -34,7 +44,13 @@ const liveOn = new Set(Object.entries(nodes)
 
 if (flags.includes("--dirty")) {
   const r = await sweepDirty(db, graphql, { commit: COMMIT, isLive: (p) => liveOn.has(p), log: console.log });
-  console.log(`markers seen ${r.seen} · products pushed ${r.pushed} · markers cleared ${r.cleared}${r.remaining ? ` · ${r.remaining} left for the next run` : ""}`);
+  // `remaining` counts markers that are demonstrably still on the node — the
+  // ones past the per-run cap AND the ones deliberately kept because their push
+  // did not happen. A dry run clears nothing, so it reports the whole queue.
+  console.log(`markers seen ${r.seen} · products pushed ${r.pushed} · markers cleared ${r.cleared}` +
+    `${r.kept ? ` · ${r.kept} kept (not pushed — they retry)` : ""}` +
+    `${r.remaining ? ` · ${r.remaining} still marked` : ""}` +
+    `${COMMIT ? "" : "  [dry run — no marker was cleared]"}`);
   process.exit(0);
 }
 
