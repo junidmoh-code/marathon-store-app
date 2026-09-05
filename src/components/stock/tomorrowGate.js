@@ -73,6 +73,28 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
   }
 }
 
+// ─── WHICH ROWS THE GATE COVERS (2026-09-05) ─────────────────────────────────
+// The warehouse queue is hub-switched and the order card is shared, so the
+// button itself decides whether the Central question applies to this row.
+//
+// CENTRAL-FED HUBS ONLY — hub1 (2026-08-25) and hub2 (2026-09-05). Hub 2 draws
+// the same Central replenishment Hub 1 does, so "does Central hold this?" is
+// the right question before promising a Hub 2 customer a pair tomorrow.
+// hub3/hubC are NOT in that class: they replenish from hub stock Central may
+// never carry, so a missing Central cell there would read as a false "Out of
+// stock" — the one failure this feature must never produce. They keep
+// yesterday's behaviour verbatim (Tomorrow always offered, no probe, no
+// re-check), and so do the shops, which never render this button.
+//
+// The hub rule matches the app's orderInHub VERBATIM: hub3/hubC live in
+// placedAtHub, hub1/hub2 in `hub` (defaulted hub1).
+export const CENTRAL_FED_HUBS = ["hub1", "hub2"];
+export function centralFedRow(order) {
+  const hub = order?.hub || "hub1";
+  return CENTRAL_FED_HUBS.includes(hub)
+    && order?.placedAtHub !== "hub3" && order?.placedAtHub !== "hubC";
+}
+
 // The outcome a tap must produce, from a fresh availability answer.
 // null (unknown) → "tomorrow": see the fail-open note above.
 export function tomorrowTapOutcome(avail) {

@@ -91,8 +91,8 @@ import { displaySendNeedsSize } from "./utils/displaySend";
 import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
-import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits } from "./components/stock/availabilityCore";
+import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -9179,20 +9179,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // ONE PATH, TWO HUBS. Hub 2 did NOT get its own predicate, its own
   // arithmetic or its own tile: sneakerHubOf names the hub and every helper
-  // below indexes its data by that name. A `hub2SneakerOut` sitting beside a
-  // `sneakerOut` is exactly the drift this file's availability work exists to
-  // prevent.
+  // below indexes its data by that name. A second, hub-named copy of sneakerOut
+  // sitting beside this one is exactly the drift this file's availability work
+  // exists to prevent — hubIsolation.test.js refuses to let one appear.
   //
   // The gate opens only once THAT hub's subtree has settled, and never on a
   // read error. isFootwearProduct, not merely "not clothing": the sneaker
   // browse grid also carries perfumes, bags and one-size accessories (no
   // productType), whose availability promises this gate does not model — they
   // keep yesterday's behaviour. (Adversarial review, PR #446.)
-  const sneakerHubOf = (p) => {
-    if (!isFootwearProduct(p) || (p?.productType || "sneaker") === "clothing") return null;
-    const h = computeHubForItem({ product: p });
-    return (h === "hub1" || h === "hub2") ? h : null;
-  };
+  // gatedSneakerHub lives in availabilityCore next to the resolver it feeds, so
+  // "which hub answers" is testable without mounting the screen (hubIsolation).
+  const sneakerHubOf = (p) => gatedSneakerHub(p, computeHubForItem({ product: p }));
   // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
   // register), so they keep their own narrower predicate rather than riding
   // sneakerHubOf — a Hub 2 shoe must not be offered a Hub 1 display pair.
@@ -10565,14 +10563,14 @@ function TomorrowActionButton({ order, onOutcome }) {
   // placedAtHub, hub1/hub2 in `hub` (defaulted hub1). Hub 1's answer is
   // unchanged, character for character — hub2 is added as a disjunct and
   // nothing else moved. Pinned by hubIsolation.test.js.
-  const rowHub = order.hub || "hub1";
-  const centralFedRow = (rowHub === "hub1" || rowHub === "hub2")
-    && order.placedAtHub !== "hub3" && order.placedAtHub !== "hubC";
+  // centralFedRow lives in tomorrowGate.js beside the read it guards, so this
+  // row rule is testable on its own (hubIsolation.test.js).
+  const gatedRow = centralFedRow(order);
   const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
   const [busy, setBusy]   = useState(false);
   const busyRef = useRef(false);                   // state lags a frame; the ref doesn't
   useEffect(() => {
-    if (!centralFedRow) return undefined;
+    if (!gatedRow) return undefined;
     let on = true;
     setAvail(undefined);   // a reused instance must not wear its neighbour's label
     fetchCentralAvailability(order.productId, gateSize).then((a) => {
@@ -10580,14 +10578,14 @@ function TomorrowActionButton({ order, onOutcome }) {
       if (on && !busyRef.current) setAvail(a);
     });
     return () => { on = false; };
-  }, [order.productId, gateSize, centralFedRow]);
-  const offersOOS = centralFedRow && avail !== undefined && avail !== null && avail <= 0;
+  }, [order.productId, gateSize, gatedRow]);
+  const offersOOS = gatedRow && avail !== undefined && avail !== null && avail <= 0;
   const tap = async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     try {
-      if (!centralFedRow) { await onOutcome("tomorrow"); return; }   // hub3/hubC: yesterday's behaviour, verbatim
+      if (!gatedRow) { await onOutcome("tomorrow"); return; }   // hub3/hubC: yesterday's behaviour, verbatim
       const fresh = await fetchCentralAvailability(order.productId, gateSize, { fresh: true });
       setAvail(fresh);
       await onOutcome(tomorrowTapOutcome(fresh));

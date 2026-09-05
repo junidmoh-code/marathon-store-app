@@ -137,6 +137,31 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
   return out;
 }
 
+// ─── WHICH HUB ANSWERS FOR A SNEAKER TILE (2026-09-05) ───────────────────────
+// The shop ordering grid gates a sneaker size on the availability of the hub
+// that would actually have to supply it. `routedHub` is the caller's own
+// routing answer (App.jsx computeHubForItem — the same routing the order
+// itself will take); this returns the hub whose data should gate, or NULL for
+// "no gate, yesterday's behaviour".
+//
+// TWO HUBS, and deliberately only two:
+//   • hub1 — the original build (2026-08-25)
+//   • hub2 — joined 2026-09-05, this file's whole reason for existing twice
+//   • hub3 (Pine) and everything else — NULL. Pine replenishes on its own
+//     terms and its grid has never been gated; the shops never run this gate
+//     at all (they are order DESTINATIONS, not the supplying hub).
+//
+// isFootwearProduct, not merely "not clothing": the sneaker browse grid also
+// carries perfumes, bags and one-size accessories (no productType), whose
+// availability promises this gate does not model — they keep yesterday's
+// behaviour. (Adversarial review, PR #446.)
+export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
+export function gatedSneakerHub(product, routedHub) {
+  if (!isFootwearProduct(product)) return null;
+  if ((product?.productType || "sneaker") === "clothing") return null;
+  return GATED_SNEAKER_HUBS.includes(routedHub) ? routedHub : null;
+}
+
 // The resolver itself. `cellQty` is the raw booked quantity (may be negative);
 // `promised` is the units already spoken for in that cell (absent → 0).
 export function availableUnits(cellQty, promised = 0) {
