@@ -4,6 +4,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onValueWritten } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
+const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
@@ -569,6 +570,65 @@ exports.holdAvailabilityNotify = onValueWritten(
       before:    event.data.before.val(),
       after:     event.data.after.val(),
     });
+  }
+);
+
+// ─── SHOPIFY INVENTORY: MARK WHAT MOVED ──────────────────────────────────────
+// The storefront was overselling. reconcile.mjs writes a product's inventory to
+// Shopify exactly once — at the moment it goes live — and never again, so a
+// product's quantity on the shop froze on its publish day while stock kept
+// moving in the shops. Measured 2026-09-04 over 1,152 live products: 564
+// drifted, 1,190 variants, and 220 variants OFFERED FOR SALE against an app
+// quantity of zero.
+//
+// This is the half that could not be built before, because it needs a database
+// trigger. It writes ONE small counter key per changed product;
+// scripts/shopify/inventorySync.mjs drains those keys on the Mac mini's
+// two-minute commit tick. The alternative — sweeping /stock — is a 5.36 MB read
+// every two minutes, ~2.6 GB a day, to usually learn that nothing moved.
+//
+// Scoped to /stock/{loc}/{pid}, so ONE movement wakes it ONCE however many
+// size cells it touched. Every decision (unsellable locations, the per-size
+// comparison, the live-on gate, the fresh re-read of the changed cells) lives
+// in lib/shopify-inventory-dirty.cjs and is node-tested.
+//
+// retry: false ON PURPOSE. A missed mark is repaired by the very next movement
+// on that product, and by the reconciler's own periodic full pass — while a
+// retry storm on a hot stock node would multiply invocations against the one
+// path the whole shop floor writes through. The counter is idempotent-ish by
+// design (over-marking is free), so this is the cheap side to fail on.
+//   firebase deploy --only functions:shopifyInventoryDirty
+exports.shopifyInventoryDirty = onValueWritten(
+  {
+    ref:            "/stock/{loc}/{pid}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,
+  },
+  async (event) => {
+    try {
+      await markInventoryDirty(
+        {
+          db:        admin.database(),
+          increment: (n) => admin.database.ServerValue.increment(n),
+          log:       () => {},
+        },
+        {
+          loc:    event.params.loc,
+          pid:    event.params.pid,
+          before: event.data.before.val(),
+        }
+      );
+    } catch (e) {
+      // NEVER let this throw into the stock write path's retry machinery. The
+      // marker is an optimisation over a full sweep; failing to write one costs
+      // a delayed correction, and the next movement on this product writes it
+      // again. Failing LOUDLY here would put retries on the busiest node in the
+      // database for no gain.
+      console.error(`shopifyInventoryDirty: ${String(e?.message || e)}`);
+    }
   }
 );
 

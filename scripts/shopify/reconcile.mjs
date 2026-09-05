@@ -83,6 +83,12 @@ import { resolveCollection, COLLECTION_BY_KEY } from "./collectionMap.mjs";
 // CONFIRMS a state, so it tracks the storefront within one tick rather than
 // waiting for a rebuild. Best-effort by design — see searchIndexWrite.mjs.
 import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchIndexWrite.mjs";
+// The continuous inventory push. reconcile.mjs writes a product's quantity to
+// Shopify exactly once, when it goes live; this drains the dirty markers the
+// shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
+// its storefront quantity in step with the shops. Without it the shop was
+// offering 220 variants it had none of. See inventorySync.mjs.
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1257,6 +1263,22 @@ let sweepRan = false;
 // 30 minutes, or 3 hours overnight — while its own log line promised the next
 // tick. Unfinished CLEARS lastSweepAt instead, which makes the next tick due.
 let sweepUnfinished = false;
+// The inventory backstop's place in the live product list, carried in the same
+// state record as the search-index cadence. `written` is a separate flag rather
+// than a null check because null is a MEANINGFUL cursor value — it is what a
+// completed full pass returns — and "the pass wrapped" must not be confused
+// with "the backstop did not run this tick".
+let inventoryCursor = null;
+let inventoryCursorWritten = false;
+// The marker sweep's rotation point. Separate from inventoryCursor: one walks
+// the dirty node, the other walks the live product list, and they advance at
+// different rates.
+let markerCursor = null;
+let markerCursorWritten = false;
+// The live set this tick read, hoisted so the inventory backstop can re-use it
+// instead of paying 747 KB for its own copy. Null when the sweep did not run or
+// could not read it — the backstop then simply does not run this tick.
+let liveNow = null;
 // A plain conditional, not a sentinel exception. "Not due" is a schedule, not a
 // failure, and routing it through throw meant the catch below had to tell the
 // two apart by comparing an error MESSAGE — which leaves the catch describing
@@ -1264,7 +1286,7 @@ let sweepUnfinished = false;
 // sentinel.
 if (sweepDue) {
   try {
-    const liveNow = scanMode === "full"
+    liveNow = scanMode === "full"
       ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
       : await readLivePids(db, { meter });
     const sweep = await sweepSearchIndex(db, admin.app(), {
@@ -1309,6 +1331,91 @@ if (sweepDue) {
     sweepUnfinished = true;
     console.error(`  ⚠ search-index sweep failed (${String(e?.message || e)}) — run build-search-index.mjs --commit`);
   }
+}
+
+// ── The inventory sweep — the thing that stops an oversell ───────────────────
+// Runs on EVERY commit tick, including a tick with no intents to apply. That is
+// the point: intent ticks are rare and stock moves all day, and the whole
+// defect being closed here is that inventory was only ever written on an intent
+// tick. A tick with no markers costs one small read of /shopify_inventory_dirty
+// and does not mint a Shopify token.
+//
+// It is deliberately AFTER the applies and the search-index sweep: a product
+// that just went live in this same tick had its inventory written by the apply
+// path, so its marker (if any) finds no drift and costs one query.
+//
+// A failure here NEVER fails the tick. The markers of anything not pushed
+// survive by design, so the next tick retries; turning a Shopify blip into a
+// non-zero exit would banner the runner's log FAILED for work that is already
+// scheduled to happen again in two minutes.
+// ── A `--pids` RUN TOUCHES NOTHING BUT ITS PIDS ─────────────────────────────
+// The scan state below is already gated on `!ONLY` — "a surgical human command
+// must not tell the scheduler it is caught up". The same reasoning applies here
+// and was missed: a scoped debug run against one product would still push up to
+// 40 unrelated products' inventory to Shopify as a side effect, which is not
+// what anyone typing --pids is asking for.
+if (!ONLY) try {
+  const inv = await sweepInventoryDirty(db, graphql, {
+    commit: true,
+    cursor: scanState?.markerCursor ?? null,
+    // Answered per pid, not from a whole-node read: the sweep processes at most
+    // MAX_PER_RUN products, so this is at most 40 small reads, against the
+    // 747 KB the live-set query costs. On a quiet tick there are no markers and
+    // this is never called at all.
+    isLive: async (pid) => {
+      assertSafeSegment(pid, "productId");
+      const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+      return node?.state === "live" && node?.liveState === "on";
+    },
+    log: (line) => console.error(line),
+  });
+  if (inv.seen) {
+    console.log(
+      `\ninventory: ${inv.seen} marker(s) · ${inv.pushed} product(s) pushed · ${inv.cleared} cleared` +
+      (inv.kept ? ` · ${inv.kept} kept (not pushed — they retry)` : "") +
+      (inv.remaining ? ` · ${inv.remaining} still marked` : "")
+    );
+    for (const r of inv.results) {
+      if (r.skipped) console.error(`  ⚠ inventory ${r.pid}: ${r.skipped} — marker kept`);
+      // A product DELETED from Shopify while the app still calls it live is the
+      // opposite failure from an oversell, and reads very differently in a log —
+      // so it is said differently.
+      if (r.productGone) console.error(`  ‼ inventory ${r.pid}: ${r.why}`);
+      else if (r.ok === false) console.error(`  ⚠ inventory ${r.pid}: ${r.why}`);
+      else if (r.staleVariants?.length) console.error(`  ⚠ inventory ${r.pid}: ${r.staleVariants.length} variant(s) point at inventory items Shopify does not know — id map stale, the rest were corrected`);
+    }
+  }
+} catch (e) {
+  console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
+}
+
+if (!ONLY && sweepDue && liveNow) {
+    // ── THE INVENTORY BACKSTOP RIDES THIS TICK'S LIVE SET ────────────────────
+    // The markers are the fast path; this is the one that does not depend on a
+    // marker ever having been written. It runs on the search-index sweep's
+    // CADENCE purely for the read: `liveNow` costs 747 KB and that sweep has
+    // already paid for it this tick. It sits OUTSIDE that sweep's try/catch on
+    // purpose — a Shopify blip in the backstop must not be mistaken for an
+    // unfinished index sweep, which is what sharing the catch would do. A slice of MAX_PER_RUN products per due tick walks the whole shop
+    // several times a day. Its cursor is a product id, so a product going live
+    // or coming off never makes the pass skip or repeat one.
+    //
+    try {
+      const back = await sweepInventoryBacklog(db, graphql, {
+        livePids: liveNow,
+        cursor: scanState?.inventoryCursor ?? null,
+        commit: true,
+        log: (line) => console.error(line),
+      });
+      inventoryCursor = back.nextCursor;
+      inventoryCursorWritten = true;
+      if (back.pushed || back.wrapped) {
+        console.log(`inventory backstop: ${back.checked} checked · ${back.pushed} corrected` +
+          (back.wrapped ? " · full pass complete, starting again next time" : ` · next from ${back.nextCursor}`));
+      }
+    } catch (e) {
+      console.error(`  ⚠ inventory backstop failed (${String(e?.message || e)}) — the cursor is unchanged, the next sweep resumes there`);
+    }
 }
 
 // RTDB stores no empty object — writing `{}` deletes the key, which is exactly
@@ -1385,6 +1492,8 @@ if (COMMIT && !ONLY) {
     // the next tick is due regardless of cadence), and never ran because it was
     // not due (leave it alone — clearing there would sweep every tick forever).
     ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
+    ...(inventoryCursorWritten ? { inventoryCursor } : {}),
+    ...(markerCursorWritten ? { markerCursor } : {}),
     updatedAt: runStartedAt,
   });
 }
