@@ -501,6 +501,56 @@ describe("clearMarker — an abort must be unreachable from a null cache", () =>
 });
 const db2 = (store) => fakeDb(store);
 
+// ── A THROWING clearMarker MUST COST ONE PID, NOT THE TICK ──────────────────
+// #564 made clearMarker do a real server round trip (returning `null` for an
+// absent marker rather than aborting locally), which made it capable of
+// REJECTING for the first time — a non-ok PUT, or retries lost to contention.
+// The not-live clear sat outside the try/catch, so one blip on one de-listed
+// product would have thrown out of the loop and cost every remaining product in
+// the batch its correction.
+describe("sweepDirty — one pid's failure never costs the batch", () => {
+  const throwingClear = (store, failPid) => {
+    const db = fakeDb(store);
+    const realRef = db.ref;
+    db.ref = (path) => {
+      const r = realRef(path);
+      if (path === `${DIRTY_PATH}/${failPid}`) {
+        r.transaction = async () => { throw new Error("PUT failed: transaction contention"); };
+      }
+      return r;
+    };
+    return db;
+  };
+
+  it("a NOT-LIVE product whose clear rejects does not stop the live one behind it", async () => {
+    const store = withProduct("zzz", { appQty: 3, marker: 1 });
+    store[DIRTY_PATH].aaa = 1;                       // sorts first, and is not live
+    const db = throwingClear(store, "aaa");
+    const r = await sweepDirty(db, graphqlSaying(7), {
+      commit: true, isLive: (p) => p === "zzz",
+    });
+    // The live product WAS pushed and cleared, even though the marker before it
+    // blew up. Before the guard moved, this threw and returned nothing at all.
+    expect(r.pushed).toBe(1);
+    expect(store[DIRTY_PATH].zzz).toBeUndefined();
+    expect(store[DIRTY_PATH].aaa).toBe(1);           // its own marker survives, to retry
+    expect(r.results.some((x) => x.pid === "aaa" && x.ok === false)).toBe(true);
+  });
+
+  it("an isLive() that rejects costs only its own pid", async () => {
+    const store = withProduct("zzz", { appQty: 3, marker: 1 });
+    store[DIRTY_PATH].aaa = 1;
+    const r = await sweepDirty(fakeDb(store), graphqlSaying(7), {
+      commit: true,
+      // The reconciler answers isLive with a per-pid RTDB read, which can fail
+      // for exactly the same reasons a clear can.
+      isLive: async (p) => { if (p === "aaa") throw new Error("RTDB read failed"); return true; },
+    });
+    expect(r.pushed).toBe(1);
+    expect(store[DIRTY_PATH].zzz).toBeUndefined();
+  });
+});
+
 // ── The one constant that lives in two languages ─────────────────────────────
 // The Cloud Function trigger (functions/lib/shopify-inventory-dirty.cjs, CJS)
 // decides whether a movement is worth marking; this module's push

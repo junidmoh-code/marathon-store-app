@@ -47,9 +47,20 @@ if (flags.includes("--dirty")) {
   // is no next tick to carry a cursor to and a person running this by hand is
   // asking for all of it. The per-run cap exists to keep a scheduled tick
   // short, which is not what this is.
-  const r = await sweepDirty(db, graphql, {
-    commit: COMMIT, isLive: (p) => liveOn.has(p), max: Number.MAX_SAFE_INTEGER, log: console.log,
-  });
+  // sweepDirty guards every per-pid failure itself, but a failure OUTSIDE the
+  // loop — the single location lookup, or the first read of the marker node —
+  // still throws out of it. This is a CLI a person runs by hand, so that must
+  // print a reason and exit non-zero rather than dying in a stack trace.
+  let r;
+  try {
+    r = await sweepDirty(db, graphql, {
+      commit: COMMIT, isLive: (p) => liveOn.has(p), max: Number.MAX_SAFE_INTEGER, log: console.log,
+    });
+  } catch (e) {
+    console.error(`✗ the marker sweep failed: ${String(e?.message || e)}`);
+    console.error(`  No marker was cleared that was not pushed — nothing is lost; re-run.`);
+    process.exit(1);
+  }
   // `remaining` counts markers that are demonstrably still on the node — the
   // ones past the per-run cap AND the ones deliberately kept because their push
   // did not happen. A dry run clears nothing, so it reports the whole queue.

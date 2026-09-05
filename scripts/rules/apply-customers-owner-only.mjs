@@ -72,8 +72,8 @@ const canonical = (v) => {
 
 // The three keys this script may touch, removed from BOTH sides before the
 // documents are compared. Declared here, beside canonical, because the dry-run
-// self-check above calls it — and putting it below that call is exactly the
-// temporal-dead-zone bug this pair already produced once.
+// self-check BELOW calls it — and putting it after that call is exactly the
+// temporal-dead-zone bug this pair already produced, twice, within a minute.
 const strip = (r) => {
   const c = JSON.parse(JSON.stringify(r));
   delete c.rules.customers[".write"];
@@ -134,8 +134,23 @@ const next = patchOrdersIndex(patchCustomersRules(live));
 // So both helpers are now called here, on the actual fetched document, on every
 // run. A TDZ, a typo or a shape the canonicaliser cannot handle now crashes in
 // the DRY RUN, which is the whole point of having one.
-if (canonical(live) === undefined || typeof strip(live) !== "string") {
-  throw new Error("the verify helpers did not survive the live document — refusing to go near --apply");
+// A THROW is the signal here, not the comparison. The first version read
+// `if (canonical(live) === undefined || typeof strip(live) !== "string")`,
+// which sounds like a test and is not one: canonical never returns undefined
+// for a parsed document, and strip always stringifies, so that condition can
+// never be true. What it actually caught — the TDZ it was written for — came
+// through as an uncaught ReferenceError sailing straight past the `if`. Worth
+// saying plainly rather than leaving a check whose shape implies it does
+// something its body cannot.
+//
+// So: CALL them, and let a throw be the failure. And assert the one property
+// the verify genuinely depends on — that canonical actually normalises key
+// order — because if it silently stopped doing that, the post-write diff would
+// go back to being order-sensitive and could restore the backup over a correct
+// apply, which is the bug this pair of helpers exists to prevent.
+strip(live);
+if (JSON.stringify(canonical({ b: 1, a: 2 })) !== JSON.stringify({ a: 2, b: 1 })) {
+  throw new Error("canonical() no longer normalises key order — the post-write diff would be order-sensitive again");
 }
 
 console.log("\n── the change ──");
