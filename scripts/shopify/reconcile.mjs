@@ -1364,7 +1364,11 @@ try {
       (inv.remaining ? ` · ${inv.remaining} still marked` : "")
     );
     for (const r of inv.results) {
-      if (r.ok === false) console.error(`  ⚠ inventory ${r.pid}: ${r.why}`);
+      // A product DELETED from Shopify while the app still calls it live is the
+      // opposite failure from an oversell, and reads very differently in a log —
+      // so it is said differently.
+      if (r.productGone) console.error(`  ‼ inventory ${r.pid}: ${r.why}`);
+      else if (r.ok === false) console.error(`  ⚠ inventory ${r.pid}: ${r.why}`);
       else if (r.staleVariants?.length) console.error(`  ⚠ inventory ${r.pid}: ${r.staleVariants.length} variant(s) point at inventory items Shopify does not know — id map stale, the rest were corrected`);
     }
   }

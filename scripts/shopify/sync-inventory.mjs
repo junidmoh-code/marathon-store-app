@@ -69,11 +69,15 @@ const locationId = await requireSingleLocation(graphql);
 const locNames = await locationNames(db);
 let drifted = 0, variants = 0, zeroed = 0;
 const zeroRows = [];
+// Products the app calls live that Shopify no longer has. Collected separately
+// because it is the OPPOSITE failure from an oversell, and would otherwise be
+// seven lines lost inside a report about quantities.
+const gone = [];
 for (const pid of pids) {
   let r;
   try { r = await syncProduct(db, graphql, pid, { commit: COMMIT, locationId, locNames }); }
   catch (e) { console.log(`✗ ${pid}: ${String(e?.message || e)}`); continue; }
-  if (r.ok === false) { console.log(`✗ ${pid}: ${r.why}`); continue; }
+  if (r.ok === false) { console.log(`✗ ${pid}: ${r.why}`); if (r.productGone) gone.push(pid); continue; }
   if (r.staleVariants?.length) console.log(`  ⚠ ${pid}: ${r.staleVariants.length} variant(s) point at inventory items Shopify does not know — id map stale, the rest were still corrected`);
   if (r.skipped || !r.drift?.length) continue;
   drifted++; variants += r.drift.length;
@@ -94,5 +98,11 @@ if (zeroRows.length) {
   console.log(`\nSELLABLE AT ZERO — these could be bought and not shipped:`);
   for (const z of zeroRows) console.log(`  ${z.pid} ${z.sizeKey}  shopify was offering ${z.shopify}`);
   console.log(COMMIT ? "  ↑ all now set to 0 on Shopify — off the shop." : "  ↑ run again with --commit to take them off the shop.");
+}
+if (gone.length) {
+  console.log(`\nDELETED FROM SHOPIFY — the app still records these as live and on:`);
+  for (const p of gone) console.log(`  ${p}`);
+  console.log(`  ↑ NOT an oversell — the opposite. Nothing here can correct them:`);
+  console.log(`    the product must be re-published, or its publish node taken off.`);
 }
 process.exit(0);

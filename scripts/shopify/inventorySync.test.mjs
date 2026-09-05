@@ -16,7 +16,7 @@
 // emulator cannot be made to produce on demand.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
-import { sweepDirty, sweepBacklog, clearMarker, DIRTY_PATH } from "./inventorySync.mjs";
+import { sweepDirty, sweepBacklog, syncProduct, clearMarker, DIRTY_PATH } from "./inventorySync.mjs";
 
 // ── A fake RTDB just rich enough for this module ─────────────────────────────
 // get() reads a path out of a plain object; transaction() runs the updater
@@ -311,6 +311,61 @@ describe("sweepBacklog", () => {
     const r = await sweepBacklog(fakeDb({}), g, { livePids: [], commit: true });
     expect(r).toMatchObject({ checked: 0, pushed: 0, nextCursor: null, wrapped: true });
     expect(g).not.toHaveBeenCalled();
+  });
+});
+
+// ── THE OPPOSITE FAILURE: A PRODUCT THE APP THINKS IS LIVE AND ISN'T ─────────
+// All 7 refusals in the 2026-09-05 correction run were products DELETED from
+// Shopify while the app still recorded state:"live", liveState:"on". The
+// message said "the id map is stale", which is true and useless — it describes
+// a symptom shared by two very different situations.
+describe("syncProduct — an entirely unknown id map is diagnosed, not guessed at", () => {
+  const goneStore = () => ({
+    locations: LOCATIONS,
+    stock: { pe: { p1: { M: { qty: 3 } } } },
+    shopify_sync: { p1: { shopifyProductId: "gid://shopify/Product/1", variants: { M: { shopifyInventoryItemId: "gid://shopify/InventoryItem/1" } } } },
+  });
+
+  it("says DELETED when Shopify does not have the product either", async () => {
+    const g = vi.fn(async (q) => {
+      if (q.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+      if (q.includes("product(id:")) return { product: null };
+      return { nodes: [] };
+    });
+    const r = await syncProduct(fakeDb(goneStore()), g, "p1", { commit: true });
+    expect(r).toMatchObject({ ok: false, productGone: true });
+    expect(r.why).toMatch(/DELETED FROM SHOPIFY/);
+    expect(r.why).toContain("gid://shopify/Product/1");
+  });
+
+  it("keeps the STALE MAP diagnosis when the product is still there", async () => {
+    const g = vi.fn(async (q) => {
+      if (q.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+      if (q.includes("product(id:")) return { product: { id: "gid://shopify/Product/1" } };
+      return { nodes: [] };
+    });
+    const r = await syncProduct(fakeDb(goneStore()), g, "p1", { commit: true });
+    expect(r).toMatchObject({ ok: false, productGone: false });
+    expect(r.why).toMatch(/the id map is stale/);
+  });
+
+  it("a probe that THROWS answers null, not 'present' — and never masks the refusal", async () => {
+    const g = vi.fn(async (q) => {
+      if (q.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+      if (q.includes("product(id:")) throw new Error("ETIMEDOUT");
+      return { nodes: [] };
+    });
+    const r = await syncProduct(fakeDb(goneStore()), g, "p1", { commit: true });
+    expect(r.ok).toBe(false);
+    expect(r.productGone).toBeNull();
+    expect(r.why).toMatch(/the id map is stale/);
+  });
+
+  it("costs NOTHING on the healthy path — the probe is only asked after a failure", async () => {
+    const store = withProduct("p1", { appQty: 3, marker: 1 });
+    const g = graphqlSaying(7);
+    await syncProduct(fakeDb(store), g, "p1", { commit: true });
+    expect(g.mock.calls.some(([q]) => q.includes("product(id:"))).toBe(false);
   });
 });
 

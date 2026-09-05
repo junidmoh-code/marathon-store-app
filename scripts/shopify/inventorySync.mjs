@@ -129,7 +129,33 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
     .filter((i) => i.shopify !== i.quantity);
 
   const stale = unknown.length ? { staleVariants: unknown.map((i) => i.sizeKey) } : {};
-  if (!known.length) return { pid, ok: false, why: `every mapped inventory item is unknown to Shopify — the id map is stale`, ...stale };
+  // ── AN ENTIRELY UNKNOWN ID MAP HAS TWO VERY DIFFERENT CAUSES ──────────────
+  // "The id map is stale" was the whole diagnosis, and it is the less
+  // interesting half. The 2026-09-05 correction run refused 7 products this
+  // way; every one of them turned out to have been DELETED FROM SHOPIFY while
+  // the app still recorded state:"live", liveState:"on". Those are not
+  // overselling — they are the opposite: seven products the shop believes it is
+  // selling online and is not, with nothing anywhere saying so.
+  //
+  // One extra query, asked ONLY on the path that has already failed (7 products
+  // out of 1,152), turns an ambiguous message into a fact. Nothing is written:
+  // what a deleted product should do to its publish node is a separate question
+  // with a separate answer, and guessing it here would be a third way this file
+  // could quietly disagree with the storefront.
+  if (!known.length) {
+    let gone = null;   // null = could not be established — NOT "present"
+    try {
+      const probe = await graphql(`query ($id: ID!) { product(id: $id) { id } }`, { id: map.shopifyProductId });
+      gone = probe?.product == null;
+    } catch { /* a probe that fails answers nothing, and must not mask the real refusal */ }
+    return {
+      pid, ok: false, productGone: gone,
+      why: gone
+        ? `DELETED FROM SHOPIFY (${map.shopifyProductId}) — the app still records this product as live and on, and it is not on the storefront at all`
+        : `every mapped inventory item is unknown to Shopify — the id map is stale`,
+      ...stale,
+    };
+  }
   if (!drift.length) return { pid, ok: true, drift: [], changed: 0, ...stale };
   if (!commit) return { pid, ok: true, drift, changed: 0, dryRun: true, ...stale };
 
