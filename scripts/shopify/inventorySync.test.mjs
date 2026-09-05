@@ -40,12 +40,28 @@ function fakeDb(store, { onTransaction } = {}) {
   return {
     ref: (path) => ({
       get: async () => ({ val: () => (at(path) === undefined ? null : at(path)) }),
+      // ── THE FAKE MODELS THE OPTIMISTIC NULL PASS, BECAUSE RTDB DOES ──────
+      // The first version called the updater ONCE with the true value. Every
+      // test passed, and the real thing cleared nothing: runTransaction runs
+      // the callback SYNCHRONOUSLY against the local cache first — null in a
+      // fresh process — and an `undefined` return aborts there, on the wire
+      // having never been touched. A fake kinder than the SDK is a fake that
+      // certifies a bug.
+      //
+      // So: call with null (what a cold cache presents); if that ABORTS, the
+      // transaction is over and nothing is written, exactly as the SDK does.
+      // Otherwise re-run against the real value and apply that — the server
+      // round trip.
       transaction: async (updater) => {
         onTransaction?.(path);
+        const optimistic = updater(null);
+        if (optimistic === undefined) {
+          return { committed: false, snapshot: { val: () => null } };
+        }
         const current = at(path) === undefined ? null : at(path);
         const next = updater(current);
         if (next !== undefined) setAt(path, next);
-        return { snapshot: { val: () => (at(path) === undefined ? null : at(path)) } };
+        return { committed: next !== undefined, snapshot: { val: () => (at(path) === undefined ? null : at(path)) } };
       },
     }),
   };
@@ -450,6 +466,40 @@ describe("sweepDirty — stuck markers cannot monopolise the window", () => {
     expect(r.nextCursor).toBeNull();
   });
 });
+
+// ── THE BUG THE OLD FAKE HID ────────────────────────────────────────────────
+// Live, on 2026-09-05, the sweep reported "10 marker(s) · 10 cleared · 10 still
+// marked" tick after tick while the node grew. clearMarker returned `undefined`
+// for an absent marker, which aborts the transaction against the cold local
+// cache before the server value is ever fetched — so nothing was deleted, and
+// the return read the cached null and called it a clear.
+describe("clearMarker — an abort must be unreachable from a null cache", () => {
+  it("still clears when the marker is really there (the cold-cache pass must not abort)", async () => {
+    const store = { [DIRTY_PATH]: { p1: 4 } };
+    const calls = [];
+    const db = fakeDb(store);
+    const realRef = db.ref;
+    db.ref = (path) => {
+      const r = realRef(path);
+      const t = r.transaction;
+      r.transaction = (u) => t((cur) => { calls.push(cur); return u(cur); });
+      return r;
+    };
+    expect(await clearMarker(db, "p1", 4)).toBe(true);
+    expect(store[DIRTY_PATH].p1).toBeUndefined();
+    // The updater saw null FIRST — the shape that used to abort — and then the
+    // real value. Both, in that order, or this test is not about the bug.
+    expect(calls[0]).toBeNull();
+    expect(calls).toContain(4);
+  });
+
+  it("a newer revision still survives the null pass", async () => {
+    const store = { [DIRTY_PATH]: { p1: 9 } };
+    expect(await clearMarker(db2(store), "p1", 4)).toBe(false);
+    expect(store[DIRTY_PATH].p1).toBe(9);
+  });
+});
+const db2 = (store) => fakeDb(store);
 
 // ── The one constant that lives in two languages ─────────────────────────────
 // The Cloud Function trigger (functions/lib/shopify-inventory-dirty.cjs, CJS)
