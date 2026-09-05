@@ -30,6 +30,8 @@ const F = {
   dup:   "src/components/stock/duplicateGroups.js",
   app:   "src/App.jsx",
   pa:    "src/components/stock/ProductActions.jsx",
+  bc:    "src/components/stock/BarcodeCatalog.jsx",
+  lp:    "src/components/LabelPrintView.jsx",
 };
 
 const T = {
@@ -160,6 +162,20 @@ const MUTATIONS = [
     from: "    const res = deactivated ? await reactivateProduct(product.id) : await deactivateProduct(product.id);",
     to:   "    const res = deactivated ? await reactivateProduct(product.id) : await deactivateProduct(product.id);\n    if (!deactivated && totalHeld > 0) await doZero();",
     tests: [T.actions],
+  },
+  {
+    name: "18. The barcode catalogue lists deactivated products again",
+    file: F.bc,
+    from: "      !isDeactivated(p) &&\n",
+    to:   "",
+    tests: [T.read],
+  },
+  {
+    name: "19. Print Labels lists deactivated products again",
+    file: F.lp,
+    from: "      if (isDeactivated(p)) return false;\n",
+    to:   "",
+    tests: [T.read],
   },
 ];
 
