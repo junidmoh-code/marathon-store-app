@@ -295,3 +295,96 @@ export function buildDuplicateGroups({ products = [], allStock = null, identityM
     || String(a.members[0].name).localeCompare(String(b.members[0].name)));
   return groups;
 }
+
+// ── THE ONE-TAP TWIN, FOR A ZERO-STOCK LEFTOVER ──────────────────────────────
+// (Owner spec 2026-09-05, BUILD 2.) Deactivating a bad record leaves the bad
+// NAME in the system forever; merging removes it AND repoints its barcodes onto
+// the survivor. So merge is the better exit whenever a twin exists — and the
+// operator should not have to go find it. This names the single most likely
+// survivor for one product so the leftovers card can show it, with its photo,
+// as a one-tap merge target.
+//
+// NEVER AUTOMATIC, and never a merge on its own: it returns a SUGGESTION that
+// opens the existing merge screen with both sides pre-filled, where the human
+// still confirms the plan and commits.
+//
+// TWO WAYS TO BE A TWIN, in this order of confidence:
+//   1. SHARED IDENTITY TOKEN — the two records carry a style code or label
+//      alias in common. That is the strongest signal the catalogue has.
+//   2. A VERY CLOSE NORMALISED NAME IN THE SAME BRAND — namesAreClose above,
+//      brand-bucketed, exactly the rule the Duplicates tab groups on (and
+//      exactly as conservative: one differing non-numeric token, max).
+//
+// Deliberately NOT "shared style code alone" as a join across the catalogue —
+// see this file's header: one code legitimately owns several colourway
+// siblings, and grouping on codes recommended merging real products. Here the
+// code is only ever used to nominate ONE candidate that the human then eyeballs
+// against a photo, and rule 2 is what carries most of the weight.
+//
+// The candidate itself must be a live, non-deactivated, non-merged OTHER record.
+// Among candidates the winner is `recommendSurvivor`'s own ranking — the same
+// evidence order the Duplicates tab uses — so the twin offered is the copy the
+// stock, the sales and the photo say to keep.
+export function buildTwinIndex({ products = [], identityMap = null } = {}) {
+  // Built ONCE per screen. Without it every card would scan the whole ~4k
+  // catalogue (and call identityFor on each), which is the difference between
+  // an instant list and a warehouse phone locking up on 300 rows.
+  const byCode = new Map();     // lowercased code/alias → [product]
+  const byBrand = new Map();    // brand bucket → [product]
+  for (const p of products) {
+    if (!p || !p.id || !p.name || isMergedAway(p) || isDeactivated(p)) continue;
+    const ident = identityFor(p, identityMap);
+    for (const c of [...(ident.codes || []), ...(ident.aliases || [])]) {
+      const k = String(c).toLowerCase();
+      if (!k) continue;
+      if (!byCode.has(k)) byCode.set(k, []);
+      byCode.get(k).push({ product: p, code: c });   // `code` keeps the printed casing
+    }
+    const b = brandKey(p);
+    if (!byBrand.has(b)) byBrand.set(b, []);
+    byBrand.get(b).push(p);
+  }
+  return { byCode, byBrand };
+}
+
+export function suggestTwin(product, { index = null, products = [], allStock = null, identityMap = null } = {}) {
+  if (!product || !product.id) return null;
+  const idx = index || buildTwinIndex({ products, identityMap });
+  const mine = identityFor(product, identityMap);
+  const myTokens = [...(mine.codes || []), ...(mine.aliases || [])]
+    .map((c) => String(c).toLowerCase()).filter(Boolean);
+  const myBrand = brandKey(product);
+
+  const ok = (p) => p && p.id && p.id !== product.id && p.name && !isMergedAway(p) && !isDeactivated(p);
+
+  const shared = [];
+  const sharedCode = new Map();          // pid → the token the two records agree on
+  for (const t of myTokens) {
+    for (const { product: p, code } of idx.byCode.get(t) || []) {
+      if (!ok(p) || sharedCode.has(p.id)) continue;
+      shared.push(p);
+      sharedCode.set(p.id, code);
+    }
+  }
+  const close = [];
+  if (!shared.length) {
+    for (const p of idx.byBrand.get(myBrand) || []) {
+      if (!ok(p)) continue;
+      if (namesAreClose(product.name, p.name)) close.push(p);
+    }
+  }
+  const pool = shared.length ? shared : close;
+  if (!pool.length) return null;
+  const facts = pool.map((p) => memberFacts(p, { allStock, identityMap, sales: null }));
+  const { ordered } = recommendSurvivor(facts);
+  const best = ordered[0];
+  if (!best) return null;
+  return {
+    product: best.product,
+    units: best.units,
+    via: shared.length ? "code" : "name",
+    reason: shared.length
+      ? `shares ${sharedCode.get(best.id) || "a label code"} with this record`
+      : "almost the same name, same brand",
+  };
+}
