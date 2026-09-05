@@ -48,7 +48,7 @@
 // change on the owner in the same breath as this rule (marathon-pos-app #309).
 // A name edit is untouched: it writes a field and deletes nothing.
 //
-// The emulator proof for every clause above is scripts/rules/customers-rules.test.mjs.
+// The emulator proof for every clause above is scripts/rules/prove-customers-rules.mjs.
 
 export const OWNER_EMAIL = "gunidmoh@gmail.com";
 

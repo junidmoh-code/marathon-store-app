@@ -13,7 +13,7 @@
 // token: an Authorization: Bearer header on the emulator is the ADMIN bypass,
 // and a suite that used one would pass every case while proving nothing.
 //
-// Run:  node scripts/rules/customers-rules.test.mjs
+// Run:  node scripts/rules/prove-customers-rules.mjs
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

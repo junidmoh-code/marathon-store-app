@@ -1,5 +1,5 @@
 // ── The rules patch, as a pure function ──────────────────────────────────────
-// The emulator suite (customers-rules.test.mjs) proves what the rules DO. This
+// The emulator suite (prove-customers-rules.mjs) proves what the rules DO. This
 // one proves what the patch TOUCHES — that it edits three keys and carries the
 // other 69 nodes of the live document through byte-for-byte, and that it
 // refuses rather than guessing when the live shape is not what it expects.

@@ -93,7 +93,7 @@ console.log(`  /orders .indexOn             : ${JSON.stringify(live.rules.orders
 const liveForEmu = path.join(os.tmpdir(), `rtdb-rules-live-${stamp}.json`);
 fs.writeFileSync(liveForEmu, JSON.stringify(live));
 console.log("\n── proving on the RTDB emulator ──");
-const proof = spawnSync(process.execPath, [path.join(HERE, "customers-rules.test.mjs")], {
+const proof = spawnSync(process.execPath, [path.join(HERE, "prove-customers-rules.mjs")], {
   stdio: "inherit",
   env: { ...process.env, LIVE_RULES: liveForEmu },
 });
