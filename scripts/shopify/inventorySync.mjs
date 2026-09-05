@@ -230,10 +230,32 @@ export async function clearMarker(db, pid, revision) {
  * of /shopify_publish (at most `max` small reads), the CLI from a set it
  * already holds.
  */
-export async function sweepDirty(db, graphql, { commit = false, isLive, max = MAX_PER_RUN, log = () => {} } = {}) {
+export async function sweepDirty(db, graphql, { commit = false, isLive, max = MAX_PER_RUN, cursor = null, log = () => {} } = {}) {
   const markers = (await db.ref(DIRTY_PATH).get()).val() || {};
-  const pids = Object.keys(markers);
-  if (!pids.length) return { seen: 0, pushed: 0, cleared: 0, kept: 0, remaining: 0, results: [] };
+  const allPids = Object.keys(markers).sort();
+  if (!allPids.length) return { seen: 0, pushed: 0, cleared: 0, kept: 0, remaining: 0, nextCursor: null, results: [] };
+
+  // ── THE WINDOW ROTATES, OR THE ZOMBIES EAT IT ──────────────────────────────
+  // This took `Object.keys(markers).slice(0, max)`. RTDB returns children in
+  // KEY ORDER, not insertion order, and a marker whose push can never succeed
+  // is never cleared — by design, since a failed push must not look like a done
+  // one. The live shop already has 7 such products (live+on in the app, deleted
+  // from Shopify). They sort where they sort, and they would sit at the front
+  // of the very same slice on every tick for ever. Once the stuck count reaches
+  // `max`, every genuinely new drift is starved out of the fast path
+  // completely, and nothing in the log distinguishes a healthy queue from one
+  // full of zombies.
+  //
+  // So the slice starts AFTER the last pid the previous run looked at and wraps.
+  // Stuck markers still cost their share of a tick's budget — they must, since
+  // nothing else knows they are stuck — but they cost it once per rotation
+  // instead of on every tick. With `max` at or above the marker count the
+  // rotation is a no-op and everything is still handled in one tick.
+  const start = cursor ? allPids.findIndex((p) => p > cursor) : 0;
+  const from = start === -1 ? 0 : start;
+  const pids = allPids.length <= max
+    ? allPids
+    : Array.from({ length: max }, (_, i) => allPids[(from + i) % allPids.length]);
 
   const locId = commit ? await requireSingleLocation(graphql) : null;
   const locNames = await locationNames(db);
@@ -255,16 +277,25 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
       const r = await syncProduct(db, graphql, pid, { commit, locationId: locId, locNames });
       results.push(r);
       if (r.changed) pushed++;
-      // ── ok:false NEVER CLEARS ────────────────────────────────────────────
-      // syncProduct returns ok:false without a mutation when every mapped
-      // inventory item is stale. Nothing was pushed, so nothing is done; the
-      // marker stays and the report says so. Repairing the id map is what
-      // clears it, and until then this product keeps announcing itself.
-      if (commit && r.ok !== false) {
+      // ── ONLY ok === true CLEARS ──────────────────────────────────────────
+      // This asked `r.ok !== false`, and syncProduct has a THIRD answer: a
+      // `skipped` result — "no shopify_sync id map", "no mapped inventory
+      // items" — which carries no `ok` field at all. `undefined !== false` is
+      // true, so those cleared the marker after doing nothing, and printed
+      // nothing either. That is reachable: /shopify_publish and /shopify_sync
+      // go out of step (reconcileScope.mjs documents it), so a product can read
+      // live+on with no id map, and every stock movement on it would mark, skip
+      // and clear in silence — the exact failure this module exists to end,
+      // rebuilt inside the fix for it.
+      //
+      // The rule is now the narrow one: a marker is cleared when a push
+      // SUCCEEDED, and in no other case. Everything else keeps its marker and
+      // says why.
+      if (commit && r.ok === true) {
         if (await clearMarker(db, pid, revision)) cleared++; else kept++;
       } else if (commit) {
         kept++;
-        log(`  ⚠ ${pid}: ${r.why || "not pushed"} — marker kept for the next tick`);
+        log(`  ⚠ ${pid}: ${r.why || r.skipped || "not pushed"} — marker kept for the next tick`);
       }
     } catch (e) {
       // The marker STAYS on a failure, so the next tick retries it. This is the
@@ -288,7 +319,18 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
   // that knows, so the node is asked. One small read at the end of a run that
   // already did real work.
   const left = (await db.ref(DIRTY_PATH).get()).val() || {};
-  return { seen: pids.length, pushed, cleared, kept, results, remaining: Object.keys(left).length };
+  return {
+    // `seen` is what is ON THE NODE, not what this run's window looked at —
+    // the CLI prints it as "markers seen", and a rotating window would otherwise
+    // make that number shrink while the queue grew. `results.length` is the
+    // count actually processed.
+    seen: allPids.length, pushed, cleared, kept, results,
+    remaining: Object.keys(left).length,
+    // Where the next run picks up. Null when this run saw the whole node, so a
+    // shrinking queue returns to a plain front-to-back sweep instead of
+    // carrying a cursor nothing needs.
+    nextCursor: allPids.length <= max ? null : (pids.at(-1) ?? null),
+  };
 }
 
 // ─── THE BACKSTOP: A SLOW PASS OVER EVERY LIVE PRODUCT ───────────────────────

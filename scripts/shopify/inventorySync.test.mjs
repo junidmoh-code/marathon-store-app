@@ -369,6 +369,88 @@ describe("syncProduct — an entirely unknown id map is diagnosed, not guessed a
   });
 });
 
+// ── THE TWO HOLES AN ADVERSARIAL PASS FOUND, AND THEY INTERACT ───────────────
+describe("sweepDirty — a `skipped` result is NOT a success", () => {
+  it("keeps the marker when the product has no shopify_sync id map", async () => {
+    // syncProduct answers { pid, skipped } with NO `ok` field. The clear used
+    // to ask `r.ok !== false`, and undefined !== false, so this cleared the
+    // marker after doing nothing at all — and logged nothing either.
+    const store = { locations: LOCATIONS, stock: { pe: { p1: { M: { qty: 3 } } } }, [DIRTY_PATH]: { p1: 1 } };
+    const lines = [];
+    const r = await sweepDirty(fakeDb(store), graphqlSaying(7), { commit: true, isLive: () => true, log: (l) => lines.push(l) });
+    expect(store[DIRTY_PATH].p1).toBe(1);
+    expect(r.cleared).toBe(0);
+    expect(r.kept).toBe(1);
+    expect(lines.join(" ")).toMatch(/no shopify_sync id map/);
+  });
+
+  it("keeps the marker when the map carries no inventory item ids", async () => {
+    const store = {
+      locations: LOCATIONS,
+      stock: { pe: { p1: { M: { qty: 3 } } } },
+      shopify_sync: { p1: { variants: { M: {} } } },
+      [DIRTY_PATH]: { p1: 1 },
+    };
+    const r = await sweepDirty(fakeDb(store), graphqlSaying(7), { commit: true, isLive: () => true });
+    expect(store[DIRTY_PATH].p1).toBe(1);
+    expect(r.cleared).toBe(0);
+  });
+});
+
+describe("sweepDirty — stuck markers cannot monopolise the window", () => {
+  // A marker whose push can never succeed is never cleared, by design. RTDB
+  // returns children in KEY order, so without rotation the same low-sorting
+  // zombies would sit at the front of every tick's slice for ever, and once
+  // there were `max` of them nothing else would ever be pushed again.
+  const zombieStore = (n, live) => {
+    const store = { locations: LOCATIONS, stock: { pe: {} }, shopify_sync: {}, [DIRTY_PATH]: {} };
+    for (let i = 0; i < n; i++) {
+      const pid = `a${String(i).padStart(3, "0")}`;   // sort BEFORE the live one
+      store[DIRTY_PATH][pid] = 1;
+      store.stock.pe[pid] = { M: { qty: 1 } };
+      store.shopify_sync[pid] = { shopifyProductId: "gid://shopify/Product/9", variants: { M: { shopifyInventoryItemId: "gid://shopify/InventoryItem/999" } } };
+    }
+    store[DIRTY_PATH][live] = 1;
+    store.stock.pe[live] = { M: { qty: 3 } };
+    store.shopify_sync[live] = { variants: { M: { shopifyInventoryItemId: "gid://shopify/InventoryItem/1" } } };
+    return store;
+  };
+  // Item 999 is unknown to Shopify, item 1 is known — so the a### products are
+  // permanently stuck and the live one is pushable.
+  const g = () => vi.fn(async (query) => {
+    if (query.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+    if (query.includes("inventorySetQuantities")) return { inventorySetQuantities: { userErrors: [] } };
+    if (query.includes("product(id:")) return { product: null };
+    return { nodes: [{ id: "gid://shopify/InventoryItem/1", inventoryLevel: { quantities: [{ name: "available", quantity: 7 }] } }] };
+  });
+
+  it("without rotation the live product would never be reached — with it, it is", async () => {
+    const store = zombieStore(3, "zzz");
+    // A window of 2 against 4 markers: the first run sees only zombies.
+    const r1 = await sweepDirty(fakeDb(store), g(), { commit: true, max: 2, isLive: () => true });
+    expect(r1.results.map((x) => x.pid)).toEqual(["a000", "a001"]);
+    expect(r1.nextCursor).toBe("a001");
+    // The next run carries on past them rather than starting at the front again.
+    const r2 = await sweepDirty(fakeDb(store), g(), { commit: true, max: 2, cursor: r1.nextCursor, isLive: () => true });
+    expect(r2.results.map((x) => x.pid)).toEqual(["a002", "zzz"]);
+    expect(r2.pushed).toBe(1);
+    expect(store[DIRTY_PATH].zzz).toBeUndefined();   // pushed AND cleared
+    expect(store[DIRTY_PATH].a000).toBe(1);          // the zombies stay marked
+  });
+
+  it("wraps back to the front once it runs off the end", async () => {
+    const store = zombieStore(3, "zzz");
+    const r = await sweepDirty(fakeDb(store), g(), { commit: true, max: 2, cursor: "zzz", isLive: () => true });
+    expect(r.results.map((x) => x.pid)).toEqual(["a000", "a001"]);
+  });
+
+  it("does not rotate at all when the whole queue fits in one run", async () => {
+    const store = withProduct("p1", { appQty: 3, marker: 1 });
+    const r = await sweepDirty(fakeDb(store), graphqlSaying(7), { commit: true, isLive: () => true });
+    expect(r.nextCursor).toBeNull();
+  });
+});
+
 // ── The one constant that lives in two languages ─────────────────────────────
 // The Cloud Function trigger (functions/lib/shopify-inventory-dirty.cjs, CJS)
 // decides whether a movement is worth marking; this module's push

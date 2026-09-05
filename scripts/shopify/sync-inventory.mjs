@@ -43,7 +43,13 @@ const liveOn = new Set(Object.entries(nodes)
   .map(([pid]) => pid));
 
 if (flags.includes("--dirty")) {
-  const r = await sweepDirty(db, graphql, { commit: COMMIT, isLive: (p) => liveOn.has(p), log: console.log });
+  // A manual run takes the WHOLE queue in one go — no rotation, because there
+  // is no next tick to carry a cursor to and a person running this by hand is
+  // asking for all of it. The per-run cap exists to keep a scheduled tick
+  // short, which is not what this is.
+  const r = await sweepDirty(db, graphql, {
+    commit: COMMIT, isLive: (p) => liveOn.has(p), max: Number.MAX_SAFE_INTEGER, log: console.log,
+  });
   // `remaining` counts markers that are demonstrably still on the node — the
   // ones past the per-run cap AND the ones deliberately kept because their push
   // did not happen. A dry run clears nothing, so it reports the whole queue.

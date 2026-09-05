@@ -1270,6 +1270,11 @@ let sweepUnfinished = false;
 // with "the backstop did not run this tick".
 let inventoryCursor = null;
 let inventoryCursorWritten = false;
+// The marker sweep's rotation point. Separate from inventoryCursor: one walks
+// the dirty node, the other walks the live product list, and they advance at
+// different rates.
+let markerCursor = null;
+let markerCursorWritten = false;
 // The live set this tick read, hoisted so the inventory backstop can re-use it
 // instead of paying 747 KB for its own copy. Null when the sweep did not run or
 // could not read it — the backstop then simply does not run this tick.
@@ -1343,9 +1348,16 @@ if (sweepDue) {
 // survive by design, so the next tick retries; turning a Shopify blip into a
 // non-zero exit would banner the runner's log FAILED for work that is already
 // scheduled to happen again in two minutes.
-try {
+// ── A `--pids` RUN TOUCHES NOTHING BUT ITS PIDS ─────────────────────────────
+// The scan state below is already gated on `!ONLY` — "a surgical human command
+// must not tell the scheduler it is caught up". The same reasoning applies here
+// and was missed: a scoped debug run against one product would still push up to
+// 40 unrelated products' inventory to Shopify as a side effect, which is not
+// what anyone typing --pids is asking for.
+if (!ONLY) try {
   const inv = await sweepInventoryDirty(db, graphql, {
     commit: true,
+    cursor: scanState?.markerCursor ?? null,
     // Answered per pid, not from a whole-node read: the sweep processes at most
     // MAX_PER_RUN products, so this is at most 40 small reads, against the
     // 747 KB the live-set query costs. On a quiet tick there are no markers and
@@ -1364,6 +1376,7 @@ try {
       (inv.remaining ? ` · ${inv.remaining} still marked` : "")
     );
     for (const r of inv.results) {
+      if (r.skipped) console.error(`  ⚠ inventory ${r.pid}: ${r.skipped} — marker kept`);
       // A product DELETED from Shopify while the app still calls it live is the
       // opposite failure from an oversell, and reads very differently in a log —
       // so it is said differently.
@@ -1376,7 +1389,7 @@ try {
   console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
 }
 
-if (sweepDue && liveNow) {
+if (!ONLY && sweepDue && liveNow) {
     // ── THE INVENTORY BACKSTOP RIDES THIS TICK'S LIVE SET ────────────────────
     // The markers are the fast path; this is the one that does not depend on a
     // marker ever having been written. It runs on the search-index sweep's
@@ -1480,6 +1493,7 @@ if (COMMIT && !ONLY) {
     // not due (leave it alone — clearing there would sweep every tick forever).
     ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
     ...(inventoryCursorWritten ? { inventoryCursor } : {}),
+    ...(markerCursorWritten ? { markerCursor } : {}),
     updatedAt: runStartedAt,
   });
 }
