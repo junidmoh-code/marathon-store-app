@@ -16,7 +16,7 @@
 // emulator cannot be made to produce on demand.
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
-import { sweepDirty, clearMarker, DIRTY_PATH } from "./inventorySync.mjs";
+import { sweepDirty, sweepBacklog, clearMarker, DIRTY_PATH } from "./inventorySync.mjs";
 
 // ── A fake RTDB just rich enough for this module ─────────────────────────────
 // get() reads a path out of a plain object; transaction() runs the updater
@@ -208,6 +208,109 @@ describe("sweepDirty — a product we do not sell online", () => {
       query.includes("locations(first: 2)") ? { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } } : {});
     const r = await sweepDirty(fakeDb(store), graphql, { commit: true, isLive: async () => false });
     expect(r.cleared).toBe(1);
+  });
+});
+
+describe("sweepDirty — remaining is READ BACK, not computed", () => {
+  it("counts a marker the trigger wrote DURING the run", async () => {
+    // The run clears every marker it started with. Arithmetic on its own
+    // numbers would answer "queue empty" with a new product sitting in it.
+    const pid = "p1";
+    const store = withProduct(pid, { appQty: 3, marker: 1 });
+    const db = fakeDb(store);
+    const realRef = db.ref;
+    db.ref = (path) => {
+      const r = realRef(path);
+      if (path === `stock/pe/${pid}`) {
+        const get = r.get;
+        r.get = async () => { const v = await get(); store[DIRTY_PATH].p2 = 1; return v; };
+      }
+      return r;
+    };
+    const res = await sweepDirty(db, graphqlSaying(7), { commit: true, isLive: (p) => p === pid });
+    expect(res.cleared).toBe(1);          // p1 was pushed and cleared
+    expect(res.remaining).toBe(1);        // p2 arrived and is still queued
+    expect(store[DIRTY_PATH].p2).toBe(1);
+  });
+});
+
+// ── The backstop ─────────────────────────────────────────────────────────────
+// Every way the marker can fail to be written ends in the same silent state: a
+// product whose storefront quantity is wrong and which says nothing about it.
+// The backstop is the path that does not depend on a marker existing, so the
+// cases below are about it covering everything and losing nothing across runs.
+describe("sweepBacklog", () => {
+  const liveStore = (pids) => {
+    const store = { locations: LOCATIONS, stock: { pe: {} }, shopify_sync: {} };
+    for (const pid of pids) {
+      store.stock.pe[pid] = { M: { qty: 3 } };
+      store.shopify_sync[pid] = { variants: { M: { shopifyInventoryItemId: "gid://shopify/InventoryItem/1" } } };
+    }
+    return store;
+  };
+
+  it("takes a slice and hands back the pid to carry on from", async () => {
+    const r = await sweepBacklog(fakeDb(liveStore(["a", "b", "c", "d"])), graphqlSaying(7),
+      { livePids: ["d", "b", "a", "c"], max: 2, commit: true });
+    expect(r.checked).toBe(2);
+    expect(r.nextCursor).toBe("b");   // sorted: a,b,c,d — took a,b
+    expect(r.wrapped).toBe(false);
+  });
+
+  it("resumes AFTER the cursor and covers the whole list across runs", async () => {
+    const pids = ["a", "b", "c", "d", "e"];
+    const store = liveStore(pids);
+    const seen = [];
+    let cursor = null;
+    for (let i = 0; i < 3; i++) {
+      const g = vi.fn(async (query) => {
+        if (query.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+        if (query.includes("inventorySetQuantities")) return { inventorySetQuantities: { userErrors: [] } };
+        return { nodes: [{ id: "gid://shopify/InventoryItem/1", inventoryLevel: { quantities: [{ name: "available", quantity: 7 }] } }] };
+      });
+      const r = await sweepBacklog(fakeDb(store), g, { livePids: pids, cursor, max: 2, commit: true });
+      seen.push(...r.results.map((x) => x.pid));
+      cursor = r.nextCursor;
+    }
+    expect(seen).toEqual(["a", "b", "c", "d", "e"]);
+    expect(cursor).toBeNull();   // the pass wrapped; the next run starts at the top
+  });
+
+  it("a cursor naming a product that has since gone OFF still resumes correctly", async () => {
+    // "b" is no longer live. Ordering by value means the pass carries on at "c"
+    // rather than restarting — which an index-based cursor could not do.
+    const r = await sweepBacklog(fakeDb(liveStore(["a", "c", "d"])), graphqlSaying(7),
+      { livePids: ["a", "c", "d"], cursor: "b", max: 1, commit: true });
+    expect(r.results.map((x) => x.pid)).toEqual(["c"]);
+  });
+
+  it("one product's failure costs only that product its turn", async () => {
+    const pids = ["a", "b"];
+    let n = 0;
+    const g = vi.fn(async (query) => {
+      if (query.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+      if (++n === 1) throw new Error("ETIMEDOUT");
+      if (query.includes("inventorySetQuantities")) return { inventorySetQuantities: { userErrors: [] } };
+      return { nodes: [{ id: "gid://shopify/InventoryItem/1", inventoryLevel: { quantities: [{ name: "available", quantity: 7 }] } }] };
+    });
+    const r = await sweepBacklog(fakeDb(liveStore(pids)), g, { livePids: pids, max: 2, commit: true });
+    expect(r.checked).toBe(2);
+    expect(r.results[0]).toMatchObject({ pid: "a", ok: false });
+    expect(r.results[1]).toMatchObject({ pid: "b", ok: true });
+  });
+
+  it("NEVER touches a marker — the two paths share syncProduct and nothing else", async () => {
+    const store = liveStore(["a"]);
+    store[DIRTY_PATH] = { a: 1, zzz: 1 };
+    await sweepBacklog(fakeDb(store), graphqlSaying(7), { livePids: ["a"], commit: true });
+    expect(store[DIRTY_PATH]).toEqual({ a: 1, zzz: 1 });
+  });
+
+  it("an empty live set is not an error and costs no Shopify call", async () => {
+    const g = vi.fn();
+    const r = await sweepBacklog(fakeDb({}), g, { livePids: [], commit: true });
+    expect(r).toMatchObject({ checked: 0, pushed: 0, nextCursor: null, wrapped: true });
+    expect(g).not.toHaveBeenCalled();
   });
 });
 

@@ -28,6 +28,12 @@
 // ~2.6 GB a day to discover that usually nothing did. Instead a Cloud Function
 // trigger writes a one-key marker when a cell changes, and this sweep reads
 // only the markers. A quiet shop costs one small read per tick.
+//
+// AND A BACKSTOP UNDER IT. A marker that is never written fails silently — the
+// product simply stays wrong — which is the exact failure this module exists to
+// end, so it cannot be the module's own residue. sweepBacklog at the foot of
+// this file walks every live product a slice at a time, reading no marker and
+// clearing none. Markers are the fast path, not the only path.
 
 import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
 
@@ -243,11 +249,90 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
       log(`  ⚠ inventory push failed for ${pid}: ${String(e?.message || e)}`);
     }
   }
-  // ── THE COUNT IS OF MARKERS THAT SURVIVED, NOT OF ARITHMETIC ───────────────
+  // ── THE COUNT IS READ BACK, NOT COMPUTED ──────────────────────────────────
   // This used to be `pids.length - max`, which reports 0 remaining for a
   // single-marker dry run that cleared nothing, and 0 for a run whose only
   // product failed. Both are the same lie — "the queue is empty" — told at the
-  // exact moment it is not. Remaining is now what is demonstrably still there:
-  // everything this run did not clear, including everything past the cap.
-  return { seen: pids.length, pushed, cleared, kept, results, remaining: pids.length - cleared };
+  // exact moment it is not.
+  //
+  // Arithmetic on the numbers this run knows about is still a lie, just a
+  // smaller one: the trigger can mark a DIFFERENT product while this run is
+  // pushing, and a run that cleared every marker it started with would report
+  // an empty queue with that new one sitting in it. The node is the only thing
+  // that knows, so the node is asked. One small read at the end of a run that
+  // already did real work.
+  const left = (await db.ref(DIRTY_PATH).get()).val() || {};
+  return { seen: pids.length, pushed, cleared, kept, results, remaining: Object.keys(left).length };
+}
+
+// ─── THE BACKSTOP: A SLOW PASS OVER EVERY LIVE PRODUCT ───────────────────────
+//
+// WHY A MARKER-DRIVEN SWEEP IS NOT ENOUGH ON ITS OWN. Every way the marker can
+// fail to be written ends in the SAME silent state — a product whose storefront
+// quantity is wrong and which is announcing nothing about it. The trigger runs
+// with retry:false (it sits on the busiest write path in the database and must
+// never put a retry storm there), a Cloud Function can fail or be throttled,
+// and a marker can be lost to a bug not yet written. That failure mode is
+// exactly the one this whole module exists to end, so it cannot be left as the
+// module's own residue.
+//
+// So the markers are the FAST path, not the only path. This walks the live
+// product list a slice at a time and pushes each product's inventory whether or
+// not anything marked it. It reads no marker and clears none: the two paths
+// share syncProduct and nothing else, so a bug in the marker bookkeeping cannot
+// disable the backstop and vice versa.
+//
+// COST. It rides the reconciler's existing sweep cadence, so it re-uses a live
+// set that tick has already read, and takes MAX_PER_RUN products from where it
+// stopped last time. Over a day it covers the whole shop several times. A
+// product with no drift costs ONE Shopify query and no mutation.
+//
+// THE CURSOR IS A PRODUCT ID, NOT AN OFFSET. An offset into a list whose length
+// changes silently skips or repeats products when a product goes live or comes
+// off. A pid says "carry on after this one" against a sorted list, so a
+// disappearing product costs the pass nothing at all.
+
+/**
+ * Push a slice of the live products, starting after `cursor`.
+ * Returns the pid to carry into the next run — null when the pass wrapped,
+ * which is what makes a full cycle observable rather than assumed.
+ */
+export async function sweepBacklog(db, graphql, { livePids, cursor = null, commit = false, max = MAX_PER_RUN, log = () => {} } = {}) {
+  const all = [...new Set(livePids || [])].sort();
+  if (!all.length) return { checked: 0, pushed: 0, nextCursor: null, wrapped: true, results: [] };
+
+  // "After the cursor" by VALUE. A cursor naming a product that has since gone
+  // off the storefront still orders correctly against the remaining ids, so the
+  // pass resumes where it meant to instead of restarting.
+  const start = cursor ? all.findIndex((p) => p > cursor) : 0;
+  const from = start === -1 ? all.length : start;
+  const slice = all.slice(from, from + max);
+  const wrapped = from + max >= all.length;
+
+  const locId = commit ? await requireSingleLocation(graphql) : null;
+  const locNames = await locationNames(db);
+  const results = [];
+  let pushed = 0;
+  for (const pid of slice) {
+    try {
+      const r = await syncProduct(db, graphql, pid, { commit, locationId: locId, locNames });
+      results.push(r);
+      if (r.changed) pushed++;
+    } catch (e) {
+      // A failure costs this product its turn and nothing else. The next full
+      // cycle comes back to it; there is no state to corrupt because the
+      // backstop keeps none beyond the cursor.
+      results.push({ pid, ok: false, why: String(e?.message || e) });
+      log(`  ⚠ inventory backstop failed for ${pid}: ${String(e?.message || e)}`);
+    }
+  }
+  return {
+    checked: slice.length,
+    pushed,
+    // Wrapping returns null so the next pass starts from the top — including at
+    // products that were added while this cycle was part-way through.
+    nextCursor: wrapped ? null : (slice.at(-1) ?? cursor),
+    wrapped,
+    results,
+  };
 }

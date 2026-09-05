@@ -88,7 +88,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
-import { sweepDirty as sweepInventoryDirty } from "./inventorySync.mjs";
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1263,6 +1263,17 @@ let sweepRan = false;
 // 30 minutes, or 3 hours overnight — while its own log line promised the next
 // tick. Unfinished CLEARS lastSweepAt instead, which makes the next tick due.
 let sweepUnfinished = false;
+// The inventory backstop's place in the live product list, carried in the same
+// state record as the search-index cadence. `written` is a separate flag rather
+// than a null check because null is a MEANINGFUL cursor value — it is what a
+// completed full pass returns — and "the pass wrapped" must not be confused
+// with "the backstop did not run this tick".
+let inventoryCursor = null;
+let inventoryCursorWritten = false;
+// The live set this tick read, hoisted so the inventory backstop can re-use it
+// instead of paying 747 KB for its own copy. Null when the sweep did not run or
+// could not read it — the backstop then simply does not run this tick.
+let liveNow = null;
 // A plain conditional, not a sentinel exception. "Not due" is a schedule, not a
 // failure, and routing it through throw meant the catch below had to tell the
 // two apart by comparing an error MESSAGE — which leaves the catch describing
@@ -1270,7 +1281,7 @@ let sweepUnfinished = false;
 // sentinel.
 if (sweepDue) {
   try {
-    const liveNow = scanMode === "full"
+    liveNow = scanMode === "full"
       ? Object.entries(all).filter(([, n]) => n?.state === "live" && n?.liveState === "on").map(([p]) => p)
       : await readLivePids(db, { meter });
     const sweep = await sweepSearchIndex(db, admin.app(), {
@@ -1361,6 +1372,35 @@ try {
   console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
 }
 
+if (sweepDue && liveNow) {
+    // ── THE INVENTORY BACKSTOP RIDES THIS TICK'S LIVE SET ────────────────────
+    // The markers are the fast path; this is the one that does not depend on a
+    // marker ever having been written. It runs on the search-index sweep's
+    // CADENCE purely for the read: `liveNow` costs 747 KB and that sweep has
+    // already paid for it this tick. It sits OUTSIDE that sweep's try/catch on
+    // purpose — a Shopify blip in the backstop must not be mistaken for an
+    // unfinished index sweep, which is what sharing the catch would do. A slice of MAX_PER_RUN products per due tick walks the whole shop
+    // several times a day. Its cursor is a product id, so a product going live
+    // or coming off never makes the pass skip or repeat one.
+    //
+    try {
+      const back = await sweepInventoryBacklog(db, graphql, {
+        livePids: liveNow,
+        cursor: scanState?.inventoryCursor ?? null,
+        commit: true,
+        log: (line) => console.error(line),
+      });
+      inventoryCursor = back.nextCursor;
+      inventoryCursorWritten = true;
+      if (back.pushed || back.wrapped) {
+        console.log(`inventory backstop: ${back.checked} checked · ${back.pushed} corrected` +
+          (back.wrapped ? " · full pass complete, starting again next time" : ` · next from ${back.nextCursor}`));
+      }
+    } catch (e) {
+      console.error(`  ⚠ inventory backstop failed (${String(e?.message || e)}) — the cursor is unchanged, the next sweep resumes there`);
+    }
+}
+
 // RTDB stores no empty object — writing `{}` deletes the key, which is exactly
 // what an empty retry set should do, but the Admin SDK refuses `{}` in an
 // update payload. Say `null` and mean it.
@@ -1435,6 +1475,7 @@ if (COMMIT && !ONLY) {
     // the next tick is due regardless of cadence), and never ran because it was
     // not due (leave it alone — clearing there would sweep every tick forever).
     ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
+    ...(inventoryCursorWritten ? { inventoryCursor } : {}),
     updatedAt: runStartedAt,
   });
 }
