@@ -33,6 +33,10 @@ describe("displayUnitsByCell — live slots per hub cell", () => {
     expect(m["p1::6"]).toEqual({ units: 2, stores: ["marathon-pe", "trophy"], unverified: 0 });
     expect(m["p2::5_5"]).toEqual({ units: 1, stores: ["marathon-pe"], unverified: 0 });
   });
+  // STILL TRUE after Hub 2 sneakers joined the availability gate (2026-09-05):
+  // the gate spread, the DISPLAY-PAIR lane did not. Slots, the register and the
+  // 48h pull claim stay hub1-scoped, so a hub2-booked slot is still nobody's
+  // marker but hub2's own. hubIsolation.test.js fences the other half.
   it("HUB-SCOPED: a hub2-booked slot never appears in hub1's map (hub2/hub3 unchanged, pinned)", () => {
     expect(m["p4::7"]).toBeUndefined();
     expect(Object.keys(displayUnitsByCell(SLOTS, "hub2"))).toEqual(["p4::7"]);

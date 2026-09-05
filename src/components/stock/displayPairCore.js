@@ -123,6 +123,16 @@ export function displayOnly(avail, displayUnits) {
 // order may).
 export const PULL_CLAIM_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const PENDING_PULL_STATUSES = new Set(["incoming", "coming_tomorrow"]);
+// NOT HUB-SCOPED, and that is load-bearing to remember. The keys are
+// productId::sizeKey with no hub term, so this map may only be netted against a
+// hub whose display-pair lane actually raises these claims — Hub 1's, today.
+// Hub 2's availability deliberately nets ready orders ONLY (App.jsx
+// hub2ReadyPromised): a Hub 2 sneaker structurally cannot produce a pull claim
+// (sneakerDisplayOnly gates on sneakerServedByHub1), so folding this in there
+// would only ever import a Hub 1 claim's ✕ onto an unrelated Hub 2 cell.
+// IF the display-pair lane is ever extended to Hub 2, this function needs a
+// real hub filter FIRST — widening sneakerServedByHub1 alone would leave Hub 2
+// silently not netting the claims it had started raising.
 export function pendingDisplayPullsByCell(orders, productsById, nowMs = serverNowMs()) {
   const out = {};
   for (const o of orders || []) {

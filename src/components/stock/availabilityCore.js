@@ -45,6 +45,24 @@
 //
 // No missed-demand logging: a blocked size is just an X (owner decision).
 // Pure module — no firebase imports; callers feed it data they already hold.
+//
+// ONE HUB-2 FACT WORTH KNOWING (2026-09-05). The 20-minute window is measured
+// from the RAW record's readyAt, which is stamped when the warehouse marks the
+// order Sent. Hub 2 alone holds the CUSTOMER-facing reveal for 6 minutes after
+// that (HUB2_DISPATCH_HOLD_MS — the parcel is on the van), so a Hub 2 customer
+// gets roughly 14 minutes of hold after being told, not 20. Deliberate, not
+// corrected here: the owner's directive is "don't reserve anything for anyone",
+// so erring SHORT frees the size sooner, which is the direction they asked for.
+// Reading notifyReadyAt instead would lengthen every Hub 2 ✕ — a behaviour
+// change nobody asked for.
+//
+// HUB-AGNOSTIC BY CONSTRUCTION (restated 2026-09-05, when Hub 2 sneakers
+// joined). `loc` is a parameter, not a constant: the same arithmetic answers
+// for Hub 1, Hub 2 and Central, and there is no second definition of
+// "available" anywhere in the tree — the clothing grey-out's zero-test routes
+// through availableUnits too (App.jsx hubQty). Anything that needs a DIFFERENT
+// answer per hub belongs in the caller's data (which cells, which promises),
+// never in a fork of this file. Pinned by hub2SneakerAvailability.test.js.
 
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";
@@ -127,6 +145,31 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
     out[key] = (out[key] || 0) + (Number(o.qty) || 1);
   }
   return out;
+}
+
+// ─── WHICH HUB ANSWERS FOR A SNEAKER TILE (2026-09-05) ───────────────────────
+// The shop ordering grid gates a sneaker size on the availability of the hub
+// that would actually have to supply it. `routedHub` is the caller's own
+// routing answer (App.jsx computeHubForItem — the same routing the order
+// itself will take); this returns the hub whose data should gate, or NULL for
+// "no gate, yesterday's behaviour".
+//
+// TWO HUBS, and deliberately only two:
+//   • hub1 — the original build (2026-08-25)
+//   • hub2 — joined 2026-09-05, this file's whole reason for existing twice
+//   • hub3 (Pine) and everything else — NULL. Pine replenishes on its own
+//     terms and its grid has never been gated; the shops never run this gate
+//     at all (they are order DESTINATIONS, not the supplying hub).
+//
+// isFootwearProduct, not merely "not clothing": the sneaker browse grid also
+// carries perfumes, bags and one-size accessories (no productType), whose
+// availability promises this gate does not model — they keep yesterday's
+// behaviour. (Adversarial review, PR #446.)
+export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
+export function gatedSneakerHub(product, routedHub) {
+  if (!isFootwearProduct(product)) return null;
+  if ((product?.productType || "sneaker") === "clothing") return null;
+  return GATED_SNEAKER_HUBS.includes(routedHub) ? routedHub : null;
 }
 
 // The resolver itself. `cellQty` is the raw booked quantity (may be negative);
