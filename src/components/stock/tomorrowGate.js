@@ -77,22 +77,35 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
 // The warehouse queue is hub-switched and the order card is shared, so the
 // button itself decides whether the Central question applies to this row.
 //
-// CENTRAL-FED HUBS ONLY — hub1 (2026-08-25) and hub2 (2026-09-05). Hub 2 draws
-// the same Central replenishment Hub 1 does, so "does Central hold this?" is
-// the right question before promising a Hub 2 customer a pair tomorrow.
-// hub3/hubC are NOT in that class: they replenish from hub stock Central may
-// never carry, so a missing Central cell there would read as a false "Out of
-// stock" — the one failure this feature must never produce. They keep
-// yesterday's behaviour verbatim (Tomorrow always offered, no probe, no
+// CENTRAL-FED SNEAKER ROWS ONLY — hub1 (2026-08-25) and hub2 (2026-09-05).
+// Hub 2 draws the same Central replenishment Hub 1 does, so "does Central hold
+// this?" is the right question before promising a Hub 2 customer a pair
+// tomorrow. hub3/hubC are NOT in that class: they replenish from hub stock
+// Central may never carry, so a missing Central cell there would read as a
+// false "Out of stock" — the one failure this feature must never produce. They
+// keep yesterday's behaviour verbatim (Tomorrow always offered, no probe, no
 // re-check), and so do the shops, which never render this button.
+//
+// AND HUB 2 CLOTHING IS NOT IN IT EITHER — the correction that mattered most in
+// review. A customer CLOTHING order placed in the central universe is stamped
+// hub:"hub2", placedAtHub:"hub2" (App.jsx: placedHub = CR_HUB_BY_UNIVERSE[...]
+// for a clothing line), so a bare hub2 disjunct silently swept every Hub 2
+// clothing row into the gate: a row that has always offered Tomorrow with no
+// read would start probing Central and could answer "Out of stock". Hub 2
+// clothing was live and correct before this change and had to stay
+// byte-identical, so the hub2 arm is footwear-only. Hub 1's arm is untouched
+// and carries NO type test — hub1 stocks no clothing, and "unchanged" beats
+// "consistent" on a rule that was already right.
 //
 // The hub rule matches the app's orderInHub VERBATIM: hub3/hubC live in
 // placedAtHub, hub1/hub2 in `hub` (defaulted hub1).
 export const CENTRAL_FED_HUBS = ["hub1", "hub2"];
 export function centralFedRow(order) {
+  if (order?.placedAtHub === "hub3" || order?.placedAtHub === "hubC") return false;
   const hub = order?.hub || "hub1";
-  return CENTRAL_FED_HUBS.includes(hub)
-    && order?.placedAtHub !== "hub3" && order?.placedAtHub !== "hubC";
+  if (!CENTRAL_FED_HUBS.includes(hub)) return false;
+  if (hub === "hub1") return true;                                  // 2026-08-25, verbatim
+  return (order?.productType || "sneaker") !== "clothing";          // hub2: sneakers only
 }
 
 // The outcome a tap must produce, from a fresh availability answer.

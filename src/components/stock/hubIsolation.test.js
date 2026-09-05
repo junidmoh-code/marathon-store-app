@@ -11,7 +11,16 @@
 //     that happened to it is that its zero-test now calls availableUnits
 //     instead of its own copy of the same arithmetic — a definition merge, and
 //     hub2SneakerAvailability.test.js exhausts the proof that it changes no
-//     answer. What is pinned HERE is that its cell LOOKUP was left alone.
+//     answer. What is pinned HERE is that its cell LOOKUP was left alone, and
+//     that its warehouse rows are still not probed at Central: a customer
+//     clothing order in the central universe is stamped hub:"hub2", so the
+//     first cut of the Tomorrow rule swept every one of them into the gate.
+//     Review caught it; the hub2 arm is footwear-only and this file says so.
+//
+// NOTE ON THE COMMIT 4 "RE-PIN": there was nothing to re-pin. The pre-change
+// App.jsx comment claimed hub2's exclusion was "pinned by test", but no test on
+// main asserted it — the fences below are the first. Said plainly rather than
+// implying an old pin was re-scoped.
 //
 // A note on shape: the two hub predicates were lifted out of App.jsx into the
 // pure modules they belong to (gatedSneakerHub → availabilityCore, centralFedRow
@@ -104,12 +113,35 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
       if (!legacyHub1Row(o) && (o.hub || "hub1") !== "hub2") {
         expect(centralFedRow(o)).toBe(false);                             // and no old FALSE flipped, outside hub2
       }
+      // The same sweep with a clothing productType: hub1 rows must not shift
+      // either, and every hub2 clothing row must stay out of the gate.
+      const c = { ...o, productType: "clothing" };
+      if (legacyHub1Row(c)) expect(centralFedRow(c)).toBe(true);
+      if (!legacyHub1Row(c)) expect(centralFedRow(c)).toBe(false);
     }
   });
   it("hub2 is the ONLY row class that changed", () => {
     expect(centralFedRow({ hub: "hub2" })).toBe(true);
     expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2" })).toBe(true);
     expect(centralFedRow({ hub: "hub2", placedAtHub: "hub3" })).toBe(false);   // still listed under hub3 too
+  });
+  it("HUB 2 CLOTHING is not probed — it always offered Tomorrow and still does", () => {
+    // The breach caught in review: a customer clothing order placed in the
+    // central universe is stamped hub:"hub2", placedAtHub:"hub2" (App.jsx
+    // placedHub = CR_HUB_BY_UNIVERSE[...] for a clothing line), so a bare hub2
+    // disjunct swept every Hub 2 clothing row into the gate. Hub 2 clothing was
+    // live and correct and had to stay byte-identical.
+    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2", productType: "clothing" })).toBe(false);
+    expect(centralFedRow({ hub: "hub2", productType: "clothing" })).toBe(false);
+    // A Hub 2 SNEAKER row is the thing that changed, and only it.
+    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2", productType: "sneaker" })).toBe(true);
+    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2" })).toBe(true);   // untyped = sneaker, the app's default
+  });
+  it("HUB 1 carries no type test at all — its rule is the 2026-08-25 one, verbatim", () => {
+    // hub1 stocks no clothing, so there is nothing to filter; adding a test
+    // there for symmetry would be a behaviour change to a rule already right.
+    expect(centralFedRow({ hub: "hub1", productType: "clothing" })).toBe(true);
+    expect(centralFedRow({ productType: "clothing" })).toBe(true);
   });
   it("the fail-open rule is untouched: unknown Central availability still offers Tomorrow", () => {
     expect(tomorrowTapOutcome(null)).toBe("tomorrow");

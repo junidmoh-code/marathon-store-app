@@ -2,7 +2,7 @@
 // One bounded read of /stock/hub2 (the subtree the app already streams live)
 // plus /products for the footwear classification. Reports only — no writes.
 import { createRequire } from "module";
-const require = createRequire(new URL("../../../../../Users/junidmohammed/Documents/marathon-store-app-hub2avail/functions/package.json", import.meta.url));
+const require = createRequire(new URL("../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
 admin.initializeApp({
   credential: admin.credential.applicationDefault(),
