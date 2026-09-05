@@ -37,9 +37,10 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gatedSneakerHub, GATED_SNEAKER_HUBS, readyPromisedByCell, cellAvailability } from "./availabilityCore";
+import { gatedSneakerHub, GATED_SNEAKER_HUBS, readyPromisedByCell, cellAvailability, promisedKey } from "./availabilityCore";
 import { centralFedRow, CENTRAL_FED_HUBS, tomorrowTapOutcome } from "./tomorrowGate";
 import { orderSizeOut } from "../../utils/deactivation";
+import { decodeSizeKey } from "../../utils/sizeKey";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const src = (p) => readFileSync(join(HERE, p), "utf8");
@@ -245,7 +246,14 @@ describe("Hub 2 clothing behaves exactly as it did before this change", () => {
     expect(readyPromisedByCell(rows, "hub2", { c1: CLOTHING })).toEqual({});
   });
   it("all three clothing chip surfaces still go through orderSizeOut", () => {
-    expect(app().split("orderSizeOut(").length - 1).toBeGreaterThanOrEqual(3);
+    // A bare count has no surface identity (review: three calls on ONE surface
+    // would pass it), so name the three call sites by the variable each surface
+    // actually uses: the hover grid's `p`, the quick-view's `qv`, the phone
+    // sheet's `selected`. All three must still compose the clothing predicate.
+    const a = app();
+    expect(a).toContain("orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz) })");
+    expect(a).toContain("orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz) })");
+    expect(a).toContain("orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s) })");
   });
 });
 
@@ -263,7 +271,22 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
   it("hub2's promised map is READY ORDERS ONLY — no pull claims folded in", () => {
     const a = app();
     expect(a).toContain('readyPromisedByCell(orders, "hub2", productsById)');
-    expect(a).not.toContain('mergePromised(hub2ReadyPromised');
+    // NOT `not.toContain("mergePromised(hub2ReadyPromised")` — review showed
+    // that assertion is defeated by a line break, a rename, or by ALSO building
+    // a merged map alongside the ready one. There is exactly ONE promise merge
+    // in the file and it is hub1's; a second one is what this refuses.
+    expect(a.match(/mergePromised\(/g) || []).toHaveLength(1);
+    expect(a).toContain("mergePromised(hub1ReadyPromised, hub1PullPromised)");
+  });
+  it("and behaviourally: a pull claim on a cell cannot lower hub2's availability", () => {
+    // The source pin above says the wiring is right; this says what the wiring
+    // is FOR. A pending display-pair pull is netted at hub1 and must not be at
+    // hub2 — the map is keyed pid::size with no hub term, so a hub2 cell would
+    // otherwise inherit a Hub 1 claim's ✕.
+    const cells = { s1: { 8: { qty: 1 } } };
+    const pull = { [promisedKey("s1", "8")]: 1 };
+    expect(cellAvailability({ cells, promised: pull, productId: "s1", size: "8" })).toBe(0);   // hub1's netting
+    expect(cellAvailability({ cells, promised: {}, productId: "s1", size: "8" })).toBe(1);     // hub2's
   });
   it("the display-only check still asks Hub 1 explicitly", () => {
     expect(app()).toContain('const avail = sneakerAvail(p.id, s, "hub1") - sneakerInCart(p.id, s);');
@@ -295,16 +318,24 @@ describe("Hub 2 did not get its own code path", () => {
     expect(a).toContain("hubLabel: HUB_LABELS[hub] || hub,");
     expect(a).toContain("Size ${sz} isn't available at ${hub} right now");
   });
-  it("both hubs land on the same arithmetic, value for value", () => {
+  it("a hub's own orders book its own cells and NOTHING books another hub's", () => {
+    // Rewritten after review called the previous version tautological: it fed
+    // each hub its own matching order and asserted both got the same number,
+    // which cellAvailability (hub-less by signature) cannot fail. The real
+    // question is CROSS-hub, so ask that: one hub1 order, and check what each
+    // hub's map does with it. The fixture goes through decodeByProduct like
+    // production, per hub2SneakerAvailability.test.js's own fixture rule.
     const PRODUCTS = { s1: SNEAKER };
-    const cells = { s1: { 8: { qty: 2 } } };
+    const cells = { s1: { [decodeSizeKey("8")]: { qty: 2 } } };
     const NOW = Date.parse("2026-09-05T10:05:00.000Z");
-    const answers = ["hub1", "hub2"].map((h) => {
-      const promised = readyPromisedByCell(
-        [{ status: "ready", productId: "s1", size: "8", hub: h, readyAt: "2026-09-05T10:00:00.000Z" }],
-        h, PRODUCTS, NOW);
-      return cellAvailability({ cells, promised, productId: "s1", size: "8" });
-    });
-    expect(answers).toEqual([1, 1]);
+    const hub1Order = [{ status: "ready", productId: "s1", size: "8", hub: "hub1", readyAt: "2026-09-05T10:00:00.000Z" }];
+    const atHub1 = readyPromisedByCell(hub1Order, "hub1", PRODUCTS, NOW);
+    const atHub2 = readyPromisedByCell(hub1Order, "hub2", PRODUCTS, NOW);
+    expect(cellAvailability({ cells, promised: atHub1, productId: "s1", size: "8" })).toBe(1);   // booked here
+    expect(cellAvailability({ cells, promised: atHub2, productId: "s1", size: "8" })).toBe(2);   // not there
+    // And the mirror, so neither direction is assumed from the other.
+    const hub2Order = [{ ...hub1Order[0], hub: "hub2" }];
+    expect(cellAvailability({ cells, promised: readyPromisedByCell(hub2Order, "hub2", PRODUCTS, NOW), productId: "s1", size: "8" })).toBe(1);
+    expect(cellAvailability({ cells, promised: readyPromisedByCell(hub2Order, "hub1", PRODUCTS, NOW), productId: "s1", size: "8" })).toBe(2);
   });
 });

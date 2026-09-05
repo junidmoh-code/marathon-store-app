@@ -9361,6 +9361,16 @@ function AssistantView({ products, onExit, orders = [] }) {
       // makes, enforced here too so a stale hover panel can't add past it.
       return 0;
     }
+    // KNOWN GAP, PRE-EXISTING AND NOT WIDENED HERE (found in review, 2026-09-05).
+    // The sneaker branch above is a ZERO check only; it has no QUANTITY clamp,
+    // so on this desktop path a stepper set to 5 against a cell holding 1 adds
+    // five lines. addToCart (the phone sheet) does clamp — see the belt there.
+    // Left alone deliberately: the clamp lives on the hub1 path too, so adding
+    // it here would change live Hub 1 behaviour, which this change is fenced
+    // out of ("nothing else changes"). Hub 2 is strictly BETTER than yesterday
+    // either way — before this work it had no zero check here at all. Raised
+    // for the owner as its own decision; the one-line fix is to mirror
+    // addToCart's clampHub/sneakerGateReady block into this branch.
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
       : { product: p, size, requestDisplay: false, requestDisplayPartner: false };

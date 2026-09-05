@@ -25,7 +25,12 @@ import { decodeSizeKey, stockSizeKey } from "../../utils/sizeKey";
 import { orderSizeOut } from "../../utils/deactivation";
 
 const SNEAKER = { id: "s1", category: "Footwear", productType: "sneaker" };
-const BOOT    = { id: "s2", category: "Footwear", productType: "sneaker" };   // "Boots" — same seven-category group
+// A real Boots record, not a copy of SNEAKER with a different id (review: the
+// old fixture was byte-identical apart from the id, so it demonstrated nothing
+// about the category group it was named for). Boots carry subcategory "Boots" /
+// categoryKey "boots" and map to the legacy category "Footwear" — which is what
+// makes them the same gated group as Sneakers.
+const BOOT = { id: "s2", category: "Footwear", subcategory: "Boots", categoryKey: "boots" };
 const CLOTHING = { id: "c1", category: "Clothing", productType: "clothing" };
 const PRODUCTS = { s1: SNEAKER, s2: BOOT, c1: CLOTHING };
 
@@ -115,6 +120,14 @@ describe("Hub 2 sneaker cells — negative, over-promised, and plain", () => {
   });
   it("a healthy cell reports its units", () => {
     expect(cellAvailability({ cells, promised, productId: "s1", size: "8" })).toBe(3);
+  });
+  it("a BOOTS record is gated the same as a Sneakers one — the group, not the label", () => {
+    // The owner's "sneakers" is seven categories; the gate's predicate is the
+    // legacy category they all map to. BOOT carries no productType at all, the
+    // real shape, and must still be netted and gated.
+    expect(readyPromisedByCell(
+      [{ status: "ready", productId: "s2", size: "10", hub: "hub2", readyAt: READY }],
+      "hub2", PRODUCTS, NOW)["s2::10"]).toBe(1);
   });
 });
 

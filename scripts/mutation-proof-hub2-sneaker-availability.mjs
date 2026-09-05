@@ -19,6 +19,17 @@
 //   second hub riding the shared resolver, on its own data, with the answer
 //   the staff-facing note actually renders.
 //
+// TWO KINDS OF GUARD, AND THE SCORE SAYS WHICH — added after review pointed
+// out that "19 guards, each watched to break" read as behavioural coverage and
+// was not. A guard on a PURE MODULE is killed by a unit test that runs the
+// mutated code and gets a wrong answer: real evidence. A guard on App.jsx is
+// killed by a source-string pin of the very line the mutation edits, which is
+// circular — it proves the line has not moved, not that the screen behaves.
+// The behaviour behind those lives inside AssistantView / TomorrowActionButton
+// and is genuinely unreachable without mounting, which is the honest reason for
+// the pin; the dishonest part was counting them the same. They are counted
+// apart now, and the summary says so in words.
+//
 // Run:  node scripts/mutation-proof-hub2-sneaker-availability.mjs
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -42,6 +53,7 @@ const MUTATIONS = [
     id: "G1",
     guard: "The grid gate covers HUB 2 — dropping it is the bug this change fixes",
     file: CORE,
+    kind: "behavioural",
     from: `export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];`,
     to: `export const GATED_SNEAKER_HUBS = ["hub1"];`,
   },
@@ -49,6 +61,7 @@ const MUTATIONS = [
     id: "G2",
     guard: "The Tomorrow gate covers HUB 2 — a promise Central cannot keep",
     file: GATE,
+    kind: "behavioural",
     from: `export const CENTRAL_FED_HUBS = ["hub1", "hub2"];`,
     to: `export const CENTRAL_FED_HUBS = ["hub1"];`,
   },
@@ -58,6 +71,7 @@ const MUTATIONS = [
     id: "G3",
     guard: "HUB 3 (Pine) is NOT gated — its grid has never been and must not start",
     file: CORE,
+    kind: "behavioural",
     from: `export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];`,
     to: `export const GATED_SNEAKER_HUBS = ["hub1", "hub2", "hub3"];`,
   },
@@ -65,6 +79,7 @@ const MUTATIONS = [
     id: "G4",
     guard: "A SHOP can never arm the gate — a shop is a destination, not a supplying hub",
     file: CORE,
+    kind: "behavioural",
     from: `  return GATED_SNEAKER_HUBS.includes(routedHub) ? routedHub : null;`,
     to: `  return routedHub || null;`,
   },
@@ -72,6 +87,7 @@ const MUTATIONS = [
     id: "G5",
     guard: "hub3 rows are NOT probed for Central — a hub Central may never stock would read a false Out of stock",
     file: GATE,
+    kind: "behavioural",
     from: `  if (order?.placedAtHub === "hub3" || order?.placedAtHub === "hubC") return false;`,
     to: `  if (order?.placedAtHub === "hubC") return false;`,
   },
@@ -79,6 +95,7 @@ const MUTATIONS = [
     id: "G6",
     guard: "hubC (customer clothing) rows are NOT probed either",
     file: GATE,
+    kind: "behavioural",
     from: `  if (order?.placedAtHub === "hub3" || order?.placedAtHub === "hubC") return false;`,
     to: `  if (order?.placedAtHub === "hub3") return false;`,
   },
@@ -86,6 +103,7 @@ const MUTATIONS = [
     id: "G6b",
     guard: "HUB 2 CLOTHING is NOT probed — a live, correct lane a bare hub2 disjunct swept in (caught in review)",
     file: GATE,
+    kind: "behavioural",
     from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
     to: `  return true;`,
   },
@@ -93,6 +111,7 @@ const MUTATIONS = [
     id: "G6c",
     guard: "HUB 2 PERFUME is not probed — the gate asks the CATEGORY, not the order's stamped type",
     file: GATE,
+    kind: "behavioural",
     // The round-2 catch: a perfume order takes the sneaker checkout branch and
     // is stamped productType "sneaker", so a type-based test swept it in.
     from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
@@ -102,6 +121,7 @@ const MUTATIONS = [
     id: "G6e",
     guard: "An UNKNOWN product is not probed — fail-open, because a false Out of stock messages a customer",
     file: GATE,
+    kind: "behavioural",
     from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
     to: `  return !product || gatedSneakerHub(product, "hub2") === "hub2";`,
   },
@@ -109,6 +129,7 @@ const MUTATIONS = [
     id: "G6d",
     guard: "HUB 1 keeps NO type test — its 2026-08-25 rule is verbatim, clothing row or not",
     file: GATE,
+    kind: "behavioural",
     from: `  if (hub === "hub1") return true;                                  // 2026-08-25, verbatim`,
     to: `  if (hub === "hub1") return (order?.productType || "sneaker") !== "clothing";`,
   },
@@ -116,6 +137,7 @@ const MUTATIONS = [
     id: "G6f",
     guard: "The two surfaces share ONE predicate — the warehouse must not refuse a shoe the grid lets through",
     file: GATE,
+    kind: "behavioural",
     // Round 3: isFootwearProduct alone drops the grid's second clause, so a
     // Footwear record stamped productType "clothing" would be ungated on the
     // grid and probed here. One call, one answer, both screens.
@@ -126,6 +148,7 @@ const MUTATIONS = [
     id: "G7",
     guard: "The hub-less legacy order still defaults to hub1, never to nothing",
     file: GATE,
+    kind: "behavioural",
     from: `  const hub = order?.hub || "hub1";`,
     to: `  const hub = order?.hub;`,
   },
@@ -135,6 +158,7 @@ const MUTATIONS = [
     id: "G8",
     guard: "A NEGATIVE cell reports booked ZERO in the why-split — the ✕ note must never read \"All -2 of size 5\"",
     file: CORE,
+    kind: "behavioural",
     // The outer floor in availableUnits already makes a negative cell
     // unavailable, so mutating the clamp THERE proves nothing (it did not, and
     // this harness said so rather than crediting it). The clamp that carries
@@ -147,6 +171,7 @@ const MUTATIONS = [
     id: "G9",
     guard: "An OVER-promised cell floors at zero, never reports a negative",
     file: CORE,
+    kind: "behavioural",
     from: `  return Math.max(booked - spoken, 0);`,
     to: `  return booked - spoken;`,
   },
@@ -154,6 +179,7 @@ const MUTATIONS = [
     id: "G10",
     guard: "Ready promises are actually SUBTRACTED — the last pair reserved for an uncollected order is not available",
     file: CORE,
+    kind: "behavioural",
     from: `  return Math.max(booked - spoken, 0);`,
     to: `  return Math.max(booked, 0);`,
   },
@@ -161,6 +187,7 @@ const MUTATIONS = [
     id: "G11",
     guard: "Non-footwear keeps yesterday's behaviour — perfumes and bags are not modelled here (PR #446)",
     file: CORE,
+    kind: "behavioural",
     from: `  if (!isFootwearProduct(product)) return null;`,
     to: ``,
   },
@@ -168,6 +195,7 @@ const MUTATIONS = [
     id: "G12",
     guard: "Clothing never enters the sneaker gate",
     file: CORE,
+    kind: "behavioural",
     from: `  if ((product?.productType || "sneaker") === "clothing") return null;`,
     to: ``,
   },
@@ -177,6 +205,7 @@ const MUTATIONS = [
     id: "G13",
     guard: "Hub 2 reads HUB 2's cells — pointing it at hub1's is a silent wrong answer",
     file: APP,
+    kind: "source-pin",
     from: `  const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);`,
     to: `  const sneakerCellsState = () => hub1CellsState;`,
   },
@@ -184,6 +213,7 @@ const MUTATIONS = [
     id: "G14",
     guard: "Hub 2 nets READY ORDERS ONLY — a Hub 1 display-pull claim must never ✕ a Hub 2 cell",
     file: APP,
+    kind: "source-pin",
     from: `  const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);`,
     to: `  const sneakerPromisedMap = () => hub1Promised;`,
   },
@@ -191,6 +221,7 @@ const MUTATIONS = [
     id: "G15",
     guard: "The gate never opens before THAT hub's subtree has settled — an unsettled map would ✕ every size",
     file: APP,
+    kind: "source-pin",
     from: `    return !!hub && st.settled && !st.error;`,
     to: `    return !!hub;`,
   },
@@ -198,6 +229,7 @@ const MUTATIONS = [
     id: "G16",
     guard: "The display-pair lane stays HUB 1's — its slots and register are hub1-scoped",
     file: APP,
+    kind: "source-pin",
     from: `  const sneakerServedByHub1 = (p) => sneakerHubOf(p) === "hub1";`,
     to: `  const sneakerServedByHub1 = (p) => !!sneakerHubOf(p);`,
   },
@@ -205,6 +237,7 @@ const MUTATIONS = [
     id: "G17",
     guard: "The ✕ note names the hub that refused — a Hub 2 shoe blamed on Hub 1 sends staff to the wrong building",
     file: APP,
+    kind: "source-pin",
     from: `    hubLabel: HUB_LABELS[hub] || hub,`,
     to: `    hubLabel: "Hub 1",`,
   },
@@ -212,6 +245,7 @@ const MUTATIONS = [
     id: "G18",
     guard: "The CLOTHING cell lookup was left alone — merging it with the sneaker key space changes live Hub 2 clothing",
     file: APP,
+    kind: "source-pin",
     from: `  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[size]?.qty);`,
     to: `  const hubQty = (pid, size) => cellAvailability({ cells: servingHubCells, promised: {}, productId: pid, size });`,
   },
@@ -219,6 +253,7 @@ const MUTATIONS = [
     id: "G19",
     guard: "An ungated row short-circuits with NO read — hub3 must not pay for a probe it can never use",
     file: APP,
+    kind: "source-pin",
     from: `    if (!gatedRow) return undefined;`,
     to: `    if (false) return undefined;`,
   },
@@ -301,11 +336,17 @@ for (const m of MUTATIONS) {
   }
   const proven = mutated === "FAIL" && restored === "PASS";
   results.push({ ...m, mutated, restored, proven });
-  console.log(`${m.id}  mutated:${mutated}  restored:${restored}  ${proven ? "✅ PROVEN" : "❌ NOT PROVEN"}  — ${m.guard}`);
+  const tag = m.kind === "behavioural" ? "behavioural" : "source-pin";
+  console.log(`${m.id}  mutated:${mutated}  restored:${restored}  ${proven ? "✅ PROVEN" : "❌ NOT PROVEN"}  [${tag}]  — ${m.guard}`);
 }
 
 const bad = results.filter((r) => !r.proven);
-console.log(`\n${results.length - bad.length}/${results.length} guards proven.`);
+const beh = results.filter((r) => r.kind === "behavioural");
+const pin = results.filter((r) => r.kind === "source-pin");
+console.log(`\n${results.length - bad.length}/${results.length} guards proven — ` +
+  `${beh.filter((r) => r.proven).length} BEHAVIOURAL (a unit test ran the mutated code and got a wrong answer) ` +
+  `+ ${pin.filter((r) => r.proven).length} SOURCE PINS (the mutation edits a pinned line, so it fails its own pin — ` +
+  `this proves the wiring has not moved, NOT that the screen behaves).`);
 if (bad.length) {
   console.log("NOT PROVEN:");
   for (const r of bad) console.log(`  ${r.id}  mutated:${r.mutated}  restored:${r.restored}  — ${r.guard}`);
