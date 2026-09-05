@@ -124,6 +124,52 @@ const cellQty = (stock, pid, rawSize) => {
   return Number.isFinite(q) ? q : 0;
 };
 
+// ── THE PROMISED TERM (added after review) ──────────────────────────────────
+// The first cut tested the raw cell (`qty <= 0`). The real gate does NOT: it
+// runs availableUnits(qty, promised), subtracting ready-but-uncollected orders
+// inside the 20-minute freshness window. Measuring the cell instead of the
+// resolver undercounts ✕ at BOTH hubs, and review was right that a bias which
+// lands differently on the two hubs would fake the reassuring result.
+//
+// ON THE CLAIMED MECHANISM, though: review argued Hub 2 carries structurally
+// more booked-but-ready cells because HUB2_DISPATCH_HOLD_MS adds 6 minutes "on
+// top of" the 20-minute window. It does not. readyAt is stamped at warehouse
+// Sent for every hub and promiseFresh ages from readyAt, so the promise window
+// is 20 minutes at both; the 6-minute hold only delays the CUSTOMER-facing
+// reveal (holdHub2Ready rewrites a display copy, never the raw record the
+// resolver reads). So the size of the omission is an empirical question per
+// hub, not a structural tilt — which is a reason to measure it, not to argue
+// about it. Both numbers are reported below.
+const ordersForPromises = (await db.ref("orders").orderByKey().startAt("0").endAt("9").once("value")).val() || {};
+const NOW_MS = Date.now();
+const READY_PROMISE_MAX_AGE_MS = 20 * 60 * 1000;
+const promiseFresh = (o) => {
+  let t = Date.parse(o?.readyAt ?? "");
+  if (!Number.isFinite(t)) t = Date.parse(o?.createdAt ?? "");
+  if (!Number.isFinite(t)) return true;                       // un-ageable — keep
+  return NOW_MS - t <= READY_PROMISE_MAX_AGE_MS;
+};
+// availabilityCore.readyPromisedByCell, transcribed.
+function promisedByCell(loc) {
+  const out = {};
+  for (const o of Object.values(ordersForPromises)) {
+    if (!o || typeof o !== "object" || o.status !== "ready") continue;
+    if (!promiseFresh(o)) continue;
+    const inHub = (loc === "hub3" || loc === "hubC") ? o.placedAtHub === loc : (o.hub || "hub1") === loc;
+    if (!inHub || !o.productId) continue;
+    const p = products[o.productId];
+    if (!p || !isFootwearProduct(p)) continue;
+    const key = `${o.productId}::${stockSizeKey(String(o.sentSize ?? o.size ?? ""))}`;
+    if (key.endsWith("::_")) continue;
+    out[key] = (out[key] || 0) + (Number(o.qty) || 1);
+  }
+  return out;
+}
+const PROMISED = { hub1: promisedByCell("hub1"), hub2: promisedByCell("hub2") };
+// availabilityCore.availableUnits, transcribed.
+const availableUnits = (q, promised = 0) =>
+  Math.max(Math.max(Number(q) || 0, 0) - Math.max(Number(promised) || 0, 0), 0);
+
 // ── (A) chips that flip to ✕ ────────────────────────────────────────────────
 let hub2Products = 0, hub1Products = 0;
 let chips = 0, chipsX = 0, chipsNoCell = 0, chipsZeroOrNeg = 0;
@@ -205,8 +251,9 @@ for (const [pid, p] of Object.entries(products)) {
 // The same two measurements run over HUB 1 — the control. Same predicates,
 // same chip rule, same Central question, only the hub differs.
 function gridAndCentralFor(hubId, stock) {
-  let prods = 0, ch = 0, chX = 0, noCell = 0, zeroNeg = 0, blocked = 0, blockedHolding = 0;
-  let cPairs = 0, cHas = 0;
+  const promised = PROMISED[hubId] || {};
+  let prods = 0, ch = 0, chX = 0, noCell = 0, zeroNeg = 0, byPromise = 0, blocked = 0, blockedHolding = 0;
+  let chXRawCellOnly = 0, cPairs = 0, cHas = 0;
   for (const [pid, p] of Object.entries(products)) {
     if (!p || typeof p !== "object" || !isGatedSneaker(p) || p.mergedInto) continue;
     if (routedHub(p) !== hubId) continue;
@@ -218,8 +265,15 @@ function gridAndCentralFor(hubId, stock) {
       const cq = cellQty(central, pid, sz);
       if (cq !== null && cq > 0) cHas++;
       const q = cellQty(stock, pid, sz);
-      if (q === null) { noCell++; chX++; b++; continue; }
-      if (q <= 0) { zeroNeg++; chX++; b++; }
+      if (q === null) { noCell++; chX++; chXRawCellOnly++; b++; continue; }
+      // THE RESOLVER'S OWN QUESTION, not the cell's: availableUnits nets the
+      // fresh ready promises before deciding ✕.
+      const avail = availableUnits(q, promised[`${pid}::${stockSizeKey(String(sz))}`]);
+      if (q <= 0) { zeroNeg++; chXRawCellOnly++; }
+      if (avail <= 0) {
+        chX++; b++;
+        if (q > 0) byPromise++;                       // ✕ only because it is spoken for
+      }
     }
     if (b === sizes.length) {
       blocked++;
@@ -227,7 +281,8 @@ function gridAndCentralFor(hubId, stock) {
       if (units > 0) blockedHolding++;
     }
   }
-  return { products: prods, chips: ch, chipsX: chX, noCell, zeroNeg, blocked, blockedHolding, cPairs, cHas };
+  return { products: prods, chips: ch, chipsX: chX, chXRawCellOnly, noCell, zeroNeg, byPromise,
+           blocked, blockedHolding, cPairs, cHas };
 }
 const CONTROL_HUB1 = gridAndCentralFor("hub1", hub1);
 const MEASURED_HUB2 = gridAndCentralFor("hub2", hub2);
@@ -264,6 +319,8 @@ console.log(JSON.stringify({
       products: CONTROL_HUB1.products, chips: CONTROL_HUB1.chips,
       chipsX: CONTROL_HUB1.chipsX, chipsXPercent: pct(CONTROL_HUB1.chipsX, CONTROL_HUB1.chips),
       noCell: CONTROL_HUB1.noCell, zeroOrNegative: CONTROL_HUB1.zeroNeg,
+      xOnlyBecausePromised: CONTROL_HUB1.byPromise,
+      chipsX_ifCellTestedRawInstead: CONTROL_HUB1.chXRawCellOnly,
       fullyBlockedProducts: CONTROL_HUB1.blocked, fullyBlockedHoldingUnits: CONTROL_HUB1.blockedHolding,
       centralCoverage: pct(CONTROL_HUB1.cHas, CONTROL_HUB1.cPairs),
     },
@@ -271,6 +328,8 @@ console.log(JSON.stringify({
       products: MEASURED_HUB2.products, chips: MEASURED_HUB2.chips,
       chipsX: MEASURED_HUB2.chipsX, chipsXPercent: pct(MEASURED_HUB2.chipsX, MEASURED_HUB2.chips),
       noCell: MEASURED_HUB2.noCell, zeroOrNegative: MEASURED_HUB2.zeroNeg,
+      xOnlyBecausePromised: MEASURED_HUB2.byPromise,
+      chipsX_ifCellTestedRawInstead: MEASURED_HUB2.chXRawCellOnly,
       fullyBlockedProducts: MEASURED_HUB2.blocked, fullyBlockedHoldingUnits: MEASURED_HUB2.blockedHolding,
       centralCoverage: pct(MEASURED_HUB2.cHas, MEASURED_HUB2.cPairs),
     },
