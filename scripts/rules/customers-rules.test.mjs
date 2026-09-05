@@ -227,6 +227,43 @@ await admin.put("customers/0827778888", { laybyHoldings: { s1: { qty: 1 } } });
 await expectDenied("empty a record out one field at a time until nothing is left",
   as(TILL, "DELETE", "customers/0827778888/laybyHoldings"));
 
+// ── THE MULTI-PATH ROUTE ROUND THE RULE ─────────────────────────────────────
+// Both apps write customer fields inside a ROOT update() next to a /pos/audit
+// row, so that is the shape anyone bypassing this rule would reach for first.
+// It is split and evaluated per path, so it is refused for the same reasons —
+// but that is a claim about the rules engine, and claims about engines belong
+// in a test.
+await admin.put("customers/0826660001", { name: "MP A", phone: "0826660001" });
+await admin.put("customers/0826660002", { name: "MP B", phone: "0826660002" });
+await expectDenied("archive inside a multi-path root update",
+  as(TILL, "PATCH", "", { "customers/0826660001/archivedAt": 9,
+    "pos/audit/mp-1": { action: "x", actingUserUid: "till-uid", timestamp: 1788600000000 } }));
+await expectDenied("delete inside a multi-path root update",
+  as(TILL, "PATCH", "", { "customers/0826660002": null }));
+await expectDenied("anonymous delete inside a multi-path root update",
+  as(ANON, "PATCH", "", { "customers/0826660002": null }));
+
+// ── TYPE CONFUSION AROUND THE .val() COMPARISON ─────────────────────────────
+// The rule compares archivedAt/archivedBy by .val(). A child written as an
+// OBJECT returns the object from .val(), and two object values are never ===
+// in the rules language — so this is refused, not accidentally equal. Pinned
+// because "compare two values" is exactly where a rule quietly stops meaning
+// what it reads as.
+await expectDenied("archivedAt written as an object rather than a timestamp",
+  as(TILL, "PUT", "customers/0826660001/archivedAt", { t: 1 }));
+
+// ── AND WHAT AN ARCHIVED RECORD STILL ACCEPTS ───────────────────────────────
+// Archived is not frozen. Store credit and lay-bys on an archived customer must
+// still be writable — the money outlives the visibility flag — and a whole-record
+// PUT is fine as long as it carries the archive fields through unchanged.
+await expectAllowed("a whole-record PUT that KEEPS archivedAt",
+  as(TILL, "PUT", "customers/0823334444",
+    { name: "Archived Customer", phone: "0823334444", archivedAt: 1788500000000, archivedBy: OWNER_EMAIL }));
+await expectAllowed("store credit still moves on an archived customer",
+  as(TILL, "PUT", "customers/0823334444/storeCredit/cr9/remainingAmount", 100));
+await expectDenied("but a whole-record PUT that DROPS archivedAt is an unarchive",
+  as(TILL, "PUT", "customers/0823334444", { name: "Archived Customer", phone: "0823334444" }));
+
 console.log("\n── what the OWNER must be able to do ──");
 await expectAllowed("owner archives a customer",
   as(OWNER, "PATCH", "customers/0821112222", { archivedAt: 1788600000000, archivedBy: OWNER_EMAIL }));
