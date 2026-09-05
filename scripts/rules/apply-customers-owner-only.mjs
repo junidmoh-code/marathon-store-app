@@ -50,6 +50,39 @@ const DB = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app
 const APPLY = process.argv.includes("--apply");
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+// ── THE DIFF IS STRUCTURAL, NOT BYTE-FOR-BYTE ────────────────────────────────
+// This compared JSON.stringify output. If the rules endpoint ever returns the
+// document with its keys in a different order than we sent — and nothing
+// promises it will not; a round trip through a server is exactly where that
+// happens — a CORRECTLY APPLIED fix would fail the `untouched` check, and the
+// restore path below would then put the OLD, VULNERABLE RULES BACK over it.
+// Loudly, not silently, but it would still be this script undoing its own
+// correct work because two identical documents were spelled differently.
+//
+// Object keys are sorted recursively; ARRAYS ARE LEFT ALONE, because .indexOn's
+// order is data we are asserting on and sorting it would hide a reordering we
+// would want to see.
+const canonical = (v) => {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]));
+  }
+  return v;
+};
+
+// The three keys this script may touch, removed from BOTH sides before the
+// documents are compared. Declared here, beside canonical, because the dry-run
+// self-check above calls it — and putting it below that call is exactly the
+// temporal-dead-zone bug this pair already produced once.
+const strip = (r) => {
+  const c = JSON.parse(JSON.stringify(r));
+  delete c.rules.customers[".write"];
+  delete c.rules.customers.$customerId[".write"];
+  delete c.rules.orders[".indexOn"];
+  return JSON.stringify(canonical(c));
+};
+
+
 async function token() {
   const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".config/configstore/firebase-tools.json"), "utf8"));
   const body = new URLSearchParams({
@@ -90,6 +123,21 @@ console.log(`etag from server: ${liveEtag === null ? "none (endpoint does not is
 // cannot be built.
 const next = patchOrdersIndex(patchCustomersRules(live));
 
+// ── EXERCISE THE VERIFY HELPERS ON THE REAL DOCUMENT, IN THE DRY RUN ────────
+// The first version declared `canonical` BELOW the pre-PUT recheck that calls
+// it, so `--apply` died in the temporal dead zone — after the emulator proof
+// passed, and one line before the write. It failed safe (nothing was written,
+// and the live rules were verified untouched afterwards), but the dry run could
+// not have caught it: that line is only reachable under --apply, so the gate
+// everybody runs first did not cover the code only the real run executes.
+//
+// So both helpers are now called here, on the actual fetched document, on every
+// run. A TDZ, a typo or a shape the canonicaliser cannot handle now crashes in
+// the DRY RUN, which is the whole point of having one.
+if (canonical(live) === undefined || typeof strip(live) !== "string") {
+  throw new Error("the verify helpers did not survive the live document — refusing to go near --apply");
+}
+
 console.log("\n── the change ──");
 console.log("  /customers .write            : REMOVED (was the any-signed-in-till grant)");
 console.log("  /customers/$customerId .write: ADDED");
@@ -125,32 +173,6 @@ const { rules: after } = await getRules(t);
 // ── Verify: our lines landed verbatim and NOTHING else moved ─────────────────
 // The diff is taken by stripping exactly the three keys this script is allowed
 // to touch from BOTH documents and requiring byte equality of the remainder.
-// ── THE DIFF IS STRUCTURAL, NOT BYTE-FOR-BYTE ────────────────────────────────
-// This compared JSON.stringify output. If the rules endpoint ever returns the
-// document with its keys in a different order than we sent — and nothing
-// promises it will not; a round trip through a server is exactly where that
-// happens — a CORRECTLY APPLIED fix would fail the `untouched` check, and the
-// restore path below would then put the OLD, VULNERABLE RULES BACK over it.
-// Loudly, not silently, but it would still be this script undoing its own
-// correct work because two identical documents were spelled differently.
-//
-// Object keys are sorted recursively; ARRAYS ARE LEFT ALONE, because .indexOn's
-// order is data we are asserting on and sorting it would hide a reordering we
-// would want to see.
-const canonical = (v) => {
-  if (Array.isArray(v)) return v.map(canonical);
-  if (v && typeof v === "object") {
-    return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]));
-  }
-  return v;
-};
-const strip = (r) => {
-  const c = JSON.parse(JSON.stringify(r));
-  delete c.rules.customers[".write"];
-  delete c.rules.customers.$customerId[".write"];
-  delete c.rules.orders[".indexOn"];
-  return JSON.stringify(canonical(c));
-};
 const landedWrite = after.rules?.customers?.$customerId?.[".write"] === CUSTOMER_RECORD_WRITE;
 const grantGone = after.rules?.customers?.[".write"] === undefined;
 const landedIndex = JSON.stringify(after.rules?.orders?.[".indexOn"]) === JSON.stringify(NEXT_ORDERS_INDEX);
