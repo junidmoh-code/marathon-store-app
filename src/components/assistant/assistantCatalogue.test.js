@@ -12,6 +12,9 @@
 // tests drive the REAL search implementations over the REAL pool.
 
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Fuse from "fuse.js";
 import { assistantCatalogue } from "./assistantCatalogue.js";
 import { browsableProducts, isDeactivated, orderSizeOut } from "../../utils/deactivation.js";
@@ -19,6 +22,8 @@ import { searchProducts } from "../../utils/productSearch.js";
 import {
   DEFAULT_DEACTIVATED_SHOPS, readDeactivatedShops, showsDeactivated,
 } from "../../config/assistantVisibility.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
 
 const LIVE = {
   id: "pLive", name: "Dolce & Gabbana Sneakers Navy", productType: "sneaker",
@@ -168,5 +173,30 @@ describe("the mode and hub rules this gate composes with are untouched", () => {
   it("nulls in the list never throw", () => {
     expect(assistantCatalogue({ products: [null, undefined, LIVE], wantsClothing: false, storeMode: "central", isDeactivated }))
       .toHaveLength(1);
+  });
+});
+
+describe("what the gate COSTS to read — bandwidth is a live problem", () => {
+  const src = (rel) => fs.readFileSync(path.resolve(here, rel), "utf8");
+  it("subscribes to one tiny config node, never a whole-node read", () => {
+    const hook = src("../../config/useAssistantVisibility.js");
+    expect(hook).toContain("ref(database, ASSISTANT_VISIBILITY_PATH)");
+    expect(src("../../config/assistantVisibility.js"))
+      .toContain('export const ASSISTANT_VISIBILITY_PATH = "config/assistantView";');
+    // and nothing else — no /products, no /stock, no /orders
+    for (const node of ['"products"', '"stock"', '"orders"', "`products", "`stock"]) {
+      expect(hook).not.toContain(node);
+    }
+  });
+  it("fails to the shipped default on a denied read, and says so in the console", () => {
+    const hook = src("../../config/useAssistantVisibility.js");
+    expect(hook).toContain('deactivatedShops: DEFAULT_DEACTIVATED_SHOPS, ready: true, source: "default"');
+    expect(hook).toContain("console.warn(");
+  });
+  it("the twin index is built ONCE per screen, not once per card", () => {
+    // suggestTwin accepts a prepared index precisely so 300 rows do not each
+    // scan a ~4k catalogue on a warehouse phone.
+    expect(src("../stock/duplicateGroups.js")).toContain("export function buildTwinIndex(");
+    expect(src("../stock/HubCleanup.jsx")).toContain("buildTwinIndex({ products, identityMap: identity.map })");
   });
 });
