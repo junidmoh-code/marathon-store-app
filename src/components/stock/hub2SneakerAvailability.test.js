@@ -101,6 +101,14 @@ describe("Hub 2 sneaker cells — negative, over-promised, and plain", () => {
     expect(cellBlockInfo({ cells, promised, productId: "s1", size: "7" }))
       .toEqual({ booked: 1, promised: 1, available: 0 });
   });
+  it("the why-split never reports a NEGATIVE booked — the note renders that number", () => {
+    // "All -2 of size 5 at Hub 2 are reserved…" is what an unclamped split
+    // would put in front of staff. 22 Hub 2 sneaker cells are negative today.
+    expect(cellBlockInfo({ cells, promised, productId: "s1", size: "5" }))
+      .toEqual({ booked: 0, promised: 0, available: 0 });
+    expect(cellBlockInfo({ cells, promised, productId: "s1", size: "6" }))
+      .toEqual({ booked: 0, promised: 0, available: 0 });
+  });
   it("an empty cell and a missing cell are both unavailable", () => {
     expect(cellAvailability({ cells, promised, productId: "s1", size: "9" })).toBe(0);
     expect(cellAvailability({ cells, promised, productId: "s1", size: "13" })).toBe(0);
