@@ -286,15 +286,33 @@ export async function sweepDirty(db, graphql, { commit = false, isLive, max = MA
     // The revision as it stood when this run read the node. Everything below
     // clears against THIS value or not at all.
     const revision = markers[pid];
-    // A marker for a product that is not on the storefront is not an error and
-    // not work — it is cleared, because leaving it would make the node grow
-    // forever with every stock movement on everything we do not sell online.
-    // Still revision-guarded: "not live" was read at the top of this run too.
-    if (!(await isLive(pid))) {
-      if (commit && await clearMarker(db, pid, revision)) cleared++;
-      continue;
-    }
+    // ── EVERY PER-PID FAILURE COSTS ONE PID, NEVER THE BATCH ──────────────
+    // The not-live clear used to sit OUTSIDE this try, which was survivable
+    // only while clearMarker structurally could not throw: it returned
+    // `undefined` for an absent marker, and that aborts the transaction against
+    // the local cache — resolving, never rejecting, without a network call.
+    //
+    // The #564 fix returns `null` there instead, precisely so the write reaches
+    // the server. That made this a real round trip, and therefore a call that
+    // CAN reject: a non-ok PUT response, or 25 retries lost to contention, and
+    // the SDK rejects the promise. One transient blip on one de-listed
+    // product's marker would then throw out of this loop and cost the whole
+    // tick — up to 40 products getting no inventory correction at all, instead
+    // of "39 pushed, 1 kept for retry". That is the availability property this
+    // module exists to protect, broken by the fix for a different bug in it.
+    //
+    // So the whole body is guarded, and the isLive() call is inside it too —
+    // the reconciler answers that with a per-pid RTDB read, which can fail for
+    // exactly the same reasons.
     try {
+      // A marker for a product that is not on the storefront is not an error and
+      // not work — it is cleared, because leaving it would make the node grow
+      // forever with every stock movement on everything we do not sell online.
+      // Still revision-guarded: "not live" was read at the top of this run too.
+      if (!(await isLive(pid))) {
+        if (commit && await clearMarker(db, pid, revision)) cleared++;
+        continue;
+      }
       const r = await syncProduct(db, graphql, pid, { commit, locationId: locId, locNames });
       results.push(r);
       if (r.changed) pushed++;
