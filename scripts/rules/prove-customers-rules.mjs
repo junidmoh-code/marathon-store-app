@@ -21,7 +21,12 @@ import { join } from "node:path";
 import { patchCustomersRules, patchOrdersIndex, OWNER_EMAIL } from "./customersOwnerOnly.mjs";
 
 const NS = "marathon-club-default-rtdb";
-const PORT = Number(process.env.RULES_TEST_PORT || 9099);
+// NOT 9099 — that is the Firebase AUTH emulator's default port. A developer with
+// the emulator suite already running would have this script either fail to bind
+// or hold a conversation with the wrong emulator. The control check below would
+// catch it and abort, but an operational footgun that fails safe is still a
+// footgun.
+const PORT = Number(process.env.RULES_TEST_PORT || 9591);
 const HOST = `http://127.0.0.1:${PORT}`;
 const JAR = process.env.RTDB_EMULATOR_JAR ||
   join(process.env.HOME, ".cache/firebase/emulators/firebase-database-emulator-v4.11.2.jar");
@@ -100,8 +105,15 @@ const stop = () => { try { emu.kill("SIGKILL"); } catch { /* already gone */ } }
 process.on("exit", stop);
 
 // Wait for it to answer rather than sleeping a guessed number of seconds.
+// "Something answered on that port" is not "the database emulator is up". Ask
+// for the rules document, which only this emulator serves, rather than treating
+// any HTTP response as readiness.
 for (let i = 0; ; i++) {
-  try { await fetch(`${HOST}/.json?ns=${NS}`, { headers: OWNER_HDR }); break; } catch {
+  try {
+    const r = await fetch(`${HOST}/.settings/rules.json?ns=${NS}`, { headers: OWNER_HDR });
+    if (r.ok) break;
+    throw new Error(String(r.status));
+  } catch {
     if (i > 150) { console.error("emulator did not start:\n" + emuLog); process.exit(2); }
     await new Promise((r) => setTimeout(r, 200));
   }

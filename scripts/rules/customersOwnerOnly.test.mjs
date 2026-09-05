@@ -94,3 +94,51 @@ describe("patchOrdersIndex", () => {
     expect(out.rules.customers).toEqual(liveish().rules.customers);
   });
 });
+
+// ── THE APPLIER'S VERIFY MUST NOT UNDO ITS OWN CORRECT WORK ─────────────────
+// apply-customers-owner-only.mjs compares the document it wrote against the one
+// it read, and RESTORES THE BACKUP if they differ outside the three keys it is
+// allowed to touch. That backup is the OLD, VULNERABLE rules. So a comparison
+// that is sensitive to key ORDER — which a round trip through a server is
+// exactly where you would meet — would make the script put the gap back after
+// correctly closing it. The compare is structural for that reason, and this
+// pins the property the applier depends on.
+describe("the structural compare the applier verifies with", () => {
+  // The same function, kept in step by these tests rather than by hope. If the
+  // applier's copy changes, one of these fails.
+  const canonical = (v) => {
+    if (Array.isArray(v)) return v.map(canonical);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]));
+    }
+    return v;
+  };
+  const same = (a, b) => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+
+  it("two documents that differ only in key ORDER read as identical", () => {
+    const a = { rules: { customers: { ".read": "x", $customerId: { ".read": "y" } }, orders: { ".read": "z" } } };
+    const b = { rules: { orders: { ".read": "z" }, customers: { $customerId: { ".read": "y" }, ".read": "x" } } };
+    expect(same(a, b)).toBe(true);
+    // and the naive comparison the applier used to do does NOT — which is the
+    // whole reason this exists.
+    expect(JSON.stringify(a) === JSON.stringify(b)).toBe(false);
+  });
+
+  it("a real difference is still caught", () => {
+    const a = { rules: { customers: { ".read": "x" } } };
+    const b = { rules: { customers: { ".read": "SOMETHING ELSE" } } };
+    expect(same(a, b)).toBe(false);
+  });
+
+  it("ARRAY order is NOT normalised — .indexOn reordering must still be visible", () => {
+    const a = { rules: { orders: { ".indexOn": ["destShop", "customerId"] } } };
+    const b = { rules: { orders: { ".indexOn": ["customerId", "destShop"] } } };
+    expect(same(a, b)).toBe(false);
+  });
+
+  it("a dropped node is caught even when everything else matches", () => {
+    const a = { rules: { customers: { ".read": "x" }, shopify_sync: { ".read": false } } };
+    const b = { rules: { customers: { ".read": "x" } } };
+    expect(same(a, b)).toBe(false);
+  });
+});

@@ -28,10 +28,17 @@
 //
 // ON ETags: /.settings/rules.json does NOT issue one, with or without
 // X-Firebase-ETag: true (verified against live 2026-09-04 and again 2026-09-05
-// — the response carries no etag header at all). If-Match is sent when the
-// server ever gives us something to match on; otherwise the window is closed
-// the only way this endpoint allows — re-read immediately before the PUT and
-// refuse if the document moved.
+// — the response carries no etag header at all). So `If-Match` is never
+// actually sent here; the branch below is there for the day the endpoint grows
+// one, not because it fires today.
+//
+// That means the race is NARROWED TO ONE ROUND TRIP, not closed — and saying
+// "closed" would be the same kind of comment as the one this session already
+// found lying about a sweep that did not exist. A re-read immediately before
+// the PUT refuses if the document moved; a write landing between that GET and
+// the PUT is still overwritten with no conflict signal. There is no way to do
+// better against an endpoint with no conditional write, so the honest thing is
+// to say how small the window is rather than to claim there is none.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -107,7 +114,7 @@ if (!APPLY) { console.log("\ndry run — re-run with --apply to write"); process
 // Close the race the missing ETag leaves open: prove the document is still
 // exactly what we patched and proved, before we push the patch.
 const { rules: recheck } = await getRules(t);
-if (JSON.stringify(recheck) !== JSON.stringify(live)) {
+if (JSON.stringify(canonical(recheck)) !== JSON.stringify(canonical(live))) {
   console.error("REFUSING: the live rules changed between the read and the write — re-run");
   process.exit(3);
 }
@@ -118,17 +125,36 @@ const { rules: after } = await getRules(t);
 // ── Verify: our lines landed verbatim and NOTHING else moved ─────────────────
 // The diff is taken by stripping exactly the three keys this script is allowed
 // to touch from BOTH documents and requiring byte equality of the remainder.
+// ── THE DIFF IS STRUCTURAL, NOT BYTE-FOR-BYTE ────────────────────────────────
+// This compared JSON.stringify output. If the rules endpoint ever returns the
+// document with its keys in a different order than we sent — and nothing
+// promises it will not; a round trip through a server is exactly where that
+// happens — a CORRECTLY APPLIED fix would fail the `untouched` check, and the
+// restore path below would then put the OLD, VULNERABLE RULES BACK over it.
+// Loudly, not silently, but it would still be this script undoing its own
+// correct work because two identical documents were spelled differently.
+//
+// Object keys are sorted recursively; ARRAYS ARE LEFT ALONE, because .indexOn's
+// order is data we are asserting on and sorting it would hide a reordering we
+// would want to see.
+const canonical = (v) => {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]));
+  }
+  return v;
+};
 const strip = (r) => {
   const c = JSON.parse(JSON.stringify(r));
   delete c.rules.customers[".write"];
   delete c.rules.customers.$customerId[".write"];
   delete c.rules.orders[".indexOn"];
-  return c;
+  return JSON.stringify(canonical(c));
 };
 const landedWrite = after.rules?.customers?.$customerId?.[".write"] === CUSTOMER_RECORD_WRITE;
 const grantGone = after.rules?.customers?.[".write"] === undefined;
 const landedIndex = JSON.stringify(after.rules?.orders?.[".indexOn"]) === JSON.stringify(NEXT_ORDERS_INDEX);
-const untouched = JSON.stringify(strip(after)) === JSON.stringify(strip(live));
+const untouched = strip(after) === strip(live);
 if (!landedWrite || !grantGone || !landedIndex || !untouched) {
   console.error("VERIFY FAILED — restoring backup", { landedWrite, grantGone, landedIndex, untouched });
   try { await putRules(t, live, newEtag); console.error("restored the backup"); }
