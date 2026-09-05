@@ -7907,14 +7907,19 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // which is what made typing in the search box lag. A screenful is ~12-20 cards.
 const AD_PAGE = 60;
 
-// The ✕-note text for a Hub 1 sneaker size — WHY the hub can't give it out.
+// The ✕-note text for a sneaker size — WHY the serving hub can't give it out.
 // Three ✕ causes that looked identical and read as "this size doesn't exist"
 // (owner report 2026-09-01, Lacoste Powercourt size 8): the cell truly has
 // nothing; the cell has stock but every unit is reserved for a ready-but-
 // uncollected order; or this cart already holds everything the hub can give.
-// `w` is sneakerOutWhy's { booked, promised, available, inCart }.
+// `w` is sneakerOutWhy's { booked, promised, available, pullOnly, hubLabel }.
+// hubLabel is the hub that actually refused (Hub 1 or, since 2026-09-05, Hub
+// 2): naming the wrong shelf sends staff to the wrong building. It defaults to
+// "Hub 1" only when there is no split at all, which is the pre-2026-09-05
+// wording verbatim.
 function sneakerBlockNoteText(size, w) {
   const sz = formatSize(size);
+  const hub = w?.hubLabel || "Hub 1";
   // "another customer's order", not "awaiting collection": the promised
   // scalar merges ready promises WITH pending display-pair pulls, and the
   // note must not name a reason it cannot distinguish (adversarial review).
@@ -7923,15 +7928,15 @@ function sneakerBlockNoteText(size, w) {
   // EXCEPT a block explained only by a display-pair pull claim (w.pullOnly):
   // that lane holds for up to 48h, and calling it a 20-minute hold would be
   // false (CodeRabbit, #546).
-  if (!w || w.booked <= 0) return `Size ${sz} isn't available at Hub 1 right now — it can't be ordered.`;
+  if (!w || w.booked <= 0) return `Size ${sz} isn't available at ${hub} right now — it can't be ordered.`;
   if (w.available <= 0) {
     if (w.pullOnly)
-      return `Size ${sz} at Hub 1 is claimed by a pending display-pair request — it can't be ordered.`;
+      return `Size ${sz} at ${hub} is claimed by a pending display-pair request — it can't be ordered.`;
     return w.booked === 1
-      ? `Hub 1's only size ${sz} is reserved for another customer's order (20-minute hold) — try again shortly.`
-      : `All ${w.booked} of size ${sz} at Hub 1 are reserved for other customers' orders (20-minute hold) — try again shortly.`;
+      ? `${hub}'s only size ${sz} is reserved for another customer's order (20-minute hold) — try again shortly.`
+      : `All ${w.booked} of size ${sz} at ${hub} are reserved for other customers' orders (20-minute hold) — try again shortly.`;
   }
-  return `Your cart already has all ${w.available} of size ${sz} that Hub 1 can give out.`;
+  return `Your cart already has all ${w.available} of size ${sz} that ${hub} can give out.`;
 }
 
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
@@ -8308,8 +8313,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // Clothing: a size the serving hub has zero of is
                               // greyed/disabled here (hover quick-add has no room
                               // for the inline note — the quick-view carries it).
-                              // Hub 1 sneakers: same disable from the shared
-                              // availability resolver (sneakerOut), composed
+                              // Sneakers (Hub 1 and Hub 2): same disable from
+                              // the shared availability resolver (sneakerOut), composed
                               // with the deactivation/clothing rule (#445).
                               const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz) })
                                 || (!clothingOrder && !!sneakerOut?.(p, sz));
@@ -8515,10 +8520,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {sizesOf(qv).map(sz => {
                         // Clothing (and a deactivated line, #445) keeps its
-                        // note-raising tap; a Hub 1 sneaker size with none
-                        // available is simply not tappable (✕). The Display
-                        // Partner toggle lifts the ✕ — a partner request
-                        // exists to ask for what Hub 1 lacks.
+                        // note-raising tap; a sneaker size its serving hub has
+                        // none available of (Hub 1 or Hub 2) is simply not
+                        // tappable (✕). The Display Partner toggle lifts the
+                        // ✕ — a partner request exists to ask for what Hub 1
+                        // lacks, and that lane stays Hub 1's.
                         const snkOut = !clothingOrder && !qvDP && !isDeactivated(qv) && !!sneakerOut?.(qv, sz);
                         const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz) }) || snkOut;
                         // "Only the display pair is left" — marked, not
@@ -8882,6 +8888,21 @@ function AssistantView({ products, onExit, orders = [] }) {
   // can never gate anything. A null location leaves settled=false, which the
   // gate already reads as "no ✕".
   const hub1CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub1");
+  // ── HUB 2 SNEAKER AVAILABILITY (2026-09-05) ───────────────────────────────
+  // The gap this closes: Hub 1 sneakers got the ✕ in August and Hub 2 clothing
+  // has had its own since long before, but a HUB 2 SNEAKER — a shoe whose
+  // product record routes to hub2 — was still orderable into nothing. Same
+  // resolver, same gate, same tile; the ONLY new thing is the second hub's
+  // data. No third code path (see sneakerHubOf below).
+  //
+  // COSTS NOTHING EXTRA ON THE WIRE. `stock/hub2` is ALREADY streamed on every
+  // non-Pine device — servingHubCells subscribes to exactly this path for the
+  // clothing grey-out (CR_HUB_BY_UNIVERSE.central === "hub2"). Two listeners
+  // on one path share a single server subscription in the RTDB SDK's sync
+  // tree, so this hook re-reads the cache, not the network. Pine skips it for
+  // the same reason it skips hub1: computeHubForItem returns hub3 there, so
+  // the gate could never fire and the stream would be pure cost.
+  const hub2CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub2");
   const productsById = useMemo(() => {
     const m = {};
     for (const p of products || []) if (p?.id) m[p.id] = p;
@@ -8916,6 +8937,15 @@ function AssistantView({ products, onExit, orders = [] }) {
   const hub1Promised = useMemo(
     () => mergePromised(hub1ReadyPromised, hub1PullPromised),
     [hub1ReadyPromised, hub1PullPromised]
+  );
+  // Hub 2's promises: READY ORDERS ONLY, and deliberately so. The display-pair
+  // pull lane (pendingDisplayPullsByCell) is a HUB 1 build — its slots and its
+  // register are hub1-scoped — and that map is NOT hub-scoped, so folding it in
+  // here would let a Hub 1 pull claim ✕ an unrelated Hub 2 cell. Same reason
+  // the display marker below stays Hub 1 only.
+  const hub2ReadyPromised = useMemo(
+    () => readyPromisedByCell(orders, "hub2", productsById),
+    [orders, productsById, promiseTick]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
@@ -9137,20 +9167,44 @@ function AssistantView({ products, onExit, orders = [] }) {
     return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
   };
 
-  // ── THE HUB 1 GRID GATE (2026-08-25) ──────────────────────────────────────
-  // A sneaker size Hub 1 has none available of renders as ✕ — not tappable, no
-  // order line, no note. HUB 1 ONLY: hub2-routed sneakers (and everything at
-  // Pine/hub3) keep exactly yesterday's behaviour, pinned by test. The gate
-  // opens only once the subtree has settled, and never on a read error.
-  // isFootwearProduct, not merely "not clothing": the sneaker browse grid also
-  // carries perfumes, bags and one-size accessories (no productType), whose
-  // availability promises this gate does not model — they keep yesterday's
-  // behaviour. (Adversarial review, PR #446.)
-  const sneakerServedByHub1 = (p) =>
-    isFootwearProduct(p) && (p?.productType || "sneaker") !== "clothing"
-    && computeHubForItem({ product: p }) === "hub1";
-  const sneakerAvail = (pid, size) =>
-    cellAvailability({ cells: hub1CellsState.cells, promised: hub1Promised, productId: pid, size });
+  // ── THE SNEAKER GRID GATE (2026-08-25; Hub 2 joined 2026-09-05) ───────────
+  // A sneaker size the serving hub has none available of renders as ✕ — not
+  // tappable, no order line, a note on tap saying why. HUB 1 AND HUB 2: the
+  // shoe's own product record decides which hub answers (computeHubForItem, the
+  // same routing the order itself will take), so the tile is always gated by
+  // the hub that would actually have to supply it. Pine/hub3 keeps exactly
+  // yesterday's behaviour — computeHubForItem returns hub3 there and
+  // sneakerHubOf refuses it — as do the shops, which never run this screen's
+  // gate at all. Pinned by hubIsolation.test.js.
+  //
+  // ONE PATH, TWO HUBS. Hub 2 did NOT get its own predicate, its own
+  // arithmetic or its own tile: sneakerHubOf names the hub and every helper
+  // below indexes its data by that name. A `hub2SneakerOut` sitting beside a
+  // `sneakerOut` is exactly the drift this file's availability work exists to
+  // prevent.
+  //
+  // The gate opens only once THAT hub's subtree has settled, and never on a
+  // read error. isFootwearProduct, not merely "not clothing": the sneaker
+  // browse grid also carries perfumes, bags and one-size accessories (no
+  // productType), whose availability promises this gate does not model — they
+  // keep yesterday's behaviour. (Adversarial review, PR #446.)
+  const sneakerHubOf = (p) => {
+    if (!isFootwearProduct(p) || (p?.productType || "sneaker") === "clothing") return null;
+    const h = computeHubForItem({ product: p });
+    return (h === "hub1" || h === "hub2") ? h : null;
+  };
+  // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
+  // register), so they keep their own narrower predicate rather than riding
+  // sneakerHubOf — a Hub 2 shoe must not be offered a Hub 1 display pair.
+  const sneakerServedByHub1 = (p) => sneakerHubOf(p) === "hub1";
+  const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);
+  const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);
+  const sneakerGateReady = (hub) => {
+    const st = sneakerCellsState(hub);
+    return !!hub && st.settled && !st.error;
+  };
+  const sneakerAvail = (pid, size, hub = "hub1") =>
+    cellAvailability({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: pid, size });
   // Units of this product+size already in the cart. Classic partner rows are
   // excluded (they become requests, not pulls) — but a display-pair PULL line
   // IS a pull of a known unit and counts, so the same single pair can never
@@ -9160,9 +9214,10 @@ function AssistantView({ products, onExit, orders = [] }) {
     cart.filter(l => (l.productType || "sneaker") !== "clothing"
       && l.product?.id === pid && l.size === size
       && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
-  const sneakerOut = (p, s) =>
-    sneakerServedByHub1(p) && hub1CellsState.settled && !hub1CellsState.error
-    && !!s && sneakerAvail(p.id, s) <= sneakerInCart(p.id, s);
+  const sneakerOut = (p, s) => {
+    const hub = sneakerHubOf(p);
+    return sneakerGateReady(hub) && !!s && sneakerAvail(p.id, s, hub) <= sneakerInCart(p.id, s);
+  };
   // WHY that ✕ — booked vs reserved vs in-cart, for the explanatory note. An
   // ✕ whose cell holds real stock reserved for an uncollected order looked
   // identical to "this size doesn't exist", and staff read it exactly that
@@ -9171,10 +9226,19 @@ function AssistantView({ products, onExit, orders = [] }) {
   // order placed minutes earlier). Same inputs as sneakerOut, kept apart.
   // pullOnly: the block is explained ENTIRELY by a pending display-pair
   // pull claim (48h lane) — the note must not call that a 20-minute hold.
-  const sneakerOutWhy = (p, s) => ({
-    ...cellBlockInfo({ cells: hub1CellsState.cells, promised: hub1Promised, productId: p.id, size: s }),
-    pullOnly: !(hub1ReadyPromised[promisedKey(p.id, s)] > 0) && hub1PullPromised[promisedKey(p.id, s)] > 0,
-  });
+  // hubLabel travels WITH the split: the note names the hub that refused, and
+  // a Hub 2 shoe blamed on "Hub 1" would send staff to the wrong shelf.
+  // pullOnly is a Hub 1 fact only — Hub 2 nets no pull claims (see
+  // hub2ReadyPromised), so it can never be true there.
+  const sneakerOutWhy = (p, s) => {
+    const hub = sneakerHubOf(p) || "hub1";
+    return {
+      ...cellBlockInfo({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: p.id, size: s }),
+      pullOnly: hub === "hub1"
+        && !(hub1ReadyPromised[promisedKey(p.id, s)] > 0) && hub1PullPromised[promisedKey(p.id, s)] > 0,
+      hubLabel: HUB_LABELS[hub] || hub,
+    };
+  };
   // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
   // Marked, not blocked: the tile keeps its number, gains a corner display
   // icon + warning tint, and tapping it offers "Request display pair" instead
@@ -9187,7 +9251,7 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (!s || !sneakerServedByHub1(p) || !hub1CellsState.settled || hub1CellsState.error) return null;
     const d = hub1DisplayUnits[promisedKey(p.id, s)];
     if (!d) return null;
-    const avail = sneakerAvail(p.id, s) - sneakerInCart(p.id, s);
+    const avail = sneakerAvail(p.id, s, "hub1") - sneakerInCart(p.id, s);
     return displayOnly(avail, d.units) ? { stores: d.stores } : null;
   };
   // THE QUIET TIER (owner ask, 2026-08-26): a size that is on a display shows
@@ -9243,11 +9307,11 @@ function AssistantView({ products, onExit, orders = [] }) {
     }
     // Sneakers: size is optional when a Display Partner request is set.
     if (!pendingSize && !pendingDisplayPartner) return;
-    // Hub 1 availability belt: the grid already renders an unavailable size as
-    // a disabled ✕, but a size selected BEFORE the stock moved (sheet left
-    // open) must not order into nothing either — and a quantity larger than
-    // Hub 1 can still give out (net of cart lines) is clamped down, the same
-    // promise the clothing path makes.
+    // The availability belt (Hub 1 and Hub 2 alike): the grid already renders an
+    // unavailable size as a disabled ✕, but a size selected BEFORE the stock
+    // moved (sheet left open) must not order into nothing either — and a
+    // quantity larger than the serving hub can still give out (net of cart
+    // lines) is clamped down, the same promise the clothing path makes.
     if (pendingSize && !pendingDisplayPartner && sneakerOut(selected, pendingSize)) { setPendingSize(""); return; }
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
@@ -9257,9 +9321,9 @@ function AssistantView({ products, onExit, orders = [] }) {
       : 1;
     // The quantity clamp half of the belt above: with 2 available a 10-pair
     // add lands 2 lines, never 10. Only where the gate has real data.
-    if (pendingSize && !pendingDisplayPartner && sneakerServedByHub1(selected)
-        && hub1CellsState.settled && !hub1CellsState.error) {
-      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize) - sneakerInCart(selected.id, pendingSize)));
+    const clampHub = pendingSize && !pendingDisplayPartner ? sneakerHubOf(selected) : null;
+    if (sneakerGateReady(clampHub)) {
+      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize, clampHub) - sneakerInCart(selected.id, pendingSize)));
     }
     const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
     // A display-PAIR pull (the "on display" prompt path): the pair to send IS
@@ -9295,8 +9359,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       reps = Math.min(reps, Math.max(0, hubQty(p.id, size) - clothingInCart(p.id, size)));
       if (reps <= 0) return 0;
     } else if (size && sneakerOut(p, size)) {
-      // Hub 1 sneaker with none available — same refusal the grid's ✕ makes,
-      // enforced here too so a stale hover panel can't add past it.
+      // A sneaker its hub has none available of — same refusal the grid's ✕
+      // makes, enforced here too so a stale hover panel can't add past it.
       return 0;
     }
     const line = isClothingCustomer
@@ -10151,8 +10215,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // not selectable — tapping one raises the note above instead of
                 // silently ordering into nothing. Hub 1 sneakers get the same
                 // treatment from the shared availability resolver (✕, truly
-                // not tappable); hub2/hub3 sneakers stay untouched, and the
-                // deactivation rule (#445) disables everywhere. A Display
+                // not tappable) — Hub 1 and, since 2026-09-05, Hub 2; hub3
+                // sneakers stay untouched, and the deactivation rule (#445)
+                // disables everywhere. A Display
                 // Partner request EXISTS to ask for what Hub 1 lacks (it
                 // becomes a request, not a pull), so the partner toggle lifts
                 // the ✕ — the addToCart belt has the same exemption.
