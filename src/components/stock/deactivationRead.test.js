@@ -76,6 +76,14 @@ describe("the ordering grid (App.jsx AssistantView) — phone AND desktop", () =
   it("the desktop overlay is handed the SAME browse list — one memo, no drift", () => {
     expect(app).toContain("products={browse} searchResults={filtered}");
   });
+  it("…and the SAME ordering predicate, so the two layouts cannot disagree", () => {
+    // Dropping this prop is silent: AssistantDesktop defaults it to the bare
+    // isDeactivated, which would quietly restore strict behaviour on the
+    // desktop at an EXEMPT store while the phone stayed exempt.
+    expect(app).toContain("deadForOrder={deadForOrder}");
+    expect(app).toContain("const deadForOrder = useCallback(");
+    expect(app).toContain("(p) => !showDeactivated && isDeactivated(p),");
+  });
   it("a deactivated product that DOES surface (an exempt store) is marked on every card", () => {
     // phone photo grid, CR refill card, desktop card
     expect(app).toContain("{p.name}{isDeactivated(p) && <DeactivatedChip small />}");

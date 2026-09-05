@@ -51,6 +51,20 @@ describe("suggestTwin — a one-tap merge target, never an automatic merge", () 
     const off = { id: "pOff", name: "Air Force 1", brand: "Nike", deactivated: { at: 1, by: "u" } };
     expect(twinOf(dead, [dead, gone, off])).toBeNull();
   });
+  it("…even from a STALE index that still lists them", () => {
+    // The index is built once per screen and the product list is live, so a
+    // record deactivated (or merged away) between the two is exactly the case
+    // the per-candidate guard exists for. Building the index BEFORE the flag
+    // lands reproduces it.
+    const gone = { id: "pGone", name: "Air Force 1", brand: "Nike", mergedInto: "pX" };
+    const off = { id: "pOff", name: "Air Force 1", brand: "Nike", styleCodeNormalised: "ZZ9" };
+    const loser = { id: "pL", name: "Air foce 1", brand: "Nike", styleCodeNormalised: "ZZ9" };
+    const stale = buildTwinIndex({ products: [loser, { ...gone, mergedInto: undefined }, off] });
+    // now both go away underneath it
+    stale.byBrand.set("nike", [loser, gone, { ...off, deactivated: { at: 1, by: "u" } }]);
+    stale.byCode.set("zz9", [{ product: { ...off, deactivated: { at: 1, by: "u" } }, code: "ZZ9" }]);
+    expect(suggestTwin(loser, { index: stale })).toBeNull();
+  });
   it("never nominates the product itself", () => {
     expect(twinOf(dead, [dead])).toBeNull();
   });
