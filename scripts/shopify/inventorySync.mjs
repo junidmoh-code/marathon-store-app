@@ -200,20 +200,41 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
  */
 export async function clearMarker(db, pid, revision) {
   const res = await db.ref(`${DIRTY_PATH}/${pid}`).transaction((current) => {
-    // Gone already (another sweep, a manual clear) — nothing to do, and
-    // returning undefined aborts the transaction without a write.
-    if (current === null || current === undefined) return undefined;
+    // ── NO ABORT MAY BE REACHABLE FROM `current == null` ──────────────────
+    // This returned `undefined` here, and it was a no-op dressed as a success.
+    // runTransaction attaches a listener and runs this callback SYNCHRONOUSLY
+    // against the local cache first — which is null in a fresh process, which
+    // every reconciler tick is. Returning undefined aborts THERE: it unwatches
+    // and resolves committed:false without ever asking the server. An abort is
+    // the one outcome that never reaches the wire, so the callback was never
+    // re-invoked with the true value and no marker was ever deleted.
+    //
+    // It was invisible from the log, because the return below reads
+    // `snapshot.val()` — which on that aborted first pass is the cached null.
+    // So every run reported every marker cleared while the node grew:
+    //
+    //   10:10:56  inventory: 10 marker(s) · 0 pushed · 10 cleared · 10 still marked
+    //
+    // Caught by reading the live node rather than believing the line. This is
+    // the trap already written down from PR #551 (scripts/shopify/idMap.mjs,
+    // five review rounds) and it was walked into again here, which is the
+    // argument for the test fake below now modelling the optimistic null pass
+    // instead of only the tidy one.
+    //
+    // Returning `null` for an absent marker is the safe equivalent: a write of
+    // null to a key that does not exist changes nothing, and — crucially — it
+    // is a WRITE, so the callback is re-invoked with the server's value.
+    if (current === null || current === undefined) return null;
     // A DIFFERENT value means the trigger wrote again after this run read it.
     // That write stands for a stock movement this run did not push, so the
-    // marker must survive: returning the current value aborts the write.
+    // marker must survive: returning it unchanged leaves it standing.
     if (current !== revision) return current;
     return null; // same revision, push succeeded → clear it
   });
-  // `committed` is false for both aborts above. Distinguish "we removed it"
-  // from "we left it" by what the node holds now, not by committed alone —
-  // an abort on an already-absent marker is a successful clear in every sense
-  // that matters to the caller's count.
-  return res.snapshot.val() === null || res.snapshot.val() === undefined;
+  // What the node HOLDS decides, not `committed` — an already-absent marker is
+  // a successful clear in every sense that matters to the caller's count.
+  const after = res.snapshot.val();
+  return after === null || after === undefined;
 }
 
 /**
