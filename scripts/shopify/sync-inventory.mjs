@@ -37,7 +37,29 @@ const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
 const argOf = (n) => { const i = flags.indexOf(n); return i >= 0 ? flags[i + 1] : null; };
 
-const nodes = await readAllPublishNodes(db);
+
+// ── EVERY TOP-LEVEL AWAIT DIES WITH A REASON, NOT A STACK TRACE ─────────────
+// env.mjs says of this directory: "every CLI in this directory already ends in
+// a .catch that prints err.message and exits non-zero, so a person running one
+// by hand sees exactly what they saw before". This one did not. The setup reads
+// below run before any command mode is chosen, so an RTDB blip on the publish
+// node — or a Shopify blip on the location lookup — killed the process with an
+// unhandled rejection, which is precisely the failure the --dirty path had a
+// handler for one line further down. (CodeRabbit, PR #565.)
+//
+// Nothing here has written anything yet, so every one of these is safe to
+// simply refuse: the answer is always "re-run".
+const orDie = async (promise, what) => {
+  try {
+    return await promise;
+  } catch (e) {
+    console.error(`✗ ${what}: ${String(e?.message || e)}`);
+    console.error(`  Nothing was written. Re-run.`);
+    process.exit(1);
+  }
+};
+
+const nodes = await orDie(readAllPublishNodes(db), "could not read the publish nodes");
 const liveOn = new Set(Object.entries(nodes)
   .filter(([, n]) => n?.state === "live" && n?.liveState === "on")
   .map(([pid]) => pid));
@@ -47,10 +69,10 @@ if (flags.includes("--dirty")) {
   // is no next tick to carry a cursor to and a person running this by hand is
   // asking for all of it. The per-run cap exists to keep a scheduled tick
   // short, which is not what this is.
-  // sweepDirty guards every per-pid failure itself, but a failure OUTSIDE the
-  // loop — the single location lookup, or the first read of the marker node —
-  // still throws out of it. This is a CLI a person runs by hand, so that must
-  // print a reason and exit non-zero rather than dying in a stack trace.
+  // sweepDirty guards every per-pid failure itself, but a failure OUTSIDE its
+  // loop — its own location lookup, or the first read of the marker node —
+  // still throws out of it. The setup reads above have orDie; this is the same
+  // contract for the sweep's own internals.
   let r;
   try {
     r = await sweepDirty(db, graphql, {
@@ -81,9 +103,9 @@ console.log(`${COMMIT ? "CORRECTING" : "DRY RUN —"} ${pids.length} live produc
 // single call and wrong for 866 of them: it turned a 2-query product into a
 // 3-query product and put an extra 866 calls through a leaky bucket that
 // throttles. The first full run was on course for hours.
-const locationId = await requireSingleLocation(graphql);
+const locationId = await orDie(requireSingleLocation(graphql), "could not resolve the Shopify location");
 // The location NAMES too — desiredFor would otherwise re-read them per product.
-const locNames = await locationNames(db);
+const locNames = await orDie(locationNames(db), "could not read the location names");
 let drifted = 0, variants = 0, zeroed = 0;
 const zeroRows = [];
 // Products the app calls live that Shopify no longer has. Collected separately
