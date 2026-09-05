@@ -10568,6 +10568,14 @@ function TomorrowActionButton({ order, product, onOutcome }) {
   // `product` is the catalogue record for this row, from the map WarehouseView
   // already builds — no read. Absent (an order for a deleted/unknown product)
   // means the hub2 arm cannot tell footwear from perfume, so it does not probe.
+  //
+  // A RAW LOOKUP, NOT resolveProductById — deliberately, and the two reviewers
+  // split on it. Following the merge pointer would classify the row correctly,
+  // but the PROBE still reads order.productId's own Central cell, and a merged
+  // loser's cell is empty by definition (its stock moved to the survivor). So
+  // resolving the merge would turn a silently-unprobed row into a confident
+  // false "Out of stock" — the one answer this feature must never invent. Not
+  // probing is the safe direction: it keeps the promise a human just made.
   const gatedRow = centralFedRow(order, product);
   const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
   const [busy, setBusy]   = useState(false);

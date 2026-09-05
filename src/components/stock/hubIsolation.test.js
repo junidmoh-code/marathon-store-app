@@ -113,6 +113,10 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
       { placedAtHub: "hub1" }, { placedAtHub: "hub3" }, { placedAtHub: "hubC" },
       { hub: "hub3" }, { hub: "hub3", placedAtHub: "hub3" },
       { hub: "hubC" },
+      // hub2 shapes belong in the SAME sweep, or the third branch below is
+      // dead code claiming coverage it never runs (round-3 review).
+      { hub: "hub2" }, { hub: "hub2", placedAtHub: "hub2" },
+      { hub: "hub2", placedAtHub: "hub3" }, { hub: "hub2", placedAtHub: "hubC" },
     ];
     // Every shape, crossed with every product kind a row can carry. A hub1 row
     // must answer the legacy expression whatever the product is; outside hub2
@@ -126,7 +130,11 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
         } else if ((o.hub || "hub1") !== "hub2") {
           expect(got, `non-hub2 shape must stay false for ${label}`).toBe(false);
         } else {
-          expect(got, `hub2 shape gates on footwear only (${label})`).toBe(p === SNEAKER);
+          // A hub2 shape still listed under hub3/hubC is refused outright;
+          // otherwise it turns true for footwear and nothing else.
+          const listedElsewhere = o.placedAtHub === "hub3" || o.placedAtHub === "hubC";
+          expect(got, `hub2 shape gates on footwear only (${label})`)
+            .toBe(!listedElsewhere && p === SNEAKER);
         }
       }
     }
