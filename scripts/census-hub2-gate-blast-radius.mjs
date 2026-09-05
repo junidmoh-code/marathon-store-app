@@ -46,21 +46,37 @@ admin.initializeApp({
 });
 const db = admin.database();
 
-// Same predicates the app uses, inlined (the modules import through the
-// bundler's extensionless resolution).
+// The app's own predicates, MIRRORED EXACTLY — not approximated. Review caught
+// the first cut diverging in three places (a broad `_`→`.` decode, a loose
+// "One Size" fold, and a sizesOf that did not drop blanks and the "_" sentinel),
+// and these numbers are the evidence the change is safe to deploy, so an
+// approximation is not good enough. Each function below is a transcription of
+// the named source; check them against it, not against intuition.
+//
+// src/utils/sizeKey.js
+const ILLEGAL_RTDB_CHARS = /[.#$[\]/\s]/g;
+const encodeSizeKey = (size) => {
+  if (typeof size === "number") size = String(size);
+  if (typeof size !== "string") return size;
+  return size.replace(ILLEGAL_RTDB_CHARS, "_");
+};
+const decodeSizeKey = (key) =>
+  typeof key !== "string" ? key : key.replace(/(\d)_(\d)/g, "$1.$2");   // digit_digit ONLY
+const stockSizeKey = (size) =>
+  (size == null || size === "" || size === "Free Size") ? "_" : encodeSizeKey(size);
+const decodedCellKey = (size) => decodeSizeKey(stockSizeKey(size));
+// src/components/stock/missingFootwearCore.js + availabilityCore.gatedSneakerHub
 const isFootwearProduct = (p) => p?.category === "Footwear";
 const isGatedSneaker = (p) => isFootwearProduct(p) && (p?.productType || "sneaker") !== "clothing";
+// src/App.jsx getProductHubs + computeHubForItem (central universe)
 const getProductHubs = (p) => p?.hubs || (p?.hub ? [p.hub] : []);
 const routedHub = (p) => getProductHubs(p).find((h) => h === "hub1" || h === "hub2") || "hub1";
-// utils/sizeKey: "." → "_", and a blank/one-size label folds to "_".
-const stockSizeKey = (s) => {
-  const t = String(s ?? "").trim();
-  if (!t || t.toLowerCase() === "free size" || t.toLowerCase() === "one size") return "_";
-  return t.replace(/\./g, "_").replace(/\s/g, "_");
+// src/App.jsx sizesOf — drops blanks, whitespace-only entries and the "_"
+// sentinel before falling back to the single "Free Size" chip.
+const sizesOf = (p) => {
+  const s = (Array.isArray(p?.sizes) ? p.sizes : []).filter((x) => x && String(x).trim() && x !== "_");
+  return s.length ? s : ["Free Size"];
 };
-const decodeSizeKey = (k) => String(k).replace(/_/g, ".");
-// The grid's chip list: declared sizes, or the single "Free Size" chip.
-const sizesOf = (p) => (Array.isArray(p?.sizes) && p.sizes.length ? p.sizes : ["Free Size"]);
 
 // HUB 1 IS THE CONTROL, and it is the only thing that makes these numbers
 // readable. Hub 1 has run this exact gate since 2026-08-25 with the owner
@@ -81,18 +97,31 @@ const hub2 = hub2Snap.val() || {};
 const hub1 = hub1Snap.val() || {};
 const central = centralSnap.val() || {};
 
-const cellQty = (stock, pid, rawSize) => {
-  const bySize = stock[pid];
-  if (!bySize) return null;                       // no row at all for this product
-  // The client decodes stored keys, then indexes by decodedCellKey(size).
-  const want = decodeSizeKey(stockSizeKey(rawSize));
-  for (const k of Object.keys(bySize)) {
-    if (decodeSizeKey(k) === want) {
-      const q = Number(bySize[k]?.qty);
-      return Number.isFinite(q) ? q : 0;
-    }
+// EXACTLY what the client does: useStock.decodeByProduct decodes every stored
+// key on the way in, and the resolver then indexes that decoded map by
+// decodedCellKey(size). Anything else measures a lookup the app never performs.
+const decodedCache = new Map();
+const decodedRows = (stock, pid) => {
+  const key = `${stock === undefined ? "?" : ""}${pid}`;
+  let per = decodedCache.get(stock);
+  if (!per) { per = new Map(); decodedCache.set(stock, per); }
+  if (per.has(key)) return per.get(key);
+  const raw = stock[pid];
+  let dec = null;
+  if (raw) {
+    dec = {};
+    for (const k of Object.keys(raw)) dec[decodeSizeKey(k)] = raw[k];
   }
-  return null;                                    // row exists, this size does not
+  per.set(key, dec);
+  return dec;
+};
+const cellQty = (stock, pid, rawSize) => {
+  const rows = decodedRows(stock, pid);
+  if (!rows) return null;                         // no row at all for this product
+  const cell = rows[decodedCellKey(rawSize)];
+  if (cell === undefined) return null;            // row exists, this size does not
+  const q = Number(cell?.qty);
+  return Number.isFinite(q) ? q : 0;
 };
 
 // ── (A) chips that flip to ✕ ────────────────────────────────────────────────
