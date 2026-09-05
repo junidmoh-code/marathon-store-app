@@ -16,6 +16,12 @@
 //     clothing order in the central universe is stamped hub:"hub2", so the
 //     first cut of the Tomorrow rule swept every one of them into the gate.
 //     Review caught it; the hub2 arm is footwear-only and this file says so.
+//   • AND EVERYTHING ELSE HUB 2 CARRIES. Hub 2 is where the non-sneaker
+//     catalogue lives — perfume, bags, accessories. A perfume order takes the
+//     SNEAKER checkout branch and is stamped productType:"sneaker", so a
+//     type-based hub2 test swept perfume in too (round 2 of review). The gate
+//     asks isFootwearProduct — the category, the same question the grid gate
+//     asks — and an unknown product is not probed at all.
 //
 // NOTE ON THE COMMIT 4 "RE-PIN": there was nothing to re-pin. The pre-change
 // App.jsx comment claimed hub2's exclusion was "pinned by test", but no test on
@@ -89,12 +95,12 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
     expect(CENTRAL_FED_HUBS).toEqual(["hub1", "hub2"]);
   });
   it("a hub3 row is NOT probed — it keeps offering Tomorrow, as it always has", () => {
-    expect(centralFedRow({ hub: "hub3", placedAtHub: "hub3" })).toBe(false);
-    expect(centralFedRow({ placedAtHub: "hub3" })).toBe(false);           // legacy hub-less shape
+    expect(centralFedRow({ hub: "hub3", placedAtHub: "hub3" }, SNEAKER)).toBe(false);
+    expect(centralFedRow({ placedAtHub: "hub3" }, SNEAKER)).toBe(false);   // legacy hub-less shape
   });
   it("a hubC (customer clothing) row is NOT probed", () => {
-    expect(centralFedRow({ hub: "hub1", placedAtHub: "hubC" })).toBe(false);
-    expect(centralFedRow({ placedAtHub: "hubC" })).toBe(false);
+    expect(centralFedRow({ hub: "hub1", placedAtHub: "hubC" }, SNEAKER)).toBe(false);
+    expect(centralFedRow({ placedAtHub: "hubC" }, SNEAKER)).toBe(false);
   });
   it("hub1's answer is unchanged, character for character", () => {
     // The pre-2026-09-05 expression, re-evaluated here against the extracted
@@ -108,40 +114,69 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
       { hub: "hub3" }, { hub: "hub3", placedAtHub: "hub3" },
       { hub: "hubC" },
     ];
+    // Every shape, crossed with every product kind a row can carry. A hub1 row
+    // must answer the legacy expression whatever the product is; outside hub2
+    // no old FALSE may flip; and a hub2 row may only turn true for footwear.
     for (const o of SHAPES) {
-      if (legacyHub1Row(o)) expect(centralFedRow(o)).toBe(true);          // every old TRUE is still true
-      if (!legacyHub1Row(o) && (o.hub || "hub1") !== "hub2") {
-        expect(centralFedRow(o)).toBe(false);                             // and no old FALSE flipped, outside hub2
+      for (const [label, p] of [["sneaker", SNEAKER], ["clothing", CLOTHING],
+                                ["perfume", PERFUME], ["unknown", undefined]]) {
+        const got = centralFedRow(o, p);
+        if (legacyHub1Row(o)) {
+          expect(got, `hub1 shape must be unchanged for ${label}`).toBe(true);
+        } else if ((o.hub || "hub1") !== "hub2") {
+          expect(got, `non-hub2 shape must stay false for ${label}`).toBe(false);
+        } else {
+          expect(got, `hub2 shape gates on footwear only (${label})`).toBe(p === SNEAKER);
+        }
       }
-      // The same sweep with a clothing productType: hub1 rows must not shift
-      // either, and every hub2 clothing row must stay out of the gate.
-      const c = { ...o, productType: "clothing" };
-      if (legacyHub1Row(c)) expect(centralFedRow(c)).toBe(true);
-      if (!legacyHub1Row(c)) expect(centralFedRow(c)).toBe(false);
     }
   });
-  it("hub2 is the ONLY row class that changed", () => {
-    expect(centralFedRow({ hub: "hub2" })).toBe(true);
-    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2" })).toBe(true);
-    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub3" })).toBe(false);   // still listed under hub3 too
+  it("hub2 FOOTWEAR is the ONLY row class that changed", () => {
+    expect(centralFedRow({ hub: "hub2" }, SNEAKER)).toBe(true);
+    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2" }, SNEAKER)).toBe(true);
+    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub3" }, SNEAKER)).toBe(false);   // still listed under hub3 too
   });
   it("HUB 2 CLOTHING is not probed — it always offered Tomorrow and still does", () => {
-    // The breach caught in review: a customer clothing order placed in the
-    // central universe is stamped hub:"hub2", placedAtHub:"hub2" (App.jsx
-    // placedHub = CR_HUB_BY_UNIVERSE[...] for a clothing line), so a bare hub2
-    // disjunct swept every Hub 2 clothing row into the gate. Hub 2 clothing was
-    // live and correct and had to stay byte-identical.
-    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2", productType: "clothing" })).toBe(false);
-    expect(centralFedRow({ hub: "hub2", productType: "clothing" })).toBe(false);
+    // Round 1 of review: a customer clothing order placed in the central
+    // universe is stamped hub:"hub2", placedAtHub:"hub2" (App.jsx placedHub =
+    // CR_HUB_BY_UNIVERSE[...] for a clothing line), so a bare hub2 disjunct
+    // swept every Hub 2 clothing row into the gate. Hub 2 clothing was live and
+    // correct and had to stay byte-identical.
+    const row = { hub: "hub2", placedAtHub: "hub2" };
+    expect(centralFedRow(row, CLOTHING)).toBe(false);
+    expect(centralFedRow({ ...row, productType: "clothing" }, CLOTHING)).toBe(false);
     // A Hub 2 SNEAKER row is the thing that changed, and only it.
-    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2", productType: "sneaker" })).toBe(true);
-    expect(centralFedRow({ hub: "hub2", placedAtHub: "hub2" })).toBe(true);   // untyped = sneaker, the app's default
+    expect(centralFedRow(row, SNEAKER)).toBe(true);
   });
-  it("HUB 1 carries no type test at all — its rule is the 2026-08-25 one, verbatim", () => {
-    // hub1 stocks no clothing, so there is nothing to filter; adding a test
-    // there for symmetry would be a behaviour change to a rule already right.
-    expect(centralFedRow({ hub: "hub1", productType: "clothing" })).toBe(true);
-    expect(centralFedRow({ productType: "clothing" })).toBe(true);
+  it("HUB 2 PERFUME is not probed either — 'not clothing' was never the same as 'is a sneaker'", () => {
+    // Round 2 of review, and the sharper half. A perfume record carries
+    // hubs:["hub2"] and NO productType (the new-product form omits it for that
+    // category), and its customer order takes the SNEAKER checkout branch —
+    // which stamps productType:"sneaker". So a type-based test read a perfume
+    // as a gated Hub 2 sneaker, and a perfume Central does not hold would have
+    // offered "Out of stock" and auto-sent that to a customer. The gate asks
+    // the category, exactly as the grid gate does.
+    const row = { hub: "hub2", placedAtHub: "hub2", productType: "sneaker" };
+    expect(centralFedRow(row, PERFUME)).toBe(false);
+    expect(centralFedRow(row, { id: "b1", category: "Bags" })).toBe(false);
+    expect(centralFedRow(row, SNEAKER)).toBe(true);
+  });
+  it("an UNKNOWN product is not probed — fail-open toward yesterday's behaviour", () => {
+    // A false "Out of stock" tells a customer their order is dead; a false
+    // Tomorrow merely keeps the promise a human just made. Same asymmetry the
+    // rest of this module is built on.
+    const row = { hub: "hub2", placedAtHub: "hub2" };
+    expect(centralFedRow(row, undefined)).toBe(false);
+    expect(centralFedRow(row, null)).toBe(false);
+    expect(centralFedRow(row, {})).toBe(false);
+  });
+  it("HUB 1 asks nothing about the product — its rule is the 2026-08-25 one, verbatim", () => {
+    // hub1 carries neither clothing nor perfume, so there is nothing to filter;
+    // adding a test there for symmetry would change a rule already right.
+    for (const p of [SNEAKER, CLOTHING, PERFUME, undefined, null]) {
+      expect(centralFedRow({ hub: "hub1" }, p)).toBe(true);
+      expect(centralFedRow({ productType: "clothing" }, p)).toBe(true);
+    }
   });
   it("the fail-open rule is untouched: unknown Central availability still offers Tomorrow", () => {
     expect(tomorrowTapOutcome(null)).toBe("tomorrow");
@@ -152,6 +187,10 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
     const a = app();
     expect(a).toContain('if (!gatedRow) { await onOutcome("tomorrow"); return; }');
     expect(a).toContain("if (!gatedRow) return undefined;");
+    // The row's own catalogue record reaches the gate — from the map the
+    // warehouse already builds, never a read.
+    expect(a).toContain("const gatedRow = centralFedRow(order, product);");
+    expect(a).toContain("<TomorrowActionButton order={order} product={whProductsById[order.productId]}");
   });
 });
 

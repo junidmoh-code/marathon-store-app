@@ -86,15 +86,24 @@ const MUTATIONS = [
     id: "G6b",
     guard: "HUB 2 CLOTHING is NOT probed — a live, correct lane a bare hub2 disjunct swept in (caught in review)",
     file: GATE,
-    from: `  return (order?.productType || "sneaker") !== "clothing";          // hub2: sneakers only`,
+    from: `  return isFootwearProduct(product);                                // hub2: the seven categories, only`,
     to: `  return true;`,
   },
   {
     id: "G6c",
-    guard: "An untyped hub2 row still counts as a sneaker — the app's own default, not a refusal",
+    guard: "HUB 2 PERFUME is not probed — the gate asks the CATEGORY, not the order's stamped type",
     file: GATE,
-    from: `  return (order?.productType || "sneaker") !== "clothing";          // hub2: sneakers only`,
-    to: `  return order?.productType !== undefined && order.productType !== "clothing";`,
+    // The round-2 catch: a perfume order takes the sneaker checkout branch and
+    // is stamped productType "sneaker", so a type-based test swept it in.
+    from: `  return isFootwearProduct(product);                                // hub2: the seven categories, only`,
+    to: `  return (order?.productType || "sneaker") !== "clothing";`,
+  },
+  {
+    id: "G6e",
+    guard: "An UNKNOWN product is not probed — fail-open, because a false Out of stock messages a customer",
+    file: GATE,
+    from: `  return isFootwearProduct(product);                                // hub2: the seven categories, only`,
+    to: `  return !product || isFootwearProduct(product);`,
   },
   {
     id: "G6d",

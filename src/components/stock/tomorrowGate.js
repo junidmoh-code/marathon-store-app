@@ -35,7 +35,7 @@
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { stockCellPath, assertSafeSegment } from "../../utils/sizeKey";
-import { availableUnits } from "./availabilityCore";
+import { availableUnits, isFootwearProduct } from "./availabilityCore";
 
 const CENTRAL = "central";
 const CACHE_TTL_MS = 60 * 1000;
@@ -86,26 +86,44 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
 // keep yesterday's behaviour verbatim (Tomorrow always offered, no probe, no
 // re-check), and so do the shops, which never render this button.
 //
-// AND HUB 2 CLOTHING IS NOT IN IT EITHER — the correction that mattered most in
-// review. A customer CLOTHING order placed in the central universe is stamped
-// hub:"hub2", placedAtHub:"hub2" (App.jsx: placedHub = CR_HUB_BY_UNIVERSE[...]
-// for a clothing line), so a bare hub2 disjunct silently swept every Hub 2
-// clothing row into the gate: a row that has always offered Tomorrow with no
-// read would start probing Central and could answer "Out of stock". Hub 2
-// clothing was live and correct before this change and had to stay
-// byte-identical, so the hub2 arm is footwear-only. Hub 1's arm is untouched
-// and carries NO type test — hub1 stocks no clothing, and "unchanged" beats
-// "consistent" on a rule that was already right.
+// AND THE HUB 2 ARM IS FOOTWEAR ONLY — the correction that took two review
+// rounds, because Hub 2 is where everything that is not a Hub 1 sneaker lives.
+//
+//   ROUND 1: a customer CLOTHING order placed in the central universe is
+//   stamped hub:"hub2", placedAtHub:"hub2" (App.jsx: placedHub =
+//   CR_HUB_BY_UNIVERSE[...] for a clothing line), so a bare hub2 disjunct swept
+//   every Hub 2 clothing row into the gate.
+//
+//   ROUND 2: excluding productType "clothing" was still not enough, because
+//   "not clothing" is not "footwear". A PERFUME record carries hubs:["hub2"],
+//   no productType at all (63 of 65 perfumes have the field absent — the new
+//   product form omits it for that category), and its customer order takes the
+//   SNEAKER checkout branch, which stamps productType: "sneaker". So a perfume
+//   row read as a gated Hub 2 sneaker row, and a perfume Central does not hold
+//   would have offered "Out of stock" and auto-sent that outcome to a customer.
+//   Perfume is not one of the seven sneaker categories, and "nothing else
+//   changes" is the whole brief.
+//
+// So the hub2 arm asks the SAME question the grid gate asks — isFootwearProduct,
+// the category test — instead of guessing from the order's own stamped type. An
+// UNKNOWN product (no record in hand) is not probed: that is fail-open toward
+// yesterday's behaviour, matching this module's stated asymmetry (a false
+// "Out of stock" wrongly tells a customer their order is dead; a false Tomorrow
+// merely keeps the promise a human just chose to make).
+//
+// Hub 1's arm is untouched and asks NOTHING about the product — hub1 carries
+// neither clothing nor perfume, and "unchanged" beats "consistent" on a rule
+// that was already right.
 //
 // The hub rule matches the app's orderInHub VERBATIM: hub3/hubC live in
 // placedAtHub, hub1/hub2 in `hub` (defaulted hub1).
 export const CENTRAL_FED_HUBS = ["hub1", "hub2"];
-export function centralFedRow(order) {
+export function centralFedRow(order, product) {
   if (order?.placedAtHub === "hub3" || order?.placedAtHub === "hubC") return false;
   const hub = order?.hub || "hub1";
   if (!CENTRAL_FED_HUBS.includes(hub)) return false;
   if (hub === "hub1") return true;                                  // 2026-08-25, verbatim
-  return (order?.productType || "sneaker") !== "clothing";          // hub2: sneakers only
+  return isFootwearProduct(product);                                // hub2: the seven categories, only
 }
 
 // The outcome a tap must produce, from a fresh availability answer.

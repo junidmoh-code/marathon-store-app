@@ -10547,7 +10547,7 @@ const WH_TAB_ICON = {
 // An unresolvable row (no productId/size, unreadable cell) keeps today's
 // Tomorrow behaviour — fail-open, because a false OOS wrongly messages the
 // customer while a false Tomorrow merely keeps the human's own promise.
-function TomorrowActionButton({ order, onOutcome }) {
+function TomorrowActionButton({ order, product, onOutcome }) {
   // sentSize is what physically left when a substitute was sent; the promise
   // (and the refill request updateStatus raises) draws on the same cell.
   const gateSize = order.sentSize ?? order.size ?? null;
@@ -10565,7 +10565,10 @@ function TomorrowActionButton({ order, onOutcome }) {
   // nothing else moved. Pinned by hubIsolation.test.js.
   // centralFedRow lives in tomorrowGate.js beside the read it guards, so this
   // row rule is testable on its own (hubIsolation.test.js).
-  const gatedRow = centralFedRow(order);
+  // `product` is the catalogue record for this row, from the map WarehouseView
+  // already builds — no read. Absent (an order for a deleted/unknown product)
+  // means the hub2 arm cannot tell footwear from perfume, so it does not probe.
+  const gatedRow = centralFedRow(order, product);
   const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
   const [busy, setBusy]   = useState(false);
   const busyRef = useRef(false);                   // state lags a frame; the ref doesn't
@@ -10578,7 +10581,7 @@ function TomorrowActionButton({ order, onOutcome }) {
       if (on && !busyRef.current) setAvail(a);
     });
     return () => { on = false; };
-  }, [order.productId, gateSize, gatedRow]);
+  }, [order.productId, gateSize, gatedRow]);   // gatedRow already folds in the product
   const offersOOS = gatedRow && avail !== undefined && avail !== null && avail <= 0;
   const tap = async () => {
     if (busyRef.current) return;
@@ -11991,7 +11994,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             Mark as Out of Stock
                           </button>
-                          <TomorrowActionButton order={order}
+                          <TomorrowActionButton order={order} product={whProductsById[order.productId]}
                             onOutcome={(kind) => updateStatus(order, kind === "out_of_stock" ? STATUS.OUT_OF_STOCK : STATUS.COMING_TOMORROW)} />
                           <button onClick={() => subAvailable && setPickerOpenId(order.id)}
                                   disabled={!subAvailable}
