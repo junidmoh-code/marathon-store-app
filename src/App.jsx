@@ -9,6 +9,9 @@ import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
 import { isDeactivated, orderSizeOut, browsableProducts, REACTIVATED_EVENT } from "./utils/deactivation";
 import { ProductActionsButton, DeactivatedChip } from "./components/stock/ProductActions.jsx";
+import { showsDeactivated } from "./config/assistantVisibility";
+import { useAssistantVisibility } from "./config/useAssistantVisibility";
+import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
@@ -7946,7 +7949,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayOnly, sneakerDisplayInfo }) {
+                            hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayOnly, sneakerDisplayInfo,
+                            deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
   // clothing catalog with live per-size availability at the serving CR hub
@@ -8316,22 +8320,22 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // Sneakers (Hub 1 and Hub 2): same disable from
                               // the shared availability resolver (sneakerOut), composed
                               // with the deactivation/clothing rule (#445).
-                              const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz) })
+                              const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz), deactivated: deadForOrder(p) })
                                 || (!clothingOrder && !!sneakerOut?.(p, sz));
                               // "Only the display pair is left": the hover
                               // grid has no room for the prompt (its own
                               // standing note), so a marked tap opens the
                               // quick-view with the prompt already up.
-                              const dOnly = !out && !clothingOrder && !isDeactivated(p)
+                              const dOnly = !out && !clothingOrder && !deadForOrder(p)
                                 ? sneakerDisplayOnly?.(p, sz) : null;
                               // Quiet tier — glyph on any AVAILABLE size that
                               // is on a display; amber only when it is the
                               // last one. Never on a ✕/deactivated tile — the
                               // ✕ is authoritative (the drift rule).
-                              const dInfo = !clothingOrder && !out && !isDeactivated(p) ? sneakerDisplayInfo?.(p, sz) : null;
+                              const dInfo = !clothingOrder && !out && !deadForOrder(p) ? sneakerDisplayInfo?.(p, sz) : null;
                               return (
                                 <button key={sz} className="ad-sz" disabled={out}
-                                  title={out ? (isDeactivated(p) ? "Deactivated — finished line"
+                                  title={out ? (deadForOrder(p) ? "Deactivated — finished line"
                                       : clothingOrder ? `Not available at ${servingHubLabel}`
                                       // Sneaker ✕: name the real reason — a cell
                                       // whose stock is reserved for an uncollected
@@ -8484,12 +8488,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         more than the hub can still cover. Live: recomputes
                         remaining (hub minus cart) every render and hides once
                         more is addable than when it was raised. */}
-                    {qvNa && (clothingOrder || isDeactivated(qv) || qvNa.snk) && (() => {
+                    {qvNa && (clothingOrder || deadForOrder(qv) || qvNa.snk) && (() => {
                       // Sneaker ✕ note (2026-09-01): raised by tapping a ✕
                       // tile; says WHY (empty vs reserved vs already-in-cart)
                       // instead of leaving "reserved" indistinguishable from
                       // "doesn't exist". Self-hides once the size frees up.
-                      if (qvNa.snk && !isDeactivated(qv)) {
+                      if (qvNa.snk && !deadForOrder(qv)) {
                         // Belt on the toggle's clear: partner mode lifts the
                         // ✕, so the note must never outlive it either way.
                         if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
@@ -8503,8 +8507,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       const rem = have - clothingInCart(qv.id, qvNa.size);
                       // Deactivation is not a stock condition — its note never
                       // self-hides on availability.
-                      if (!isDeactivated(qv) && rem > qvNa.left) return null;
-                      const text = isDeactivated(qv)
+                      if (!deadForOrder(qv) && rem > qvNa.left) return null;
+                      const text = deadForOrder(qv)
                         ? `${qv.name} is deactivated — a finished line. Its sizes can't be ordered.`
                         : have <= 0
                         ? `Size ${formatSize(qvNa.size)} isn't available at ${servingHubLabel} right now — it can't be ordered.`
@@ -8525,15 +8529,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         // tappable (✕). The Display Partner toggle lifts the
                         // ✕ — a partner request exists to ask for what Hub 1
                         // lacks, and that lane stays Hub 1's.
-                        const snkOut = !clothingOrder && !qvDP && !isDeactivated(qv) && !!sneakerOut?.(qv, sz);
-                        const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz) }) || snkOut;
+                        const snkOut = !clothingOrder && !qvDP && !deadForOrder(qv) && !!sneakerOut?.(qv, sz);
+                        const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz), deactivated: deadForOrder(qv) }) || snkOut;
                         // "Only the display pair is left" — marked, not
                         // blocked; tapping opens the display-pair prompt.
-                        const dOnly = !out && !clothingOrder && !qvDP && !isDeactivated(qv)
+                        const dOnly = !out && !clothingOrder && !qvDP && !deadForOrder(qv)
                           ? sneakerDisplayOnly?.(qv, sz) : null;
                         // Quiet tier — same rule as the phone sheet and the
                         // hover grid: never on a ✕/deactivated tile.
-                        const dInfo = !clothingOrder && !out && !isDeactivated(qv)
+                        const dInfo = !clothingOrder && !out && !deadForOrder(qv)
                           ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
@@ -8554,7 +8558,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // A sneaker ✕ tap raises the why-note (snk flag)
                               // instead of dying silently — reserved stock
                               // otherwise reads as "size doesn't exist".
-                              if (out) { setQvNa(clothingOrder || isDeactivated(qv) ? { size: sz, left: 0 } : { size: sz, left: 0, snk: true }); return; }
+                              if (out) { setQvNa(clothingOrder || deadForOrder(qv) ? { size: sz, left: 0 } : { size: sz, left: 0, snk: true }); return; }
                               if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                               // A plain size selection drops any display-pair
                               // claim — it belongs to the prompted size only.
@@ -9080,30 +9084,47 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Products matching the active mode (sneaker/clothing) + store universe,
   // BEFORE any text search. The fuzzy search runs over this candidate set so a
   // typo can never pull in products from the wrong mode/hub.
-  const base = useMemo(() =>
-    products.filter(p => {
-      const isClothingProduct = (p.productType || "sneaker") === "clothing";
-      if (isClothingProduct !== wantsClothing) return false;
-      if (!wantsClothing) {
-        const hubs = getProductHubs(p);
-        if (effectiveStoreMode === "pine") {
-          if (!hubs.includes("hub3")) return false;
-        } else {
-          if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
-        }
-      }
-      return true;
-    }),
-  [products, wantsClothing, effectiveStoreMode]);
+  // ── THE DEACTIVATION GATE (owner spec 2026-09-05, BUG 1 + 1b) ──────────────
+  // A deactivated product is COMPLETELY ABSENT from this screen — not greyed,
+  // not badged, not showing zero sizes. It was badged before, and that cost
+  // real sales: the assistant found the deactivated duplicate, saw no sizes,
+  // and told the customer there was no stock while the sizes sat under the
+  // other copy. The exemption is Marathon Pine (uncounted Hub 3, manual floor),
+  // and it lives in /config/assistantView so it can be switched off without a
+  // deploy — see src/config/assistantVisibility.js for the whole contract.
+  //
+  // THE GATE IS APPLIED IN `base`, DELIBERATELY. `base` is the ONE pool this
+  // screen derives everything from: the browse grid, the Fuse index, the
+  // barcode/SKU code-hit branch, the 1-char substring branch, the desktop
+  // overlay's catalog, and the tongue-label finder. Filtering here is what
+  // makes "not findable by search either" structurally true instead of a rule
+  // four call sites have to remember.
+  const { deactivatedShops } = useAssistantVisibility();
+  const showDeactivated = showsDeactivated(deactivatedShops, effectiveShop);
 
-  // ── THE DEACTIVATION READ (owner spec 2026-08-31, BUG 1) ───────────────────
-  // `base` stays the FULL universe because it is the SEARCH pool: a typed query
-  // must still find a deactivated product (marked), so the operator can act on
-  // the copy they are looking at. `browse` is what the GRID renders with no
-  // query — and a finished line is not on offer there. One pair of memos feeds
-  // BOTH the phone grid (`filtered` below) and the desktop overlay (which takes
-  // `products={browse}` + `searchResults={filtered}`), so neither can drift.
-  const browse = useMemo(() => browsableProducts(base), [base]);
+  const base = useMemo(
+    () => assistantCatalogue({
+      products, wantsClothing, storeMode: effectiveStoreMode, showDeactivated, isDeactivated,
+    }),
+    [products, wantsClothing, effectiveStoreMode, showDeactivated]);
+
+  // `browse` is what the GRID renders with no query. For every strict store it
+  // is already identical to `base` (the gate above removed them); for an EXEMPT
+  // store it must NOT drop them — Pine's assistant view shows everything —
+  // so browsableProducts runs only when the gate is off. One pair of memos
+  // feeds BOTH the phone grid (`filtered` below) and the desktop overlay (which
+  // takes `products={browse}` + `searchResults={filtered}`), so neither can drift.
+  const browse = useMemo(() => (showDeactivated ? base : browsableProducts(base)), [base, showDeactivated]);
+
+  // THE ORDERING PREDICATE, once. At a strict store `base` no longer contains a
+  // deactivated product at all, so this can only ever fire on a cart line added
+  // before someone tapped Deactivate (the stale-cart window the submit guard
+  // closes). At an EXEMPT store it is permanently false — Pine sees the card
+  // AND may order it, because the shoe may be on Pine's uncounted shelf. It is
+  // passed into AssistantDesktop so the two layouts cannot disagree.
+  const deadForOrder = useCallback(
+    (p) => !showDeactivated && isDeactivated(p),
+    [showDeactivated]);
 
   // Fuzzy search (Fuse.js): typo- and case-tolerant matching over name +
   // category. Rebuilt only when `base` changes (memoised — fine for ~1.2k
@@ -9414,7 +9435,7 @@ function AssistantView({ products, onExit, orders = [] }) {
     // subscription), falling back to the cart's own copy.
     {
       const dead = cart.filter(isCustomerLine)
-        .find((item) => isDeactivated(resolveProductById(item.product.id) || item.product));
+        .find((item) => deadForOrder(resolveProductById(item.product.id) || item.product));
       if (dead) {
         alert(`${dead.product.name} was deactivated — a finished line. Remove it from the cart to place the rest.`);
         return;
@@ -9747,6 +9768,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
           products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
+          deadForOrder={deadForOrder}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
@@ -10100,8 +10122,8 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
                   )}
-                  <div style={{ fontSize:13, fontWeight:500, color: isDeactivated(p) ? "#B9C0D4" : "#4A7FFF" }}>
-                    {isDeactivated(p) ? "Deactivated — no sizes on offer" : "Tap to add →"}
+                  <div style={{ fontSize:13, fontWeight:500, color: deadForOrder(p) ? "#B9C0D4" : "#4A7FFF" }}>
+                    {deadForOrder(p) ? "Deactivated — no sizes on offer" : "Tap to add →"}
                   </div>
                 </div>
                 <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
@@ -10149,11 +10171,11 @@ function AssistantView({ products, onExit, orders = [] }) {
                 than the hub can still cover. Live: it recomputes remaining
                 (hub qty minus cart) every render and hides the moment more
                 stock is actually addable than when it was raised. */}
-            {naNote && ((selected.productType || "sneaker") === "clothing" || isDeactivated(selected) || naNote.snk) && (() => {
+            {naNote && ((selected.productType || "sneaker") === "clothing" || deadForOrder(selected) || naNote.snk) && (() => {
               // Sneaker ✕ note (2026-09-01) — the phone-sheet twin of the
               // quick-view's: tapping a ✕ tile says WHY (empty vs reserved
               // vs already-in-cart). Self-hides once the size frees up.
-              if (naNote.snk && !isDeactivated(selected)) {
+              if (naNote.snk && !deadForOrder(selected)) {
                 // Belt on the toggle's clear: partner mode lifts the ✕, so
                 // the note must never outlive it either way.
                 if (pendingDisplayPartner || !sneakerOut(selected, naNote.size)) return null;
@@ -10167,9 +10189,9 @@ function AssistantView({ products, onExit, orders = [] }) {
               const rem = have - clothingInCart(selected.id, naNote.size);
               // A deactivated product's note never self-hides on stock — stock
               // is not the reason its sizes are blocked.
-              if (!isDeactivated(selected) && rem > naNote.left) return null;
+              if (!deadForOrder(selected) && rem > naNote.left) return null;
               const label = HUB_LABELS[servingHub] || servingHub;
-              const text = isDeactivated(selected)
+              const text = deadForOrder(selected)
                 ? `${selected.name} is deactivated — a finished line. Its sizes can't be ordered.`
                 : have <= 0
                 ? `Size ${formatSize(naNote.size)} isn't available at ${label} right now — it can't be ordered.`
@@ -10230,15 +10252,15 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // becomes a request, not a pull), so the partner toggle lifts
                 // the ✕ — the addToCart belt has the same exemption.
                 const clothing = (selected.productType || "sneaker") === "clothing";
-                const snkOut = !clothing && !pendingDisplayPartner && !isDeactivated(selected) && sneakerOut(selected, s);
-                const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s) }) || snkOut;
+                const snkOut = !clothing && !pendingDisplayPartner && !deadForOrder(selected) && sneakerOut(selected, s);
+                const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s), deactivated: deadForOrder(selected) }) || snkOut;
                 // "Only the display pair is left" — the tile STAYS the size
                 // number (the grid is built on single characters and flips
                 // constantly); it gains a corner display glyph + amber tint,
                 // and tapping it opens the display-pair prompt above instead
                 // of selecting. Suppressed while the partner toggle is on
                 // (that flow already exists to ask for what hub1 lacks).
-                const dispOnly = !out && !clothing && !pendingDisplayPartner && !isDeactivated(selected)
+                const dispOnly = !out && !clothing && !pendingDisplayPartner && !deadForOrder(selected)
                   ? sneakerDisplayOnly(selected, s) : null;
                 // The quiet tier: any AVAILABLE size on a display carries the
                 // glyph — amber only when the display pair is the last one.
@@ -10246,7 +10268,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                 // (displayPairCore's drift rule — a cell the books call empty
                 // must not advertise a display), and the two on one 34px tile
                 // say opposite things.
-                const dispInfo = !clothing && !out && !isDeactivated(selected)
+                const dispInfo = !clothing && !out && !deadForOrder(selected)
                   ? sneakerDisplayInfo(selected, s) : null;
                 return (
                   // No `disabled` on a ✕ tile: the tap must land so it can
@@ -10270,7 +10292,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       }
                       // A sneaker ✕ tap raises the why-note (snk flag) —
                       // reserved stock must not read as "size doesn't exist".
-                      if (out) { setNaNote(clothing || isDeactivated(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
+                      if (out) { setNaNote(clothing || deadForOrder(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
                       if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
                       // A plain size selection drops any display-pair claim —
                       // the claim belongs to the size the prompt was about.

@@ -155,7 +155,10 @@ describe("source pins — the call sites exist", () => {
   });
   it("placeOrders carries the submit-time stale-cart guard", () => {
     const app = src("../../App.jsx");
-    expect(app).toContain("isDeactivated(resolveProductById(item.product.id) || item.product)");
+    // 2026-09-05: the predicate became `deadForOrder` — isDeactivated composed
+    // with the per-store Pine exemption, so an exempt store may still place the
+    // line it was deliberately shown. Same guard, one gate wider.
+    expect(app).toContain("deadForOrder(resolveProductById(item.product.id) || item.product)");
   });
   it("MoveExcess skips deactivated products in lockstep with the engine's excess pass", () => {
     const me = src("./MoveExcess.jsx");
@@ -165,12 +168,15 @@ describe("source pins — the call sites exist", () => {
     const hc = src("./HubCleanup.jsx");
     expect(hc).toContain("{allStock && deactivatedRows.length > 0 && (");
   });
-  // THREE since 2026-08-31: leftovers, finished lines, and the new
+  // THREE since 2026-08-31: leftovers, finished lines, and the
   // "Unregistered, not held here" section (the 174 products that were in no
-  // list at all — see buildUnregisteredElsewhere).
-  it("HubCleanup renders Deactivate on leftover, finished-line AND not-held-here cards, and Reactivate", () => {
+  // list at all — see buildUnregisteredElsewhere). Since 2026-09-05 all three
+  // render the SAME exits block (LeftoverExits — merge first, deactivate
+  // second), so the three call sites are three `onDeactivate={doDeactivate}`
+  // props rather than three inline handlers.
+  it("HubCleanup renders the exits on leftover, finished-line AND not-held-here cards, and Reactivate", () => {
     const hc = src("./HubCleanup.jsx");
-    expect(hc.split("doDeactivate(product)").length - 1).toBe(3);
+    expect(hc.split("onMerge={openMerge} onDeactivate={doDeactivate}").length - 1).toBe(3);
     expect(hc).toContain("doReactivate(product)");
   });
 });

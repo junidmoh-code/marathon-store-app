@@ -9,8 +9,11 @@
 //   BROWSE  drops deactivated records — the grid, the CR refill list, the
 //           engine decision queue, the introduce-to-engine migration, display
 //           registration.
-//   SEARCH  keeps them and MARKS them — a typed query must still find the copy
-//           the operator is looking at, so they can act on it.
+//   SEARCH  in the ADMIN section keeps them and MARKS them — a typed query
+//           must still find the copy the operator is looking at. In the
+//           ASSISTANT VIEW it does not: 2026-09-05 (BUG 1) a marked search hit
+//           was read as "no stock" and cost the sale, so that screen gates its
+//           whole pool. Marathon Pine is exempt, by config, not by code.
 //   MERGE PICKER / DEACTIVATED LIST  keep them by design.
 
 import { describe, it, expect } from "vitest";
@@ -50,21 +53,38 @@ describe("browsableProducts — the one browse filter", () => {
 
 describe("the ordering grid (App.jsx AssistantView) — phone AND desktop", () => {
   const app = read("../../App.jsx");
-  it("browses from a filtered list, not the raw universe", () => {
-    expect(app).toContain("const browse = useMemo(() => browsableProducts(base), [base]);");
+  it("gates the WHOLE pool, so browse and search cannot disagree", () => {
+    // 2026-09-05, BUG 1: the gate moved from `browse` into `base` — the single
+    // pool the grid, the Fuse index, the code-hit branch, the desktop overlay
+    // and the tongue-label finder all derive from.
+    expect(app).toContain("products, wantsClothing, storeMode: effectiveStoreMode, showDeactivated, isDeactivated,");
+    expect(app).toContain("const showDeactivated = showsDeactivated(deactivatedShops, effectiveShop);");
+  });
+  it("browses from a filtered list, and an EXEMPT store keeps them", () => {
+    expect(app).toContain("const browse = useMemo(() => (showDeactivated ? base : browsableProducts(base)), [base, showDeactivated]);");
   });
   it("an EMPTY query renders `browse`, so a deactivated product has no card", () => {
     expect(app).toContain("if (!q) return browse;");
   });
-  it("a TYPED query still searches the FULL universe, so search can find it", () => {
-    // Fuse is built over `base`, and the code-hit branch filters `base` too.
+  it("a TYPED query searches `base` — which the gate has already narrowed", () => {
     expect(app).toContain("const fuse = useMemo(() => new Fuse(base, {");
     expect(app).toContain("const codeHits = /\\d/.test(q) ? base.filter(p => {");
+  });
+  it("the tongue-label finder is handed the same gated pool", () => {
+    expect(app).toContain("<AssistantLabelFinder products={base}");
   });
   it("the desktop overlay is handed the SAME browse list — one memo, no drift", () => {
     expect(app).toContain("products={browse} searchResults={filtered}");
   });
-  it("a deactivated product that DOES surface (via search) is marked on every card", () => {
+  it("…and the SAME ordering predicate, so the two layouts cannot disagree", () => {
+    // Dropping this prop is silent: AssistantDesktop defaults it to the bare
+    // isDeactivated, which would quietly restore strict behaviour on the
+    // desktop at an EXEMPT store while the phone stayed exempt.
+    expect(app).toContain("deadForOrder={deadForOrder}");
+    expect(app).toContain("const deadForOrder = useCallback(");
+    expect(app).toContain("(p) => !showDeactivated && isDeactivated(p),");
+  });
+  it("a deactivated product that DOES surface (an exempt store) is marked on every card", () => {
     // phone photo grid, CR refill card, desktop card
     expect(app).toContain("{p.name}{isDeactivated(p) && <DeactivatedChip small />}");
     expect(app).toContain("{product.name}{isDeactivated(product) && <DeactivatedChip small />}");
@@ -92,6 +112,25 @@ describe("the other lists a product can be requested or refilled from", () => {
     expect(read("./missingProductsCore.js")).toContain("if (isDeactivated(p)) continue;");
     expect(read("./missingFootwearCore.js")).toContain("if (isDeactivated(p)) continue;");
     expect(read("./MoveExcess.jsx")).toContain("if (isDeactivated(p)) continue;");
+  });
+});
+
+describe("the two staff tools open to EVERYONE, not just the stock section", () => {
+  // Barcodes and Print Labels are reachable from the role tiles by any signed-in
+  // staff member (App.jsx: "ROLES.BARCODES is open to everyone"), so they are
+  // not "the admin section" and a retired line must not be printable or
+  // findable there either. Both gate inside their own `predicate`, which is
+  // shared by the empty-query list AND the searchProducts branch — one filter,
+  // browse and search.
+  it("the barcode catalogue drops deactivated records", () => {
+    const bc = read("./BarcodeCatalog.jsx");
+    expect(bc).toContain("      !isDeactivated(p) &&");
+    expect(bc).toContain("searchProducts(products, search, { limit: 500, predicate })");
+  });
+  it("Print Labels drops them too", () => {
+    const lp = read("../LabelPrintView.jsx");
+    expect(lp).toContain("      if (isDeactivated(p)) return false;");
+    expect(lp).toContain("searchProducts(products, query, { predicate, limit: 2000 })");
   });
 });
 

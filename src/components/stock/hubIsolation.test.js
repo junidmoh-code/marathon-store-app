@@ -251,9 +251,11 @@ describe("Hub 2 clothing behaves exactly as it did before this change", () => {
     // actually uses: the hover grid's `p`, the quick-view's `qv`, the phone
     // sheet's `selected`. All three must still compose the clothing predicate.
     const a = app();
-    expect(a).toContain("orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz) })");
-    expect(a).toContain("orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz) })");
-    expect(a).toContain("orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s) })");
+    // Each also carries the per-store deactivation override added 2026-09-05
+    // (the Pine exemption) — the clothing term itself is untouched.
+    expect(a).toContain("orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz), deactivated: deadForOrder(p) })");
+    expect(a).toContain("orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz), deactivated: deadForOrder(qv) })");
+    expect(a).toContain("orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s), deactivated: deadForOrder(selected) })");
   });
 });
 
