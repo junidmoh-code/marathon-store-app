@@ -188,6 +188,17 @@ await expectAllowed("a merge tombstone is repointed",
 await expectAllowed("the till can still READ customers",
   as(TILL, "GET", "customers/0821112222"));
 
+// ── A MULTI-PATH ROOT UPDATE IS SPLIT AND EVALUATED PER PATH ────────────────
+// Both apps write customer fields inside a root update() alongside an audit
+// entry. If the rules engine judged such a write at the ROOT — where nothing
+// grants — every one of them would break. It does not: each path is evaluated
+// at its own location. Asserted because the whole change depends on it.
+await expectAllowed("a multi-path root update carrying a name edit and an audit row",
+  as(TILL, "PATCH", "", {
+    "customers/0821112222/name": "Multi Path",
+    "pos/audit/audit-1": { action: "customer_edited", actingUserUid: "till-uid", timestamp: 1788600000000 },
+  }));
+
 console.log("\n── what an ordinary till must NOT be able to do ──");
 await expectDenied("delete a whole customer record",
   as(TILL, "DELETE", "customers/0821112222"));
@@ -205,6 +216,16 @@ await expectDenied("forge archivedBy as somebody else while editing a name",
   as(TILL, "PATCH", "customers/0821112222", { name: "X", archivedBy: OWNER_EMAIL }));
 await expectDenied("rewrite the whole customer book in one call",
   as(TILL, "PATCH", "customers", { "0821112222": null }));
+
+// ── THE EDGE THE RULE DELIBERATELY REFUSES ──────────────────────────────────
+// "The record must still exist after the write" means emptying a record is a
+// delete, whatever path it was written through. No till flow does this — every
+// customer carries a name and a phone, and clearing one field leaves the rest —
+// but it is the shape most likely to be reached for by someone trying to get
+// round the rule, so it is pinned.
+await admin.put("customers/0827778888", { laybyHoldings: { s1: { qty: 1 } } });
+await expectDenied("empty a record out one field at a time until nothing is left",
+  as(TILL, "DELETE", "customers/0827778888/laybyHoldings"));
 
 console.log("\n── what the OWNER must be able to do ──");
 await expectAllowed("owner archives a customer",
