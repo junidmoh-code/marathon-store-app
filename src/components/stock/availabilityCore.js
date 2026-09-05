@@ -45,6 +45,14 @@
 //
 // No missed-demand logging: a blocked size is just an X (owner decision).
 // Pure module — no firebase imports; callers feed it data they already hold.
+//
+// HUB-AGNOSTIC BY CONSTRUCTION (restated 2026-09-05, when Hub 2 sneakers
+// joined). `loc` is a parameter, not a constant: the same arithmetic answers
+// for Hub 1, Hub 2 and Central, and there is no second definition of
+// "available" anywhere in the tree — the clothing grey-out's zero-test routes
+// through availableUnits too (App.jsx hubQty). Anything that needs a DIFFERENT
+// answer per hub belongs in the caller's data (which cells, which promises),
+// never in a fork of this file. Pinned by hub2SneakerAvailability.test.js.
 
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";

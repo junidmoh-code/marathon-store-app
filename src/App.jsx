@@ -92,7 +92,7 @@ import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from ".
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey } from "./components/stock/availabilityCore";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -8849,7 +8849,24 @@ function AssistantView({ products, onExit, orders = [] }) {
   // signed-in (non-anonymous) staff account, no stockRole needed for reads.
   const servingHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
   const servingHubCells = useStockCells(servingHub);   // { pid: { size: cell } }
-  const hubQty = (pid, size) => Number(servingHubCells?.[pid]?.[size]?.qty) || 0;
+  // ONE DEFINITION OF "AVAILABLE" (2026-09-05). The zero-test below used to be
+  // its own `Number(qty) || 0`; it now runs through availabilityCore's
+  // availableUnits — the same arithmetic the sneaker lane uses at Hub 1 and
+  // (from this change) Hub 2. Clothing nets no promises: readyPromisedByCell is
+  // footwear-only, so the promised term is structurally 0 here.
+  //
+  // BYTE-IDENTICAL, and proved: for every value a cell can hold, availableUnits
+  // agrees with the old expression on the OUT/IN test, on the add clamp, and on
+  // the note's self-hide. The only difference is that a NEGATIVE cell now
+  // reports 0 instead of its negative — and every consumer of this number
+  // already floors at 0 (hub2SneakerAvailability.test.js exhausts it).
+  //
+  // What deliberately did NOT converge: this lane looks a cell up by the RAW
+  // declared size while the sneaker lane uses decodedCellKey. Merging that
+  // would change which cell a "Free Size" / space-padded clothing size reads —
+  // a live Hub 2 clothing behaviour change, which this work is not allowed to
+  // make. Left as it is on purpose; do not "fix" it without an owner decision.
+  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[size]?.qty);
   // ── HUB 1 SNEAKER AVAILABILITY (2026-08-25) ───────────────────────────────
   // The sneaker mirror of the clothing subscription above: sneaker orders
   // sourcing from Hub 1 grey out (✕) sizes Hub 1 cannot supply, through the
