@@ -115,6 +115,25 @@ describe("the other lists a product can be requested or refilled from", () => {
   });
 });
 
+describe("the two staff tools open to EVERYONE, not just the stock section", () => {
+  // Barcodes and Print Labels are reachable from the role tiles by any signed-in
+  // staff member (App.jsx: "ROLES.BARCODES is open to everyone"), so they are
+  // not "the admin section" and a retired line must not be printable or
+  // findable there either. Both gate inside their own `predicate`, which is
+  // shared by the empty-query list AND the searchProducts branch — one filter,
+  // browse and search.
+  it("the barcode catalogue drops deactivated records", () => {
+    const bc = read("./BarcodeCatalog.jsx");
+    expect(bc).toContain("      !isDeactivated(p) &&");
+    expect(bc).toContain("searchProducts(products, search, { limit: 500, predicate })");
+  });
+  it("Print Labels drops them too", () => {
+    const lp = read("../LabelPrintView.jsx");
+    expect(lp).toContain("      if (isDeactivated(p)) return false;");
+    expect(lp).toContain("searchProducts(products, query, { predicate, limit: 2000 })");
+  });
+});
+
 describe("the three places it MUST stay visible", () => {
   it("the merge picker keeps it and marks it", () => {
     expect(read("./mergeSearch.js")).toContain('const mark = isDeactivated(product) ? " · deactivated" : "";');
