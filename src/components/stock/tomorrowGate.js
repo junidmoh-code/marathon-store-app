@@ -35,7 +35,7 @@
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { stockCellPath, assertSafeSegment } from "../../utils/sizeKey";
-import { availableUnits, isFootwearProduct } from "./availabilityCore";
+import { availableUnits, gatedSneakerHub } from "./availabilityCore";
 
 const CENTRAL = "central";
 const CACHE_TTL_MS = 60 * 1000;
@@ -104,12 +104,19 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
 //   Perfume is not one of the seven sneaker categories, and "nothing else
 //   changes" is the whole brief.
 //
-// So the hub2 arm asks the SAME question the grid gate asks — isFootwearProduct,
-// the category test — instead of guessing from the order's own stamped type. An
-// UNKNOWN product (no record in hand) is not probed: that is fail-open toward
-// yesterday's behaviour, matching this module's stated asymmetry (a false
-// "Out of stock" wrongly tells a customer their order is dead; a false Tomorrow
-// merely keeps the promise a human just chose to make).
+// So the hub2 arm asks the SAME question the grid gate asks — literally the
+// same function, gatedSneakerHub, not a second predicate that happens to agree
+// today. Round 3 of review is why: an earlier cut called isFootwearProduct
+// directly, which drops the grid's second clause (a Footwear record stamped
+// productType "clothing" is ungated there), so the two surfaces could have
+// disagreed about the same shoe — the ✕ absent on the grid while the warehouse
+// refused to promise it. One call, one answer, both screens.
+//
+// An UNKNOWN product (no record in hand — including one merged away, whose id
+// the order still carries) is not probed: that is fail-open toward yesterday's
+// behaviour, matching this module's stated asymmetry (a false "Out of stock"
+// wrongly tells a customer their order is dead; a false Tomorrow merely keeps
+// the promise a human just chose to make).
 //
 // Hub 1's arm is untouched and asks NOTHING about the product — hub1 carries
 // neither clothing nor perfume, and "unchanged" beats "consistent" on a rule
@@ -123,7 +130,7 @@ export function centralFedRow(order, product) {
   const hub = order?.hub || "hub1";
   if (!CENTRAL_FED_HUBS.includes(hub)) return false;
   if (hub === "hub1") return true;                                  // 2026-08-25, verbatim
-  return isFootwearProduct(product);                                // hub2: the seven categories, only
+  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate
 }
 
 // The outcome a tap must produce, from a fresh availability answer.

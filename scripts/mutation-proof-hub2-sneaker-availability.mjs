@@ -86,7 +86,7 @@ const MUTATIONS = [
     id: "G6b",
     guard: "HUB 2 CLOTHING is NOT probed — a live, correct lane a bare hub2 disjunct swept in (caught in review)",
     file: GATE,
-    from: `  return isFootwearProduct(product);                                // hub2: the seven categories, only`,
+    from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
     to: `  return true;`,
   },
   {
@@ -95,15 +95,15 @@ const MUTATIONS = [
     file: GATE,
     // The round-2 catch: a perfume order takes the sneaker checkout branch and
     // is stamped productType "sneaker", so a type-based test swept it in.
-    from: `  return isFootwearProduct(product);                                // hub2: the seven categories, only`,
+    from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
     to: `  return (order?.productType || "sneaker") !== "clothing";`,
   },
   {
     id: "G6e",
     guard: "An UNKNOWN product is not probed — fail-open, because a false Out of stock messages a customer",
     file: GATE,
-    from: `  return isFootwearProduct(product);                                // hub2: the seven categories, only`,
-    to: `  return !product || isFootwearProduct(product);`,
+    from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
+    to: `  return !product || gatedSneakerHub(product, "hub2") === "hub2";`,
   },
   {
     id: "G6d",
@@ -111,6 +111,16 @@ const MUTATIONS = [
     file: GATE,
     from: `  if (hub === "hub1") return true;                                  // 2026-08-25, verbatim`,
     to: `  if (hub === "hub1") return (order?.productType || "sneaker") !== "clothing";`,
+  },
+  {
+    id: "G6f",
+    guard: "The two surfaces share ONE predicate — the warehouse must not refuse a shoe the grid lets through",
+    file: GATE,
+    // Round 3: isFootwearProduct alone drops the grid's second clause, so a
+    // Footwear record stamped productType "clothing" would be ungated on the
+    // grid and probed here. One call, one answer, both screens.
+    from: `  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate`,
+    to: `  return product?.category === "Footwear";`,
   },
   {
     id: "G7",

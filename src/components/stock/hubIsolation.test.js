@@ -161,6 +161,20 @@ describe("Hub 3 and the shops are untouched by the Tomorrow gate", () => {
     expect(centralFedRow(row, { id: "b1", category: "Bags" })).toBe(false);
     expect(centralFedRow(row, SNEAKER)).toBe(true);
   });
+  it("ONE predicate, both surfaces — the grid and the warehouse cannot disagree about a shoe", () => {
+    // Round 3 of review: asking isFootwearProduct directly drops the grid's
+    // second clause, so a Footwear record stamped productType "clothing" would
+    // be ungated on the grid yet probed here — the ✕ absent while the warehouse
+    // refuses to promise the same pair. The Tomorrow arm calls the grid's own
+    // gatedSneakerHub, so the two answers are the same answer by construction.
+    const row = { hub: "hub2", placedAtHub: "hub2" };
+    const ODDITY = { id: "x1", category: "Footwear", productType: "clothing" };
+    expect(gatedSneakerHub(ODDITY, "hub2")).toBe(null);
+    expect(centralFedRow(row, ODDITY)).toBe(false);
+    for (const p of [SNEAKER, CLOTHING, PERFUME, ODDITY, { id: "b1", category: "Bags" }]) {
+      expect(centralFedRow(row, p)).toBe(gatedSneakerHub(p, "hub2") === "hub2");
+    }
+  });
   it("an UNKNOWN product is not probed — fail-open toward yesterday's behaviour", () => {
     // A false "Out of stock" tells a customer their order is dead; a false
     // Tomorrow merely keeps the promise a human just made. Same asymmetry the
