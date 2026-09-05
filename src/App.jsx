@@ -10531,14 +10531,16 @@ const WH_TAB_ICON = {
 };
 
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
-// ─── THE TOMORROW ACTION, DATA-DRIVEN (2026-08-25) ───────────────────────────
+// ─── THE TOMORROW ACTION, DATA-DRIVEN (2026-08-25; Hub 2 joined 2026-09-05) ──
 // One button per warehouse row where "Schedule for Tomorrow" used to be. The
 // label comes from a one-time single-cell read of Central's availability for
 // this order's product+size (via tomorrowGate.js — never a subtree read, cost
 // note there): Central holds some → the Tomorrow promise is offered; Central
 // holds none → the row offers "Out of stock" instead, and taking it sends the
 // out-of-stock outcome automatically (the existing updateStatus path — OOS
-// WhatsApp, insight row, hold-release — nothing new).
+// WhatsApp, insight row, hold-release — nothing new; the same call the
+// "Mark as Out of Stock" button next to it makes, so the approved
+// notification templates are reused untouched, at Hub 2 exactly as at Hub 1).
 //
 // THE TAP RE-CHECKS the same cell FRESH, so a screen left open cannot send a
 // promise that has expired: an expired Tomorrow converts SILENTLY to
@@ -10551,17 +10553,26 @@ function TomorrowActionButton({ order, onOutcome }) {
   // sentSize is what physically left when a substitute was sent; the promise
   // (and the refill request updateStatus raises) draws on the same cell.
   const gateSize = order.sentSize ?? order.size ?? null;
-  // HUB 1 ROWS ONLY. The warehouse queue is hub-switched and this card is
-  // shared; hub3/hubC replenish from hub stock Central may never carry, so a
-  // missing Central cell there would read as a false "Out of stock". Hub rule
-  // matches the app's orderInHub: hub3/hubC live in placedAtHub, hub1 in `hub`.
-  const hub1Row = (order.hub || "hub1") === "hub1"
+  // CENTRAL-FED ROWS ONLY — hub1 (2026-08-25) and hub2 (2026-09-05). The
+  // warehouse queue is hub-switched and this card is shared; hub3/hubC
+  // replenish from hub stock Central may never carry, so a missing Central
+  // cell there would read as a false "Out of stock". Hub 2 is not in that
+  // class: it is a Central-fed hub, the same replenishment Hub 1 draws on, so
+  // the same question ("does Central hold this?") is the right one to ask
+  // before promising a Hub 2 customer a pair tomorrow.
+  //
+  // The hub rule matches the app's orderInHub verbatim: hub3/hubC live in
+  // placedAtHub, hub1/hub2 in `hub` (defaulted hub1). Hub 1's answer is
+  // unchanged, character for character — hub2 is added as a disjunct and
+  // nothing else moved. Pinned by hubIsolation.test.js.
+  const rowHub = order.hub || "hub1";
+  const centralFedRow = (rowHub === "hub1" || rowHub === "hub2")
     && order.placedAtHub !== "hub3" && order.placedAtHub !== "hubC";
   const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
   const [busy, setBusy]   = useState(false);
   const busyRef = useRef(false);                   // state lags a frame; the ref doesn't
   useEffect(() => {
-    if (!hub1Row) return undefined;
+    if (!centralFedRow) return undefined;
     let on = true;
     setAvail(undefined);   // a reused instance must not wear its neighbour's label
     fetchCentralAvailability(order.productId, gateSize).then((a) => {
@@ -10569,14 +10580,14 @@ function TomorrowActionButton({ order, onOutcome }) {
       if (on && !busyRef.current) setAvail(a);
     });
     return () => { on = false; };
-  }, [order.productId, gateSize, hub1Row]);
-  const offersOOS = hub1Row && avail !== undefined && avail !== null && avail <= 0;
+  }, [order.productId, gateSize, centralFedRow]);
+  const offersOOS = centralFedRow && avail !== undefined && avail !== null && avail <= 0;
   const tap = async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     try {
-      if (!hub1Row) { await onOutcome("tomorrow"); return; }   // yesterday's behaviour, verbatim
+      if (!centralFedRow) { await onOutcome("tomorrow"); return; }   // hub3/hubC: yesterday's behaviour, verbatim
       const fresh = await fetchCentralAvailability(order.productId, gateSize, { fresh: true });
       setAvail(fresh);
       await onOutcome(tomorrowTapOutcome(fresh));
