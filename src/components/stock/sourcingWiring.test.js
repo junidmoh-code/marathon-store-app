@@ -25,6 +25,22 @@ describe("routing and availability are ONE computation", () => {
   it("the null answer is tested for FINITENESS, never compared to zero", () => {
     expect(APP).toContain("Number.isFinite(available)");
   });
+  // Both of these RECOMPUTED availability beside the resolver and subtracted
+  // the whole cart a second time. That is how a fallback to the other hub came
+  // to short-fill an add, and how a display pair came to be offered as ordinary
+  // shelf stock.
+  it("the quantity clamp reads the resolver's remaining count, never its own", () => {
+    expect(APP).toContain("const { hub: clampHub, available: clampLeft } =");
+    expect(APP).toContain("reps = Math.min(reps, Math.max(1, clampLeft));");
+    // and does not go back to recomputing one
+    const i = APP.indexOf("const { hub: clampHub, available: clampLeft } =");
+    expect(APP.slice(i, i + 400)).not.toContain("sneakerInCart(selected.id, pendingSize)");
+  });
+  it("the display-only check does too", () => {
+    expect(APP).toContain("const { hub, available } = sneakerSourcing(p, s);");
+    const i = APP.indexOf("const sneakerDisplayOnly = (p, s) => {");
+    expect(APP.slice(i, i + 900)).not.toContain("- sneakerInCart(p.id, s)");
+  });
   it("sneakerHubOf is derived from that same call — no second route", () => {
     expect(APP).toContain("const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;");
   });

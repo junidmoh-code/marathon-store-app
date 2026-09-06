@@ -125,9 +125,9 @@ const MUTATIONS = [
     guard: "Placement PINS a display-pair line's hub instead of resolving it",
     file: APP,
     kind: "source-pin",
-    from: `          : item.displayPairRequest === true
+    from: `          const hub = item.displayPairRequest === true
             ? DISPLAY_PAIR_HUB`,
-    to: `          : false
+    to: `          const hub = false
             ? DISPLAY_PAIR_HUB`,
   },
   {
