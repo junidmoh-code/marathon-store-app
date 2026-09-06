@@ -158,6 +158,14 @@ describe("buildAttributeRecord", () => {
     expect(buildAttributeRecord({ vision, product, model: "m", at: 1, previousVersion: EXTRACTOR_VERSION }).supersededV).toBe(null);
     expect(buildAttributeRecord({ vision, product, model: "m", at: 1, previousVersion: 1 }).supersededV).toBe(1);
   });
+  // The runner writes with update(), which MERGES. An omitted `conf` left the
+  // previous extraction's confidence attached to a new run's attributes and
+  // timestamp — a number asserted about an answer that never produced one.
+  it("writes conf: null when a run reported none, so a merge cannot keep a stale one", () => {
+    const r = buildAttributeRecord({ vision: { ...vision, confidence: undefined }, product, model: "m", at: 1 });
+    expect("conf" in r).toBe(true);
+    expect(r.conf).toBe(null);
+  });
   it("keeps per-field confidence and invents none", () => {
     const r = rec();
     expect(r.conf.silhouette).toBe(0.9);
@@ -267,6 +275,20 @@ describe("the name is derived from the attributes", () => {
   });
   // MAP["__proto__"] is Object.prototype: truthy, not a string, and it made
   // titleCase read [0] of an object and throw.
+  // confirmed.styleTags is written by a person straight into RTDB and does not
+  // pass through the parser, so a tag of "Nike" reached tier 3 and produced
+  // "…with a Nike finish" — refused by the publish path as a brand trigger,
+  // while the product stayed in `derived` as though it were nameable.
+  it("filters style tags to the vocabulary before they reach a name", () => {
+    const withBrand = { ...FULL, styleTags: ["Nike"] };
+    const n = nameFromAttributes(withBrand, { discriminate: 4 });
+    expect(n).not.toMatch(/nike/i);
+    expect(validateVisionName(n).ok, n).toBe(true);
+    // A legal tag alongside an illegal one still lands.
+    expect(nameFromAttributes({ ...FULL, secondaryColour: "", pattern: "solid", finish: "plain",
+                                soleType: "", soleColour: "", styleTags: ["Nike", "retro"] }, { discriminate: 3 }))
+      .toContain("retro");
+  });
   it("never throws on a prototype-named attribute value", () => {
     for (const k of ["finish", "soleType", "closure", "toeShape", "silhouette", "upperMaterial", "pattern"]) {
       for (const bad of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {

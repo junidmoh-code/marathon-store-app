@@ -208,6 +208,23 @@ const MUTATIONS = [
   },
 
   {
+    id: "G11g",
+    guard: "A style tag is filtered to the vocabulary before it reaches a name — confirmed.styleTags never passes the parser",
+    file: ATTR,
+    kind: "behavioural",
+    from: `  const tags = Array.isArray(attrs.styleTags)
+    ? attrs.styleTags.filter((t) => STYLE_TAGS.includes(t)) : [];`,
+    to: `  const tags = Array.isArray(attrs.styleTags) ? attrs.styleTags : [];`,
+  },
+  {
+    id: "G14c",
+    guard: "conf is written as an explicit NULL when a run reported none — update() merges, so an omitted key keeps the old number",
+    file: ATTR,
+    kind: "behavioural",
+    from: `    conf: Object.keys(conf).length ? conf : null,`,
+    to: `    ...(Object.keys(conf).length ? { conf } : {}),`,
+  },
+  {
     id: "G14b",
     guard: "An RTDB server sentinel survives the record builder — Number() of it is NaN, and `|| 0` wrote at:0 onto 205 live records",
     file: ATTR,
@@ -444,6 +461,22 @@ const MUTATIONS = [
     kind: "source-pin",
     from: `      isSellable: (p) => !isDeactivated(p) && !isMergedAway(p)`,
     to: `      isSellable: (p) => !deadForOrder(p) && !isMergedAway(p)`,
+  },
+  {
+    id: "G25e",
+    guard: "A recommendation waits for /orders — before it answers the promise map is empty, which reads as \"nothing is promised\"",
+    file: APP,
+    kind: "source-pin",
+    from: `        if (!ordersSettled) return false;`,
+    to: ``,
+  },
+  {
+    id: "G25f",
+    guard: "…and for the DISPLAY lane on a Hub 1 size — an unanswered display map reads as \"nothing is on a floor\"",
+    file: APP,
+    kind: "source-pin",
+    from: `        if (hub === "hub1" && !displayLaneReady) return false;`,
+    to: ``,
   },
   {
     id: "G25",

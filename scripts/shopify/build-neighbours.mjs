@@ -35,7 +35,7 @@ import {
   neighbourProfile, topNeighbours, scorePair, encodeNeighbour, matchReasonText,
   MAX_NEIGHBOURS, NEIGHBOURS_FIELD, SIMILARITY_WEIGHTS,
 } from "../../src/utils/productNeighbours.js";
-import { readMapPaged } from "../lib/rtdbPaged.mjs";
+import { readMapPaged, shallowKeys } from "../lib/rtdbPaged.mjs";
 import { isSneakerProduct } from "../lib/sneakerScope.mjs";
 
 const flags = process.argv.slice(2);
@@ -155,16 +155,50 @@ if (!APPLY) {
 // neighbours — but it must be a DELIBERATE null, not an accidental [], so the
 // intent is readable at the call site rather than inferred from a database
 // quirk.
+// ── A WRITE MUST NEVER RESURRECT A DELETED PRODUCT ───────────────────────────
+// The obvious shape — one batched update() of `${pid}/alternatives` — protects
+// the record's OTHER fields, but not its EXISTENCE. The scope is a paged
+// snapshot taken minutes earlier; if an admin deletes a product while the
+// matrix computes (there is a real deletion path in the app), the update
+// RECREATES /products/{pid} holding nothing but an `alternatives` child. That
+// corpse has no `id`, and a product record with no inner `id` is invisible to
+// every list in the app while still occupying the node — a ghost nobody can see
+// or clean up (independent review, 2026-09-06).
+//
+// ── WHY THIS IS A RE-READ AND NOT A TRANSACTION ──────────────────────────────
+// A transaction that aborts on a null `cur` looks like the right tool and is
+// not. RTDB calls the handler OPTIMISTICALLY with the locally cached value
+// first, which is `null` when nothing is cached, so an abort-on-null handler
+// aborts on the FIRST call and never reaches the server. Measured here: the
+// transaction version reported all 1,382 products "deleted mid-run" and wrote
+// nothing, and a preceding get() does not help — the Admin SDK still calls the
+// handler with null after a successful read (probed directly, 2026-09-06).
+// It is the same null-first behaviour the state-first write in vision-name.mjs
+// RELIES on; it just cannot express this direction.
+//
+// So: ONE fresh shallow read of the product keys immediately before writing.
+// That is a key list, not the node's weight. It shrinks the window from the
+// minutes the matrix takes to the seconds between this read and the chunk
+// write. HONEST LIMIT: it narrows the race, it does not close it. RTDB has no
+// conditional write, and closing it properly needs a rules-level guard, which
+// this build does not touch. If it ever does fire, the stub is findable — a
+// /products record with no inner `id`.
+const liveKeys = new Set(await shallowKeys(admin.app(), "products"));
 const patch = {};
-let wrote = 0, cleared = 0;
+let wrote = 0, cleared = 0, vanished = 0;
 for (const p of profiles) {
   assertSafeSegment(p.pid, "productId");
+  if (!liveKeys.has(p.pid)) { vanished += 1; continue; }
   const list = lists.get(p.pid);
   if (list?.length) {
     patch[`${p.pid}/${NEIGHBOURS_FIELD}`] = list.map((n) => encodeNeighbour(n.pid, n.code));
     wrote += 1;
   } else if (PRUNE && products[p.pid]?.[NEIGHBOURS_FIELD] !== undefined) {
-    patch[`${p.pid}/${NEIGHBOURS_FIELD}`] = null;   // deliberate delete, not []
+    // RTDB CANNOT STORE AN EMPTY ARRAY: writing [] deletes the child and it
+    // reads back null. That is exactly what a product with no neighbours wants
+    // — but it must be a DELIBERATE null, so the intent is readable here rather
+    // than inferred from a database quirk.
+    patch[`${p.pid}/${NEIGHBOURS_FIELD}`] = null;
     cleared += 1;
   }
 }
@@ -176,11 +210,13 @@ for (const p of profiles) {
 if (PRUNE) {
   for (const [pid, p] of Object.entries(products)) {
     if (!p?.id || byPid.has(pid) || p[NEIGHBOURS_FIELD] === undefined) continue;
+    if (!liveKeys.has(pid)) { vanished += 1; continue; }
     assertSafeSegment(pid, "productId");
     patch[`${pid}/${NEIGHBOURS_FIELD}`] = null;
     cleared += 1;
   }
 }
+if (vanished) console.log(`  ${vanished} product(s) were deleted since the scope snapshot — skipped, never recreated`);
 
 const keys = Object.keys(patch);
 const CHUNK = 400;
@@ -190,6 +226,7 @@ for (let i = 0; i < keys.length; i += CHUNK) {
   await db.ref("products").update(slice);
   console.log(`  … wrote ${Math.min(i + CHUNK, keys.length)}/${keys.length}`);
 }
-console.log(`\nwrote ${wrote} list(s)${PRUNE ? ` · cleared ${cleared}` : ""}. ` +
+console.log(`\nwrote ${wrote} list(s)${PRUNE ? ` · cleared ${cleared}` : ""}` +
+            `${vanished ? ` · skipped ${vanished} deleted` : ""}. ` +
             `Bytes added to /products: ~${(wrote * MAX_NEIGHBOURS * 20 / 1024).toFixed(0)} KB.`);
 process.exit(0);

@@ -45,14 +45,22 @@ describe("the refusal itself is unchanged", () => {
 
 describe("the alternatives join uses the shared resolver and nothing else", () => {
   it("availability comes from sneakerOut — one definition on this screen", () => {
-    expect(APP).toContain("&& !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),");
+    expect(APP).toContain("return !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz);");
   });
   // AFTER #568 the serving hub is a PER-SIZE answer, so one size of a shoe can
   // be answerable while another is not. The readiness check is explicit at the
   // size, not inherited from a product-level gate — sneakerOut returning false
   // for an unready hub means "no gate", not "in stock".
   it("each size is checked against the hub THAT size resolves to", () => {
-    expect(APP).toContain("sizeAvailable: (p, sz) => sneakerGateReady(sneakerHubOf(p, sz))");
+    expect(APP).toContain("if (!sneakerGateReady(hub)) return false;");
+  });
+  // A RECOMMENDATION asserts availability; a tile merely fails to deny it. So
+  // every input must have ANSWERED, not merely be empty — an unanswered
+  // /orders reads as "nothing is promised", an unanswered display lane as
+  // "nothing is on a floor", and both fail OPEN.
+  it("nothing is recommended until every input has actually answered", () => {
+    expect(APP).toContain("if (!ordersSettled) return false;");
+    expect(APP).toContain('if (hub === "hub1" && !displayLaneReady) return false;');
   });
   // sneakerOut answers "is there a unit"; it does not answer "can it be sold
   // down THIS path". A display-only size is sellable, but only through the

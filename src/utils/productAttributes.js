@@ -390,7 +390,13 @@ export function buildAttributeRecord({
     model: model || null,
     a,
     from,
-    ...(Object.keys(conf).length ? { conf } : {}),
+    // EXPLICIT NULL, not an omitted key. The runner writes this with update(),
+    // which merges — so omitting `conf` left the PREVIOUS extraction's
+    // confidence attached to a new run's attributes and timestamp, quietly
+    // asserting a number about an answer that never produced one (independent
+    // review, reproduced 2026-09-06). null deletes the child in RTDB, which is
+    // exactly "this run reported no confidence".
+    conf: Object.keys(conf).length ? conf : null,
     // What this extraction REPLACED, so a bad version is diffable rather than
     // merely gone. Null (not omitted) so a stale stamp from an older run can
     // never be mistaken for this one's.
@@ -558,6 +564,17 @@ export function nameFromAttributes(attrs, opts = {}) {
 
   // Tier 3 — the toe shape (skipped when "round", for the reason above) and, as
   // the very last resort, a style tag.
+  // ── THE TAGS ARE FILTERED HERE TOO ────────────────────────────────────────
+  // `confirmed.styleTags` is written by a person straight into RTDB and does
+  // not pass through parseAttributeResponse, so a tag of "Nike" reached tier 3
+  // and produced "Leather low-top in black with a Nike finish" — refused by the
+  // publish path as a brand trigger, and kept in `derived` as though it were
+  // nameable, so the hand-back never released it either (independent review,
+  // reproduced 2026-09-06). Same rule as colourWord: the closed vocabulary is
+  // enforced where the words are USED.
+  const tags = Array.isArray(attrs.styleTags)
+    ? attrs.styleTags.filter((t) => STYLE_TAGS.includes(t)) : [];
+
   if (level >= 3) {
     if (attrs.toeShape && attrs.toeShape !== "round" && word(TOE_WORD, attrs.toeShape)) {
       // The article follows the word, not a guess: "almond-toe" and "open-toe"
@@ -565,8 +582,8 @@ export function nameFromAttributes(attrs, opts = {}) {
       const t = word(TOE_WORD, attrs.toeShape);
       optional.push(words.length); words.push(`with ${/^[aeiou]/.test(t) ? "an" : "a"} ${t} shape`);
     }
-    if (Array.isArray(attrs.styleTags) && attrs.styleTags[0]) {
-      optional.push(words.length); words.push(`with a ${attrs.styleTags[0]} finish`);
+    if (tags[0]) {
+      optional.push(words.length); words.push(`with a ${tags[0]} finish`);
     }
   }
 
@@ -578,12 +595,12 @@ export function nameFromAttributes(attrs, opts = {}) {
   // describable the same way. The full tag set is the last honest distinction
   // left. Anything still colliding after this is handed to the prose namer
   // rather than given a manufactured difference — see distinctNamesFor.
-  if (level >= 4 && Array.isArray(attrs.styleTags) && attrs.styleTags.length > 1) {
+  if (level >= 4 && tags.length > 1) {
     // Replaces tier 3's single-tag clause rather than stacking on it.
     const i = optional[optional.length - 1];
     if (i !== undefined && String(words[i]).startsWith("with a ") && String(words[i]).endsWith(" finish")) words.splice(i, 1);
     optional.push(words.length);
-    words.push(`with ${attrs.styleTags.join(", ")} styling`);
+    words.push(`with ${tags.join(", ")} styling`);
   }
 
   // ── THE 80-CHARACTER CEILING IS A PUBLISH GATE, NOT A PREFERENCE ───────────

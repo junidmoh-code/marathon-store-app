@@ -102,7 +102,7 @@ import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } fr
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useDisplaySlotsState, useDisplayRegisterState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -879,9 +879,16 @@ function updateProductHubs(id, hubs) {
 // read is a destShop-scoped query — the /orders rule REJECTS an unscoped full read
 // from a store-assigned user, so this is genuine data-level isolation, not just UI.
 // null/undefined (warehouse, admin, super-admin, anonymous TV) → full-node read.
+// The returned array carries a `settled` FLAG (a property on the array, so
+// every existing consumer — map, filter, length, spread — is untouched). Most
+// screens do not care: a list that fills in a moment later is normal. The
+// alternatives strip does, because before /orders answers the ready-promise
+// map is EMPTY, which is indistinguishable from "nothing is promised" — and a
+// recommendation made on that basis asserts availability nobody has checked
+// (independent review, 2026-09-06).
 function useOrders(scopeShop = null) {
   const authReady = useAuthReady();
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
 
   useEffect(() => {
     if (!authReady) return;
@@ -895,7 +902,7 @@ function useOrders(scopeShop = null) {
     const unsub = onValue(readRef, (snap) => {
       const data = snap.val();
       if (!data) {
-        setOrders([]);
+        setOrders(Object.assign([], { settled: true }));
         return;
       }
       // Legacy shape detected — migrate.
@@ -913,15 +920,17 @@ function useOrders(scopeShop = null) {
         const arr = data.items.slice().sort((a, b) =>
           tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
-        setOrders(arr);
+        setOrders(Object.assign(arr, { settled: true }));
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
       const arr = Object.values(data)
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-      setOrders(arr);
+      setOrders(Object.assign(arr, { settled: true }));
     }, (err) => {
+      // A read ERROR leaves settled FALSE deliberately: the promise map is
+      // empty for a reason that has nothing to do with the shelf.
       console.warn("Firebase read error on /orders:", err);
     });
     return () => unsub();
@@ -9018,12 +9027,24 @@ function AssistantView({ products, onExit, orders = [] }) {
   // The live display slots — one ~60 KB listener (the marker cannot be
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
-  const displaySlots = useDisplaySlots(effectiveStoreMode !== "pine");
+  const displaySlotsState = useDisplaySlotsState(effectiveStoreMode !== "pine");
+  const displaySlots = displaySlotsState.value;
   // The register joins as the store-less second source: 71% of registered
   // displays have no slot (store never picked at registration), so keying the
   // marker on slots alone left most registered displays invisible (owner
   // report, 2026-08-26). displayUnitsByCell applies the double-count guard.
-  const hub1DisplayRegister = useDisplayRegister("hub1", effectiveStoreMode !== "pine");
+  const hub1DisplayRegisterState = useDisplayRegisterState("hub1", effectiveStoreMode !== "pine");
+  const hub1DisplayRegister = hub1DisplayRegisterState.value;
+  // Has the display lane actually ANSWERED? Both sources, no read error. The
+  // tile marker does not need this (a marker that arrives late is harmless);
+  // the alternatives strip does, because an empty display map before the
+  // subscription answers looks exactly like "nothing is on a floor", and the
+  // display-only exclusion would fail open precisely when its evidence is
+  // missing (independent review). A read ERROR makes it permanent.
+  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error
+    && hub1DisplayRegisterState.settled && !hub1DisplayRegisterState.error;
+  // Has /orders answered at all? See useOrders — the flag rides on the array.
+  const ordersSettled = orders?.settled === true;
   const hub1DisplayUnits = useMemo(
     () => displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister),
     [displaySlots, hub1DisplayRegister]
@@ -9443,12 +9464,32 @@ function AssistantView({ products, onExit, orders = [] }) {
       // shoe still appears if it has other sizes; the customer is never sent
       // down a path this screen cannot complete. Hub 1 only, matching
       // sneakerDisplayOnly's own scope.
-      // PER SIZE, and the gate-ready check is explicit here rather than left to
-      // sneakerOut: sneakerOut returns false for an unready hub meaning "no
-      // gate", NOT "in stock". After #568 each size resolves its own hub, so
-      // one size of a shoe can be answerable while another is not.
-      sizeAvailable: (p, sz) => sneakerGateReady(sneakerHubOf(p, sz))
-        && !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),
+      // PER SIZE, and every input must have ANSWERED — not merely be empty.
+      //
+      // sneakerOut returns false for an unready hub meaning "no gate", NOT "in
+      // stock", so the stock gate is explicit. After #568 each size resolves
+      // its own hub, so one size of a shoe can be answerable while another is
+      // not.
+      //
+      // The other two are the same mistake in the other two inputs, and an
+      // independent review found both (2026-09-06). Before /orders answers,
+      // the ready-promise map is EMPTY — identical to "nothing is promised" —
+      // so a pair already spoken for reads as free. Before the display lane
+      // answers, hub1DisplayUnits is empty — identical to "nothing is on a
+      // floor" — so the display-only exclusion fails open exactly when its
+      // evidence is missing. Neither matters for a TILE (a marker that arrives
+      // late is harmless); both matter for a RECOMMENDATION, which asserts
+      // availability rather than merely failing to deny it.
+      //
+      // displayLaneReady is only required for a size HUB 1 would serve: the
+      // display-pair lane is hub1-scoped, so a Hub 2 size is not waiting on it.
+      sizeAvailable: (p, sz) => {
+        const hub = sneakerHubOf(p, sz);
+        if (!sneakerGateReady(hub)) return false;
+        if (!ordersSettled) return false;
+        if (hub === "hub1" && !displayLaneReady) return false;
+        return !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz);
+      },
       // ── SUGGESTING IS NOT THE SAME AS PERMITTING ──────────────────────
       // isDeactivated, NOT deadForOrder. deadForOrder is Pine-exempt (#566:
       // `/config/assistantView/showDeactivatedShops/marathon-pine` lets Pine
@@ -9469,6 +9510,17 @@ function AssistantView({ products, onExit, orders = [] }) {
     // offered a Hub 2 shoe with no signal is being asked to promise a
     // collection time they cannot know (spec-conformance review). The hub is
     // already computed to decide availability; it just was not carried.
+    // ── THE ONE RESIDUAL, STATED ─────────────────────────────────────────
+    // A store-assigned device can only read ITS OWN shop's /orders (rule-
+    // enforced, useOrders(scopeShop)), so a pair promised to a ready order at
+    // another shop is invisible to it and reads as free. That is inherited
+    // from the resolver and is exactly the blind spot the ✕ this sheet sits
+    // under already has — the note above and the row below are computed from
+    // the same data, so they cannot disagree with each other. It cannot be
+    // closed on the client without giving every shop device read access to
+    // every other shop's orders, which is a rules decision, not a code one.
+    // Recorded rather than hidden (independent review, 2026-09-06).
+    //
     // WHICH SHELF, for the size the assistant will actually take. After #568
     // that is a per-size answer, so asking it product-level could name Hub 1 on
     // a card whose only available size is picked by Hub 2. The requested size

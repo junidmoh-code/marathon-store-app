@@ -97,77 +97,45 @@ for (const [pid, { name, handle, level }] of derived) {
 rows.sort((a, b) => a.pid.localeCompare(b.pid));
 
 // ── WHICH HANDLES ARE ALREADY SPOKEN FOR ─────────────────────────────────────
-// Every product that will KEEP its current cleanName after this run still owns
-// that handle, and a proposal walking into one is the same publish block this
-// build exists to end.
+// EVERY product's CURRENT cleanName owns its handle. Full stop.
 //
-// The first version excluded every product distinctNamesFor had named, which
-// was wrong in three ways at once (CodeRabbit): a product filtered out by
-// --pids or --collisions keeps its old name and its old handle; so does one
-// blocked by mayProposeFor; and so does one whose derived name the validator
-// refused. All three were treated as having vacated their handle.
+// This got it wrong twice, in opposite directions, and the second way was
+// subtler than the first. Version one excluded every product distinctNamesFor
+// had named — so a product filtered out by --pids, or blocked by
+// mayProposeFor, or whose name the validator refused, was treated as having
+// vacated a handle it still holds. Version two fixed that with a fixed-point
+// loop over the blocked set, and was still wrong, because the premise underneath
+// both was false:
 //
-// ── AND IT HAS TO BE A FIXED POINT, NOT ONE PASS ─────────────────────────────
-// The second version computed the free set once, then blocked rows against it.
-// But blocking a row is itself a change to the free set: row A, blocked here
-// because its derived handle is on the storefront, now KEEPS its own current
-// handle — and A had already been excluded from the free set on the assumption
-// it was renaming. Row B could then be handed A's current handle unblocked
-// (adversarial review). distinctNamesFor already iterates to a fixed point for
-// exactly this shape of problem; this has to as well.
+//   THIS SCRIPT WRITES PROPOSALS. IT DOES NOT RENAME ANYTHING.
 //
-// It terminates: every round blocks at least one more row or stops, and rows
-// are finite. Blocking is monotone — a blocked row is never unblocked — so the
-// answer does not depend on the order rows are visited.
-let takenElsewhere = new Map();
-for (let round = 0; ; round++) {
-  const renaming = new Set(rows.filter((r) => !r.blocked).map((r) => r.pid));
-  takenElsewhere = new Map();
-  for (const [pid, n] of Object.entries(publish)) {
-    if (renaming.has(pid)) continue;
-    const h = handleFromName(n?.cleanName || "");
-    if (h) takenElsewhere.set(h, pid);
-  }
-  let newlyBlocked = 0;
-  for (const r of rows) {
-    if (r.blocked) continue;
-    const owner = takenElsewhere.get(r.handle);
-    // Its OWN current handle is not a collision with itself.
-    if (owner && owner !== r.pid) {
-      r.blocked = `handle "${r.handle}" is on the storefront, held by ${owner}`;
-      newlyBlocked += 1;
-    }
-  }
-  if (!newlyBlocked) { if (round) console.log(`handle blocking settled after ${round + 1} round(s)`); break; }
+// A proposal waits in /shopify_publish/{pid}/nameProposal for Junid to approve
+// it in the publishing page, and it may never be approved. Until then the
+// product still owns the handle its CURRENT cleanName produces. Treating "is
+// getting a proposal in this run" as "has released its handle" let product B
+// be proposed a name that product A is using on the storefront right now —
+// verified by an independent reviewer who ran this block on that input and
+// watched both rows come back unblocked (2026-09-06).
+//
+// So there is no fixed point to reach: the taken set does not depend on what
+// this run decides, because nothing this run does takes a handle away from
+// anybody. The only exemption is a product's own handle, which cannot collide
+// with itself.
+//
+// The cost of being right: B stays blocked until A's rename is actually
+// approved and published, and a later run picks B up. That is the refuse-over-
+// guess direction this whole build takes everywhere else.
+const takenElsewhere = new Map();
+for (const [pid, n] of Object.entries(publish)) {
+  const h = handleFromName(n?.cleanName || "");
+  if (h && !takenElsewhere.has(h)) takenElsewhere.set(h, pid);
 }
-
-// ── Report ───────────────────────────────────────────────────────────────────
-console.log(`enriched sneakers: ${named.length} · derived names: ${derived.size} · in this report: ${rows.length}`);
-const dupNow = [...todayHandles.values()].filter((v) => v.length > 1);
-console.log(`handles colliding TODAY among enriched products: ${dupNow.length} group(s), ${dupNow.reduce((t, v) => t + v.length, 0)} product(s)\n`);
-
 for (const r of rows) {
-  const mark = r.blocked ? "✗" : r.collidesToday ? "→" : "·";
-  console.log(`${mark} ${r.pid}`);
-  console.log(`    catalogue : ${JSON.stringify(r.product?.name || "")}`);
-  console.log(`    before    : ${JSON.stringify(r.before)}  handle ${JSON.stringify(r.beforeHandle)}${r.collidesToday ? "   ← COLLIDES" : ""}`);
-  console.log(`    after     : ${JSON.stringify(r.name)}  handle ${JSON.stringify(r.handle)}${r.level ? `  (escalated to tier ${r.level})` : ""}`);
-  if (r.blocked) console.log(`    BLOCKED   : ${r.blocked}`);
-}
-
-// The proof, over whatever set was reported.
-const seen = new Map();
-for (const r of rows) {
-  if (!seen.has(r.handle)) seen.set(r.handle, []);
-  seen.get(r.handle).push(r.pid);
-}
-const stillDup = [...seen.entries()].filter(([, v]) => v.length > 1);
-console.log(`\nAFTER: ${seen.size} distinct handle(s) for ${rows.length} product(s) — ` +
-            (stillDup.length ? `STILL COLLIDING: ${stillDup.map(([h, v]) => `${h} (${v.join(",")})`).join(" · ")}` : "no duplicates"));
-
-if (!APPLY) {
-  console.log(`\nDRY RUN — nothing written. Re-run with --apply to write the proposals.`);
-  process.exit(stillDup.length ? 1 : 0);
+  if (r.blocked) continue;
+  const owner = takenElsewhere.get(r.handle);
+  if (owner && owner !== r.pid) {
+    r.blocked = `handle "${r.handle}" is on the storefront, held by ${owner} until its own rename is approved`;
+  }
 }
 
 // ── HANDING A PRODUCT BACK ───────────────────────────────────────────────────

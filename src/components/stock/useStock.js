@@ -128,6 +128,16 @@ export function useDisplaySlots(enabled = true) {
   return usePath(DISPLAY_SLOTS_ROOT, enabled);
 }
 
+// The same node WITH its readiness. A consumer that only marks a tile can
+// treat "not loaded yet" as "no displays" — the marker simply appears a moment
+// later. A consumer that RECOMMENDS a size cannot: an empty display map before
+// the subscription answers is indistinguishable from a real absence, and the
+// display-only exclusion then fails OPEN exactly when its evidence is missing
+// (independent review, 2026-09-06). Those callers need the flag.
+export function useDisplaySlotsState(enabled = true) {
+  return usePathState(DISPLAY_SLOTS_ROOT, enabled);
+}
+
 // /settings/hubSneakerCount/register/{hub} → { "pid__sizeKey": row } — the
 // display REGISTER: every registered display's size (qty, style code), but no
 // store and never decremented (write-only-upward history; hubCleanupStore.js
@@ -137,6 +147,11 @@ export function useDisplaySlots(enabled = true) {
 // the ~60 KB slots node and the ~474 KB hub1 stock subtree.
 export function useDisplayRegister(hub, enabled = true) {
   return usePath(hub ? `settings/hubSneakerCount/register/${hub}` : null, enabled);
+}
+
+/** The register with its readiness — see useDisplaySlotsState for why. */
+export function useDisplayRegisterState(hub, enabled = true) {
+  return usePathState(hub ? `settings/hubSneakerCount/register/${hub}` : null, enabled);
 }
 
 // /stock_movements -> array sorted newest-first. Optionally filter by productId.
