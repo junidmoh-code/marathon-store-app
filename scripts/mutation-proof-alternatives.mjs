@@ -24,9 +24,12 @@
 //
 //   4. BRAND IS A WEIGHT AND NOT A FILTER, and the silhouette wall holds.
 //      The owner decision most likely to be quietly reversed, and the one
-//      exclusion that keeps the list from being random. G15-G18.
+//      exclusion that keeps the list from being random. G15-G19.
 //
-// AND ONE THING MUST NOT MOVE: the refusal itself. G19-G20 watch the fences
+//   5. THE CHIP STILL READS AS UNAVAILABLE WITHOUT THE ✕. G20-G22 — one per
+//      axis of the container difference that replaced the glyph.
+//
+// AND ONE THING MUST NOT MOVE: the refusal itself. G23-G25 watch the fences
 // around the X gate — tapping an unavailable size still cannot raise a refill
 // request, and the reason text is unchanged.
 //
