@@ -163,6 +163,82 @@ describe("allocateSneakerCart", () => {
     expect(hubOf.get(ordinary)).toBe("hub2");
   });
 
+  // ── PINNED DEMAND IS RESERVED FIRST ─────────────────────────────────────
+  // Codex's scenario, exactly: Hub 1 holds one unit (a live display), Hub 2
+  // holds one ordinary. Cart = one ordinary line then a pull. In plain cart
+  // order the ordinary line took Hub 1's last unit and the pull overdrew the
+  // same hub — a deficit nothing recorded, so the tile read Hub 2 as untouched
+  // and offered a THIRD pair against two.
+  it("a pull reserves its hub BEFORE a flexible line can take it", () => {
+    const ordinary = line();
+    const pull = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const { hubOf, consumed, overAllocated } = alloc([ordinary, pull], 1, 1);
+    expect(hubOf.get(pull)).toBe(DISPLAY_PAIR_HUB);
+    expect(hubOf.get(ordinary)).toBe("hub2");        // flowed around the pull
+    expect(consumed.get("s1::8")).toEqual({ hub1: 1, hub2: 1 });
+    expect(overAllocated.size).toBe(0);              // feasible
+  });
+  it("…and the cart is then correctly FULL — no third pair is offered", () => {
+    const ordinary = line();
+    const pull = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const { consumed } = alloc([ordinary, pull], 1, 1);
+    const next = resolveSneakerSourcing({
+      product: P(), taggedHub: "hub1", size: "8", hubData: world(1, 1),
+      consumedByHub: consumed.get("s1::8"),
+    });
+    expect(next.available).toBe(0);
+  });
+  it("pulls that between them exceed the pinned hub are MARKED infeasible", () => {
+    const p1 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const p2 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    // Hub 1 holds one; two pulls cannot both be satisfied and there is nowhere
+    // else for either of them.
+    const { overAllocated } = alloc([p1, p2], 1, 5);
+    expect(overAllocated.has("s1::8")).toBe(true);
+  });
+  it("…and one pull against one unit is not", () => {
+    const p1 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    expect(alloc([p1], 1, 0).overAllocated.size).toBe(0);
+  });
+  it("an unread pinned hub is never called infeasible — silence is not a deficit", () => {
+    const p1 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const p2 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    expect(alloc([p1, p2], null, 5).overAllocated.size).toBe(0);
+  });
+  // The property the old test could not express: the ALLOCATION must be
+  // feasible — every hub's allocated demand within what that hub holds —
+  // whenever a feasible allocation exists at all.
+  it("never allocates more from a hub than that hub holds, over the grid", () => {
+    for (let h1 = 0; h1 <= 3; h1++) for (let h2 = 0; h2 <= 3; h2++) {
+      for (let ord = 0; ord <= 3; ord++) for (let pulls = 0; pulls <= 2; pulls++) {
+        const lines = [
+          ...Array.from({ length: ord }, () => line()),
+          ...Array.from({ length: pulls }, () => line({ requestDisplayPartner: true, displayPairRequest: true })),
+        ];
+        const { consumed, overAllocated } = alloc(lines, h1, h2);
+        const c = consumed.get("s1::8") || {};
+        const why = `h1=${h1} h2=${h2} ord=${ord} pulls=${pulls}`;
+        // Hub 2 is never over-drawn: it carries no pinned demand.
+        expect(c.hub2 || 0, why).toBeLessThanOrEqual(h2);
+        // WHEN THE CART IS FEASIBLE AT ALL — the pulls fit Hub 1 and the whole
+        // cart fits both hubs — the allocation must be within capacity
+        // everywhere. This is the property the old spill model could not state,
+        // and the one a pull allocated after a flexible line broke.
+        const feasible = pulls <= h1 && ord + pulls <= h1 + h2;
+        if (feasible) {
+          expect(c.hub1 || 0, `${why} (feasible)`).toBeLessThanOrEqual(h1);
+          expect(overAllocated.has("s1::8"), `${why} (feasible)`).toBe(false);
+        }
+        // And an infeasible PULL demand is always recorded, never hidden.
+        if (pulls > h1) expect(overAllocated.has("s1::8"), `${why} (pulls exceed hub1)`).toBe(true);
+        // A cart that simply outgrew the shelves is the pre-existing stale-cart
+        // case: the line is placed and the warehouse resolves it visibly as
+        // out of stock. Not this function's to solve, and not hidden by it —
+        // the tile refuses the add that would create it.
+      }
+    }
+  });
+
   it("clothing is skipped entirely", () => {
     const cloth = line({ productType: "clothing" });
     const ordinary = line();

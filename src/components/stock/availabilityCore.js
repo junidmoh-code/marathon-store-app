@@ -381,32 +381,67 @@ export function resolveSneakerSourcing({ product, taggedHub, size, hubData, cons
 //      draws from one shelf, and the next line must see that shelf shorter and
 //      the other one untouched.
 //
-// Cart ORDER is allocation order — stable, and what the assistant sees. A line
-// added first keeps its hub when a later one is added.
+// PINNED DEMAND IS ALLOCATED FIRST, then everything else in cart order. A
+// display pull can go nowhere else, so reserving it before the lines that CAN
+// move around it is what makes the allocation feasible whenever a feasible
+// allocation exists. `overAllocated` names any cell whose PULLS alone exceed
+// the pinned hub — genuinely infeasible, and the checkout refuses it rather
+// than quietly over-committing.
 //
 // `taggedHubFor(product)` is the caller's tag router; `hubData` is the same
 // { cells, promised, ready } map resolveSneakerSourcing takes.
 export function allocateSneakerCart({ lines, hubData, taggedHubFor, displayPairHub = DISPLAY_PAIR_HUB }) {
   const hubOf = new Map();        // line -> the hub it draws from
   const consumed = new Map();     // "pid::size" -> { hub1, hub2 }
-  for (const line of lines || []) {
-    if ((line?.productType || "sneaker") === "clothing") continue;
-    if (line?.requestDisplayPartner && line?.displayPairRequest !== true) continue;   // rule 1
-    const pid = line?.product?.id;
-    if (!pid || !line?.size) continue;
-    const key = `${pid}::${line.size}`;
+  const overAllocated = new Set();// "pid::size" -> pinned demand exceeds the pinned hub
+
+  const eligible = (line) => {
+    if ((line?.productType || "sneaker") === "clothing") return false;
+    if (line?.requestDisplayPartner && line?.displayPairRequest !== true) return false;   // rule 1
+    return !!(line?.product?.id && line?.size);
+  };
+  const keyOf = (line) => `${line.product.id}::${line.size}`;
+  const charge = (line, hub) => {
+    const key = keyOf(line);
     const taken = consumed.get(key) || {};
-    const hub = line.displayPairRequest === true
-      ? displayPairHub                                                                 // rule 2
-      : resolveSneakerSourcing({
-          product: line.product, taggedHub: taggedHubFor(line.product),
-          size: line.size, hubData, consumedByHub: taken,                              // rule 3
-        }).hub;
-    if (!hub) continue;
     hubOf.set(line, hub);
     consumed.set(key, { ...taken, [hub]: (taken[hub] || 0) + 1 });
+  };
+
+  // ── PASS 1: THE PINNED DEMAND, BEFORE ANYTHING FLEXIBLE ───────────────────
+  // A display pull can go nowhere else, so it must be reserved before the
+  // lines that CAN move around it. Allocating in plain cart order let an
+  // ordinary line take Hub 1's last unit and the pull then overdraw the same
+  // hub — a deficit nothing recorded, so the tile saw Hub 2 as untouched and
+  // offered a THIRD pair against two (independent review, 2026-09-06).
+  //
+  // Constrained demand first is what makes the allocation FEASIBLE whenever a
+  // feasible allocation exists: the flexible lines flow around the pulls.
+  for (const line of lines || []) {
+    if (!eligible(line) || line.displayPairRequest !== true) continue;
+    const key = keyOf(line);
+    charge(line, displayPairHub);                                                   // rule 2
+    // Pulls that between them exceed the pinned hub are genuinely infeasible —
+    // there is no other shelf for them — so the cart is MARKED rather than
+    // quietly over-committed, and the checkout refuses it.
+    const pinned = hubData?.[displayPairHub];
+    if (pinned?.ready) {
+      const raw = cellAvailability({
+        cells: pinned.cells, promised: pinned.promised, productId: line.product.id, size: line.size });
+      if ((consumed.get(key)?.[displayPairHub] || 0) > raw) overAllocated.add(key);
+    }
   }
-  return { hubOf, consumed };
+
+  // ── PASS 2: EVERYTHING ELSE, IN CART ORDER ────────────────────────────────
+  for (const line of lines || []) {
+    if (!eligible(line) || line.displayPairRequest === true) continue;
+    const hub = resolveSneakerSourcing({
+      product: line.product, taggedHub: taggedHubFor(line.product),
+      size: line.size, hubData, consumedByHub: consumed.get(keyOf(line)) || {},       // rule 3
+    }).hub;
+    if (hub) charge(line, hub);
+  }
+  return { hubOf, consumed, overAllocated };
 }
 
 export function resolveSneakerSourcingHub(args) {

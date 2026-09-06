@@ -112,6 +112,30 @@ const MUTATIONS = [
   },
 
   {
+    id: "G19c",
+    guard: "PINNED demand is allocated BEFORE flexible lines — otherwise an ordinary line takes hub1's last unit and the pull overdraws it invisibly",
+    file: CORE,
+    kind: "behavioural",
+    from: `    if (!eligible(line) || line.displayPairRequest !== true) continue;`,
+    to: `    if (!eligible(line) || line.displayPairRequest === true) continue;`,
+  },
+  {
+    id: "G19d",
+    guard: "…and pulls that between them exceed the pinned hub are MARKED infeasible rather than quietly over-committed",
+    file: CORE,
+    kind: "behavioural",
+    from: `      if ((consumed.get(key)?.[displayPairHub] || 0) > raw) overAllocated.add(key);`,
+    to: ``,
+  },
+  {
+    id: "G19e",
+    guard: "…and an UNREAD pinned hub is never called infeasible — silence is not a deficit",
+    file: CORE,
+    kind: "behavioural",
+    from: `    if (pinned?.ready) {`,
+    to: `    if (true) {`,
+  },
+  {
     id: "G19b",
     guard: "A CLASSIC Display Partner request consumes NOTHING — it asks for what the hub does not have",
     file: CORE,
@@ -169,6 +193,14 @@ const MUTATIONS = [
     setSubmitting(true);`,
   },
 
+  {
+    id: "G11d",
+    guard: "The checkout refuses a cart whose own pulls over-draw hub1 — raw shelf availability cannot see that deficit",
+    file: APP,
+    kind: "source-pin",
+    from: `        if (cartAllocation.overAllocated.has(\`\${item.product.id}::\${item.size}\`)) return true;`,
+    to: ``,
+  },
   {
     id: "G11b",
     guard: "The pre-flight fails CLOSED — unverifiable display data is refused, never waved through",

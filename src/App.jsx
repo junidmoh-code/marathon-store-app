@@ -9811,6 +9811,10 @@ function AssistantView({ products, onExit, orders = [] }) {
         if (!displayLaneReady || !ordersSettled) return true;      // cannot verify
         if (!sneakerGateReady(DISPLAY_PAIR_HUB)) return true;
         const d = hub1DisplayUnits[promisedKey(item.product.id, item.size)];
+        // The cart's own pulls of this cell already exceed Hub 1 — infeasible
+        // whatever the shelf says, and recorded by the allocation rather than
+        // discovered at the warehouse.
+        if (cartAllocation.overAllocated.has(`${item.product.id}::${item.size}`)) return true;
         if (!d || !(d.units > 0)) return true;                     // no display left at all
         // A store was recorded only when the claim was UNAMBIGUOUS; when one
         // was, that floor must still be listed.
