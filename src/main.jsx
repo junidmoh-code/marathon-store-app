@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
+import { applyPushDeepLink } from "./push/deepLink.js";
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
 // fixed banner on screen, so a failure can never be a silent black screen with
@@ -30,6 +31,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("error", (e) => showFatal(String(e?.message || e?.error || e) + (e?.filename ? `  (${e.filename}:${e.lineno})` : "")));
   window.addEventListener("unhandledrejection", (e) => showFatal("Promise: " + String(e?.reason?.message || e?.reason || e)));
 }
+
+// A tapped push notification lands here as /?push=refill&hub=… . Consumed
+// BEFORE React mounts, because the workspace and the Source tab are both seeded
+// from localStorage at first render — writing those two keys first is what
+// makes the deep link work with no route, no parser and no second source of
+// truth about where a screen lives. See src/push/deepLink.js.
+applyPushDeepLink();
 
 // Long-lived warehouse/TV tabs: poll /version.json and pick up new deploys on
 // their own (banner + idle auto-reload; never mid-count — see updateChecker.js).

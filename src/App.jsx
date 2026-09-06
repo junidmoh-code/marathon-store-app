@@ -81,7 +81,9 @@ import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
+import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
+import { useForegroundPush } from "./push/useForegroundPush";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
@@ -2884,7 +2886,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -2892,10 +2894,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // flag is the same scalar the server callable checks, so the two can never
   // disagree about a grant. See src/config/enginePolicy.js.
   const enginePolicyViewer = { email: homeUser?.email, permFlags: homePerm?.permFlags };
-  // Web push. The hook runs on EVERY home render for a signed-in user, which is
-  // exactly the "every app load" the token lifecycle needs — home is the screen
-  // every session passes through. It reads one two-field node and nothing else.
-  const push = usePushRegistration({ user: homeUser, permRecord: homePerm, isSuperAdmin });
   // Who-am-I, home only (owner directive 2026-08-08): the global "Signed in:"
   // pill is gone, so the bare name in the hero of BOTH home branches is the one
   // identity signal in the app. Hoisted above the isDesktop split — it used to
@@ -18289,6 +18287,17 @@ function AdminSignInScreen({ onCancel }) {
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
   const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  // ── WEB PUSH ───────────────────────────────────────────────────────────────
+  // Hoisted to the app root rather than to the home screen, because a staff
+  // member with a persisted role opens straight into their workspace and may go
+  // weeks without rendering home. The token has to be refreshed on every app
+  // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
+  // from the one component every session mounts. The settings row still owns
+  // the switch; it receives this same object as a prop.
+  const push = usePushRegistration({ user: authUser, permRecord, isSuperAdmin });
+  // The in-app half: banner + chime instead of an OS notification while the app
+  // is open. No listener at all when push is off.
+  const foregroundPush = useForegroundPush({ enabled: !!push.enabled && !!push.uid });
   // Gates the shared /insights_log subscription (mounted at the bottom of this
   // component): the read is rules-gated on a non-anonymous user.
   const insightsAuthReady = useAuthReady();
@@ -18620,7 +18629,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
@@ -18735,6 +18744,9 @@ function AppInner() {
     <>
       <PWAUpdateBanner />
       <ReactivationNotice />
+      {/* Sibling of the boundary, like the clock warning: a crash in `view`
+          still leaves the alert on screen. */}
+      <PushBanner banner={foregroundPush.banner} onOpen={foregroundPush.open} onDismiss={foregroundPush.dismiss} />
       {showClockWarning && <ClockWarningBanner />}
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}
