@@ -1,4 +1,4 @@
-// ─── MUTATION PROOF HARNESS — refill push notifications ──────────────────────
+// ─── MUTATION PROOF HARNESS — order push notifications ───────────────────────
 // For each guard: reintroduce the bug, prove the suite FAILS, restore the file,
 // prove it PASSES. A test that cannot fail proves nothing, so this runs the
 // whole cycle and refuses to report a pass it did not watch break first.
@@ -12,7 +12,8 @@
 // it must go red) and M7/M8 (dead-token pruning). The rest are here because
 // each is a way this feature fails LOUDLY at a staff member and quietly in the
 // logs: a sweep firing four hundred notifications, a redelivery double-sending,
-// shadow rows notifying forever about work nobody will ever do.
+// a RECYCLED order id swallowing tomorrow's real order as a replay, shadow
+// orders notifying forever about work nobody will ever do.
 //
 // Run:  node scripts/mutation-proof-push-notify.mjs
 
@@ -20,13 +21,15 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const PREFS = "src/push/notificationPrefs.js";
-const PUSH = "functions/lib/refill-push.cjs";
-const SERVER_TESTS = ["test/refill-push.test.cjs"];
+const PUSH = "functions/lib/order-push.cjs";
+const SERVER_TESTS = ["test/order-push.test.cjs"];
 const PREFS_TESTS = ["src/push/notificationPrefs.test.js"];
 const CHIME = "src/push/chime.js";
 const FOREGROUND = "src/push/useForegroundPush.js";
 const FOREGROUND_TESTS = ["src/push/foregroundBanner.test.jsx"];
 const CHIME_TESTS = ["src/push/chime.test.js"];
+const DEEPLINK = "src/push/deepLink.js";
+const DEEPLINK_TESTS = ["src/push/deepLink.test.js"];
 
 const MUTATIONS = [
   // ── DEFAULT ON ────────────────────────────────────────────────────────────
@@ -117,7 +120,7 @@ function normalise(v) {`,
   // ── BURST COLLAPSE ────────────────────────────────────────────────────────
   {
     id: "M9",
-    guard: "THE COLLAPSE — only the invocation that OPENED the window sends; 40 requests are one notification",
+    guard: "THE COLLAPSE — only the invocation that OPENED the window sends; 40 orders are one notification",
     file: PUSH,
     from: `  if (claim.snapshot.val() && claim.snapshot.val().windowId !== windowId) {
     return { sent: false, skipped: "joined_window" };
@@ -127,7 +130,7 @@ function normalise(v) {`,
   },
   {
     id: "M10",
-    guard: "A request that joins an open window is COUNTED, not treated as a fresh one",
+    guard: "An order that joins an open window is COUNTED, not treated as a fresh one",
     file: PUSH,
     from: `    const open = !!(cur && cur.windowId && !cur.closedAt && nowMs - beat < STALE_CLAIM_MS);`,
     to: `    const open = false;`,
@@ -139,7 +142,7 @@ function normalise(v) {`,
     id: "M11",
     guard: "IDEMPOTENCY — a redelivered creation is recognised and sends nothing",
     file: PUSH,
-    from: `    if (seen[requestId]) { replay = true; return undefined; }`,
+    from: `    if (seen[seenKey]) { replay = true; return undefined; }`,
     to: ``,
     nodeTests: SERVER_TESTS,
   },
@@ -155,7 +158,7 @@ function normalise(v) {`,
   // ── THE TWO FAILURES THE FIRST DRAFT HAD ──────────────────────────────────
   {
     id: "M15",
-    guard: "A dead claimer's count is CARRIED FORWARD — its requests are already in `seen` and can never be re-counted",
+    guard: "A dead claimer's count is CARRIED FORWARD — its orders are already in `seen` and can never be re-counted",
     file: PUSH,
     from: `    const orphaned = cur && cur.windowId && !cur.closedAt ? Number(cur.count || 0) : 0;`,
     to: `    const orphaned = 0;`,
@@ -163,7 +166,7 @@ function normalise(v) {`,
   },
   {
     id: "M16",
-    guard: "The replay memory is CAPPED — uncapped, one hub's burst costs O(n^2) bytes on a single node",
+    guard: "The replay memory is CAPPED — uncapped, one store's burst costs O(n^2) bytes on a single node",
     file: PUSH,
     from: `  if (fresh.length > MAX_SEEN) {
     fresh.sort((a, b) => b[1] - a[1]);
@@ -193,7 +196,7 @@ function normalise(v) {`,
   },
   {
     id: "M19",
-    guard: "A restored window is expired against EVERY clock — otherwise the next request joins a window with no claimer",
+    guard: "A restored window is expired against EVERY clock — otherwise the next order joins a window with no claimer",
     file: PUSH,
     from: `      startedAt: 0,`,
     to: `      startedAt: closedAt,`,
@@ -227,10 +230,26 @@ function normalise(v) {`,
   },
   {
     id: "M23",
-    guard: "A STORE destination opens the app, never a hub queue that would not list its request",
+    guard: "An order with no usable hub opens the app, never a queue that would not list it",
     file: PUSH,
-    from: `const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : hub === "hub2" ? "clothing" : null);`,
-    to: `const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : "clothing");`,
+    from: `  if (!hub || !HUB_LABEL[hub]) return "/";`,
+    to: `  if (!hub) return "/";`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M23b",
+    guard: "A SINGLE order links to the card itself; a burst opens the queue",
+    file: PUSH,
+    from: `  if (count > 1 || !sample.orderId) return base;`,
+    to: `  if (!sample.orderId) return base;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M23c",
+    guard: "The focus identity carries createdAt — the bare id would ring a card from a previous day",
+    file: PUSH,
+    from: `    + \`&at=\${encodeURIComponent(sample.createdAt || "")}\`;`,
+    to: `    ;`,
     nodeTests: SERVER_TESTS,
   },
   {
@@ -272,13 +291,13 @@ function normalise(v) {`,
     id: "M29",
     guard: "A destination that is not a legal RTDB key is REFUSED before it becomes a path",
     file: PUSH,
-    from: '  if (/[.#$/[\\]]/.test(hub)) return "bad_destination";',
+    from: '  if (/[.#$/[\\]]/.test(dest)) return "bad_destination";',
     to: "",
     nodeTests: SERVER_TESTS,
   },
   {
     id: "M30",
-    guard: "A lone request is quiet at the FIRST tick — seeded from the claimed count, not -1",
+    guard: "A lone order is quiet at the FIRST tick — seeded from the claimed count, not -1",
     file: PUSH,
     from: "  let lastCount = Number((claim.snapshot.val() || {}).count) || 0;",
     to: "  let lastCount = -1;",
@@ -322,19 +341,90 @@ function normalise(v) {`,
   // ── SHADOW ROWS ───────────────────────────────────────────────────────────
   {
     id: "M13",
-    guard: "Shadow rows notify NOBODY — they are a preview the sweep rewrites every 15 minutes",
+    guard: "Shadow orders notify NOBODY — they are a preview the sweep rewrites every 15 minutes",
     file: PUSH,
-    from: `  if (typeof requestId === "string" && requestId.startsWith("SHDWrr-")) return "shadow_key";`,
+    from: `  if (typeof orderId === "string" && orderId.startsWith("SHDW-")) return "shadow_key";`,
     to: ``,
     nodeTests: SERVER_TESTS,
   },
   {
     id: "M14",
-    guard: "Only an OPEN request is new work — a fulfil or a withdrawal is not",
+    guard: "Only an INCOMING order is new work — a restore or a status rewrite is not",
     file: PUSH,
-    from: `  if (rec.status !== "open") return "not_open";`,
+    from: `  if (rec.status !== "incoming") return "not_incoming";`,
     to: ``,
     nodeTests: SERVER_TESTS,
+  },
+
+  // ── THE RECYCLED ORDER ID (this release) ──────────────────────────────────
+  // Both counters reset daily and cycle 001-999 while the nodes persist, so the
+  // same key is written again and again. Every guard below is a way that fact
+  // turns into a real order nobody is ever told about.
+  {
+    id: "M34",
+    guard: "THE REPLAY KEY CARRIES createdAt — on the bare id, tomorrow's 005 is a replay of today's",
+    file: PUSH,
+    from: '  const seenKey = `${orderId}::${record.createdAt == null ? "" : String(record.createdAt)}`;',
+    to: "  const seenKey = orderId;",
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M35",
+    guard: "A SUPERSEDED record is left to its own event — the id was recycled while this one was in flight",
+    file: PUSH,
+    from: `  if (expectedCreatedAt != null && String(rec.createdAt) !== String(expectedCreatedAt)) {
+    return "superseded";
+  }`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M36",
+    guard: "A shop refill is NAMED as one, so a lock screen tells it from a customer's order",
+    file: PUSH,
+    from: '  const kind = sample && sample.refill ? "Shop refill: " : "";',
+    to: '  const kind = "";',
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M37",
+    guard: "The order NUMBER leads the body — it is what is on the box and on the slip",
+    file: PUSH,
+    from: '  const num = sample && sample.orderId ? `#${sample.orderId} · ` : "";',
+    to: '  const num = "";',
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M38",
+    guard: "A CR refill links to the clothing tab, not to a queue that does not list it",
+    file: PUSH,
+    from: '  return isRefillOrder(rec) && CR_HUBS.has(hub) ? "clothing" : "queue";',
+    to: '  return "queue";',
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M39",
+    guard: "A FOCUS MARKER EXPIRES — an untapped one must not ring a card on a later, unrelated visit",
+    file: DEEPLINK,
+    from: "  if (!writtenAt || nowMs - writtenAt > FOCUS_ORDER_TTL_MS) return null;",
+    to: "  if (!writtenAt) return null;",
+    tests: DEEPLINK_TESTS,
+  },
+  {
+    id: "M40",
+    guard: "The focus marker is CONSUMED on read — one tap rings one card, not every later mount",
+    file: DEEPLINK,
+    from: "  try { store.removeItem(FOCUS_ORDER_KEY); } catch { /* nothing more to do */ }",
+    to: "",
+    tests: DEEPLINK_TESTS,
+  },
+  {
+    id: "M41",
+    guard: "A hub the warehouse selector cannot render is REFUSED, not persisted as a blank screen",
+    file: DEEPLINK,
+    from: "  const hub = VALID_HUBS.has(hubParam) ? hubParam : null;",
+    to: "  const hub = hubParam;",
+    tests: DEEPLINK_TESTS,
   },
 ];
 
