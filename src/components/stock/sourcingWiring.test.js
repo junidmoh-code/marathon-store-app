@@ -32,8 +32,14 @@ describe("routing and availability are ONE computation", () => {
   // runs later; the repo has already lost a run to exactly that (#563), so the
   // order is pinned rather than left to luck.
   it("sneakerInCart is declared BEFORE the resolver that reads it", () => {
-    expect(APP.indexOf("const sneakerInCart = (pid, size) =>"))
-      .toBeLessThan(APP.indexOf("const sneakerSourcing = (p, s) =>"));
+    const cart = APP.indexOf("const sneakerInCart = (pid, size) =>");
+    const resolver = APP.indexOf("const sneakerSourcing = (p, s) =>");
+    // BOTH must be found first. indexOf returns -1 for a miss, and -1 is less
+    // than any real offset — so a rename of either declaration would have let
+    // this fence pass while proving nothing (CodeRabbit).
+    expect(cart, "sneakerInCart declaration not found").toBeGreaterThan(-1);
+    expect(resolver, "sneakerSourcing declaration not found").toBeGreaterThan(-1);
+    expect(cart).toBeLessThan(resolver);
   });
 });
 
@@ -49,10 +55,22 @@ describe("a display-pair line's hub is fixed, not resolved", () => {
     expect(APP).toContain("&& sneakerGateReady(DISPLAY_PAIR_HUB)");
     expect(APP).toContain("&& sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0);");
     expect(APP).toContain("is no longer available at ${HUB_LABELS[DISPLAY_PAIR_HUB]");
-    // The refusal returns before anything is written, like the deactivation
-    // guard beside it — never a half-placed checkout.
-    const i = APP.indexOf("The display pair of ${gone.product.name}");
-    expect(APP.slice(i, i + 400)).toContain("return;");
+    // THE ORDERING, not just the presence of a `return`. The refusal must come
+    // before the checkout does anything at all — the first write in placeOrders
+    // is setSubmitting(true), and everything that touches the database is
+    // after it. Searching a window after the message only proved a `return`
+    // existed somewhere nearby, which a mutation of the message alone could
+    // satisfy (CodeRabbit).
+    const refusal = APP.indexOf("The display pair of ${gone.product.name}");
+    const refusalReturn = APP.indexOf("return;", refusal);
+    const firstWrite = APP.indexOf("setSubmitting(true);", refusal);
+    const orderNumber = APP.indexOf("await getNextOrderNumber()", refusal);
+    expect(refusal, "the refusal is gone").toBeGreaterThan(-1);
+    expect(firstWrite, "placeOrders no longer sets submitting after the guard").toBeGreaterThan(-1);
+    expect(orderNumber, "placeOrders no longer claims an order number").toBeGreaterThan(-1);
+    expect(refusalReturn).toBeGreaterThan(-1);
+    expect(refusalReturn, "the refusal does not return before the checkout starts").toBeLessThan(firstWrite);
+    expect(refusalReturn, "the refusal does not return before an order number is claimed").toBeLessThan(orderNumber);
   });
   it("the hub is named once, in the module that owns the lane", () => {
     expect(APP).toContain("DISPLAY_PAIR_HUB } from \"./components/stock/availabilityCore\"");

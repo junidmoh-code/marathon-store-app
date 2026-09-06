@@ -33,7 +33,16 @@ const { decodeSizeKey } = await import("../src/utils/sizeKey.js");
 const { readMapPaged } = await import("./lib/rtdbPaged.mjs");
 
 const products = await readMapPaged(db, "products", { pageSize: 500 });
-const orders = Object.values((await db.ref("orders").orderByKey().startAt("0").endAt("9").once("value")).val() || {});
+// ── READ ALL OF /orders, PAGED ───────────────────────────────────────────────
+// The obvious copy of the TV's ranged read is WRONG here and was: an
+// orderByKey range of ["0","9"] returns EIGHT of the 565 customer orders on
+// live data (measured 2026-09-06 — RTDB sorts integer-like keys ahead of
+// string keys and the bounds do not bracket what they look like they bracket).
+// 194 of the ones it drops are status "ready", so the promised map came out
+// nearly empty and every availability figure was overstated.
+// This is an offline census; paged is bounded and correct. See
+// TV_ORDER_KEY_END, which has the same defect on a LIVE screen.
+const orders = Object.values(await readMapPaged(db, "orders", { pageSize: 500 }));
 
 const decode = (raw) => {
   const out = {};

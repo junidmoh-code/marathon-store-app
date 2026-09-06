@@ -140,11 +140,21 @@ const MUTATIONS = [
   },
   {
     id: "G12",
-    guard: "…and it returns BEFORE anything is written — never a half-placed checkout",
+    guard: "…and it returns BEFORE the checkout starts — never a half-placed order",
     file: APP,
     kind: "source-pin",
-    from: `is no longer available at \${HUB_LABELS[DISPLAY_PAIR_HUB]`,
-    to: `is fine actually at \${HUB_LABELS[DISPLAY_PAIR_HUB]`,
+    // MUTATE THE RETURN, NOT THE MESSAGE. The first version changed a word in
+    // the alert, which the test caught only because it pinned that word — it
+    // proved the wording existed, not the ordering the guard claims
+    // (CodeRabbit). Deleting the return is the mutation that actually lets a
+    // refused checkout carry on and place.
+    from: `        return;
+      }
+    }
+    setSubmitting(true);`,
+    to: `      }
+    }
+    setSubmitting(true);`,
   },
 
   // ── 3. NOTHING #568 DID MAY MOVE ─────────────────────────────────────────
