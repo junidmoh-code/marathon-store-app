@@ -52,7 +52,7 @@ const MUTATIONS = [
     guard: "The cart is SUBTRACTED from the tagged hub — without it the tag wins on stock it has already promised to this device",
     file: CORE,
     kind: "behavioural",
-    from: `  const taggedLeft = Math.max(taggedRaw - used, 0);`,
+    from: `  const taggedLeft = Math.max(taggedRaw - takenAt(taggedHub), 0);`,
     to: `  const taggedLeft = taggedRaw;`,
   },
   {
@@ -65,11 +65,11 @@ const MUTATIONS = [
   },
   {
     id: "G3",
-    guard: "The cart drains the TAG first and only the excess spills — subtracting it from both hubs double-counts and refuses a pair that exists",
+    guard: "The ALTERNATE is charged its own consumption, never the tag's — a unit must not be billed to a shelf it never came off",
     file: CORE,
     kind: "behavioural",
-    from: `  const altLeft = Math.max(altRaw - Math.max(used - taggedRaw, 0), 0);`,
-    to: `  const altLeft = Math.max(altRaw - used, 0);`,
+    from: `  const altLeft = Math.max(altRaw - takenAt(alternate), 0);`,
+    to: `  const altLeft = Math.max(altRaw - takenAt(taggedHub), 0);`,
   },
   // G4 WAS HERE, AND IS GONE ON PURPOSE. It mutated the inner clamp on the
   // spill (`Math.max(used - taggedRaw, 0)`), and could not be killed: that line
@@ -83,8 +83,8 @@ const MUTATIONS = [
     guard: "A junk cart count is treated as none, never as a negative credit",
     file: CORE,
     kind: "behavioural",
-    from: `  const used = Math.max(Number(consumed) || 0, 0);`,
-    to: `  const used = Number(consumed) || 0;`,
+    from: `  const takenAt = (h) => Math.max(Number(consumedByHub?.[h]) || 0, 0);`,
+    to: `  const takenAt = (h) => Number(consumedByHub?.[h]) || 0;`,
   },
   {
     id: "G6",
@@ -111,6 +111,15 @@ const MUTATIONS = [
     to: ``,
   },
 
+  {
+    id: "G19b",
+    guard: "A CLASSIC Display Partner request consumes NOTHING — it asks for what the hub does not have",
+    file: CORE,
+    kind: "behavioural",
+    from: `    if (line?.requestDisplayPartner && line?.displayPairRequest !== true) continue;   // rule 1`,
+    to: ``,
+  },
+
   // ── 2. A DISPLAY PAIR CANNOT BE REROUTED ─────────────────────────────────
   {
     id: "G9",
@@ -122,13 +131,13 @@ const MUTATIONS = [
   },
   {
     id: "G10",
-    guard: "Placement PINS a display-pair line's hub instead of resolving it",
-    file: APP,
-    kind: "source-pin",
-    from: `          const hub = item.displayPairRequest === true
-            ? DISPLAY_PAIR_HUB`,
-    to: `          const hub = false
-            ? DISPLAY_PAIR_HUB`,
+    guard: "A display pull is PINNED to hub1 rather than routed — the lane is hub1-scoped and no other hub can act on the instruction",
+    file: CORE,
+    kind: "behavioural",
+    from: `    const hub = line.displayPairRequest === true
+      ? displayPairHub                                                                 // rule 2`,
+    to: `    const hub = false
+      ? displayPairHub`,
   },
   {
     id: "G11",
@@ -178,18 +187,18 @@ const MUTATIONS = [
   },
   {
     id: "G19",
-    guard: "The CHECKOUT allocates line by line — handing it the tile's whole-cart question sends a whole order to an empty hub",
-    file: APP,
-    kind: "source-pin",
-    from: `size: item.size, hubData: sneakerHubData(), consumed: already,`,
-    to: `size: item.size, hubData: sneakerHubData(), consumed: 0,`,
+    guard: "Each line is charged to the hub it was ACTUALLY allocated — charging the tag lets one display pair be allocated twice",
+    file: CORE,
+    kind: "behavioural",
+    from: `    consumed.set(key, { ...taken, [hub]: (taken[hub] || 0) + 1 });`,
+    to: `    consumed.set(key, { ...taken, hub1: (taken.hub1 || 0) + 1 });`,
   },
   {
     id: "G20",
-    guard: "…and each line's allocation is actually USED, rather than the hub being re-derived at write time",
+    guard: "…and placement READS that allocation rather than re-deriving a hub at write time",
     file: APP,
     kind: "source-pin",
-    from: `          : (allocatedHub.get(placedIndex) || computeHubForItem(item));`,
+    from: `          : (cartAllocation.hubOf.get(item) || computeHubForItem(item));`,
     to: `          : computeHubForItem(item);`,
   },
   {
@@ -251,8 +260,8 @@ const MUTATIONS = [
     guard: "The cart goes INTO the resolver — applying it afterwards is exactly how the two answers came to disagree",
     file: APP,
     kind: "source-pin",
-    from: `    consumed: p?.id ? sneakerInCart(p.id, s) : 0,`,
-    to: `    consumed: 0,`,
+    from: `    consumedByHub: cartAllocation.consumed.get(\`\${p?.id}::\${s}\`) || null,`,
+    to: `    consumedByHub: null,`,
   },
   {
     id: "G18",
