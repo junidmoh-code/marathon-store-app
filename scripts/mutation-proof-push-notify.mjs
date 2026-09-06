@@ -148,6 +148,27 @@ function normalise(v) {`,
     nodeTests: SERVER_TESTS,
   },
 
+  // ── THE TWO FAILURES THE FIRST DRAFT HAD ──────────────────────────────────
+  {
+    id: "M15",
+    guard: "A dead claimer's count is CARRIED FORWARD — its requests are already in `seen` and can never be re-counted",
+    file: PUSH,
+    from: `    const orphaned = cur && cur.windowId && !cur.closedAt ? Number(cur.count || 0) : 0;`,
+    to: `    const orphaned = 0;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M16",
+    guard: "The replay memory is CAPPED — uncapped, one hub's burst costs O(n^2) bytes on a single node",
+    file: PUSH,
+    from: `  if (fresh.length > MAX_SEEN) {
+    fresh.sort((a, b) => b[1] - a[1]);
+    fresh.length = MAX_SEEN;
+  }`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+
   // ── SHADOW ROWS ───────────────────────────────────────────────────────────
   {
     id: "M13",

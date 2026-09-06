@@ -16,7 +16,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   notifyRefillRequest, shouldNotify, pruneSeen, composeMessage,
-  WINDOW_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS,
+  WINDOW_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS, MAX_SEEN,
 } = require("../lib/refill-push.cjs");
 
 const NOW = 1_757_000_000_000;
@@ -383,4 +383,50 @@ test("a token row with no token string is skipped, not sent as undefined", async
   const m = fakeMessaging();
   await run({ ref }, m, "r1", REQ());
   assert.deepEqual(m.calls[0].tokens, ["tok-A"]);
+});
+
+// ── THE TWO FAILURES THE FIRST DRAFT HAD ─────────────────────────────────────
+
+test("a window whose claimer DIED carries its count forward — late, never lost", async () => {
+  const { ref, state } = fakeDb(WORLD());
+  const m = fakeMessaging();
+
+  // Five requests land; the claimer never returns (the instance was killed).
+  let neverResolves;
+  const stuck = new Promise((r) => { neverResolves = r; });
+  notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "r0", record: REQ(), nowMs: NOW,
+    sleep: () => stuck, newWindowId: () => "W1",
+  });
+  for (let i = 1; i < 5; i += 1) {
+    await notifyRefillRequest({
+      db: { ref }, messaging: m, requestId: `r${i}`, record: REQ(), nowMs: NOW + i,
+      sleep: noSleep, newWindowId: () => `Wx${i}`,
+    });
+  }
+  assert.equal(state.push_bursts.hub1.count, 5);
+  assert.equal(m.calls.length, 0, "nobody has been told anything yet");
+
+  // The window ages out and the next request opens a new one. The five orphans
+  // are already in `seen`, so nothing will ever re-count them — discarding the
+  // count here would understate the work permanently.
+  const next = await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "r9", record: REQ(),
+    nowMs: NOW + WINDOW_MS + 1, sleep: noSleep, newWindowId: () => "W2",
+  });
+  assert.equal(next.sent, true);
+  assert.equal(next.count, 6, "5 orphaned + 1 new");
+  neverResolves();
+});
+
+test("the replay memory is CAPPED, so one node cannot grow with the burst", () => {
+  const seen = {};
+  for (let i = 0; i < MAX_SEEN + 500; i += 1) seen[`r${i}`] = NOW - (MAX_SEEN + 500 - i);
+  const kept = pruneSeen(seen, NOW);
+  // Unbounded, the 400th request of a sweep would read and rewrite 400 ids —
+  // O(n^2) bytes on the single node every request for that hub transacts on.
+  assert.equal(Object.keys(kept).length, MAX_SEEN);
+  // The newest survive: a redelivery is most likely to be about a recent id.
+  assert.ok(kept[`r${MAX_SEEN + 499}`], "the most recent id is kept");
+  assert.ok(!kept.r0, "the oldest is dropped");
 });

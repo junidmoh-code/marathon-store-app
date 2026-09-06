@@ -59,6 +59,21 @@ const FLUSH_DELAY_MS = 20 * 1000;
 // How long a request id is remembered as "already counted".
 const REPLAY_TTL_MS = 30 * 60 * 1000;
 
+// ── WHY THE REPLAY MEMORY IS CAPPED, NOT JUST AGED ──────────────────────────
+// Every request for a hub runs a transaction on ONE node, and a transaction
+// reads and writes the WHOLE node. So an uncapped `seen` map makes a burst cost
+// O(n^2) bytes: the 400th request of a sweep would read and rewrite 400 remembered
+// ids. Live bandwidth is this project's largest bill line, and the engine's
+// first scan after a bulk target migration once computed 4,849 intents.
+//
+// Capping the map bounds one transaction at roughly 10 KB however large the
+// burst gets, which makes the whole feature's worst case arithmetic rather than
+// a surprise. What is given up is replay protection for the OLDEST ids in a
+// burst bigger than the cap — and the cost of that is bounded too: such a
+// replay joins the current window and adds one to a count, or at worst produces
+// a single extra "1 new refill request". It cannot duplicate the burst.
+const MAX_SEEN = 250;
+
 // Ceiling on recipients resolved from the index. Not a policy — a blast-radius
 // stop, so a corrupted index cannot turn one refill request into thousands of
 // per-user reads.
@@ -89,15 +104,24 @@ const hubLabel = (hub) => HUB_LABEL[hub] || String(hub || "a hub");
 // the Hub 2 / clothing queue. Mirrors src/push/pushConfig.js.
 const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : "clothing");
 
-/** Drop remembered request ids older than the replay window. Returns a fresh
- *  object so a transaction re-run never mutates the value it was handed. */
+/** Drop remembered request ids older than the replay window, and keep only the
+ *  newest MAX_SEEN of whatever survives. Returns a fresh object so a transaction
+ *  re-run never mutates the value it was handed. */
 function pruneSeen(seen, nowMs) {
-  const out = {};
-  if (seen && typeof seen === "object") {
+  const fresh = [];
+  if (seen && typeof seen === "object" && !Array.isArray(seen)) {
     for (const [id, ts] of Object.entries(seen)) {
-      if (typeof ts === "number" && nowMs - ts < REPLAY_TTL_MS) out[id] = ts;
+      if (typeof ts === "number" && nowMs - ts < REPLAY_TTL_MS) fresh.push([id, ts]);
     }
   }
+  // Newest first, then truncate: an id that has just been seen is the one a
+  // redelivery is most likely to be about.
+  if (fresh.length > MAX_SEEN) {
+    fresh.sort((a, b) => b[1] - a[1]);
+    fresh.length = MAX_SEEN;
+  }
+  const out = {};
+  for (const [id, ts] of fresh) out[id] = ts;
   return out;
 }
 
@@ -230,7 +254,19 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
     if (open) {
       return { ...cur, count: Number(cur.count || 0) + 1, sample: cur.sample || sample, seen };
     }
-    return { windowId, startedAt: nowMs, count: 1, sample, seen, closedAt: null };
+    // ── AN ABANDONED WINDOW IS CARRIED FORWARD, NOT DISCARDED ────────────────
+    // A window whose claimer died (a crash, an instance killed mid-flush) is
+    // still open and still holds a real count of requests nobody was told
+    // about. Those requests are in `seen`, so they will never be re-counted —
+    // discarding the count here would silently lose them and the next
+    // notification would understate the work by however many were orphaned.
+    // Taking the count with us turns "lost" into "late", which is the worst a
+    // notification should ever be.
+    const orphaned = cur && cur.windowId && !cur.closedAt ? Number(cur.count || 0) : 0;
+    return {
+      windowId, startedAt: nowMs, count: 1 + orphaned,
+      sample: (orphaned && cur.sample) || sample, seen, closedAt: null,
+    };
   });
 
   if (replay) return { sent: false, skipped: "replay" };
@@ -323,6 +359,7 @@ module.exports = {
   WINDOW_MS,
   FLUSH_DELAY_MS,
   REPLAY_TTL_MS,
+  MAX_SEEN,
   MAX_RECIPIENTS,
   DEAD_TOKEN_CODES,
 };
