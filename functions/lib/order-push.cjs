@@ -410,6 +410,36 @@ async function pruneDeadTokens(db, dead) {
   await db.ref().update(upd);
 }
 
+// ── THE REPLAY KEY IS EPOCH-MS, NEVER THE ISO STAMP ─────────────────────────
+// This string becomes an OBJECT KEY inside the window node's `seen` map, so it
+// is an RTDB key and lives under RTDB's key rules: no ".", "#", "$", "/", "["
+// or "]". An ISO timestamp carries a dot in its milliseconds
+// ("2026-09-06T07:07:41.633Z"), and the Admin SDK throws SYNCHRONOUSLY on an
+// invalid key — before the transaction is even sent, so nothing downstream can
+// catch it. The result is not a degraded notification, it is every claim
+// throwing and nobody ever being told anything.
+//
+// This project has already paid for this lesson once: #269, where the refill
+// engine built /refill_engine/retryHistory/{…|ISO} and crashed every scan that
+// reached that line, intermittently, for hours. The fix then was epoch-ms and
+// it is epoch-ms here.
+//
+// The identity still has to be id AND time — order numbers are recycled daily,
+// so a bare id would make tomorrow's 005 a replay of today's and silently drop
+// a real order. Epoch-ms preserves that distinction exactly for the ISO stamps
+// every producer writes.
+//
+// The fallback is for a createdAt this app did not write (dirty data, a restore
+// with a different shape): unparseable values keep their own text with every
+// illegal character replaced, so two different malformed stamps stay different
+// keys rather than collapsing into one and being read as replays of each other.
+function replayKey(orderId, createdAt) {
+  const raw = createdAt == null ? "" : String(createdAt);
+  const ms = Date.parse(raw);
+  const stamp = Number.isFinite(ms) ? String(ms) : raw.replace(/[.#$/[\]]/g, "-");
+  return `${orderId}::${stamp}`;
+}
+
 /**
  * @param {object} args
  * @param {object} args.db            admin.database()
@@ -430,10 +460,7 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
   if (skip) return { sent: false, skipped: skip };
 
   const hub = record.destShop.trim();
-  // The replay key is id AND createdAt, never the bare id: order numbers are
-  // recycled daily, so a bare id would make tomorrow's 005 a replay of today's
-  // and drop it silently. See MAX_SEEN for why the map is capped as well as aged.
-  const seenKey = `${orderId}::${record.createdAt == null ? "" : String(record.createdAt)}`;
+  const seenKey = replayKey(orderId, record.createdAt);
   const windowId = (newWindowId || (() => `w_${nowMs}_${Math.random().toString(36).slice(2, 10)}`))();
   const burstRef = db.ref(`push_bursts/${hub}`);
   const sample = {
@@ -543,7 +570,7 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
   // moment the window closes.
   const closedAt = nowMs + (now() - waitStart);
   let captured = null;
-  await burstRef.transaction((cur) => {
+  const closeRes = await burstRef.transaction((cur) => {
     // Someone else's window: leave it entirely alone. Reachable — a run of
     // missed heartbeats (a paused instance, a spell of failed updates) lets a
     // joining order judge this claim abandoned and open its own. That path is
@@ -556,7 +583,16 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
     return tombstone(cur, closedAt);
   });
   // Already closed (a duplicate flush), or nothing to report.
-  if (!captured) return { sent: false, skipped: "window_taken" };
+  //
+  // `committed` is checked as well as `captured`, and the order matters. A
+  // transaction handler runs MORE than twice against a contended node, and
+  // `captured` is assigned from inside it — so a run that saw our window (a
+  // stale local value) followed by a run that saw somebody else's (the server's
+  // truth, which aborts) would leave `captured` set on a transaction that
+  // changed nothing. Sending then would duplicate the notification of whichever
+  // claimer actually owns the window now. Nothing was closed, so nothing is
+  // sent.
+  if (!closeRes.committed || !captured) return { sent: false, skipped: "window_taken" };
 
   const count = Math.max(1, Number(captured.count) || 1);
 
@@ -651,14 +687,33 @@ async function deliver({ db, messaging, hub, count, captured, closedAt }) {
     const code = r && r.error && (r.error.code || r.error.errorInfo?.code);
     if (code && DEAD_TOKEN_CODES.has(code)) dead.push(rows[i]);
   });
-  await pruneDeadTokens(db, dead);
+  // NEVER fatal. This runs AFTER the multicast has already been delivered, and
+  // the caller's catch treats a throw as "the send failed" and puts the whole
+  // burst back — so a failed tidy-up would re-notify every device that had just
+  // been told. Housekeeping cannot be allowed to undo the thing it comes after.
+  try {
+    await pruneDeadTokens(db, dead);
+  } catch (err) {
+    console.error("PUSH_ALARM orderPlacedPush could not prune dead tokens (delivery already succeeded):", err && err.message);
+  }
+
+  // NOBODY GOT IT IS NOT A SEND. A multicast where every token failed for a
+  // transient reason (a quota spell, an FCM blip) would otherwise consume the
+  // burst: the count is gone, the ids are remembered as seen, and no device
+  // received anything — the exact silent loss the restore path exists for. A
+  // partial success is left alone, because the alternative is re-notifying the
+  // devices that did get it.
+  const delivered = (res && res.successCount) || 0;
+  if (!delivered && rows.length) {
+    throw new Error(`multicast delivered 0 of ${rows.length} tokens`);
+  }
 
   return {
     sent: true,
     hub,
     count,
     tokens: rows.length,
-    delivered: (res && res.successCount) || 0,
+    delivered,
     pruned: dead.length,
     title,
     body,
@@ -673,6 +728,7 @@ module.exports = {
   pruneSeen,
   tombstone,
   composeMessage,
+  replayKey,
   hubLabel,
   WAREHOUSE_HUBS,
   hubForOrder,

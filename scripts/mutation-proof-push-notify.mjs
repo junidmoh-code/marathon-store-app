@@ -421,6 +421,43 @@ function normalise(v) {`,
     tests: DEEPLINK_TESTS,
   },
   {
+    id: "M44",
+    guard: "THE REPLAY KEY IS A LEGAL RTDB KEY — an ISO stamp's dot throws on every claim (#269 again)",
+    file: PUSH,
+    from: "  const stamp = Number.isFinite(ms) ? String(ms) : raw.replace(/[.#$/[\\]]/g, \"-\");",
+    to: "  const stamp = raw;",
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M45",
+    guard: "A delivery of ZERO is not a send — every token failing must put the burst back",
+    file: PUSH,
+    from: "  if (!delivered && rows.length) {",
+    to: "  if (false) {",
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M46",
+    guard: "A failed token prune cannot undo a delivery that already happened",
+    file: PUSH,
+    from: `  try {
+    await pruneDeadTokens(db, dead);
+  } catch (err) {`,
+    to: `  {
+    await pruneDeadTokens(db, dead);
+  }
+  if (false) { const err = null;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M47",
+    guard: "An aborted close transaction sends NOTHING — captured can survive a re-run that changed nothing",
+    file: PUSH,
+    from: "  if (!closeRes.committed || !captured) return { sent: false, skipped: \"window_taken\" };",
+    to: "  if (!captured) return { sent: false, skipped: \"window_taken\" };",
+    nodeTests: SERVER_TESTS,
+  },
+  {
     id: "M42",
     guard: "A link may only carry a hub the WAREHOUSE selector can render, not every labelled destination",
     file: PUSH,

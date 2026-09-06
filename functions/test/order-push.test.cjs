@@ -17,7 +17,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const {
-  notifyOrderPlaced, restoreBurst, shouldNotify, pruneSeen, composeMessage,
+  notifyOrderPlaced, restoreBurst, shouldNotify, pruneSeen, composeMessage, replayKey,
   orderLink, warehouseTabFor, hubForOrder, isRefillOrder,
   STALE_CLAIM_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS, MAX_SEEN,
   FLUSH_TICK_MS, MAX_FLUSH_WAIT_MS,
@@ -33,10 +33,36 @@ const AT = new Date(NOW).toISOString();
 // FIRST with null (an empty local cache), and only if that returns a value is it
 // re-run against the real server value. A fake that fed the server value first
 // would never exercise the polarity the tombstone flush depends on.
+// ── THE FAKE ENFORCES RTDB'S KEY RULES ──────────────────────────────────────
+// It did not, and that let a release-blocking bug through: the replay key was
+// built from an ISO createdAt, whose milliseconds carry a ".", and RTDB forbids
+// "." "#" "$" "/" "[" "]" in a key. The real Admin SDK throws SYNCHRONOUSLY on
+// one, before the transaction is sent — so every claim would have thrown and
+// nobody would ever have been told anything, while this suite stayed green
+// because a plain JS object accepts any string as a key.
+//
+// A fake that accepts what the real thing rejects does not model it; it just
+// agrees with whatever the code does. So every key this fake writes — path
+// segments AND the keys of any object written into a node — is checked the way
+// RTDB checks them. (Same lesson as #269, where an ISO key crashed the refill
+// engine intermittently for hours.)
+const ILLEGAL_KEY = /[.#$/[\]]/;
+function assertLegalKeys(value, where) {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) { value.forEach((v) => assertLegalKeys(v, where)); return; }
+  for (const [k, v] of Object.entries(value)) {
+    if (ILLEGAL_KEY.test(k)) {
+      throw new Error(`Invalid RTDB key "${k}" written at ${where} — RTDB forbids . # $ / [ ]`);
+    }
+    assertLegalKeys(v, `${where}/${k}`);
+  }
+}
+
 function fakeDb(initial = {}) {
   const state = structuredClone(initial);
   const get = (path) => path.split("/").filter(Boolean).reduce((n, k) => (n == null ? n : n[k]), state);
   const setPath = (path, value) => {
+    assertLegalKeys(value, path);
     const parts = path.split("/").filter(Boolean);
     const last = parts.pop();
     let n = state;
@@ -361,6 +387,99 @@ test("TOMORROW'S 005 IS NOT A REPLAY OF TODAY'S — the replay key carries creat
   assert.match(m.calls[1].data.body, /New Balance 530/);
 });
 
+test("THE REPLAY KEY IS A LEGAL RTDB KEY — an ISO stamp's dot would throw on every claim", async () => {
+  // The key goes into the `seen` MAP, so it is an RTDB key. An ISO createdAt
+  // carries a "." in its milliseconds and the Admin SDK throws synchronously on
+  // one — before the transaction is sent, so nothing downstream can catch it.
+  // Not a degraded notification: every claim throws and nobody is ever told.
+  // #269 is the same bug in the refill engine, and cost hours of silent scans.
+  assert.equal(replayKey("005", "2026-09-06T07:07:41.633Z"), "005::1788678461633");
+  for (const stamp of [AT, "2026-09-06T07:07:41.633Z", null, undefined, "", 0, "not a date", "a.b#c$d/e[f]g"]) {
+    const key = replayKey("R041-2", stamp);
+    assert.ok(!/[.#$/[\]]/.test(key), `illegal RTDB key produced from ${JSON.stringify(stamp)}: ${key}`);
+  }
+  // Two different malformed stamps must stay DIFFERENT keys, or one would be
+  // read as a replay of the other and a real order would be dropped.
+  assert.notEqual(replayKey("005", "x.1"), replayKey("005", "x.2"));
+
+  // And end to end: the fake now rejects an illegal key the way RTDB does, so
+  // this send is the proof the whole path is clean.
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", CUSTOMER());
+  assert.equal(res.sent, true);
+  assert.equal(m.calls.length, 1);
+});
+
+test("A DELIVERY OF ZERO IS NOT A SEND — the burst is put back, not consumed", async () => {
+  // Every token failing for a transient reason would otherwise eat the burst:
+  // the count gone, the ids remembered as seen, and no device told anything.
+  const { ref, state } = fakeDb(WORLD());
+  const m = fakeMessaging({ "tok-A": "messaging/server-unavailable" });
+  const res = await run({ ref }, m, "005", CUSTOMER());
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "send_failed");
+  const w = state.push_bursts["marathon-pe"];
+  assert.equal(w.count, 1, "the count is back for the next order to flush");
+  assert.ok(state.push_tokens.u_ware.d1, "and a transient failure still did not cost a registration");
+});
+
+test("a PARTIAL delivery is left alone — re-sending would re-notify the devices that got it", async () => {
+  const world = WORLD();
+  world.push_tokens.u_ware.d2 = { token: "tok-B" };
+  const { ref } = fakeDb(world);
+  const m = fakeMessaging({ "tok-B": "messaging/server-unavailable" });
+  const res = await run({ ref }, m, "005", CUSTOMER());
+  assert.equal(res.sent, true);
+  assert.equal(res.delivered, 1);
+});
+
+test("a failed token PRUNE cannot undo a delivery that already happened", async () => {
+  // The prune runs after the multicast. A throw there would reach the caller's
+  // catch, which puts the whole burst back — re-notifying every device that had
+  // just been told.
+  const world = WORLD();
+  world.push_tokens.u_ware.d2 = { token: "tok-DEAD" };
+  const base = fakeDb(world);
+  const refWithBrokenPrune = (path = "") => {
+    const inner = base.ref(path);
+    if (path !== "") return inner;
+    return { ...inner, async update() { throw new Error("prune write failed"); } };
+  };
+  const m = fakeMessaging({ "tok-DEAD": "messaging/registration-token-not-registered" });
+  const res = await run({ ref: refWithBrokenPrune }, m, "005", CUSTOMER());
+  assert.equal(res.sent, true, "the delivery stands");
+  assert.equal(m.calls.length, 1, "and it is not sent a second time");
+});
+
+test("a close transaction that did NOT commit sends nothing", async () => {
+  // `captured` is assigned from inside the transaction handler, which runs more
+  // than twice against a contended node. A run that saw our window followed by
+  // a run that saw somebody else's leaves `captured` set on a transaction that
+  // changed nothing — and sending then duplicates the real owner's notification.
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+  const stolen = (path = "") => {
+    const inner = ref(path);
+    if (!path.startsWith("push_bursts")) return inner;
+    return {
+      ...inner,
+      async transaction(fn) {
+        // Hand the handler OUR window first, then abort as the server would
+        // when another claimer already owns it.
+        fn({ windowId: "W1", startedAt: NOW, heartbeatAt: NOW, count: 3, sample: null, seen: {}, closedAt: null });
+        return { committed: false, snapshot: { val: () => null, exists: () => false } };
+      },
+    };
+  };
+  const res = await notifyOrderPlaced({
+    db: { ref: stolen }, messaging: m, orderId: "005", record: CUSTOMER(), createdAt: AT,
+    nowMs: NOW, sleep: noSleep, newWindowId: () => "W1",
+  });
+  assert.equal(res.sent, false);
+  assert.equal(m.calls.length, 0, "an aborted close must not send");
+});
+
 test("a redelivery INSIDE the window does not inflate the count either", async () => {
   const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
@@ -407,7 +526,12 @@ test("PRUNING: an INVALID_ARGUMENT token is deleted too", async () => {
 });
 
 test("PRUNING: a TRANSIENT failure never costs someone their registration", async () => {
-  const { ref, state } = fakeDb(WORLD());
+  // A SECOND, working device, so this stays a test about pruning: with only the
+  // failing token the multicast delivers zero, which is now its own failure
+  // (the burst is put back rather than consumed) and would test that instead.
+  const world = WORLD();
+  world.push_tokens.u_ware.d2 = { token: "tok-OK" };
+  const { ref, state } = fakeDb(world);
   const m = fakeMessaging({ "tok-A": "messaging/server-unavailable" });
   const res = await run({ ref }, m, "005", CUSTOMER());
   assert.equal(res.pruned, 0);

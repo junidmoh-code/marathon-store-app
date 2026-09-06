@@ -3521,16 +3521,35 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // store transacts and exits in milliseconds. And the wait ends when the burst
 // does — a single order placed by hand costs one tick (12s), not the ceiling.
 //
-// ── THE ONE KNOWN GAP, STATED PLAINLY ───────────────────────────────────────
-// Recovery from a killed claimer is REACTIVE: an abandoned window's count is
-// carried forward by the NEXT order at that store, and a failed send restores
-// its count for the same next order to flush. Both need a next order to exist.
-// If a claimer dies on the last cart of the day at a quiet store and nothing
-// else is placed there, that burst is never announced. It is not lost data —
-// the orders are in the queue and on screen — only the notification about them.
+// ── THE KNOWN GAPS, STATED PLAINLY ──────────────────────────────────────────
+// Each of these is accepted, not overlooked. Every one costs at most a late or
+// a duplicate NOTIFICATION; none of them loses an order, which is on the queue
+// and on screen regardless.
 //
-// Closing it completely means a scheduled sweep over the destination stores,
-// which is a SECOND function; this feature was scoped to one.
+// 1. Recovery from a killed claimer is REACTIVE: an abandoned window's count is
+//    carried forward by the NEXT order at that store, and a failed send
+//    restores its count for the same next order to flush. Both need a next
+//    order to exist. If a claimer dies on the last cart of the day at a quiet
+//    store and nothing else is placed there, that burst is never announced.
+//    Closing it completely means a scheduled sweep over the destination stores,
+//    which is a SECOND function; this feature was scoped to one.
+//
+// 2. A REDELIVERY is recognised as a replay and returns before the
+//    carry-forward runs, so a redelivered last-order-of-the-day cannot revive
+//    an abandoned window either. Same shape as (1), same cost.
+//
+// 3. A redelivery arriving after REPLAY_TTL_MS (30 min), or after the id has
+//    been evicted from the capped `seen` map by a burst larger than MAX_SEEN,
+//    is no longer recognised. At worst that is one extra "1 new order"; it
+//    cannot duplicate a burst.
+//
+// 4. An order that has already advanced past "incoming" by the time the
+//    re-read happens is skipped. That is deliberate — somebody has already
+//    picked it — but it does mean a very fast fulfil suppresses the alert.
+//
+// 5. A transient failure of the re-read itself drops that one order's
+//    contribution (retry:false, and no window was claimed yet to restore).
+//    It logs PUSH_ALARM so the loss is visible rather than merely survivable.
 //
 // Every guard, the burst window, the replay memory and the dead-token pruning
 // live in lib/order-push.cjs (node-tested, mutation-proven).
