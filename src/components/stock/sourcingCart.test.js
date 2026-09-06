@@ -215,7 +215,7 @@ describe("allocateSneakerCart", () => {
           ...Array.from({ length: ord }, () => line()),
           ...Array.from({ length: pulls }, () => line({ requestDisplayPartner: true, displayPairRequest: true })),
         ];
-        const { consumed, overAllocated } = alloc(lines, h1, h2);
+        const { consumed, overAllocated, hubOf } = alloc(lines, h1, h2);
         const c = consumed.get("s1::8") || {};
         const why = `h1=${h1} h2=${h2} ord=${ord} pulls=${pulls}`;
         // Hub 2 is never over-drawn: it carries no pinned demand.
@@ -231,10 +231,19 @@ describe("allocateSneakerCart", () => {
         }
         // And an infeasible PULL demand is always recorded, never hidden.
         if (pulls > h1) expect(overAllocated.has("s1::8"), `${why} (pulls exceed hub1)`).toBe(true);
+        // CONSERVATION. The bounds above pass just as happily if a line is
+        // silently dropped — H1=2, H2=0, two ordinary lines, allocate one:
+        // within capacity, nothing over-allocated, and an order lost
+        // (independent review). Every eligible line must get a hub, and the
+        // recorded consumption must total exactly the lines allocated.
+        const total = (c.hub1 || 0) + (c.hub2 || 0);
+        expect(hubOf.size, `${why} (a line was dropped)`).toBe(ord + pulls);
+        expect(total, `${why} (consumption does not match the lines)`).toBe(ord + pulls);
+        for (const l of lines) expect(hubOf.has(l), `${why} (unallocated line)`).toBe(true);
         // A cart that simply outgrew the shelves is the pre-existing stale-cart
-        // case: the line is placed and the warehouse resolves it visibly as
-        // out of stock. Not this function's to solve, and not hidden by it —
-        // the tile refuses the add that would create it.
+        // case: the line is still allocated and placed, and the warehouse
+        // resolves it visibly as out of stock. Not this function's to solve,
+        // and not hidden by it — the tile refuses the add that would create it.
       }
     }
   });

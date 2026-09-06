@@ -388,6 +388,12 @@ export function resolveSneakerSourcing({ product, taggedHub, size, hubData, cons
 // the pinned hub — genuinely infeasible, and the checkout refuses it rather
 // than quietly over-committing.
 //
+// A CONSEQUENCE WORTH STATING: a line does NOT keep the hub it was first given.
+// Adding a pull re-runs the whole allocation, and an ordinary line added before
+// it can move to the other shelf to make room — which is the point, and is why
+// the tile shows the cart as full the moment the pull lands rather than a
+// moment later. Cart order still decides between two flexible lines.
+//
 // `taggedHubFor(product)` is the caller's tag router; `hubData` is the same
 // { cells, promised, ready } map resolveSneakerSourcing takes.
 export function allocateSneakerCart({ lines, hubData, taggedHubFor, displayPairHub = DISPLAY_PAIR_HUB }) {
