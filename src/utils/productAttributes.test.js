@@ -3,7 +3,7 @@ import {
   EXTRACTOR_VERSION, ATTRIBUTE_KEYS, VISION_FIELDS, MAX_STYLE_TAGS,
   COLOURS, COLOUR_FAMILIES, SILHOUETTES, UPPER_MATERIALS, PATTERNS, STYLE_TAGS,
   PRICE_BANDS, SOLE_TYPES, CLOSURES, FINISHES, priceBandOf, colourFamily, isLegalAttribute,
-  buildAttributeRecord, resolveAttributes, confirmedFields, isCurrentExtraction,
+  buildAttributeRecord, resolveAttributes, confirmedFields, isCurrentExtraction, serverStamp,
   usableAttributes, nameFromAttributes, handleFromName, distinctNamesFor, MAX_NAME_LENGTH,
   nameVocabularyTriggers,
 } from "./productAttributes.js";
@@ -131,6 +131,20 @@ describe("buildAttributeRecord", () => {
     expect(r.a.silhouette).toBeUndefined();
     expect(r.a.pattern).toBeUndefined();
     expect(r.a.primaryColour).toBe("black");   // the legal ones still land
+  });
+  // THE at:0 BUG. Number(ServerValue.TIMESTAMP) is NaN because the sentinel is
+  // the OBJECT {".sv":"timestamp"}, and `|| 0` wrote a zero timestamp onto the
+  // first 205 records. It looked right in the code and was wrong in the
+  // database, which is the only place it matters.
+  it("passes an RTDB server sentinel through UNTOUCHED", () => {
+    const sentinel = { ".sv": "timestamp" };
+    expect(buildAttributeRecord({ vision, product, model: "m", at: sentinel }).at).toBe(sentinel);
+  });
+  it("keeps a real client timestamp, and refuses a junk one", () => {
+    expect(buildAttributeRecord({ vision, product, model: "m", at: 1757000000000 }).at).toBe(1757000000000);
+    for (const junk of [0, -1, NaN, "", null, undefined, "abc"]) {
+      expect(buildAttributeRecord({ vision, product, model: "m", at: junk }).at).toBe(0);
+    }
   });
   it("stamps the version and the model so a run is diffable", () => {
     const r = rec();

@@ -296,14 +296,34 @@ export function usableAttributes(node) {
  * this function cannot produce it, which is the structural reason a re-run
  * cannot clobber a human correction.
  *
- * `at` is supplied by the caller (serverNowMs on a client, a server clock in a
- * script) rather than read from Date.now() here: this module is pure, and the
- * app's rule is that every timestamp it writes is server-anchored.
+ * `at` is supplied by the caller rather than read from Date.now() here: this
+ * module is pure, and the app's rule is that every timestamp it writes is
+ * server-anchored — serverNowMs() from a browser, and from a script the RTDB
+ * server sentinel itself.
+ *
+ * WHICH IS WHY `at` IS NOT COERCED WITH Number(). It was, and the first 205
+ * records went in carrying `at: 0`: the Admin SDK's ServerValue.TIMESTAMP is
+ * the OBJECT {".sv":"timestamp"}, Number() of it is NaN, and `|| 0` turned
+ * every extraction's timestamp into zero. The value looked plausible in the
+ * code and was wrong in the database, which is the only place it matters.
+ * A sentinel object is passed through untouched; a real number is kept when it
+ * is positive; anything else is 0.
  *
  * RTDB CANNOT STORE AN EMPTY ARRAY — writing [] deletes the child and it reads
  * back null. So an empty styleTags is OMITTED rather than written empty, and
  * every reader treats absent as [] (resolveAttributes does).
  */
+/**
+ * A timestamp this module is allowed to store. A POSITIVE NUMBER (a client's
+ * serverNowMs) or an RTDB server sentinel object, which is opaque here on
+ * purpose — this module has no firebase import and must not grow one.
+ */
+export function serverStamp(at) {
+  if (at && typeof at === "object") return at;      // {".sv":"timestamp"}
+  const n = Number(at);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export function buildAttributeRecord({
   vision, product, model, at, version = EXTRACTOR_VERSION, previousVersion = null,
 }) {
@@ -351,7 +371,7 @@ export function buildAttributeRecord({
 
   return {
     v: version,
-    at: Number(at) || 0,
+    at: serverStamp(at),
     model: model || null,
     a,
     from,

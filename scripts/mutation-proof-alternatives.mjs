@@ -175,6 +175,15 @@ const MUTATIONS = [
     to: `  return !!node?.a;`,
   },
 
+  {
+    id: "G14b",
+    guard: "An RTDB server sentinel survives the record builder — Number() of it is NaN, and `|| 0` wrote at:0 onto 205 live records",
+    file: ATTR,
+    kind: "behavioural",
+    from: `  if (at && typeof at === "object") return at;      // {".sv":"timestamp"}`,
+    to: ``,
+  },
+
   // ── 4. BRAND IS A WEIGHT, AND THE WALL HOLDS ─────────────────────────────
   {
     id: "G15",
