@@ -1,7 +1,7 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { applyCategoryPolicy } = require("./lib/category-policy-write.cjs");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onValueWritten } = require("firebase-functions/v2/database");
+const { onValueCreated, onValueWritten } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
@@ -12,6 +12,7 @@ const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
+const { notifyRefillRequest } = require("./lib/refill-push.cjs");
 const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
@@ -3470,6 +3471,65 @@ exports.updateStaffPassword = onCall(
 // node-tested); I/O wrapper in refill-scan.cjs. Deploy scoped:
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
+
+// ─── REFILL REQUEST → STAFF PUSH NOTIFICATION ────────────────────────────────
+// Tells the people who pick refills that there is work, on a phone that is
+// locked with the app closed.
+//
+// ONE trigger covers BOTH creation paths because they converge on one write:
+// the 15-minute engine sweep (refill-scan.cjs) and the human paths (Missing
+// Sneakers, and the on-hold re-link) all end at refill_requests/{id}. Hooking
+// the row rather than either producer means neither can be missed, and a future
+// producer is covered on the day it ships.
+//
+// onValueCreated, not onValueWritten: a fulfil, a resize and a withdrawal all
+// rewrite this record, and none of them is new work arriving.
+//
+// ── retry: false, ON PURPOSE ────────────────────────────────────────────────
+// The sweep can create hundreds of requests in one run. A retry storm across
+// that many invocations, each of which may hold a 20-second flush window open,
+// is a real cost and a real risk to the function's concurrency budget — while
+// the thing being protected is a convenience notification, not a customer
+// message and not a stock movement. The core is idempotent regardless (the
+// window's `seen` map survives the window closing), so redelivery is handled
+// where it is cheap rather than by re-driving the whole trigger.
+//
+// timeoutSeconds must exceed FLUSH_DELAY_MS plus the send; 120 leaves room for
+// a slow multicast to a few dozen devices without the claimer being killed
+// mid-flush, which would leave a window open until it aged out.
+//
+// Every guard, the burst window, the replay memory and the dead-token pruning
+// live in lib/refill-push.cjs (node-tested, mutation-proven).
+//   firebase deploy --only functions:refillRequestPush
+exports.refillRequestPush = onValueCreated(
+  {
+    ref:            "/refill_requests/{requestId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 120,
+    retry:          false,
+  },
+  async (event) => {
+    const res = await notifyRefillRequest({
+      db:        admin.database(),
+      messaging: admin.messaging(),
+      requestId: event.params.requestId,
+      record:    event.data.val(),
+      // Google's clock, not a device's — the whole reason serverNowMs() exists
+      // on the client is to avoid trusting a till's clock, and here there is no
+      // till in the loop at all.
+      nowMs:     Date.now(),
+      sleep:     (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    if (res.sent) {
+      console.log(
+        `refillRequestPush: ${res.hub} ${res.count} request(s) -> ${res.delivered}/${res.tokens} devices`
+        + (res.pruned ? `, pruned ${res.pruned} dead token(s)` : ""),
+      );
+    }
+  }
+);
 
 // ─── DISPLAY CHECKS — onClothingSale (PR 2: dormant trigger, writes only) ─────
 // Clothing `sold` movements at enabled stores become display checks in the
