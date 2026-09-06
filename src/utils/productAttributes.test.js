@@ -306,14 +306,21 @@ describe("the name is derived from the attributes", () => {
                    finish: "distressed", primaryColour: "light-grey", secondaryColour: "multicolour" };
     expect(nameFromAttributes(OVER)).toBe("");
   });
+  // WITHOUT THE COUNT, "" makes this vacuous: a regression that emptied every
+  // name would pass an assertion that only checks length (adversarial review).
   it("no attribute combination can produce a name over the ceiling", () => {
+    let emitted = 0, refused = 0;
     for (const sil of SILHOUETTES) for (const mat of UPPER_MATERIALS) for (const c of COLOURS) {
       const n = nameFromAttributes(
         { ...FULL, silhouette: sil, upperMaterial: mat, primaryColour: c, secondaryColour: "multicolour",
           soleColour: "chocolate", soleType: "vulcanised", closure: "velcro", toeShape: "pointed" },
         { discriminate: 3 });
-      expect(n.length, n).toBeLessThanOrEqual(MAX_NAME_LENGTH);   // "" counts
+      expect(n.length, n).toBeLessThanOrEqual(MAX_NAME_LENGTH);
+      if (n) emitted += 1; else refused += 1;
     }
+    // The refusal is a rare corner, not the common case.
+    expect(emitted).toBeGreaterThan(0);
+    expect(refused / (emitted + refused)).toBeLessThan(0.02);
   });
   it("never claims a sole COLOUR that is one of the upper's colours", () => {
     // The sole TYPE still shows — it is a different fact.

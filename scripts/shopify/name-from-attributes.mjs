@@ -105,23 +105,40 @@ rows.sort((a, b) => a.pid.localeCompare(b.pid));
 // was wrong in three ways at once (CodeRabbit): a product filtered out by
 // --pids or --collisions keeps its old name and its old handle; so does one
 // blocked by mayProposeFor; and so does one whose derived name the validator
-// refused. All three were treated as having vacated their handle, so a selected
-// row could be proposed a name that is on the storefront right now.
+// refused. All three were treated as having vacated their handle.
 //
-// So the set is built from what this run will ACTUALLY change: a handle is free
-// only if the product holding it is getting a proposal in this run.
-const renaming = new Set(rows.filter((r) => !r.blocked).map((r) => r.pid));
-const takenElsewhere = new Map();
-for (const [pid, n] of Object.entries(publish)) {
-  if (renaming.has(pid)) continue;
-  const h = handleFromName(n?.cleanName || "");
-  if (h) takenElsewhere.set(h, pid);
-}
-for (const r of rows) {
-  if (r.blocked) continue;
-  const owner = takenElsewhere.get(r.handle);
-  // Its OWN current handle is not a collision with itself.
-  if (owner && owner !== r.pid) r.blocked = `handle "${r.handle}" is on the storefront, held by ${owner}`;
+// ── AND IT HAS TO BE A FIXED POINT, NOT ONE PASS ─────────────────────────────
+// The second version computed the free set once, then blocked rows against it.
+// But blocking a row is itself a change to the free set: row A, blocked here
+// because its derived handle is on the storefront, now KEEPS its own current
+// handle — and A had already been excluded from the free set on the assumption
+// it was renaming. Row B could then be handed A's current handle unblocked
+// (adversarial review). distinctNamesFor already iterates to a fixed point for
+// exactly this shape of problem; this has to as well.
+//
+// It terminates: every round blocks at least one more row or stops, and rows
+// are finite. Blocking is monotone — a blocked row is never unblocked — so the
+// answer does not depend on the order rows are visited.
+let takenElsewhere = new Map();
+for (let round = 0; ; round++) {
+  const renaming = new Set(rows.filter((r) => !r.blocked).map((r) => r.pid));
+  takenElsewhere = new Map();
+  for (const [pid, n] of Object.entries(publish)) {
+    if (renaming.has(pid)) continue;
+    const h = handleFromName(n?.cleanName || "");
+    if (h) takenElsewhere.set(h, pid);
+  }
+  let newlyBlocked = 0;
+  for (const r of rows) {
+    if (r.blocked) continue;
+    const owner = takenElsewhere.get(r.handle);
+    // Its OWN current handle is not a collision with itself.
+    if (owner && owner !== r.pid) {
+      r.blocked = `handle "${r.handle}" is on the storefront, held by ${owner}`;
+      newlyBlocked += 1;
+    }
+  }
+  if (!newlyBlocked) { if (round) console.log(`handle blocking settled after ${round + 1} round(s)`); break; }
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────
@@ -153,6 +170,34 @@ if (!APPLY) {
   process.exit(stillDup.length ? 1 : 0);
 }
 
+// ── HANDING A PRODUCT BACK ───────────────────────────────────────────────────
+// vision-name.mjs skips any node carrying an attribute-derived proposal, so
+// that marker is a claim of OWNERSHIP. It was a one-way ratchet: a product this
+// lane named once, and can no longer name — its attributes regressed, or it now
+// collides irreducibly with another shoe and distinctNamesFor refuses it — was
+// skipped by the prose namer for ever and re-derived by nobody. No namer at
+// all, and nothing to notice it (adversarial review).
+//
+// So the claim is RELEASED here, through the mechanism that already exists for
+// "this product needs a fresh name": the reconciler's nameRerunRequestedAt
+// marker, which vision-name.mjs's --requested run consumes and clears. A
+// distinct reason string keeps the two producers of that signal apart in the
+// record.
+//
+// Scoped to the products this run could see: --pids and --collisions filter the
+// OUTPUT, so a full run is what actually releases them, and a scoped run
+// releases nothing it did not look at.
+const handBack = [];
+if (!onlyPids && !COLLISIONS_ONLY) {
+  for (const [pid, p] of Object.entries(products)) {
+    if (!p?.id || p.mergedInto || !isSneakerProduct(p)) continue;
+    if (derived.has(pid)) continue;                        // still ours
+    if (publish[pid]?.[NAME_PROPOSAL_KEY]?.source !== ATTRIBUTE_NAME_SOURCE) continue;
+    handBack.push(pid);
+  }
+}
+console.log(`\nhanding back to the prose namer: ${handBack.length} product(s) this lane can no longer name`);
+
 let wrote = 0;
 for (const r of rows) {
   if (r.blocked) continue;
@@ -181,5 +226,13 @@ for (const r of rows) {
   });
   wrote += 1;
 }
-console.log(`\nwrote ${wrote} proposal(s). PENDING — nothing is on the storefront until they are approved in the publishing page.`);
+for (const pid of handBack) {
+  assertSafeSegment(pid, "productId");
+  await db.ref(`shopify_publish/${pid}`).update({
+    nameRerunRequestedAt: admin.database.ServerValue.TIMESTAMP,
+    nameRerunReason: "attribute namer can no longer name this product",
+  });
+}
+console.log(`\nwrote ${wrote} proposal(s)${handBack.length ? ` · handed back ${handBack.length}` : ""}. ` +
+            `PENDING — nothing is on the storefront until they are approved in the publishing page.`);
 process.exit(0);

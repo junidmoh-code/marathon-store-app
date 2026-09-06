@@ -282,10 +282,14 @@ const MUTATIONS = [
     guard: "The size number clears 4.5:1 on its own chip surface — an unreadable number is worse than one that looks slightly available",
     file: CHIP,
     kind: "behavioural",
-    from: `      color: "rgba(233,238,255,.62)",
-      // Still tappable: the tap is what opens the sheet.`,
-    to: `      color: "rgba(233,238,255,.38)",
-      // Still tappable: the tap is what opens the sheet.`,
+    // ANCHOR ON THE SHORTEST UNIQUE THING. This guard silently no-opped for
+    // one commit because the anchor carried the whole line including an inline
+    // comment, and the very next commit appended to that comment — the "last
+    // fix breaks the proof of the fix before it" trap, found by a reviewer and
+    // not by me, because I did not re-run the harness after editing the file
+    // it mutates.
+    from: `238,255,.62)",   // 6.5:1`,
+    to: `238,255,.38)",   // 6.5:1`,
   },
   {
     id: "G21c",
