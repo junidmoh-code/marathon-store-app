@@ -39,6 +39,25 @@ import {
   pushTokenPath,
 } from "./pushConfig";
 
+// ── "NO COST WHEN IT IS OFF" HAS TO MEAN NO WRITES EITHER ───────────────────
+// Most staff are not subscribed, and every one of them loads this app several
+// times a day. A revoke that runs unconditionally would mean a delete plus an
+// eight-leaf index clear per load, per person, forever — to remove things that
+// were never there. This marker records that THIS browser actually registered
+// something, so a revoke with nothing to revoke touches the database not at all.
+// It is a local optimisation hint, never a source of truth: if it is missing
+// when a registration does exist, the worst case is a stale index entry whose
+// uid has no tokens, which the fan-out already ignores.
+const REGISTERED_KEY = "marathon.push.registered";
+
+function registeredMarker() {
+  try { return localStorage.getItem(REGISTERED_KEY); } catch { return null; }
+}
+function setRegisteredMarker(uid) {
+  try { if (uid) localStorage.setItem(REGISTERED_KEY, uid); else localStorage.removeItem(REGISTERED_KEY); }
+  catch { /* private mode: revoke simply stops being able to skip its writes */ }
+}
+
 // Every non-registering outcome is a NAMED state rather than a bare false, so
 // the toggle can say what is actually wrong instead of "notifications are off".
 export const PUSH_STATE = Object.freeze({
@@ -111,6 +130,9 @@ export async function ensurePushRegistration({ uid, wanted, buckets = [], prompt
   if (!uid) return { state: PUSH_STATE.ERROR, reason: "no_uid" };
 
   if (!wanted) {
+    // Nothing was ever registered from this browser for this user — so there is
+    // nothing to delete, and the cheapest correct thing is silence.
+    if (registeredMarker() !== uid) return { state: PUSH_STATE.OFF };
     await revokePushRegistration({ uid });
     return { state: PUSH_STATE.OFF };
   }
@@ -172,6 +194,7 @@ export async function ensurePushRegistration({ uid, wanted, buckets = [], prompt
     }));
 
     await update(ref(database), audienceUpdates(uid, buckets, nowMs));
+    setRegisteredMarker(uid);
     return { state: PUSH_STATE.ON, token };
   } catch (err) {
     console.error("[push] registration failed:", err);
@@ -216,4 +239,10 @@ export async function revokePushRegistration({ uid }) {
   } catch (err) {
     console.warn("[push] could not clear audience entries:", err);
   }
+
+  // Cleared LAST, and only after the writes above were attempted: clearing it
+  // first would mean a revoke that failed mid-way could never be retried,
+  // because the next load would see no marker and skip the whole path — leaving
+  // a live token receiving notifications for someone who switched them off.
+  setRegisteredMarker(null);
 }
