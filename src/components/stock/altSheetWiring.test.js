@@ -77,6 +77,21 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
   });
 });
 
+describe("the strip is wired into both sheets", () => {
+  // The component itself is now a real file with real render tests
+  // (AlternativesStrip.render.test.jsx) — these two only check that each sheet
+  // actually mounts it, which is the part that lives in App.jsx.
+  it("the phone sheet renders it under the reason", () => {
+    const i = APP.indexOf("{sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}");
+    const j = APP.indexOf("<AlternativesStrip rows={alternativesFor(selected, naNote.size)}");
+    expect(i).toBeGreaterThan(0);
+    expect(j).toBeGreaterThan(i);          // BELOW the reason, never above it
+  });
+  it("the quick-view renders it too", () => {
+    expect(APP).toContain("<AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}");
+  });
+});
+
 describe("the ✕ glyph is gone from every size chip", () => {
   const chipLines = APP.split("\n").filter((l) => /snkOut \?/.test(l));
   it("there are still exactly the chips that had it", () => {

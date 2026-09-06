@@ -42,6 +42,7 @@ const ATTR = "src/utils/productAttributes.js";
 const NEIGH = "src/utils/productNeighbours.js";
 const ALT = "src/components/stock/alternativesCore.js";
 const CHIP = "src/components/stock/sizeChipTheme.js";
+const STRIP = "src/components/stock/AlternativesStrip.jsx";
 const EXTRACT = "src/utils/attributeExtraction.js";
 const APP = "src/App.jsx";
 
@@ -53,6 +54,7 @@ const SUITE = [
   "src/utils/attributeExtraction.test.js",
   "src/components/stock/rtdbEmptyArray.test.js",
   "src/components/stock/alternativesFuzz.test.js",
+  "src/components/stock/AlternativesStrip.render.test.jsx",
 ];
 
 const MUTATIONS = [
@@ -350,6 +352,31 @@ const MUTATIONS = [
     from: `      // Still tappable: the tap is what opens the sheet.
       cursor: "pointer",`,
     to: `      cursor: "not-allowed",`,
+  },
+
+  {
+    id: "G22b",
+    guard: "An empty result renders NOTHING — no section header, no \"no matches\" row; the sheet falls back to the bare refusal",
+    file: STRIP,
+    kind: "behavioural",
+    from: `  if (!rows?.length) return null;`,
+    to: ``,
+  },
+  {
+    id: "G22c",
+    guard: "The customer's own size is called out only when the shoe actually HAS it",
+    file: STRIP,
+    kind: "behavioural",
+    from: `              {r.hasRequestedSize && (`,
+    to: `              {true && (`,
+  },
+  {
+    id: "G22d",
+    guard: "The sizes are PRINTED, not counted — \"4 sizes\" makes the assistant tap to find out",
+    file: STRIP,
+    kind: "behavioural",
+    from: `                {r.sizes.map((sz) => (sz === "Free Size" ? "OS" : formatSize(sz))).join(" · ")}`,
+    to: `                {r.sizes.length} sizes`,
   },
 
   // ── 6. THE REFUSAL ITSELF DOES NOT MOVE ──────────────────────────────────
