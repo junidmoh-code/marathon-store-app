@@ -590,7 +590,20 @@ export function nameFromAttributes(attrs, opts = {}) {
     drop.add(optional[i]);
     name = assemble(drop);
   }
-  return name;
+  // ── AND IF THE BASE ITSELF DOES NOT FIT, THERE IS NO NAME ─────────────────
+  // Only optional clauses can be dropped, so a base name over the ceiling
+  // survives every trim and is returned. It is then REFUSED by the publish
+  // path, which is the failure this build exists to end. Measured (CodeRabbit
+  // ran the combinatorics rather than reading them): the longest base name
+  // reachable is 81 characters — "Colour-block distressed calf-hair
+  // moulded-stud boot in light grey and multicolour" — one over, on exactly
+  // one corner of the vocabulary.
+  //
+  // "" means "these attributes cannot name this product", which every caller
+  // already handles: distinctNamesFor drops it, name-from-attributes.mjs never
+  // proposes for it, and the shoe keeps whatever name it has and goes to the
+  // prose namer. Refusing beats emitting a name that cannot be published.
+  return name.length > MAX_NAME_LENGTH ? "" : name;
 }
 
 /**

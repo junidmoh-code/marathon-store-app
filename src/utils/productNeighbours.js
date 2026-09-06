@@ -29,7 +29,7 @@
 // of the top five for a shopper whose size is missing in a thin category. It is
 // the difference between a ranked list and a random one.
 
-import { colourFamily } from "./productAttributes.js";
+import { colourFamily, MAX_STYLE_TAGS } from "./productAttributes.js";
 
 // ── SILHOUETTE GROUPS — the wall ─────────────────────────────────────────────
 // A shoe may only be offered as an alternative to another shoe in its own
@@ -160,7 +160,13 @@ export function scorePair(a, b) {
   terms.soleColour = W.soleColour * eq(a.soleColour, b.soleColour);
   terms.toeShape = W.toeShape * eq(a.toeShape, b.toeShape);
   terms.brand = W.brand * eq(a.brand, b.brand);
-  const shared = a.styleTags.filter((t) => b.styleTags.includes(t)).length;
+  // CLAMPED AT THE SCORING BOUNDARY, not only where the record is built.
+  // buildAttributeRecord caps the MACHINE tags, but `confirmed.styleTags` is
+  // human-supplied and resolveAttributes passes it through whole, so a
+  // correction listing six tags would score six times the documented cap and
+  // quietly out-rank a shoe that matched on silhouette and colour (CodeRabbit).
+  const shared = Math.min(
+    a.styleTags.filter((t) => b.styleTags.includes(t)).length, MAX_STYLE_TAGS);
   terms.styleTag = W.styleTag * shared;
 
   let score = 0;

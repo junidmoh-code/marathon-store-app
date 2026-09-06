@@ -297,13 +297,22 @@ describe("the name is derived from the attributes", () => {
     expect(n3).toContain("with a retro finish");   // the tie-break survives
     expect(n3).not.toContain("sole");              // the older clause made room
   });
+  // Only OPTIONAL clauses can be trimmed, so a base name over the ceiling
+  // survived every trim and was returned — then refused by the publish path,
+  // which is the failure this build exists to end. Measured over the whole
+  // vocabulary: exactly 12 of 5,914,080 combinations reach 81 characters.
+  it("refuses rather than emitting a base name the publish path will reject", () => {
+    const OVER = { silhouette: "soccer-boot", upperMaterial: "calf-hair", pattern: "multi",
+                   finish: "distressed", primaryColour: "light-grey", secondaryColour: "multicolour" };
+    expect(nameFromAttributes(OVER)).toBe("");
+  });
   it("no attribute combination can produce a name over the ceiling", () => {
     for (const sil of SILHOUETTES) for (const mat of UPPER_MATERIALS) for (const c of COLOURS) {
       const n = nameFromAttributes(
         { ...FULL, silhouette: sil, upperMaterial: mat, primaryColour: c, secondaryColour: "multicolour",
           soleColour: "chocolate", soleType: "vulcanised", closure: "velcro", toeShape: "pointed" },
         { discriminate: 3 });
-      expect(n.length, n).toBeLessThanOrEqual(MAX_NAME_LENGTH);
+      expect(n.length, n).toBeLessThanOrEqual(MAX_NAME_LENGTH);   // "" counts
     }
   });
   it("never claims a sole COLOUR that is one of the upper's colours", () => {

@@ -38,12 +38,35 @@ describe("the size number stays readable", () => {
       expect(s.textDecoration).toBeUndefined();
     }
   });
-  it("nothing is faded to the point of illegibility", () => {
+  // COMPUTED CONTRAST, not an alpha threshold. An alpha reads as "dim enough"
+  // and says nothing about whether a 16px size number can actually be read on
+  // the chip's own surface — .38 measured at roughly 3:1 there, and WCAG AA
+  // wants 4.5:1 for text this size (CodeRabbit).
+  const SHEET_BG = [11, 14, 24];        // the phone sheet's ground, #0b0e18
+
+  // rgba(r,g,b,a) over a known ground.
+  const composite = (css, bg) => {
+    const [r, g, b, a = 1] = String(css).replace(/^.*\(|\).*$/g, "").split(",").map(Number);
+    return [r, g, b].map((c, i) => c * a + bg[i] * (1 - a));
+  };
+  const relLum = ([r, g, b]) => {
+    const f = (c) => { const s = c / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const contrast = (fg, bg) => {
+    const [a, b] = [relLum(fg), relLum(bg)].sort((x, y) => y - x);
+    return (a + 0.05) / (b + 0.05);
+  };
+
+  it("the unavailable size number clears 4.5:1 on its own chip surface", () => {
     const out = phoneSizeChipStyle({ out: true });
-    expect(out.opacity).toBeUndefined();               // no blanket opacity
-    // rgba(r,g,b,a) — the alpha is the last comma-separated component.
-    const alpha = Number(String(out.color).replace(/^.*\(|\).*$/g, "").split(",").pop());
-    expect(alpha).toBeGreaterThanOrEqual(0.35);        // .38, not the old .28
+    const surface = composite(out.background, SHEET_BG);
+    const text = composite(out.color, surface);
+    expect(contrast(text, surface)).toBeGreaterThanOrEqual(4.5);
+  });
+  it("nothing is faded with a blanket opacity, which would defeat the above", () => {
+    expect(phoneSizeChipStyle({ out: true }).opacity).toBeUndefined();
+    expect(quickViewSizeChipStyle({ out: true }).opacity).toBeUndefined();
   });
 });
 

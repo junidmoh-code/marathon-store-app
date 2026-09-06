@@ -42,7 +42,12 @@ const flags = process.argv.slice(2);
 const arg = (n) => { const i = flags.indexOf(n); if (i === -1) return null; const v = flags[i + 1]; if (!v || v.startsWith("--")) { console.error(`${n} needs a value`); process.exit(2); } return v; };
 const APPLY = flags.includes("--apply");
 const PRUNE = flags.includes("--prune");
-const SPOT = arg("--spot") ? Number(arg("--spot")) : 20;
+// `arg("--spot") ? … : 20` made "--spot 0" fall through to 20 and let "--spot
+// abc" reach the loop as NaN, printing nothing and looking like "there are no
+// neighbours" (CodeRabbit). The default applies only when the flag is ABSENT.
+const SPOT_RAW = arg("--spot");
+const SPOT = SPOT_RAW === null ? 20 : Number(SPOT_RAW);
+if (!Number.isInteger(SPOT) || SPOT < 0) { console.error("--spot needs a non-negative integer"); process.exit(2); }
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");

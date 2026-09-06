@@ -187,13 +187,19 @@ export function parseAttributeResponse(raw) {
   // whole extraction over the shape of a confidence block would be theatre.
   const c = json.confidence;
   const confidence = {};
+  // typeof === "number", NOT Number(): Number(null), Number("") and Number([])
+  // are all 0, so a model that reported no confidence at all would have every
+  // field stamped "certainly wrong" — the exact opposite of absent, and a
+  // direct breach of the record's own contract that a field the model did not
+  // report gets NO entry rather than a fabricated zero (CodeRabbit).
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   if (c && typeof c === "object" && !Array.isArray(c)) {
     for (const k of VISION_FIELDS) {
-      const n = Number(c[k]);
-      if (Number.isFinite(n)) confidence[k] = Math.min(1, Math.max(0, n));
+      const n = num(c[k]);
+      if (n !== null) confidence[k] = Math.min(1, Math.max(0, n));
     }
-  } else if (Number.isFinite(Number(c))) {
-    const n = Math.min(1, Math.max(0, Number(c)));
+  } else if (num(c) !== null) {
+    const n = Math.min(1, Math.max(0, c));
     for (const k of VISION_FIELDS) if (vision[k] !== undefined) confidence[k] = n;
   }
   vision.confidence = confidence;

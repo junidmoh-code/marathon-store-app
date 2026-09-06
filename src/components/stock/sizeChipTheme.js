@@ -50,9 +50,14 @@ export function phoneSizeChipStyle({ out, selected }) {
       borderColor: "rgba(255,255,255,.20)",
       // 3. A FAINT FILL where an available chip is transparent.
       background: "rgba(255,255,255,.045)",
-      // 4. Much lower text contrast — but still legible, which is the point of
-      //    dropping the glyph. No line-through.
-      color: "rgba(233,238,255,.38)",
+      // 4. Lower text contrast — but LEGIBLE, which is the whole point of
+      //    dropping the glyph. .38 was measured at roughly 3:1 against these
+      //    chip surfaces and a 16px size label wants 4.5:1 (CodeRabbit). Raised
+      //    to .62, which clears it. The chip does not need the text to carry
+      //    the signal: three other axes already do, and a size number nobody
+      //    can read is a worse failure than one that looks slightly available.
+      //    No line-through.
+      color: "rgba(233,238,255,.62)",
       // Still tappable: the tap is what opens the sheet.
       cursor: "pointer",
     };
@@ -76,7 +81,7 @@ export function quickViewSizeChipStyle({ out }) {
       borderStyle: "dashed",
       borderColor: "rgba(255,255,255,.20)",
       background: "rgba(255,255,255,.045)",
-      color: "rgba(233,238,255,.38)",
+      color: "rgba(233,238,255,.62)",   // see phoneSizeChipStyle — 4.5:1, not 3:1
       cursor: "pointer",
     };
   }

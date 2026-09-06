@@ -4,7 +4,7 @@ import {
   silhouetteGroup, neighbourProfile, scorePair, topNeighbours,
   matchReasonCode, matchReasonText, encodeNeighbour, parseNeighbours,
 } from "./productNeighbours.js";
-import { SILHOUETTES, PRICE_BANDS } from "./productAttributes.js";
+import { SILHOUETTES, PRICE_BANDS, MAX_STYLE_TAGS } from "./productAttributes.js";
 
 const ATTRS = {
   silhouette: "low-top", upperMaterial: "leather", primaryColour: "black",
@@ -95,6 +95,26 @@ describe("the dominant terms dominate", () => {
         .toBe(SIMILARITY_WEIGHTS.priceBand);
     }
     expect(scorePair(prof("p1", { priceBand: "" }), prof("p2", { priceBand: "core" })).terms.priceBand).toBe(0);
+  });
+  // buildAttributeRecord caps the MACHINE tags, but confirmed.styleTags is
+  // human-supplied and resolveAttributes passes it through whole. Without a
+  // clamp here, one six-tag correction would score six times the documented
+  // cap and out-rank a shoe that matched on silhouette AND colour.
+  it("clamps shared tags at the SCORING boundary, not only where the record is built", () => {
+    const many = ["retro", "skate", "casual", "chunky", "luxury", "minimal"];
+    const t = prof("p1", { styleTags: many });
+    const u = prof("p2", { styleTags: many });
+    expect(scorePair(t, u).terms.styleTag).toBe(SIMILARITY_WEIGHTS.styleTag * MAX_STYLE_TAGS);
+  });
+  it("…and a six-tag match still cannot outrank silhouette plus colour", () => {
+    const t = prof("p1", { styleTags: ["retro", "skate", "casual", "chunky", "luxury", "minimal"] });
+    const tagTwin = prof("p2",
+      { silhouette: "high-top", primaryColour: "yellow", colourFamily: "yellow", upperMaterial: "mesh",
+        pattern: "solid", soleType: "flat", finish: "plain", closure: "zip", soleColour: "yellow",
+        toeShape: "square", priceBand: "luxury", styleTags: ["retro", "skate", "casual", "chunky", "luxury", "minimal"] },
+      { brand: "Adidas", categoryKey: "boots" });
+    const realTwin = prof("p3", { styleTags: [] }, { brand: "Adidas" });
+    expect(topNeighbours(t, [tagTwin, realTwin])[0].pid).toBe("p3");
   });
   it("shared style tags add, and are capped by how many can be stored", () => {
     const t = prof("p1", { styleTags: ["retro", "skate", "casual"] });

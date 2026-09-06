@@ -26,8 +26,8 @@
 //      The owner decision most likely to be quietly reversed, and the one
 //      exclusion that keeps the list from being random. G15-G19.
 //
-//   5. THE CHIP STILL READS AS UNAVAILABLE WITHOUT THE ✕. G20-G22 — one per
-//      axis of the container difference that replaced the glyph.
+//   5. THE CHIP STILL READS AS UNAVAILABLE WITHOUT THE ✕, and the size number
+//      inside it stays readable. G20-G22.
 //
 // AND ONE THING MUST NOT MOVE: the refusal itself. G23-G25 watch the fences
 // around the X gate — tapping an unavailable size still cannot raise a refill
@@ -42,6 +42,7 @@ const ATTR = "src/utils/productAttributes.js";
 const NEIGH = "src/utils/productNeighbours.js";
 const ALT = "src/components/stock/alternativesCore.js";
 const CHIP = "src/components/stock/sizeChipTheme.js";
+const EXTRACT = "src/utils/attributeExtraction.js";
 const APP = "src/App.jsx";
 
 const SUITE = [
@@ -49,6 +50,8 @@ const SUITE = [
   "src/utils/productNeighbours.test.js",
   "src/components/stock/alternativesCore.test.js",
   "src/components/stock/sizeChipTheme.test.js",
+  "src/utils/attributeExtraction.test.js",
+  "src/components/stock/rtdbEmptyArray.test.js",
 ];
 
 const MUTATIONS = [
@@ -184,6 +187,23 @@ const MUTATIONS = [
     to: ``,
   },
 
+  {
+    id: "G11b",
+    guard: "A base name over the 80-character publish gate is REFUSED — only optional clauses can be trimmed, so it would otherwise ship unpublishable",
+    file: ATTR,
+    kind: "behavioural",
+    from: `  return name.length > MAX_NAME_LENGTH ? "" : name;`,
+    to: `  return name;`,
+  },
+  {
+    id: "G11c",
+    guard: "An unreported confidence stays ABSENT — Number(null) is 0, which claims \"certainly wrong\"",
+    file: EXTRACT,
+    kind: "behavioural",
+    from: `  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);`,
+    to: `  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);`,
+  },
+
   // ── 4. BRAND IS A WEIGHT, AND THE WALL HOLDS ─────────────────────────────
   {
     id: "G15",
@@ -219,6 +239,15 @@ const MUTATIONS = [
     to: ``,
   },
   {
+    id: "G18b",
+    guard: "Shared style tags are clamped at the SCORING boundary — confirmed.styleTags is human-supplied and uncapped",
+    file: NEIGH,
+    kind: "behavioural",
+    from: `  const shared = Math.min(
+    a.styleTags.filter((t) => b.styleTags.includes(t)).length, MAX_STYLE_TAGS);`,
+    to: `  const shared = a.styleTags.filter((t) => b.styleTags.includes(t)).length;`,
+  },
+  {
     id: "G19",
     guard: "Ties break on pid, so a re-run produces the identical list and a diff shows only what moved",
     file: NEIGH,
@@ -247,6 +276,16 @@ const MUTATIONS = [
     from: `      // 1. DASHED, not solid — the shape of the outline itself differs.
       borderStyle: "dashed",`,
     to: `      borderStyle: "solid",`,
+  },
+  {
+    id: "G21b",
+    guard: "The size number clears 4.5:1 on its own chip surface — an unreadable number is worse than one that looks slightly available",
+    file: CHIP,
+    kind: "behavioural",
+    from: `      color: "rgba(233,238,255,.62)",
+      // Still tappable: the tap is what opens the sheet.`,
+    to: `      color: "rgba(233,238,255,.38)",
+      // Still tappable: the tap is what opens the sheet.`,
   },
   {
     id: "G22",

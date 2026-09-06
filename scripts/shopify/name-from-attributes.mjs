@@ -68,16 +68,6 @@ for (const [pid, p] of Object.entries(products)) {
 }
 const derived = distinctNamesFor(named);
 
-// The handles ALREADY on the storefront for products this run is not renaming.
-// A derived name that walks into one of those is the same block this build
-// exists to end, so it counts as a collision and escalates like any other.
-const takenElsewhere = new Map();
-for (const [pid, n] of Object.entries(publish)) {
-  if (derived.has(pid)) continue;
-  const h = handleFromName(n?.cleanName || "");
-  if (h) takenElsewhere.set(h, pid);
-}
-
 const onlyPids = PIDS ? new Set(PIDS.split(",").map((s) => s.trim()).filter(Boolean)) : null;
 
 // The handles in USE today, to report what this actually fixes.
@@ -101,11 +91,38 @@ for (const [pid, { name, handle, level }] of derived) {
     pid, name, handle, level, before, beforeHandle, collidesToday,
     product: products[pid], node,
     blocked: !mayProposeFor(node) ? "manual name — Junid's decision" :
-      !validateVisionName(name).ok ? `refused: ${validateVisionName(name).problems.join("; ")}` :
-      takenElsewhere.has(handle) ? `handle taken by ${takenElsewhere.get(handle)}` : null,
+      !validateVisionName(name).ok ? `refused: ${validateVisionName(name).problems.join("; ")}` : null,
   });
 }
 rows.sort((a, b) => a.pid.localeCompare(b.pid));
+
+// ── WHICH HANDLES ARE ALREADY SPOKEN FOR ─────────────────────────────────────
+// Every product that will KEEP its current cleanName after this run still owns
+// that handle, and a proposal walking into one is the same publish block this
+// build exists to end.
+//
+// The first version excluded every product distinctNamesFor had named, which
+// was wrong in three ways at once (CodeRabbit): a product filtered out by
+// --pids or --collisions keeps its old name and its old handle; so does one
+// blocked by mayProposeFor; and so does one whose derived name the validator
+// refused. All three were treated as having vacated their handle, so a selected
+// row could be proposed a name that is on the storefront right now.
+//
+// So the set is built from what this run will ACTUALLY change: a handle is free
+// only if the product holding it is getting a proposal in this run.
+const renaming = new Set(rows.filter((r) => !r.blocked).map((r) => r.pid));
+const takenElsewhere = new Map();
+for (const [pid, n] of Object.entries(publish)) {
+  if (renaming.has(pid)) continue;
+  const h = handleFromName(n?.cleanName || "");
+  if (h) takenElsewhere.set(h, pid);
+}
+for (const r of rows) {
+  if (r.blocked) continue;
+  const owner = takenElsewhere.get(r.handle);
+  // Its OWN current handle is not a collision with itself.
+  if (owner && owner !== r.pid) r.blocked = `handle "${r.handle}" is on the storefront, held by ${owner}`;
+}
 
 // ── Report ───────────────────────────────────────────────────────────────────
 console.log(`enriched sneakers: ${named.length} · derived names: ${derived.size} · in this report: ${rows.length}`);
