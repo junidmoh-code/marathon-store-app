@@ -49,12 +49,18 @@ describe("a display-pair line's hub is fixed, not resolved", () => {
   });
   it("and the pre-flight REFUSES rather than redirecting", () => {
     expect(APP).toContain("item.displayPairRequest === true");
-    // The CONDITION, not just the message: the claim is checked against Hub 1's
-    // own availability, and only when Hub 1 has actually been read. Pinning the
-    // alert alone let the check itself be disabled with the wording intact.
-    expect(APP).toContain("&& sneakerGateReady(DISPLAY_PAIR_HUB)");
-    expect(APP).toContain("&& sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0);");
-    expect(APP).toContain("is no longer available at ${HUB_LABELS[DISPLAY_PAIR_HUB]");
+    // THE CONDITION, not just the message. And it checks the NAMED PAIR, not
+    // the shelf total: Hub 1 holding stock says nothing about whether this
+    // particular display pair still stands, since a fresh ordinary pair
+    // arriving after somebody pulled the display one would let the claim
+    // through.
+    expect(APP).toContain("const d = hub1DisplayUnits[promisedKey(item.product.id, item.size)];");
+    expect(APP).toContain("if (!d || !(d.units > 0)) return true;");
+    expect(APP).toContain("if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;");
+    // FAIL CLOSED: unverifiable is refused, not waved through.
+    expect(APP).toContain("if (!displayLaneReady || !ordersSettled) return true;");
+    expect(APP).toContain("if (!sneakerGateReady(DISPLAY_PAIR_HUB)) return true;");
+    expect(APP).toContain("can no longer be confirmed at ${HUB_LABELS[DISPLAY_PAIR_HUB]");
     // THE ORDERING, not just the presence of a `return`. The refusal must come
     // before the checkout does anything at all — the first write in placeOrders
     // is setSubmitting(true), and everything that touches the database is

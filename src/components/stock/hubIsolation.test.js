@@ -298,7 +298,12 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(cellAvailability({ cells, promised: {}, productId: "s1", size: "8" })).toBe(1);     // hub2's
   });
   it("the display-only check still asks Hub 1 explicitly", () => {
-    expect(app()).toContain('const avail = sneakerAvail(p.id, s, "hub1") - sneakerInCart(p.id, s);');
+    // It asks by NAME through the shared constant now, and takes its remaining
+    // count from the resolver instead of recomputing one — recomputing is how
+    // the whole cart came to be subtracted from Hub 1 for units that were never
+    // Hub 1's. Still hub1-scoped, which is what this fence is about.
+    expect(app()).toContain("if (hub !== DISPLAY_PAIR_HUB || !Number.isFinite(available)) return null;");
+    expect(app()).toContain('const d = hub1DisplayUnits[promisedKey(p.id, s)];');
   });
 });
 
@@ -309,8 +314,15 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
 // 2026-09-06 defect inverted, and silent. There is ONE answer, and placement
 // reads it.
 describe("stock-aware sourcing has exactly one answer", () => {
-  it("placement asks sneakerHubOf, the same function the tile was gated on", () => {
-    expect(app()).toContain("(sneakerHubOf(item.product, item.size) || computeHubForItem(item))");
+  it("placement routes through the same resolver the tile was gated on", () => {
+    // NOT the same CALL any more, deliberately. The tile asks "can I add one
+    // more?" (consumed = the whole cart); the checkout asks "where does THIS
+    // line come from?" (consumed = only what earlier lines of the same checkout
+    // took). Handing the checkout the tile's question sent a whole order to an
+    // empty hub. Same resolver, same data, one allocation pass in cart order.
+    expect(app()).toContain("const allocatedHub = new Map();");
+    expect(app()).toContain("size: item.size, hubData: sneakerHubData(), consumed: already,");
+    expect(app()).toContain("(allocatedHub.get(placedIndex) || computeHubForItem(item))");
   });
   it("and there is exactly one call to the routing resolver in the file", () => {
     // resolveSneakerSourcing since 2026-09-06 — the routing and availability
@@ -318,8 +330,15 @@ describe("stock-aware sourcing has exactly one answer", () => {
     // (they were two, and they disagreed). resolveSneakerSourcingHub is now a
     // wrapper over it and the screen no longer calls it at all. The fence is
     // unchanged in intent: exactly ONE place in this file decides the hub.
-    expect((app().match(/resolveSneakerSourcing\(/g) || [])).toHaveLength(1);
+    // TWO call sites since 2026-09-06, and exactly two: the tile's
+    // sneakerSourcing and the checkout's allocation pass. They ask different
+    // questions of the SAME function on the SAME data — which is the point.
+    // A third would be a second definition of routing, which is what this
+    // fence has always existed to refuse.
+    expect((app().match(/resolveSneakerSourcing\(/g) || [])).toHaveLength(2);
     expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(0);
+    // And nothing hand-rolls a hub for a sneaker line beside them.
+    expect(app()).toContain("const sneakerSourcing = (p, s) => resolveSneakerSourcing({");
   });
   it("computeHubForItem itself is untouched — it is still the TAG router", () => {
     // The stock-aware layer sits ON it, never inside it: hub3/Pine, clothing

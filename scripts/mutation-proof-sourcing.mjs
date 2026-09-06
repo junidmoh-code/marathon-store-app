@@ -157,6 +157,55 @@ const MUTATIONS = [
     setSubmitting(true);`,
   },
 
+  {
+    id: "G11b",
+    guard: "The pre-flight fails CLOSED — unverifiable display data is refused, never waved through",
+    file: APP,
+    kind: "source-pin",
+    from: `        if (!displayLaneReady || !ordersSettled) return true;      // cannot verify`,
+    to: `        if (!displayLaneReady || !ordersSettled) return false;`,
+  },
+  {
+    id: "G11c",
+    guard: "…and the CLAIMED STORE must still hold one — a fresh ordinary pair must not vouch for a display that has gone",
+    file: APP,
+    kind: "source-pin",
+    from: `        if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;`,
+    to: ``,
+  },
+  {
+    id: "G19",
+    guard: "The CHECKOUT allocates line by line — handing it the tile's whole-cart question sends a whole order to an empty hub",
+    file: APP,
+    kind: "source-pin",
+    from: `size: item.size, hubData: sneakerHubData(), consumed: already,`,
+    to: `size: item.size, hubData: sneakerHubData(), consumed: 0,`,
+  },
+  {
+    id: "G20",
+    guard: "…and each line's allocation is actually USED, rather than the hub being re-derived at write time",
+    file: APP,
+    kind: "source-pin",
+    from: `          : (allocatedHub.get(placedIndex) || computeHubForItem(item));`,
+    to: `          : computeHubForItem(item);`,
+  },
+  {
+    id: "G21",
+    guard: "sneakerDisplayOnly reads the resolver's remaining count — recomputing one subtracts the whole cart from Hub 1 for units that were never Hub 1's",
+    file: APP,
+    kind: "source-pin",
+    from: `    if (hub !== DISPLAY_PAIR_HUB || !Number.isFinite(available)) return null;`,
+    to: `    if (!Number.isFinite(available)) return null;`,
+  },
+  {
+    id: "G22",
+    guard: "The quantity clamp reads it too — recomputing double-counts the cart and silently short-fills an add",
+    file: APP,
+    kind: "source-pin",
+    from: `      reps = Math.min(reps, Math.max(1, clampLeft));`,
+    to: `      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize, clampHub) - sneakerInCart(selected.id, pendingSize)));`,
+  },
+
   // ── 3. NOTHING #568 DID MAY MOVE ─────────────────────────────────────────
   {
     id: "G13",

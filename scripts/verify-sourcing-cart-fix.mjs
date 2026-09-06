@@ -37,7 +37,14 @@ const loadCells = async (hub) => {
   if (raw) for (const k of Object.keys(raw)) if (raw[k] != null) out[PID][decodeSizeKey(k)] = raw[k];
   return out;
 };
-const orders = Object.values((await db.ref("orders").orderByKey().startAt("0").endAt("9").once("value")).val() || {});
+// ALL of /orders, paged. The ranged read this was copied from carries a
+// \uf8ff sentinel that is INVISIBLE in sed, grep and JSON.stringify alike, so a
+// hand-typed copy silently becomes endAt("9") — which returns 8 of 565 customer
+// orders on live data and leaves the promise map nearly empty. A verification
+// script that overstates availability cannot verify anything (independent
+// review, 2026-09-06).
+const { readMapPaged } = await import("./lib/rtdbPaged.mjs");
+const orders = Object.values(await readMapPaged(db, "orders", { pageSize: 500 }));
 const productsById = { [PID]: prod };
 const hubData = {};
 for (const h of GATED_SNEAKER_HUBS) hubData[h] = {

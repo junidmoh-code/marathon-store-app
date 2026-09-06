@@ -19,6 +19,7 @@ import {
   resolveSneakerSourcing, resolveSneakerSourcingHub, cellAvailability,
   GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB,
 } from "./availabilityCore";
+import { gatedSneakerHub } from "./availabilityCore";
 import { decodeSizeKey } from "../../utils/sizeKey";
 
 const SNEAKER = { id: "s1", category: "Footwear", productType: "sneaker" };
@@ -127,11 +128,33 @@ describe("the cart drains the tagged hub FIRST, then spills", () => {
 
 describe("nothing else moved", () => {
   it("identical to the shipped rule at cart depth 0, over the whole grid", () => {
-    for (let h1 = 0; h1 <= 3; h1++) for (let h2 = 0; h2 <= 3; h2++) {
+    // AGAINST A COPY OF THE ORIGINAL, not against the new function's own
+    // wrapper. Comparing resolveSneakerSourcing to resolveSneakerSourcingHub
+    // proves nothing once the latter delegates to the former — it is the same
+    // code answering twice (independent review, 2026-09-06). This is #568's
+    // rule as it shipped, transcribed.
+    const asShipped = ({ product, taggedHub, size, hubData }) => {
+      if (!gatedSneakerHub(product, taggedHub)) return taggedHub;
+      if (!size) return taggedHub;
+      const alternate = GATED_SNEAKER_HUBS.find((h) => h !== taggedHub);
+      const tagged = hubData?.[taggedHub];
+      const alt = hubData?.[alternate];
+      if (!tagged?.ready || !alt?.ready) return taggedHub;
+      const here = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
+      if (here > 0) return taggedHub;
+      const there = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
+      return there > 0 ? alternate : taggedHub;
+    };
+    for (const h1 of [0, 1, 2, 3, null]) for (const h2 of [0, 1, 2, 3, null]) {
       const hubData = world(h1, h2);
-      const old = resolveSneakerSourcingHub({ product: SNEAKER, taggedHub: "hub1", size: "8", hubData });
-      expect(resolveSneakerSourcing({ product: SNEAKER, taggedHub: "hub1", size: "8", hubData, consumed: 0 }).hub,
-        `h1=${h1} h2=${h2}`).toBe(old);
+      const args = { product: SNEAKER, taggedHub: "hub1", size: "8", hubData };
+      expect(resolveSneakerSourcing({ ...args, consumed: 0 }).hub, `h1=${h1} h2=${h2}`).toBe(asShipped(args));
+    }
+    // …and for a product the rule does not cover, and for a missing size.
+    for (const args of [{ product: CLOTHING, taggedHub: "hub1", size: "8", hubData: world(0, 3) },
+                        { product: SNEAKER, taggedHub: "hub3", size: "8", hubData: world(0, 3) },
+                        { product: SNEAKER, taggedHub: "hub1", size: "", hubData: world(0, 3) }]) {
+      expect(resolveSneakerSourcing({ ...args, consumed: 0 }).hub).toBe(asShipped(args));
     }
   });
   it("silence is still not zero — an unread tag answers NOTHING, whatever the cart", () => {
