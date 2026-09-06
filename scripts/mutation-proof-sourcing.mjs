@@ -140,8 +140,8 @@ const MUTATIONS = [
     guard: "A CLASSIC Display Partner request consumes NOTHING — it asks for what the hub does not have",
     file: CORE,
     kind: "behavioural",
-    from: `    if (line?.requestDisplayPartner && line?.displayPairRequest !== true) continue;   // rule 1`,
-    to: ``,
+    from: `if (line?.requestDisplayPartner && line?.displayPairRequest !== true) return false;`,
+    to: `if (false) return false;`,
   },
 
   // ── 2. A DISPLAY PAIR CANNOT BE REROUTED ─────────────────────────────────
@@ -158,10 +158,8 @@ const MUTATIONS = [
     guard: "A display pull is PINNED to hub1 rather than routed — the lane is hub1-scoped and no other hub can act on the instruction",
     file: CORE,
     kind: "behavioural",
-    from: `    const hub = line.displayPairRequest === true
-      ? displayPairHub                                                                 // rule 2`,
-    to: `    const hub = false
-      ? displayPairHub`,
+    from: `    charge(line, displayPairHub);                                                   // rule 2`,
+    to: `    charge(line, "hub2");`,
   },
   {
     id: "G11",

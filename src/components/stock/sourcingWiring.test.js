@@ -84,6 +84,9 @@ describe("a display-pair line's hub is fixed, not resolved", () => {
     expect(APP).toContain("if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;");
     // FAIL CLOSED: unverifiable is refused, not waved through.
     expect(APP).toContain("if (!displayLaneReady || !ordersSettled) return true;");
+    // And the cart's OWN over-draw of Hub 1, which raw shelf availability
+    // cannot see: two pulls of a cell that holds one.
+    expect(APP).toContain("if (cartAllocation.overAllocated.has(`${item.product.id}::${item.size}`)) return true;");
     expect(APP).toContain("if (!sneakerGateReady(DISPLAY_PAIR_HUB)) return true;");
     expect(APP).toContain("can no longer be confirmed at ${HUB_LABELS[DISPLAY_PAIR_HUB]");
     // THE ORDERING, not just the presence of a `return`. The refusal must come
