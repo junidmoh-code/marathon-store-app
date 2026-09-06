@@ -221,7 +221,10 @@ const MUTATIONS = [
     guard: "The container carries the signal on EVERY axis — converging any one of them is a grid nobody can read",
     file: CHIP,
     kind: "behavioural",
-    from: `      background: "rgba(255,255,255,.045)",`,
+    // The phone chip's copy — the quick-view carries the identical line, so
+    // the anchor takes the comment above it to stay unique.
+    from: `      // 3. A FAINT FILL where an available chip is transparent.
+      background: "rgba(255,255,255,.045)",`,
     to: `      background: "transparent",`,
   },
   {
@@ -229,7 +232,8 @@ const MUTATIONS = [
     guard: "…and the outline SHAPE differs, which is what reads at arm's length",
     file: CHIP,
     kind: "behavioural",
-    from: `      borderStyle: "dashed",`,
+    from: `      // 1. DASHED, not solid — the shape of the outline itself differs.
+      borderStyle: "dashed",`,
     to: `      borderStyle: "solid",`,
   },
   {
