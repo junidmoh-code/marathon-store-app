@@ -389,29 +389,35 @@ example (`functions/lib/order-push.cjs`).
 
 ---
 
-## The TV kiosk's `/orders` key range currently returns 9 of 565 customer orders
+## `/orders` numeric keys sort as INTEGERS — the range sentinel is load-bearing and INVISIBLE
 
-**What's true.** RTDB compares `"001"`-style keys as INTEGERS. Measured live
-2026-09-06 with the Admin SDK:
+**What's true.** RTDB compares `"001"`-style keys as integers, not as strings.
+Measured live 2026-09-06 with the Admin SDK:
 
 ```
-orderByKey().startAt("0").endAt("9")      →   8 rows   (orders 001–008)
-orderByKey().startAt("0").endAt("99")     →  98 rows   (orders 001–098)
-orderByKey().startAt("0").endAt("9zz")    → 565 rows   (every customer order)
+orderByKey().startAt("0").endAt("9")       →   8 rows   (orders 001–008: ints 1–8 ≤ 9)
+orderByKey().startAt("0").endAt("99")      →  98 rows   (ints 1–98)
+orderByKey().startAt("0").endAt("9\uF8FF") → 565 rows   (every customer order)
 ```
 
-`src/utils/tvOrdersRange.js` uses `TV_ORDER_KEY_END = "9"`, so the kiosk's
-bounded read stops at order 009. The same range appears in several census
-scripts (`census-hub1-promised.mjs`, `census-hub2-gate-blast-radius.mjs`,
-`verify-louboutin-sourcing.mjs`), whose numbers are understated by the same
-rule.
+`TV_ORDER_KEY_END` in `src/utils/tvOrdersRange.js` is `"9\uF8FF"` — a bare `"9"`
+followed by U+F8FF, the private-use sentinel that sorts after every integer key.
+**The kiosk is correct and always has been.** The danger is that U+F8FF renders
+as NOTHING in `cat`, `grep`, a diff and most editors, so the constant reads on
+screen as `"9"` and looks like a bug. It is not one. Do not "tidy" it away, and
+check the bytes (`grep … | xxd`, or a script that tests for `"\uF8FF" in line`)
+before concluding anything about this range.
 
-**Why it costs something.** The counter reached 196 on 2026-09-06, so almost
-every customer order placed that day was outside the range the pickup board
-reads.
+I got this wrong in the first draft of this entry: I read the constant through
+`cat`, tested a bare `"9"` I had typed myself, and reported the pickup board as
+broken. It was not.
 
-**Status: FOUND, NOT FIXED.** Discovered while investigating `/orders` for the
-order-push trigger (PR after #569) and deliberately left out of that change to
-keep it scoped. The fix is an end bound that sorts after every integer key —
-`"9zz"` is proven above — plus the same change in
-`keyInTvOrdersRange()` and in the census scripts, with a live count either side.
+**What IS understated.** Three one-off analysis scripts use a bare `"9"` and so
+only ever saw orders 001–009:
+
+- `scripts/census-hub2-gate-blast-radius.mjs:143` and `:207`
+- `scripts/verify-louboutin-sourcing.mjs:38`
+
+(`scripts/census-hub1-promised.mjs:25` has the sentinel and is fine.) Any figure
+those two produced about customer orders is low. They are already-run one-offs,
+not live surfaces — re-run them with the sentinel before trusting an old number.
