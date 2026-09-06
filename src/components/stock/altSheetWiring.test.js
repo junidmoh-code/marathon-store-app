@@ -45,7 +45,13 @@ describe("the refusal itself is unchanged", () => {
 
 describe("the alternatives join uses the shared resolver and nothing else", () => {
   it("availability comes from sneakerOut — one definition on this screen", () => {
-    expect(APP).toContain("sizeAvailable: (p, sz) => !sneakerOut(p, sz),");
+    expect(APP).toContain("sizeAvailable: (p, sz) => !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),");
+  });
+  // sneakerOut answers "is there a unit"; it does not answer "can it be sold
+  // down THIS path". A display-only size is sellable, but only through the
+  // display-pair request flow, which this sheet has no prompt for.
+  it("a display-only size is never offered as an alternative", () => {
+    expect(APP).toContain("!sneakerDisplayOnly(p, sz)");
   });
   // THE SHARPEST EDGE IN THE BUILD. sneakerOut returns false for an ungated
   // hub meaning "no gate", not "in stock". Offering a Pine shoe on that basis
@@ -54,7 +60,8 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
     expect(APP).toContain("const hub = sneakerHubOf(p);\n        return !!hub && sneakerGateReady(hub);");
   });
   it("deactivated, priceless and photoless lines are excluded", () => {
-    expect(APP).toContain("isSellable: (p) => !deadForOrder(p) && Number(p.retailPrice) > 0 && !!String(p.photoUrl || \"\").trim(),");
+    expect(APP).toContain("isSellable: (p) => !deadForOrder(p) && !isMergedAway(p)");
+    expect(APP).toContain("&& Number(p.retailPrice) > 0 && !!String(p.photoUrl || \"\").trim(),");
   });
   it("the neighbour list is read from the product record, not fetched", () => {
     expect(APP).toContain("neighbours: product[NEIGHBOURS_FIELD],");

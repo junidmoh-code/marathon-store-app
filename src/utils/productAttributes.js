@@ -83,6 +83,18 @@ export const EXTRACTOR_VERSION = 2;
 /** Where an extraction lives. Sibling of /products, never inside it. */
 export const ATTRIBUTES_PATH = "product_attributes";
 
+/**
+ * The `nameProposal.source` an attribute-derived name carries.
+ *
+ * It is what keeps the two namers from overwriting each other for ever:
+ * vision-name.mjs (the prose namer, scheduled nightly on the mini) skips any
+ * node already carrying one of these, so a product the attribute namer could
+ * name belongs to the attribute namer, and everything else — clothing,
+ * accessories, unenriched sneakers, and the shoes whose attributes cannot
+ * separate them from another shoe — stays the prose namer's.
+ */
+export const ATTRIBUTE_NAME_SOURCE = "attributes";
+
 // ─── THE CONTROLLED VOCABULARIES ─────────────────────────────────────────────
 // Order is meaningless; membership is everything. Every list is frozen so a
 // caller cannot quietly widen the vocabulary at runtime and produce values the

@@ -30,11 +30,11 @@ import {
 } from "../../src/utils/visionNaming.js";
 import {
   ATTRIBUTES_PATH, usableAttributes, distinctNamesFor, handleFromName,
+  ATTRIBUTE_NAME_SOURCE,
 } from "../../src/utils/productAttributes.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
 import { isSneakerProduct } from "../lib/sneakerScope.mjs";
 
-const NAME_SOURCE = "attributes";
 
 const flags = process.argv.slice(2);
 const arg = (n) => { const i = flags.indexOf(n); if (i === -1) return null; const v = flags[i + 1]; if (!v || v.startsWith("--")) { console.error(`${n} needs a value`); process.exit(2); } return v; };
@@ -156,7 +156,7 @@ for (const r of rows) {
       }),
       // Marked so the review page can tell an attribute-derived proposal from a
       // prose one at a glance, and so a later audit can find them.
-      source: NAME_SOURCE,
+      source: ATTRIBUTE_NAME_SOURCE,
       derivedFrom: { v: attrs[r.pid]?.v ?? null, tier: r.level },
     },
     nameRerunRequestedAt: null,

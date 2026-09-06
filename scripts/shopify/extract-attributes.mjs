@@ -228,8 +228,13 @@ for (const [i, { pid, product, photo }] of work.entries()) {
     const usable = usableAttributes({ a: record.a, confirmed: prev?.confirmed });
     results.push({
       pid, status: usable ? "extracted" : "incomplete", attempts,
+      // The PHOTO URL travels with the line. The whole point of printing a
+      // sample is that somebody can look at the shoe and see whether the
+      // extractor is telling the truth, and a row of attribute values with no
+      // way back to the picture cannot be checked at all.
       detail: VISION_FIELDS.map((k) => `${k}=${record.a[k] ?? "-"}`).join(" ") +
-        (parsed.dropped.length ? ` · dropped: ${parsed.dropped.join(",")}` : ""),
+        (parsed.dropped.length ? ` · dropped: ${parsed.dropped.join(",")}` : "") +
+        `\n                                    ${photo}`,
     });
   } catch (e) {
     results.push({ pid, status: "failed", detail: String(e?.message || e) });

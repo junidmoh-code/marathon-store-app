@@ -14,7 +14,7 @@ import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
-import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
+import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
@@ -7985,8 +7985,11 @@ function AlternativesStrip({ rows, requestedSize, onPick, compact = false }) {
           <button key={r.product.id} onClick={() => onPick(r)}
             title={`${r.product.name} — ${r.why}`}
             style={{ flex: `0 0 ${cardW}px`, width: cardW, textAlign: "left", padding: 0,
-                     border: "1px solid rgba(60,110,255,.28)", borderRadius: 12,
-                     background: "rgba(60,110,255,.06)", color: "inherit", cursor: "pointer",
+                     // NEUTRAL, not blue. Blue is "chosen" on the size chips a
+                     // few pixels below, and eight blue-bordered cards next to
+                     // that grid read as pre-selected.
+                     border: "1px solid rgba(255,255,255,.14)", borderRadius: 12,
+                     background: "rgba(255,255,255,.04)", color: "inherit", cursor: "pointer",
                      fontFamily: "inherit", overflow: "hidden" }}>
             <div style={{ position: "relative", width: "100%", aspectRatio: "3 / 4", background: "rgba(0,0,0,.25)" }}>
               <img src={r.product.photoUrl} alt="" loading="lazy"
@@ -8017,7 +8020,7 @@ function AlternativesStrip({ rows, requestedSize, onPick, compact = false }) {
                 {r.sizes.map((sz) => (sz === "Free Size" ? "OS" : formatSize(sz))).join(" · ")}
               </div>
               <div style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: "rgba(157,188,255,.72)", lineHeight: 1.3 }}>
-                {r.why}
+                {r.why}{r.hubLabel ? ` · ${r.hubLabel}` : ""}
               </div>
             </div>
           </button>
@@ -8431,8 +8434,18 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // last one. Never on a ✕/deactivated tile — the
                               // ✕ is authoritative (the drift rule).
                               const dInfo = !clothingOrder && !out && !deadForOrder(p) ? sneakerDisplayInfo?.(p, sz) : null;
+                              // THE THIRD SIZE-CHIP SURFACE. The spec says
+                                // the unavailable chip becomes tappable, and
+                                // that has to mean here too — this hover panel
+                                // has no room for a sheet, so the tap opens the
+                                // quick-view with the note and the alternatives
+                                // already up. Exactly the route the
+                                // display-only tile has taken since #456.
+                                // A CLOTHING or DEACTIVATED tile keeps its
+                                // disabled state: neither has a sheet to open.
+                              const snkTappable = out && !clothingOrder && !deadForOrder(p) && !!sneakerOut?.(p, sz);
                               return (
-                                <button key={sz} className="ad-sz" disabled={out}
+                                <button key={sz} className="ad-sz" disabled={out && !snkTappable}
                                   title={out ? (deadForOrder(p) ? "Deactivated — finished line"
                                       : clothingOrder ? `Not available at ${servingHubLabel}`
                                       // Sneaker ✕: name the real reason — a cell
@@ -8441,16 +8454,23 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                       : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
                                     : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
                                     : dInfo ? "This size is on a display" : undefined}
-                                  // The hover grid's tiles stay DISABLED (there
-                                  // is no room for a sheet in a hover panel and
-                                  // the quick-view carries it), but they lose
-                                  // the line-through for the same reason the
-                                  // ✕ went: the size number is the content.
-                                  style={out ? { opacity:.32, cursor:"not-allowed" }
+                                  // No line-through, for the same reason the ✕
+                                  // went: the size number is the content. An
+                                  // unavailable SNEAKER tile is now a pointer
+                                  // (it opens the quick-view's note); clothing
+                                  // and deactivated tiles stay not-allowed.
+                                  style={out ? { opacity:.32, cursor: snkTappable ? "pointer" : "not-allowed" }
                                     : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
                                     : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
-                                    e.stopPropagation(); if (out) return;
+                                    e.stopPropagation();
+                                    // The unavailable tap OPENS the quick-view's
+                                    // note. It still selects nothing and still
+                                    // cannot raise a request — openQv clears
+                                    // qvSize, and the note is raised through the
+                                    // same qvNa the quick-view's own out-tap uses.
+                                    if (snkTappable) { openQv(p); setQvNa({ size: sz, left: 0, snk: true }); return; }
+                                    if (out) return;
                                     if (dOnly) { openQv(p); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                                     // quickAdd returns 0 when the cart already
                                     // holds everything the hub has — no ✓ flash
@@ -9440,9 +9460,37 @@ function AssistantView({ products, onExit, orders = [] }) {
         const hub = sneakerHubOf(p);
         return !!hub && sneakerGateReady(hub);
       },
-      sizeAvailable: (p, sz) => !sneakerOut(p, sz),
-      isSellable: (p) => !deadForOrder(p) && Number(p.retailPrice) > 0 && !!String(p.photoUrl || "").trim(),
-    });
+      // ONE DEFINITION OF AVAILABLE, PLUS ONE OF "SELLABLE HOW".
+      //
+      // sneakerOut answers "is there a unit"; it does NOT answer "can it be
+      // sold down this path". A size whose only remaining unit is the Hub 1
+      // DISPLAY PAIR reads as available — correctly, per the #324 "displays
+      // are hub stock" policy — but selling it requires the display-pair
+      // request flow, which stamps the line so the warehouse card says "take
+      // it off the display" and the slot register is told the pair left. This
+      // sheet has no such prompt and pickAlternative deliberately clears every
+      // display-pair flag, so offering that size here would create a plain
+      // cart line for a pair that is on a shop floor: a phantom display
+      // survives the physical shipment and staff hunt for a box that is not
+      // there (senior-architect review, and the #456 "slots are truth" rule).
+      //
+      // So a display-only size is simply NOT OFFERED as an alternative. The
+      // shoe still appears if it has other sizes; the customer is never sent
+      // down a path this screen cannot complete. Hub 1 only, matching
+      // sneakerDisplayOnly's own scope.
+      sizeAvailable: (p, sz) => !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),
+      // isMergedAway as well as deactivated: followMerge returns the LAST
+      // resolved record on a dangling pointer or a cycle, and that record is
+      // still merged-away. A priced, photographed, non-deactivated corpse
+      // would otherwise pass every other gate here and be offered for sale.
+      isSellable: (p) => !deadForOrder(p) && !isMergedAway(p)
+        && Number(p.retailPrice) > 0 && !!String(p.photoUrl || "").trim(),
+    // WHICH SHELF IT COMES OFF. The refusal note names the hub that refused,
+    // and an alternative may be supplied by the OTHER one — a Hub 1 assistant
+    // offered a Hub 2 shoe with no signal is being asked to promise a
+    // collection time they cannot know (spec-conformance review). The hub is
+    // already computed to decide availability; it just was not carried.
+    }).map((row) => ({ ...row, hubLabel: HUB_LABELS[sneakerHubOf(row.product)] || "" }));
   };
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");

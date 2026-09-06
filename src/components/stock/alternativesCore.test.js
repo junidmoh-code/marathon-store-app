@@ -48,6 +48,19 @@ describe("nothing that cannot be sold is ever shown", () => {
     const w = world({ sizeAvailable: (p, s) => s === "9" });
     expect(call(LIST, w)[0].sizes).toEqual(["9"]);
   });
+  // A size whose only unit is the Hub 1 DISPLAY PAIR reads as available —
+  // correctly, per #324 — but selling it needs the display-pair request flow,
+  // which this sheet has no prompt for. Offering it would create a plain cart
+  // line for a pair on a shop floor, leaving a phantom display behind.
+  it("drops a size that only exists as a display pair", () => {
+    const w = world({ sizeAvailable: (p, s) => !(p.id === "p2" && s === "8") });
+    const rows = call(LIST, w, "8");
+    expect(rows.find((r) => r.product.id === "p2").sizes).toEqual(["7", "9"]);
+  });
+  it("…and drops the whole shoe when EVERY size is display-only", () => {
+    const w = world({ sizeAvailable: (p) => p.id !== "p2" });
+    expect(call(LIST, w).map((r) => r.product.id)).toEqual(["p1", "p3"]);
+  });
   it("drops a pid that no longer resolves to a product", () => {
     const w = world({ products: { p1: P("p1") } });
     expect(call(LIST, w).map((r) => r.product.id)).toEqual(["p1"]);
@@ -58,6 +71,15 @@ describe("nothing that cannot be sold is ever shown", () => {
     const survivor = P("p1");
     const w = world({ products: {}, resolveProduct: () => survivor });
     expect(call(LIST, w).map((r) => r.product.id)).toEqual(["p1"]);
+  });
+  // followMerge returns the LAST RESOLVED record on a dangling pointer or a
+  // cycle, and that record is still merged-away. A priced, photographed,
+  // non-deactivated corpse passes every other gate.
+  it("drops a merged-away record that a broken pointer chain resolved to", () => {
+    const corpse = P("p9", { mergedInto: "p-gone" });
+    const w = world({ products: { p1: P("p1"), p2: corpse, p3: P("p3") },
+                      isSellable: (p) => !p.mergedInto });
+    expect(call(LIST, w).map((r) => r.product.id)).toEqual(["p1", "p3"]);
   });
 });
 

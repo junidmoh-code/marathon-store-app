@@ -47,6 +47,7 @@ import {
 import {
   SEARCH_IDENTITY_PATH, shouldReplaceIdentity,
 } from "../../src/utils/searchIdentity.js";
+import { ATTRIBUTE_NAME_SOURCE } from "../../src/utils/productAttributes.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
 import { callVision } from "./visionCall.mjs";
 
@@ -115,7 +116,7 @@ if (onlyPids && onlyPids.size === 0) { console.error("--pids parsed to an empty 
 
 const products = await readMapPaged(db, "products", { pageSize: 500 });
 
-const skipped = { manual: 0, priceRecord: 0, noPhoto: 0, merged: 0 };
+const skipped = { manual: 0, priceRecord: 0, noPhoto: 0, merged: 0, attributeNamed: 0 };
 const scope = [];
 for (const [pid, p] of Object.entries(products)) {
   if (!p || typeof p !== "object" || !p.id) continue;
@@ -139,6 +140,28 @@ for (const [pid, p] of Object.entries(products)) {
   // so; nothing here writes cleanName.
   if (!requested && !mayProposeFor(node)) { skipped.manual += 1; continue; }
   if (UNNAMED_ONLY && node?.cleanName) continue;
+  // ── ONE NAMER PER PRODUCT (2026-09-06) ────────────────────────────────────
+  // name-from-attributes.mjs derives a name from the extracted attribute
+  // schema and writes it to this same nameProposal key. Both runners writing
+  // it would have them overwrite each other for ever — this one is scheduled
+  // on the mini (com.marathon.visionnaming.plist), so the prose namer would
+  // simply win the last word every night (spec-conformance review).
+  //
+  // The split is by OWNERSHIP, not by preference: a product the attribute
+  // namer could name, it has named, and this run leaves it alone. Everything
+  // else — clothing, accessories, perfume, unenriched sneakers, and the shoes
+  // the attribute namer REFUSED because their attributes cannot separate them
+  // from another shoe — is still this runner's, and it is the right lane for
+  // them because prose can say things a closed vocabulary cannot.
+  //
+  // A REQUEST OVERRIDES IT, like every other exclusion here: the reconciler
+  // asks for a fresh name only when it has PROVED the current one cannot be
+  // published, and a product blocked for ever behind an unusable name is worse
+  // than a second opinion.
+  if (!requested && node?.[NAME_PROPOSAL_KEY]?.source === ATTRIBUTE_NAME_SOURCE) {
+    skipped.attributeNamed += 1;
+    continue;
+  }
   // One image per call, so a product with no photo has nothing to read.
   const photo = String(p.photoUrl || "").trim();
   if (!photo) { skipped.noPhoto += 1; continue; }
@@ -149,7 +172,7 @@ const work = LIMIT ? scope.slice(0, LIMIT) : scope;
 
 const quote = projectCost(work.length);
 console.log(`scope: ${work.length} product(s)${LIMIT && scope.length > LIMIT ? ` (capped from ${scope.length} by --limit)` : ""}`);
-console.log(`  skipped — manual name: ${skipped.manual} · price record: ${skipped.priceRecord} · no photo: ${skipped.noPhoto} · merged: ${skipped.merged}`);
+console.log(`  skipped — manual name: ${skipped.manual} · price record: ${skipped.priceRecord} · no photo: ${skipped.noPhoto} · merged: ${skipped.merged} · already named from attributes: ${skipped.attributeNamed}`);
 console.log(`\nPROJECTED COST: $${quote.usd} (~R${quote.zar}) at $${quote.perNameUsd}/name, one image per call`);
 console.log(`FOR REFERENCE, the whole catalogue (${Object.keys(products).length} records): $${projectCost(Object.keys(products).length).usd} (~R${projectCost(Object.keys(products).length).zar})`);
 
