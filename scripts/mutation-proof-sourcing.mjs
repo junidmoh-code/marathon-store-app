@@ -71,14 +71,13 @@ const MUTATIONS = [
     from: `  const altLeft = Math.max(altRaw - Math.max(used - taggedRaw, 0), 0);`,
     to: `  const altLeft = Math.max(altRaw - used, 0);`,
   },
-  {
-    id: "G4",
-    guard: "…and the spill is never NEGATIVE, which would credit the alternate with units nobody has",
-    file: CORE,
-    kind: "behavioural",
-    from: `  const altLeft = Math.max(altRaw - Math.max(used - taggedRaw, 0), 0);`,
-    to: `  const altLeft = Math.max(altRaw - (used - taggedRaw), 0);`,
-  },
+  // G4 WAS HERE, AND IS GONE ON PURPOSE. It mutated the inner clamp on the
+  // spill (`Math.max(used - taggedRaw, 0)`), and could not be killed: that line
+  // is only reached once taggedLeft is 0, which means used >= taggedRaw, so the
+  // clamp is unreachable by construction. It stays in the source as a belt
+  // against a future reordering; it does NOT stay here, because a guard nothing
+  // can kill is a green tick standing in for evidence — exactly what this
+  // harness exists to refuse.
   {
     id: "G5",
     guard: "A junk cart count is treated as none, never as a negative credit",

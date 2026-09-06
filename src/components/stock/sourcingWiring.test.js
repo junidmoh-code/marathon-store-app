@@ -43,6 +43,11 @@ describe("a display-pair line's hub is fixed, not resolved", () => {
   });
   it("and the pre-flight REFUSES rather than redirecting", () => {
     expect(APP).toContain("item.displayPairRequest === true");
+    // The CONDITION, not just the message: the claim is checked against Hub 1's
+    // own availability, and only when Hub 1 has actually been read. Pinning the
+    // alert alone let the check itself be disabled with the wording intact.
+    expect(APP).toContain("&& sneakerGateReady(DISPLAY_PAIR_HUB)");
+    expect(APP).toContain("&& sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0);");
     expect(APP).toContain("is no longer available at ${HUB_LABELS[DISPLAY_PAIR_HUB]");
     // The refusal returns before anything is written, like the deactivation
     // guard beside it — never a half-placed checkout.

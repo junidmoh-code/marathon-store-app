@@ -339,6 +339,11 @@ export function resolveSneakerSourcing({ product, taggedHub, size, hubData, cons
   // have actually read it.
   if (!alt?.ready) return { hub: taggedHub, available: 0 };
   const altRaw = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
+  // The spill cannot be negative HERE — this line is only reached once
+  // taggedLeft is 0, which means used >= taggedRaw. The inner clamp is a belt
+  // against a future edit reordering those branches, and is deliberately not
+  // guarded by a test: nothing can currently reach it with a smaller `used`,
+  // and a guard that cannot be killed is not evidence (mutation harness G4).
   const altLeft = Math.max(altRaw - Math.max(used - taggedRaw, 0), 0);
   if (altLeft > 0) return { hub: alternate, available: altLeft };
 
