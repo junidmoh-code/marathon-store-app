@@ -14,7 +14,7 @@ import { useAssistantVisibility } from "./config/useAssistantVisibility";
 import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
-import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
+import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
@@ -96,9 +96,13 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
 import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcingHub, GATED_SNEAKER_HUBS } from "./components/stock/availabilityCore";
+import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
+import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
+import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
+import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useDisplaySlotsState, useDisplayRegisterState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -875,9 +879,16 @@ function updateProductHubs(id, hubs) {
 // read is a destShop-scoped query — the /orders rule REJECTS an unscoped full read
 // from a store-assigned user, so this is genuine data-level isolation, not just UI.
 // null/undefined (warehouse, admin, super-admin, anonymous TV) → full-node read.
+// The returned array carries a `settled` FLAG (a property on the array, so
+// every existing consumer — map, filter, length, spread — is untouched). Most
+// screens do not care: a list that fills in a moment later is normal. The
+// alternatives strip does, because before /orders answers the ready-promise
+// map is EMPTY, which is indistinguishable from "nothing is promised" — and a
+// recommendation made on that basis asserts availability nobody has checked
+// (independent review, 2026-09-06).
 function useOrders(scopeShop = null) {
   const authReady = useAuthReady();
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
 
   useEffect(() => {
     if (!authReady) return;
@@ -891,7 +902,7 @@ function useOrders(scopeShop = null) {
     const unsub = onValue(readRef, (snap) => {
       const data = snap.val();
       if (!data) {
-        setOrders([]);
+        setOrders(Object.assign([], { settled: true }));
         return;
       }
       // Legacy shape detected — migrate.
@@ -909,15 +920,17 @@ function useOrders(scopeShop = null) {
         const arr = data.items.slice().sort((a, b) =>
           tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
-        setOrders(arr);
+        setOrders(Object.assign(arr, { settled: true }));
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
       const arr = Object.values(data)
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-      setOrders(arr);
+      setOrders(Object.assign(arr, { settled: true }));
     }, (err) => {
+      // A read ERROR leaves settled FALSE deliberately: the promise map is
+      // empty for a reason that has nothing to do with the shelf.
       console.warn("Firebase read error on /orders:", err);
     });
     return () => unsub();
@@ -7952,6 +7965,7 @@ function sneakerBlockNoteText(size, w) {
   return `Your cart already has all ${w.available} of size ${sz} that ${hub} can give out.`;
 }
 
+
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
@@ -7960,6 +7974,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayOnly, sneakerDisplayInfo,
+                            alternativesFor,
                             deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
@@ -8077,6 +8092,18 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
     setQvDisplayPrompt(null); setQvDisplayPair(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
+  };
+  // Taking an alternative from the ✕ sheet. The quick-view SWAPS to the chosen
+  // shoe rather than closing — the assistant is mid-sentence with a customer,
+  // and sending them back to the catalogue to find it again is how the
+  // suggestion stops being used. openQv already clears every piece of state
+  // that belonged to the previous shoe (the display-pair claim, the partner
+  // toggle, the quantity), so the size is set AFTER it.
+  const pickQvAlternative = (row, requestedSize) => {
+    const pick = alternativeSelection(row, requestedSize);
+    if (!pick) return;
+    openQv(pick.product);
+    if (pick.size) setQvSize(pick.size);
   };
   // objectFit CONTAIN, not cover: live product photos are predominantly
   // 600×800 portrait (13-sample survey of /orders productPhotoUrl,
@@ -8343,8 +8370,18 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // last one. Never on a ✕/deactivated tile — the
                               // ✕ is authoritative (the drift rule).
                               const dInfo = !clothingOrder && !out && !deadForOrder(p) ? sneakerDisplayInfo?.(p, sz) : null;
+                              // THE THIRD SIZE-CHIP SURFACE. The spec says
+                                // the unavailable chip becomes tappable, and
+                                // that has to mean here too — this hover panel
+                                // has no room for a sheet, so the tap opens the
+                                // quick-view with the note and the alternatives
+                                // already up. Exactly the route the
+                                // display-only tile has taken since #456.
+                                // A CLOTHING or DEACTIVATED tile keeps its
+                                // disabled state: neither has a sheet to open.
+                              const snkTappable = out && !clothingOrder && !deadForOrder(p) && !!sneakerOut?.(p, sz);
                               return (
-                                <button key={sz} className="ad-sz" disabled={out}
+                                <button key={sz} className="ad-sz" disabled={out && !snkTappable}
                                   title={out ? (deadForOrder(p) ? "Deactivated — finished line"
                                       : clothingOrder ? `Not available at ${servingHubLabel}`
                                       // Sneaker ✕: name the real reason — a cell
@@ -8353,11 +8390,24 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                       : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
                                     : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
                                     : dInfo ? "This size is on a display" : undefined}
-                                  style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
+                                  // No line-through, for the same reason the ✕
+                                  // went: the size number is the content. And
+                                  // the same FOUR-AXIS container difference the
+                                  // other two surfaces use — opacity alone left
+                                  // this tile reading as an ordinary blue chip
+                                  // at 32%, a fifth of a signal (CodeRabbit).
+                                  style={out ? hoverGridSizeChipStyle({ out: true, tappable: snkTappable })
                                     : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
                                     : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
-                                    e.stopPropagation(); if (out) return;
+                                    e.stopPropagation();
+                                    // The unavailable tap OPENS the quick-view's
+                                    // note. It still selects nothing and still
+                                    // cannot raise a request — openQv clears
+                                    // qvSize, and the note is raised through the
+                                    // same qvNa the quick-view's own out-tap uses.
+                                    if (snkTappable) { openQv(p); setQvNa({ size: sz, left: 0, snk: true }); return; }
+                                    if (out) return;
                                     if (dOnly) { openQv(p); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                                     // quickAdd returns 0 when the cart already
                                     // holds everything the hub has — no ✓ flash
@@ -8505,12 +8555,20 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       // "doesn't exist". Self-hides once the size frees up.
                       if (qvNa.snk && !deadForOrder(qv)) {
                         // Belt on the toggle's clear: partner mode lifts the
-                        // ✕, so the note must never outlive it either way.
+                        // grey-out, so the note must never outlive it either way.
                         if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
                         return (
-                          <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
-                            {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
-                          </div>
+                          <>
+                            <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                              {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
+                            </div>
+                            {/* The desktop twin of the phone sheet's strip. The
+                                reason above is unchanged; this only adds what
+                                can be sold instead. */}
+                            <AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}
+                                               requestedSize={qvNa.size}
+                                               onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                          </>
                         );
                       }
                       const have = hubQty(qv.id, qvNa.size);
@@ -8551,9 +8609,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
-                            style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" }
+                            // The ✕ is gone here too, and with it the
+                            // line-through that made a half size unreadable on
+                            // a 34px tile. sizeChipTheme carries the four-axis
+                            // container difference that replaces both.
+                            style={out ? quickViewSizeChipStyle({ out: true })
                               : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
-                              : dInfo ? { position:"relative" } : undefined}
+                              : dInfo ? { position:"relative" } : quickViewSizeChipStyle({ out: false })}
                             onClick={() => {
                               // Deselect FIRST — before the out gate — so a
                               // size that went ✕ while selected can still be
@@ -8574,7 +8636,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // claim — it belongs to the prompted size only.
                               setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(sz);
                             }}>
-                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
                               <span aria-label={dOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
                                 <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
@@ -8965,12 +9027,24 @@ function AssistantView({ products, onExit, orders = [] }) {
   // The live display slots — one ~60 KB listener (the marker cannot be
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
-  const displaySlots = useDisplaySlots(effectiveStoreMode !== "pine");
+  const displaySlotsState = useDisplaySlotsState(effectiveStoreMode !== "pine");
+  const displaySlots = displaySlotsState.value;
   // The register joins as the store-less second source: 71% of registered
   // displays have no slot (store never picked at registration), so keying the
   // marker on slots alone left most registered displays invisible (owner
   // report, 2026-08-26). displayUnitsByCell applies the double-count guard.
-  const hub1DisplayRegister = useDisplayRegister("hub1", effectiveStoreMode !== "pine");
+  const hub1DisplayRegisterState = useDisplayRegisterState("hub1", effectiveStoreMode !== "pine");
+  const hub1DisplayRegister = hub1DisplayRegisterState.value;
+  // Has the display lane actually ANSWERED? Both sources, no read error. The
+  // tile marker does not need this (a marker that arrives late is harmless);
+  // the alternatives strip does, because an empty display map before the
+  // subscription answers looks exactly like "nothing is on a floor", and the
+  // display-only exclusion would fail open precisely when its evidence is
+  // missing (independent review). A read ERROR makes it permanent.
+  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error
+    && hub1DisplayRegisterState.settled && !hub1DisplayRegisterState.error;
+  // Has /orders answered at all? See useOrders — the flag rides on the array.
+  const ordersSettled = orders?.settled === true;
   const hub1DisplayUnits = useMemo(
     () => displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister),
     [displaySlots, hub1DisplayRegister]
@@ -9326,6 +9400,137 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sneakerDisplayInfo = (p, s) =>
     (s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
 
+  // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
+  // The greyed size chip used to be a dead end: a reason, and the sale walks
+  // out. It now opens a sheet that keeps the reason UNCHANGED and adds, below
+  // it, the alternatives that can actually be sold this minute.
+  //
+  // THE READ PATH IS THE WHOLE DESIGN. The ranking was computed offline
+  // (scripts/shopify/build-neighbours.mjs) and stored on the product record, so
+  // this does no similarity arithmetic, opens no subscription and scans no
+  // catalogue: it reads at most twelve pids out of a list the screen already
+  // holds, and checks each one against the SAME maps the grid behind it is
+  // already using. 1,410 sneakers is ~1M pairs; scoring that at tap time is a
+  // frozen phone in front of a customer.
+  //
+  // EVERY GATE FAILS CLOSED. A suggestion an assistant reads out that turns out
+  // not to exist is worse than the bare refusal it replaced — it costs the
+  // customer twice and teaches the assistant not to trust the screen. So:
+  //   • availabilityKnown is FALSE for a Pine/hub3 shoe and for a hub whose
+  //     cells have not settled. sneakerOut returns false there meaning "no
+  //     gate", NOT "in stock", and reading it the other way is exactly how an
+  //     unverified shoe reaches a customer.
+  //   • a deactivated line (#445/#532/#566), a priceless one and a photoless
+  //     one are all out — the row has nothing to show and nothing to sell.
+  //   • sneakerOut, not a second availability test. One definition of
+  //     "available" on this screen, the same one that drew the chip.
+  const alternativesFor = (product, size) => {
+    if (!product || !size) return [];
+    // Sneakers only. Clothing and perfume are out of scope for this build, and
+    // a clothing tile's grey-out reads its cell by a different rule
+    // (availabilityCore's header, the deliberately-unmerged clothing lane).
+    if ((product.productType || "sneaker") === "clothing") return [];
+    return sellableAlternatives({
+      neighbours: product[NEIGHBOURS_FIELD],
+      requestedSize: size,
+      // FOLLOWS MERGES. A pid in a list written last week may since have been
+      // merged away; resolveProductById lands on the survivor, and
+      // sellableAlternatives de-duplicates when two entries land on the same
+      // shoe.
+      resolveProduct: (pid) => resolveProductById(pid),
+      sizesOf: (p) => (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"),
+      // PRODUCT-LEVEL: is this shoe gated AT ALL? With no size,
+      // resolveSneakerSourcingHub yields the TAG, which is null for a Pine/hub3
+      // shoe — exactly the "this screen cannot answer for it" case. The
+      // per-size readiness check moved into sizeAvailable below, because after
+      // #568 the serving hub is a per-size answer and a product-level gate
+      // would vouch for sizes routed to a hub that has not settled.
+      availabilityKnown: (p) => !!sneakerHubOf(p),
+      // ONE DEFINITION OF AVAILABLE, PLUS ONE OF "SELLABLE HOW".
+      //
+      // sneakerOut answers "is there a unit"; it does NOT answer "can it be
+      // sold down this path". A size whose only remaining unit is the Hub 1
+      // DISPLAY PAIR reads as available — correctly, per the #324 "displays
+      // are hub stock" policy — but selling it requires the display-pair
+      // request flow, which stamps the line so the warehouse card says "take
+      // it off the display" and the slot register is told the pair left. This
+      // sheet has no such prompt and pickAlternative deliberately clears every
+      // display-pair flag, so offering that size here would create a plain
+      // cart line for a pair that is on a shop floor: a phantom display
+      // survives the physical shipment and staff hunt for a box that is not
+      // there (senior-architect review, and the #456 "slots are truth" rule).
+      //
+      // So a display-only size is simply NOT OFFERED as an alternative. The
+      // shoe still appears if it has other sizes; the customer is never sent
+      // down a path this screen cannot complete. Hub 1 only, matching
+      // sneakerDisplayOnly's own scope.
+      // PER SIZE, and every input must have ANSWERED — not merely be empty.
+      //
+      // sneakerOut returns false for an unready hub meaning "no gate", NOT "in
+      // stock", so the stock gate is explicit. After #568 each size resolves
+      // its own hub, so one size of a shoe can be answerable while another is
+      // not.
+      //
+      // The other two are the same mistake in the other two inputs, and an
+      // independent review found both (2026-09-06). Before /orders answers,
+      // the ready-promise map is EMPTY — identical to "nothing is promised" —
+      // so a pair already spoken for reads as free. Before the display lane
+      // answers, hub1DisplayUnits is empty — identical to "nothing is on a
+      // floor" — so the display-only exclusion fails open exactly when its
+      // evidence is missing. Neither matters for a TILE (a marker that arrives
+      // late is harmless); both matter for a RECOMMENDATION, which asserts
+      // availability rather than merely failing to deny it.
+      //
+      // displayLaneReady is only required for a size HUB 1 would serve: the
+      // display-pair lane is hub1-scoped, so a Hub 2 size is not waiting on it.
+      sizeAvailable: (p, sz) => {
+        const hub = sneakerHubOf(p, sz);
+        if (!sneakerGateReady(hub)) return false;
+        if (!ordersSettled) return false;
+        if (hub === "hub1" && !displayLaneReady) return false;
+        return !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz);
+      },
+      // ── SUGGESTING IS NOT THE SAME AS PERMITTING ──────────────────────
+      // isDeactivated, NOT deadForOrder. deadForOrder is Pine-exempt (#566:
+      // `/config/assistantView/showDeactivatedShops/marathon-pine` lets Pine
+      // still see and order a deactivated line, because Pine works an
+      // uncounted manual floor). That exemption is about not HIDING what Pine
+      // staff go looking for. It is not a licence for the app to go and
+      // RECOMMEND a line the owner has retired — nobody asked for that, and a
+      // suggestion is the app's own initiative in a way a search result is not
+      // (CodeRabbit).
+      //
+      // isMergedAway too: followMerge returns the LAST resolved record on a
+      // dangling pointer or a cycle, and that record is still merged-away. A
+      // priced, photographed, live-looking corpse would pass every other gate.
+      isSellable: (p) => !isDeactivated(p) && !isMergedAway(p)
+        && Number(p.retailPrice) > 0 && !!String(p.photoUrl || "").trim(),
+    // WHICH SHELF IT COMES OFF. The refusal note names the hub that refused,
+    // and an alternative may be supplied by the OTHER one — a Hub 1 assistant
+    // offered a Hub 2 shoe with no signal is being asked to promise a
+    // collection time they cannot know (spec-conformance review). The hub is
+    // already computed to decide availability; it just was not carried.
+    // ── THE ONE RESIDUAL, STATED ─────────────────────────────────────────
+    // A store-assigned device can only read ITS OWN shop's /orders (rule-
+    // enforced, useOrders(scopeShop)), so a pair promised to a ready order at
+    // another shop is invisible to it and reads as free. That is inherited
+    // from the resolver and is exactly the blind spot the ✕ this sheet sits
+    // under already has — the note above and the row below are computed from
+    // the same data, so they cannot disagree with each other. It cannot be
+    // closed on the client without giving every shop device read access to
+    // every other shop's orders, which is a rules decision, not a code one.
+    // Recorded rather than hidden (independent review, 2026-09-06).
+    //
+    // WHICH SHELF, for the size the assistant will actually take. After #568
+    // that is a per-size answer, so asking it product-level could name Hub 1 on
+    // a card whose only available size is picked by Hub 2. The requested size
+    // when the shoe has it, otherwise the first size actually on offer.
+    }).map((row) => ({
+      ...row,
+      hubLabel: HUB_LABELS[sneakerHubOf(row.product, row.hasRequestedSize ? size : row.sizes[0])] || "",
+    }));
+  };
+
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
   // (name/phone/WhatsApp) when it's a sneaker OR a clothing line tagged
@@ -9341,6 +9546,34 @@ function AssistantView({ products, onExit, orders = [] }) {
   const refillCount       = cart.length - customerCount;
 
   const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+
+  // ── TAKING AN ALTERNATIVE ─────────────────────────────────────────────────
+  // The sheet STAYS OPEN and swaps to the chosen shoe. Never a bounce back to
+  // the catalogue: the assistant is mid-sentence with a customer, and making
+  // them find the shoe again is how the suggestion stops being used.
+  //
+  // The customer's original size travels with them ONLY when that shoe has it
+  // available (alternativeSelection decides, and it decides from the sizes the
+  // availability join already verified). Otherwise the shoe opens on its own
+  // grid with nothing chosen — pre-selecting a size nobody asked for is how a
+  // wrong pair gets ordered.
+  //
+  // Every other piece of sheet state is cleared, exactly as resetSheet would:
+  // a display-pair claim, a partner toggle and a quantity all belong to the
+  // shoe that was on screen a moment ago, and carrying any of them across
+  // would attach them to a different product.
+  const pickAlternative = (row) => {
+    const pick = alternativeSelection(row, naNote?.size || pendingSize || "");
+    if (!pick) return;
+    setNaNote(null);
+    setDisplayPrompt(null);
+    setPendingDisplayPair(null);
+    setPendingDisplay(false);
+    setPendingDisplayPartner(false);
+    setPendingQty(1);
+    setPendingSize(pick.size);
+    setSelected(pick.product);
+  };
 
   const addToCart = () => {
     if (!selected) return;
@@ -9834,7 +10067,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo}
+          alternativesFor={alternativesFor} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -10229,13 +10463,21 @@ function AssistantView({ products, onExit, orders = [] }) {
               // quick-view's: tapping a ✕ tile says WHY (empty vs reserved
               // vs already-in-cart). Self-hides once the size frees up.
               if (naNote.snk && !deadForOrder(selected)) {
-                // Belt on the toggle's clear: partner mode lifts the ✕, so
-                // the note must never outlive it either way.
+                // Belt on the toggle's clear: partner mode lifts the grey-out,
+                // so the note must never outlive it either way.
                 if (pendingDisplayPartner || !sneakerOut(selected, naNote.size)) return null;
                 return (
-                  <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
-                    {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
-                  </div>
+                  <>
+                    <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
+                      {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
+                    </div>
+                    {/* THE REASON IS UNCHANGED. This sits BELOW it and adds
+                        nothing to what the refusal says — the X gate blocks
+                        exactly what it blocked yesterday, and the only new
+                        action on this sheet is choosing a different shoe. */}
+                    <AlternativesStrip rows={alternativesFor(selected, naNote.size)}
+                                       requestedSize={naNote.size} onPick={pickAlternative} />
+                  </>
                 );
               }
               const have = hubQty(selected.id, naNote.size);
@@ -10352,11 +10594,19 @@ function AssistantView({ products, onExit, orders = [] }) {
                       setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
                     }}
                     style={out
-                      ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor: pendingSize===s ? "pointer" : "not-allowed", fontWeight:"700", fontSize:"1rem" }
+                      // THE GLYPH IS GONE (owner spec 2026-09-06). The
+                      // container alone carries the signal now, and it was
+                      // widened to carry it: dashed instead of solid, grey
+                      // instead of blue, faintly filled instead of transparent,
+                      // and dimmer text — four independent differences, pinned
+                      // by sizeChipTheme.test.js so a later edit cannot quietly
+                      // converge them. The size number reads clearly, which is
+                      // the whole reason the glyph could go.
+                      ? phoneSizeChipStyle({ out: true, selected: pendingSize === s })
                       : dispOnly
                         ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?"#FBBF24":"rgba(251,191,36,.45)", background: pendingSize===s?"rgba(251,191,36,.18)":"rgba(251,191,36,.08)", color:"#FBBF24", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }
-                        : { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
-                    <SizeTag size={s} />{snkOut ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                        : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>
+                    <SizeTag size={s} />{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                     {dispInfo ? (
                       <span aria-label={dispOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={dispOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>

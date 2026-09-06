@@ -512,6 +512,84 @@ made against numbers.
 
 ---
 
+## `/product_attributes/{productId}` — what a shoe LOOKS LIKE
+
+The data the catalogue never had. Measured 2026-09-06 across the 1,410 live
+sneaker products: `brand`, `category` and `retailPrice` are 100% filled, and
+`colour` / `color` / `colourway` are **0.0%** — not one record. `dominantColours`
+reaches 3.6%. So nothing in `/products` can answer "what else would this
+customer take?", and the lexicon namer's "Sneaker Black" on four different shoes
+is not a naming bug but the absence of this node.
+
+Written **only** by `scripts/shopify/extract-attributes.mjs` (Admin SDK). No
+client reads it: it is extraction data, and `/products` is already a 3.92 MB
+`onValue` on every device on every session. **There is no rule for this path and
+none is needed** — the live rules have no root default and no wildcard, so a
+top-level node with no entry is denied to every client, which is exactly right.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `v` | number | `EXTRACTOR_VERSION`. A product at the current version is out of scope, which is what makes a crashed run cost nothing to resume; a bump makes the whole catalogue eligible again. |
+| `at` | number (epoch ms) | The RTDB **server** sentinel at write time, never `Date.now()`. Do not coerce it with `Number()` — the sentinel is the object `{".sv":"timestamp"}` and `Number(…) \|\| 0` wrote `at: 0` onto the first 205 records. |
+| `model` | string \| null | The vision model that produced it. |
+| `a` | object | **The machine half.** Only keys the vocabulary accepted; an illegal value is dropped, never coerced. |
+| `confirmed` | object | **The human half.** Nothing in the extractor path can write it — `buildAttributeRecord` structurally cannot produce this child, which is the reason a re-run at any version cannot clobber a correction. `resolveAttributes` prefers it field by field. |
+| `from` | object | Per field: `"record"` (read off the product), `"vision"` (paid for), `"derived"` (arithmetic). |
+| `conf` | object | Per-field model confidence, 0–1. A field the model did not report has **no entry** rather than a fabricated `0` — absent and "certainly wrong" are different claims. |
+| `supersededV` | number \| null | The version this extraction replaced, so a bad version is diffable rather than merely gone. |
+
+### The vocabulary is closed (`src/utils/productAttributes.js`)
+
+Free text does not match: "off-white", "cream", "bone" and "ecru" are one shoe
+colour and four strings that score zero against each other. Every field is an
+enum, and colour additionally rolls up to a **family** so burgundy can rank
+beside oxblood without being called the same colour.
+
+`silhouette` · `upperMaterial` · `primaryColour` · `secondaryColour` ·
+`colourFamily` (derived) · `pattern` · `toeShape` · `soleColour` · `soleType` ·
+`closure` · `finish` · `priceBand` (derived from `retailPrice`) · `styleTags`
+(≤3) · `brand` and `category` (both read from the record, never asked for).
+
+**`"off-white"` is deliberately absent from the colour list.** Off-White is a
+label, `shopifyTriggers.js` refuses it, and a colour by that name would produce
+a listing title the publish path can never accept. `nameVocabularyTriggers()`
+proves at import time that no word the namer can emit is a trigger.
+
+**`styleTags` is OMITTED when empty, never written as `[]`.** RTDB deletes a
+child written as an empty array and it reads back `null`.
+
+### The name is derived from these, not judged separately
+
+`nameFromAttributes()` builds the listing title from the same data a suggestion
+is ranked on, so the two can never disagree. `distinctNamesFor()` escalates
+specificity **only where a handle actually collides**, so a name that was
+already unique never gains a word it did not need. Proposals go to the existing
+`/shopify_publish/{pid}/nameProposal` lane — `cleanName` is still never written
+by a script.
+
+---
+
+## `/products/{productId}/alternatives` — the precomputed neighbour list
+
+The runtime half, and the reason it lives on the hot node rather than beside the
+attributes: the ✕ sheet needs it the instant a chip is tapped, and a per-tap
+fetch is a spinner in front of a customer.
+
+An array of up to 12 strings, `"<productId>:<reasonCode>"`, best first. Written
+only by `scripts/shopify/build-neighbours.mjs`, which scores the whole matrix
+offline — 1,410 sneakers is ~1M pairs, and scoring that in a phone at tap time
+is a frozen screen. The reason is a single character rendered from
+`MATCH_REASONS`; twelve sentences per product would be ~300 KB of prose on a
+node every device streams in full.
+
+Read by `alternativesCore.sellableAlternatives`, which joins each candidate to
+LIVE availability through the shared resolver (`availabilityCore`, PR #562) and
+drops anything that cannot be sold this minute. Every gate fails closed —
+notably, a Pine/hub3 shoe is dropped because `sneakerOut` returning false there
+means "no gate", **not** "in stock".
+
+---
+
 ## `/products_meta`
 
 Holds the SKU and barcode counters that back the product-creation auto-assignment.
