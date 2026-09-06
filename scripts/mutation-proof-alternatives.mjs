@@ -288,6 +288,14 @@ const MUTATIONS = [
       // Still tappable: the tap is what opens the sheet.`,
   },
   {
+    id: "G21c",
+    guard: "The SELLABLE size stays the brighter of the two — raising one label alone inverted the pair",
+    file: CHIP,
+    kind: "behavioural",
+    from: `    color: selected ? BLUE_L : "rgba(233,238,255,.78)",`,
+    to: `    color: selected ? BLUE_L : "#888",`,
+  },
+  {
     id: "G22",
     guard: "The unavailable chip stays TAPPABLE — not-allowed would put the sheet out of reach entirely",
     file: CHIP,

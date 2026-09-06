@@ -51,13 +51,10 @@ export function phoneSizeChipStyle({ out, selected }) {
       // 3. A FAINT FILL where an available chip is transparent.
       background: "rgba(255,255,255,.045)",
       // 4. Lower text contrast — but LEGIBLE, which is the whole point of
-      //    dropping the glyph. .38 was measured at roughly 3:1 against these
-      //    chip surfaces and a 16px size label wants 4.5:1 (CodeRabbit). Raised
-      //    to .62, which clears it. The chip does not need the text to carry
-      //    the signal: three other axes already do, and a size number nobody
-      //    can read is a worse failure than one that looks slightly available.
-      //    No line-through.
-      color: "rgba(233,238,255,.62)",
+      //    dropping the glyph. .38 measured at roughly 3:1 against these chip
+      //    surfaces and a 16px size label wants 4.5:1 (CodeRabbit). No
+      //    line-through, and no blanket opacity: both would undo this.
+      color: "rgba(233,238,255,.62)",   // 6.5:1 — see the pairing note below
       // Still tappable: the tap is what opens the sheet.
       cursor: "pointer",
     };
@@ -67,7 +64,18 @@ export function phoneSizeChipStyle({ out, selected }) {
     borderStyle: "solid",
     borderColor: selected ? BLUE : "rgba(60,110,255,.15)",
     background: selected ? "rgba(60,110,255,.15)" : "transparent",
-    color: selected ? BLUE_L : "#888",
+    // ── THE AVAILABLE CHIP HAD TO MOVE TOO ────────────────────────────────
+    // Raising the unavailable label to .62 INVERTED the pair: composited on
+    // its own faintly-filled surface it lands at rgb(153,157,171), luminance
+    // .338, against #888's .246 — the unavailable number came out BRIGHTER
+    // than the sellable one, which is the wrong way round on the one axis a
+    // person reads fastest. (Caught by computing it, not by looking at it.)
+    //
+    // #888 was also only 5.4:1 and is the label on the chips staff use all
+    // day. .78 puts it at 10.3:1 and luminance .509 — comfortably the
+    // brighter of the two, so the ordering says what it should: this size is
+    // live, that one is not.
+    color: selected ? BLUE_L : "rgba(233,238,255,.78)",
     cursor: "pointer",
   };
 }
@@ -81,10 +89,13 @@ export function quickViewSizeChipStyle({ out }) {
       borderStyle: "dashed",
       borderColor: "rgba(255,255,255,.20)",
       background: "rgba(255,255,255,.045)",
-      color: "rgba(233,238,255,.62)",   // see phoneSizeChipStyle — 4.5:1, not 3:1
+      color: "rgba(233,238,255,.62)",   // see phoneSizeChipStyle for the pairing
       cursor: "pointer",
     };
   }
+  // The quick-view's available chip keeps its stylesheet colour (.ad-svsz
+  // button), which is already brighter than .62 composited — the inversion
+  // this file fixes is the phone sheet's, where the two were set side by side.
   return { position: "relative" };
 }
 

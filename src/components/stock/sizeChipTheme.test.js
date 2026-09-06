@@ -61,8 +61,21 @@ describe("the size number stays readable", () => {
   it("the unavailable size number clears 4.5:1 on its own chip surface", () => {
     const out = phoneSizeChipStyle({ out: true });
     const surface = composite(out.background, SHEET_BG);
-    const text = composite(out.color, surface);
-    expect(contrast(text, surface)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(composite(out.color, surface), surface)).toBeGreaterThanOrEqual(4.5);
+  });
+  it("and so does the AVAILABLE one — it is the label staff read all day", () => {
+    const ok = phoneSizeChipStyle({ out: false, selected: false });
+    expect(contrast(composite(ok.color, SHEET_BG), SHEET_BG)).toBeGreaterThanOrEqual(4.5);
+  });
+  // THE ORDERING IS THE POINT, and raising one label alone inverted it: the
+  // unavailable number composited BRIGHTER than the sellable one (luminance
+  // .338 vs .246), which is backwards on the axis a person reads fastest.
+  it("the SELLABLE size is the brighter of the two", () => {
+    const out = phoneSizeChipStyle({ out: true });
+    const ok = phoneSizeChipStyle({ out: false, selected: false });
+    const outLum = relLum(composite(out.color, composite(out.background, SHEET_BG)));
+    const okLum = relLum(composite(ok.color, SHEET_BG));
+    expect(okLum).toBeGreaterThan(outLum);
   });
   it("nothing is faded with a blanket opacity, which would defeat the above", () => {
     expect(phoneSizeChipStyle({ out: true }).opacity).toBeUndefined();
