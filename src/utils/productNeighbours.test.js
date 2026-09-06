@@ -32,6 +32,20 @@ describe("the silhouette group is a wall, not a weight", () => {
   it("trainers substitute for each other across their own group", () => {
     expect(scorePair(prof("p1", { silhouette: "low-top" }), prof("p2", { silhouette: "high-top" })).score).toBeGreaterThan(0);
   });
+  // SILHOUETTE_GROUP["__proto__"] is Object.prototype: truthy, so the group
+  // lookup returned it, and the wall then compared Object.prototype to
+  // Object.prototype — equal — letting ANY silhouette substitute for any other.
+  it("does not inherit a group from Object.prototype, which would open the wall", () => {
+    for (const bad of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
+      expect(silhouetteGroup(bad), bad).toBe("");
+      expect(neighbourProfile(PRODUCT, { ...ATTRS, silhouette: bad }), bad).toBe(null);
+    }
+  });
+  it("matchReasonText does not inherit a sentence from Object.prototype", () => {
+    for (const bad of ["__proto__", "constructor", "toString"]) {
+      expect(matchReasonText(bad), bad).toBe(MATCH_REASONS.x);
+    }
+  });
   it("an unknown silhouette produces no profile at all", () => {
     expect(neighbourProfile(PRODUCT, { ...ATTRS, silhouette: "moon-boot" })).toBe(null);
     expect(neighbourProfile(PRODUCT, null)).toBe(null);

@@ -245,6 +245,40 @@ describe("the name is derived from the attributes", () => {
     expect(nameFromAttributes({ silhouette: "low-top" })).toBe("");
     expect(nameFromAttributes(null)).toBe("");
   });
+  // PRESENT IS NOT ENOUGH — it must be LEGAL. resolveAttributes prefers
+  // `confirmed`, which a person writes straight into RTDB and which nothing
+  // validates on the way out, so an illegal value arrives looking exactly like
+  // a legal one.
+  it("refuses when a required attribute is present but OUTSIDE the vocabulary", () => {
+    for (const bad of ["UNKNOWN", "sneaker", "__proto__", "off-white"]) {
+      expect(nameFromAttributes({ ...FULL, silhouette: bad }), `silhouette=${bad}`).toBe("");
+      expect(nameFromAttributes({ ...FULL, primaryColour: bad }), `primaryColour=${bad}`).toBe("");
+      expect(nameFromAttributes({ ...FULL, upperMaterial: bad }), `upperMaterial=${bad}`).toBe("");
+      expect(nameFromAttributes({ ...FULL, pattern: bad }), `pattern=${bad}`).toBe("");
+    }
+  });
+  // An OPTIONAL illegal value is dropped, not fatal — the shoe still gets a
+  // name, just a less specific one.
+  it("drops an illegal OPTIONAL value instead of refusing the whole name", () => {
+    const n = nameFromAttributes({ ...FULL, secondaryColour: "UNKNOWN", soleColour: "__proto__" }, { discriminate: 2 });
+    expect(n).toBeTruthy();
+    expect(n).not.toContain("UNKNOWN");
+    expect(n).not.toContain("proto");
+  });
+  // MAP["__proto__"] is Object.prototype: truthy, not a string, and it made
+  // titleCase read [0] of an object and throw.
+  it("never throws on a prototype-named attribute value", () => {
+    for (const k of ["finish", "soleType", "closure", "toeShape", "silhouette", "upperMaterial", "pattern"]) {
+      for (const bad of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
+        expect(() => nameFromAttributes({ ...FULL, [k]: bad }, { discriminate: 4 }), `${k}=${bad}`).not.toThrow();
+      }
+    }
+  });
+  it("colourFamily does not inherit a family from Object.prototype", () => {
+    for (const bad of ["__proto__", "constructor", "toString", "valueOf"]) {
+      expect(colourFamily(bad), bad).toBe("");
+    }
+  });
   it("names both colours when there are two", () => {
     // "Two-tone … in black and white" says the same thing twice, so the
     // pattern word is suppressed when both colours are named — those nine
