@@ -39,7 +39,14 @@ export default function NotificationSettingsRow({ push }) {
   if (!push || !push.uid) return null;
   const { enabled, reason, hasExplicit, state, busy, setEnabled, clearExplicit } = push;
 
-  const trouble = enabled ? TROUBLE[state] : null;
+  // NOT gated on `enabled`. setEnabled(true) records the preference only once
+  // the browser has granted permission, so a DENIED prompt leaves the resolved
+  // value at the role default — off — while the state holds the only
+  // explanation of why the tap did nothing. Gating on `enabled` showed that
+  // user "Off for your role. Switch it on…", beside a switch that would not
+  // move, with the real cause hidden. Every key in TROUBLE is a non-working
+  // state, so an actually-working "on" user still sees no warning.
+  const trouble = TROUBLE[state] || null;
   const sub = trouble
     || (enabled
       ? (reason === "role_default_on"

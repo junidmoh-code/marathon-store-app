@@ -22,6 +22,7 @@ import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
 import { onValue, ref } from "firebase/database";
 import { auth, database } from "../firebase";
 import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
+import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
 
@@ -144,7 +145,19 @@ export default function AuthGate({ children, renderTv }) {
   const storeIds      = permReadError ? effectiveStoreIds({ storeIds: [] }, isSuperAdmin)
                                       : effectiveStoreIds(permRecord, isSuperAdmin);
   const hasPermission = (p) => isSuperAdmin || permissions.includes(p);
-  const doSignOut     = () => signOut(auth).catch((err) => console.warn("signOut failed:", err));
+  // Push registration is torn down BEFORE the sign-out, while this user is
+  // still authenticated — the only moment the database accepts it, since the
+  // rules scope every write on those paths to auth.uid. These tablets are
+  // shared: without this, the next person to sign in inherits a live token row
+  // belonging to the last one, and starts receiving their alerts.
+  //
+  // Awaited, but never allowed to block: a failure logs and the sign-out
+  // proceeds regardless. Someone tapping Sign out must always sign out.
+  const doSignOut     = () =>
+    revokeBeforeSignOut(user && !user.isAnonymous ? user.uid : null)
+      .catch(() => {})
+      .then(() => signOut(auth))
+      .catch((err) => console.warn("signOut failed:", err));
 
   return (
     <PermissionsContext.Provider

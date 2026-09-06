@@ -201,6 +201,14 @@ function shouldNotify(requestId, rec) {
   if (rec.status !== "open") return "not_open";
   const hub = typeof rec.requestingLocation === "string" ? rec.requestingLocation.trim() : "";
   if (!hub) return "no_destination";
+  // THIS VALUE BECOMES A PATH SEGMENT — push_bursts/{hub} and
+  // push_audience/{hub} — and it arrives from records this function does not
+  // write. RTDB refuses ".", "#", "$", "[" and "]" in a key, so db.ref() THROWS
+  // on one, before the send's own try/catch exists; and "/" would silently
+  // become a second path level, splitting one hub's window across two nodes so
+  // the collapse quietly stops working. The data here is known to be dirty, so
+  // an unusable destination is refused rather than trusted.
+  if (/[.#$/[\]]/.test(hub)) return "bad_destination";
   return null;
 }
 
@@ -348,7 +356,11 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
   // already waiting. Every other invocation for this burst has long since
   // exited.
   const waitStart = now();
-  let lastCount = -1;
+  // Seeded with the count this invocation actually claimed, NOT -1. Starting
+  // below every possible count makes the first tick unable to conclude "quiet",
+  // so a single hand-raised request that attracts no joiners waited two ticks —
+  // 24s, not the one tick the comments promise.
+  let lastCount = Number((claim.snapshot.val() || {}).count) || 0;
   let readFailures = 0;
   for (;;) {
     await sleep(FLUSH_TICK_MS);

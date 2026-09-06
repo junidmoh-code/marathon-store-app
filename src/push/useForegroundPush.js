@@ -38,7 +38,11 @@ export function useForegroundPush({ enabled }) {
   useEffect(() => { if (enabled) armAudioUnlock(); }, [enabled]);
 
   useEffect(() => {
-    if (!enabled || typeof window === "undefined") return undefined;
+    // Switching push off must take any banner already on screen with it —
+    // clearing only the timeout leaves the last alert sitting there after the
+    // feature that produced it was turned off.
+    if (!enabled) { setBanner(null); return undefined; }
+    if (typeof window === "undefined") return undefined;
     let cancelled = false;
     let unsubscribe = null;
 

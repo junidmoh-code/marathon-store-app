@@ -129,6 +129,27 @@ function audienceUpdates(uid, buckets, nowMs) {
 export async function ensurePushRegistration({ uid, wanted, buckets = [], promptIfNeeded = false }) {
   if (!uid) return { state: PUSH_STATE.ERROR, reason: "no_uid" };
 
+  // ── THE SHARED TABLET ───────────────────────────────────────────────────────
+  // Staff sign in with a PIN on tablets they share. An FCM token belongs to the
+  // BROWSER, not to the signed-in account, and getDeviceId() is stable across
+  // sign-outs — so when B signs in after A, getToken() hands back A's token and
+  // it gets written under B as well. A's row stays live, pointing at a device A
+  // is not holding, and the fan-out sends A's alerts to whoever is using it.
+  //
+  // The clean fix is to revoke while the user is still authenticated, which
+  // signOutWithPush() does at the sign-out tap. This is the path for when that
+  // did not happen — a closed tab, an expired session, a device handed over.
+  // B cannot delete A's rows (the rules scope every write to auth.uid, and that
+  // is exactly right), so instead B DELETES THE SHARED TOKEN and registers a
+  // fresh one. A's row is left holding an address that no longer exists, and
+  // the fan-out's dead-token pruning removes it on the very next send. The
+  // machinery to clean this up already exists; this just makes it fire.
+  const marker = registeredMarker();
+  if (marker && marker !== uid) {
+    await orphanForeignToken();
+    setRegisteredMarker(null);
+  }
+
   if (!wanted) {
     // Nothing was ever registered from this browser for this user — so there is
     // nothing to delete, and the cheapest correct thing is silence.
@@ -202,6 +223,48 @@ export async function ensurePushRegistration({ uid, wanted, buckets = [], prompt
   }
 }
 
+/**
+ * Revoke this browser's push registration BEFORE the user signs out, while they
+ * are still authenticated — the only moment the database will accept the
+ * delete, because the rules scope every write on these paths to auth.uid.
+ *
+ * Wired into the app's one sign-out (src/components/AuthGate.jsx). Doing it
+ * afterwards cannot work, and doing it from the NEXT user's session cannot work
+ * either; both would leave a live token row pointing at a tablet its owner has
+ * handed over.
+ *
+ * Never blocks the sign-out. A staff member tapping Sign out must always sign
+ * out, so a failed cleanup keeps the marker (so a later load can retry) and
+ * lets the sign-out proceed; the fan-out's dead-token pruning is the backstop.
+ */
+export async function revokeBeforeSignOut(uid) {
+  if (!uid || registeredMarker() !== uid) return;
+  try {
+    await revokePushRegistration({ uid });
+  } catch (err) {
+    console.warn("[push] sign-out cleanup failed (sign-out continues):", err);
+  }
+}
+
+/** Drop the FCM token this browser shares with a PREVIOUS user, so the next
+ *  getToken() mints a fresh one. Deliberately does not touch RTDB: the previous
+ *  user's rows are theirs, and the rules (correctly) refuse this write. Their
+ *  row is left pointing at a dead address, which the fan-out prunes on its next
+ *  send — see the shared-tablet note in ensurePushRegistration. */
+async function orphanForeignToken() {
+  try {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const swReg = await navigator.serviceWorker.getRegistration(PUSH_SW_SCOPE);
+    if (!swReg) return;
+    const { getMessaging, deleteToken, isSupported } = await import("firebase/messaging");
+    if (await isSupported()) await deleteToken(getMessaging());
+  } catch (err) {
+    // Worst case the token is shared for a while longer and the previous user's
+    // device label is wrong. Never worth failing a sign-in over.
+    console.warn("[push] could not release the previous user's token:", err);
+  }
+}
+
 /** Tear the registration down completely: no token, no row, no index entry. */
 export async function revokePushRegistration({ uid }) {
   if (!uid) return;
@@ -219,6 +282,7 @@ export async function revokePushRegistration({ uid }) {
     }
   } catch { /* the RTDB cleanup below is what actually stops the sends */ }
 
+  let cleanupFailed = false;
   try {
     if (deviceId) {
       await remove(ref(database, pushTokenPath(uid, deviceId)));
@@ -231,18 +295,21 @@ export async function revokePushRegistration({ uid }) {
       if (snap.exists()) await remove(ref(database, `push_tokens/${uid}`));
     }
   } catch (err) {
+    cleanupFailed = true;
     console.warn("[push] could not remove token row:", err);
   }
 
   try {
     await update(ref(database), audienceUpdates(uid, [], serverNowMs()));
   } catch (err) {
+    cleanupFailed = true;
     console.warn("[push] could not clear audience entries:", err);
   }
 
-  // Cleared LAST, and only after the writes above were attempted: clearing it
-  // first would mean a revoke that failed mid-way could never be retried,
-  // because the next load would see no marker and skip the whole path — leaving
-  // a live token receiving notifications for someone who switched them off.
-  setRegisteredMarker(null);
+  // Cleared LAST, and only if the writes above actually succeeded. The marker
+  // is what lets a later load retry; clearing it after a FAILED delete would
+  // make the next load skip the whole path and leave a live token notifying
+  // someone who switched notifications off — or, on a shared tablet, notifying
+  // the wrong person entirely.
+  if (!cleanupFailed) setRegisteredMarker(null);
 }

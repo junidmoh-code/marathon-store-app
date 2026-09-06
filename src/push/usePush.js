@@ -55,6 +55,10 @@ export function usePushRegistration({ user, permRecord, isSuperAdmin }) {
   useEffect(() => {
     if (!uid || !prefsLoaded) return;
     let cancelled = false;
+    // Cleared before every attempt AND on a uid change, so a previous user's
+    // successful registration can never be read as this one's. On a shared
+    // tablet that is the difference between "B is registered" and "A was".
+    setState(null);
     ensurePushRegistration({ uid, wanted: resolved.on, buckets: resolved.buckets })
       .then((r) => { if (!cancelled) setState(r.state); })
       .catch((e) => { if (!cancelled) { console.error("[push]", e); setState(PUSH_STATE.ERROR); } });
@@ -106,6 +110,14 @@ export function usePushRegistration({ user, permRecord, isSuperAdmin }) {
   return {
     uid,
     enabled: resolved.on,
+    // ── WHAT THE FOREGROUND LISTENER MUST GATE ON ────────────────────────────
+    // `enabled` is only the resolved PREFERENCE. Registration can still be in
+    // flight, or have come back BLOCKED, UNSUPPORTED or ERROR — and several of
+    // those paths leave an earlier token and audience entry alive, so a payload
+    // can reach the tab and chime at somebody whose registration is not
+    // actually working. `ready` says the current uid's registration returned
+    // ON, and nothing else does.
+    ready: state === PUSH_STATE.ON,
     reason: resolved.reason,
     hasExplicit: typeof (prefs && prefs.refillRequests) === "boolean",
     state,

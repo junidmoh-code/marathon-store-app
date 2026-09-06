@@ -18297,7 +18297,11 @@ function AppInner() {
   const push = usePushRegistration({ user: authUser, permRecord, isSuperAdmin });
   // The in-app half: banner + chime instead of an OS notification while the app
   // is open. No listener at all when push is off.
-  const foregroundPush = useForegroundPush({ enabled: !!push.enabled && !!push.uid });
+  // Gated on `ready` (this uid's registration actually returned ON), not merely
+  // on the preference: registration can be in flight or have failed, and some
+  // of those paths leave an older token alive, which would chime at someone
+  // whose push is not really working.
+  const foregroundPush = useForegroundPush({ enabled: !!push.ready && !!push.uid });
   // Gates the shared /insights_log subscription (mounted at the bottom of this
   // component): the read is rules-gated on a non-anonymous user.
   const insightsAuthReady = useAuthReady();

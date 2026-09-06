@@ -24,6 +24,8 @@ const PUSH = "functions/lib/refill-push.cjs";
 const SERVER_TESTS = ["test/refill-push.test.cjs"];
 const PREFS_TESTS = ["src/push/notificationPrefs.test.js"];
 const CHIME = "src/push/chime.js";
+const FOREGROUND = "src/push/useForegroundPush.js";
+const FOREGROUND_TESTS = ["src/push/foregroundBanner.test.jsx"];
 const CHIME_TESTS = ["src/push/chime.test.js"];
 
 const MUTATIONS = [
@@ -263,6 +265,48 @@ function normalise(v) {`,
     from: "      if (readFailures >= MAX_TICK_READ_FAILURES) break;",
     to: "      break;",
     nodeTests: SERVER_TESTS,
+  },
+
+  // ── CODERABBIT ROUND (PR #569) ────────────────────────────────────────────
+  {
+    id: "M29",
+    guard: "A destination that is not a legal RTDB key is REFUSED before it becomes a path",
+    file: PUSH,
+    from: '  if (/[.#$/[\\]]/.test(hub)) return "bad_destination";',
+    to: "",
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M30",
+    guard: "A lone request is quiet at the FIRST tick — seeded from the claimed count, not -1",
+    file: PUSH,
+    from: "  let lastCount = Number((claim.snapshot.val() || {}).count) || 0;",
+    to: "  let lastCount = -1;",
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M31",
+    guard: "The recipient CAP holds — the old test could not fail because only one uid had a token",
+    file: PUSH,
+    from: "  return Array.from(uids).slice(0, MAX_RECIPIENTS);",
+    to: "  return Array.from(uids);",
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M32",
+    guard: "Switching push off clears a banner already on screen",
+    file: FOREGROUND,
+    from: "    if (!enabled) { setBanner(null); return undefined; }",
+    to: "    if (!enabled) return undefined;",
+    tests: FOREGROUND_TESTS,
+  },
+  {
+    id: "M33",
+    guard: "The same message never fires twice — a reconnect is not a second alert",
+    file: FOREGROUND,
+    from: "      if (shownRef.current.has(key)) return;",
+    to: "",
+    tests: FOREGROUND_TESTS,
   },
 
   // ── THE CHIME MUST NOT PAINT THE FATAL BANNER ─────────────────────────────

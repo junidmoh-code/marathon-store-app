@@ -300,12 +300,55 @@ test("nobody subscribed: it closes the window quietly rather than throwing", asy
 
 test("the recipient set is capped, so a corrupted index cannot fan out forever", async () => {
   const world = WORLD();
-  for (let i = 0; i < MAX_RECIPIENTS + 50; i += 1) world.push_audience.all[`u${i}`] = { at: NOW };
+  // EVERY surplus uid gets a token. The earlier version of this test gave a
+  // token only to u_ware, so deleting the cap still produced one token and the
+  // assertion passed — it could not fail, which is the same as not existing.
+  for (let i = 0; i < MAX_RECIPIENTS + 50; i += 1) {
+    world.push_audience.all[`u${i}`] = { at: NOW };
+    world.push_tokens[`u${i}`] = { d1: { token: `tok-${i}` } };
+  }
   const { ref } = fakeDb(world);
   const m = fakeMessaging();
   await run({ ref }, m, "r1", REQ());
-  // u_ware is the only uid with a token; the cap is on how many are RESOLVED.
-  assert.ok(m.calls.length <= 1);
+  assert.equal(m.calls.length, 1);
+  assert.ok(
+    m.calls[0].tokens.length <= MAX_RECIPIENTS,
+    `resolved ${m.calls[0].tokens.length} recipients, cap is ${MAX_RECIPIENTS}`,
+  );
+});
+
+test("a destination that is not a legal RTDB key is REFUSED, not turned into a path", async () => {
+  // These arrive on records this function does not write, and the data is known
+  // to be dirty. A "." or "#" makes db.ref() throw before the send's try/catch
+  // exists; a "/" would silently split one hub's window across two nodes and
+  // stop the collapse working, with nothing to show for it.
+  for (const bad of ["a.b", "a#b", "a$b", "a/b", "a[b", "a]b", "marathon.pe"]) {
+    assert.equal(shouldNotify("r1", REQ({ requestingLocation: bad })), "bad_destination", bad);
+  }
+  for (const good of ["hub1", "hub2", "marathon-pe", "marathon_pine", "trophy"]) {
+    assert.equal(shouldNotify("r1", REQ({ requestingLocation: good })), null, good);
+  }
+
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "r1", REQ({ requestingLocation: "hub/1" }));
+  assert.equal(res.skipped, "bad_destination");
+  assert.equal(m.calls.length, 0);
+});
+
+test("a lone request is quiet at the FIRST tick, not the second", async () => {
+  // lastCount used to start at -1, which no real count can equal, so a single
+  // hand-raised request always waited two ticks — 24 seconds, twice what every
+  // comment in the file promised.
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+  let ticks = 0;
+  await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "r1", record: REQ(),
+    nowMs: NOW, sleep: async () => { ticks += 1; }, newWindowId: () => "W1",
+  });
+  assert.equal(ticks, 1, "one request that attracts no joiners waits exactly one tick");
+  assert.equal(m.calls.length, 1);
 });
 
 // ── THE WORDS, AND THE LINK ──────────────────────────────────────────────────
