@@ -46,10 +46,25 @@
 // makes that possible and also makes the flush safely repeatable: a second
 // flush of an already-closed window finds nothing claimed and sends nothing.
 
-// How long requests keep joining one window. Comfortably longer than the gap
-// between two consecutive writes inside one engine sweep's apply loop (serial
-// RTDB I/O, a few hundred ms each), so a whole sweep collapses into one send.
-const WINDOW_MS = 90 * 1000;
+// ── HOW A WINDOW IS JUDGED ABANDONED: A HEARTBEAT, NOT A STOPWATCH ──────────
+// The first version asked "has this window existed longer than WINDOW_MS?" and
+// treated a yes as "its claimer died". That question cannot tell a dead claimer
+// from a live one, and it is WRONG for exactly the case this feature exists to
+// serve: the engine's apply loop is boxed at 200s, so a real sweep's claimer is
+// legitimately still waiting long after any such threshold. The next request
+// past the line would mint a new window, steal the count, and leave the live
+// claimer to wake up, find someone else's window, and send nothing. For a sweep
+// longer than the threshold that repeated every threshold-length — churning the
+// whole node each time, and turning one notification back into instalments.
+// Raising the constant only moves the line; it does not make the question
+// answerable.
+//
+// So the claimer SAYS IT IS ALIVE. Each tick it stamps heartbeatAt. A window
+// with a fresh heartbeat has someone waiting on it and is joined; a window
+// whose heartbeat has gone quiet for three ticks has lost its claimer and is
+// carried forward. This is answerable, it is independent of how long the burst
+// runs, and it recovers from a dead claimer FASTER than the old threshold did.
+const STALE_CLAIM_MS = 45 * 1000;
 
 // ── THE CLAIMER WAITS FOR QUIET, NOT FOR A FIXED DELAY ──────────────────────
 // A fixed delay does not collapse a burst; it collapses the first N seconds of
@@ -72,6 +87,10 @@ const WINDOW_MS = 90 * 1000;
 // the ceiling simply gets a second notification — the degradation is graceful.
 const FLUSH_TICK_MS = 12 * 1000;
 const MAX_FLUSH_WAIT_MS = 240 * 1000;
+
+// Consecutive failed tick reads before the claimer gives up waiting and flushes
+// with what it has. See the catch in the wait loop for why one is not enough.
+const MAX_TICK_READ_FAILURES = 3;
 
 // How long a request id is remembered as "already counted".
 const REPLAY_TTL_MS = 30 * 60 * 1000;
@@ -293,7 +312,11 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
     const seen = pruneSeen(cur && cur.seen, nowMs);
     if (seen[requestId]) { replay = true; return undefined; }
     seen[requestId] = nowMs;
-    const open = !!(cur && cur.windowId && !cur.closedAt && nowMs - Number(cur.startedAt || 0) < WINDOW_MS);
+    // Fresh heartbeat (or, before the first tick, a fresh start) = a claimer is
+    // alive and waiting. heartbeatAt is preferred but startedAt is the fallback,
+    // because a window is joinable for its first tick before any beat exists.
+    const beat = Number((cur && (cur.heartbeatAt || cur.startedAt)) || 0);
+    const open = !!(cur && cur.windowId && !cur.closedAt && nowMs - beat < STALE_CLAIM_MS);
     if (open) {
       return { ...cur, count: Number(cur.count || 0) + 1, sample: cur.sample || sample, seen };
     }
@@ -307,7 +330,7 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
     // notification should ever be.
     const orphaned = cur && cur.windowId && !cur.closedAt ? Number(cur.count || 0) : 0;
     return {
-      windowId, startedAt: nowMs, count: 1 + orphaned,
+      windowId, startedAt: nowMs, heartbeatAt: nowMs, count: 1 + orphaned,
       sample: (orphaned && cur.sample) || sample, seen, closedAt: null,
     };
   });
@@ -326,14 +349,37 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
   // exited.
   const waitStart = now();
   let lastCount = -1;
+  let readFailures = 0;
   for (;;) {
     await sleep(FLUSH_TICK_MS);
+    const tickNow = nowMs + (now() - waitStart);
     let cur = null;
-    try { cur = (await burstRef.get()).val(); } catch { break; }   // a read blip: flush with what we have
+    try {
+      cur = (await burstRef.get()).val();
+      readFailures = 0;
+    } catch {
+      // ONE blip is not an answer. Breaking on the first failed read turns the
+      // whole tick design back into a single fixed delay — silently, and under
+      // exactly the load (contention during a large sweep) most likely to cause
+      // the failure in the first place: a sustained read problem would fragment
+      // one sweep into dozens of tiny notifications, which is the original bug
+      // arriving through an error path instead of a timing constant. Only a run
+      // of failures means "we genuinely cannot tell", and then flushing with
+      // what we have is the conservative answer.
+      readFailures += 1;
+      if (readFailures >= MAX_TICK_READ_FAILURES) break;
+      continue;
+    }
     // Somebody closed or replaced this window (a restore, a manual clear).
     // Stop waiting; the close transaction below will find nothing claimed and
     // send nothing, which is correct.
     if (!cur || cur.windowId !== windowId) break;
+    // SAY WE ARE ALIVE. Without this a joining request cannot tell this claimer
+    // from a dead one, and will carry the count off into a new window. A plain
+    // update rather than a transaction: it is a single leaf, and a transaction
+    // here would have to handle the cold-cache null case, where aborting would
+    // mean never writing the beat at all.
+    try { await burstRef.update({ heartbeatAt: tickNow }); } catch { /* a missed beat only risks an early handoff */ }
     const seenCount = Number(cur.count) || 0;
     if (seenCount === lastCount) break;                            // quiet — the burst is over
     lastCount = seenCount;
@@ -348,10 +394,11 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
   const closedAt = nowMs + (now() - waitStart);
   let captured = null;
   await burstRef.transaction((cur) => {
-    // Someone else's window: leave it entirely alone. Cannot happen while this
-    // one is open (a new window only starts once this is closed), but a flush
-    // that stomped a live window would silently swallow a whole burst, so it is
-    // guarded rather than reasoned away.
+    // Someone else's window: leave it entirely alone. Reachable — a run of
+    // missed heartbeats (a paused instance, a spell of failed updates) lets a
+    // joining request judge this claim abandoned and open its own. That path is
+    // lossless: the count was carried forward into the new window, so the right
+    // thing for this claimer to do is exactly nothing.
     if (cur && cur.windowId && cur.windowId !== windowId) return undefined;
     if (cur && cur.windowId === windowId) captured = cur;
     // Always returns a value, never undefined — so a cold local cache still
@@ -401,6 +448,9 @@ async function restoreBurst({ burstRef, count, captured, closedAt }) {
     return {
       windowId: `retry_${closedAt}`,
       startedAt: 0,
+      // No heartbeat: nobody is waiting on a restored window, so it must read
+      // as abandoned to the very next request, which is what flushes it.
+      heartbeatAt: 0,
       count,
       sample: captured.sample || null,
       seen,
@@ -476,7 +526,8 @@ module.exports = {
   composeMessage,
   hubLabel,
   sourceTabFor,
-  WINDOW_MS,
+  STALE_CLAIM_MS,
+  MAX_TICK_READ_FAILURES,
   FLUSH_TICK_MS,
   MAX_FLUSH_WAIT_MS,
   REPLAY_TTL_MS,

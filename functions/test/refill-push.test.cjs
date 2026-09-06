@@ -16,7 +16,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   notifyRefillRequest, restoreBurst, shouldNotify, pruneSeen, composeMessage,
-  WINDOW_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS, MAX_SEEN,
+  STALE_CLAIM_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS, MAX_SEEN,
   FLUSH_TICK_MS, MAX_FLUSH_WAIT_MS,
 } = require("../lib/refill-push.cjs");
 
@@ -174,13 +174,13 @@ test("two hubs bursting at once get one notification EACH, not one between them"
   assert.deepEqual(m.calls.map((c) => c.data.hub), ["hub1", "hub2"]);
 });
 
-test("a request arriving after the window closed opens a NEW one and is not swallowed", async () => {
+test("a request arriving long after the claimer went quiet opens a NEW window", async () => {
   const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
   await run({ ref }, m, "r1", REQ());
   const later = await notifyRefillRequest({
     db: { ref }, messaging: m, requestId: "r2", record: REQ(),
-    nowMs: NOW + WINDOW_MS + 1000, sleep: noSleep, newWindowId: () => "W2",
+    nowMs: NOW + STALE_CLAIM_MS + 1000, sleep: noSleep, newWindowId: () => "W2",
   });
   assert.equal(later.sent, true);
   assert.equal(m.calls.length, 2);
@@ -437,7 +437,7 @@ test("a window whose claimer DIED carries its count forward — late, never lost
   // count here would understate the work permanently.
   const next = await notifyRefillRequest({
     db: { ref }, messaging: m, requestId: "r9", record: REQ(),
-    nowMs: NOW + WINDOW_MS + 1, sleep: noSleep, newWindowId: () => "W2",
+    nowMs: NOW + STALE_CLAIM_MS + 1, sleep: noSleep, newWindowId: () => "W2",
   });
   assert.equal(next.sent, true);
   assert.equal(next.count, 6, "5 orphaned + 1 new");
@@ -559,4 +559,99 @@ test("the wait ends at the ceiling rather than never — a burst that never stop
   });
   assert.equal(res.sent, true, "an unending burst still produces a notification");
   assert.equal(m.calls.length, 1);
+});
+
+test("A LIVE CLAIMER IS NOT ROBBED — one clock, a sweep that outlives any fixed threshold", async () => {
+  // THE test the earlier suite could not fail. Its slow-sweep case advanced the
+  // joiners' clock by milliseconds and the claimer's by ticks — two clocks that
+  // are the same clock in production — so a joining request's `nowMs` never
+  // crossed the threshold that decided whether the claimer looked dead. With a
+  // fixed WINDOW_MS this scenario stole the burst from a live claimer every 90
+  // seconds and split one sweep into instalments; every test still passed.
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+
+  let clock = NOW;                      // ONE clock, shared by claimer and joiners
+  let landed = 0;
+  const slowSweep = async () => {
+    // Each tick is 12s of wall clock, and the sweep keeps writing for 200s —
+    // the engine's real apply box, and far past any 90s window.
+    clock += FLUSH_TICK_MS;
+    if (clock - NOW > 200 * 1000) return;   // the sweep finally stops
+    for (let i = 0; i < 5; i += 1) {
+      landed += 1;
+      await notifyRefillRequest({
+        db: { ref }, messaging: m, requestId: `s${landed}`, record: REQ(),
+        nowMs: clock, sleep: noSleep, now: () => clock, newWindowId: () => `Wj${landed}`,
+      });
+    }
+  };
+
+  const res = await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "s0", record: REQ(),
+    nowMs: NOW, sleep: slowSweep, now: () => clock, newWindowId: () => "W1",
+  });
+
+  assert.equal(res.sent, true, "the original claimer must still be the one that sends");
+  assert.equal(m.calls.length, 1, "a 200s sweep is ONE notification, not one per 90s");
+  assert.equal(res.count, landed + 1, "every request that landed during the sweep is counted");
+});
+
+test("a claimer that stops beating IS judged abandoned — recovery does not depend on the burst's age", async () => {
+  const { ref, state } = fakeDb(WORLD());
+  const m = fakeMessaging();
+
+  // A window opened long ago whose claimer beat once and then died.
+  await ref("push_bursts/hub1").transaction(() => ({
+    windowId: "DEAD", startedAt: NOW, heartbeatAt: NOW, count: 7,
+    sample: { productId: "p1", size: "9", qty: 1 }, seen: {}, closedAt: null,
+  }));
+
+  // A request three ticks later finds the heartbeat stale and takes over.
+  const res = await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "r1", record: REQ(),
+    nowMs: NOW + STALE_CLAIM_MS + 1, sleep: noSleep, newWindowId: () => "W2",
+  });
+  assert.equal(res.sent, true);
+  assert.equal(res.count, 8, "7 orphaned + 1 new");
+  assert.equal(state.push_bursts.hub1.windowId, null, "and the window is closed properly");
+});
+
+test("a run of failed tick reads flushes; a single blip does NOT", async () => {
+  // A sustained read failure fragmenting one sweep into dozens of notifications
+  // is the original bug arriving through an error path. One blip must not end
+  // the wait; a run of them must.
+  const world = WORLD();
+  const base = fakeDb(world);
+  let failures = 0;
+  const flaky = (path) => {
+    const inner = base.ref(path);
+    return {
+      ...inner,
+      async get() {
+        if (path.startsWith("push_bursts") && failures > 0) { failures -= 1; throw new Error("read blip"); }
+        return inner.get();
+      },
+    };
+  };
+  const m = fakeMessaging();
+  let ticks = 0;
+  // One blip, then the burst keeps growing for two more ticks, then quiet.
+  const sleepFn = async () => {
+    ticks += 1;
+    if (ticks === 1) { failures = 1; return; }          // a single blip
+    if (ticks <= 3) {
+      await notifyRefillRequest({
+        db: { ref: flaky }, messaging: m, requestId: `b${ticks}`, record: REQ(),
+        nowMs: NOW + ticks, sleep: noSleep, newWindowId: () => `Wb${ticks}`,
+      });
+    }
+  };
+  const res = await notifyRefillRequest({
+    db: { ref: flaky }, messaging: m, requestId: "b0", record: REQ(),
+    nowMs: NOW, sleep: sleepFn, newWindowId: () => "W1",
+  });
+  assert.equal(res.sent, true);
+  assert.ok(res.count > 1, "the wait survived the blip and kept collecting");
+  assert.ok(ticks > 1, "one failed read did not end the wait");
 });
