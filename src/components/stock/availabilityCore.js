@@ -166,6 +166,15 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 // availability promises this gate does not model — they keep yesterday's
 // behaviour. (Adversarial review, PR #446.)
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
+
+// ── WHERE A DISPLAY PAIR LIVES ───────────────────────────────────────────────
+// The display-pair lane is hub1-scoped by construction: the slots node, the
+// register and sneakerServedByHub1 all name hub1. A line flagged
+// displayPairRequest is therefore a HUB 1 pull of one identified physical pair,
+// and its hub is a FACT rather than a routing question — see the placement
+// path, where sending it through the stock-aware resolver could redirect it to
+// a hub that has no display register at all.
+export const DISPLAY_PAIR_HUB = "hub1";
 export function gatedSneakerHub(product, routedHub) {
   if (!isFootwearProduct(product)) return null;
   if ((product?.productType || "sneaker") === "clothing") return null;
@@ -272,19 +281,175 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 // `hubData[hub]` is { cells, promised, ready } — cells/promised in exactly the
 // shapes cellAvailability takes, `ready` the caller's settled-and-not-errored
 // read state for that hub's subtree.
-export function resolveSneakerSourcingHub({ product, taggedHub, size, hubData }) {
+// ── THE CART IS PART OF THE QUESTION (2026-09-06) ────────────────────────────
+// The first version of this decided from cellAvailability alone — booked minus
+// ready-promises — and did NOT subtract what the DEVICE'S OWN CART has already
+// committed. The screen then subtracted the cart AFTERWARDS, against whichever
+// hub this had already chosen, so the two disagreed in one specific and very
+// reachable way:
+//
+//   resolver:   available(tag) > 0        -> "the tag can supply", tag wins
+//   sneakerOut: available(tag) <= inCart  -> ✕
+//
+// ...and the alternate hub was never consulted, however much it held. An
+// assistant with one pair of a size in the cart was refused a second pair that
+// physically exists at the other hub. Measured on live stock 2026-09-06: 14
+// product/size cells at cart depth 1, 46 at depth 2, 60 at depth 3 — 20, 95 and
+// 121 strandable units respectively.
+//
+// So routing and availability are ONE computation now, returning both answers,
+// and the screen reads `available` rather than recomputing it. That is this
+// file's own standing rule — there is no second definition of "available" — and
+// the split is exactly how the two came to disagree.
+//
+// THE CART DRAINS THE TAGGED HUB FIRST, then spills. A cart line is a claim on
+// one unit of a product+size, not on a hub: the tag wins whenever it can
+// supply, so the first `taggedRaw` units of the cart come off the tag and only
+// the excess reaches the alternate. Subtracting the whole cart from BOTH hubs
+// would double-count it and refuse a pair that exists (tagged 1 + alternate 1 +
+// cart 1 must leave one orderable, not none).
+//
+// Everything else is unchanged, and identical at cart depth 0 — verified
+// branch by branch. See resolveSneakerSourcingHub below for the original rule,
+// which still reads exactly as it did.
+export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumedByHub = null }) {
+  // `available: null` means "this rule does not answer for it" — NOT zero. A
+  // caller must test it with Number.isFinite, because `null <= 0` is true in
+  // JavaScript and would turn "not our business" into "out of stock".
+  const NO_ANSWER = { hub: taggedHub, available: null };
+
   // Not a gated sneaker, or tagged at a hub this rule does not cover (hub3,
   // hubC, anything new) — the tag is the answer, untouched.
-  if (!gatedSneakerHub(product, taggedHub)) return taggedHub;
-  if (!size) return taggedHub;                 // no size, no per-cell question
+  if (!gatedSneakerHub(product, taggedHub)) return NO_ANSWER;
+  if (!size) return NO_ANSWER;                 // no size, no per-cell question
+
   const alternate = GATED_SNEAKER_HUBS.find((h) => h !== taggedHub);
   const tagged = hubData?.[taggedHub];
   const alt = hubData?.[alternate];
-  // Silence is not zero. Only a hub we have actually read can be judged empty,
-  // and only a hub we have actually read can be chosen instead.
-  if (!tagged?.ready || !alt?.ready) return taggedHub;
-  const here = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
-  if (here > 0) return taggedHub;              // the tag can supply — it wins
-  const there = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
-  return there > 0 ? alternate : taggedHub;    // both empty → the tag, and a true ✕
+  // Silence is not zero. A hub we have not read cannot be judged empty, and
+  // cannot be chosen instead.
+  if (!tagged?.ready) return NO_ANSWER;
+
+  // ── CONSUMPTION IS PER HUB, BECAUSE ALLOCATION IS ─────────────────────────
+  // This took a scalar `consumed` and drained the tagged hub first, spilling
+  // the excess. That models a cart as "N units of this size from wherever", and
+  // it is wrong the moment a line is PINNED to a hub: a display pull is a Hub 1
+  // unit by construction, and charging it against a Hub-2 tag made the next
+  // line believe Hub 2 was empty and route to a Hub 1 that only ever had the
+  // display pair — allocating that one pair twice while Hub 2's ordinary pair
+  // sat unused (independent review, reproduced 2026-09-06).
+  //
+  // The caller allocates line by line and tells us what it has taken FROM EACH
+  // HUB. The arithmetic is then simply per-hub subtraction — no spill rule, and
+  // no way for a unit to be charged to a shelf it never came off.
+  const takenAt = (h) => Math.max(Number(consumedByHub?.[h]) || 0, 0);
+  const taggedRaw = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
+  const taggedLeft = Math.max(taggedRaw - takenAt(taggedHub), 0);
+  if (taggedLeft > 0) return { hub: taggedHub, available: taggedLeft };
+
+  // The tag is exhausted. Only now does the alternate matter — and only if we
+  // have actually read it.
+  if (!alt?.ready) return { hub: taggedHub, available: 0 };
+  const altRaw = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
+  const altLeft = Math.max(altRaw - takenAt(alternate), 0);
+  if (altLeft > 0) return { hub: alternate, available: altLeft };
+
+  // BOTH EMPTY → THE TAGGED HUB, and a true ✕ that names the right shelf.
+  return { hub: taggedHub, available: 0 };
+}
+
+// ── ALLOCATING A CART, LINE BY LINE ──────────────────────────────────────────
+// Every question the ordering screen asks about a sneaker size depends on what
+// the DEVICE'S CART has already claimed and, crucially, FROM WHICH HUB. Two
+// earlier attempts at this lived in the screen and were wrong in ways that
+// routed real orders to empty shelves, so it is a pure function now, and one
+// walk feeds both the tile ("can I add one more?") and the checkout ("where
+// does THIS line come from?").
+//
+// THE THREE RULES, each of which was a defect first:
+//
+//   1. A CLASSIC DISPLAY PARTNER REQUEST CONSUMES NOTHING. It asks for what a
+//      hub does NOT have — it is a request, never a pull. Counting it made the
+//      next ordinary line believe the stock was gone and routed it to an empty
+//      hub.
+//   2. A DISPLAY PULL IS PINNED, AND CHARGED WHERE IT IS PINNED. The lane is
+//      hub1-scoped, so the unit comes off Hub 1 whatever the product's tag
+//      says. Charging it against the tag let the next line allocate Hub 1's
+//      single display pair a SECOND time while the alternate's ordinary pair
+//      sat unused.
+//   3. CONSUMPTION IS PER HUB. A cart is not "N units from wherever": each line
+//      draws from one shelf, and the next line must see that shelf shorter and
+//      the other one untouched.
+//
+// PINNED DEMAND IS ALLOCATED FIRST, then everything else in cart order. A
+// display pull can go nowhere else, so reserving it before the lines that CAN
+// move around it is what makes the allocation feasible whenever a feasible
+// allocation exists. `overAllocated` names any cell whose PULLS alone exceed
+// the pinned hub — genuinely infeasible, and the checkout refuses it rather
+// than quietly over-committing.
+//
+// A CONSEQUENCE WORTH STATING: a line does NOT keep the hub it was first given.
+// Adding a pull re-runs the whole allocation, and an ordinary line added before
+// it can move to the other shelf to make room — which is the point, and is why
+// the tile shows the cart as full the moment the pull lands rather than a
+// moment later. Cart order still decides between two flexible lines.
+//
+// `taggedHubFor(product)` is the caller's tag router; `hubData` is the same
+// { cells, promised, ready } map resolveSneakerSourcing takes.
+export function allocateSneakerCart({ lines, hubData, taggedHubFor, displayPairHub = DISPLAY_PAIR_HUB }) {
+  const hubOf = new Map();        // line -> the hub it draws from
+  const consumed = new Map();     // "pid::size" -> { hub1, hub2 }
+  const overAllocated = new Set();// "pid::size" -> pinned demand exceeds the pinned hub
+
+  const eligible = (line) => {
+    if ((line?.productType || "sneaker") === "clothing") return false;
+    if (line?.requestDisplayPartner && line?.displayPairRequest !== true) return false;   // rule 1
+    return !!(line?.product?.id && line?.size);
+  };
+  const keyOf = (line) => `${line.product.id}::${line.size}`;
+  const charge = (line, hub) => {
+    const key = keyOf(line);
+    const taken = consumed.get(key) || {};
+    hubOf.set(line, hub);
+    consumed.set(key, { ...taken, [hub]: (taken[hub] || 0) + 1 });
+  };
+
+  // ── PASS 1: THE PINNED DEMAND, BEFORE ANYTHING FLEXIBLE ───────────────────
+  // A display pull can go nowhere else, so it must be reserved before the
+  // lines that CAN move around it. Allocating in plain cart order let an
+  // ordinary line take Hub 1's last unit and the pull then overdraw the same
+  // hub — a deficit nothing recorded, so the tile saw Hub 2 as untouched and
+  // offered a THIRD pair against two (independent review, 2026-09-06).
+  //
+  // Constrained demand first is what makes the allocation FEASIBLE whenever a
+  // feasible allocation exists: the flexible lines flow around the pulls.
+  for (const line of lines || []) {
+    if (!eligible(line) || line.displayPairRequest !== true) continue;
+    const key = keyOf(line);
+    charge(line, displayPairHub);                                                   // rule 2
+    // Pulls that between them exceed the pinned hub are genuinely infeasible —
+    // there is no other shelf for them — so the cart is MARKED rather than
+    // quietly over-committed, and the checkout refuses it.
+    const pinned = hubData?.[displayPairHub];
+    if (pinned?.ready) {
+      const raw = cellAvailability({
+        cells: pinned.cells, promised: pinned.promised, productId: line.product.id, size: line.size });
+      if ((consumed.get(key)?.[displayPairHub] || 0) > raw) overAllocated.add(key);
+    }
+  }
+
+  // ── PASS 2: EVERYTHING ELSE, IN CART ORDER ────────────────────────────────
+  for (const line of lines || []) {
+    if (!eligible(line) || line.displayPairRequest === true) continue;
+    const hub = resolveSneakerSourcing({
+      product: line.product, taggedHub: taggedHubFor(line.product),
+      size: line.size, hubData, consumedByHub: consumed.get(keyOf(line)) || {},       // rule 3
+    }).hub;
+    if (hub) charge(line, hub);
+  }
+  return { hubOf, consumed, overAllocated };
+}
+
+export function resolveSneakerSourcingHub(args) {
+  return resolveSneakerSourcing(args).hub;
 }

@@ -298,7 +298,12 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(cellAvailability({ cells, promised: {}, productId: "s1", size: "8" })).toBe(1);     // hub2's
   });
   it("the display-only check still asks Hub 1 explicitly", () => {
-    expect(app()).toContain('const avail = sneakerAvail(p.id, s, "hub1") - sneakerInCart(p.id, s);');
+    // It asks by NAME through the shared constant now, and takes its remaining
+    // count from the resolver instead of recomputing one — recomputing is how
+    // the whole cart came to be subtracted from Hub 1 for units that were never
+    // Hub 1's. Still hub1-scoped, which is what this fence is about.
+    expect(app()).toContain("if (hub !== DISPLAY_PAIR_HUB || !Number.isFinite(available)) return null;");
+    expect(app()).toContain('const d = hub1DisplayUnits[promisedKey(p.id, s)];');
   });
 });
 
@@ -309,11 +314,30 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
 // 2026-09-06 defect inverted, and silent. There is ONE answer, and placement
 // reads it.
 describe("stock-aware sourcing has exactly one answer", () => {
-  it("placement asks sneakerHubOf, the same function the tile was gated on", () => {
-    expect(app()).toContain("(sneakerHubOf(item.product, item.size) || computeHubForItem(item))");
+  it("placement routes through the same allocation the tile was gated on", () => {
+    // ONE allocation of the cart, walked once (allocateSneakerCart, a pure
+    // function with its own behavioural tests), read by both. The tile asks
+    // "can I add one more?" and the checkout asks "where does THIS line come
+    // from?" — different questions, the same walk, so they cannot disagree.
+    // Keyed by the LINE OBJECT, so no index can drift out of step with it.
+    expect(app()).toContain("const cartAllocation = useMemo(() => allocateSneakerCart({");
+    expect(app()).toContain("(cartAllocation.hubOf.get(item) || computeHubForItem(item))");
+    expect(app()).toContain("consumedByHub: cartAllocation.consumed.get(");
   });
   it("and there is exactly one call to the routing resolver in the file", () => {
-    expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(1);
+    // resolveSneakerSourcing since 2026-09-06 — the routing and availability
+    // answers merged into one call when the CART became part of the question
+    // (they were two, and they disagreed). resolveSneakerSourcingHub is now a
+    // wrapper over it and the screen no longer calls it at all. The fence is
+    // unchanged in intent: exactly ONE place in this file decides the hub.
+    // ONE call in this file — the tile's. The checkout's allocation moved into
+    // availabilityCore as a pure function, which is why counting call sites is
+    // a weak fence and this no longer pretends otherwise: the real invariant is
+    // that BOTH read one allocation, and that is asserted above and covered
+    // behaviourally in sourcingCart.test.js.
+    expect((app().match(/resolveSneakerSourcing\(/g) || [])).toHaveLength(1);
+    expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(0);
+    expect(app()).toContain("const sneakerSourcing = (p, s) => resolveSneakerSourcing({");
   });
   it("computeHubForItem itself is untouched — it is still the TAG router", () => {
     // The stock-aware layer sits ON it, never inside it: hub3/Pine, clothing
@@ -334,8 +358,11 @@ describe("Hub 2 did not get its own code path", () => {
   it("one sneakerOut, and it routes by hub name", () => {
     const a = app();
     expect(a).toContain("const sneakerOut = (p, s) => {");
-    expect(a).toContain("const hub = sneakerHubOf(p, s);");
-    expect(a).toContain("sneakerAvail(p.id, s, hub) <= sneakerInCart(p.id, s)");
+    // It reads the resolver's OWN availability now rather than recomputing one
+    // beside it — that recomputation is precisely how the cart came to be
+    // subtracted against a hub chosen without it. Still one sneakerOut, still
+    // indexed by hub NAME, which is what this fence is about.
+    expect(a).toContain("const { hub, available } = sneakerSourcing(p, s);");
     expect(a).toContain('const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);');
     expect(a).toContain('const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);');
   });
