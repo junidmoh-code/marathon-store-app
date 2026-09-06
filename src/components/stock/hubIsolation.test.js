@@ -313,7 +313,13 @@ describe("stock-aware sourcing has exactly one answer", () => {
     expect(app()).toContain("(sneakerHubOf(item.product, item.size) || computeHubForItem(item))");
   });
   it("and there is exactly one call to the routing resolver in the file", () => {
-    expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(1);
+    // resolveSneakerSourcing since 2026-09-06 — the routing and availability
+    // answers merged into one call when the CART became part of the question
+    // (they were two, and they disagreed). resolveSneakerSourcingHub is now a
+    // wrapper over it and the screen no longer calls it at all. The fence is
+    // unchanged in intent: exactly ONE place in this file decides the hub.
+    expect((app().match(/resolveSneakerSourcing\(/g) || [])).toHaveLength(1);
+    expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(0);
   });
   it("computeHubForItem itself is untouched — it is still the TAG router", () => {
     // The stock-aware layer sits ON it, never inside it: hub3/Pine, clothing
@@ -334,8 +340,11 @@ describe("Hub 2 did not get its own code path", () => {
   it("one sneakerOut, and it routes by hub name", () => {
     const a = app();
     expect(a).toContain("const sneakerOut = (p, s) => {");
-    expect(a).toContain("const hub = sneakerHubOf(p, s);");
-    expect(a).toContain("sneakerAvail(p.id, s, hub) <= sneakerInCart(p.id, s)");
+    // It reads the resolver's OWN availability now rather than recomputing one
+    // beside it — that recomputation is precisely how the cart came to be
+    // subtracted against a hub chosen without it. Still one sneakerOut, still
+    // indexed by hub NAME, which is what this fence is about.
+    expect(a).toContain("const { hub, available } = sneakerSourcing(p, s);");
     expect(a).toContain('const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);');
     expect(a).toContain('const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);');
   });

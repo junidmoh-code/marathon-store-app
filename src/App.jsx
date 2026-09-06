@@ -95,7 +95,7 @@ import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from ".
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcingHub, GATED_SNEAKER_HUBS } from "./components/stock/availabilityCore";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcing, resolveSneakerSourcingHub, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB } from "./components/stock/availabilityCore";
 import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
 import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
 import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
@@ -9320,10 +9320,33 @@ function AssistantView({ products, onExit, orders = [] }) {
     hub1: { cells: hub1CellsState.cells, promised: hub1Promised, ready: sneakerGateReady("hub1") },
     hub2: { cells: hub2CellsState.cells, promised: hub2ReadyPromised, ready: sneakerGateReady("hub2") },
   });
-  const sneakerHubOf = (p, s) => resolveSneakerSourcingHub({
+  // Units of this product+size already in the cart. Classic partner rows are
+  // excluded (they become requests, not pulls) — but a display-pair PULL line
+  // IS a pull of a known unit and counts, so the same single pair can never
+  // be pulled twice within one cart session (the tile flips ✕ the moment the
+  // first pull line is in the cart). Mirrors clothingInCart otherwise.
+  const sneakerInCart = (pid, size) =>
+    cart.filter(l => (l.productType || "sneaker") !== "clothing"
+      && l.product?.id === pid && l.size === size
+      && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
+
+  // ── ROUTING AND AVAILABILITY ARE ONE ANSWER ──────────────────────────────
+  // They were two, and they disagreed. The resolver decided the hub from stock
+  // alone while sneakerOut subtracted the CART afterwards against whatever hub
+  // it had already picked — so a cart holding the tagged hub's last unit made
+  // the tile ✕ without the alternate ever being consulted, however much it
+  // held. Measured on live stock: 14 cells at cart depth 1, 46 at depth 2.
+  // One call now returns both, and the cart goes IN rather than being applied
+  // after the fact.
+  const sneakerSourcing = (p, s) => resolveSneakerSourcing({
     product: p, taggedHub: gatedSneakerHub(p, computeHubForItem({ product: p })),
     size: s, hubData: sneakerHubData(),
+    // sneakerInCart is the DEVICE's own claim on this product+size: the units
+    // it has already committed but not yet placed. Nothing server-side knows
+    // about it, which is exactly why the resolver could not see it before.
+    consumed: p?.id ? sneakerInCart(p.id, s) : 0,
   });
+  const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;
   // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
   // register), so they keep their own narrower predicate rather than riding
   // sneakerHubOf — a Hub 2 shoe must not be offered a Hub 1 display pair.
@@ -9334,18 +9357,14 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";
   const sneakerAvail = (pid, size, hub = "hub1") =>
     cellAvailability({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: pid, size });
-  // Units of this product+size already in the cart. Classic partner rows are
-  // excluded (they become requests, not pulls) — but a display-pair PULL line
-  // IS a pull of a known unit and counts, so the same single pair can never
-  // be pulled twice within one cart session (the tile flips ✕ the moment the
-  // first pull line is in the cart). Mirrors clothingInCart otherwise.
-  const sneakerInCart = (pid, size) =>
-    cart.filter(l => (l.productType || "sneaker") !== "clothing"
-      && l.product?.id === pid && l.size === size
-      && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
   const sneakerOut = (p, s) => {
-    const hub = sneakerHubOf(p, s);
-    return sneakerGateReady(hub) && !!s && sneakerAvail(p.id, s, hub) <= sneakerInCart(p.id, s);
+    if (!s) return false;
+    const { hub, available } = sneakerSourcing(p, s);
+    // Number.isFinite, not `available <= 0`: `available` is NULL when the rule
+    // does not answer for this product (Pine, clothing, an unread hub), and
+    // `null <= 0` is TRUE in JavaScript — which would turn "not our business"
+    // into "out of stock" for every one of them.
+    return sneakerGateReady(hub) && Number.isFinite(available) && available <= 0;
   };
   // WHY that ✕ — booked vs reserved vs in-cart, for the explanatory note. An
   // ✕ whose cell holds real stock reserved for an uncollected order looked
@@ -9718,6 +9737,25 @@ function AssistantView({ products, onExit, orders = [] }) {
         return;
       }
     }
+    // ── A DISPLAY-PAIR CLAIM THAT NO LONGER STANDS UP ────────────────────────
+    // The same stale-cart window as the deactivation guard above, for the one
+    // line type that names an IDENTIFIED PHYSICAL PAIR rather than "a unit of
+    // this size". The claim was minted when Hub 1 could still supply it; if it
+    // cannot now, somebody else has taken that pair.
+    //
+    // FAIL, NEVER REDIRECT. Hub 2 has no display register and no slot for it —
+    // an order sent there carries an instruction it cannot act on. Refusing
+    // leaves the cart intact so the assistant can drop the line or ask again.
+    {
+      const gone = cart.filter(isCustomerLine).find((item) =>
+        item.displayPairRequest === true
+        && sneakerGateReady(DISPLAY_PAIR_HUB)
+        && sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0);
+      if (gone) {
+        alert(`The display pair of ${gone.product.name} size ${formatSize(gone.size)} is no longer available at ${HUB_LABELS[DISPLAY_PAIR_HUB] || DISPLAY_PAIR_HUB} — somebody else has taken it. Remove that line to place the rest.`);
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const normalizedPhone = normalizeSAPhone(customerPhone);
@@ -9754,9 +9792,25 @@ function AssistantView({ products, onExit, orders = [] }) {
         // to computeHubForItem for everything the sneaker gate does not cover
         // (Pine, perfume/bags/one-size accessories, a null size), so their
         // routing is byte-for-byte what it was.
+        // ── A DISPLAY-PAIR LINE'S HUB IS FIXED, NOT RESOLVED ──────────────
+        // A displayPairRequest names an IDENTIFIED PHYSICAL PAIR standing on a
+        // named shop's floor, registered against Hub 1 (the whole display lane
+        // is hub1-scoped — slots, register, sneakerServedByHub1). "Which hub
+        // can supply this size" is not a question that applies to it: there is
+        // exactly one such pair and it is where it is.
+        //
+        // Sending it through the stock-aware resolver did apply that question,
+        // and if Hub 1's availability hit zero between the request and
+        // checkout the order went to HUB 2 still carrying "take it off the
+        // display" and the Hub 1 store name — instructing a hub that has no
+        // display register to pull a pair it has never seen (independent
+        // review, 2026-09-06). The pre-flight above refuses that line rather
+        // than redirecting it; this is the second lock.
         const placedHub = isClothingCustomer
           ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
-          : (sneakerHubOf(item.product, item.size) || computeHubForItem(item));
+          : item.displayPairRequest === true
+            ? DISPLAY_PAIR_HUB
+            : (sneakerHubOf(item.product, item.size) || computeHubForItem(item));
         const order = {
           id: orderNum,
           productId: item.product.id,

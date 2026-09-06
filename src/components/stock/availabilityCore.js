@@ -166,6 +166,15 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 // availability promises this gate does not model — they keep yesterday's
 // behaviour. (Adversarial review, PR #446.)
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
+
+// ── WHERE A DISPLAY PAIR LIVES ───────────────────────────────────────────────
+// The display-pair lane is hub1-scoped by construction: the slots node, the
+// register and sneakerServedByHub1 all name hub1. A line flagged
+// displayPairRequest is therefore a HUB 1 pull of one identified physical pair,
+// and its hub is a FACT rather than a routing question — see the placement
+// path, where sending it through the stock-aware resolver could redirect it to
+// a hub that has no display register at all.
+export const DISPLAY_PAIR_HUB = "hub1";
 export function gatedSneakerHub(product, routedHub) {
   if (!isFootwearProduct(product)) return null;
   if ((product?.productType || "sneaker") === "clothing") return null;
@@ -272,19 +281,71 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 // `hubData[hub]` is { cells, promised, ready } — cells/promised in exactly the
 // shapes cellAvailability takes, `ready` the caller's settled-and-not-errored
 // read state for that hub's subtree.
-export function resolveSneakerSourcingHub({ product, taggedHub, size, hubData }) {
+// ── THE CART IS PART OF THE QUESTION (2026-09-06) ────────────────────────────
+// The first version of this decided from cellAvailability alone — booked minus
+// ready-promises — and did NOT subtract what the DEVICE'S OWN CART has already
+// committed. The screen then subtracted the cart AFTERWARDS, against whichever
+// hub this had already chosen, so the two disagreed in one specific and very
+// reachable way:
+//
+//   resolver:   available(tag) > 0        -> "the tag can supply", tag wins
+//   sneakerOut: available(tag) <= inCart  -> ✕
+//
+// ...and the alternate hub was never consulted, however much it held. An
+// assistant with one pair of a size in the cart was refused a second pair that
+// physically exists at the other hub. Measured on live stock 2026-09-06: 14
+// product/size cells at cart depth 1, 46 at depth 2, 60 at depth 3 — 20, 95 and
+// 121 strandable units respectively.
+//
+// So routing and availability are ONE computation now, returning both answers,
+// and the screen reads `available` rather than recomputing it. That is this
+// file's own standing rule — there is no second definition of "available" — and
+// the split is exactly how the two came to disagree.
+//
+// THE CART DRAINS THE TAGGED HUB FIRST, then spills. A cart line is a claim on
+// one unit of a product+size, not on a hub: the tag wins whenever it can
+// supply, so the first `taggedRaw` units of the cart come off the tag and only
+// the excess reaches the alternate. Subtracting the whole cart from BOTH hubs
+// would double-count it and refuse a pair that exists (tagged 1 + alternate 1 +
+// cart 1 must leave one orderable, not none).
+//
+// Everything else is unchanged, and identical at cart depth 0 — verified
+// branch by branch. See resolveSneakerSourcingHub below for the original rule,
+// which still reads exactly as it did.
+export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumed = 0 }) {
+  // `available: null` means "this rule does not answer for it" — NOT zero. A
+  // caller must test it with Number.isFinite, because `null <= 0` is true in
+  // JavaScript and would turn "not our business" into "out of stock".
+  const NO_ANSWER = { hub: taggedHub, available: null };
+
   // Not a gated sneaker, or tagged at a hub this rule does not cover (hub3,
   // hubC, anything new) — the tag is the answer, untouched.
-  if (!gatedSneakerHub(product, taggedHub)) return taggedHub;
-  if (!size) return taggedHub;                 // no size, no per-cell question
+  if (!gatedSneakerHub(product, taggedHub)) return NO_ANSWER;
+  if (!size) return NO_ANSWER;                 // no size, no per-cell question
+
   const alternate = GATED_SNEAKER_HUBS.find((h) => h !== taggedHub);
   const tagged = hubData?.[taggedHub];
   const alt = hubData?.[alternate];
-  // Silence is not zero. Only a hub we have actually read can be judged empty,
-  // and only a hub we have actually read can be chosen instead.
-  if (!tagged?.ready || !alt?.ready) return taggedHub;
-  const here = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
-  if (here > 0) return taggedHub;              // the tag can supply — it wins
-  const there = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
-  return there > 0 ? alternate : taggedHub;    // both empty → the tag, and a true ✕
+  // Silence is not zero. A hub we have not read cannot be judged empty, and
+  // cannot be chosen instead.
+  if (!tagged?.ready) return NO_ANSWER;
+
+  const used = Math.max(Number(consumed) || 0, 0);
+  const taggedRaw = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
+  const taggedLeft = Math.max(taggedRaw - used, 0);
+  if (taggedLeft > 0) return { hub: taggedHub, available: taggedLeft };
+
+  // The tag is exhausted. Only now does the alternate matter — and only if we
+  // have actually read it.
+  if (!alt?.ready) return { hub: taggedHub, available: 0 };
+  const altRaw = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
+  const altLeft = Math.max(altRaw - Math.max(used - taggedRaw, 0), 0);
+  if (altLeft > 0) return { hub: alternate, available: altLeft };
+
+  // BOTH EMPTY → THE TAGGED HUB, and a true ✕ that names the right shelf.
+  return { hub: taggedHub, available: 0 };
+}
+
+export function resolveSneakerSourcingHub(args) {
+  return resolveSneakerSourcing(args).hub;
 }
