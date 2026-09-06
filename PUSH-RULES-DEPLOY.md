@@ -12,6 +12,16 @@ edited here and deploying it would regress the live document
 **Firebase Console → Realtime Database → Rules**, as siblings of the existing
 top-level entries, then Publish.
 
+> **2026-09-06 — the trigger moved to /orders and these rules did NOT change.**
+> The four paths, their shapes and their validations are byte-for-byte what was
+> pasted for the refill release. `/push_bursts` is now keyed by `destShop`
+> rather than by a hub, which is a different key under the same server-only
+> node — no rule mentions the key. `/notification_prefs/{uid}/refillRequests`
+> keeps its field name deliberately: it holds a person's explicit answer to
+> "do you want to be told", and renaming it would read every one of those
+> answers as never-given and silently re-subscribe everyone who switched the
+> alerts off. **Nothing to paste for this release.**
+
 ## The paths
 
 | Path | Written by | Read by |
@@ -19,7 +29,7 @@ top-level entries, then Publish.
 | `/push_tokens/{uid}/{tokenId}` | the signed-in user, own uid only | the Cloud Function (Admin SDK, bypasses rules) |
 | `/notification_prefs/{uid}` | the signed-in user, own uid only | that user |
 | `/push_audience/{bucket}/{uid}` | the signed-in user, own uid only | the Cloud Function |
-| `/push_bursts/{hub}` | nobody — server only | nobody |
+| `/push_bursts/{destShop}` | nobody — server only | nobody |
 
 ## The rules
 

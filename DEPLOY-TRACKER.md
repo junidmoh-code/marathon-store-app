@@ -362,3 +362,56 @@ targeting stays off.
 **Before arming footwear targeting, ALL of these must be true:** hub inventory
 verification complete, the exception-bucket gate shipped, and an explicit owner
 go-ahead. Two of the three are not done.
+
+---
+
+## /orders keys are RECYCLED, so `onValueCreated` is the wrong trigger for "a new order"
+
+**What's true.** Both order counters reset daily and cycle 001–999 while the
+nodes they key persist. Measured live 2026-09-06: 2,942 nodes under `/orders`,
+565 numeric customer keys and 2,377 `R###-{line}` refill keys going back to
+July — and `R040-1` had just been rewritten over an August record by that
+morning's engine run.
+
+**Why it costs something.** A `google.firebase.database.ref.v1.created` trigger
+fires on null → value only. On this node that means it fires the first time a
+number is ever used and stays silent every time it comes round again — no
+error, no log, nothing that looks like a fault. Anything that must react to "a
+new order arrived" has to key off a value that CHANGES per order.
+`createdAt` is that value: every producer writes a fresh one, and the ordinary
+lifecycle (status, readyAt, dispatch, collection) never touches it.
+
+**What a change has to do first.** Any consumer of `/orders` creation must
+also treat the id as non-unique: an idempotency key must be
+`${orderId}::${createdAt}`, never the bare id, or one day's order silently
+swallows the next day's at the same number. `orderPlacedPush` is the worked
+example (`functions/lib/order-push.cjs`).
+
+---
+
+## The TV kiosk's `/orders` key range currently returns 9 of 565 customer orders
+
+**What's true.** RTDB compares `"001"`-style keys as INTEGERS. Measured live
+2026-09-06 with the Admin SDK:
+
+```
+orderByKey().startAt("0").endAt("9")      →   8 rows   (orders 001–008)
+orderByKey().startAt("0").endAt("99")     →  98 rows   (orders 001–098)
+orderByKey().startAt("0").endAt("9zz")    → 565 rows   (every customer order)
+```
+
+`src/utils/tvOrdersRange.js` uses `TV_ORDER_KEY_END = "9"`, so the kiosk's
+bounded read stops at order 009. The same range appears in several census
+scripts (`census-hub1-promised.mjs`, `census-hub2-gate-blast-radius.mjs`,
+`verify-louboutin-sourcing.mjs`), whose numbers are understated by the same
+rule.
+
+**Why it costs something.** The counter reached 196 on 2026-09-06, so almost
+every customer order placed that day was outside the range the pickup board
+reads.
+
+**Status: FOUND, NOT FIXED.** Discovered while investigating `/orders` for the
+order-push trigger (PR after #569) and deliberately left out of that change to
+keep it scoped. The fix is an end bound that sorts after every integer key —
+`"9zz"` is proven above — plus the same change in
+`keyInTvOrdersRange()` and in the census scripts, with a live count either side.
