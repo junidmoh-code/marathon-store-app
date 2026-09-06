@@ -40,13 +40,25 @@ describe("routing and availability are ONE computation", () => {
     expect(APP).toContain("const { hub: clampHub, available: clampLeft } =");
     expect(APP).toContain("reps = Math.min(reps, Math.max(1, clampLeft));");
     // and does not go back to recomputing one
+    // Bounded to the statement it guards, not a fixed window.
     const i = APP.indexOf("const { hub: clampHub, available: clampLeft } =");
-    expect(APP.slice(i, i + 400)).not.toContain("sneakerInCart(selected.id, pendingSize)");
+    expect(i).toBeGreaterThan(-1);
+    const end = APP.indexOf("const line = {", i);
+    expect(end, "the clamp no longer sits before the line it builds").toBeGreaterThan(i);
+    expect(APP.slice(i, end)).not.toContain("sneakerInCart(selected.id, pendingSize)");
   });
   it("the display-only check does too", () => {
     expect(APP).toContain("const { hub, available } = sneakerSourcing(p, s);");
+    // BOUNDED TO THE FUNCTION BODY, not a fixed window. A 900-character slice
+    // stopped short of the statements after the explanatory block, so the very
+    // line this pins could be reintroduced below it and still pass — and this
+    // file is in the mutation harness's suite, so a weak pin weakens the proof
+    // (CodeRabbit).
     const i = APP.indexOf("const sneakerDisplayOnly = (p, s) => {");
-    expect(APP.slice(i, i + 900)).not.toContain("- sneakerInCart(p.id, s)");
+    expect(i).toBeGreaterThan(-1);
+    const end = APP.indexOf("\n  };", i);
+    expect(end, "sneakerDisplayOnly's body no longer ends where expected").toBeGreaterThan(i);
+    expect(APP.slice(i, end)).not.toContain("- sneakerInCart(p.id, s)");
   });
   it("sneakerHubOf is derived from that same call — no second route", () => {
     expect(APP).toContain("const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;");
