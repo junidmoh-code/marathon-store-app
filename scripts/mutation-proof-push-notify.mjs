@@ -30,6 +30,8 @@ const FOREGROUND_TESTS = ["src/push/foregroundBanner.test.jsx"];
 const CHIME_TESTS = ["src/push/chime.test.js"];
 const DEEPLINK = "src/push/deepLink.js";
 const DEEPLINK_TESTS = ["src/push/deepLink.test.js"];
+const FOCUS = "src/push/useFocusOrder.js";
+const FOCUS_TESTS = ["src/push/focusOrder.test.jsx"];
 
 const MUTATIONS = [
   // ── DEFAULT ON ────────────────────────────────────────────────────────────
@@ -417,6 +419,22 @@ function normalise(v) {`,
     from: "  try { store.removeItem(FOCUS_ORDER_KEY); } catch { /* nothing more to do */ }",
     to: "",
     tests: DEEPLINK_TESTS,
+  },
+  {
+    id: "M42",
+    guard: "A link may only carry a hub the WAREHOUSE selector can render, not every labelled destination",
+    file: PUSH,
+    from: '  if (!hub || !WAREHOUSE_HUBS.has(hub)) return "/";',
+    to: '  if (!hub || !HUB_LABEL[hub]) return "/";',
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M43",
+    guard: "The focus ring is cleared on EVERY way out of the effect, not only by its timer",
+    file: FOCUS,
+    from: "    if (!marker) { setFocusKey(null); return undefined; }",
+    to: "    if (!marker) { return undefined; }",
+    tests: FOCUS_TESTS,
   },
   {
     id: "M41",

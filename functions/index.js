@@ -3554,7 +3554,20 @@ exports.orderPlacedPush = onValueWritten(
     // RE-READ. Never the event payload: delivery is at-least-once and can be
     // minutes late, and this path's ids are recycled — the truth about what
     // order lives at this key right now is only in the database.
-    const record = (await db.ref(`orders/${orderId}`).get()).val();
+    //
+    // WRAPPED, because this read happens BEFORE any window is claimed. Every
+    // later failure self-heals — a failed send puts its count back for the next
+    // order to flush — but a throw here leaves nothing behind at all: with
+    // retry:false the invocation is dropped and this order's contribution to
+    // the count simply vanishes, silently. The alarm marker is the same one the
+    // send path uses, so one Monitoring rule sees both.
+    let record = null;
+    try {
+      record = (await db.ref(`orders/${orderId}`).get()).val();
+    } catch (err) {
+      console.error(`PUSH_ALARM orderPlacedPush could not re-read orders/${orderId}:`, err && err.message);
+      return;
+    }
     const res = await notifyOrderPlaced({
       db,
       messaging: admin.messaging(),

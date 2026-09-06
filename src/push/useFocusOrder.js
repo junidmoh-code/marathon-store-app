@@ -9,9 +9,20 @@
 // what the picker sees — and this screen's ordering is load-bearing (day
 // grouping, status tabs, the on-hold lane). A find-and-ring touches none of it:
 // if the card is on screen the reader is taken to it, and if it is not (wrong
-// tab, wrong hub, already collected, an order whose surface is the CR batch
-// view rather than a per-order card) NOTHING happens, which is exactly the same
+// tab, wrong hub, already collected) NOTHING happens, which is exactly the same
 // screen they would have got from a link with no focus at all.
+//
+// ── ONE CARD CAN BE SEVERAL ORDERS ──────────────────────────────────────────
+// The order queue stamps one key per card. The CR Orders tab does not: it
+// groups a whole request into one card per (product, store), so that card is
+// several order lines at once — and a shop refill or an engine leg is ALWAYS on
+// that tab, which is most of the orders this feature notifies about. Stamping
+// only per-order cards would have meant the ring worked for customer orders and
+// silently did nothing for everything else.
+//
+// So the attribute holds a SPACE-SEPARATED list of the keys a card covers, and
+// the lookup uses `~=`, CSS's own "one of a whitespace-separated list" operator.
+// One card, one attribute, however many orders are on it.
 //
 // The marker is consumed on read (see takeFocusOrder), so this fires once per
 // notification tap and never re-rings on a later render.
@@ -38,9 +49,16 @@ export function useFocusOrder(ready) {
   const [focusKey, setFocusKey] = useState(null);
 
   useEffect(() => {
-    if (!ready) return undefined;
+    // EVERY path out of this effect clears the ring, not just the timer's.
+    // The marker is consumed on its first successful read, so an effect that
+    // re-runs (the hub selector being reopened and a hub picked again, say)
+    // finds nothing and returns early — and if that early return left the
+    // previous run's key in state, the ring would have nothing left to clear
+    // it and would sit on whatever card matched, indefinitely, on a screen a
+    // picker is working from.
+    if (!ready) { setFocusKey(null); return undefined; }
     const marker = takeFocusOrder();
-    if (!marker) return undefined;
+    if (!marker) { setFocusKey(null); return undefined; }
     const key = orderCardKey(marker.id, marker.createdAt);
     setFocusKey(key);
 
@@ -51,7 +69,7 @@ export function useFocusOrder(ready) {
     const find = () => {
       let el = null;
       try {
-        el = document.querySelector(`[data-order-card="${CSS.escape(key)}"]`);
+        el = document.querySelector(`[data-order-card~="${CSS.escape(key)}"]`);
       } catch {
         // CSS.escape is absent on some older WebViews; a failed lookup only
         // costs the scroll, never the ring.
@@ -69,6 +87,9 @@ export function useFocusOrder(ready) {
     return () => {
       clearTimeout(clearTimer);
       if (findTimer) clearTimeout(findTimer);
+      // Teardown clears it too: the timer that would have done so is being
+      // cancelled on this very line.
+      setFocusKey(null);
     };
   }, [ready]);
 

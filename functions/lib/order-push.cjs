@@ -14,6 +14,24 @@
 // miss the button; hooking the node they all create misses neither, and any
 // future producer is covered on the day it ships.
 //
+// ── WHAT IS DELIBERATELY NOT COVERED, BECAUSE IT CREATES NOTHING ────────────
+// Stated rather than assumed, so a future reader does not have to re-derive it:
+//
+//   • the POS (marathon-pos-app/src/sale/markOrderCollected.js) only ever writes
+//     status / collectedAt / updatedAt on an order that already exists. It has
+//     never created one.
+//   • the engine's resize and close transactions (refill-scan.cjs) rewrite an
+//     existing order without touching createdAt.
+//   • the shadow sync rewrites SHDW- artifacts every 15 minutes but preserves
+//     `existing.createdAt`, so only their first appearance is an event at all —
+//     and shadow rows are refused twice over regardless.
+//   • the legacy {items:[…]} migration in useOrders would create nodes, but it
+//     is long done (every live key is per-id) and a migrated row is not
+//     "incoming", so it is refused.
+//
+// None of these is a gap: each writes something that is not a new order, and
+// the trigger is keyed on the one field that only a new order changes.
+//
 // ── WHY THE TRIGGER IS ON createdAt AND NOT ON THE ORDER NODE ───────────────
 // An order id is NOT unique. Both counters (orderCounter, refillCounter) reset
 // daily and cycle 001–999, while the nodes they key persist: measured live on
@@ -196,6 +214,16 @@ const hubLabel = (hub) => HUB_LABEL[hub] || String(hub || "a store");
 // opens the queue they are all on.
 const CR_HUBS = new Set(["hub2", "hub3"]);
 
+// ── ONE HUB VOCABULARY, BOTH ENDS ───────────────────────────────────────────
+// These are the hubs the WAREHOUSE SELECTOR offers, which is a different set
+// from HUB_LABEL (that one also names the destination stores, because a
+// notification names a store). A link may only carry a hub the selector can
+// render: the client refuses any other (src/push/deepLink.js VALID_HUBS), so
+// emitting one here would produce a link that silently drops its hub and lands
+// the reader on whichever hub they last used. Pinned to the same four strings
+// on both ends.
+const WAREHOUSE_HUBS = new Set(["hub1", "hub2", "hub3", "hubC"]);
+
 /** The hub whose warehouse queue this order is worked on. */
 function hubForOrder(rec) {
   const placed = typeof rec.placedAtHub === "string" ? rec.placedAtHub.trim() : "";
@@ -224,7 +252,7 @@ function warehouseTabFor(rec) {
  *  reader concludes the ALERT was wrong rather than that the link was. */
 function orderLink(sample, count) {
   const hub = sample && typeof sample.hub === "string" ? sample.hub : "";
-  if (!hub || !HUB_LABEL[hub]) return "/";
+  if (!hub || !WAREHOUSE_HUBS.has(hub)) return "/";
   const tab = (sample && sample.tab) === "clothing" ? "clothing" : "queue";
   const base = `/?push=order&hub=${encodeURIComponent(hub)}&tab=${tab}`;
   if (count > 1 || !sample.orderId) return base;
@@ -646,6 +674,7 @@ module.exports = {
   tombstone,
   composeMessage,
   hubLabel,
+  WAREHOUSE_HUBS,
   hubForOrder,
   isRefillOrder,
   warehouseTabFor,

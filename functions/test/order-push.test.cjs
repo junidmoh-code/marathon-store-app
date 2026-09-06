@@ -614,6 +614,17 @@ test("AN ORDER WITH NO USABLE HUB OPENS THE APP, never a screen that would not l
   for (const hub of [null, "", "hub-from-2019", "nonsense"]) {
     assert.equal(orderLink({ orderId: "005", createdAt: AT, hub, tab: "queue" }, 1), "/", String(hub));
   }
+  // ONE HUB VOCABULARY. A destination STORE is a legal HUB_LABEL key (a
+  // notification names a store) but is not a hub the warehouse selector can
+  // render, and the client refuses one — so emitting it here would produce a
+  // link that silently drops its hub and lands the reader on whichever hub they
+  // last used. Only the selector's own four are allowed out.
+  for (const notAHub of ["marathon-pe", "trophy", "marathon-pine", "central"]) {
+    assert.equal(orderLink({ orderId: "005", createdAt: AT, hub: notAHub, tab: "queue" }, 1), "/", notAHub);
+  }
+  for (const hub of ["hub1", "hub2", "hub3", "hubC"]) {
+    assert.match(orderLink({ orderId: "005", createdAt: AT, hub, tab: "queue" }, 1), /^\/\?push=order/, hub);
+  }
 });
 
 // ── DIRTY DATA ───────────────────────────────────────────────────────────────
