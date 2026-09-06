@@ -141,7 +141,10 @@ export const COLOUR_FAMILIES = Object.freeze([...new Set(Object.values(COLOUR_FA
 
 /** The family a colour rolls up to, or "" for anything outside the vocabulary. */
 export function colourFamily(colour) {
-  return COLOUR_FAMILY_OF[String(colour ?? "").trim().toLowerCase()] || "";
+  // Own-property only — COLOUR_FAMILY_OF["__proto__"] is Object.prototype,
+  // which is truthy and not a family. See `word` below for the same hazard.
+  const k = String(colour ?? "").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(COLOUR_FAMILY_OF, k) ? COLOUR_FAMILY_OF[k] : "";
 }
 
 export const PATTERNS = Object.freeze(["solid", "two-tone", "multi", "print"]);
@@ -455,8 +458,28 @@ const CLOSURE_WORD = Object.freeze({
 // 80 so the two can be seen to be the same number.
 export const MAX_NAME_LENGTH = 80;
 
+// ── LOOK A WORD UP WITHOUT INHERITING ONE ────────────────────────────────────
+// `MAP[key] || ""` is wrong for any key that comes from data. `MAP["__proto__"]`
+// returns Object.prototype — truthy, not a string, and `|| ""` does not catch
+// it — so titleCase() then reads [0] of an object and throws, taking the namer
+// down. Found by the property fuzz feeding "__proto__" as an attribute value,
+// which is reachable: a `confirmed` value is written by a person straight into
+// RTDB and is not vocabulary-checked on the way out.
+//
+// Own-property only, and it must actually be a string. Every word map in this
+// file goes through it.
+const word = (map, key) =>
+  (typeof key === "string" && Object.prototype.hasOwnProperty.call(map, key)
+    && typeof map[key] === "string") ? map[key] : "";
+
 const titleCase = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
-const colourWord = (c) => String(c || "").replace(/-/g, " ");
+// IN-VOCABULARY ONLY. Anything else is dropped rather than printed: a
+// `confirmed` value is written by a person straight into RTDB and is not
+// vocabulary-checked on the way out, so a colour of "UNKNOWN" reached a
+// customer-facing listing title verbatim — and was then refused by the publish
+// path for being ALL CAPS (found by the fuzz). The closed vocabulary has to be
+// enforced where the words are USED, not only where they are written.
+const colourWord = (c) => (COLOURS.includes(c) ? String(c).replace(/-/g, " ") : "");
 
 /**
  * The public listing name for a set of attributes. Returns "" when the required
@@ -469,8 +492,13 @@ const colourWord = (c) => String(c || "").replace(/-/g, " ");
  */
 export function nameFromAttributes(attrs, opts = {}) {
   if (!attrs) return "";
+  // THE REQUIRED FIELDS MUST BE PRESENT *AND* LEGAL. Presence alone was not
+  // enough: resolveAttributes prefers `confirmed`, which nothing validates on
+  // the way out, so a hand-written value outside the vocabulary reached the
+  // name. isLegalAttribute is the same test the writer applies — one rule, both
+  // ends.
   const need = ["silhouette", "upperMaterial", "primaryColour", "pattern"];
-  if (need.some((k) => !attrs[k])) return "";
+  if (need.some((k) => !attrs[k] || !isLegalAttribute(k, attrs[k]))) return "";
 
   const level = Number(opts.discriminate) || 0;
   const words = [];
@@ -490,15 +518,15 @@ export function nameFromAttributes(attrs, opts = {}) {
   const c1 = colourWord(attrs.primaryColour);
   const c2 = attrs.secondaryColour && attrs.secondaryColour !== attrs.primaryColour
     ? colourWord(attrs.secondaryColour) : "";
-  const pat = attrs.pattern === "two-tone" && c2 ? "" : (PATTERN_WORD[attrs.pattern] || "");
+  const pat = attrs.pattern === "two-tone" && c2 ? "" : (word(PATTERN_WORD, attrs.pattern));
   if (pat) words.push(titleCase(pat));
-  const fin = FINISH_WORD[attrs.finish] || "";
+  const fin = word(FINISH_WORD, attrs.finish);
   if (fin) words.push(words.length ? fin : titleCase(fin));
-  const mat = MATERIAL_WORD[attrs.upperMaterial] || "";
+  const mat = word(MATERIAL_WORD, attrs.upperMaterial);
   if (mat) words.push(words.length ? mat : titleCase(mat));
 
   // 2. SILHOUETTE — always. It is what the item IS.
-  const sil = SILHOUETTE_WORD[attrs.silhouette] || "";
+  const sil = word(SILHOUETTE_WORD, attrs.silhouette);
   if (sil) words.push(words.length ? sil : titleCase(sil));
 
   // 3. COLOUR. Both when there are two, because a two-colour shoe named for one
@@ -514,7 +542,7 @@ export function nameFromAttributes(attrs, opts = {}) {
   // Tier 1 — the sole, named by type and, when it differs from the upper, by
   // colour too. "black sole" on a black shoe distinguishes nothing.
   if (level >= 1) {
-    const st = SOLE_WORD[attrs.soleType] || "";
+    const st = word(SOLE_WORD, attrs.soleType);
     const sc = attrs.soleColour && attrs.soleColour !== attrs.primaryColour && attrs.soleColour !== attrs.secondaryColour
       ? colourWord(attrs.soleColour) : "";
     const clause = st && sc ? `on a ${sc} ${st}` : st ? `on a ${st}` : sc ? `on a ${sc} sole` : "";
@@ -523,18 +551,18 @@ export function nameFromAttributes(attrs, opts = {}) {
 
   // Tier 2 — how it fastens. Silent for "laced", which is the default and true
   // of most of the catalogue.
-  if (level >= 2 && CLOSURE_WORD[attrs.closure]) {
+  if (level >= 2 && word(CLOSURE_WORD, attrs.closure)) {
     optional.push(words.length);
-    words.push(CLOSURE_WORD[attrs.closure]);
+    words.push(word(CLOSURE_WORD, attrs.closure));
   }
 
   // Tier 3 — the toe shape (skipped when "round", for the reason above) and, as
   // the very last resort, a style tag.
   if (level >= 3) {
-    if (attrs.toeShape && attrs.toeShape !== "round" && TOE_WORD[attrs.toeShape]) {
+    if (attrs.toeShape && attrs.toeShape !== "round" && word(TOE_WORD, attrs.toeShape)) {
       // The article follows the word, not a guess: "almond-toe" and "open-toe"
       // both start with a vowel and "an squared-toe" is not English.
-      const t = TOE_WORD[attrs.toeShape];
+      const t = word(TOE_WORD, attrs.toeShape);
       optional.push(words.length); words.push(`with ${/^[aeiou]/.test(t) ? "an" : "a"} ${t} shape`);
     }
     if (Array.isArray(attrs.styleTags) && attrs.styleTags[0]) {

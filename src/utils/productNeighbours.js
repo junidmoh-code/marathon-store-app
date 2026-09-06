@@ -45,7 +45,11 @@ export const SILHOUETTE_GROUP = Object.freeze({
 
 /** The group a silhouette substitutes within, or "" for an unknown silhouette. */
 export function silhouetteGroup(silhouette) {
-  return SILHOUETTE_GROUP[String(silhouette ?? "").trim()] || "";
+  // Own-property only. SILHOUETTE_GROUP["__proto__"] is Object.prototype —
+  // truthy, and not a group — which would have made the WALL compare
+  // Object.prototype to Object.prototype and let anything through it.
+  const k = String(silhouette ?? "").trim();
+  return Object.prototype.hasOwnProperty.call(SILHOUETTE_GROUP, k) ? SILHOUETTE_GROUP[k] : "";
 }
 
 // ── THE WEIGHTS ──────────────────────────────────────────────────────────────
@@ -115,7 +119,14 @@ export function neighbourProfile(product, attrs) {
     finish: attrs.finish || "",
     soleColour: attrs.soleColour || "",
     toeShape: attrs.toeShape || "",
-    styleTags: Array.isArray(attrs.styleTags) ? attrs.styleTags : [],
+    // DEDUPLICATED HERE, not only in the parser. scorePair counts how many of
+    // a's tags appear in b, so ["retro","retro"] against ["retro"] scored TWO
+    // one way and ONE the other — the similarity relation was not symmetric,
+    // and a duplicate tag inflated a shoe's rank (found by the fuzz asserting
+    // scorePair(a,b) === scorePair(b,a)). parseAttributeResponse dedupes what
+    // the MODEL returns; confirmed.styleTags is written by a person and does
+    // not pass through it.
+    styleTags: Array.isArray(attrs.styleTags) ? [...new Set(attrs.styleTags)] : [],
   };
 }
 
@@ -214,7 +225,8 @@ export function matchReasonCode(a, b) {
 
 /** The sentence for a stored code, falling back to the generic one. */
 export function matchReasonText(code) {
-  return MATCH_REASONS[code] || MATCH_REASONS.x;
+  return (typeof code === "string" && Object.prototype.hasOwnProperty.call(MATCH_REASONS, code))
+    ? MATCH_REASONS[code] : MATCH_REASONS.x;
 }
 
 // ── Storage encoding ─────────────────────────────────────────────────────────

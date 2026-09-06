@@ -52,6 +52,7 @@ const SUITE = [
   "src/components/stock/sizeChipTheme.test.js",
   "src/utils/attributeExtraction.test.js",
   "src/components/stock/rtdbEmptyArray.test.js",
+  "src/components/stock/alternativesFuzz.test.js",
 ];
 
 const MUTATIONS = [
@@ -147,6 +148,32 @@ const MUTATIONS = [
     // publish path refuses it, and every name that used it would be blocked.
     from: `  white: "white", cream: "white", bone: "white", eggshell: "white",`,
     to: `  white: "white", "off-white": "white", cream: "white", bone: "white",`,
+  },
+
+  {
+    id: "G11d",
+    guard: "A word map is looked up by OWN PROPERTY — MAP[\"__proto__\"] is Object.prototype, truthy, and crashes the namer",
+    file: ATTR,
+    kind: "behavioural",
+    from: `  (typeof key === "string" && Object.prototype.hasOwnProperty.call(map, key)
+    && typeof map[key] === "string") ? map[key] : "";`,
+    to: `  map[key] || "";`,
+  },
+  {
+    id: "G11e",
+    guard: "An out-of-vocabulary colour is DROPPED, never printed into a customer-facing title",
+    file: ATTR,
+    kind: "behavioural",
+    from: `const colourWord = (c) => (COLOURS.includes(c) ? String(c).replace(/-/g, " ") : "");`,
+    to: `const colourWord = (c) => String(c || "").replace(/-/g, " ");`,
+  },
+  {
+    id: "G11f",
+    guard: "A required attribute must be LEGAL, not merely present — `confirmed` is never validated on the way out",
+    file: ATTR,
+    kind: "behavioural",
+    from: `  if (need.some((k) => !attrs[k] || !isLegalAttribute(k, attrs[k]))) return "";`,
+    to: `  if (need.some((k) => !attrs[k])) return "";`,
   },
 
   // ── 3. HUMAN CORRECTIONS SURVIVE; RESUMING IS FREE ───────────────────────
@@ -246,6 +273,22 @@ const MUTATIONS = [
     from: `  const shared = Math.min(
     a.styleTags.filter((t) => b.styleTags.includes(t)).length, MAX_STYLE_TAGS);`,
     to: `  const shared = a.styleTags.filter((t) => b.styleTags.includes(t)).length;`,
+  },
+  {
+    id: "G18c",
+    guard: "styleTags are deduplicated at the scoring boundary — a repeated tag made the similarity relation ASYMMETRIC",
+    file: NEIGH,
+    kind: "behavioural",
+    from: `    styleTags: Array.isArray(attrs.styleTags) ? [...new Set(attrs.styleTags)] : [],`,
+    to: `    styleTags: Array.isArray(attrs.styleTags) ? attrs.styleTags : [],`,
+  },
+  {
+    id: "G18d",
+    guard: "The silhouette WALL is looked up by own property — Object.prototype === Object.prototype would let anything through it",
+    file: NEIGH,
+    kind: "behavioural",
+    from: `  return Object.prototype.hasOwnProperty.call(SILHOUETTE_GROUP, k) ? SILHOUETTE_GROUP[k] : "";`,
+    to: `  return SILHOUETTE_GROUP[k] || "";`,
   },
   {
     id: "G19",
