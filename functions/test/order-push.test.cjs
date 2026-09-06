@@ -459,14 +459,22 @@ test("a close transaction that did NOT commit sends nothing", async () => {
   // changed nothing — and sending then duplicates the real owner's notification.
   const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
+  // The CLAIM must behave normally — otherwise the function exits at
+  // "claim_failed" and never reaches the close, which is the whole point of
+  // this test. Only the second transaction on the burst node (the close) is
+  // made to re-run and then abort.
+  let burstTxns = 0;
   const stolen = (path = "") => {
     const inner = ref(path);
     if (!path.startsWith("push_bursts")) return inner;
     return {
       ...inner,
       async transaction(fn) {
-        // Hand the handler OUR window first, then abort as the server would
-        // when another claimer already owns it.
+        burstTxns += 1;
+        if (burstTxns === 1) return inner.transaction(fn);
+        // Hand the handler OUR window first (a stale local value, which sets
+        // `captured`), then abort as the server would when another claimer
+        // already owns it.
         fn({ windowId: "W1", startedAt: NOW, heartbeatAt: NOW, count: 3, sample: null, seen: {}, closedAt: null });
         return { committed: false, snapshot: { val: () => null, exists: () => false } };
       },
@@ -476,6 +484,7 @@ test("a close transaction that did NOT commit sends nothing", async () => {
     db: { ref: stolen }, messaging: m, orderId: "005", record: CUSTOMER(), createdAt: AT,
     nowMs: NOW, sleep: noSleep, newWindowId: () => "W1",
   });
+  assert.ok(burstTxns >= 2, "the test must actually reach the close transaction");
   assert.equal(res.sent, false);
   assert.equal(m.calls.length, 0, "an aborted close must not send");
 });
