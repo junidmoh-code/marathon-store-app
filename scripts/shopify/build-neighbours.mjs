@@ -111,7 +111,8 @@ console.log(`scored ${pairs.toLocaleString()} pair(s) in ${((Date.now() - starte
 
 const sizes = [...lists.values()].map((v) => v.length);
 const full = sizes.filter((n) => n === MAX_NEIGHBOURS).length;
-console.log(`list length: ${full} at the ${MAX_NEIGHBOURS} cap · min ${Math.min(...sizes, 0)} · ` +
+// Math.min(...sizes, 0) always reported 0 — the seed is a floor, not a guard.
+console.log(`list length: ${full} at the ${MAX_NEIGHBOURS} cap · min ${sizes.length ? Math.min(...sizes) : 0} · ` +
             `mean ${(sizes.reduce((a, b) => a + b, 0) / Math.max(sizes.length, 1)).toFixed(1)}`);
 
 // ── THE SPOT-CHECK ───────────────────────────────────────────────────────────
