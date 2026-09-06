@@ -17,7 +17,7 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveSneakerSourcing, resolveSneakerSourcingHub, cellAvailability,
-  GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB,
+  allocateSneakerCart, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB,
 } from "./availabilityCore";
 import { gatedSneakerHub } from "./availabilityCore";
 import { decodeSizeKey } from "../../utils/sizeKey";
@@ -41,8 +41,12 @@ const world = (h1, h2) => ({
   hub1: h1 === null ? UNREAD : hub(cells("s1", { 8: h1 })),
   hub2: h2 === null ? UNREAD : hub(cells("s1", { 8: h2 })),
 });
-const ask = (h1, h2, consumed, taggedHub = "hub1") =>
-  resolveSneakerSourcing({ product: SNEAKER, taggedHub, size: "8", hubData: world(h1, h2), consumed });
+// `consumed` is now PER HUB. The scalar it replaces drained the tagged hub
+// first and spilled — a model that cannot express a line PINNED to a hub, and
+// charged a Hub 1 display pull against a Hub 2 tag.
+const ask = (h1, h2, consumedByHub, taggedHub = "hub1") =>
+  resolveSneakerSourcing({ product: SNEAKER, taggedHub, size: "8", hubData: world(h1, h2),
+    consumedByHub: typeof consumedByHub === "number" ? { [taggedHub]: consumedByHub } : consumedByHub });
 
 describe("THE FAULT: a cart that exhausts the tag must not hide the other hub", () => {
   // The reported shape. One pair in the cart, the tagged hub's last unit spoken
@@ -65,64 +69,126 @@ describe("THE FAULT: a cart that exhausts the tag must not hide the other hub", 
     expect(beforeHub).toBe("hub1");
     expect(beforeLeft).toBe(0);                       // ✕, with 3 pairs at hub2
     // The AFTER: one computation.
-    const after = resolveSneakerSourcing({ product: SNEAKER, taggedHub: "hub1", size: "8", hubData, consumed: 1 });
+    const after = resolveSneakerSourcing({ product: SNEAKER, taggedHub: "hub1", size: "8", hubData, consumedByHub: { hub1: 1 } });
     expect(after.hub).toBe("hub2");
     expect(after.available).toBe(3);
   });
 });
 
-describe("the cart drains the tagged hub FIRST, then spills", () => {
-  // Subtracting the whole cart from BOTH hubs would double-count it and refuse
-  // a pair that exists. A cart line is a claim on one unit of a product+size,
-  // not on a hub, and the tag is drawn down first because the tag wins whenever
-  // it can supply.
-  it("tag 1 + alternate 1 + cart 1 leaves ONE orderable, not none", () => {
-    const got = ask(1, 1, 1);
-    expect(got.hub).toBe("hub2");
-    expect(got.available).toBe(1);
+describe("the resolver subtracts PER HUB, and nothing else", () => {
+  it("what was taken from the tag comes off the tag, and only that", () => {
+    expect(ask(3, 5, { hub1: 2 })).toEqual({ hub: "hub1", available: 1 });
+    expect(ask(3, 5, { hub1: 3 })).toEqual({ hub: "hub2", available: 5 });
+    expect(ask(3, 5, { hub1: 3, hub2: 2 })).toEqual({ hub: "hub2", available: 3 });
   });
-  it("tag 1 + alternate 1 + cart 2 is genuinely out", () => {
-    const got = ask(1, 1, 2);
-    expect(got.hub).toBe("hub1");                     // the tag, and a true ✕
-    expect(got.available).toBe(0);
+  it("a unit taken from the ALTERNATE never shortens the tag", () => {
+    expect(ask(2, 2, { hub2: 2 })).toEqual({ hub: "hub1", available: 2 });
   });
-  it("the spill only reaches the alternate once the tag is actually exhausted", () => {
-    // tag 3, alternate 5, cart 2 -> the tag still has one, so nothing spills.
-    expect(ask(3, 5, 2)).toEqual({ hub: "hub1", available: 1 });
-    // cart 4 -> tag exhausted and one unit over, so the alternate loses one.
-    expect(ask(3, 5, 4)).toEqual({ hub: "hub2", available: 4 });
-  });
-  it("total orderable never exceeds total stock, at any depth", () => {
+  it("total offered never exceeds what is actually left, over the grid", () => {
     for (let h1 = 0; h1 <= 4; h1++) for (let h2 = 0; h2 <= 4; h2++) {
-      for (let c = 0; c <= 8; c++) {
-        const { available } = ask(h1, h2, c);
-        const left = Math.max(h1 + h2 - c, 0);
-        expect(available, `h1=${h1} h2=${h2} cart=${c}`).toBeLessThanOrEqual(left);
-      }
-    }
-  });
-  // The property that matters to a customer: if any unit remains anywhere, the
-  // screen must offer one. Nothing may be stranded.
-  it("if ANY unit remains across both hubs, the answer is orderable", () => {
-    for (let h1 = 0; h1 <= 4; h1++) for (let h2 = 0; h2 <= 4; h2++) {
-      for (let c = 0; c <= 8; c++) {
-        const { hub: chosen, available } = ask(h1, h2, c);
-        const left = h1 + h2 - c;
-        if (left > 0) {
-          expect(available, `h1=${h1} h2=${h2} cart=${c} -> ${chosen}`).toBeGreaterThan(0);
-        } else {
-          expect(available, `h1=${h1} h2=${h2} cart=${c}`).toBe(0);
+      for (let c1 = 0; c1 <= 4; c1++) for (let c2 = 0; c2 <= 4; c2++) {
+        const { hub: chosen, available } = ask(h1, h2, { hub1: c1, hub2: c2 });
+        const left = Math.max(h1 - c1, 0) + Math.max(h2 - c2, 0);
+        const why = `h1=${h1}-${c1} h2=${h2}-${c2}`;
+        expect(available, why).toBeLessThanOrEqual(left);
+        // and if anything is left anywhere, something is offered
+        if (left > 0) expect(available, why).toBeGreaterThan(0);
+        else expect(available, why).toBe(0);
+        // a chosen hub always holds what it claims
+        if (available > 0) {
+          expect(chosen === "hub1" ? Math.max(h1 - c1, 0) : Math.max(h2 - c2, 0), why).toBe(available);
         }
       }
     }
   });
-  it("a chosen hub always actually holds what it claims", () => {
-    for (let h1 = 0; h1 <= 4; h1++) for (let h2 = 0; h2 <= 4; h2++) {
-      for (let c = 0; c <= 6; c++) {
-        const { hub: chosen, available } = ask(h1, h2, c);
-        if (available > 0) expect(chosen === "hub1" ? h1 : h2, `h1=${h1} h2=${h2} cart=${c}`).toBeGreaterThanOrEqual(available);
-      }
+  it("a junk consumption is treated as none, never as a negative credit", () => {
+    for (const c of [{ hub1: -3 }, { hub1: NaN }, { hub1: null }, { hub1: "2" }, {}, null]) {
+      const got = ask(1, 3, c);
+      expect(got.available, JSON.stringify(c)).toBeGreaterThan(0);
+      expect(got.available).toBeLessThanOrEqual(3);
     }
+  });
+});
+
+// ─── THE ALLOCATION ITSELF ───────────────────────────────────────────────────
+// This is where the spill rule used to live, wrongly, inside the resolver. Two
+// production faults came out of that and neither was reachable from a test of
+// the resolver alone — which is why it is a pure function now.
+describe("allocateSneakerCart", () => {
+  const P = (id = "s1") => ({ id, category: "Footwear", productType: "sneaker" });
+  const alloc = (lines, h1, h2, tag = "hub1") => allocateSneakerCart({
+    lines, hubData: world(h1, h2), taggedHubFor: () => tag,
+  });
+  const line = (over = {}) => ({ product: P(), size: "8", ...over });
+
+  it("consecutive lines of the same size draw down one shelf, then the other", () => {
+    const a = line(), b = line(), c = line();
+    const { hubOf } = alloc([a, b, c], 2, 5);
+    expect([hubOf.get(a), hubOf.get(b), hubOf.get(c)]).toEqual(["hub1", "hub1", "hub2"]);
+  });
+  it("different sizes of one product have separate counters", () => {
+    const a = line({ size: "8" }), b = line({ size: "9" });
+    const { hubOf } = alloc([a, b], 1, 5);
+    expect([hubOf.get(a), hubOf.get(b)]).toEqual(["hub1", "hub1"]);
+  });
+
+  // FAULT 1: a classic Display Partner request asks for what the hub does NOT
+  // have. Counting it made the next ordinary line believe the stock was gone.
+  it("a CLASSIC partner request consumes nothing", () => {
+    const partner = line({ requestDisplayPartner: true });
+    const ordinary = line();
+    const { hubOf, consumed } = alloc([partner, ordinary], 0, 1);
+    expect(hubOf.has(partner)).toBe(false);
+    expect(hubOf.get(ordinary)).toBe("hub2");          // NOT the empty hub1
+    expect(consumed.get("s1::8")).toEqual({ hub2: 1 });
+  });
+
+  // FAULT 2: a display pull is a Hub 1 unit by construction. Charging it to the
+  // product's tag let the next line allocate Hub 1's single display pair twice
+  // while the alternate's ordinary pair sat unused.
+  it("a display PULL is pinned to hub1 AND charged there, whatever the tag says", () => {
+    const pull = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const ordinary = line();
+    // hub2-tagged shoe, one pair at each hub.
+    const { hubOf, consumed } = alloc([pull, ordinary], 1, 1, "hub2");
+    expect(hubOf.get(pull)).toBe(DISPLAY_PAIR_HUB);
+    expect(hubOf.get(ordinary)).toBe("hub2");          // NOT hub1 a second time
+    expect(consumed.get("s1::8")).toEqual({ hub1: 1, hub2: 1 });
+  });
+  it("…and two pulls do exhaust hub1 for an ordinary line", () => {
+    const p1 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const p2 = line({ requestDisplayPartner: true, displayPairRequest: true });
+    const ordinary = line();
+    const { hubOf } = alloc([p1, p2, ordinary], 2, 1, "hub1");
+    expect(hubOf.get(ordinary)).toBe("hub2");
+  });
+
+  it("clothing is skipped entirely", () => {
+    const cloth = line({ productType: "clothing" });
+    const ordinary = line();
+    const { hubOf } = alloc([cloth, ordinary], 1, 5);
+    expect(hubOf.has(cloth)).toBe(false);
+    expect(hubOf.get(ordinary)).toBe("hub1");
+  });
+  it("a sizeless or productless line is skipped rather than throwing", () => {
+    const bad = [{ product: null, size: "8" }, { product: P(), size: null }, {}, null];
+    expect(() => alloc(bad, 1, 1)).not.toThrow();
+    expect(alloc(bad, 1, 1).hubOf.size).toBe(0);
+  });
+  it("an ungated shoe gets no allocation, so placement falls back to the tag", () => {
+    const l = line();
+    const { hubOf } = allocateSneakerCart({
+      lines: [l], hubData: world(1, 1), taggedHubFor: () => null,
+    });
+    expect(hubOf.has(l)).toBe(false);
+  });
+  it("an empty cart allocates nothing", () => {
+    expect(alloc([], 3, 3).hubOf.size).toBe(0);
+    expect(allocateSneakerCart({ lines: null, hubData: world(1, 1), taggedHubFor: () => "hub1" }).hubOf.size).toBe(0);
+  });
+  it("is deterministic — the same cart allocates the same way twice", () => {
+    const lines = [line(), line(), line({ size: "9" })];
+    expect([...alloc(lines, 1, 3).hubOf.values()]).toEqual([...alloc(lines, 1, 3).hubOf.values()]);
   });
 });
 

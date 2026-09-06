@@ -13,7 +13,14 @@ describe("routing and availability are ONE computation", () => {
   // alone while sneakerOut subtracted the cart afterwards against whatever hub
   // it had already picked.
   it("the cart goes INTO the resolver, not on after it", () => {
-    expect(APP).toContain("consumed: p?.id ? sneakerInCart(p.id, s) : 0,");
+    expect(APP).toContain("consumedByHub: cartAllocation.consumed.get(`${p?.id}::${s}`) || null,");
+  });
+  // PER HUB, because a line pinned to a hub cannot be charged to another one.
+  // The scalar this replaced drained the tagged hub first and spilled, which
+  // charged a Hub 1 display pull against a Hub 2 tag.
+  it("the cart is allocated ONCE, by a pure function, and both callers read it", () => {
+    expect(APP).toContain("const cartAllocation = useMemo(() => allocateSneakerCart({");
+    expect(APP).toContain("taggedHubFor: (p) => gatedSneakerHub(p, computeHubForItem({ product: p })),");
   });
   it("sneakerOut reads the resolver's own answer rather than recomputing one", () => {
     expect(APP).toContain("const { hub, available } = sneakerSourcing(p, s);");
@@ -47,21 +54,23 @@ describe("routing and availability are ONE computation", () => {
   // A const arrow used before its declaration is fine only because the caller
   // runs later; the repo has already lost a run to exactly that (#563), so the
   // order is pinned rather than left to luck.
-  it("sneakerInCart is declared BEFORE the resolver that reads it", () => {
-    const cart = APP.indexOf("const sneakerInCart = (pid, size) =>");
+  it("the allocation is declared BEFORE the resolver that reads it", () => {
+    const alloc = APP.indexOf("const cartAllocation = useMemo(() => allocateSneakerCart({");
     const resolver = APP.indexOf("const sneakerSourcing = (p, s) =>");
     // BOTH must be found first. indexOf returns -1 for a miss, and -1 is less
     // than any real offset — so a rename of either declaration would have let
     // this fence pass while proving nothing (CodeRabbit).
-    expect(cart, "sneakerInCart declaration not found").toBeGreaterThan(-1);
+    expect(alloc, "cartAllocation declaration not found").toBeGreaterThan(-1);
     expect(resolver, "sneakerSourcing declaration not found").toBeGreaterThan(-1);
-    expect(cart).toBeLessThan(resolver);
+    expect(alloc).toBeLessThan(resolver);
   });
 });
 
 describe("a display-pair line's hub is fixed, not resolved", () => {
-  it("placement pins it rather than asking the resolver", () => {
-    expect(APP).toContain("item.displayPairRequest === true\n            ? DISPLAY_PAIR_HUB");
+  it("the pin lives in the allocation, which placement then reads", () => {
+    // The pin moved into allocateSneakerCart (availabilityCore) where it is
+    // covered behaviourally: a pull is routed to hub1 AND charged there.
+    expect(APP).toContain("(cartAllocation.hubOf.get(item) || computeHubForItem(item))");
   });
   it("and the pre-flight REFUSES rather than redirecting", () => {
     expect(APP).toContain("item.displayPairRequest === true");

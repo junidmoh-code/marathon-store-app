@@ -312,7 +312,7 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 // Everything else is unchanged, and identical at cart depth 0 — verified
 // branch by branch. See resolveSneakerSourcingHub below for the original rule,
 // which still reads exactly as it did.
-export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumed = 0 }) {
+export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumedByHub = null }) {
   // `available: null` means "this rule does not answer for it" — NOT zero. A
   // caller must test it with Number.isFinite, because `null <= 0` is true in
   // JavaScript and would turn "not our business" into "out of stock".
@@ -330,25 +330,83 @@ export function resolveSneakerSourcing({ product, taggedHub, size, hubData, cons
   // cannot be chosen instead.
   if (!tagged?.ready) return NO_ANSWER;
 
-  const used = Math.max(Number(consumed) || 0, 0);
+  // ── CONSUMPTION IS PER HUB, BECAUSE ALLOCATION IS ─────────────────────────
+  // This took a scalar `consumed` and drained the tagged hub first, spilling
+  // the excess. That models a cart as "N units of this size from wherever", and
+  // it is wrong the moment a line is PINNED to a hub: a display pull is a Hub 1
+  // unit by construction, and charging it against a Hub-2 tag made the next
+  // line believe Hub 2 was empty and route to a Hub 1 that only ever had the
+  // display pair — allocating that one pair twice while Hub 2's ordinary pair
+  // sat unused (independent review, reproduced 2026-09-06).
+  //
+  // The caller allocates line by line and tells us what it has taken FROM EACH
+  // HUB. The arithmetic is then simply per-hub subtraction — no spill rule, and
+  // no way for a unit to be charged to a shelf it never came off.
+  const takenAt = (h) => Math.max(Number(consumedByHub?.[h]) || 0, 0);
   const taggedRaw = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
-  const taggedLeft = Math.max(taggedRaw - used, 0);
+  const taggedLeft = Math.max(taggedRaw - takenAt(taggedHub), 0);
   if (taggedLeft > 0) return { hub: taggedHub, available: taggedLeft };
 
   // The tag is exhausted. Only now does the alternate matter — and only if we
   // have actually read it.
   if (!alt?.ready) return { hub: taggedHub, available: 0 };
   const altRaw = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
-  // The spill cannot be negative HERE — this line is only reached once
-  // taggedLeft is 0, which means used >= taggedRaw. The inner clamp is a belt
-  // against a future edit reordering those branches, and is deliberately not
-  // guarded by a test: nothing can currently reach it with a smaller `used`,
-  // and a guard that cannot be killed is not evidence (mutation harness G4).
-  const altLeft = Math.max(altRaw - Math.max(used - taggedRaw, 0), 0);
+  const altLeft = Math.max(altRaw - takenAt(alternate), 0);
   if (altLeft > 0) return { hub: alternate, available: altLeft };
 
   // BOTH EMPTY → THE TAGGED HUB, and a true ✕ that names the right shelf.
   return { hub: taggedHub, available: 0 };
+}
+
+// ── ALLOCATING A CART, LINE BY LINE ──────────────────────────────────────────
+// Every question the ordering screen asks about a sneaker size depends on what
+// the DEVICE'S CART has already claimed and, crucially, FROM WHICH HUB. Two
+// earlier attempts at this lived in the screen and were wrong in ways that
+// routed real orders to empty shelves, so it is a pure function now, and one
+// walk feeds both the tile ("can I add one more?") and the checkout ("where
+// does THIS line come from?").
+//
+// THE THREE RULES, each of which was a defect first:
+//
+//   1. A CLASSIC DISPLAY PARTNER REQUEST CONSUMES NOTHING. It asks for what a
+//      hub does NOT have — it is a request, never a pull. Counting it made the
+//      next ordinary line believe the stock was gone and routed it to an empty
+//      hub.
+//   2. A DISPLAY PULL IS PINNED, AND CHARGED WHERE IT IS PINNED. The lane is
+//      hub1-scoped, so the unit comes off Hub 1 whatever the product's tag
+//      says. Charging it against the tag let the next line allocate Hub 1's
+//      single display pair a SECOND time while the alternate's ordinary pair
+//      sat unused.
+//   3. CONSUMPTION IS PER HUB. A cart is not "N units from wherever": each line
+//      draws from one shelf, and the next line must see that shelf shorter and
+//      the other one untouched.
+//
+// Cart ORDER is allocation order — stable, and what the assistant sees. A line
+// added first keeps its hub when a later one is added.
+//
+// `taggedHubFor(product)` is the caller's tag router; `hubData` is the same
+// { cells, promised, ready } map resolveSneakerSourcing takes.
+export function allocateSneakerCart({ lines, hubData, taggedHubFor, displayPairHub = DISPLAY_PAIR_HUB }) {
+  const hubOf = new Map();        // line -> the hub it draws from
+  const consumed = new Map();     // "pid::size" -> { hub1, hub2 }
+  for (const line of lines || []) {
+    if ((line?.productType || "sneaker") === "clothing") continue;
+    if (line?.requestDisplayPartner && line?.displayPairRequest !== true) continue;   // rule 1
+    const pid = line?.product?.id;
+    if (!pid || !line?.size) continue;
+    const key = `${pid}::${line.size}`;
+    const taken = consumed.get(key) || {};
+    const hub = line.displayPairRequest === true
+      ? displayPairHub                                                                 // rule 2
+      : resolveSneakerSourcing({
+          product: line.product, taggedHub: taggedHubFor(line.product),
+          size: line.size, hubData, consumedByHub: taken,                              // rule 3
+        }).hub;
+    if (!hub) continue;
+    hubOf.set(line, hub);
+    consumed.set(key, { ...taken, [hub]: (taken[hub] || 0) + 1 });
+  }
+  return { hubOf, consumed };
 }
 
 export function resolveSneakerSourcingHub(args) {

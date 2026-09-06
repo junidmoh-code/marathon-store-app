@@ -95,7 +95,7 @@ import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from ".
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcing, resolveSneakerSourcingHub, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB } from "./components/stock/availabilityCore";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcing, resolveSneakerSourcingHub, allocateSneakerCart, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB } from "./components/stock/availabilityCore";
 import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
 import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
 import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
@@ -9330,6 +9330,34 @@ function AssistantView({ products, onExit, orders = [] }) {
       && l.product?.id === pid && l.size === size
       && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
 
+  // ── THE CART IS ALLOCATED ONCE, LINE BY LINE, HUB BY HUB ─────────────────
+  // Every question the screen asks about a sneaker size depends on what THIS
+  // DEVICE'S CART has already claimed and, crucially, FROM WHICH HUB. Two
+  // earlier attempts got this wrong in ways that routed real orders to empty
+  // shelves:
+  //
+  //   • a scalar "the cart holds N of this size" drained the tagged hub first
+  //     and spilled the rest — which charges a Hub 1 display pull against a
+  //     Hub 2 tag, and then routes the NEXT line to the Hub 1 whose only unit
+  //     is that same display pair, allocating it twice;
+  //   • counting every non-clothing line charged CLASSIC Display Partner
+  //     requests, which are requests for what a hub does NOT have and consume
+  //     nothing (sneakerInCart excludes them, and this must agree).
+  //
+  // So the cart is walked ONCE, in order, and each line is charged to the hub
+  // it is actually allocated to. Both the tile ("can I add one more?") and the
+  // checkout ("where does THIS line come from?") read the same walk — they ask
+  // different questions of one allocation rather than each keeping a count.
+  //
+  // Cart order is the allocation order, which is stable and is what the
+  // assistant sees; a line added first keeps its hub when a later one is added.
+  const cartAllocation = useMemo(() => allocateSneakerCart({
+    lines: cart,
+    hubData: sneakerHubData(),
+    taggedHubFor: (p) => gatedSneakerHub(p, computeHubForItem({ product: p })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [cart, hub1CellsState, hub2CellsState, hub1Promised, hub2ReadyPromised, effectiveStoreMode]);
+
   // ── ROUTING AND AVAILABILITY ARE ONE ANSWER ──────────────────────────────
   // They were two, and they disagreed. The resolver decided the hub from stock
   // alone while sneakerOut subtracted the CART afterwards against whatever hub
@@ -9341,10 +9369,10 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sneakerSourcing = (p, s) => resolveSneakerSourcing({
     product: p, taggedHub: gatedSneakerHub(p, computeHubForItem({ product: p })),
     size: s, hubData: sneakerHubData(),
-    // sneakerInCart is the DEVICE's own claim on this product+size: the units
-    // it has already committed but not yet placed. Nothing server-side knows
-    // about it, which is exactly why the resolver could not see it before.
-    consumed: p?.id ? sneakerInCart(p.id, s) : 0,
+    // What the cart has already taken FROM EACH HUB — the allocation above,
+    // not a recount. Nothing server-side knows about the cart, which is why the
+    // resolver could not see it before.
+    consumedByHub: cartAllocation.consumed.get(`${p?.id}::${s}`) || null,
   });
   const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;
   // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
@@ -9784,9 +9812,24 @@ function AssistantView({ products, onExit, orders = [] }) {
         if (!sneakerGateReady(DISPLAY_PAIR_HUB)) return true;
         const d = hub1DisplayUnits[promisedKey(item.product.id, item.size)];
         if (!d || !(d.units > 0)) return true;                     // no display left at all
-        // A store was recorded only when the claim was unambiguous; when one
+        // A store was recorded only when the claim was UNAMBIGUOUS; when one
         // was, that floor must still be listed.
         if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;
+        // ── THE RESIDUAL, STATED ────────────────────────────────────────────
+        // A STORE-LESS claim cannot be verified any further here, and this does
+        // not pretend otherwise. Such a claim was minted when the prompt found
+        // either no slot at all or two — and the register half of
+        // hub1DisplayUnits is write-only-upward history that is NEVER
+        // decremented, so a register-only display reads as present for ever.
+        // A display that has since been sold, with ordinary stock arriving
+        // after it, therefore still passes (independent review, 2026-09-06).
+        //
+        // NOT CLOSED HERE ON PURPOSE. Refusing every store-less claim would
+        // block the 71% of registered displays that have no slot — a live
+        // flow since #456 that nobody asked this PR to change — and the failure
+        // it prevents is the visible one: the warehouse looks, does not find
+        // the pair, and marks it out of stock. Closing it properly means the
+        // register learning to decrement, which is that lane's own work.
         return sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0;
       });
       if (gone) {
@@ -9812,46 +9855,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       // lines stay in the cart and get placed via the floating Place Refill
       // Request bar (different shape, no customer info).
       const customerCart = cart.filter(isCustomerLine);
-      // ── ALLOCATE THE CART, LINE BY LINE ──────────────────────────────────
-      // The tile and the checkout ask the resolver DIFFERENT questions, and
-      // handing it the same `consumed` for both is wrong in a way that ships a
-      // whole order to an empty hub.
-      //
-      //   TILE:     "can I add one MORE?"   -> consumed = what the cart holds
-      //   CHECKOUT: "where does THIS line come from?" -> consumed = what
-      //             EARLIER LINES OF THIS SAME CHECKOUT have already taken
-      //
-      // Passing the whole cart at checkout asks where the pair AFTER the cart
-      // would come from. With hub1 0 / hub2 1 and one line, that is "nowhere",
-      // and the resolver's both-empty branch returns the TAGGED hub — so the
-      // order was placed against an empty Hub 1 while the pair sat at Hub 2.
-      // Two lines against one pair at each hub sent BOTH to Hub 1 (independent
-      // review, 2026-09-06; a regression this PR introduced and did not catch).
-      //
-      // So the cart is allocated ONCE, here, in cart order: each line asks with
-      // only what its predecessors took, and a display-pair pull is PINNED to
-      // its own hub while still consuming a unit there.
-      const allocatedHub = new Map();          // cart index -> hub
-      {
-        const taken = new Map();               // "pid::size" -> units already allocated
-        customerCart.forEach((item, i) => {
-          if (item.productType === "clothing") return;   // routed by universe, not stock
-          const key = `${item.product?.id}::${item.size}`;
-          const already = taken.get(key) || 0;
-          const hub = item.displayPairRequest === true
-            ? DISPLAY_PAIR_HUB
-            : (resolveSneakerSourcing({
-                product: item.product,
-                taggedHub: gatedSneakerHub(item.product, computeHubForItem(item)),
-                size: item.size, hubData: sneakerHubData(), consumed: already,
-              }).hub || computeHubForItem(item));
-          allocatedHub.set(i, hub);
-          taken.set(key, already + 1);
-        });
-      }
-      let placedIndex = -1;
       for (const item of customerCart) {
-        placedIndex += 1;
         const orderNum = await getNextOrderNumber();
         // Customer clothing orders route to the universe's CR hub (hub2 for
         // PE/Trophy, hub3 for Pine — CR_HUB_BY_UNIVERSE), where the clothing
@@ -9885,7 +9889,11 @@ function AssistantView({ products, onExit, orders = [] }) {
         // than redirecting it; this is the second lock.
         const placedHub = isClothingCustomer
           ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
-          : (allocatedHub.get(placedIndex) || computeHubForItem(item));
+          // THE SAME ALLOCATION THE TILE WAS GATED ON, keyed by the line
+          // itself so no index can drift out of step with it. A line the walk
+          // skipped (a classic partner request, an ungated shoe) falls back to
+          // the tag router, exactly as it did before any of this.
+          : (cartAllocation.hubOf.get(item) || computeHubForItem(item));
         const order = {
           id: orderNum,
           productId: item.product.id,

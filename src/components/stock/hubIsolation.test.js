@@ -314,15 +314,15 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
 // 2026-09-06 defect inverted, and silent. There is ONE answer, and placement
 // reads it.
 describe("stock-aware sourcing has exactly one answer", () => {
-  it("placement routes through the same resolver the tile was gated on", () => {
-    // NOT the same CALL any more, deliberately. The tile asks "can I add one
-    // more?" (consumed = the whole cart); the checkout asks "where does THIS
-    // line come from?" (consumed = only what earlier lines of the same checkout
-    // took). Handing the checkout the tile's question sent a whole order to an
-    // empty hub. Same resolver, same data, one allocation pass in cart order.
-    expect(app()).toContain("const allocatedHub = new Map();");
-    expect(app()).toContain("size: item.size, hubData: sneakerHubData(), consumed: already,");
-    expect(app()).toContain("(allocatedHub.get(placedIndex) || computeHubForItem(item))");
+  it("placement routes through the same allocation the tile was gated on", () => {
+    // ONE allocation of the cart, walked once (allocateSneakerCart, a pure
+    // function with its own behavioural tests), read by both. The tile asks
+    // "can I add one more?" and the checkout asks "where does THIS line come
+    // from?" — different questions, the same walk, so they cannot disagree.
+    // Keyed by the LINE OBJECT, so no index can drift out of step with it.
+    expect(app()).toContain("const cartAllocation = useMemo(() => allocateSneakerCart({");
+    expect(app()).toContain("(cartAllocation.hubOf.get(item) || computeHubForItem(item))");
+    expect(app()).toContain("consumedByHub: cartAllocation.consumed.get(");
   });
   it("and there is exactly one call to the routing resolver in the file", () => {
     // resolveSneakerSourcing since 2026-09-06 — the routing and availability
@@ -330,14 +330,13 @@ describe("stock-aware sourcing has exactly one answer", () => {
     // (they were two, and they disagreed). resolveSneakerSourcingHub is now a
     // wrapper over it and the screen no longer calls it at all. The fence is
     // unchanged in intent: exactly ONE place in this file decides the hub.
-    // TWO call sites since 2026-09-06, and exactly two: the tile's
-    // sneakerSourcing and the checkout's allocation pass. They ask different
-    // questions of the SAME function on the SAME data — which is the point.
-    // A third would be a second definition of routing, which is what this
-    // fence has always existed to refuse.
-    expect((app().match(/resolveSneakerSourcing\(/g) || [])).toHaveLength(2);
+    // ONE call in this file — the tile's. The checkout's allocation moved into
+    // availabilityCore as a pure function, which is why counting call sites is
+    // a weak fence and this no longer pretends otherwise: the real invariant is
+    // that BOTH read one allocation, and that is asserted above and covered
+    // behaviourally in sourcingCart.test.js.
+    expect((app().match(/resolveSneakerSourcing\(/g) || [])).toHaveLength(1);
     expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(0);
-    // And nothing hand-rolls a hub for a sneaker line beside them.
     expect(app()).toContain("const sneakerSourcing = (p, s) => resolveSneakerSourcing({");
   });
   it("computeHubForItem itself is untouched — it is still the TAG router", () => {
