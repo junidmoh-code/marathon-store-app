@@ -210,3 +210,81 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
   const spoken = Math.max(Number(promised?.[promisedKey(productId, size)]) || 0, 0);
   return { booked, promised: spoken, available: availableUnits(booked, spoken) };
 }
+
+// ─── WHICH HUB SHOULD ACTUALLY SUPPLY THIS SIZE (2026-09-06) ─────────────────
+//
+// THE DEFECT THIS EXISTS FOR. On 2026-09-06 a shop opened the order sheet for
+// CHRISTINA LOUBOUTIN LOUIS PARIS black and every one of its six sizes read ✕,
+// under a heading that said "Hub 1". The gate was RIGHT: /stock/hub1 held no
+// row for that product at all. All eleven units were at HUB 2 (sizes 6–11 =
+// 2,2,2,2,2,1), moved there from Central by transfers on 3 and 5 September.
+// What was wrong sat one step upstream — gatedSneakerHub above is handed
+// `routedHub` from App.jsx computeHubForItem, which reads the product record's
+// `hubs` TAG and nothing else. The tag still said hub1. So the sheet asked the
+// empty hub whether it could supply, got a truthful no, and refused the sale
+// of stock the company was holding two doors down.
+//
+// A TAG IS AN INTENTION; A CELL IS A FACT. Nothing moves the `hubs` tag when
+// stock moves: it is set by hand in the product editor and by append-on-toggle,
+// while /stock is written by every transfer, count and till sale. The two drift
+// silently and permanently, and the ✕ turns that drift into a refused sale.
+// Catalogue census the day this shipped: of 1,438 active gated sneakers, 31
+// were WHOLLY unorderable this way (187 units stranded at the other hub, 26 of
+// them tagged hub1 with the stock at hub2, 5 the other way), across 107
+// product×size chips of 9,053. This one product was 11 of those units.
+//
+// NOT THE 1-SEPTEMBER SEAM. That report (Lacoste Powercourt size 8) was a
+// GHOST PROMISE — real stock in the right hub's cell, subtracted by a ready
+// order that was never closed, fixed by READY_PROMISE_MAX_AGE_MS above. This
+// is a different seam entirely: the promised term is zero here and the cell is
+// not merely empty but ABSENT. Same symptom on the tile, unrelated cause.
+//
+// THE RULE, and it is deliberately narrow:
+//
+//   • THE TAG STILL WINS WHENEVER IT CAN SUPPLY. If the tagged hub has one or
+//     more units available for this size, it answers — full stop. This is not
+//     a "pick the fuller hub" balancer, and it must never become one: the tag
+//     encodes where the owner wants a shoe served from, and re-routing a
+//     suppliable size would change live Hub 1 behaviour beyond the defect.
+//   • ONLY A ZERO REROUTES, and only to a hub that actually has the size.
+//     Tagged hub 0 + other gated hub >0 → the other hub answers, the size is
+//     orderable again, and the ✕ note (when some other reason blocks it) names
+//     the hub that will really pick it.
+//   • BOTH ZERO → THE TAGGED HUB, unchanged. The ✕ still fires and still says
+//     "Hub 1", which is the true and useful answer: nobody has it.
+//   • NEVER ON UNSETTLED OR ERRORED DATA. A hub whose subtree has not settled,
+//     or errored, is not evidence of zero — it is silence, and silence must
+//     not move an order. `ready` false on the tagged hub means no reroute at
+//     all (the gate is already open in that state); `ready` false on the
+//     alternate means it cannot be chosen.
+//   • ONLY BETWEEN THE GATED HUBS (hub1 ⇄ hub2) AND ONLY FOR GATED SNEAKERS.
+//     Pine/hub3 is not a candidate and is never rerouted away from: Pine
+//     replenishes on its own terms, its grid has never been gated, and
+//     gatedSneakerHub already refuses it. Clothing, perfume, bags and one-size
+//     accessories keep exactly yesterday's routing.
+//
+// PER SIZE, NOT PER PRODUCT. The 107 affected chips are not all whole products
+// — a shoe can hold 8s at Hub 1 and 9s at Hub 2. The gate has always been a
+// per-size question; this makes the ROUTING one too, so the tile and the order
+// line placed from it can never disagree about who is picking.
+//
+// Pure, like everything here: the caller passes the two hubs' data in.
+// `hubData[hub]` is { cells, promised, ready } — cells/promised in exactly the
+// shapes cellAvailability takes, `ready` the caller's settled-and-not-errored
+// read state for that hub's subtree.
+export function resolveSneakerSourcingHub({ product, taggedHub, size, hubData }) {
+  // Not a gated sneaker, or tagged at a hub this rule does not cover (hub3,
+  // hubC, anything new) — the tag is the answer, untouched.
+  if (!gatedSneakerHub(product, taggedHub)) return taggedHub;
+  if (!size) return taggedHub;                 // no size, no per-cell question
+  const alternate = GATED_SNEAKER_HUBS.find((h) => h !== taggedHub);
+  const tagged = hubData?.[taggedHub];
+  const alt = hubData?.[alternate];
+  // Silence is not zero. Only a hub we have actually read can be judged empty,
+  // and only a hub we have actually read can be chosen instead.
+  if (!tagged?.ready || !alt?.ready) return taggedHub;
+  const here = cellAvailability({ cells: tagged.cells, promised: tagged.promised, productId: product?.id, size });
+  if (here > 0) return taggedHub;              // the tag can supply — it wins
+  const there = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
+  return there > 0 ? alternate : taggedHub;    // both empty → the tag, and a true ✕
+}
