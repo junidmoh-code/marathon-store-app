@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "proof:social": "node scripts/mutation-proof-social-health.mjs && node scripts/mutation-proof-social-twin.mjs"
+    "proof:social": "node scripts/mutation-proof-social-health.mjs && node scripts/mutation-proof-social-twin.mjs",
+    "proof:push": "node scripts/mutation-proof-push-notify.mjs"
   },
   "dependencies": {
     "firebase": "^10.13.2",
