@@ -8,9 +8,9 @@
 // BEFORE is the shipped-at-#568 behaviour, reconstructed exactly:
 //     hub      = the resolver, deciding from stock ALONE
 //     blocked  = cellAvailability(that hub) <= cartDepth      (cart applied after)
-// AFTER is the fixed behaviour:
-//     { hub, available } = resolveSneakerSourcing(..., consumed: cartDepth)
-//     blocked  = available <= 0
+// AFTER drives the REAL allocation: `cartDepth` ordinary lines are allocated
+// through allocateSneakerCart exactly as the screen allocates them, and the
+// next line's answer is what the chip would show.
 //
 // The cart depth is the point. With an EMPTY cart the two agree everywhere —
 // which is why #568's own before/after report showed nothing wrong. The fault
@@ -22,7 +22,7 @@ admin.initializeApp({ credential: admin.credential.applicationDefault(),
   databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
 
-const { resolveSneakerSourcing, cellAvailability, readyPromisedByCell, gatedSneakerHub, GATED_SNEAKER_HUBS } =
+const { resolveSneakerSourcing, allocateSneakerCart, cellAvailability, readyPromisedByCell, gatedSneakerHub, GATED_SNEAKER_HUBS } =
   await import("../src/components/stock/availabilityCore.js");
 const { decodeSizeKey } = await import("../src/utils/sizeKey.js");
 
@@ -68,8 +68,15 @@ for (const depth of DEPTHS) {
     const beforeHub = resolveSneakerSourcing({ product: prod, taggedHub, size, hubData, consumed: 0 }).hub || tag;
     const beforeAvail = cellAvailability({ ...hubData[beforeHub], productId: PID, size });
     const beforeBlocked = beforeAvail <= depth;
-    // AFTER: one computation, cart included.
-    const after = resolveSneakerSourcing({ product: prod, taggedHub, size, hubData, consumed: depth });
+    // AFTER: the real allocation of `depth` lines, then the next line's answer.
+    const lines = Array.from({ length: depth }, () => ({ product: prod, size }));
+    const { consumed } = allocateSneakerCart({
+      lines, hubData, taggedHubFor: () => taggedHub,
+    });
+    const after = resolveSneakerSourcing({
+      product: prod, taggedHub, size, hubData,
+      consumedByHub: consumed.get(`${PID}::${size}`) || null,
+    });
     const afterBlocked = !(Number.isFinite(after.available) && after.available > 0);
     if (beforeBlocked !== afterBlocked) changed += 1;
     const say = (hub, blocked, n) => `${hub}: ${blocked ? "✕ BLOCKED" : `${n} more — ORDERABLE`}`;
