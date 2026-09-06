@@ -266,7 +266,10 @@ describe("Hub 2 clothing behaves exactly as it did before this change", () => {
 describe("the display-pair lane did not follow the gate to Hub 2", () => {
   it("the marker predicate is still hub1-only, separate from sneakerHubOf", () => {
     const a = app();
-    expect(a).toContain('const sneakerServedByHub1 = (p) => sneakerHubOf(p) === "hub1";');
+    // Takes the size since 2026-09-06 (the serving hub is a per-size answer
+    // once routing is stock-aware), but it is still DERIVED from sneakerHubOf
+    // and still tests for hub1 — that is what this fence is about.
+    expect(a).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
     expect(a).toContain('const hub1DisplayRegister = useDisplayRegister("hub1"');
     expect(a).toContain('displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister)');
   });
@@ -295,6 +298,27 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
   });
 });
 
+// ─── FENCE 3b: THE TILE AND THE ORDER LINE CANNOT DISAGREE (2026-09-06) ──────
+// Once the sourcing hub became a stock question, there were two places that
+// could answer it: the tile's gate and placeOrders. If those ever diverge, a
+// size can be offered by one hub and the order placed against the other — the
+// 2026-09-06 defect inverted, and silent. There is ONE answer, and placement
+// reads it.
+describe("stock-aware sourcing has exactly one answer", () => {
+  it("placement asks sneakerHubOf, the same function the tile was gated on", () => {
+    expect(app()).toContain("(sneakerHubOf(item.product, item.size) || computeHubForItem(item))");
+  });
+  it("and there is exactly one call to the routing resolver in the file", () => {
+    expect((app().match(/resolveSneakerSourcingHub\(/g) || [])).toHaveLength(1);
+  });
+  it("computeHubForItem itself is untouched — it is still the TAG router", () => {
+    // The stock-aware layer sits ON it, never inside it: hub3/Pine, clothing
+    // and the display-refill patch at line ~11140 all still get the raw tag.
+    expect(app()).toContain('return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";');
+    expect(app()).toContain('if (effectiveStoreMode === "pine") return "hub3";');
+  });
+});
+
 // ─── FENCE 4: ONE PATH, NOT THREE ────────────────────────────────────────────
 describe("Hub 2 did not get its own code path", () => {
   it("there is no hub2-specific gate, predicate or note function", () => {
@@ -306,7 +330,7 @@ describe("Hub 2 did not get its own code path", () => {
   it("one sneakerOut, and it routes by hub name", () => {
     const a = app();
     expect(a).toContain("const sneakerOut = (p, s) => {");
-    expect(a).toContain("const hub = sneakerHubOf(p);");
+    expect(a).toContain("const hub = sneakerHubOf(p, s);");
     expect(a).toContain("sneakerAvail(p.id, s, hub) <= sneakerInCart(p.id, s)");
     expect(a).toContain('const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);');
     expect(a).toContain('const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);');

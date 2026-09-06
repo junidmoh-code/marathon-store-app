@@ -95,7 +95,7 @@ import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from ".
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub } from "./components/stock/availabilityCore";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcingHub, GATED_SNEAKER_HUBS } from "./components/stock/availabilityCore";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -7931,7 +7931,17 @@ function sneakerBlockNoteText(size, w) {
   // EXCEPT a block explained only by a display-pair pull claim (w.pullOnly):
   // that lane holds for up to 48h, and calling it a 20-minute hold would be
   // false (CodeRabbit, #546).
-  if (!w || w.booked <= 0) return `Size ${sz} isn't available at ${hub} right now — it can't be ordered.`;
+  // BOTH GATED HUBS CHECKED, BOTH EMPTY (2026-09-06). Since sourcing became
+  // stock-aware, an ✕ on a size neither Hub 1 nor Hub 2 holds is a genuinely
+  // different fact from "the hub this shoe is tagged to hasn't got it" — and
+  // the old wording said the second while meaning the first, which is the
+  // shape of the report that started this work: staff read a hub-named ✕ as
+  // "this size doesn't exist" and stopped looking. Say what was actually
+  // checked. Only when the resolver really did read both (w.checkedBoth);
+  // an unsettled alternate keeps the single-hub wording verbatim.
+  if (!w || w.booked <= 0) return w?.checkedBoth
+    ? `Size ${sz} isn't at Hub 1 or Hub 2 right now — it can't be ordered.`
+    : `Size ${sz} isn't available at ${hub} right now — it can't be ordered.`;
   if (w.available <= 0) {
     if (w.pullOnly)
       return `Size ${sz} at ${hub} is claimed by a pending display-pair request — it can't be ordered.`;
@@ -9211,17 +9221,43 @@ function AssistantView({ products, onExit, orders = [] }) {
   // keep yesterday's behaviour. (Adversarial review, PR #446.)
   // gatedSneakerHub lives in availabilityCore next to the resolver it feeds, so
   // "which hub answers" is testable without mounting the screen (hubIsolation).
-  const sneakerHubOf = (p) => gatedSneakerHub(p, computeHubForItem({ product: p }));
-  // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
-  // register), so they keep their own narrower predicate rather than riding
-  // sneakerHubOf — a Hub 2 shoe must not be offered a Hub 1 display pair.
-  const sneakerServedByHub1 = (p) => sneakerHubOf(p) === "hub1";
   const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);
   const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);
   const sneakerGateReady = (hub) => {
     const st = sneakerCellsState(hub);
     return !!hub && st.settled && !st.error;
   };
+  // ── THE SOURCING HUB IS A STOCK QUESTION, NOT ONLY A TAG (2026-09-06) ─────
+  // computeHubForItem answers from the product record's `hubs` tag alone, and
+  // a tag does not move when stock does. On 2026-09-06 that refused every size
+  // of a shoe whose eleven units had been transferred to Hub 2 while its tag
+  // still read hub1 — the gate was right, the hub it asked was wrong.
+  // resolveSneakerSourcingHub keeps the tag whenever the tagged hub can supply
+  // the size and only reroutes a ZERO to a gated hub that actually holds it;
+  // the rule, its narrowness and the census behind it live in availabilityCore
+  // next to the resolver it feeds. Both hub subtrees are already streamed on
+  // every non-Pine device (hub1CellsState / hub2CellsState), so this reads
+  // cache and costs nothing on the wire.
+  //
+  // Per SIZE: the routing question and the ✕ question are now the same
+  // question, so a tile and the order line placed from it cannot disagree
+  // about which hub picks. Passing no size yields the tag, unchanged.
+  const sneakerHubData = () => ({
+    hub1: { cells: hub1CellsState.cells, promised: hub1Promised, ready: sneakerGateReady("hub1") },
+    hub2: { cells: hub2CellsState.cells, promised: hub2ReadyPromised, ready: sneakerGateReady("hub2") },
+  });
+  const sneakerHubOf = (p, s) => resolveSneakerSourcingHub({
+    product: p, taggedHub: gatedSneakerHub(p, computeHubForItem({ product: p })),
+    size: s, hubData: sneakerHubData(),
+  });
+  // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
+  // register), so they keep their own narrower predicate rather than riding
+  // sneakerHubOf — a Hub 2 shoe must not be offered a Hub 1 display pair.
+  // It takes the size for the same reason everything else here does: after
+  // 2026-09-06 the serving hub is a per-size answer, and a lane that asked the
+  // product-level question would offer a Hub 1 display pair for a size Hub 1
+  // is no longer picking.
+  const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";
   const sneakerAvail = (pid, size, hub = "hub1") =>
     cellAvailability({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: pid, size });
   // Units of this product+size already in the cart. Classic partner rows are
@@ -9234,7 +9270,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       && l.product?.id === pid && l.size === size
       && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
   const sneakerOut = (p, s) => {
-    const hub = sneakerHubOf(p);
+    const hub = sneakerHubOf(p, s);
     return sneakerGateReady(hub) && !!s && sneakerAvail(p.id, s, hub) <= sneakerInCart(p.id, s);
   };
   // WHY that ✕ — booked vs reserved vs in-cart, for the explanatory note. An
@@ -9250,12 +9286,20 @@ function AssistantView({ products, onExit, orders = [] }) {
   // pullOnly is a Hub 1 fact only — Hub 2 nets no pull claims (see
   // hub2ReadyPromised), so it can never be true there.
   const sneakerOutWhy = (p, s) => {
-    const hub = sneakerHubOf(p) || "hub1";
+    const hub = sneakerHubOf(p, s) || "hub1";
     return {
       ...cellBlockInfo({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: p.id, size: s }),
       pullOnly: hub === "hub1"
         && !(hub1ReadyPromised[promisedKey(p.id, s)] > 0) && hub1PullPromised[promisedKey(p.id, s)] > 0,
       hubLabel: HUB_LABELS[hub] || hub,
+      // Did the sourcing resolver actually READ both gated hubs and find
+      // nothing at either? Only then may the note say so. `hub` is the
+      // RESOLVED hub, so it staying put while the other hub is settled and
+      // empty is exactly that case; an unsettled alternate is silence, not
+      // evidence, and keeps the single-hub wording.
+      checkedBoth: GATED_SNEAKER_HUBS.includes(hub)
+        && GATED_SNEAKER_HUBS.every(h => sneakerGateReady(h))
+        && GATED_SNEAKER_HUBS.every(h => sneakerAvail(p.id, s, h) <= 0),
     };
   };
   // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
@@ -9267,7 +9311,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // { stores } (whose floor the pair is on — from the slot, so the request
   // can clear and later refill the RIGHT store's slot).
   const sneakerDisplayOnly = (p, s) => {
-    if (!s || !sneakerServedByHub1(p) || !hub1CellsState.settled || hub1CellsState.error) return null;
+    if (!s || !sneakerServedByHub1(p, s) || !hub1CellsState.settled || hub1CellsState.error) return null;
     const d = hub1DisplayUnits[promisedKey(p.id, s)];
     if (!d) return null;
     const avail = sneakerAvail(p.id, s, "hub1") - sneakerInCart(p.id, s);
@@ -9280,7 +9324,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // last availability (sneakerDisplayOnly above). Same slots data the screen
   // already streams; needs no availability read, so no settled gate.
   const sneakerDisplayInfo = (p, s) =>
-    (s && sneakerServedByHub1(p) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
+    (s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -9340,7 +9384,7 @@ function AssistantView({ products, onExit, orders = [] }) {
       : 1;
     // The quantity clamp half of the belt above: with 2 available a 10-pair
     // add lands 2 lines, never 10. Only where the gate has real data.
-    const clampHub = pendingSize && !pendingDisplayPartner ? sneakerHubOf(selected) : null;
+    const clampHub = pendingSize && !pendingDisplayPartner ? sneakerHubOf(selected, pendingSize) : null;
     if (sneakerGateReady(clampHub)) {
       reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize, clampHub) - sneakerInCart(selected.id, pendingSize)));
     }
@@ -9468,9 +9512,18 @@ function AssistantView({ products, onExit, orders = [] }) {
         // normal dispatch path: Send fires the real hub→destShop transfer.
         // Sneakers keep their existing hub routing.
         const isClothingCustomer = item.productType === "clothing";
+        // SNEAKERS: the SAME stock-aware answer the tile was gated on
+        // (sneakerHubOf — see it and availabilityCore.resolveSneakerSourcingHub
+        // for the rule). Before 2026-09-06 this was the raw tag, so an order
+        // for a shoe whose stock had moved hubs was placed against the hub that
+        // no longer had it — the sheet could not offer that size at all, and
+        // for the 2026-09-06 report it could not offer any of six. Falls back
+        // to computeHubForItem for everything the sneaker gate does not cover
+        // (Pine, perfume/bags/one-size accessories, a null size), so their
+        // routing is byte-for-byte what it was.
         const placedHub = isClothingCustomer
           ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
-          : computeHubForItem(item);
+          : (sneakerHubOf(item.product, item.size) || computeHubForItem(item));
         const order = {
           id: orderNum,
           productId: item.product.id,
