@@ -75,9 +75,12 @@ const REPLAY_TTL_MS = 30 * 60 * 1000;
 const MAX_SEEN = 250;
 
 // Ceiling on recipients resolved from the index. Not a policy — a blast-radius
-// stop, so a corrupted index cannot turn one refill request into thousands of
-// per-user reads.
-const MAX_RECIPIENTS = 250;
+// stop, so a corrupted or abused index cannot turn one refill request into
+// hundreds of per-user reads. Grounded in the real staff count (~31 accounts),
+// with headroom, rather than in a round number: the console rules scope every
+// audience write to the writer's own uid, so the index cannot legitimately
+// exceed the number of people who work here.
+const MAX_RECIPIENTS = 60;
 
 // The FCM error codes that mean "this address is dead, stop writing to it".
 // Anything else — a quota error, a transport blip, an auth hiccup — is
@@ -296,6 +299,56 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
   if (!captured) return { sent: false, skipped: "window_taken" };
 
   const count = Math.max(1, Number(captured.count) || 1);
+
+  // ── FROM HERE THE COUNT EXISTS ONLY IN THIS INVOCATION'S MEMORY ───────────
+  // The window has just been tombstoned, so the requests it counted are in
+  // `seen` (never re-counted) and their count is gone from the database. If
+  // anything below throws — a transient RTDB read, an FCM 503, a malformed
+  // multicast — the whole burst would vanish with no notification and no
+  // signal, which is strictly worse than a late one. Everything from here to
+  // the send is therefore wrapped, and a failure PUTS THE COUNT BACK.
+  try {
+    return await deliver({ db, messaging, hub, count, captured, closedAt });
+  } catch (err) {
+    await restoreBurst({ burstRef, count, captured, closedAt }).catch(() => {});
+    // The house alarm pattern (CARD_RECON_ALARM, SOCIAL_ENGINE_ALARM): a log
+    // marker a Monitoring alert can match, so a lost-and-restored burst is
+    // visible rather than merely survivable.
+    console.error(`PUSH_ALARM refillRequestPush send failed for ${hub} (${count} request(s), count restored):`, err && err.message);
+    return { sent: false, skipped: "send_failed", hub, count, error: err && err.message };
+  }
+}
+
+/** Put a failed burst's count back so the next request for that hub flushes it.
+ *  Re-opened as ALREADY EXPIRED, so it is carried forward on the very next
+ *  transaction rather than waiting out another full window. */
+async function restoreBurst({ burstRef, count, captured, closedAt }) {
+  await burstRef.transaction((cur) => {
+    const seen = pruneSeen(cur && cur.seen, closedAt);
+    // A newer window opened while we were failing: fold the count into it
+    // rather than clobbering a live claim.
+    if (cur && cur.windowId && !cur.closedAt) {
+      return { ...cur, count: Number(cur.count || 0) + count, sample: cur.sample || captured.sample, seen };
+    }
+    // startedAt 0, not "closedAt minus a window". Arithmetic on the current
+    // clock only LOOKS expired: a request arriving a second later would still
+    // be inside the window and would JOIN this one — becoming a counted joiner
+    // of a window with no claimer, so nothing would ever flush it. Zero is
+    // expired against every possible clock.
+    return {
+      windowId: `retry_${closedAt}`,
+      startedAt: 0,
+      count,
+      sample: captured.sample || null,
+      seen,
+      closedAt: null,
+    };
+  });
+}
+
+/** Resolve, compose and send. Separated so the caller above can treat every
+ *  failure in here as one recoverable unit. */
+async function deliver({ db, messaging, hub, count, captured, closedAt }) {
   const recipients = await resolveRecipients(db, hub);
   if (!recipients.length) return { sent: false, skipped: "no_recipients", count };
 
@@ -350,6 +403,7 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
 
 module.exports = {
   notifyRefillRequest,
+  restoreBurst,
   shouldNotify,
   pruneSeen,
   tombstone,

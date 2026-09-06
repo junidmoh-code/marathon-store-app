@@ -169,6 +169,33 @@ function normalise(v) {`,
     nodeTests: SERVER_TESTS,
   },
 
+  {
+    id: "M17",
+    guard: "A FAILED SEND puts the count back — otherwise the burst vanishes with no notification and no signal",
+    file: PUSH,
+    from: `    await restoreBurst({ burstRef, count, captured, closedAt }).catch(() => {});`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M18",
+    guard: "A restore folds into a LIVE window instead of clobbering another claim",
+    file: PUSH,
+    from: `    if (cur && cur.windowId && !cur.closedAt) {
+      return { ...cur, count: Number(cur.count || 0) + count, sample: cur.sample || captured.sample, seen };
+    }`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M19",
+    guard: "A restored window is expired against EVERY clock — otherwise the next request joins a window with no claimer",
+    file: PUSH,
+    from: `      startedAt: 0,`,
+    to: `      startedAt: closedAt,`,
+    nodeTests: SERVER_TESTS,
+  },
+
   // ── SHADOW ROWS ───────────────────────────────────────────────────────────
   {
     id: "M13",

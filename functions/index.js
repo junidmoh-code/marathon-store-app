@@ -3496,7 +3496,21 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 //
 // timeoutSeconds must exceed FLUSH_DELAY_MS plus the send; 120 leaves room for
 // a slow multicast to a few dozen devices without the claimer being killed
-// mid-flush, which would leave a window open until it aged out.
+// mid-flush.
+//
+// ── THE ONE KNOWN GAP, STATED PLAINLY ───────────────────────────────────────
+// Recovery from a killed claimer is REACTIVE: an abandoned window's count is
+// carried forward by the NEXT request at that destination, and a failed send
+// restores its count for the same next request to flush. Both need a next
+// request to exist. If a claimer dies on the last burst of the day at a quiet
+// destination and nothing else is raised there, that burst is never announced.
+// It is not lost data — the requests are in the queue and on screen — only the
+// notification about them.
+//
+// Closing it completely means a scheduled sweep over the seven hub keys, which
+// is a SECOND function; this feature was scoped to one. hub1 and hub2 see the
+// engine sweep every 15 minutes through trading hours, so the exposure is a
+// quiet destination outside those hours.
 //
 // Every guard, the burst window, the replay memory and the dead-token pruning
 // live in lib/refill-push.cjs (node-tested, mutation-proven).

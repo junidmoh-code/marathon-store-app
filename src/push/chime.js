@@ -39,7 +39,11 @@ export function armAudioUnlock() {
   listening = true;
   const unlock = () => {
     unlocked = true;
-    try { context()?.resume?.(); } catch { /* nothing better available */ }
+    // resume() returns a PROMISE. A bare try/catch catches only a synchronous
+    // throw, so a rejection here (a closed context, a browser restriction)
+    // would reach the global unhandledrejection listener in main.jsx and paint
+    // the FATAL RED BANNER across a staff member's screen — for a chime.
+    try { context()?.resume?.()?.catch?.(() => {}); } catch { /* nothing better available */ }
     for (const ev of ["pointerdown", "touchstart", "keydown"]) {
       window.removeEventListener(ev, unlock);
     }
@@ -66,7 +70,10 @@ export function playChime() {
   const c = context();
   if (!c) return false;
   try {
-    if (c.state === "suspended") c.resume();
+    // Same reason as in armAudioUnlock: an unhandled rejection here would show
+    // the app's fatal error banner. playChime promises never to throw, and an
+    // unhandled rejection is not covered by that promise unless it is caught.
+    if (c.state === "suspended") c.resume()?.catch?.(() => {});
     const start = c.currentTime + 0.01;
     // E5 then B5 — a rising interval reads as "something arrived" rather than
     // as an error tone.

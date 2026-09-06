@@ -15,7 +15,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const {
-  notifyRefillRequest, shouldNotify, pruneSeen, composeMessage,
+  notifyRefillRequest, restoreBurst, shouldNotify, pruneSeen, composeMessage,
   WINDOW_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS, MAX_SEEN,
 } = require("../lib/refill-push.cjs");
 
@@ -429,4 +429,50 @@ test("the replay memory is CAPPED, so one node cannot grow with the burst", () =
   // The newest survive: a redelivery is most likely to be about a recent id.
   assert.ok(kept[`r${MAX_SEEN + 499}`], "the most recent id is kept");
   assert.ok(!kept.r0, "the oldest is dropped");
+});
+
+test("A FAILED SEND PUTS THE COUNT BACK — a burst is never lost silently", async () => {
+  const { ref, state } = fakeDb(WORLD());
+  const exploding = {
+    calls: [],
+    async sendEachForMulticast() { throw new Error("FCM 503"); },
+  };
+  const res = await run({ ref }, exploding, "r1", REQ());
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "send_failed");
+  assert.equal(res.count, 1);
+
+  // The window is re-opened, ALREADY EXPIRED, holding the count. The requests it
+  // counted are in `seen` and can never be re-counted, so discarding here would
+  // lose them permanently.
+  const w = state.push_bursts.hub1;
+  assert.ok(w.windowId, "a window is open again");
+  assert.equal(w.count, 1);
+  // startedAt 0 — expired against every possible clock. Anything derived from
+  // the current time can still look OPEN to a request arriving moments later,
+  // which would make it a joiner of a window that has no claimer, and nothing
+  // would ever flush it.
+  assert.equal(w.startedAt, 0, "expired on purpose, so the next request flushes it at once");
+
+  // The very next request carries it forward and gets through.
+  const m = fakeMessaging();
+  const next = await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "r2", record: REQ(),
+    nowMs: NOW + 1000, sleep: noSleep, newWindowId: () => "W2",
+  });
+  assert.equal(next.sent, true);
+  assert.equal(next.count, 2, "the failed one plus the new one");
+});
+
+test("a restore folds into a LIVE window rather than clobbering someone else's claim", async () => {
+  const { ref, state } = fakeDb(WORLD());
+  await ref("push_bursts/hub1").transaction(() => ({
+    windowId: "OTHER", startedAt: NOW, count: 3, sample: null, seen: {}, closedAt: null,
+  }));
+  await restoreBurst({
+    burstRef: ref("push_bursts/hub1"), count: 5,
+    captured: { sample: { productId: "p1" } }, closedAt: NOW,
+  });
+  assert.equal(state.push_bursts.hub1.windowId, "OTHER", "the live claim is untouched");
+  assert.equal(state.push_bursts.hub1.count, 8, "3 live + 5 restored");
 });
