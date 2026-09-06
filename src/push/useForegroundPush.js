@@ -1,6 +1,6 @@
 // ─── WHEN THE APP IS OPEN, THE OS STAYS QUIET ────────────────────────────────
 // A system notification for an app you are already looking at is noise. So the
-// server sends DATA-ONLY messages (functions/lib/refill-push.cjs) and the two
+// server sends DATA-ONLY messages (functions/lib/order-push.cjs) and the two
 // halves split the job with no overlap possible:
 //
 //   app backgrounded → public/firebase-messaging-sw.js shows the OS notification
@@ -47,13 +47,13 @@ export function useForegroundPush({ enabled }) {
     let unsubscribe = null;
 
     const show = (data) => {
-      const key = `${data.tag || "refill"}:${data.sentAt || ""}`;
+      const key = `${data.tag || "order"}:${data.sentAt || ""}`;
       if (shownRef.current.has(key)) return;
       shownRef.current.add(key);
       // Bounded: a long-lived warehouse tab must not accumulate keys all day.
       if (shownRef.current.size > 100) shownRef.current = new Set([key]);
       setBanner({
-        title: data.title || "New refill request",
+        title: data.title || "New order",
         body: data.body || "",
         link: data.link || null,
         count: Number(data.count) || 1,
@@ -69,7 +69,7 @@ export function useForegroundPush({ enabled }) {
         if (cancelled || !(await isSupported())) return;
         unsubscribe = onMessage(getMessaging(), (payload) => {
           const data = (payload && payload.data) || {};
-          if (data.kind !== "refill") return;
+          if (data.kind !== "order") return;
           show(data);
         });
       } catch (err) {

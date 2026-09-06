@@ -54,7 +54,7 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 // ── DATA-ONLY MESSAGES, ON PURPOSE ──────────────────────────────────────────
-// The server sends `data` and never `notification` (functions/lib/refill-push.cjs).
+// The server sends `data` and never `notification` (functions/lib/order-push.cjs).
 // A `notification` payload is displayed by the browser ITSELF, including while
 // the app is open — which is exactly the double-fire the foreground behaviour is
 // meant to prevent. Data-only puts the decision here and in the page:
@@ -63,16 +63,16 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 // Exactly one of the two runs for any given message.
 messaging.onBackgroundMessage((payload) => {
   const d = (payload && payload.data) || {};
-  const title = d.title || "New refill request";
+  const title = d.title || "New order";
   return self.registration.showNotification(title, {
     body: d.body || "",
     // The circuit icon is the installed app's own icon, so the notification
     // looks like it came from Marathon and not from a generic web page.
     icon: "/icons/icon-192-circuit.png",
     badge: "/icons/icon-192-maskable-circuit.png",
-    // Collapse in the TRAY as well as at the server: one hub's burst replaces
+    // Collapse in the TRAY as well as at the server: one store's burst replaces
     // its own previous notification rather than stacking a column of them.
-    tag: d.tag || "refill",
+    tag: d.tag || "order",
     renotify: true,
     data: { link: d.link || "/" },
   });

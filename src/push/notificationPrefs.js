@@ -6,7 +6,8 @@
 // ── DEFAULT ON, NOT OPT-IN ──────────────────────────────────────────────────
 // The absence of a /notification_prefs record does NOT mean off. It means "this
 // person has never touched the switch", and for the people whose job is picking
-// refills — stockRole warehouse and admin — the right answer to that is on.
+// and dispatching orders — stockRole warehouse and admin — the right answer to
+// that is on.
 //
 // An opt-in that starts off looks safer and is not. The failure mode of opt-in
 // is silent and permanent: a picker who never finds the toggle is never
@@ -15,7 +16,7 @@
 // a notification someone did not want, which they can switch off in one tap,
 // on the same screen they sign out from.
 //
-// The default is scoped to the two roles that fulfil refills. It is not "on for
+// The default is scoped to the two roles that fulfil orders. It is not "on for
 // everybody": a POS cashier has no use for a Hub 1 pick.
 //
 // ── THE DATA IS DIRTY, AND THAT IS THE NORMAL CASE ──────────────────────────
@@ -28,7 +29,7 @@
 
 import { AUDIENCE_ALL, AUDIENCE_BUCKETS } from "./pushConfig";
 
-// The roles whose job includes fulfilling refill requests. These are the two
+// The roles whose job includes fulfilling a shop's orders. These are the two
 // that are subscribed by default.
 export const DEFAULT_ON_ROLES = Object.freeze(["warehouse", "admin"]);
 
@@ -74,8 +75,8 @@ export function resolvePushSubscription({ permRecord, prefs, isSuperAdmin = fals
 
 // Which destinations a subscribed user hears about.
 function bucketsFor(role, permRecord) {
-  // Warehouse and admin pick for EVERY destination, so scoping them to one hub
-  // would hide most of their own work from them.
+  // Warehouse and admin pick for EVERY destination store, so scoping them to
+  // one shop would hide most of their own work from them.
   if (DEFAULT_ON_ROLES.includes(role)) return [AUDIENCE_ALL];
 
   const destShop = normalise(permRecord && permRecord.destShop);
@@ -94,7 +95,13 @@ function normalise(v) {
 }
 
 /** The value the toggle writes. Kept here so the UI and the resolver cannot
- *  disagree about the field name. */
+ *  disagree about the field name.
+ *
+ *  The stored field is still `refillRequests`, unchanged from the first
+ *  release. It is a person's EXPLICIT answer to "do you want to be told", and
+ *  renaming it would read every one of those answers as never-given — silently
+ *  re-subscribing everybody who had switched the alerts off. The words on the
+ *  switch changed; what the switch means did not. */
 export function prefPayload(on, nowMs) {
   return { refillRequests: !!on, updatedAt: nowMs };
 }

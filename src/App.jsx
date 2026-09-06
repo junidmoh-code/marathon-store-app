@@ -84,6 +84,8 @@ import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
 import { useForegroundPush } from "./push/useForegroundPush";
+import { useFocusOrder } from "./push/useFocusOrder";
+import { orderCardKey } from "./push/deepLink";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
@@ -11173,6 +11175,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Which Ready-tab row's ⋮ action menu is open (one at a time). A dispatched
   // order lives in the Ready tab — there is no separate "Sent" tab.
   const [menuOpenId, setMenuOpenId] = useState(null);
+  // A push notification tapped for ONE order leaves a marker naming it; this
+  // scrolls that card into view and rings it (src/push/useFocusOrder.js).
+  // Armed only once a hub is chosen, because before that there is no queue to
+  // search and the marker would be spent on the hub picker.
+  const focusOrderKey = useFocusOrder(!!selectedHub);
   // Dispatch-label print toast (non-blocking — Send never waits on the printer).
   const [printToast, setPrintToast] = useState(null);
   const [nowTick, setNowTick] = useState(() => serverNowMs());
@@ -12279,8 +12286,17 @@ function WarehouseView({ products = [], orders, onExit }) {
             const chipBg = incoming ? "rgba(60,110,255,.15)" : ready ? "rgba(0,180,80,.12)" : oos ? "rgba(200,40,40,.12)" : "rgba(255,255,255,.05)";
             const chipColor = incoming ? "#6A9FFF" : ready ? "#4ACA7A" : oos ? "#FF6B6B" : "#888";
             const chipLabel = incoming ? "Incoming" : ready ? "Ready" : oos ? "Out of Stock" : (STATUS_CONFIG[status]?.label || status);
+            // The card's identity for a push focus marker: id AND createdAt,
+            // because order numbers are recycled daily and the bare id would
+            // ring an unrelated card from a previous day at the same number.
+            const cardKey = orderCardKey(order.id, order.createdAt);
+            const focused = focusOrderKey != null && focusOrderKey === cardKey;
             return (
-              <div style={{ borderRadius:14, overflow:"hidden", position:"relative", background:cardBg, border:cardBorder }}>
+              <div data-order-card={cardKey}
+                   style={{ borderRadius:14, overflow:"hidden", position:"relative", background:cardBg,
+                            border: focused ? "1px solid rgba(74,127,255,.95)" : cardBorder,
+                            boxShadow: focused ? "0 0 0 3px rgba(74,127,255,.35)" : undefined,
+                            transition:"box-shadow .25s ease, border-color .25s ease" }}>
                 {/* color bar */}
                 <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:`linear-gradient(180deg,transparent,${barColor},transparent)` }}/>
                 <div style={{ padding:"12px 12px 12px 16px", display:"flex", alignItems:"flex-start", gap:11 }}>
@@ -12556,6 +12572,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             canFulfil={canFulfilCR}
             onViewPhoto={setCrPhoto}
             products={products}
+            focusOrderKey={focusOrderKey}
           />
         </div>
       )}
@@ -13131,7 +13148,7 @@ function SizeStatusChips({ items }) {
 // card open at a time. Send fires a real hub2→store transfer per fulfilled size
 // (onFulfill → fulfillCRBatch, idempotent per line+date+generation). History
 // cards still hold exactly one request.
-function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle }) {
+function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle, focusOrderKey = null }) {
   const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
   const [touched, setTouched] = useState({});   // { orderId: true }
   const [rejects, setRejects] = useState({});   // { orderId: true }
@@ -13183,8 +13200,24 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
     }
   };
 
+  // A CR card is a whole request, so it stands for SEVERAL orders. The push
+  // focus marker names one of them; `data-order-card` therefore carries every
+  // line's key and the lookup matches one of the list (src/push/useFocusOrder).
+  // Without this a shop refill or an engine leg — most of what this feature
+  // notifies about — would deep-link to the tab and ring nothing.
+  const focusKeys = (batch.items || []).map((it) => orderCardKey(it.orderId, it.createdAt)).join(" ");
+  const focusedHere = !!focusOrderKey && (batch.items || [])
+    .some((it) => orderCardKey(it.orderId, it.createdAt) === focusOrderKey);
+
   return (
-    <div style={{ background:CARD, border: open ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(60,110,255,.3)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, boxShadow: open ? "0 0 12px rgba(60,110,255,.15)" : "none", overflow:"hidden" }}>
+    <div data-order-card={focusKeys}
+         style={{ background:CARD,
+                  border: focusedHere ? "1px solid rgba(74,127,255,.95)"
+                        : open ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(60,110,255,.3)",
+                  borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS,
+                  boxShadow: focusedHere ? "0 0 0 3px rgba(74,127,255,.35)"
+                           : open ? "0 0 12px rgba(60,110,255,.15)" : "none",
+                  transition:"box-shadow .25s ease, border-color .25s ease", overflow:"hidden" }}>
       {/* Compact header row — always visible; tap to expand/collapse. */}
       <div onClick={onToggle} role="button" tabIndex={0} aria-expanded={open}
            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}
@@ -13329,7 +13362,7 @@ function UndoCRButton({ batch, onUndo }) {
   );
 }
 
-function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products }) {
+function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products, focusOrderKey = null }) {
   // Accordion — one request expanded at a time so the whole queue stays scannable.
   const [openKey, setOpenKey] = useState(null);
   // Open = the working queue (only unresolved requests); History = resolved ones
@@ -13385,6 +13418,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
               <CRFulfillCard key={batch.batchKey}
                              batch={batch} hubCells={hubCells} hubLabel={hubLabel} canFulfil={canFulfil}
                              onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime}
+                             focusOrderKey={focusOrderKey}
                              open={openKey === batch.batchKey}
                              onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
             ))}

@@ -1,7 +1,7 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { applyCategoryPolicy } = require("./lib/category-policy-write.cjs");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onValueCreated, onValueWritten } = require("firebase-functions/v2/database");
+const { onValueWritten } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
@@ -12,7 +12,7 @@ const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
-const { notifyRefillRequest } = require("./lib/refill-push.cjs");
+const { notifyOrderPlaced } = require("./lib/order-push.cjs");
 const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
@@ -3472,27 +3472,43 @@ exports.updateStaffPassword = onCall(
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 
-// ─── REFILL REQUEST → STAFF PUSH NOTIFICATION ────────────────────────────────
-// Tells the people who pick refills that there is work, on a phone that is
-// locked with the app closed.
+// ─── STORE ORDER → STAFF PUSH NOTIFICATION ───────────────────────────────────
+// Tells the people who pick and dispatch that a shop has placed an order, on a
+// phone that is locked with the app closed.
 //
-// ONE trigger covers BOTH creation paths because they converge on one write:
-// the 15-minute engine sweep (refill-scan.cjs) and the human paths (Missing
-// Sneakers, and the on-hold re-link) all end at refill_requests/{id}. Hooking
-// the row rather than either producer means neither can be missed, and a future
-// producer is covered on the day it ships.
+// ONE trigger covers EVERY creation path because they converge on one write:
+// the store app's checkout (AssistantView.placeOrders), the store app's refill
+// cart (placeRefillRequests), and the refill engine's own store legs
+// (refill-scan.cjs) all end at /orders/{id}. Hooking the node rather than any
+// producer means none can be missed, and a future producer is covered on the
+// day it ships. The POS never creates an order — it only marks one collected
+// (marathon-pos-app/src/sale/markOrderCollected.js), so it needs no coverage
+// here and gets none.
 //
-// onValueCreated, not onValueWritten: a fulfil, a resize and a withdrawal all
-// rewrite this record, and none of them is new work arriving.
+// ── WHY createdAt AND NOT THE ORDER NODE ────────────────────────────────────
+// onValueCreated fires on null → value only, and an order id is NOT unique:
+// both counters reset daily and cycle 001–999 while the nodes persist (2,942
+// live nodes on 2026-09-06, 2,377 of them R-keys back to July; R040-1 had been
+// rewritten over an August record that morning). Most new orders are therefore
+// a set() over an EXISTING node, which onValueCreated does not see at all —
+// silently, with no error and nobody told. A createdAt write whose value
+// changes is exactly "a new order has taken this id" under both cases, and the
+// ordinary lifecycle (status, readyAt, dispatch, collection) never touches it,
+// so the invocation count stays near one per order placed.
+//
+// The record is RE-READ rather than taken from the event payload — the house
+// rule for RTDB triggers here — and the re-read record's createdAt is checked
+// against the one the event fired on, so a node already replaced by the NEXT
+// order at that recycled id is left to its own event.
 //
 // ── retry: false, ON PURPOSE ────────────────────────────────────────────────
-// The sweep can create hundreds of requests in one run. A retry storm across
-// that many invocations, each of which may hold a 20-second flush window open,
-// is a real cost and a real risk to the function's concurrency budget — while
-// the thing being protected is a convenience notification, not a customer
-// message and not a stock movement. The core is idempotent regardless (the
-// window's `seen` map survives the window closing), so redelivery is handled
-// where it is cheap rather than by re-driving the whole trigger.
+// The engine sweep can create hundreds of orders in one run. A retry storm
+// across that many invocations, each of which may hold a flush window open, is
+// a real cost and a real risk to the function's concurrency budget — while the
+// thing being protected is a convenience notification, not a customer message
+// and not a stock movement. The core is idempotent regardless (the window's
+// `seen` map survives the window closing), so redelivery is handled where it is
+// cheap rather than by re-driving the whole trigger.
 //
 // timeoutSeconds must exceed MAX_FLUSH_WAIT_MS (240s) plus the send. The
 // claimer waits for the burst to go QUIET rather than for a fixed delay, and
@@ -3501,31 +3517,46 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // 300 leaves a minute for a slow multicast to a few dozen devices without the
 // claimer being killed mid-flush.
 //
-// Only the ONE claiming invocation per burst waits; every other request for
-// that destination transacts and exits in milliseconds. And the wait ends when
-// the burst does — a single request raised by hand costs one tick (12s), not
-// the ceiling.
+// Only the ONE claiming invocation per burst waits; every other order for that
+// store transacts and exits in milliseconds. And the wait ends when the burst
+// does — a single order placed by hand costs one tick (12s), not the ceiling.
 //
-// ── THE ONE KNOWN GAP, STATED PLAINLY ───────────────────────────────────────
-// Recovery from a killed claimer is REACTIVE: an abandoned window's count is
-// carried forward by the NEXT request at that destination, and a failed send
-// restores its count for the same next request to flush. Both need a next
-// request to exist. If a claimer dies on the last burst of the day at a quiet
-// destination and nothing else is raised there, that burst is never announced.
-// It is not lost data — the requests are in the queue and on screen — only the
-// notification about them.
+// ── THE KNOWN GAPS, STATED PLAINLY ──────────────────────────────────────────
+// Each of these is accepted, not overlooked. Every one costs at most a late or
+// a duplicate NOTIFICATION; none of them loses an order, which is on the queue
+// and on screen regardless.
 //
-// Closing it completely means a scheduled sweep over the seven hub keys, which
-// is a SECOND function; this feature was scoped to one. hub1 and hub2 see the
-// engine sweep every 15 minutes through trading hours, so the exposure is a
-// quiet destination outside those hours.
+// 1. Recovery from a killed claimer is REACTIVE: an abandoned window's count is
+//    carried forward by the NEXT order at that store, and a failed send
+//    restores its count for the same next order to flush. Both need a next
+//    order to exist. If a claimer dies on the last cart of the day at a quiet
+//    store and nothing else is placed there, that burst is never announced.
+//    Closing it completely means a scheduled sweep over the destination stores,
+//    which is a SECOND function; this feature was scoped to one.
+//
+// 2. A REDELIVERY is recognised as a replay and returns before the
+//    carry-forward runs, so a redelivered last-order-of-the-day cannot revive
+//    an abandoned window either. Same shape as (1), same cost.
+//
+// 3. A redelivery arriving after REPLAY_TTL_MS (30 min), or after the id has
+//    been evicted from the capped `seen` map by a burst larger than MAX_SEEN,
+//    is no longer recognised. At worst that is one extra "1 new order"; it
+//    cannot duplicate a burst.
+//
+// 4. An order that has already advanced past "incoming" by the time the
+//    re-read happens is skipped. That is deliberate — somebody has already
+//    picked it — but it does mean a very fast fulfil suppresses the alert.
+//
+// 5. A transient failure of the re-read itself drops that one order's
+//    contribution (retry:false, and no window was claimed yet to restore).
+//    It logs PUSH_ALARM so the loss is visible rather than merely survivable.
 //
 // Every guard, the burst window, the replay memory and the dead-token pruning
-// live in lib/refill-push.cjs (node-tested, mutation-proven).
-//   firebase deploy --only functions:refillRequestPush
-exports.refillRequestPush = onValueCreated(
+// live in lib/order-push.cjs (node-tested, mutation-proven).
+//   firebase deploy --only functions:orderPlacedPush
+exports.orderPlacedPush = onValueWritten(
   {
-    ref:            "/refill_requests/{requestId}",
+    ref:            "/orders/{orderId}/createdAt",
     instance:       "marathon-club-default-rtdb",
     region:         "europe-west1",
     memory:         "256MiB",
@@ -3533,11 +3564,35 @@ exports.refillRequestPush = onValueCreated(
     retry:          false,
   },
   async (event) => {
-    const res = await notifyRefillRequest({
-      db:        admin.database(),
+    // A DELETE (the shadow sweep clearing stale artifacts, a manual tidy) is
+    // not an order arriving.
+    const after = event.data && event.data.after;
+    if (!after || !after.exists()) return;
+    const orderId = event.params.orderId;
+    const db = admin.database();
+    // RE-READ. Never the event payload: delivery is at-least-once and can be
+    // minutes late, and this path's ids are recycled — the truth about what
+    // order lives at this key right now is only in the database.
+    //
+    // WRAPPED, because this read happens BEFORE any window is claimed. Every
+    // later failure self-heals — a failed send puts its count back for the next
+    // order to flush — but a throw here leaves nothing behind at all: with
+    // retry:false the invocation is dropped and this order's contribution to
+    // the count simply vanishes, silently. The alarm marker is the same one the
+    // send path uses, so one Monitoring rule sees both.
+    let record = null;
+    try {
+      record = (await db.ref(`orders/${orderId}`).get()).val();
+    } catch (err) {
+      console.error(`PUSH_ALARM orderPlacedPush could not re-read orders/${orderId}:`, err && err.message);
+      return;
+    }
+    const res = await notifyOrderPlaced({
+      db,
       messaging: admin.messaging(),
-      requestId: event.params.requestId,
-      record:    event.data.val(),
+      orderId,
+      record,
+      createdAt: after.val(),
       // Google's clock, not a device's — the whole reason serverNowMs() exists
       // on the client is to avoid trusting a till's clock, and here there is no
       // till in the loop at all.
@@ -3546,7 +3601,7 @@ exports.refillRequestPush = onValueCreated(
     });
     if (res.sent) {
       console.log(
-        `refillRequestPush: ${res.hub} ${res.count} request(s) -> ${res.delivered}/${res.tokens} devices`
+        `orderPlacedPush: ${res.hub} ${res.count} order(s) -> ${res.delivered}/${res.tokens} devices`
         + (res.pruned ? `, pruned ${res.pruned} dead token(s)` : ""),
       );
     }
