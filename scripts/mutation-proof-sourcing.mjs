@@ -135,8 +135,11 @@ const MUTATIONS = [
     guard: "…and the pre-flight REFUSES a claim that no longer stands, rather than letting it place",
     file: APP,
     kind: "source-pin",
-    from: `        && sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0);`,
-    to: `        && false);`,
+    // ANCHOR ON THE STATEMENT, NEVER THE LINE. This is the fourth stale
+    // whole-line anchor this session — the source line ends with a trailing
+    // comment, and the anchor carried it.
+    from: `if (!d || !(d.units > 0)) return true;`,
+    to: `if (!d) return false;`,
   },
   {
     id: "G12",
