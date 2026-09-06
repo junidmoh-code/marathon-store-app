@@ -138,6 +138,50 @@ for (const r of rows) {
   }
 }
 
+// ── Report ───────────────────────────────────────────────────────────────────
+// RESTORED, ALONG WITH THE DRY-RUN GUARD. An edit that replaced the block above
+// sliced from its heading to the next one and took BOTH of these with it, so
+// the script became apply-only: it wrote 1,276 proposals on a run invoked
+// without --apply. The write was the one that was wanted, and proposals reach
+// nothing but the review lane, so no harm was done — but a script that writes
+// to live data must never lose the switch that says whether to.
+console.log(`enriched sneakers: ${named.length} · derived names: ${derived.size} · in this report: ${rows.length}`);
+const dupNow = [...todayHandles.values()].filter((v) => v.length > 1);
+console.log(`handles colliding TODAY among enriched products: ${dupNow.length} group(s), ${dupNow.reduce((t, v) => t + v.length, 0)} product(s)\n`);
+
+for (const r of rows) {
+  const mark = r.blocked ? "✗" : r.collidesToday ? "→" : "·";
+  console.log(`${mark} ${r.pid}`);
+  console.log(`    catalogue : ${JSON.stringify(r.product?.name || "")}`);
+  console.log(`    before    : ${JSON.stringify(r.before)}  handle ${JSON.stringify(r.beforeHandle)}${r.collidesToday ? "   ← COLLIDES" : ""}`);
+  console.log(`    after     : ${JSON.stringify(r.name)}  handle ${JSON.stringify(r.handle)}${r.level ? `  (escalated to tier ${r.level})` : ""}`);
+  if (r.blocked) console.log(`    BLOCKED   : ${r.blocked}`);
+}
+
+const blocked = rows.filter((r) => r.blocked);
+console.log(`\n${rows.length - blocked.length} proposable · ${blocked.length} blocked`);
+const byReason = {};
+for (const r of blocked) {
+  const k = r.blocked.startsWith("handle ") ? "handle already on the storefront" : r.blocked;
+  byReason[k] = (byReason[k] || 0) + 1;
+}
+for (const [k, v] of Object.entries(byReason).sort((a, b) => b[1] - a[1])) console.log(`  ${String(v).padStart(4)}  ${k}`);
+
+const seen = new Map();
+for (const r of rows) {
+  if (r.blocked) continue;
+  if (!seen.has(r.handle)) seen.set(r.handle, []);
+  seen.get(r.handle).push(r.pid);
+}
+const stillDup = [...seen.entries()].filter(([, v]) => v.length > 1);
+console.log(`AFTER: ${seen.size} distinct handle(s) for ${rows.length - blocked.length} proposable product(s) — ` +
+            (stillDup.length ? `STILL COLLIDING: ${stillDup.map(([h, v]) => `${h} (${v.join(",")})`).join(" · ")}` : "no duplicates"));
+
+if (!APPLY) {
+  console.log(`\nDRY RUN — nothing written. Re-run with --apply to write the proposals.`);
+  process.exit(stillDup.length ? 1 : 0);
+}
+
 // ── HANDING A PRODUCT BACK ───────────────────────────────────────────────────
 // vision-name.mjs skips any node carrying an attribute-derived proposal, so
 // that marker is a claim of OWNERSHIP. It was a one-way ratchet: a product this
