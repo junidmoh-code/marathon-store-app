@@ -51,10 +51,27 @@
 // RTDB I/O, a few hundred ms each), so a whole sweep collapses into one send.
 const WINDOW_MS = 90 * 1000;
 
-// How long the claimer waits before sending. Must be < the function timeout and
-// < WINDOW_MS. Long enough to gather a sweep's opening burst, short enough that
-// a single human-raised request still feels immediate.
-const FLUSH_DELAY_MS = 20 * 1000;
+// ── THE CLAIMER WAITS FOR QUIET, NOT FOR A FIXED DELAY ──────────────────────
+// A fixed delay does not collapse a burst; it collapses the first N seconds of
+// one. The engine's apply loop is serial RTDB I/O — a few hundred ms per intent
+// — and is time-boxed at 200s, so a sweep of any size runs far longer than any
+// delay short enough to keep a single human-raised request feeling immediate.
+// With a fixed 20s the first draft sent "40 new refill requests", then "35 new
+// refill requests", then more: fewer notifications than one per request, but
+// still not the one the brief asked for.
+//
+// So the claimer ticks instead: sleep, re-read the count, and go round again
+// while the count is still MOVING. The wait therefore ends when the burst does.
+// A lone request raised by hand waits exactly one tick; a 400-intent sweep is
+// held until the sweep itself stops, and lands as one notification.
+//
+// FLUSH_TICK_MS is what a single human-raised request costs, so it is the
+// number to weigh against "immediate". MAX_FLUSH_WAIT_MS is the stop: it must
+// exceed the sweep's own 200s apply box (so a full sweep collapses) and stay
+// under the function timeout with room for the send. A burst still running at
+// the ceiling simply gets a second notification — the degradation is graceful.
+const FLUSH_TICK_MS = 12 * 1000;
+const MAX_FLUSH_WAIT_MS = 240 * 1000;
 
 // How long a request id is remembered as "already counted".
 const REPLAY_TTL_MS = 30 * 60 * 1000;
@@ -103,9 +120,22 @@ const HUB_LABEL = {
 
 const hubLabel = (hub) => HUB_LABEL[hub] || String(hub || "a hub");
 
-// hub1's queue is its own SourceView tab; every other destination is served by
-// the Hub 2 / clothing queue. Mirrors src/push/pushConfig.js.
-const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : "clothing");
+// ── ONLY LINK WHERE THE REQUEST IS ACTUALLY LISTED ──────────────────────────
+// Source has two hub queues and only two: the "Hub 1 Refill" tab renders hub1,
+// and the "Hub 2 Refill" ("clothing") tab renders hub2 — `activeHub` in
+// SourceView maps the tab to a hub and to nothing else.
+//
+// The engine also raises requests for STORE destinations (marathon-pe, trophy,
+// marathon-pine), whose work is an R### order in the warehouse queue rather
+// than a row on either of those tabs. Sending those to "clothing" — as the
+// first draft did — lands the person on the Hub 2 queue, where the thing they
+// were just notified about is not listed. A notification that opens the wrong
+// screen is worse than one that opens no particular screen, because the reader
+// concludes the alert was wrong rather than that the link was.
+//
+// So: a tab for the two destinations that have one, and null for the rest,
+// which the caller turns into a plain open of the app.
+const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : hub === "hub2" ? "clothing" : null);
 
 /** Drop remembered request ids older than the replay window, and keep only the
  *  newest MAX_SEEN of whatever survives. Returns a fresh object so a transaction
@@ -188,12 +218,6 @@ async function collectTokens(db, uids) {
 /** The words. One request names the product; a burst names the number. */
 async function composeMessage(db, hub, count, sample) {
   const where = hubLabel(hub);
-  if (count > 1) {
-    return {
-      title: `${count} new refill requests`,
-      body: `${where} — ${count} items to pick.`,
-    };
-  }
   let productName = "";
   const pid = sample && sample.productId;
   if (pid) {
@@ -202,6 +226,20 @@ async function composeMessage(db, hub, count, sample) {
       const name = snap && snap.val();
       if (typeof name === "string") productName = name.trim();
     } catch { /* a missing name must not stop the send */ }
+  }
+  // A burst names its FIRST product as well as the count. "6 items to pick" is
+  // a number; "Nike Air Max 90 and 5 more" is a thing you can picture, and it
+  // is what tells someone at a glance whether this is the delivery they were
+  // waiting for. The sample is the first request of the window (refill-push
+  // keeps `cur.sample || sample`), so it is stable for the whole burst.
+  if (count > 1) {
+    const rest = count - 1;
+    return {
+      title: `${count} new refill requests`,
+      body: productName
+        ? `${where} — ${productName} and ${rest} more to pick.`
+        : `${where} — ${count} items to pick.`,
+    };
   }
   const size = sample && sample.size != null && String(sample.size).trim() !== "" && String(sample.size) !== "_"
     ? ` · size ${sample.size}` : "";
@@ -227,10 +265,12 @@ async function pruneDeadTokens(db, dead) {
  * @param {string} args.requestId
  * @param {object} args.record        the created /refill_requests row
  * @param {number} args.nowMs
- * @param {function} args.sleep       injected so tests do not wait 20 seconds
+ * @param {function} args.sleep       injected so tests do not wait for real ticks
+ * @param {function} [args.now]        wall clock for the wait ceiling; injected so a
+ *        test can drive elapsed time instead of sleeping through it
  * @param {function} [args.newWindowId]
  */
-async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sleep, newWindowId }) {
+async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sleep, now = Date.now, newWindowId }) {
   const skip = shouldNotify(requestId, record);
   if (skip) return { sent: false, skipped: skip };
 
@@ -280,9 +320,32 @@ async function notifyRefillRequest({ db, messaging, requestId, record, nowMs, sl
     return { sent: false, skipped: "joined_window" };
   }
 
-  // ── WAIT, THEN CLOSE AND SEND ONCE ────────────────────────────────────────
-  await sleep(FLUSH_DELAY_MS);
-  const closedAt = nowMs + FLUSH_DELAY_MS;
+  // ── WAIT FOR THE BURST TO GO QUIET, THEN CLOSE AND SEND ONCE ──────────────
+  // One extra small read per tick, and only for the one invocation that is
+  // already waiting. Every other invocation for this burst has long since
+  // exited.
+  const waitStart = now();
+  let lastCount = -1;
+  for (;;) {
+    await sleep(FLUSH_TICK_MS);
+    let cur = null;
+    try { cur = (await burstRef.get()).val(); } catch { break; }   // a read blip: flush with what we have
+    // Somebody closed or replaced this window (a restore, a manual clear).
+    // Stop waiting; the close transaction below will find nothing claimed and
+    // send nothing, which is correct.
+    if (!cur || cur.windowId !== windowId) break;
+    const seenCount = Number(cur.count) || 0;
+    if (seenCount === lastCount) break;                            // quiet — the burst is over
+    lastCount = seenCount;
+    if (now() - waitStart >= MAX_FLUSH_WAIT_MS) break;             // still going: send an instalment
+  }
+  // Derived from the INJECTED clock plus however long we actually waited, not
+  // from Date.now(). The wait is real elapsed time, but every timestamp this
+  // function writes has to come from the same clock as the one it was handed —
+  // otherwise the replay memory is pruned against a different epoch than the
+  // one its entries were written in, and every remembered id evaporates the
+  // moment the window closes.
+  const closedAt = nowMs + (now() - waitStart);
   let captured = null;
   await burstRef.transaction((cur) => {
     // Someone else's window: leave it entirely alone. Cannot happen while this
@@ -356,7 +419,10 @@ async function deliver({ db, messaging, hub, count, captured, closedAt }) {
   if (!rows.length) return { sent: false, skipped: "no_tokens", count };
 
   const { title, body } = await composeMessage(db, hub, count, captured.sample);
-  const link = `/?push=refill&hub=${encodeURIComponent(hub)}&tab=${sourceTabFor(hub)}`;
+  const tab = sourceTabFor(hub);
+  const link = tab
+    ? `/?push=refill&hub=${encodeURIComponent(hub)}&tab=${tab}`
+    : "/";
 
   // DATA-ONLY. A `notification` payload is displayed by the browser itself,
   // including while the app is open, which is precisely the double-fire the
@@ -411,7 +477,8 @@ module.exports = {
   hubLabel,
   sourceTabFor,
   WINDOW_MS,
-  FLUSH_DELAY_MS,
+  FLUSH_TICK_MS,
+  MAX_FLUSH_WAIT_MS,
   REPLAY_TTL_MS,
   MAX_SEEN,
   MAX_RECIPIENTS,

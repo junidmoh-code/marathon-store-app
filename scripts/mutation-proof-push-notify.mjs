@@ -23,6 +23,8 @@ const PREFS = "src/push/notificationPrefs.js";
 const PUSH = "functions/lib/refill-push.cjs";
 const SERVER_TESTS = ["test/refill-push.test.cjs"];
 const PREFS_TESTS = ["src/push/notificationPrefs.test.js"];
+const CHIME = "src/push/chime.js";
+const CHIME_TESTS = ["src/push/chime.test.js"];
 
 const MUTATIONS = [
   // ── DEFAULT ON ────────────────────────────────────────────────────────────
@@ -194,6 +196,58 @@ function normalise(v) {`,
     from: `      startedAt: 0,`,
     to: `      startedAt: closedAt,`,
     nodeTests: SERVER_TESTS,
+  },
+
+  {
+    id: "M20",
+    guard: "THE CLAIMER WAITS FOR QUIET — a fixed delay only collapses the first seconds of a sweep",
+    file: PUSH,
+    from: `    if (seenCount === lastCount) break;                            // quiet — the burst is over
+    lastCount = seenCount;`,
+    to: `    break;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M21",
+    guard: "The wait has a CEILING — a burst that never goes quiet must still produce a notification",
+    file: PUSH,
+    from: `    if (now() - waitStart >= MAX_FLUSH_WAIT_MS) break;             // still going: send an instalment`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M22",
+    guard: "Timestamps come from the INJECTED clock — mixing epochs silently evaporates the replay memory",
+    file: PUSH,
+    from: `  const closedAt = nowMs + (now() - waitStart);`,
+    to: `  const closedAt = Date.now();`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M23",
+    guard: "A STORE destination opens the app, never a hub queue that would not list its request",
+    file: PUSH,
+    from: `const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : hub === "hub2" ? "clothing" : null);`,
+    to: `const sourceTabFor = (hub) => (hub === "hub1" ? "hub1refill" : "clothing");`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M24",
+    guard: "A burst names its first PRODUCT, not only a count",
+    file: PUSH,
+    from: "    const rest = count - 1;",
+    to: "    const rest = count - 1; productName = \"\";",
+    nodeTests: SERVER_TESTS,
+  },
+
+  // ── THE CHIME MUST NOT PAINT THE FATAL BANNER ─────────────────────────────
+  {
+    id: "M25",
+    guard: "The unlock listener is removed with the SAME capture flag it was added with, or it is never removed",
+    file: CHIME,
+    from: `      window.removeEventListener(ev, unlock, { capture: true });`,
+    to: `      window.removeEventListener(ev, unlock);`,
+    tests: CHIME_TESTS,
   },
 
   // ── SHADOW ROWS ───────────────────────────────────────────────────────────

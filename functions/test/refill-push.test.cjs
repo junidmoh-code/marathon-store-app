@@ -17,6 +17,7 @@ const assert = require("node:assert");
 const {
   notifyRefillRequest, restoreBurst, shouldNotify, pruneSeen, composeMessage,
   WINDOW_MS, REPLAY_TTL_MS, DEAD_TOKEN_CODES, MAX_RECIPIENTS, MAX_SEEN,
+  FLUSH_TICK_MS, MAX_FLUSH_WAIT_MS,
 } = require("../lib/refill-push.cjs");
 
 const NOW = 1_757_000_000_000;
@@ -315,9 +316,15 @@ test("one request names the hub and the product; a burst names the number", asyn
   assert.equal(one.title, "New refill request");
   assert.equal(one.body, "Hub 1 — Nike Air Max 90 · size 9 ×2");
 
+  // A burst names its first product too: "6 items to pick" is a number, while
+  // "Nike Air Max 90 and 5 more" is a thing you can picture — and it is what
+  // tells someone at a glance whether this is the delivery they were waiting for.
   const many = await composeMessage({ ref }, "marathon-pe", 6, { productId: "p1" });
   assert.equal(many.title, "6 new refill requests");
-  assert.match(many.body, /Marathon PE/);
+  assert.equal(many.body, "Marathon PE — Nike Air Max 90 and 5 more to pick.");
+
+  const nameless = await composeMessage({ ref }, "hub1", 4, { productId: "gone" });
+  assert.equal(nameless.body, "Hub 1 — 4 items to pick.");
 });
 
 test("a one-size product does not advertise its placeholder size key", async () => {
@@ -347,12 +354,30 @@ test("the payload is DATA-ONLY and deep-links to the destination's own queue", a
   for (const v of Object.values(sent.data)) assert.equal(typeof v, "string");
 });
 
-test("every destination other than hub1 deep-links to the clothing queue", async () => {
-  const world = WORLD();
-  const { ref } = fakeDb(world);
+test("hub2 deep-links to the Hub 2 queue", async () => {
+  const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
-  await run({ ref }, m, "r1", REQ({ requestingLocation: "marathon-pe" }));
-  assert.match(m.calls[0].data.link, /tab=clothing/);
+  await run({ ref }, m, "r1", REQ({ requestingLocation: "hub2" }));
+  assert.equal(m.calls[0].data.link, "/?push=refill&hub=hub2&tab=clothing");
+});
+
+test("a STORE destination opens the app, not a queue that would not list it", async () => {
+  // Source has exactly two hub queues, and the "clothing" tab renders hub2 and
+  // nothing else. A store leg's work is an R### order in the warehouse queue,
+  // so linking it to "clothing" — as the first draft did — landed the reader on
+  // a screen where the thing they were just told about is absent. A
+  // notification that opens the WRONG screen is worse than one that opens no
+  // particular screen: the reader concludes the alert was wrong.
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+  for (const dest of ["marathon-pe", "trophy", "marathon-pine", "hub3"]) {
+    m.calls.length = 0;
+    await notifyRefillRequest({
+      db: { ref }, messaging: m, requestId: `r-${dest}`, record: REQ({ requestingLocation: dest }),
+      nowMs: NOW, sleep: noSleep, newWindowId: () => `W-${dest}`,
+    });
+    assert.equal(m.calls[0].data.link, "/", `${dest} must not be sent to a hub queue`);
+  }
 });
 
 // ── DIRTY DATA ───────────────────────────────────────────────────────────────
@@ -475,4 +500,63 @@ test("a restore folds into a LIVE window rather than clobbering someone else's c
   });
   assert.equal(state.push_bursts.hub1.windowId, "OTHER", "the live claim is untouched");
   assert.equal(state.push_bursts.hub1.count, 8, "3 live + 5 restored");
+});
+
+test("THE COLLAPSE SURVIVES A SLOW SWEEP — the claimer waits for quiet, not for a clock", async () => {
+  // The failure this replaces: with a FIXED flush delay, a sweep that keeps
+  // writing past the delay produced "40 new refill requests", then "35 new
+  // refill requests", then more. Fewer than one notification per request, but
+  // still not the one notification the burst is supposed to become.
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+
+  // Each tick of the claimer's wait lets 10 more requests land — a sweep that
+  // is still going. The 4th tick lets nothing land, which is the sweep ending.
+  let tick = 0;
+  let landed = 0;
+  const sweepSleep = async () => {
+    tick += 1;
+    if (tick > 4) return;
+    for (let i = 0; i < 10; i += 1) {
+      landed += 1;
+      await notifyRefillRequest({
+        db: { ref }, messaging: m, requestId: `r${landed}`, record: REQ(),
+        nowMs: NOW + landed, sleep: noSleep, newWindowId: () => `Wj${landed}`,
+      });
+    }
+  };
+
+  const res = await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "r0", record: REQ(),
+    nowMs: NOW, sleep: sweepSleep, newWindowId: () => "W1",
+  });
+
+  assert.equal(res.sent, true);
+  assert.equal(m.calls.length, 1, "a sweep spanning several ticks is still ONE notification");
+  assert.equal(res.count, 41, "the claimer plus every request that landed while it waited");
+  assert.equal(m.calls[0].data.title, "41 new refill requests");
+});
+
+test("the wait ends at the ceiling rather than never — a burst that never stops still lands", async () => {
+  const { ref } = fakeDb(WORLD());
+  const m = fakeMessaging();
+  let landed = 0;
+  let clock = NOW;
+  // Never goes quiet: every tick adds another request AND advances the clock,
+  // so only the ceiling can end this wait.
+  const forever = async () => {
+    landed += 1;
+    clock += FLUSH_TICK_MS;
+    if (clock - NOW > MAX_FLUSH_WAIT_MS * 3) throw new Error("the ceiling did not stop the wait");
+    await notifyRefillRequest({
+      db: { ref }, messaging: m, requestId: `x${landed}`, record: REQ(),
+      nowMs: NOW + landed, sleep: noSleep, newWindowId: () => `Wx${landed}`,
+    });
+  };
+  const res = await notifyRefillRequest({
+    db: { ref }, messaging: m, requestId: "x0", record: REQ(),
+    nowMs: NOW, sleep: forever, now: () => clock, newWindowId: () => "W1",
+  });
+  assert.equal(res.sent, true, "an unending burst still produces a notification");
+  assert.equal(m.calls.length, 1);
 });

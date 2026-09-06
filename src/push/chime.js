@@ -44,14 +44,19 @@ export function armAudioUnlock() {
     // would reach the global unhandledrejection listener in main.jsx and paint
     // the FATAL RED BANNER across a staff member's screen — for a chime.
     try { context()?.resume?.()?.catch?.(() => {}); } catch { /* nothing better available */ }
+    // The capture flag is PART OF THE LISTENER'S IDENTITY: removing without it
+    // removes nothing, and the listener stays for the life of the page calling
+    // resume() on every tap forever. The first draft had this mismatch, and the
+    // test that "proved" removal passed only because its fake window ignored
+    // the options argument.
     for (const ev of ["pointerdown", "touchstart", "keydown"]) {
-      window.removeEventListener(ev, unlock);
+      window.removeEventListener(ev, unlock, { capture: true });
     }
     listening = false;
   };
   // Capture phase, so a gesture consumed by a component still unlocks audio.
   for (const ev of ["pointerdown", "touchstart", "keydown"]) {
-    window.addEventListener(ev, unlock, { capture: true, once: false, passive: true });
+    window.addEventListener(ev, unlock, { capture: true, passive: true });
   }
 }
 

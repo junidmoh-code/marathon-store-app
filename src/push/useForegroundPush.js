@@ -19,7 +19,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { armAudioUnlock, playChime } from "./chime";
 import { routeFromPushMessage } from "./deepLink";
-import { PUSH_SW_SCOPE } from "./pushConfig";
 
 const BANNER_MS = 8000;
 
@@ -97,10 +96,6 @@ export function useForegroundPush({ enabled }) {
     dismiss();
     if (link) routeFromPushMessage(link);
   }, [banner, dismiss]);
-
-  // Exported for the "not registered yet" case: the SW scope is the one thing a
-  // reader might otherwise assume from the URL rather than the constant.
-  useForegroundPush.scope = PUSH_SW_SCOPE;
 
   return { banner, dismiss, open };
 }

@@ -3494,9 +3494,17 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // window's `seen` map survives the window closing), so redelivery is handled
 // where it is cheap rather than by re-driving the whole trigger.
 //
-// timeoutSeconds must exceed FLUSH_DELAY_MS plus the send; 120 leaves room for
-// a slow multicast to a few dozen devices without the claimer being killed
-// mid-flush.
+// timeoutSeconds must exceed MAX_FLUSH_WAIT_MS (240s) plus the send. The
+// claimer waits for the burst to go QUIET rather than for a fixed delay, and
+// the engine's apply loop is time-boxed at 200s, so the ceiling has to clear
+// that or a large sweep would arrive as several notifications instead of one.
+// 300 leaves a minute for a slow multicast to a few dozen devices without the
+// claimer being killed mid-flush.
+//
+// Only the ONE claiming invocation per burst waits; every other request for
+// that destination transacts and exits in milliseconds. And the wait ends when
+// the burst does — a single request raised by hand costs one tick (12s), not
+// the ceiling.
 //
 // ── THE ONE KNOWN GAP, STATED PLAINLY ───────────────────────────────────────
 // Recovery from a killed claimer is REACTIVE: an abandoned window's count is
@@ -3521,7 +3529,7 @@ exports.refillRequestPush = onValueCreated(
     instance:       "marathon-club-default-rtdb",
     region:         "europe-west1",
     memory:         "256MiB",
-    timeoutSeconds: 120,
+    timeoutSeconds: 300,
     retry:          false,
   },
   async (event) => {
