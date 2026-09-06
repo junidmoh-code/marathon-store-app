@@ -66,7 +66,19 @@ import { triggersInText } from "./shopifyTriggers.js";
 // Bump when the SCHEMA or the PROMPT changes in a way that makes an old
 // extraction not comparable to a new one. A bump makes every product eligible
 // again; leaving it alone makes a crashed run resume for free.
-export const EXTRACTOR_VERSION = 1;
+// v2 (2026-09-06) — WIDENED AFTER THE PILOT MEASURED IT TOO COARSE. On 205
+// products v1 produced 190 distinct attribute signatures but only 188 distinct
+// handles, with 12 colliding groups over 29 products (one group of six: six
+// different shoes that were all "leather low-top black solid round-toe"). The
+// existing prose namer collided ZERO times on the same 205, so v1 would have
+// been a regression on the very thing this build exists to fix.
+//
+// The pilot also showed WHY: toeShape is 82.9% "round" across the catalogue —
+// a true fact about sneakers and therefore nearly useless for telling them
+// apart, and it was the namer's FIRST escalation tier. So v2 adds the three
+// things that are highly visible in a product photo and actually vary
+// (soleType, closure, finish) and re-orders the tiers to spend them first.
+export const EXTRACTOR_VERSION = 2;
 
 /** Where an extraction lives. Sibling of /products, never inside it. */
 export const ATTRIBUTES_PATH = "product_attributes";
@@ -121,7 +133,28 @@ export function colourFamily(colour) {
 }
 
 export const PATTERNS = Object.freeze(["solid", "two-tone", "multi", "print"]);
+
+// MEASURED 82.9% "round" on the 205-product pilot. Kept — the owner brief names
+// it, and the 17% that are not round are genuinely told apart by it — but it is
+// the LAST thing the namer reaches for, not the first, and it carries a small
+// weight. A field that is one value four times in five cannot carry a name.
 export const TOE_SHAPES = Object.freeze(["round", "almond", "square", "pointed", "open"]);
+
+// ── THE v2 WIDENING ──────────────────────────────────────────────────────────
+// The three things a person picks a shoe out of a row by, that v1 did not ask
+// for. All optional: a shoe whose sole the photo does not show still enriches,
+// it just discriminates less.
+export const SOLE_TYPES = Object.freeze([
+  "cup", "gum", "chunky", "platform", "wedge", "vulcanised", "rocker",
+  "cushioned", "cleated", "flat",
+]);
+export const CLOSURES = Object.freeze([
+  "laced", "slip-on", "strap", "buckle", "zip", "elastic", "velcro",
+]);
+export const FINISHES = Object.freeze([
+  "plain", "matte", "glossy", "metallic", "distressed", "perforated",
+  "quilted", "textured", "woven",
+]);
 
 // The style tags. SMALL and deliberately so: a tag vocabulary that grows past
 // what a person can hold in their head stops being a controlled vocabulary and
@@ -162,6 +195,9 @@ export const ATTRIBUTE_FIELDS = Object.freeze({
   pattern:         { from: "vision",  vocab: PATTERNS,        required: true },
   toeShape:        { from: "vision",  vocab: TOE_SHAPES,      required: false },
   soleColour:      { from: "vision",  vocab: COLOURS,         required: false },
+  soleType:        { from: "vision",  vocab: SOLE_TYPES,      required: false },
+  closure:         { from: "vision",  vocab: CLOSURES,        required: false },
+  finish:          { from: "vision",  vocab: FINISHES,        required: false },
   priceBand:       { from: "derived", vocab: PRICE_BANDS,     required: false },
   styleTags:       { from: "vision",  vocab: STYLE_TAGS,      required: false, list: true },
 });
@@ -360,6 +396,28 @@ const MATERIAL_WORD = Object.freeze({
 });
 const TOE_WORD = Object.freeze({ round: "round-toe", almond: "almond-toe", square: "squared-toe", pointed: "pointed-toe", open: "open-toe" });
 
+// v2. "plain" and "laced" emit NOTHING: they are the defaults, and a word that
+// is true of most of the catalogue lengthens a name without telling anyone
+// anything — which is exactly what 82.9%-round "round-toe" was doing at tier 1.
+const FINISH_WORD = Object.freeze({
+  plain: "", matte: "matte", glossy: "glossy", metallic: "metallic",
+  distressed: "distressed", perforated: "perforated", quilted: "quilted",
+  textured: "textured", woven: "woven",
+});
+const SOLE_WORD = Object.freeze({
+  cup: "cup sole", gum: "gum sole", chunky: "chunky sole", platform: "platform sole",
+  wedge: "wedge sole", vulcanised: "vulcanised sole", rocker: "rocker sole",
+  // NOT "air-cushioned": "Air" is a brand token in the compliance lexicon (and
+  // a live `brand` value on 15 products), so that phrasing would be refused.
+  cushioned: "cushioned sole", cleated: "studded sole", flat: "flat sole",
+});
+const CLOSURE_WORD = Object.freeze({
+  // Every clause is a "with …" phrase so it reads after the sole clause rather
+  // than colliding with it — "on a cup sole slip-on" is not a sentence.
+  laced: "", "slip-on": "with no laces", strap: "with a strap", buckle: "with a buckle",
+  zip: "with a zip", elastic: "with elastic panels", velcro: "with a hook-and-loop strap",
+});
+
 // The publish path's own ceiling (shopifyPublishCore.checkCleanName,
 // visionNaming.validateVisionName). Named here rather than repeated as a magic
 // 80 so the two can be seen to be the same number.
@@ -388,40 +446,63 @@ export function nameFromAttributes(attrs, opts = {}) {
   // drop them lowest-value-first (see the 80-character trim below).
   const optional = [];
 
-  // 1. MATERIAL and PATTERN lead. They are the two terms that most often differ
-  //    between two shoes a colour word alone would merge.
+  // 1. PATTERN and FINISH lead, then MATERIAL. These are the three terms that
+  //    most often differ between two shoes a colour word alone would merge —
+  //    and FINISH is the v2 addition that broke the six-way "leather low-top
+  //    black" tie the pilot found.
   const pat = PATTERN_WORD[attrs.pattern] || "";
   if (pat) words.push(titleCase(pat));
+  const fin = FINISH_WORD[attrs.finish] || "";
+  if (fin) words.push(words.length ? fin : titleCase(fin));
   const mat = MATERIAL_WORD[attrs.upperMaterial] || "";
   if (mat) words.push(words.length ? mat : titleCase(mat));
 
-  // 2. TOE SHAPE — escalation tier 1. Cheap, visible, and the thing that tells
-  //    a squared-toe loafer from a round-toe one at a glance.
-  if (level >= 1 && attrs.toeShape && TOE_WORD[attrs.toeShape]) { optional.push(words.length); words.push(TOE_WORD[attrs.toeShape]); }
-
-  // 3. SILHOUETTE — always. It is what the item IS.
+  // 2. SILHOUETTE — always. It is what the item IS.
   const sil = SILHOUETTE_WORD[attrs.silhouette] || "";
   if (sil) words.push(words.length ? sil : titleCase(sil));
 
-  // 4. COLOUR. Both when there are two, because a two-colour shoe named for one
+  // 3. COLOUR. Both when there are two, because a two-colour shoe named for one
   //    of its colours is exactly the collision this build exists to end.
   const c1 = colourWord(attrs.primaryColour);
   const c2 = attrs.secondaryColour && attrs.secondaryColour !== attrs.primaryColour
     ? colourWord(attrs.secondaryColour) : "";
   if (c1) words.push(c2 ? `in ${c1} and ${c2}` : `in ${c1}`);
 
-  // 5. SOLE COLOUR — escalation tier 2. Only when it is not the upper's colour;
-  //    "black sole" on a black shoe distinguishes nothing.
-  if (level >= 2 && attrs.soleColour && attrs.soleColour !== attrs.primaryColour && attrs.soleColour !== attrs.secondaryColour) {
-    optional.push(words.length);
-    words.push(`on a ${colourWord(attrs.soleColour)} sole`);
+  // ── ESCALATION, IN MEASURED ORDER OF USEFULNESS ────────────────────────────
+  // v1 spent toe shape first and it is "round" 82.9% of the time, so tier 1
+  // bought almost nothing and the tiers below it were reached with the name
+  // already long. v2 spends the SOLE first (highly visible, well spread), then
+  // the CLOSURE, and only then the toe and a style tag.
+
+  // Tier 1 — the sole, named by type and, when it differs from the upper, by
+  // colour too. "black sole" on a black shoe distinguishes nothing.
+  if (level >= 1) {
+    const st = SOLE_WORD[attrs.soleType] || "";
+    const sc = attrs.soleColour && attrs.soleColour !== attrs.primaryColour && attrs.soleColour !== attrs.secondaryColour
+      ? colourWord(attrs.soleColour) : "";
+    const clause = st && sc ? `on a ${sc} ${st}` : st ? `on a ${st}` : sc ? `on a ${sc} sole` : "";
+    if (clause) { optional.push(words.length); words.push(clause); }
   }
 
-  // 6. A STYLE TAG — escalation tier 3, and the last thing tried. It is the
-  //    softest signal here and reads as filler on a name that did not need it.
-  if (level >= 3 && Array.isArray(attrs.styleTags) && attrs.styleTags[0]) {
+  // Tier 2 — how it fastens. Silent for "laced", which is the default and true
+  // of most of the catalogue.
+  if (level >= 2 && CLOSURE_WORD[attrs.closure]) {
     optional.push(words.length);
-    words.push(`with a ${attrs.styleTags[0]} finish`);
+    words.push(CLOSURE_WORD[attrs.closure]);
+  }
+
+  // Tier 3 — the toe shape (skipped when "round", for the reason above) and, as
+  // the very last resort, a style tag.
+  if (level >= 3) {
+    if (attrs.toeShape && attrs.toeShape !== "round" && TOE_WORD[attrs.toeShape]) {
+      // The article follows the word, not a guess: "almond-toe" and "open-toe"
+      // both start with a vowel and "an squared-toe" is not English.
+      const t = TOE_WORD[attrs.toeShape];
+      optional.push(words.length); words.push(`with ${/^[aeiou]/.test(t) ? "an" : "a"} ${t} shape`);
+    }
+    if (Array.isArray(attrs.styleTags) && attrs.styleTags[0]) {
+      optional.push(words.length); words.push(`with a ${attrs.styleTags[0]} finish`);
+    }
   }
 
   // ── THE 80-CHARACTER CEILING IS A PUBLISH GATE, NOT A PREFERENCE ───────────
@@ -504,8 +585,9 @@ export function nameVocabularyTriggers() {
   const words = [
     ...Object.values(PATTERN_WORD), ...Object.values(SILHOUETTE_WORD),
     ...Object.values(MATERIAL_WORD), ...Object.values(TOE_WORD),
+    ...Object.values(FINISH_WORD), ...Object.values(SOLE_WORD), ...Object.values(CLOSURE_WORD),
     ...COLOURS.map(colourWord), ...STYLE_TAGS,
-    "in", "and", "on a", "sole", "with a", "finish",
+    "in", "and", "on a", "sole", "with a", "with an", "shape", "finish",
   ].filter(Boolean);
   const hits = [];
   for (const w of words) {

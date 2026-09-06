@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   EXTRACTOR_VERSION, ATTRIBUTE_KEYS, VISION_FIELDS, MAX_STYLE_TAGS,
   COLOURS, COLOUR_FAMILIES, SILHOUETTES, UPPER_MATERIALS, PATTERNS, STYLE_TAGS,
-  PRICE_BANDS, priceBandOf, colourFamily, isLegalAttribute,
+  PRICE_BANDS, SOLE_TYPES, CLOSURES, FINISHES, priceBandOf, colourFamily, isLegalAttribute,
   buildAttributeRecord, resolveAttributes, confirmedFields, isCurrentExtraction,
   usableAttributes, nameFromAttributes, handleFromName, distinctNamesFor, MAX_NAME_LENGTH,
   nameVocabularyTriggers,
@@ -13,6 +13,8 @@ const FULL = {
   silhouette: "low-top", upperMaterial: "leather", primaryColour: "black",
   secondaryColour: "white", colourFamily: "black", pattern: "two-tone",
   toeShape: "round", soleColour: "cream", priceBand: "core", styleTags: ["retro"],
+  // v2, the widening the pilot forced
+  soleType: "cup", closure: "laced", finish: "perforated",
 };
 
 describe("the vocabulary is closed", () => {
@@ -64,6 +66,13 @@ describe("no word the namer can emit is a compliance trigger", () => {
         expect(name, `${sil}/${mat}/${pat}@${level}`).not.toBe("");
         expect(validateVisionName(name).ok, `${name}`).toBe(true);
       }
+    }
+  });
+  it("every v2 word survives the validator too", () => {
+    for (const soleType of SOLE_TYPES) for (const closure of CLOSURES) for (const finish of FINISHES) {
+      const n = nameFromAttributes({ ...FULL, soleType, closure, finish }, { discriminate: 3 });
+      expect(validateVisionName(n).ok, n).toBe(true);
+      expect(n.length, n).toBeLessThanOrEqual(MAX_NAME_LENGTH);
     }
   });
   it("every colour in the vocabulary survives the validator too", () => {
@@ -126,13 +135,14 @@ describe("buildAttributeRecord", () => {
   it("stamps the version and the model so a run is diffable", () => {
     const r = rec();
     expect(r.v).toBe(EXTRACTOR_VERSION);
+    expect(EXTRACTOR_VERSION).toBe(2);   // the pilot's widening
     expect(r.model).toBe("gemini-3.7-flash");
     expect(r.at).toBe(1757000000000);
   });
   it("records supersededV only when the version actually moved", () => {
     expect(buildAttributeRecord({ vision, product, model: "m", at: 1 }).supersededV).toBe(null);
-    expect(buildAttributeRecord({ vision, product, model: "m", at: 1, previousVersion: 1 }).supersededV).toBe(null);
-    expect(buildAttributeRecord({ vision, product, model: "m", at: 1, previousVersion: 0 }).supersededV).toBe(0);
+    expect(buildAttributeRecord({ vision, product, model: "m", at: 1, previousVersion: EXTRACTOR_VERSION }).supersededV).toBe(null);
+    expect(buildAttributeRecord({ vision, product, model: "m", at: 1, previousVersion: 1 }).supersededV).toBe(1);
   });
   it("keeps per-field confidence and invents none", () => {
     const r = rec();
@@ -222,21 +232,39 @@ describe("the name is derived from the attributes", () => {
     expect(nameFromAttributes(null)).toBe("");
   });
   it("names both colours when there are two", () => {
-    expect(nameFromAttributes(FULL)).toBe("Two-tone leather low-top in black and white");
+    expect(nameFromAttributes(FULL)).toBe("Two-tone perforated leather low-top in black and white");
   });
   it("does not repeat a colour against itself", () => {
-    expect(nameFromAttributes({ ...FULL, secondaryColour: "black" })).toBe("Two-tone leather low-top in black");
+    expect(nameFromAttributes({ ...FULL, secondaryColour: "black" })).toBe("Two-tone perforated leather low-top in black");
   });
   it("a solid shoe gets no pattern word", () => {
     expect(nameFromAttributes({ silhouette: "runner", upperMaterial: "mesh", primaryColour: "navy", pattern: "solid" }))
       .toBe("Mesh runner in navy");
   });
-  it("escalation adds terms in order and only when asked", () => {
-    const SHORT = { ...FULL, secondaryColour: "", pattern: "solid" };
-    expect(nameFromAttributes(SHORT, { discriminate: 1 })).toContain("round-toe");
-    expect(nameFromAttributes(SHORT, { discriminate: 2 })).toContain("on a cream sole");
-    expect(nameFromAttributes(SHORT, { discriminate: 3 })).toContain("with a retro finish");
-    expect(nameFromAttributes(SHORT, { discriminate: 0 })).not.toContain("round-toe");
+  // THE ORDER IS A MEASUREMENT, NOT A PREFERENCE. v1 spent toe shape first;
+  // the pilot measured toeShape at 82.9% "round", so tier 1 bought almost
+  // nothing and the name was already long by the time a useful term was
+  // reached. v2 spends the sole first.
+  it("escalation spends the sole, then the closure, then the toe", () => {
+    const SHORT = { ...FULL, secondaryColour: "", pattern: "solid", finish: "plain", soleColour: "",
+                    closure: "buckle", toeShape: "square", styleTags: [] };
+    expect(nameFromAttributes(SHORT, { discriminate: 1 })).toContain("cup sole");
+    expect(nameFromAttributes(SHORT, { discriminate: 2 })).toContain("with a buckle");
+    expect(nameFromAttributes(SHORT, { discriminate: 3 })).toContain("squared-toe");
+    expect(nameFromAttributes(SHORT, { discriminate: 0 })).not.toContain("sole");
+  });
+  it("never spends a word on a value that is true of most of the catalogue", () => {
+    // toeShape "round" (82.9%) and closure "laced" are the defaults; naming
+    // them lengthens every name and separates nothing.
+    const n = nameFromAttributes({ ...FULL, toeShape: "round", closure: "laced" }, { discriminate: 3 });
+    expect(n).not.toContain("round-toe");
+    expect(n).not.toContain("laces");
+    expect(nameFromAttributes({ ...FULL, finish: "plain" })).not.toContain("plain");
+  });
+  it("the toe-shape article agrees with the word", () => {
+    const SHORT = { ...FULL, secondaryColour: "", pattern: "solid", finish: "plain", styleTags: [], soleType: "", soleColour: "" };
+    expect(nameFromAttributes({ ...SHORT, toeShape: "almond" }, { discriminate: 3 })).toContain("with an almond-toe");
+    expect(nameFromAttributes({ ...SHORT, toeShape: "square" }, { discriminate: 3 })).toContain("with a squared-toe");
   });
   // The 80-character publish gate. A fully escalated two-colour shoe reaches 89
   // characters, so the ceiling is REACHABLE, and a name over it is a product
@@ -244,21 +272,23 @@ describe("the name is derived from the attributes", () => {
   it("never exceeds the publish ceiling, dropping clauses lowest-value-first", () => {
     const n3 = nameFromAttributes(FULL, { discriminate: 3 });
     expect(n3.length).toBeLessThanOrEqual(MAX_NAME_LENGTH);
-    expect(n3).not.toContain("with a retro finish");   // the tag goes first
-    expect(n3).toContain("on a cream sole");           // the sole survives
-    expect(n3).toContain("round-toe");                 // and so does the toe
+    expect(n3).not.toContain("with a retro finish");   // the style tag goes first
+    expect(n3).toContain("cup sole");                  // the sole survives
   });
   it("no attribute combination can produce a name over the ceiling", () => {
     for (const sil of SILHOUETTES) for (const mat of UPPER_MATERIALS) for (const c of COLOURS) {
       const n = nameFromAttributes(
-        { ...FULL, silhouette: sil, upperMaterial: mat, primaryColour: c, secondaryColour: "multicolour", soleColour: "chocolate" },
+        { ...FULL, silhouette: sil, upperMaterial: mat, primaryColour: c, secondaryColour: "multicolour",
+          soleColour: "chocolate", soleType: "vulcanised", closure: "velcro", toeShape: "pointed" },
         { discriminate: 3 });
       expect(n.length, n).toBeLessThanOrEqual(MAX_NAME_LENGTH);
     }
   });
-  it("never claims a sole colour that is one of the upper's colours", () => {
-    expect(nameFromAttributes({ ...FULL, soleColour: "black" }, { discriminate: 2 })).not.toContain("sole");
-    expect(nameFromAttributes({ ...FULL, soleColour: "white" }, { discriminate: 2 })).not.toContain("sole");
+  it("never claims a sole COLOUR that is one of the upper's colours", () => {
+    // The sole TYPE still shows — it is a different fact.
+    expect(nameFromAttributes({ ...FULL, soleColour: "black" }, { discriminate: 1 })).toContain("on a cup sole");
+    expect(nameFromAttributes({ ...FULL, soleColour: "black" }, { discriminate: 1 })).not.toContain("black sole");
+    expect(nameFromAttributes({ ...FULL, soleColour: "white", soleType: "" }, { discriminate: 1 })).not.toContain("sole");
   });
   it("a name never starts with a digit and never ALL CAPS — the publish gates", () => {
     for (const sil of SILHOUETTES) {

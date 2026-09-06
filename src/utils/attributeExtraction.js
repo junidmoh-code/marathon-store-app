@@ -31,6 +31,7 @@
 // the writes are in the runner.
 import {
   SILHOUETTES, UPPER_MATERIALS, COLOURS, PATTERNS, TOE_SHAPES, STYLE_TAGS,
+  SOLE_TYPES, CLOSURES, FINISHES,
   MAX_STYLE_TAGS, VISION_FIELDS, ATTRIBUTE_FIELDS, isLegalAttribute,
 } from "./productAttributes.js";
 import { GEMINI_INPUT_PER_TOKEN, GEMINI_OUTPUT_PER_TOKEN, USD_TO_ZAR } from "./visionNaming.js";
@@ -57,11 +58,14 @@ Answer with STRICT JSON and nothing else. No markdown, no code fence, no comment
   "pattern": "...",          // one of: ${list(PATTERNS)}
   "toeShape": "...",         // one of: ${list(TOE_SHAPES)}, or "" if you cannot tell
   "soleColour": "...",       // one of the COLOURS below, or "" if you cannot tell
+  "soleType": "...",         // one of: ${list(SOLE_TYPES)}, or "" if the sole is not visible
+  "closure": "...",          // one of: ${list(CLOSURES)}, or "" if you cannot tell
+  "finish": "...",           // one of: ${list(FINISHES)}, or "" if you cannot tell
   "styleTags": ["..."],      // 0 to ${MAX_STYLE_TAGS} of: ${list(STYLE_TAGS)}
   "confidence": {            // YOUR honest confidence, 0.0-1.0, PER FIELD
     "silhouette": 0.0, "upperMaterial": 0.0, "primaryColour": 0.0,
     "secondaryColour": 0.0, "pattern": 0.0, "toeShape": 0.0, "soleColour": 0.0,
-    "styleTags": 0.0
+    "soleType": 0.0, "closure": 0.0, "finish": 0.0, "styleTags": 0.0
   }
 }
 
@@ -81,31 +85,38 @@ RULES
   first and not a small logo. One-colour shoe → "".
 - "pattern": solid = one colour; two-tone = two clear blocks; multi = three or
   more; print = a repeating graphic, animal print or camouflage.
+- "soleType" is the SHAPE and construction of the sole, not its colour: cup = a
+  stitched cup sole; gum = translucent brown rubber; chunky / platform = a thick
+  raised sole; vulcanised = a thin flat rubber wrap; rocker = a curved runner
+  midsole; cushioned = a visible foam or air midsole; cleated = studs.
+- "finish" is the SURFACE, not the material: perforated, quilted, distressed,
+  metallic, glossy, matte, textured, woven — or "plain" when it is none of them.
+  These are what tell two otherwise identical shoes apart, so look for them.
 - "confidence" is per field and they are independent. Being sure of the colour
   says nothing about the material.
 
 BE DISCRIMINATING. These attributes are what tells this shoe apart from the next
-one on the shelf. Two black shoes that differ in material, sole colour or toe
-shape must not come back identical — look at the photo and say what is actually
-different about this one.
+one on the shelf. Two black leather low-tops that differ in their sole, their
+finish or how they fasten must not come back identical — that is the single
+commonest way this goes wrong, and it is why "soleType" and "finish" are asked
+for at all. Look at the photo and say what is actually different about this one.
 
 Return the JSON object only.`;
 
 // ── Cost ─────────────────────────────────────────────────────────────────────
-// MEASURED, replaced by the real figure once the pilot has run — the naming
-// build's first constant was a guess off list prices and was 2.6x wrong. Until
-// then it is derived the honest way: the prompt's own token count at the
-// published rate, plus the observed image cost. The runner prints what a batch
-// ACTUALLY cost from usageMetadata at the end of every run, so drift is visible.
+// A CONSTANT, deliberately, and not a live lookup: a batch runner has to quote a
+// total BEFORE it spends anything. The runner also prints what a batch ACTUALLY
+// cost from usageMetadata at the end of every run, so drift between this number
+// and reality is visible rather than assumed.
 //
-//   image (600x800 product photo, measured on the naming runs) ~1,100 tokens
-//   prompt text                                                 ~  720 tokens
-//   output (structured JSON + per-field confidence)             ~  180 tokens
-//
-//   input  : 1820 x $0.75/1M  = $0.001365
-//   output :  180 x $3.75/1M  = $0.000675
-//                             = $0.002040 per product  (~R0.037)
-export const COST_PER_EXTRACTION_USD = 0.00204;
+// The first value here was $0.00204, derived from the prompt's token count at
+// the published rate. MEASURED on the 200-product pilot (2026-09-06): $0.002364/call over 202
+// calls, against the $0.00204 first estimated here — the same 16% under-guess
+// the naming build made, and for the same reason (the prompt is bigger than it
+// looks once the vocabularies are interpolated into it). v2 adds three fields
+// to the prompt and to the answer, so this is the pilot figure rounded up
+// rather than the pilot figure exactly.
+export const COST_PER_EXTRACTION_USD = 0.0025;
 
 /** What a run of `n` extractions will cost, for the quote shown BEFORE it starts. */
 export function projectExtractionCost(n) {
