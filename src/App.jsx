@@ -96,6 +96,9 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
 import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub } from "./components/stock/availabilityCore";
+import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
+import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
+import { phoneSizeChipStyle, quickViewSizeChipStyle } from "./components/stock/sizeChipTheme";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -7942,6 +7945,88 @@ function sneakerBlockNoteText(size, w) {
   return `Your cart already has all ${w.available} of size ${sz} that ${hub} can give out.`;
 }
 
+// ─── THE ALTERNATIVES STRIP ──────────────────────────────────────────────────
+// Owner spec 2026-09-06. Under the refusal — which is unchanged, word for word
+// — a horizontally scrollable row of up to eight shoes that CAN be sold right
+// now. Photo, name, the sizes actually available, the price, and one short line
+// saying why it matched.
+//
+// SHOWS NOTHING WHEN THERE IS NOTHING. No empty section, no "no matches" row,
+// no skeleton. The sheet falls back to exactly what it said before this
+// existed, which is the correct answer when the catalogue genuinely has no
+// substitute: an assistant reading out a suggestion that cannot be sold is
+// worse than the bare refusal, because it spends the customer's patience twice.
+//
+// Every row here has ALREADY passed the availability join (alternativesCore);
+// this component renders and never re-decides. The sizes printed are the ones
+// the resolver said were sellable at the hub that would supply them, at the
+// moment the chip was tapped.
+//
+// TAPPING ONE SELECTS THAT SHOE — it never returns to the catalogue. The
+// customer's original size comes with them when the shoe has it; when it does
+// not, the shoe opens on its own size grid with nothing chosen, because
+// pre-choosing a size nobody asked for is how a wrong pair gets ordered.
+function AlternativesStrip({ rows, requestedSize, onPick, compact = false }) {
+  if (!rows?.length) return null;
+  const money = (n) => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
+  const cardW = compact ? 132 : 148;
+  return (
+    <div style={{ marginBottom: compact ? 8 : "0.9rem" }}>
+      <div style={{ color: "rgba(233,238,255,.5)", fontSize: compact ? 10.5 : 11, fontWeight: 800,
+                    letterSpacing: ".07em", textTransform: "uppercase", marginBottom: 7 }}>
+        Available now instead
+      </div>
+      {/* One row, scrolled sideways. A wrapped grid would push the size picker
+          and the Add button off a phone screen, and the picker is what the
+          assistant came here for. */}
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4,
+                    WebkitOverflowScrolling: "touch", scrollbarWidth: "thin" }}>
+        {rows.map((r) => (
+          <button key={r.product.id} onClick={() => onPick(r)}
+            title={`${r.product.name} — ${r.why}`}
+            style={{ flex: `0 0 ${cardW}px`, width: cardW, textAlign: "left", padding: 0,
+                     border: "1px solid rgba(60,110,255,.28)", borderRadius: 12,
+                     background: "rgba(60,110,255,.06)", color: "inherit", cursor: "pointer",
+                     fontFamily: "inherit", overflow: "hidden" }}>
+            <div style={{ position: "relative", width: "100%", aspectRatio: "3 / 4", background: "rgba(0,0,0,.25)" }}>
+              <img src={r.product.photoUrl} alt="" loading="lazy"
+                   style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              {/* The size the customer actually asked for, called out on the
+                  photo — it is the only fact that decides whether this row is
+                  the answer or merely a near miss. */}
+              {r.hasRequestedSize && (
+                <span style={{ position: "absolute", top: 6, left: 6, padding: "2px 7px", borderRadius: 999,
+                               background: "rgba(16,185,129,.92)", color: "#04150E", fontSize: 10, fontWeight: 900,
+                               letterSpacing: ".03em" }}>
+                  Size {formatSize(requestedSize)}
+                </span>
+              )}
+            </div>
+            <div style={{ padding: "7px 8px 9px" }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, lineHeight: 1.25, color: "#E9EEFF",
+                            display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                {r.product.name}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, fontWeight: 800, color: "#7AA2FF" }}>
+                {money(r.product.retailPrice)}
+              </div>
+              {/* The sizes are the point of the card. Printed in full rather
+                  than counted: "4 sizes" makes the assistant tap to find out
+                  whether any of them is the one in front of them. */}
+              <div style={{ marginTop: 4, fontSize: 10.5, fontWeight: 700, color: "rgba(233,238,255,.62)", lineHeight: 1.3 }}>
+                {r.sizes.map((sz) => (sz === "Free Size" ? "OS" : formatSize(sz))).join(" · ")}
+              </div>
+              <div style={{ marginTop: 5, fontSize: 10, fontWeight: 600, color: "rgba(157,188,255,.72)", lineHeight: 1.3 }}>
+                {r.why}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
@@ -7950,6 +8035,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayOnly, sneakerDisplayInfo,
+                            alternativesFor,
                             deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
@@ -8067,6 +8153,18 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
     setQvDisplayPrompt(null); setQvDisplayPair(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
+  };
+  // Taking an alternative from the ✕ sheet. The quick-view SWAPS to the chosen
+  // shoe rather than closing — the assistant is mid-sentence with a customer,
+  // and sending them back to the catalogue to find it again is how the
+  // suggestion stops being used. openQv already clears every piece of state
+  // that belonged to the previous shoe (the display-pair claim, the partner
+  // toggle, the quantity), so the size is set AFTER it.
+  const pickQvAlternative = (row, requestedSize) => {
+    const pick = alternativeSelection(row, requestedSize);
+    if (!pick) return;
+    openQv(pick.product);
+    if (pick.size) setQvSize(pick.size);
   };
   // objectFit CONTAIN, not cover: live product photos are predominantly
   // 600×800 portrait (13-sample survey of /orders productPhotoUrl,
@@ -8343,7 +8441,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                       : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
                                     : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
                                     : dInfo ? "This size is on a display" : undefined}
-                                  style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
+                                  // The hover grid's tiles stay DISABLED (there
+                                  // is no room for a sheet in a hover panel and
+                                  // the quick-view carries it), but they lose
+                                  // the line-through for the same reason the
+                                  // ✕ went: the size number is the content.
+                                  style={out ? { opacity:.32, cursor:"not-allowed" }
                                     : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
                                     : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
@@ -8495,12 +8598,20 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                       // "doesn't exist". Self-hides once the size frees up.
                       if (qvNa.snk && !deadForOrder(qv)) {
                         // Belt on the toggle's clear: partner mode lifts the
-                        // ✕, so the note must never outlive it either way.
+                        // grey-out, so the note must never outlive it either way.
                         if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
                         return (
-                          <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
-                            {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
-                          </div>
+                          <>
+                            <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                              {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
+                            </div>
+                            {/* The desktop twin of the phone sheet's strip. The
+                                reason above is unchanged; this only adds what
+                                can be sold instead. */}
+                            <AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}
+                                               requestedSize={qvNa.size}
+                                               onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                          </>
                         );
                       }
                       const have = hubQty(qv.id, qvNa.size);
@@ -8541,9 +8652,13 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                           ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
-                            style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" }
+                            // The ✕ is gone here too, and with it the
+                            // line-through that made a half size unreadable on
+                            // a 34px tile. sizeChipTheme carries the four-axis
+                            // container difference that replaces both.
+                            style={out ? quickViewSizeChipStyle({ out: true })
                               : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
-                              : dInfo ? { position:"relative" } : undefined}
+                              : dInfo ? { position:"relative" } : quickViewSizeChipStyle({ out: false })}
                             onClick={() => {
                               // Deselect FIRST — before the out gate — so a
                               // size that went ✕ while selected can still be
@@ -8564,7 +8679,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // claim — it belongs to the prompted size only.
                               setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(sz);
                             }}>
-                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
                               <span aria-label={dOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
                                 <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
@@ -9282,6 +9397,54 @@ function AssistantView({ products, onExit, orders = [] }) {
   const sneakerDisplayInfo = (p, s) =>
     (s && sneakerServedByHub1(p) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
 
+  // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
+  // The greyed size chip used to be a dead end: a reason, and the sale walks
+  // out. It now opens a sheet that keeps the reason UNCHANGED and adds, below
+  // it, the alternatives that can actually be sold this minute.
+  //
+  // THE READ PATH IS THE WHOLE DESIGN. The ranking was computed offline
+  // (scripts/shopify/build-neighbours.mjs) and stored on the product record, so
+  // this does no similarity arithmetic, opens no subscription and scans no
+  // catalogue: it reads at most twelve pids out of a list the screen already
+  // holds, and checks each one against the SAME maps the grid behind it is
+  // already using. 1,410 sneakers is ~1M pairs; scoring that at tap time is a
+  // frozen phone in front of a customer.
+  //
+  // EVERY GATE FAILS CLOSED. A suggestion an assistant reads out that turns out
+  // not to exist is worse than the bare refusal it replaced — it costs the
+  // customer twice and teaches the assistant not to trust the screen. So:
+  //   • availabilityKnown is FALSE for a Pine/hub3 shoe and for a hub whose
+  //     cells have not settled. sneakerOut returns false there meaning "no
+  //     gate", NOT "in stock", and reading it the other way is exactly how an
+  //     unverified shoe reaches a customer.
+  //   • a deactivated line (#445/#532/#566), a priceless one and a photoless
+  //     one are all out — the row has nothing to show and nothing to sell.
+  //   • sneakerOut, not a second availability test. One definition of
+  //     "available" on this screen, the same one that drew the chip.
+  const alternativesFor = (product, size) => {
+    if (!product || !size) return [];
+    // Sneakers only. Clothing and perfume are out of scope for this build, and
+    // a clothing tile's grey-out reads its cell by a different rule
+    // (availabilityCore's header, the deliberately-unmerged clothing lane).
+    if ((product.productType || "sneaker") === "clothing") return [];
+    return sellableAlternatives({
+      neighbours: product[NEIGHBOURS_FIELD],
+      requestedSize: size,
+      // FOLLOWS MERGES. A pid in a list written last week may since have been
+      // merged away; resolveProductById lands on the survivor, and
+      // sellableAlternatives de-duplicates when two entries land on the same
+      // shoe.
+      resolveProduct: (pid) => resolveProductById(pid),
+      sizesOf: (p) => (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"),
+      availabilityKnown: (p) => {
+        const hub = sneakerHubOf(p);
+        return !!hub && sneakerGateReady(hub);
+      },
+      sizeAvailable: (p, sz) => !sneakerOut(p, sz),
+      isSellable: (p) => !deadForOrder(p) && Number(p.retailPrice) > 0 && !!String(p.photoUrl || "").trim(),
+    });
+  };
+
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
   // (name/phone/WhatsApp) when it's a sneaker OR a clothing line tagged
@@ -9297,6 +9460,34 @@ function AssistantView({ products, onExit, orders = [] }) {
   const refillCount       = cart.length - customerCount;
 
   const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+
+  // ── TAKING AN ALTERNATIVE ─────────────────────────────────────────────────
+  // The sheet STAYS OPEN and swaps to the chosen shoe. Never a bounce back to
+  // the catalogue: the assistant is mid-sentence with a customer, and making
+  // them find the shoe again is how the suggestion stops being used.
+  //
+  // The customer's original size travels with them ONLY when that shoe has it
+  // available (alternativeSelection decides, and it decides from the sizes the
+  // availability join already verified). Otherwise the shoe opens on its own
+  // grid with nothing chosen — pre-selecting a size nobody asked for is how a
+  // wrong pair gets ordered.
+  //
+  // Every other piece of sheet state is cleared, exactly as resetSheet would:
+  // a display-pair claim, a partner toggle and a quantity all belong to the
+  // shoe that was on screen a moment ago, and carrying any of them across
+  // would attach them to a different product.
+  const pickAlternative = (row) => {
+    const pick = alternativeSelection(row, naNote?.size || pendingSize || "");
+    if (!pick) return;
+    setNaNote(null);
+    setDisplayPrompt(null);
+    setPendingDisplayPair(null);
+    setPendingDisplay(false);
+    setPendingDisplayPartner(false);
+    setPendingQty(1);
+    setPendingSize(pick.size);
+    setSelected(pick.product);
+  };
 
   const addToCart = () => {
     if (!selected) return;
@@ -9781,7 +9972,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo}
+          alternativesFor={alternativesFor} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -10176,13 +10368,21 @@ function AssistantView({ products, onExit, orders = [] }) {
               // quick-view's: tapping a ✕ tile says WHY (empty vs reserved
               // vs already-in-cart). Self-hides once the size frees up.
               if (naNote.snk && !deadForOrder(selected)) {
-                // Belt on the toggle's clear: partner mode lifts the ✕, so
-                // the note must never outlive it either way.
+                // Belt on the toggle's clear: partner mode lifts the grey-out,
+                // so the note must never outlive it either way.
                 if (pendingDisplayPartner || !sneakerOut(selected, naNote.size)) return null;
                 return (
-                  <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
-                    {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
-                  </div>
+                  <>
+                    <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
+                      {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
+                    </div>
+                    {/* THE REASON IS UNCHANGED. This sits BELOW it and adds
+                        nothing to what the refusal says — the X gate blocks
+                        exactly what it blocked yesterday, and the only new
+                        action on this sheet is choosing a different shoe. */}
+                    <AlternativesStrip rows={alternativesFor(selected, naNote.size)}
+                                       requestedSize={naNote.size} onPick={pickAlternative} />
+                  </>
                 );
               }
               const have = hubQty(selected.id, naNote.size);
@@ -10299,11 +10499,19 @@ function AssistantView({ products, onExit, orders = [] }) {
                       setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
                     }}
                     style={out
-                      ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor: pendingSize===s ? "pointer" : "not-allowed", fontWeight:"700", fontSize:"1rem" }
+                      // THE GLYPH IS GONE (owner spec 2026-09-06). The
+                      // container alone carries the signal now, and it was
+                      // widened to carry it: dashed instead of solid, grey
+                      // instead of blue, faintly filled instead of transparent,
+                      // and dimmer text — four independent differences, pinned
+                      // by sizeChipTheme.test.js so a later edit cannot quietly
+                      // converge them. The size number reads clearly, which is
+                      // the whole reason the glyph could go.
+                      ? phoneSizeChipStyle({ out: true, selected: pendingSize === s })
                       : dispOnly
                         ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?"#FBBF24":"rgba(251,191,36,.45)", background: pendingSize===s?"rgba(251,191,36,.18)":"rgba(251,191,36,.08)", color:"#FBBF24", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }
-                        : { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
-                    <SizeTag size={s} />{snkOut ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                        : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>
+                    <SizeTag size={s} />{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                     {dispInfo ? (
                       <span aria-label={dispOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={dispOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
