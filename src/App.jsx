@@ -98,7 +98,7 @@ import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./c
 import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub } from "./components/stock/availabilityCore";
 import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
 import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
-import { phoneSizeChipStyle, quickViewSizeChipStyle } from "./components/stock/sizeChipTheme";
+import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
@@ -8372,11 +8372,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                     : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
                                     : dInfo ? "This size is on a display" : undefined}
                                   // No line-through, for the same reason the ✕
-                                  // went: the size number is the content. An
-                                  // unavailable SNEAKER tile is now a pointer
-                                  // (it opens the quick-view's note); clothing
-                                  // and deactivated tiles stay not-allowed.
-                                  style={out ? { opacity:.32, cursor: snkTappable ? "pointer" : "not-allowed" }
+                                  // went: the size number is the content. And
+                                  // the same FOUR-AXIS container difference the
+                                  // other two surfaces use — opacity alone left
+                                  // this tile reading as an ordinary blue chip
+                                  // at 32%, a fifth of a signal (CodeRabbit).
+                                  style={out ? hoverGridSizeChipStyle({ out: true, tappable: snkTappable })
                                     : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
                                     : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
@@ -9396,11 +9397,20 @@ function AssistantView({ products, onExit, orders = [] }) {
       // down a path this screen cannot complete. Hub 1 only, matching
       // sneakerDisplayOnly's own scope.
       sizeAvailable: (p, sz) => !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),
-      // isMergedAway as well as deactivated: followMerge returns the LAST
-      // resolved record on a dangling pointer or a cycle, and that record is
-      // still merged-away. A priced, photographed, non-deactivated corpse
-      // would otherwise pass every other gate here and be offered for sale.
-      isSellable: (p) => !deadForOrder(p) && !isMergedAway(p)
+      // ── SUGGESTING IS NOT THE SAME AS PERMITTING ──────────────────────
+      // isDeactivated, NOT deadForOrder. deadForOrder is Pine-exempt (#566:
+      // `/config/assistantView/showDeactivatedShops/marathon-pine` lets Pine
+      // still see and order a deactivated line, because Pine works an
+      // uncounted manual floor). That exemption is about not HIDING what Pine
+      // staff go looking for. It is not a licence for the app to go and
+      // RECOMMEND a line the owner has retired — nobody asked for that, and a
+      // suggestion is the app's own initiative in a way a search result is not
+      // (CodeRabbit).
+      //
+      // isMergedAway too: followMerge returns the LAST resolved record on a
+      // dangling pointer or a cycle, and that record is still merged-away. A
+      // priced, photographed, live-looking corpse would pass every other gate.
+      isSellable: (p) => !isDeactivated(p) && !isMergedAway(p)
         && Number(p.retailPrice) > 0 && !!String(p.photoUrl || "").trim(),
     // WHICH SHELF IT COMES OFF. The refusal note names the hub that refused,
     // and an alternative may be supplied by the OTHER one — a Hub 1 assistant

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  phoneSizeChipStyle, quickViewSizeChipStyle, chipDistinctionCount, CHIP_DISTINCTION_AXES,
+  phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle,
+  chipDistinctionCount, CHIP_DISTINCTION_AXES, HOVER_GRID_BASE_CHIP,
 } from "./sizeChipTheme";
 
 // The owner spec, as a test: "the ✕ glyph inside it is REMOVED — the container
@@ -13,6 +14,18 @@ describe("the container alone carries the signal", () => {
   });
   it("the quick-view chip does too", () => {
     expect(chipDistinctionCount((o) => quickViewSizeChipStyle(o))).toBe(CHIP_DISTINCTION_AXES.length);
+  });
+  // THE THIRD SURFACE. Its `.ad-sz` class is a solid blue-tinted chip, so
+  // reducing opacity alone left an unavailable tile reading as an ordinary one
+  // at 32% — a fifth of a signal where the others carry four.
+  it("and so does the desktop hover grid, compared against its own class", () => {
+    expect(chipDistinctionCount((o) => hoverGridSizeChipStyle({ ...o, tappable: true }), HOVER_GRID_BASE_CHIP))
+      .toBe(CHIP_DISTINCTION_AXES.length);
+  });
+  it("the hover grid only offers a pointer where there is a sheet to open", () => {
+    expect(hoverGridSizeChipStyle({ out: true, tappable: true }).cursor).toBe("pointer");
+    expect(hoverGridSizeChipStyle({ out: true, tappable: false }).cursor).toBe("not-allowed");
+    expect(hoverGridSizeChipStyle({ out: false })).toBeUndefined();   // the class is the style
   });
   it("the unavailable chip carries no accent colour at all", () => {
     const out = phoneSizeChipStyle({ out: true, selected: false });
@@ -34,7 +47,8 @@ describe("the size number stays readable", () => {
   // The whole reason the glyph could go: the number is the content, and
   // anything that obscures it defeats the change.
   it("nothing is struck through", () => {
-    for (const s of [phoneSizeChipStyle({ out: true }), quickViewSizeChipStyle({ out: true })]) {
+    for (const s of [phoneSizeChipStyle({ out: true }), quickViewSizeChipStyle({ out: true }),
+                     hoverGridSizeChipStyle({ out: true, tappable: true })]) {
       expect(s.textDecoration).toBeUndefined();
     }
   });

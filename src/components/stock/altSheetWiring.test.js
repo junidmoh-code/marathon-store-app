@@ -60,7 +60,10 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
     expect(APP).toContain("const hub = sneakerHubOf(p);\n        return !!hub && sneakerGateReady(hub);");
   });
   it("deactivated, priceless and photoless lines are excluded", () => {
-    expect(APP).toContain("isSellable: (p) => !deadForOrder(p) && !isMergedAway(p)");
+    // isDeactivated, NOT deadForOrder: deadForOrder is Pine-exempt (#566), and
+    // that exemption is about not HIDING a retired line from someone looking
+    // for it — not a licence to RECOMMEND one.
+    expect(APP).toContain("isSellable: (p) => !isDeactivated(p) && !isMergedAway(p)");
     expect(APP).toContain("&& Number(p.retailPrice) > 0 && !!String(p.photoUrl || \"\").trim(),");
   });
   it("the neighbour list is read from the product record, not fetched", () => {
@@ -110,9 +113,23 @@ describe("the ✕ glyph is gone from every size chip", () => {
       }
     }
   });
-  it("both chips take their styling from the shared theme", () => {
+  it("all three chips take their styling from the shared theme", () => {
     expect(APP).toContain("phoneSizeChipStyle({ out: true, selected: pendingSize === s })");
     expect(APP).toContain("quickViewSizeChipStyle({ out: true })");
+    expect(APP).toContain("hoverGridSizeChipStyle({ out: true, tappable: snkTappable })");
+  });
+  // Not a blanket ban on `opacity` — the quantity stepper's disabled "+" uses
+  // one legitimately. This is about SIZE chips: none of the three may fall back
+  // to dimming as its only signal.
+  it("no size chip is left carrying a bare opacity as its only difference", () => {
+    for (const l of APP.split("\n")) {
+      if (!/className="ad-sz"|selectedSizes\.map|sizesOf\(qv\)\.map/.test(l) && !/opacity:\.3/.test(l)) continue;
+      if (/opacity:\.3\d?, cursor:/.test(l)) {
+        expect(l, `a size chip dims instead of differing: ${l.trim().slice(0, 90)}`).toMatch(/>\+</);
+      }
+    }
+    // and the one the hover grid used to carry is gone for good
+    expect(APP).not.toContain("style={out ? { opacity:.32,");
   });
 });
 

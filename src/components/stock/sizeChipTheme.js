@@ -99,6 +99,28 @@ export function quickViewSizeChipStyle({ out }) {
   return { position: "relative" };
 }
 
+// ── The desktop hover grid's tiles ───────────────────────────────────────────
+// The third surface, and the one that nearly kept the old look: its `.ad-sz`
+// class is a solid, blue-tinted chip, so reducing opacity alone left an
+// unavailable tile reading as an ordinary one at 32% — a fifth of a signal
+// where the other two surfaces carry four (CodeRabbit). Same four axes here,
+// expressed as overrides of that class.
+//
+// These tiles are 12px and 34px wide, so the text goes brighter than the phone
+// sheet's, not dimmer: there is less of it to read.
+export function hoverGridSizeChipStyle({ out, tappable }) {
+  if (!out) return undefined;                        // the class is the style
+  return {
+    borderStyle: "dashed",
+    borderColor: "rgba(255,255,255,.20)",
+    background: "rgba(255,255,255,.045)",
+    color: "rgba(233,238,255,.62)",
+    // Only a SNEAKER tile opens a sheet. Clothing and deactivated tiles have
+    // nothing to open and stay not-allowed.
+    cursor: tappable ? "pointer" : "not-allowed",
+  };
+}
+
 // ── The proof, as data ───────────────────────────────────────────────────────
 // The axes the test asserts on. Named here so the test reads as the spec's own
 // sentence rather than as a list of colour literals.
@@ -110,8 +132,18 @@ export const CHIP_DISTINCTION_AXES = Object.freeze(["borderStyle", "borderColor"
  * obviously different, and the state that has to be readable at a glance is the
  * plain one sitting next to it in the grid.
  */
-export function chipDistinctionCount(styleFn) {
-  const out = styleFn({ out: true, selected: false });
-  const ok = styleFn({ out: false, selected: false });
+export function chipDistinctionCount(styleFn, base = {}) {
+  const out = styleFn({ out: true, selected: false }) || {};
+  const ok = { ...base, ...(styleFn({ out: false, selected: false }) || {}) };
   return CHIP_DISTINCTION_AXES.filter((k) => out[k] !== ok[k]).length;
 }
+
+// What .ad-sz resolves to, for the hover grid's comparison — the class is the
+// available state there, so the axes have to be compared against it rather
+// than against an empty object.
+export const HOVER_GRID_BASE_CHIP = Object.freeze({
+  borderStyle: "solid",
+  borderColor: "rgba(255,255,255,.12)",
+  background: "rgba(74,127,255,.08)",
+  color: "#dfe7ff",
+});
