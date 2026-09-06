@@ -80,6 +80,10 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
+import NotificationSettingsRow from "./push/NotificationSettingsRow";
+import PushBanner from "./push/PushBanner";
+import { usePushRegistration } from "./push/usePush";
+import { useForegroundPush } from "./push/useForegroundPush";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
@@ -2895,7 +2899,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -3210,6 +3214,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
+          <NotificationSettingsRow push={push} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3261,6 +3266,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
+        <NotificationSettingsRow push={push} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
@@ -18725,6 +18731,21 @@ function AdminSignInScreen({ onCancel }) {
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
   const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  // ── WEB PUSH ───────────────────────────────────────────────────────────────
+  // Hoisted to the app root rather than to the home screen, because a staff
+  // member with a persisted role opens straight into their workspace and may go
+  // weeks without rendering home. The token has to be refreshed on every app
+  // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
+  // from the one component every session mounts. The settings row still owns
+  // the switch; it receives this same object as a prop.
+  const push = usePushRegistration({ user: authUser, permRecord, isSuperAdmin });
+  // The in-app half: banner + chime instead of an OS notification while the app
+  // is open. No listener at all when push is off.
+  // Gated on `ready` (this uid's registration actually returned ON), not merely
+  // on the preference: registration can be in flight or have failed, and some
+  // of those paths leave an older token alive, which would chime at someone
+  // whose push is not really working.
+  const foregroundPush = useForegroundPush({ enabled: !!push.ready && !!push.uid });
   // Gates the shared /insights_log subscription (mounted at the bottom of this
   // component): the read is rules-gated on a non-anonymous user.
   const insightsAuthReady = useAuthReady();
@@ -19056,7 +19077,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
@@ -19171,6 +19192,9 @@ function AppInner() {
     <>
       <PWAUpdateBanner />
       <ReactivationNotice />
+      {/* Sibling of the boundary, like the clock warning: a crash in `view`
+          still leaves the alert on screen. */}
+      <PushBanner banner={foregroundPush.banner} onOpen={foregroundPush.open} onDismiss={foregroundPush.dismiss} />
       {showClockWarning && <ClockWarningBanner />}
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}
