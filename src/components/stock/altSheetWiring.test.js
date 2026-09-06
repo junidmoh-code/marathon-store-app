@@ -45,7 +45,14 @@ describe("the refusal itself is unchanged", () => {
 
 describe("the alternatives join uses the shared resolver and nothing else", () => {
   it("availability comes from sneakerOut — one definition on this screen", () => {
-    expect(APP).toContain("sizeAvailable: (p, sz) => !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),");
+    expect(APP).toContain("&& !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),");
+  });
+  // AFTER #568 the serving hub is a PER-SIZE answer, so one size of a shoe can
+  // be answerable while another is not. The readiness check is explicit at the
+  // size, not inherited from a product-level gate — sneakerOut returning false
+  // for an unready hub means "no gate", not "in stock".
+  it("each size is checked against the hub THAT size resolves to", () => {
+    expect(APP).toContain("sizeAvailable: (p, sz) => sneakerGateReady(sneakerHubOf(p, sz))");
   });
   // sneakerOut answers "is there a unit"; it does not answer "can it be sold
   // down THIS path". A display-only size is sellable, but only through the
@@ -56,8 +63,10 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
   // THE SHARPEST EDGE IN THE BUILD. sneakerOut returns false for an ungated
   // hub meaning "no gate", not "in stock". Offering a Pine shoe on that basis
   // is an unverified suggestion in front of a customer.
-  it("a neighbour is only offered when its hub is KNOWN and SETTLED", () => {
-    expect(APP).toContain("const hub = sneakerHubOf(p);\n        return !!hub && sneakerGateReady(hub);");
+  it("a Pine/hub3 neighbour is never offered — this screen cannot answer for it", () => {
+    // With no size, resolveSneakerSourcingHub yields the TAG, which is null for
+    // an ungated shoe. That is exactly the product-level question.
+    expect(APP).toContain("availabilityKnown: (p) => !!sneakerHubOf(p),");
   });
   it("deactivated, priceless and photoless lines are excluded", () => {
     // isDeactivated, NOT deadForOrder: deadForOrder is Pine-exempt (#566), and

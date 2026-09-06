@@ -410,16 +410,16 @@ const MUTATIONS = [
     guard: "The strip is joined to the SHARED resolver, never to a second availability test",
     file: APP,
     kind: "source-pin",
-    from: `      sizeAvailable: (p, sz) => !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),`,
-    to: `      sizeAvailable: () => true,`,
+    from: `        && !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz),`,
+    to: `        && true,`,
   },
   {
     id: "G24b",
     guard: "A DISPLAY-ONLY size is never offered — it is sellable, but only down a path this sheet has no prompt for",
     file: APP,
     kind: "source-pin",
-    from: ` && !sneakerDisplayOnly(p, sz),`,
-    to: `,`,
+    from: `!sneakerDisplayOnly(p, sz),`,
+    to: `true,`,
   },
   {
     id: "G25b",
@@ -428,6 +428,14 @@ const MUTATIONS = [
     kind: "source-pin",
     from: `      isSellable: (p) => !isDeactivated(p) && !isMergedAway(p)`,
     to: `      isSellable: (p) => !isDeactivated(p)`,
+  },
+  {
+    id: "G25d",
+    guard: "Each size is checked against the hub THAT SIZE resolves to — after #568 the serving hub is a per-size answer",
+    file: APP,
+    kind: "source-pin",
+    from: `      sizeAvailable: (p, sz) => sneakerGateReady(sneakerHubOf(p, sz))`,
+    to: `      sizeAvailable: (p, sz) => true`,
   },
   {
     id: "G25c",
@@ -439,12 +447,11 @@ const MUTATIONS = [
   },
   {
     id: "G25",
-    guard: "The gated hub must be known AND settled before a neighbour can be offered",
+    guard: "A Pine/hub3 neighbour is never offered — with no size the resolver yields the TAG, null for an ungated shoe",
     file: APP,
     kind: "source-pin",
-    from: `        const hub = sneakerHubOf(p);
-        return !!hub && sneakerGateReady(hub);`,
-    to: `        return true;`,
+    from: `      availabilityKnown: (p) => !!sneakerHubOf(p),`,
+    to: `      availabilityKnown: () => true,`,
   },
 ];
 
