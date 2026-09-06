@@ -49,16 +49,18 @@ export function useFocusOrder(ready) {
   const [focusKey, setFocusKey] = useState(null);
 
   useEffect(() => {
-    // EVERY path out of this effect clears the ring, not just the timer's.
-    // The marker is consumed on its first successful read, so an effect that
-    // re-runs (the hub selector being reopened and a hub picked again, say)
-    // finds nothing and returns early — and if that early return left the
-    // previous run's key in state, the ring would have nothing left to clear
-    // it and would sit on whatever card matched, indefinitely, on a screen a
-    // picker is working from.
-    if (!ready) { setFocusKey(null); return undefined; }
+    // ── THE TEARDOWN OWNS THE RING, NOT THE TIMER ────────────────────────────
+    // The clear lives in the cleanup below and NOWHERE else, so it cannot be
+    // missed by whichever branch happens to leave the effect. That matters
+    // because the marker is CONSUMED on its first successful read: an effect
+    // that re-runs (the hub selector reopened and a hub picked again inside the
+    // few seconds the ring lasts) finds nothing and returns early, so if the
+    // ring were only ever cleared by the timer the re-run cancelled, it would
+    // have nothing left to take it off — a permanently ringed card, on a screen
+    // a picker is working from.
+    if (!ready) return undefined;
     const marker = takeFocusOrder();
-    if (!marker) { setFocusKey(null); return undefined; }
+    if (!marker) return undefined;
     const key = orderCardKey(marker.id, marker.createdAt);
     setFocusKey(key);
 
@@ -87,8 +89,8 @@ export function useFocusOrder(ready) {
     return () => {
       clearTimeout(clearTimer);
       if (findTimer) clearTimeout(findTimer);
-      // Teardown clears it too: the timer that would have done so is being
-      // cancelled on this very line.
+      // THE one clear. The timer that would otherwise have done it is being
+      // cancelled on the line above.
       setFocusKey(null);
     };
   }, [ready]);
