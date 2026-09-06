@@ -80,6 +80,8 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
+import NotificationSettingsRow from "./push/NotificationSettingsRow";
+import { usePushRegistration } from "./push/usePush";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
@@ -2890,6 +2892,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // flag is the same scalar the server callable checks, so the two can never
   // disagree about a grant. See src/config/enginePolicy.js.
   const enginePolicyViewer = { email: homeUser?.email, permFlags: homePerm?.permFlags };
+  // Web push. The hook runs on EVERY home render for a signed-in user, which is
+  // exactly the "every app load" the token lifecycle needs — home is the screen
+  // every session passes through. It reads one two-field node and nothing else.
+  const push = usePushRegistration({ user: homeUser, permRecord: homePerm, isSuperAdmin });
   // Who-am-I, home only (owner directive 2026-08-08): the global "Signed in:"
   // pill is gone, so the bare name in the hero of BOTH home branches is the one
   // identity signal in the app. Hoisted above the isDesktop split — it used to
@@ -3197,6 +3203,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
+          <NotificationSettingsRow push={push} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3248,6 +3255,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
+        <NotificationSettingsRow push={push} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
