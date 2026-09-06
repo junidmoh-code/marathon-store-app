@@ -32,11 +32,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("unhandledrejection", (e) => showFatal("Promise: " + String(e?.reason?.message || e?.reason || e)));
 }
 
-// A tapped push notification lands here as /?push=refill&hub=… . Consumed
-// BEFORE React mounts, because the workspace and the Source tab are both seeded
-// from localStorage at first render — writing those two keys first is what
-// makes the deep link work with no route, no parser and no second source of
-// truth about where a screen lives. See src/push/deepLink.js.
+// A tapped push notification lands here as /?push=order&hub=…&order=… .
+// Consumed BEFORE React mounts, because the workspace, the warehouse hub and
+// its tab are all seeded from localStorage at first render — writing those keys
+// first is what makes the deep link work with no route, no parser and no second
+// source of truth about where a screen lives. See src/push/deepLink.js.
 applyPushDeepLink();
 
 // Long-lived warehouse/TV tabs: poll /version.json and pick up new deploys on

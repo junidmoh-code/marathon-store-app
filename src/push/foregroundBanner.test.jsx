@@ -51,13 +51,16 @@ async function settle() {
 }
 
 const MESSAGE = {
-  data: { kind: "refill", title: "New refill request", body: "Hub 1 — Nike Air Max 90", sentAt: "1", tag: "refill-hub1" },
+  data: {
+    kind: "order", title: "Marathon PE — new order", body: "#005 · Nike Air Max 90 · size 6",
+    sentAt: "1", tag: "order-marathon-pe",
+  },
 };
 
 describe("useForegroundPush", () => {
   beforeEach(() => { handlers.length = 0; });
 
-  it("shows a banner for a refill message, then clears it when push is switched off", async () => {
+  it("shows a banner for an order message, then clears it when push is switched off", async () => {
     let latest = null;
     const onState = (p) => { latest = p; };
     let tree;
@@ -69,7 +72,7 @@ describe("useForegroundPush", () => {
 
     await act(async () => { handlers[0](MESSAGE); });
     expect(latest.banner).not.toBe(null);
-    expect(latest.banner.title).toBe("New refill request");
+    expect(latest.banner.title).toBe("Marathon PE — new order");
 
     await act(async () => { tree.update(<Harness enabled={false} onState={onState} />); });
     expect(latest.banner).toBe(null);
@@ -90,7 +93,7 @@ describe("useForegroundPush", () => {
     expect(latest.banner).toBe(null);
   });
 
-  it("ignores a message that is not a refill", async () => {
+  it("ignores a message that is not an order", async () => {
     let latest = null;
     const onState = (p) => { latest = p; };
     await act(async () => { TestRenderer.create(<Harness enabled onState={onState} />); });

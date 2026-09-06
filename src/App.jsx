@@ -84,6 +84,8 @@ import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
 import { useForegroundPush } from "./push/useForegroundPush";
+import { useFocusOrder } from "./push/useFocusOrder";
+import { orderCardKey } from "./push/deepLink";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
@@ -11173,6 +11175,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Which Ready-tab row's ⋮ action menu is open (one at a time). A dispatched
   // order lives in the Ready tab — there is no separate "Sent" tab.
   const [menuOpenId, setMenuOpenId] = useState(null);
+  // A push notification tapped for ONE order leaves a marker naming it; this
+  // scrolls that card into view and rings it (src/push/useFocusOrder.js).
+  // Armed only once a hub is chosen, because before that there is no queue to
+  // search and the marker would be spent on the hub picker.
+  const focusOrderKey = useFocusOrder(!!selectedHub);
   // Dispatch-label print toast (non-blocking — Send never waits on the printer).
   const [printToast, setPrintToast] = useState(null);
   const [nowTick, setNowTick] = useState(() => serverNowMs());
@@ -12279,8 +12286,17 @@ function WarehouseView({ products = [], orders, onExit }) {
             const chipBg = incoming ? "rgba(60,110,255,.15)" : ready ? "rgba(0,180,80,.12)" : oos ? "rgba(200,40,40,.12)" : "rgba(255,255,255,.05)";
             const chipColor = incoming ? "#6A9FFF" : ready ? "#4ACA7A" : oos ? "#FF6B6B" : "#888";
             const chipLabel = incoming ? "Incoming" : ready ? "Ready" : oos ? "Out of Stock" : (STATUS_CONFIG[status]?.label || status);
+            // The card's identity for a push focus marker: id AND createdAt,
+            // because order numbers are recycled daily and the bare id would
+            // ring an unrelated card from a previous day at the same number.
+            const cardKey = orderCardKey(order.id, order.createdAt);
+            const focused = focusOrderKey != null && focusOrderKey === cardKey;
             return (
-              <div style={{ borderRadius:14, overflow:"hidden", position:"relative", background:cardBg, border:cardBorder }}>
+              <div data-order-card={cardKey}
+                   style={{ borderRadius:14, overflow:"hidden", position:"relative", background:cardBg,
+                            border: focused ? "1px solid rgba(74,127,255,.95)" : cardBorder,
+                            boxShadow: focused ? "0 0 0 3px rgba(74,127,255,.35)" : undefined,
+                            transition:"box-shadow .25s ease, border-color .25s ease" }}>
                 {/* color bar */}
                 <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:`linear-gradient(180deg,transparent,${barColor},transparent)` }}/>
                 <div style={{ padding:"12px 12px 12px 16px", display:"flex", alignItems:"flex-start", gap:11 }}>

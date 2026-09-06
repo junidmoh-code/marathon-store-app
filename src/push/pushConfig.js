@@ -78,14 +78,14 @@ export const pushAudiencePath = (bucket) => `push_audience/${bucket}`;
 export const pushAudienceEntryPath = (bucket, uid) => `push_audience/${bucket}/${uid}`;
 
 // Where the fan-out keeps its burst window + replay guard, one node per
-// destination. Server-owned; the client never reads or writes it.
+// destination STORE. Server-owned; the client never reads or writes it.
 export const pushBurstPath = (hub) => `push_bursts/${hub}`;
 
 // ── BUCKETS ──────────────────────────────────────────────────────────────────
 // `all` is the wildcard bucket: Central-side staff (warehouse / admin) fulfil
-// requests for EVERY destination, so scoping them to one hub would be wrong.
-// The rest are destination keys, matching `requestingLocation` on a refill
-// request exactly.
+// orders for EVERY destination, so scoping them to one shop would be wrong.
+// The rest are destination keys, matching `destShop` on an order exactly (the
+// three shops), plus the hub keys a destShop-pinned account could carry.
 export const AUDIENCE_ALL = "all";
 
 // The CLOSED list of buckets a client may write itself into, and — just as
@@ -120,7 +120,10 @@ export function hubLabel(hub) {
   return HUB_LABEL[hub] || String(hub || "a hub");
 }
 
-// Which SourceView tab a destination's queue lives on, for the deep link.
-// hub1 → "Hub 1 Refill", everything else → the Hub 2 / Central clothing queue.
-export const SOURCE_TAB_FOR_HUB = Object.freeze({ hub1: "hub1refill" });
-export const SOURCE_TAB_DEFAULT = "clothing";
+// Which WarehouseView tab an order's card lives on, for the deep link. A shop
+// refill line at a CR hub is a card on that hub's "CR Orders" tab; everything
+// else is on the order queue. Mirrored server-side in
+// functions/lib/order-push.cjs (warehouseTabFor) — the two are pinned to the
+// same two strings by src/push/pushConfig.test.js.
+export const WAREHOUSE_TAB_CLOTHING = "clothing";
+export const WAREHOUSE_TAB_QUEUE = "queue";

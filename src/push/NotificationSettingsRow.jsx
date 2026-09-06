@@ -50,11 +50,11 @@ export default function NotificationSettingsRow({ push }) {
   const sub = trouble
     || (enabled
       ? (reason === "role_default_on"
-        ? "On because you fulfil refills. Switch it off if you'd rather not be alerted."
+        ? "On because you pick and dispatch orders. Switch it off if you'd rather not be alerted."
         : "On — you'll be alerted on this device even when the app is closed.")
       : (reason === "explicit_off"
-        ? "Off — you won't be alerted when new refill requests come in."
-        : "Off for your role. Switch it on to be alerted when refill requests come in."));
+        ? "Off — you won't be alerted when a shop places an order."
+        : "Off for your role. Switch it on to be alerted when a shop places an order."));
 
   return (
     <div style={{ marginTop: 34, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.07)" }}>
@@ -77,7 +77,7 @@ export default function NotificationSettingsRow({ push }) {
 
         <span style={{ minWidth: 0, flex: 1 }}>
           <span style={{ display: "block", fontSize: 13.5, fontWeight: 700, color: "#fff" }}>
-            Refill request alerts
+            New order alerts
           </span>
           <span style={{ display: "block", fontSize: 11.5, lineHeight: 1.45, color: trouble ? "#F5A623" : "rgba(233,238,255,.5)" }}>
             {sub}
@@ -100,7 +100,7 @@ export default function NotificationSettingsRow({ push }) {
         <button
           role="switch"
           aria-checked={enabled}
-          aria-label="Refill request alerts"
+          aria-label="New order alerts"
           disabled={busy}
           onClick={() => setEnabled(!enabled)}
           style={{
