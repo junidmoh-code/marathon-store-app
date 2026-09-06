@@ -246,7 +246,10 @@ describe("the name is derived from the attributes", () => {
     expect(nameFromAttributes(null)).toBe("");
   });
   it("names both colours when there are two", () => {
-    expect(nameFromAttributes(FULL)).toBe("Two-tone perforated leather low-top in black and white");
+    // "Two-tone … in black and white" says the same thing twice, so the
+    // pattern word is suppressed when both colours are named — those nine
+    // characters are what an escalation clause needs later.
+    expect(nameFromAttributes(FULL)).toBe("Perforated leather low-top in black and white");
   });
   it("does not repeat a colour against itself", () => {
     expect(nameFromAttributes({ ...FULL, secondaryColour: "black" })).toBe("Two-tone perforated leather low-top in black");
@@ -283,11 +286,16 @@ describe("the name is derived from the attributes", () => {
   // The 80-character publish gate. A fully escalated two-colour shoe reaches 89
   // characters, so the ceiling is REACHABLE, and a name over it is a product
   // blocked from the storefront rather than a slightly long title.
-  it("never exceeds the publish ceiling, dropping clauses lowest-value-first", () => {
-    const n3 = nameFromAttributes(FULL, { discriminate: 3 });
+  // THE TRIM KEEPS THE CLAUSE BEING SPENT. Escalation adds a clause precisely
+  // because the earlier terms failed to separate two shoes, so when the ceiling
+  // bites it is the OLDER clause that makes room, not the newer one — the first
+  // version had this backwards and every tie-break was trimmed straight off.
+  it("never exceeds the ceiling, and the newest clause is the one that survives", () => {
+    const LONG = { ...FULL, primaryColour: "multicolour", secondaryColour: "chocolate", soleColour: "eggshell" };
+    const n3 = nameFromAttributes(LONG, { discriminate: 3 });
     expect(n3.length).toBeLessThanOrEqual(MAX_NAME_LENGTH);
-    expect(n3).not.toContain("with a retro finish");   // the style tag goes first
-    expect(n3).toContain("cup sole");                  // the sole survives
+    expect(n3).toContain("with a retro finish");   // the tie-break survives
+    expect(n3).not.toContain("sole");              // the older clause made room
   });
   it("no attribute combination can produce a name over the ceiling", () => {
     for (const sil of SILHOUETTES) for (const mat of UPPER_MATERIALS) for (const c of COLOURS) {
@@ -342,14 +350,43 @@ describe("distinctNamesFor escalates only where a handle collides", () => {
     const out = distinctNamesFor([["p1", A], ["p2", { silhouette: "boot" }]]);
     expect(out.has("p2")).toBe(false);
   });
+  // A tier-4 split: identical to tier 3, differing only in the rest of the tag
+  // set. Measured on the pilot as the last honest distinction available.
+  it("spends the whole tag set before giving up", () => {
+    const base = { ...A, styleTags: ["luxury", "chunky"] };
+    const twin = { ...A, styleTags: ["luxury", "minimal"] };
+    const out = distinctNamesFor([["p1", base], ["p2", twin]]);
+    expect(out.size).toBe(2);
+    expect(out.get("p1").handle).not.toBe(out.get("p2").handle);
+    expect(out.get("p1").level).toBe(4);
+  });
   it("is order-independent: the same set gives the same names", () => {
     const a = distinctNamesFor([["p1", A], ["p2", B]]);
     const b = distinctNamesFor([["p2", B], ["p1", A]]);
     expect(a.get("p1").name).toBe(b.get("p1").name);
     expect(a.get("p2").name).toBe(b.get("p2").name);
   });
-  it("truly identical shoes stay identical — the schema does not invent difference", () => {
+  // AFTER EVERY TIER, some shoes are genuinely indistinguishable: the
+  // compliance rules forbid the brand, the sub-label, the model and the
+  // collaboration, so two makers' black leather platform low-tops are honestly
+  // describable the same way. Proposing one of those names anyway produces a
+  // handle the publish path REFUSES — the exact failure this build exists to
+  // end, recreated by the fix. So they are refused and left to the prose namer.
+  it("REFUSES to name truly identical shoes rather than manufacturing a difference", () => {
     const out = distinctNamesFor([["p1", A], ["p2", { ...A }]]);
-    expect(out.get("p1").handle).toBe(out.get("p2").handle);
+    expect(out.has("p1")).toBe(false);
+    expect(out.has("p2")).toBe(false);
+  });
+  it("and the refusal is per-collision, never a whole-batch abort", () => {
+    const out = distinctNamesFor([["p1", A], ["p2", { ...A }], ["p3", { ...A, primaryColour: "red", colourFamily: "red" }]]);
+    expect([...out.keys()]).toEqual(["p3"]);
+  });
+  it("every name it DOES emit has a unique handle — that is the contract", () => {
+    const rows = [];
+    for (let i = 0; i < 30; i++) rows.push([`p${i}`, { ...A, primaryColour: COLOURS[i % COLOURS.length] }]);
+    rows.push(["dupA", A], ["dupB", { ...A }]);
+    const out = distinctNamesFor(rows);
+    const handles = [...out.values()].map((v) => v.handle);
+    expect(new Set(handles).size).toBe(handles.length);
   });
 });

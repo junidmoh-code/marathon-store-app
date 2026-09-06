@@ -470,7 +470,15 @@ export function nameFromAttributes(attrs, opts = {}) {
   //    most often differ between two shoes a colour word alone would merge —
   //    and FINISH is the v2 addition that broke the six-way "leather low-top
   //    black" tie the pilot found.
-  const pat = PATTERN_WORD[attrs.pattern] || "";
+  // The colours are decided FIRST because the pattern word depends on them:
+  // "Two-tone … in black and white" says the same thing twice, and those nine
+  // characters are exactly what a discriminating clause needs later (measured —
+  // a two-colour base name reaches 74 of the 80 allowed, leaving no room for
+  // the escalation that was supposed to break its tie).
+  const c1 = colourWord(attrs.primaryColour);
+  const c2 = attrs.secondaryColour && attrs.secondaryColour !== attrs.primaryColour
+    ? colourWord(attrs.secondaryColour) : "";
+  const pat = attrs.pattern === "two-tone" && c2 ? "" : (PATTERN_WORD[attrs.pattern] || "");
   if (pat) words.push(titleCase(pat));
   const fin = FINISH_WORD[attrs.finish] || "";
   if (fin) words.push(words.length ? fin : titleCase(fin));
@@ -483,9 +491,6 @@ export function nameFromAttributes(attrs, opts = {}) {
 
   // 3. COLOUR. Both when there are two, because a two-colour shoe named for one
   //    of its colours is exactly the collision this build exists to end.
-  const c1 = colourWord(attrs.primaryColour);
-  const c2 = attrs.secondaryColour && attrs.secondaryColour !== attrs.primaryColour
-    ? colourWord(attrs.secondaryColour) : "";
   if (c1) words.push(c2 ? `in ${c1} and ${c2}` : `in ${c1}`);
 
   // ── ESCALATION, IN MEASURED ORDER OF USEFULNESS ────────────────────────────
@@ -525,6 +530,22 @@ export function nameFromAttributes(attrs, opts = {}) {
     }
   }
 
+  // Tier 4 — EVERY style tag, not just the first. The last thing available, and
+  // it exists because the pilot proved the earlier tiers are not always enough:
+  // five groups of shoes came back with byte-identical attributes, and under
+  // the compliance rules (no brand, no sub-label, no model, no collaboration)
+  // two different makers' black leather platform low-tops are genuinely
+  // describable the same way. The full tag set is the last honest distinction
+  // left. Anything still colliding after this is handed to the prose namer
+  // rather than given a manufactured difference — see distinctNamesFor.
+  if (level >= 4 && Array.isArray(attrs.styleTags) && attrs.styleTags.length > 1) {
+    // Replaces tier 3's single-tag clause rather than stacking on it.
+    const i = optional[optional.length - 1];
+    if (i !== undefined && String(words[i]).startsWith("with a ") && String(words[i]).endsWith(" finish")) words.splice(i, 1);
+    optional.push(words.length);
+    words.push(`with ${attrs.styleTags.join(", ")} styling`);
+  }
+
   // ── THE 80-CHARACTER CEILING IS A PUBLISH GATE, NOT A PREFERENCE ───────────
   // checkCleanName / validateVisionName both refuse a name over 80 characters,
   // and a refused name is not a name — it is a product blocked from the
@@ -534,12 +555,25 @@ export function nameFromAttributes(attrs, opts = {}) {
   // so the ceiling is reachable and had to be handled rather than hoped about
   // (caught by the exhaustive validator test, not by reading).
   //
-  // The clauses come off LOWEST VALUE FIRST — the style tag, then the sole,
-  // then the toe — because that is the reverse of the order they were spent in,
-  // and dropping the last thing added costs the least discrimination.
+  // ── AND THE CLAUSE THAT SURVIVES IS THE ONE BEING SPENT ───────────────────
+  // The first version dropped clauses NEWEST-first, reasoning that the last
+  // thing added was the least valuable. That is backwards here and the pilot
+  // showed it: escalation adds a clause precisely BECAUSE the earlier terms
+  // failed to separate two shoes, so the newest clause is the whole point of
+  // the name and the older ones are what should make room for it. Measured, a
+  // two-colour base name reached 74 characters and every escalation tier was
+  // trimmed straight back off — the tie-break never happened at all.
+  //
+  // So: oldest optional clause first. Only if the name STILL does not fit does
+  // the newest go too, because an over-long name is not a name — the publish
+  // path refuses it at 80 characters.
   const assemble = (drop) => words.filter((_, i) => !drop.has(i)).join(" ").replace(/\s+/g, " ").trim();
   const drop = new Set();
   let name = assemble(drop);
+  for (let i = 0; i < optional.length - 1 && name.length > MAX_NAME_LENGTH; i++) {
+    drop.add(optional[i]);
+    name = assemble(drop);
+  }
   for (let i = optional.length - 1; i >= 0 && name.length > MAX_NAME_LENGTH; i--) {
     drop.add(optional[i]);
     name = assemble(drop);
@@ -576,7 +610,7 @@ export function distinctNamesFor(entries) {
   // Escalate tier by tier, but only the rows still colliding. A name that was
   // already unique never gains a word it did not need — the whole point of the
   // tiers is that specificity is spent where it buys something.
-  for (let level = 1; level <= 3; level++) {
+  for (let level = 1; level <= 4; level++) {
     const byHandle = new Map();
     for (const r of rows) {
       const h = handleFromName(r.name);
@@ -590,8 +624,29 @@ export function distinctNamesFor(entries) {
     }
   }
 
+  // ── WHAT IS STILL COLLIDING IS REFUSED, NOT FUDGED ────────────────────────
+  // After every tier, some shoes are genuinely indistinguishable in attribute
+  // space: the compliance rules forbid the brand, the sub-label, the model and
+  // the collaboration, and two makers' black leather platform low-tops are then
+  // describable identically and honestly. Measured on the 199-product pilot: 5
+  // groups, 12 products.
+  //
+  // Proposing one of those names anyway would produce a handle the publish path
+  // REFUSES — which is the exact failure this build exists to end, recreated by
+  // the fix. So they are left out of the map entirely and keep whatever name
+  // they have; the existing prose namer (vision-name.mjs) is the lane for them,
+  // and it is still there. Refusing beats guessing, as everywhere else here.
+  const finalCount = new Map();
+  for (const r of rows) {
+    const h = handleFromName(r.name);
+    finalCount.set(h, (finalCount.get(h) || 0) + 1);
+  }
   const out = new Map();
-  for (const r of rows) out.set(r.pid, { name: r.name, handle: handleFromName(r.name), level: r.level });
+  for (const r of rows) {
+    const handle = handleFromName(r.name);
+    if (finalCount.get(handle) > 1) continue;
+    out.set(r.pid, { name: r.name, handle, level: r.level });
+  }
   return out;
 }
 
