@@ -270,12 +270,44 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // once routing is stock-aware), but it is still DERIVED from sneakerHubOf
     // and still tests for hub1 — that is what this fence is about.
     expect(a).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
-    // useDisplayRegisterState since 2026-09-06 — the alternatives strip needs
-    // to know whether this lane has ANSWERED, not just what it holds (an empty
-    // display map before it loads reads as "nothing is on a floor"). Still
-    // hub1, which is what this fence is about.
-    expect(a).toContain('useDisplayRegisterState("hub1"');
-    expect(a).toContain('displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister)');
+    // ONE SOURCE since 2026-09-07. The register was a second source and it is
+    // what made one display draw two markers; it is gone from this screen
+    // entirely (docs/display-marker-findings.md). Still hub1, which is what
+    // this fence is about — and the register must never come back as a term.
+    expect(a).toContain('displayUnitsByCell(displaySlotsLive, "hub1")');
+    expect(a).toContain('slotsAfterOrderExits(displaySlots, ordersForExits)');
+    // An /orders read error means "cannot verify" for EVERY order-derived gate,
+    // not just this one — folded into ordersSettled so all three inherit it.
+    expect(a).toContain("const ordersSettled = orders?.settled === true && orders?.error !== true;");
+    expect(a).toContain("const ordersForExits = ordersSettled ? orders : null;");
+    // THE SELF-HEAL IS A WRITE PATH, and these are the four things that keep it
+    // from becoming a write storm. There is no render test for an effect that
+    // only writes, so the wiring is pinned here.
+    //   • it does not run before BOTH subscriptions have answered — an empty
+    //     slots map would otherwise read as "no record" and mint creates;
+    //   • a read ERROR keeps it off, for the same reason;
+    //   • every repair is remembered BEFORE the write and never un-remembered,
+    //     so one attempt per repair per session and a persistent failure
+    //     cannot resubmit on every unrelated till transaction;
+    //   • the event's own instant is passed through, so a repair is judged by
+    //     the writers' fence exactly as the dropped write would have been.
+    // Both subscriptions must have ANSWERED and neither may be in error — an
+    // /orders error after a first success leaves `settled` true, so the error
+    // flag is checked too.
+    expect(a).toContain("if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;");
+    // and a repair loses ties inside the transaction, not only in its own fence
+    expect(a.match(/loseTies: true/g) || []).toHaveLength(2);
+    expect(a).toContain("const repairs = displaySlotRepairs(displaySlots, ordersForExits);");
+    expect(a).toContain("if (repairedRef.current.has(k)) continue;");
+    expect(a).toContain("repairedRef.current.add(k);");
+    expect(a).not.toMatch(/repairedRef\.current\.delete/);
+    expect(a).toContain("orderId: r.orderId, at: r.at");
+    // and the three exit writers stamp the transition's own instant
+    expect(a).toContain("at: order.createdAt,");
+    expect(a.match(/source: "manual", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
+    expect(a.match(/source: "display_refill", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
+    expect(a).not.toMatch(/useDisplayRegister/);
+    expect(a).not.toMatch(/hubSneakerCount\/register/);
   });
   it("hub2's promised map is READY ORDERS ONLY — no pull claims folded in", () => {
     const a = app();

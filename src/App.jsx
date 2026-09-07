@@ -108,8 +108,8 @@ import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } fr
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useDisplaySlotsState, useDisplayRegisterState, useLocations, useRefillRequests } from "./components/stock/useStock";
-import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -938,6 +938,12 @@ function useOrders(scopeShop = null) {
       // A read ERROR leaves settled FALSE deliberately: the promise map is
       // empty for a reason that has nothing to do with the shelf.
       console.warn("Firebase read error on /orders:", err);
+      // …but an error AFTER a first successful snapshot left `settled` true and
+      // the last array in place, so a consumer went on treating stale evidence
+      // as current (final gate review). The flag says so without disturbing
+      // `settled`, which every other consumer reads: the display self-heal is
+      // the one consumer that WRITES from this evidence, and it stops.
+      setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
     });
     return () => unsub();
   }, [authReady, scopeShop]);
@@ -9037,26 +9043,105 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Pine, like the hub1 stock subscription above.
   const displaySlotsState = useDisplaySlotsState(effectiveStoreMode !== "pine");
   const displaySlots = displaySlotsState.value;
-  // The register joins as the store-less second source: 71% of registered
-  // displays have no slot (store never picked at registration), so keying the
-  // marker on slots alone left most registered displays invisible (owner
-  // report, 2026-08-26). displayUnitsByCell applies the double-count guard.
-  const hub1DisplayRegisterState = useDisplayRegisterState("hub1", effectiveStoreMode !== "pine");
-  const hub1DisplayRegister = hub1DisplayRegisterState.value;
-  // Has the display lane actually ANSWERED? Both sources, no read error. The
+  // THE DISPLAY REGISTER USED TO JOIN HERE AS A SECOND SOURCE AND IT WAS THE
+  // BUG. That node is write-only-upward history keyed pid__sizeKey (its one
+  // reader is now the Display Registration card and the hub count's
+  // offShelf.js); a display that changes size leaves its old row standing, so
+  // one display drew two glyphs (51 products live, 2026-09-07 census —
+  // docs/display-marker-findings.md). The slot is one record per product per
+  // store: a replacement OVERWRITES it and a sale CLEARS it, so accumulation is
+  // impossible by construction. One source, and this screen no longer streams
+  // the ~172 KB register node at all.
+  // Has the display lane actually ANSWERED? The one source, no read error. The
   // tile marker does not need this (a marker that arrives late is harmless);
   // the alternatives strip does, because an empty display map before the
   // subscription answers looks exactly like "nothing is on a floor", and the
   // display-only exclusion would fail open precisely when its evidence is
   // missing (independent review). A read ERROR makes it permanent.
-  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error
-    && hub1DisplayRegisterState.settled && !hub1DisplayRegisterState.error;
+  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error;
   // Has /orders answered at all? See useOrders — the flag rides on the array.
-  const ordersSettled = orders?.settled === true;
-  const hub1DisplayUnits = useMemo(
-    () => displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister),
-    [displaySlots, hub1DisplayRegister]
+  // ANSWERED, AND STILL TRUSTWORTHY. An error after a first successful snapshot
+  // leaves `settled` true with the last array in place, so every order-derived
+  // gate went on treating retained evidence as current. Folding the error in
+  // here reaches all three at once — the alternatives strip, the display-pair
+  // pre-flight and the self-heal — and each already means "cannot verify" by
+  // this flag being false. (CodeRabbit + final gate review.)
+  const ordersSettled = orders?.settled === true && orders?.error !== true;
+  // The projection derives from the same evidence, so it uses it only while it
+  // is trustworthy; without it the marker falls back to the durable slot, which
+  // is exactly the behaviour before any of this.
+  const ordersForExits = ordersSettled ? orders : null;
+  // THE EXITS ARE REPLAYED OFF THE ORDERS, not merely written. Every exit —
+  // sale, replacement, retire, failed pull — already writes the slot, but all
+  // four are best-effort (the ORDER is the fact that must never be lost), so a
+  // dropped write would leave a marker standing on a shoe that has left the
+  // floor with nothing to retry it. slotsAfterOrderExits replays the same
+  // events from the orders this screen already streams and lets the newer of
+  // the two win, so the marker clears at the sale and moves at the replacement
+  // whether or not the slot write landed. No listener, no write, no cleanup.
+  const displaySlotsLive = useMemo(
+    () => slotsAfterOrderExits(displaySlots, ordersForExits),
+    [displaySlots, ordersForExits]
   );
+  const hub1DisplayUnits = useMemo(
+    () => displayUnitsByCell(displaySlotsLive, "hub1"),
+    [displaySlotsLive]
+  );
+  // ── AND THE REPAIR IS PERSISTED, because the projection alone cannot hold ──
+  // Two reasons a derived-only fix un-fixes itself, both found in review:
+  //   • /orders IS EPHEMERAL — ids recycle daily. When the order that proves
+  //     the exit is overwritten, the projection reverts and the ghost is back.
+  //   • THE ORDER FEED IS STORE-SCOPED (useOrders(myShop), rules-enforced).
+  //     When Trophy pulls a pair standing on Marathon PE's floor, PE's own
+  //     device never receives that order and would keep the ghost for ever.
+  // So the device that CAN see the evidence writes the durable record for
+  // every device that cannot, through the ordinary fenced writers, stamped
+  // with the EVENT's instant — which makes the repair indistinguishable from
+  // the write that was dropped, so it can never win over a real transition
+  // that landed in between. Idempotent, once per repair per session; a repair
+  // that fails is found again on the next load. Nothing here runs until
+  // the slots subscription has actually answered — an empty map before it
+  // lands would otherwise read as "no slot" and mint a create.
+  const repairedRef = useRef(new Set());
+  useEffect(() => {
+    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;
+    const repairs = displaySlotRepairs(displaySlots, ordersForExits);
+    for (const r of repairs) {
+      const k = displayRepairKey(r);
+      if (repairedRef.current.has(k)) continue;
+      repairedRef.current.add(k);
+      // ONE ATTEMPT PER REPAIR PER SESSION, and the key is remembered whatever
+      // the outcome. An earlier cut un-remembered a FAILED repair so it would
+      // "retry" — but the effect re-runs on every /orders snapshot, so a repair
+      // that fails persistently was resubmitted on every unrelated till
+      // transaction, from every device at once (reviewer's case). A failure now
+      // simply waits for the next load, which is when the divergence is found
+      // again. Nothing user-facing waits on this write.
+      // loseTies: a repair decided what to write against a SNAPSHOT, and a real
+      // write stamped the same instant may have landed since. Its own fence is
+      // strict; the transaction's must be too, or the repair could still clear
+      // a replacement that had just arrived.
+      const done = r.op === "clear"
+        ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at, loseTies: true })
+        : setDisplaySlot({ store: r.store, productId: r.productId, productName: r.productName,
+                           size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at, loseTies: true });
+      // The writers resolve { ok: true, superseded } / { ok: true, noop } when a
+      // transaction legitimately aborts, which is indistinguishable from "wrote
+      // fine" to a bare .catch(). A repair is the one write here nobody is
+      // watching, so it says what happened. `superseded`/`noop` are EXPECTED —
+      // a real transition beat it, which is the fence working — and are logged
+      // as information, not failure.
+      done.then((res) => {
+        if (res && res.ok && (res.superseded || res.noop)) {
+          console.info("[displaySlot] repair skipped — a newer transition stands:", k);
+        } else if (!res || res.ok !== true) {
+          console.warn("[displaySlot] repair FAILED, retrying on next load:", k, res && res.message);
+        }
+      }).catch((err) => {
+        console.warn("[displaySlot] repair threw, retrying on next load:", k, String(err?.message || err));
+      });
+    }
+  }, [displaySlots, ordersForExits, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that
   // store's warehouse→shop transfer (order.destShop). A single mis-tap here
@@ -9829,19 +9914,20 @@ function AssistantView({ products, onExit, orders = [] }) {
         if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;
         // ── THE RESIDUAL, STATED ────────────────────────────────────────────
         // A STORE-LESS claim cannot be verified any further here, and this does
-        // not pretend otherwise. Such a claim was minted when the prompt found
-        // either no slot at all or two — and the register half of
-        // hub1DisplayUnits is write-only-upward history that is NEVER
-        // decremented, so a register-only display reads as present for ever.
-        // A display that has since been sold, with ordinary stock arriving
-        // after it, therefore still passes (independent review, 2026-09-06).
+        // not pretend otherwise. Such a claim is minted when the prompt found
+        // TWO floors showing the same pid+size and refused to guess between
+        // them (displaySlotStoreFor's rule) — so the units are real and named,
+        // but which floor this one is on is not decided.
         //
-        // NOT CLOSED HERE ON PURPOSE. Refusing every store-less claim would
-        // block the 71% of registered displays that have no slot — a live
-        // flow since #456 that nobody asked this PR to change — and the failure
-        // it prevents is the visible one: the warehouse looks, does not find
-        // the pair, and marks it out of stock. Closing it properly means the
-        // register learning to decrement, which is that lane's own work.
+        // THIS USED TO SAY the residual came from the display REGISTER's
+        // never-decremented rows, and that was true until 2026-09-07: the
+        // register is no longer an input to hub1DisplayUnits at all, every
+        // marked unit now names its store, and `unverified` is always 0
+        // (displayPairCore.js). What is left is genuine two-floor ambiguity,
+        // not drift, and it is NOT closed here on purpose — refusing an
+        // ambiguous claim would block a live flow nobody asked this to change,
+        // and the failure it prevents is the visible one: the warehouse looks,
+        // does not find the pair, and marks it out of stock.
         return sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0;
       });
       if (gone) {
@@ -9982,6 +10068,12 @@ function AssistantView({ products, onExit, orders = [] }) {
             clearDisplaySlot({
               store: slotStore, productId: order.productId,
               source: "display_sold", orderId: order.id,
+              // The sale's instant is the ORDER's, not this call's — the write
+              // happens after `await writeOrder` and could otherwise stamp
+              // minutes late, overwriting a registration that landed in
+              // between. It also makes this write and displayPairCore's replay
+              // of the same event identical. (Independent review, PR #574.)
+              at: order.createdAt,
             }).catch(() => {});
           }
         }
@@ -11512,7 +11604,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         setDisplaySlot({
           store: slotStore, productId: order.productId, productName: order.productName || "",
           size: String(order.size), bookedHub: order.placedAtHub || order.hub || "hub1",
-          source: "manual", orderId: order.id,
+          // `now` is the instant stamped on outOfStockAt in the same patch, so
+          // the write and displayPairCore's replay of this reinstate agree.
+          source: "manual", orderId: order.id, at: now,
         }).catch(() => {});
       }
     }
@@ -11919,7 +12013,10 @@ function WarehouseView({ products = [], orders, onExit }) {
             productName: order.productName || "",
             size: String(refillSize),
             bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
-            source: "display_refill", orderId: order.id,
+            // `now` is the same instant this patch writes to displayRefilledAt,
+            // which is what displayPairCore's replay reads — one transition,
+            // one instant, whichever of the two records it.
+            source: "display_refill", orderId: order.id, at: now,
           }).catch(() => {});
         }
       }

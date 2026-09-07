@@ -75,20 +75,48 @@ export async function loadDisplaySlots() {
 // slot a later sale already cleared. Fresh truth always wins; the loser
 // reports { superseded: true } and nothing retries it — the newer state IS the
 // state.
-const supersededBy = (cur, notAfterIso) =>
-  !!(cur && typeof cur.at === "string" && notAfterIso && cur.at > notAfterIso);
+// `loseTies` is what a STAND-IN write passes. An author of a transition may win
+// a tie — two writes stamped the same millisecond, the second is the caller's
+// own newer intent — so the default aborts only on a STRICTLY newer record. A
+// repair (displayPairCore's replay of a write that was dropped) is not an
+// author: it decided what to write against a snapshot, and between that
+// snapshot and this transaction a real write stamped the same instant may have
+// landed. Its own `exitWins` is strict, and without this the transaction was
+// not, so the repair could still clear a replacement that had just arrived.
+// (Final gate review.) One flag, one meaning: a stand-in loses every tie,
+// wherever the comparison happens.
+const supersededBy = (cur, notAfterIso, loseTies = false) =>
+  !!(cur && typeof cur.at === "string" && notAfterIso
+     && (loseTies ? cur.at >= notAfterIso : cur.at > notAfterIso));
+
+// ── THE TRANSITION'S OWN INSTANT (`at`) ──────────────────────────────────────
+// Both writers default to "now, before the round trip". That is right when the
+// caller IS the transition, and wrong when the transition already happened and
+// this write merely records it. The sale clear is the case: it fires only
+// after `await writeOrder(order)`, so on bad wifi it stamps an instant minutes
+// after the sale — long enough for a registration that landed in between to be
+// overwritten by it, and long enough for the same event replayed off the order
+// (displayPairCore's exits, which read order.createdAt) to disagree with it.
+//
+// So a caller who knows the real instant passes it. It becomes BOTH the
+// staleness fence and the stamped `at`, which makes the write and the replay
+// of the same event byte-identical — and makes a REPAIR of a dropped write
+// indistinguishable from the write it stands in for, so it can never win over
+// something newer that landed in between. Omit it and the behaviour is exactly
+// what it was.
+const transitionAt = (at) => (typeof at === "string" && at ? at : serverNowIso());
 
 /**
  * Set (or replace) the slot: this size is on this store's floor now, booked at
  * `bookedHub`. Last INITIATED write wins — the slot IS "current state".
  */
-export async function setDisplaySlot({ store, productId, productName = "", size, bookedHub, source, orderId = null }) {
+export async function setDisplaySlot({ store, productId, productName = "", size, bookedHub, source, orderId = null, at = null, loseTies = false }) {
   const rawSize = String(size ?? "").trim();
   const sizeKey = stockSizeKey(rawSize);
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
   if (!rawSize || sizeKey === "_") return { ok: false, message: "A display slot needs a real size." };
   const user = auth.currentUser;
-  const notAfterIso = serverNowIso();
+  const notAfterIso = transitionAt(at);
   const next = {
     productId,
     productName: productName || "",
@@ -103,7 +131,7 @@ export async function setDisplaySlot({ store, productId, productName = "", size,
   };
   try {
     const res = await runTransaction(ref(database, slotPath(store, productId)), (cur) =>
-      supersededBy(cur, notAfterIso) ? undefined : next
+      supersededBy(cur, notAfterIso, loseTies) ? undefined : next
     );
     return res && res.committed ? { ok: true } : { ok: true, superseded: true };
   } catch (err) {
@@ -118,14 +146,14 @@ export async function setDisplaySlot({ store, productId, productName = "", size,
  * no-op: the shop may raise a display-partner order for a product whose
  * display was never slot-tracked.
  */
-export async function clearDisplaySlot({ store, productId, source = "display_sold", orderId = null }) {
+export async function clearDisplaySlot({ store, productId, source = "display_sold", orderId = null, at = null, loseTies = false }) {
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
   const user = auth.currentUser;
-  const notAfterIso = serverNowIso();
+  const notAfterIso = transitionAt(at);
   try {
     const res = await runTransaction(ref(database, slotPath(store, productId)), (cur) => {
       if (!cur || cur.sizeKey == null) return undefined;            // nothing out there — no-op
-      if (supersededBy(cur, notAfterIso)) return undefined;         // a newer transition already landed
+      if (supersededBy(cur, notAfterIso, loseTies)) return undefined;         // a newer transition already landed
       return {
         ...cur,
         size: null,
