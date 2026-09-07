@@ -1,0 +1,192 @@
+// Tests for the stale-display-record classification (displayRecordCleanup.js).
+// Every export is a pure function of its arguments; fixtures are the STORED
+// shapes of /settings/hubSneakerCount/register/{hub} and /settings/displaySlots.
+//
+// THE ASYMMETRY THESE TESTS EXIST FOR: retiring a row raises a cell's
+// expected-on-shelf. Retiring a GHOST fixes a false discrepancy; retiring a
+// REAL display makes the next count expect a pair that is genuinely out at a
+// shop, not find it, and adjust a real unit away. So the bar for "actionable"
+// is a LIVE RECORD THAT CONTRADICTS THE ROW — never age, never absence.
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "fs";
+import {
+  classifyDisplayRecords, splitRegisterKey, retirePlan, retireKey,
+  retireEffectLine, CLEANUP_CLASSES, ACTIONABLE_CLASSES,
+} from "./displayRecordCleanup";
+
+const P = {
+  p1: { id: "p1", name: "Air Force 1 White" },
+  p2: { id: "p2", name: "Lacoste Gripshot" },
+  p3: { id: "p3", name: "Nike Vomero" },
+  p4: { id: "p4", name: "Merged Away", mergedInto: "p9" },
+  p5: { id: "p5", name: "Finished Line", deactivated: { at: "2026-08-01T00:00:00.000Z" } },
+};
+const reg = (rows) => rows;
+const row = (over = {}) => ({ qty: 1, at: "2026-08-07T10:00:00.000Z", ...over });
+const liveSlot = (over = {}) => ({ size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z", ...over });
+const tomb = (over = {}) => ({ size: null, sizeKey: null, prevSize: "6", source: "display_sold", at: "2026-09-02T08:00:00.000Z", ...over });
+
+const run = (register, slots, over = {}) =>
+  classifyDisplayRecords({ register, slots, hub: "hub1", productsById: P, ...over });
+
+describe("splitRegisterKey — the size key can contain an underscore", () => {
+  it("splits on the LAST double underscore, like displayPairCore", () => {
+    expect(splitRegisterKey("p1__6")).toEqual(["p1", "6"]);
+    expect(splitRegisterKey("p1__5_5")).toEqual(["p1", "5_5"]);
+  });
+  it("refuses a one-size sentinel and anything malformed", () => {
+    expect(splitRegisterKey("p1___")).toBeNull();      // sizeKey "_" — never a display
+    expect(splitRegisterKey("__6")).toBeNull();
+    expect(splitRegisterKey("p1")).toBeNull();
+    expect(splitRegisterKey(null)).toBeNull();
+  });
+});
+
+describe("classifyDisplayRecords — what the evidence says", () => {
+  it("MATCHED: a live slot at the same size leaves the row alone", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: liveSlot() } });
+    expect(r.counts.matched).toBe(1);
+    expect(r.actionableCount).toBe(0);
+  });
+
+  it("REPLACED: a live slot at a DIFFERENT size makes the row the pair that went", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8", source: "display_refill" }) } });
+    expect(r.counts.replaced).toBe(1);
+    expect(r.byClass.replaced[0].why).toMatch(/now size 8/);
+    expect(r.byClass.replaced[0].retireQty).toBe(1);
+    expect(r.byClass.replaced[0].evidence).toEqual([
+      { kind: "live", store: "marathon-pe", size: "8", sizeKey: "8", at: "2026-09-01T08:00:00.000Z", source: "display_refill" },
+    ]);
+  });
+
+  it("SOLD: only a tombstone means the display left and nothing replaced it", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: tomb() } });
+    expect(r.counts.sold).toBe(1);
+    expect(r.byClass.sold[0].evidence[0]).toMatchObject({ kind: "tomb", store: "marathon-pe", size: "6" });
+  });
+
+  it("OVER: only the SURPLUS is offered — the matched part stays", () => {
+    const r = run(reg({ p1__6: row({ qty: 3 }) }), { "marathon-pe": { p1: liveSlot() } });
+    expect(r.counts.over).toBe(1);
+    expect(r.byClass.over[0].qty).toBe(3);
+    expect(r.byClass.over[0].retireQty).toBe(2);          // 3 claimed − 1 floor
+    expect(r.byClass.over[0].why).toMatch(/only 1 shop floor shows/);
+  });
+
+  it("TWO FLOORS showing the same size is not over-registration", () => {
+    const r = run(reg({ p1__6: row({ qty: 2 }) }), {
+      "marathon-pe": { p1: liveSlot() },
+      trophy: { p1: liveSlot() },
+    });
+    expect(r.counts.matched).toBe(1);
+    expect(r.actionableCount).toBe(0);
+  });
+
+  it("GONE: a merged-away product, and a product record that is not there", () => {
+    const r = run(reg({ p4__6: row(), pX__6: row() }), {});
+    expect(r.counts.gone).toBe(2);
+    expect(r.byClass.gone.map((x) => x.why).join(" ")).toMatch(/Merged into another product \(p9\)/);
+  });
+
+  it("UNVERIFIED: no slot record at all is reported and NEVER actionable", () => {
+    const r = run(reg({ p1__6: row() }), {});
+    expect(r.counts.unverified).toBe(1);
+    expect(r.actionableCount).toBe(0);
+    expect(ACTIONABLE_CLASSES.has("unverified")).toBe(false);
+  });
+
+  it("A HALF-LOADED CATALOGUE MAKES NOTHING ACTIONABLE — absence is not evidence", () => {
+    // The dangerous failure: products have not answered yet, every pid looks
+    // deleted, and a bulk retire wipes the whole register.
+    const r = classifyDisplayRecords({
+      register: reg({ p1__6: row(), p2__7: row() }),
+      slots: { "marathon-pe": { p1: liveSlot() } },
+      hub: "hub1", productsById: {}, catalogueComplete: false,
+    });
+    expect(r.counts.gone).toBe(0);
+    expect(r.byClass.matched).toHaveLength(1);            // p1 still judged on its slot
+    expect(r.byClass.unverified).toHaveLength(1);         // p2 has no slot — unverified, not gone
+  });
+
+  it("a DEACTIVATED product is a NOTE, never a reason to act", () => {
+    // A finished line can still have its last pair on a wall. "We stopped
+    // restocking it" says nothing about the floor.
+    const r = run(reg({ p5__6: row() }), { "marathon-pe": { p5: liveSlot() } });
+    expect(r.counts.matched).toBe(1);
+    expect(r.byClass.matched[0].deactivated).toBe(true);
+    expect(r.actionableCount).toBe(0);
+  });
+
+  it("HUB-SCOPED: another hub's live slot cannot vouch for this hub's row", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: liveSlot({ bookedHub: "hub2" }) } });
+    expect(r.counts.matched).toBe(0);
+    expect(r.counts.unverified).toBe(1);      // no hub1 evidence, and a tombstone is not implied
+  });
+
+  it("a retired row (qty 0) is not a record any more", () => {
+    const r = run(reg({ p1__6: row({ qty: 0, retiredAt: "2026-09-01T00:00:00.000Z" }) }), {});
+    expect(r.actionableCount).toBe(0);
+    expect(Object.values(r.counts).reduce((a, b) => a + b, 0)).toBe(0);
+  });
+
+  it("one-size sentinels and malformed keys are skipped entirely", () => {
+    const r = run(reg({ p1___: row(), garbage: row(), p1__6: row() }), {});
+    expect(Object.values(r.counts).reduce((a, b) => a + b, 0)).toBe(1);
+  });
+
+  it("empty and absent inputs are safe", () => {
+    expect(classifyDisplayRecords({ register: null, slots: null, hub: "hub1", productsById: null }).actionableCount).toBe(0);
+    expect(classifyDisplayRecords({ register: {}, slots: {}, hub: "hub1", productsById: new Map() }).counts)
+      .toEqual(Object.fromEntries(CLEANUP_CLASSES.map((c) => [c, 0])));
+  });
+
+  it("accepts a Map catalogue as well as a plain object", () => {
+    const r = classifyDisplayRecords({
+      register: reg({ p4__6: row() }), slots: {}, hub: "hub1",
+      productsById: new Map(Object.entries(P)),
+    });
+    expect(r.counts.gone).toBe(1);
+  });
+
+  it("newest registration first inside a class", () => {
+    const r = run(reg({
+      p1__6: row({ at: "2026-08-01T00:00:00.000Z" }),
+      p2__7: row({ at: "2026-09-01T00:00:00.000Z" }),
+      p3__8: row({ at: "2026-08-15T00:00:00.000Z" }),
+    }), {});
+    expect(r.byClass.unverified.map((x) => x.productId)).toEqual(["p2", "p3", "p1"]);
+  });
+});
+
+describe("retirePlan — a slot is NEVER cleared from this screen", () => {
+  it("passes no slotStores, whatever the class", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8" }) } });
+    const plan = retirePlan(r.byClass.replaced[0], "hub1");
+    expect(plan.slotStores).toEqual([]);
+    // Clearing the live slot here would erase the CURRENT display and re-create
+    // the duplicate-marker bug PR #574 closed.
+    expect(plan).toEqual({ hub: "hub1", product: { id: "p1", name: "Air Force 1 White" }, sizeKey: "6", slotStores: [], times: 1 });
+  });
+  it("an OVER row retires only its surplus", () => {
+    const r = run(reg({ p1__6: row({ qty: 4 }) }), { "marathon-pe": { p1: liveSlot() } });
+    expect(retirePlan(r.byClass.over[0], "hub1").times).toBe(3);
+  });
+  it("the module never names a slot writer", () => {
+    const src = readFileSync(new URL("./displayRecordCleanup.js", import.meta.url), "utf8");
+    expect(src).not.toMatch(/setDisplaySlot|clearDisplaySlot/);
+  });
+});
+
+describe("retireKey / retireEffectLine", () => {
+  it("the key separates hub, row and how many are being retired", () => {
+    const r = { key: "p1__6", retireQty: 1 };
+    expect(retireKey("hub1", r)).not.toBe(retireKey("hub2", r));
+    expect(retireKey("hub1", r)).not.toBe(retireKey("hub1", { ...r, retireQty: 2 }));
+    expect(retireKey("hub1", r)).toBe(retireKey("hub1", { ...r }));
+  });
+  it("says plainly that no stock moves and what the count will do", () => {
+    expect(retireEffectLine({ retireQty: 1 })).toBe(
+      "Retires 1 display record. No stock moves — the hub simply stops expecting this pair to be out at a shop, so the next count looks for it on the shelf.");
+    expect(retireEffectLine({ retireQty: 3 })).toMatch(/Retires 3 display records\..*these pairs.*looks for them/);
+  });
+});

@@ -1,0 +1,209 @@
+# Stale display-record census — 2026-09-07T13:51:24.206Z
+Read-only. 1037 product ids named by the registers; read by child path, never the /products node.
+1032 of them still have a product record.
+
+## hub1
+live register rows: 546
+    51  REPLACED    live slot at a DIFFERENT size — the pair it replaced
+    21  SOLD        only a tombstone — the display left the floor
+     1  OVER        claims more units than there are floors showing it
+     4  GONE        product deleted or merged away
+   289  UNVERIFIED  no slot record at all — NEVER actionable
+   180  MATCHED     live slot, same size — the record is right
+  → offered for retirement: 77
+
+## hub2
+live register rows: 505
+    44  REPLACED    live slot at a DIFFERENT size — the pair it replaced
+    12  SOLD        only a tombstone — the display left the floor
+     0  OVER        claims more units than there are floors showing it
+     7  GONE        product deleted or merged away
+   293  UNVERIFIED  no slot record at all — NEVER actionable
+   149  MATCHED     live slot, same size — the record is right
+  → offered for retirement: 63
+
+## TOTAL OFFERED FOR RETIREMENT ACROSS BOTH HUBS: 140
+Each one currently subtracts a unit from a hub cell's expected-on-shelf
+(offShelf.js), so each one hands a counter a discrepancy that is not real.
+
+### hub1 — REPLACED — showing 8 of 51
+  p1781649925620__7  qty 1  retire 1  registered 2026-08-27T14:37:33.977Z
+     Nike SB Dunk Low Green White
+     WHY: The display for this product is now size 8 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 8  (display_refill)  2026-09-05T12:51:30.190Z
+  p1779610932616__6  qty 1  retire 1  registered 2026-08-27T09:40:13.714Z
+     Lacoste Gripshot Lace Boot White Navy
+     WHY: The display for this product is now size 9 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 9  (display_refill)  2026-09-04T15:02:59.315Z
+  p1781423315735__9  qty 1  retire 1  registered 2026-08-24T12:13:48.987Z
+     Lacoste Graduate Pro White Green
+     WHY: The display for this product is now size 6 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 6  (display_refill)  2026-09-05T13:56:12.946Z
+  p1778150021679__8  qty 1  retire 1  registered 2026-08-22T10:41:40.893Z
+     Diesel Big D Green Orange
+     WHY: The display for this product is now size 6 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 6  (display_refill)  2026-09-05T11:40:12.985Z
+  p1778150322622__7  qty 1  retire 1  registered 2026-08-22T10:17:31.531Z
+     Diesel Slide Black White
+     WHY: The display for this product is now size 9 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 9  (display_refill)  2026-09-02T11:09:01.107Z
+  p1778150117764__9  qty 1  retire 1  registered 2026-08-22T10:09:18.023Z
+     Diesel Slide Red
+     WHY: The display for this product is now size 10 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 10  (display_refill)  2026-08-31T13:24:35.687Z
+  p1783756114201__10  qty 1  retire 1  registered 2026-08-22T07:45:41.923Z
+     Lacoste grey with navy 
+     WHY: The display for this product is now size 8 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 8  (registration)  2026-08-24T14:26:07.441Z
+  p1784718275050__9  qty 1  retire 1  registered 2026-08-20T10:27:53.800Z
+     Nike Air force cream white with grey
+     WHY: The display for this product is now size 8 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 8  (display_refill)  2026-08-23T09:38:12.041Z
+
+### hub1 — SOLD — showing 8 of 21
+  p1777896503209__8  qty 1  retire 1  registered 2026-09-01T10:02:27.125Z
+     Nike Air Force 1 Supreme Black
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 8  (display_sold)  2026-09-04T09:35:47.434Z
+  p1783762124241__6  qty 1  retire 1  registered 2026-08-31T14:37:49.579Z
+     Nike sb pink with orange 
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 6  (display_sold)  2026-09-04T07:05:37.252Z
+  p1782055077934__6  qty 1  retire 1  registered 2026-08-27T14:34:27.429Z
+     Nike SB Dunk Low Grey White
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 6  (display_sold)  2026-09-07T13:23:12.052Z
+  p1779610355274__6  qty 1  retire 1  registered 2026-08-24T10:44:05.574Z
+     Lacoste Powercourt White Black
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 6  (display_sold)  2026-08-27T11:27:46.335Z
+  p1785163556239__5  qty 1  retire 1  registered 2026-08-24T10:07:01.313Z
+     Adidas Gazelle Indoor white and black 
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 4  (display_sold)  2026-08-28T09:57:55.961Z
+  p1779086741005__8  qty 1  retire 1  registered 2026-08-24T09:59:18.052Z
+     Lacoste Court Cage White Navy Pink
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 8  (display_sold)  2026-08-31T14:21:53.445Z
+  p1784973773163__10  qty 1  retire 1  registered 2026-08-24T09:49:13.028Z
+     Airforce white and red supreme 
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 10  (display_sold)  2026-09-02T12:55:22.648Z
+  p1779610079819__9  qty 1  retire 1  registered 2026-08-24T09:41:25.052Z
+     Lacoste Gripshot M Winter Grey Blue
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 8  (display_sold)  2026-09-07T12:24:02.638Z
+
+### hub1 — OVER — showing 1 of 1
+  p1778841647046__5_5  qty 2  retire 1  registered 2026-08-20T12:32:50.483Z
+     Nike Air Max Portal Lilac Bordeaux Sail
+     WHY: Claims 2 on display, but only 1 shop floor shows this size.
+     LIVE SLOT  marathon-pe  size 5.5  (registration)  2026-08-20T12:32:50.484Z
+
+### hub1 — GONE — showing 4 of 4
+  p1783764009546__8  qty 1  retire 1  registered 2026-08-24T12:36:43.930Z
+     Nike Air portal cream 
+     WHY: Merged into another product (p1778841498271) — nothing can sell this record.
+     LIVE SLOT  marathon-pe  size 8  (registration)  2026-08-24T12:36:43.931Z
+  p1782003441156__4  qty 1  retire 1  registered 2026-08-08T06:54:42.116Z
+     Nike Air Max Plus White Gorge Green
+     WHY: The product record no longer exists.
+  p1783247034488__8  qty 1  retire 1  registered 2026-08-07T12:42:50.230Z
+     Lacoste navy with white 
+     WHY: Merged into another product (p1783248170878) — nothing can sell this record.
+  p1777974836474__5  qty 1  retire 1  registered 2026-08-06T13:25:26.037Z
+     Nike Air Max Plus A-COLD-WALL White
+     WHY: Merged into another product (p1782002544626) — nothing can sell this record.
+
+### hub2 — REPLACED — showing 8 of 44
+  p1788273865473__6  qty 1  retire 1  registered 2026-09-06T08:16:52.639Z
+     DIOR LEATHER NAVY BLUE
+     WHY: The display for this product is now size 7 — this row is the pair it replaced.
+     LIVE SLOT  trophy  size 7  (display_refill)  2026-09-07T11:53:21.393Z
+  p1785153420278__9  qty 1  retire 1  registered 2026-09-02T13:59:09.596Z
+     Adidas campus black white 
+     WHY: The display for this product is now size 8 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 8  (display_refill)  2026-09-05T14:19:52.041Z
+  p1778144541007__7  qty 1  retire 1  registered 2026-09-02T13:54:43.294Z
+     Diesel S-Ukiyo V2 Low Green
+     WHY: The display for this product is now size 6 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 6  (display_refill)  2026-09-04T13:31:36.059Z
+  p1777904061544__3  qty 1  retire 1  registered 2026-09-02T11:27:00.531Z
+     Air Jordan 1 Low Wolf Grey
+     WHY: The display for this product is now size 4 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 4  (display_refill)  2026-09-05T14:24:15.938Z
+  p1785321976470__8  qty 1  retire 1  registered 2026-08-28T10:21:09.904Z
+     DOLCE AND GABBANA FULL BLACK 
+     WHY: The display for this product is now size 9 — this row is the pair it replaced.
+     LIVE SLOT  trophy  size 9  (display_refill)  2026-09-07T09:19:48.838Z
+  p1786873160830__6  qty 1  retire 1  registered 2026-08-16T09:40:18.439Z
+     Lacoste CORDE 317 1 CAM
+     WHY: The display for this product is now size 11 — this row is the pair it replaced.
+     LIVE SLOT  trophy  size 11  (display_refill)  2026-08-28T09:00:10.240Z
+  p1778147555690__3  qty 1  retire 1  registered 2026-08-10T13:05:21.522Z
+     Puma Mayze Bright Heights
+     WHY: The display for this product is now size 5 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 5  (display_refill)  2026-08-29T08:17:06.414Z
+  p1784294079195__7  qty 1  retire 1  registered 2026-08-10T12:55:30.033Z
+     New balance 1000 black 
+     WHY: The display for this product is now size 6 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 6  (display_refill)  2026-09-05T14:19:35.604Z
+
+### hub2 — SOLD — showing 8 of 12
+  p1777974484197__8  qty 1  retire 1  registered 2026-09-02T13:52:28.182Z
+     Adidas Campus Gray White
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 8  (display_sold)  2026-09-06T11:23:47.493Z
+  p1778483629142__9  qty 1  retire 1  registered 2026-09-02T13:45:59.584Z
+     New Balance 9060 Dark Grey
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 9  (display_sold)  2026-09-04T14:59:40.730Z
+  p1778141510625__9  qty 1  retire 1  registered 2026-09-02T12:24:47.673Z
+     Air Jordan 1 Retro High OG Zion Williamson
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 9  (display_sold)  2026-09-06T10:36:59.612Z
+  p1777903867015__4  qty 1  retire 1  registered 2026-08-31T13:14:57.125Z
+     Air Jordan 1 Mid Wolf Grey
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 4  (display_sold)  2026-09-06T08:02:14.710Z
+  p1777904316300__3  qty 1  retire 1  registered 2026-08-10T12:09:37.069Z
+     Air Jordan 1 Low Black Grey
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 3  (display_sold)  2026-09-05T10:31:29.048Z
+  p1784209295595__7  qty 1  retire 1  registered 2026-08-10T11:33:05.164Z
+     Diesel shoes full black 
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 8  (display_sold)  2026-09-01T08:42:30.555Z
+  p1779015887768__9  qty 1  retire 1  registered 2026-08-09T11:18:20.279Z
+     Dr. Martens Lowell Black Leather
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  trophy  was 9  (display_sold)  2026-08-28T13:58:32.844Z
+  p1778239274035__7  qty 1  retire 1  registered 2026-08-09T11:15:24.798Z
+     Boss Menswear Gray Suede Loafers
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  trophy  was 10  (display_sold)  2026-09-02T11:23:14.037Z
+
+### hub2 — GONE — showing 7 of 7
+  p1778241852919__7  qty 1  retire 1  registered 2026-08-26T15:13:00.725Z
+     Karl Lagerfeld Kapri Ikonik Full Black
+     WHY: The product record no longer exists.
+     LIVE SLOT  marathon-pe  size 7  (registration)  2026-08-26T15:13:00.726Z
+     LIVE SLOT  trophy  size 6  (display_refill)  2026-08-21T15:06:02.384Z
+  p1783251345522__3  qty 1  retire 1  registered 2026-08-10T12:29:31.833Z
+     New balance 9060 cream & white 
+     WHY: The product record no longer exists.
+  p1778140484683__5_5  qty 1  retire 1  registered 2026-08-10T12:19:30.666Z
+     Air Jordan 1 Low Black And White Panda
+     WHY: Merged into another product (p1781787688437) — nothing can sell this record.
+  p1783322005697__5  qty 1  retire 1  registered 2026-08-10T12:16:33.310Z
+     Jordan 1 Low Paris whit & sky grey
+     WHY: Merged into another product (p1778139909700) — nothing can sell this record.
+  p1778142008332__9  qty 1  retire 1  registered 2026-08-10T11:08:06.716Z
+     Adidas Campus Black White
+     WHY: The product record no longer exists.
+  p1783497242342__6  qty 1  retire 1  registered 2026-08-09T11:02:54.461Z
+     Brunello cucinelli sandla black
+     WHY: Merged into another product (p1778244723247) — nothing can sell this record.
+  p1784642971106__6  qty 1  retire 1  registered 2026-08-09T08:11:20.271Z
+     Lacoste shoe black 
+     WHY: The product record no longer exists.
