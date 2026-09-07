@@ -128,16 +128,28 @@ describe("what the screen writes", () => {
     });
   });
 
-  it("an OVER-registered row retires ONLY its surplus, in ONE guarded transaction", async () => {
+  it("an OVER-registered row is shown with NO button — the surplus is unexplained", async () => {
     REGISTER = { p1__6: { qty: 3 } };
     SLOTS = { "marathon-pe": { p1: liveSlot() } };
     const t = paint();
-    await click(byLabel(t, /^Retire$/)[0]);
-    await click(byLabel(t, /^Confirm$/)[0]);
+    expect(textOf(t)).toContain("Over-registered");
+    expect(byLabel(t, /^Retire$/)).toHaveLength(0);
+    await expand(t, "Over-registered");
+    expect(textOf(t)).toContain("not offered here");
+    expect(byLabel(t, /^Retire$/)).toHaveLength(0);
+  });
+
+  it("a multi-unit SOLD row retires its evidenced units in ONE guarded transaction", async () => {
     // ONE call, not one per unit: two calls are not atomic, and a failure
     // between them leaves a half-retired row.
+    REGISTER = { p1__6: { qty: 2, bumps: 2 } };
+    SLOTS = { "marathon-pe": { p1: { size: null, sizeKey: null, prevSize: "6", bookedHub: "hub1", source: "display_sold", at: "2026-09-02T08:00:00.000Z" } },
+              trophy: { p1: { size: null, sizeKey: null, prevSize: "6", bookedHub: "hub1", source: "display_sold", at: "2026-09-02T08:00:00.000Z" } } };
+    const t = paint();
+    await click(byLabel(t, /^Retire$/)[0]);
+    await click(byLabel(t, /^Confirm$/)[0]);
     expect(removeDisplayFact).toHaveBeenCalledTimes(1);
-    expect(removeDisplayFact).toHaveBeenCalledWith(expect.objectContaining({ units: 2, expectQty: 3 }));
+    expect(removeDisplayFact).toHaveBeenCalledWith(expect.objectContaining({ units: 2, expectQty: 2 }));
   });
 
   it("a SUPERSEDED retire is NOT marked done — the row stays and says look again", async () => {

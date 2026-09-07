@@ -66,12 +66,18 @@ describe("classifyDisplayRecords — what the evidence says", () => {
     expect(r.byClass.sold[0].evidence[0]).toMatchObject({ kind: "tomb", store: "marathon-pe", size: "6" });
   });
 
-  it("OVER: only the SURPLUS is offered — the matched part stays", () => {
+  it("OVER is REPORTED, never actioned — the surplus is unexplained, not contradicted", () => {
+    // A floor showing THIS size explains a unit; it contradicts none. The
+    // surplus therefore stands on the same footing as a row with no slot at
+    // all, which this module refuses to touch.
     const r = run(reg({ p1__6: row({ qty: 3 }) }), { "marathon-pe": { p1: liveSlot() } });
     expect(r.counts.over).toBe(1);
     expect(r.byClass.over[0].qty).toBe(3);
-    expect(r.byClass.over[0].retireQty).toBe(2);          // 3 claimed − 1 floor
+    expect(r.byClass.over[0].retireQty).toBe(0);
+    expect(r.actionableCount).toBe(0);
+    expect(ACTIONABLE_CLASSES.has("over")).toBe(false);
     expect(r.byClass.over[0].why).toMatch(/only 1 shop floor shows/);
+    expect(r.byClass.over[0].why).toMatch(/not offered here/);
   });
 
   it("TWO FLOORS showing the same size is not over-registration", () => {
@@ -274,13 +280,13 @@ describe("retirePlan — a slot is NEVER cleared from this screen", () => {
     // the duplicate-marker bug PR #574 closed.
     expect(plan).toEqual({ hub: "hub1", product: { id: "p1", name: "Air Force 1 White" }, sizeKey: "6", slotStores: [], times: 1, expectQty: 1 });
   });
-  it("an OVER row retires only its surplus, guarded by the qty it decided against", () => {
-    const r = run(reg({ p1__6: row({ qty: 4 }) }), { "marathon-pe": { p1: liveSlot() } });
-    const plan = retirePlan(r.byClass.over[0], "hub1");
-    expect(plan.times).toBe(3);
-    // Without expectQty two admins each looking at qty 4 would each take 3 and
-    // leave 0 — wiping the legitimate matched record along with the surplus.
-    expect(plan.expectQty).toBe(4);
+  it("a retire plan is guarded by the qty it decided against", () => {
+    // Without expectQty two admins each looking at the same row would each
+    // retire against a stale view and take it further down than the evidence.
+    const r = run(reg({ p1__6: row({ qty: 2 }) }), { "marathon-pe": { p1: tomb() }, trophy: { p1: tomb() } });
+    const plan = retirePlan(r.byClass.sold[0], "hub1");
+    expect(plan.times).toBe(2);
+    expect(plan.expectQty).toBe(2);
   });
   it("the module never CALLS a slot writer", () => {
     // Comments may name them (the header explains how the unregistered rows

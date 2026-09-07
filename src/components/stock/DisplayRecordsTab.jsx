@@ -35,7 +35,7 @@
 // the tab is handed. Nothing else, and nothing until the tab is opened.
 
 import React, { useMemo, useState } from "react";
-import { classifyDisplayRecords, retirePlan, retireKey, retireEffectLine, CLEANUP_CLASSES,
+import { classifyDisplayRecords, retirePlan, retireKey, retireEffectLine, CLEANUP_CLASSES, ACTIONABLE_CLASSES,
          findUnregisteredDisplays, registerKey } from "./displayRecordCleanup";
 import { removeDisplayFact, recordDisplayFact } from "./displayRegistrationStore";
 import { useDisplaySlots, useDisplayRegister } from "./useStock";
@@ -49,7 +49,7 @@ const HUBS = ["hub1", "hub2"];
 const CLASS_META = {
   replaced: { title: "Replaced", tone: AMBER, blurb: "A shop floor shows this product on display at a DIFFERENT size. This row is the pair that was replaced." },
   sold:     { title: "Sold",     tone: AMBER, blurb: "The display left the floor and nothing replaced it." },
-  over:     { title: "Over-registered", tone: AMBER, blurb: "More units are claimed on display than there are shop floors showing that size. Only the surplus is offered." },
+  over:     { title: "Over-registered", tone: GRAY, blurb: "More units are claimed on display than there are shop floors showing that size. Nothing here says where the extras went, so they are reported and not offered — a floor showing the size explains a unit, it does not contradict one." },
   gone:     { title: "Product gone", tone: RED,  blurb: "The product record was deleted or merged away — nothing can sell it, so nobody is looking after this display." },
   unverified: { title: "No shop on record", tone: GRAY, blurb: "Registered before shops were recorded, or with no shop picked. There is no evidence either way, so nothing here can be retired — use Display Registration to attach a shop." },
   matched:  { title: "Confirmed", tone: GREEN, blurb: "A shop floor shows this product at this size. These records are right and are left alone." },
@@ -86,7 +86,7 @@ function Evidence({ row }) {
 //                       register row describes.
 export default function DisplayRecordsTab({ products = [], isAdmin = false, mode = "records" }) {
   const [hub, setHub] = useState("hub1");
-  const [open, setOpen] = useState(() => new Set(["replaced", "sold", "over", "gone"]));
+  const [open, setOpen] = useState(() => new Set(["replaced", "sold", "gone"]));
   const [confirm, setConfirm] = useState(null);     // retireKey awaiting a second tap
   const [bulk, setBulk] = useState(false);          // the bulk confirm is showing
   const [busy, setBusy] = useState(null);           // retireKey | "bulk"
@@ -165,7 +165,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
 
   const pending = (cls) => (byClass[cls] || []).filter((r) => !done.has(retireKey(hub, r)));
   const allActionable = useMemo(
-    () => ["replaced", "sold", "over", "gone"].flatMap((c) => pending(c)),
+    () => [...ACTIONABLE_CLASSES].flatMap((c) => pending(c)),
     [byClass, done, hub]
   );
 
@@ -173,6 +173,9 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
     const k = retireKey(hub, row);
     setBusy(k); setNote(null);
     const plan = retirePlan(row, hub);
+    // A plan that would move nothing is not a write. Belt and braces with the
+    // `actionable` gate on the button itself.
+    if (!(plan.times > 0)) { setBusy(null); setConfirm(null); return false; }
     try {
       // ONE GUARDED TRANSACTION, not one call per unit. An over-registered row
       // retires only its surplus, and `expectQty` makes that safe against a
@@ -357,7 +360,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
         const rows = pending(cls);
         const meta = CLASS_META[cls];
         const isOpen = open.has(cls);
-        const actionable = cls !== "unverified" && cls !== "matched";
+        const actionable = ACTIONABLE_CLASSES.has(cls);
         if (!rows.length && !counts[cls]) return null;
         return (
           <div key={cls} style={card}>

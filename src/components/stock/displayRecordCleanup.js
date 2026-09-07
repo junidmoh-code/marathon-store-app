@@ -37,8 +37,10 @@
 //               The display left the floor and nothing replaced it. Actionable,
 //               for as many units as there are tombstones — never the whole row.
 //   OVER        a live slot at this size, but the row claims MORE units than
-//               there are floors showing it. The surplus is actionable; the
-//               matched part is not, so only the surplus is offered.
+//               there are floors showing it. REPORTED, NEVER ACTIONED: a floor
+//               at this size explains a unit, it contradicts none, so the
+//               surplus is unexplained rather than wrong — the same footing as
+//               UNVERIFIED below.
 //   GONE        the product record is deleted, or merged away into another.
 //               Nothing can sell this pid; the row cannot describe a display
 //               anyone is looking after. Actionable.
@@ -67,7 +69,7 @@ import { isDeactivated } from "../../utils/deactivation";
 export const CLEANUP_CLASSES = ["replaced", "sold", "over", "gone", "unverified", "matched"];
 
 /** Which of those a human may act on. `unverified` and `matched` never appear. */
-export const ACTIONABLE_CLASSES = new Set(["replaced", "sold", "over", "gone"]);
+export const ACTIONABLE_CLASSES = new Set(["replaced", "sold", "gone"]);
 
 /** Split a register key into [productId, sizeKey]. Product ids never contain
  *  "__"; the size key can ("5_5" uses a single underscore), so split on the
@@ -122,7 +124,61 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
 
   const byClass = Object.fromEntries(CLEANUP_CLASSES.map((c) => [c, []]));
 
+  // ── EVIDENCE IS A BUDGET FOR THE PRODUCT, NOT A FACT EACH ROW MAY RE-READ ──
+  // (Property fuzz, 2026-09-07 — it found this and a hand-written fixture never
+  // would have.) Each row used to consult the floors on its own, so ONE shop
+  // record justified retiring one unit off EVERY other-sized row of the same
+  // product: three rows at sizes 3, 7 and 9 with a single floor showing size 10
+  // offered three units on the strength of one record.
+  //
+  // Why that is the dangerous direction and not merely untidy: a display
+  // standing at a shop whose slot was never written (582 rows have no slot at
+  // all, so untracked shops demonstrably exist) is described by one of those
+  // rows. Retiring it because an UNRELATED floor shows a different size takes
+  // the register's only trace of a real pair — and offShelf then stops
+  // subtracting it, so the next count expects it on the shelf, does not find
+  // it, and adjusts a real unit away.
+  //
+  // So the shop records for a product at a hub are a budget: N records justify
+  // retiring N units in total, spent across that product's rows in a fixed
+  // order and never re-read. Already-retired units (bumps − qty, summed over
+  // the product's rows) come off the budget first, so the budget cannot be
+  // re-spent across loads either.
+  //
+  // OVER is exempt and stays per-row: its bound is the floors showing THAT
+  // size right now, which shrinks by itself as units are retired. GONE is
+  // exempt because its evidence is the product's absence, not a floor.
+  const budgets = new Map();   // productId -> units the floors can still justify
+  const spent = new Map();     // productId -> units already retired off its rows
   for (const [key, raw] of Object.entries(register || {})) {
+    const split = splitRegisterKey(key);
+    if (!split) continue;
+    const [pid] = split;
+    const q = Number(raw?.qty) || 0;
+    // EVERY row, including one already retired to zero. Skipping those (as the
+    // first cut did) forgets what they spent, hands the budget back and lets a
+    // second row spend the same shop record — the fuzz walked a product to five
+    // units retired on three records that way.
+    spent.set(pid, (spent.get(pid) || 0) + Math.max(0, (Number(raw?.bumps) || q) - q));
+  }
+  const budgetFor = (productId) => {
+    if (budgets.has(productId)) return budgets.get(productId);
+    const { live, tombs } = slotsForProduct(slots, productId, hub);
+    const b = Math.max(0, live.length + tombs.length - (spent.get(productId) || 0));
+    budgets.set(productId, b);
+    return b;
+  };
+  const takeBudget = (productId, want) => {
+    const have = budgetFor(productId);
+    const take = Math.max(0, Math.min(want, have));
+    budgets.set(productId, have - take);
+    return take;
+  };
+
+  // Rows are allocated in a FIXED order (by key) so the same world always
+  // produces the same answer, whatever order RTDB hands the keys back in.
+  const entries = Object.entries(register || {}).sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [key, raw] of entries) {
     const split = splitRegisterKey(key);
     if (!split) continue;
     const [productId, sizeKey] = split;
@@ -137,25 +193,17 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
       ...tombs.map((s) => ({ kind: "tomb", store: s.store, size: s.prevSize ?? null, sizeKey: null, at: s.at, source: s.source })),
     ];
 
-    // ── EVIDENCE IS SPENT ONCE IT HAS BEEN ACTED ON ─────────────────────────
-    // `bumps` is the row's all-time high-water quantity and never decreases
-    // (displayRegistrationStore.highWater), so bumps − qty is how many units
-    // have ALREADY been retired off this row.
-    //
-    // Without subtracting that, the bound below re-offers spent evidence and
-    // walks a row to zero one load at a time: qty 2 with ONE tombstone offers
-    // 1, that lands, and on the next load qty 1 with the SAME one tombstone
-    // offers 1 again — retiring the unit that may be the display genuinely
-    // standing at an untracked shop. The count then expects a pair on the
-    // shelf that is out at a shop and adjusts a real unit away, which is the
-    // exact failure this module exists to prevent, reintroduced by iteration.
-    // (Found tracing a partially-retired row across two loads.)
-    //
-    // Rows written before `bumps` existed have none; they fall back to qty and
-    // yield 0 already-retired, which is right — nothing has been taken off them.
-    const alreadyRetired = Math.max(0, (Number(raw?.bumps) || qty) - qty);
-    // How many units this evidence can still speak for.
-    const unspent = (evidenceCount) => Math.max(0, Math.min(qty, evidenceCount - alreadyRetired));
+    // The budget above already has this product's already-retired units taken
+    // off it (bumps − qty, summed over its rows), which is what stops spent
+    // evidence being re-offered: qty 2 with ONE tombstone offers 1, that lands,
+    // and the next load sees the budget exhausted instead of the same tombstone
+    // justifying the last unit — which would walk the row to zero and take a
+    // display genuinely standing at an untracked shop.
+    // How many units this row may take out of the product's remaining budget.
+    // The per-class evidence count is still an upper bound on top of it — a
+    // sale can never justify more than the tombstones behind it — so a row is
+    // limited by BOTH what its own evidence says and what the product has left.
+    const unspent = (evidenceCount) => Math.max(0, Math.min(qty, evidenceCount));
 
     // ── RETIRE ONLY AS MANY UNITS AS THE EVIDENCE COVERS ────────────────────
     // A register row is a QUANTITY (qty > 1 happens — a second physical display
@@ -185,19 +233,33 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
       // script does, and gets the precise reason. Kept for that, not decoration.
       cls = "gone"; why = `Merged into another product (${product.mergedInto}) — nothing can sell this record.`;
     } else if (sameSize.length) {
-      if (qty > sameSize.length) {
-        // The surplus is self-limiting — it is measured against the floors that
-        // are showing the size RIGHT NOW, so a retire shrinks it on its own and
-        // there is no spent-evidence problem to correct for.
+      // ── OVER IS REPORTED, NOT ACTIONED, AND THAT IS A CORRECTION ───────────
+      // It was actionable at first: "claims 3, one floor shows it, retire 2".
+      // The property fuzz made the flaw plain. A floor showing THIS size is
+      // evidence FOR a display — it explains one unit — and it contradicts
+      // nothing. The surplus units have no shop record of their own at all,
+      // which puts them on exactly the same footing as the 582 rows with no
+      // slot that this module refuses to touch. Actioning them here while
+      // refusing those would be the same guess wearing a different hat, and
+      // with untracked shops in the data the surplus may be real displays.
+      //
+      // So the rule is uniform and stated once: a row is actionable only when
+      // a shop record CONTRADICTS it — a tombstone (it left) or a floor at
+      // another size (it moved) — never when it is merely unexplained. The
+      // surplus is still worth SEEING, so it keeps its own reason line and
+      // points at where a human can resolve it.
+      const want = qty - sameSize.length;
+      if (want > 0) {
         cls = "over";
-        retireQty = qty - sameSize.length;
-        why = `Claims ${qty} on display, but only ${sameSize.length} shop ${sameSize.length === 1 ? "floor shows" : "floors show"} this size.`;
+        retireQty = 0;
+        why = `Claims ${qty} on display, but only ${sameSize.length} shop ${sameSize.length === 1 ? "floor shows" : "floors show"} this size. `
+          + `Nothing says where the other ${want} went, so they are not offered here — check the walls, or record the shop on Display Registration.`;
       } else {
         cls = "matched"; why = "A shop floor shows this size — the record is right.";
       }
     } else if (live.length) {
       const sizes = [...new Set(live.map((s) => s.size ?? s.sizeKey))].join(", ");
-      retireQty = unspent(live.length);
+      retireQty = takeBudget(productId, unspent(live.length));
       if (retireQty > 0) {
         cls = "replaced";
         why = `The display for this product is now size ${sizes} — this row is the pair it replaced.`
@@ -207,7 +269,7 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
         why = `The move to size ${sizes} has already been accounted for. What is left here has no shop on record.`;
       }
     } else if (tombs.length) {
-      retireQty = unspent(tombs.length);
+      retireQty = takeBudget(productId, unspent(tombs.length));
       if (retireQty > 0) {
         cls = "sold";
         why = `The display left ${tombs.length === 1 ? "the floor" : `${tombs.length} floors`} and nothing replaced it.`
@@ -219,6 +281,14 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
     } else {
       cls = "unverified"; why = "No shop was ever recorded for this display — there is no evidence either way.";
     }
+
+    // A NON-ACTIONABLE CLASS CARRIES retireQty 0, structurally. The classes
+    // that are only ever reported (over / unverified / matched) used to keep
+    // the initial `retireQty = qty`, which is a live number sitting on a row
+    // nothing should act on — one caller forgetting to check the class would
+    // retire the whole row. The invariant belongs on the data, not on the
+    // discipline of every reader. (Property fuzz.)
+    if (!ACTIONABLE_CLASSES.has(cls)) retireQty = 0;
 
     byClass[cls].push({
       key, productId, sizeKey, qty, retireQty,
@@ -262,7 +332,13 @@ export function retirePlan(row, hub) {
     product: { id: row.productId, name: row.productName },
     sizeKey: row.sizeKey,
     slotStores: [],
-    times: Math.max(1, Number(row.retireQty) || 1),
+    // NEVER coerced to 1. It was `Math.max(1, …)`, so a row the classifier had
+    // decided to retire NOTHING from (an over-registered row, whose surplus is
+    // unexplained rather than contradicted) produced a plan to retire one unit
+    // — inventing the exact guess this module refuses to make. The screen only
+    // calls this for actionable rows, but a helper must not depend on its
+    // caller's discipline for that. (Property fuzz.)
+    times: Math.max(0, Number(row.retireQty) || 0),
     // The quantity this decision was MADE against. removeDisplayFact aborts if
     // the row has moved since, so a stale screen cannot retire a surplus that
     // somebody else has already taken — which would carry the legitimate
