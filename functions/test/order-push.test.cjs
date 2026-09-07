@@ -140,9 +140,17 @@ const SHADOW = (over = {}) => REFILL({
   id: "SHDW-marathon-pe-p1-M", autoRefill: true, autoShadow: true, ...over,
 });
 
-// One subscribed warehouse user with one device, plus the product name.
+// One warehouse user, ASSIGNED BY THE ADMIN to both hubs, with one device,
+// plus the product name.
+//
+// "Assigned to both" is the default fixture rather than an exotic case: it is
+// what lets every pre-existing guard below stay a test about what it was a test
+// about (collapse, idempotency, pruning, the wait) instead of quietly becoming
+// a test about scoping. The scoping guards are their own suite — see "THE
+// SCOPED FAN-OUT" at the bottom of this file, where the fixture is deliberately
+// NOT this one.
 const WORLD = () => ({
-  push_audience: { all: { u_ware: { at: NOW } } },
+  push_hub_audience: { hub1: { u_ware: { at: NOW } }, hub2: { u_ware: { at: NOW } } },
   push_tokens: { u_ware: { d1: { token: "tok-A", device: "iPhone Safari · installed · d1" } } },
   products: { p1: { name: "Nike Air Max 90" } },
 });
@@ -246,6 +254,13 @@ test("each producer's order fires EXACTLY ONE notification", async () => {
 });
 
 test("BURST COLLAPSE ACROSS PRODUCERS: a checkout, a refill cart and an engine leg are ONE notification", async () => {
+  // All five ON ONE HUB. The window is keyed by the hub that has to pick, so
+  // that is the axis this guard is about: three different producers writing
+  // work for the SAME hub converge into one window and one sentence. (A
+  // customer order for a hub2 shoe is an ordinary line — computeHubForItem
+  // resolves the hub from the PRODUCT, not from the producer.) Two DIFFERENT
+  // hubs must not collapse, and that has its own test below.
+  const H2 = { hub: "hub2", placedAtHub: "hub2" };
   const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
 
@@ -254,13 +269,13 @@ test("BURST COLLAPSE ACROSS PRODUCERS: a checkout, a refill cart and an engine l
   let release;
   const held = new Promise((r) => { release = r; });
   const claimer = notifyOrderPlaced({
-    db: { ref }, messaging: m, orderId: "005", record: CUSTOMER(), createdAt: AT,
+    db: { ref }, messaging: m, orderId: "005", record: CUSTOMER(H2), createdAt: AT,
     nowMs: NOW, sleep: () => held, newWindowId: () => "W1",
   });
 
   const others = [];
   for (const [i, [id, rec]] of [
-    ["006", CUSTOMER({ id: "006" })],
+    ["006", CUSTOMER({ id: "006", ...H2 })],
     ["R041-1", REFILL({ id: "R041-1" })],
     ["R041-2", REFILL({ id: "R041-2" })],
     ["R056-7", ENGINE()],
@@ -276,9 +291,9 @@ test("BURST COLLAPSE ACROSS PRODUCERS: a checkout, a refill cart and an engine l
   release();
   const res = await claimer;
   assert.equal(res.sent, true);
-  assert.equal(res.count, 5, "one store, five orders, whoever wrote them");
+  assert.equal(res.count, 5, "one hub, five orders, whoever wrote them");
   assert.equal(m.calls.length, 1);
-  assert.equal(m.calls[0].data.title, "Marathon PE — 5 new orders");
+  assert.equal(m.calls[0].data.title, "Hub 2 — 5 new orders");
 });
 
 test("BURST COLLAPSE: 40 orders in one sweep produce ONE notification saying 40", async () => {
@@ -308,28 +323,33 @@ test("BURST COLLAPSE: 40 orders in one sweep produce ONE notification saying 40"
   assert.equal(res.sent, true);
   assert.equal(res.count, 40);
   assert.equal(m.calls.length, 1, "one sweep, one notification");
-  assert.equal(m.calls[0].data.title, "Marathon PE — 40 new orders");
+  assert.equal(m.calls[0].data.title, "Hub 2 — 40 new orders");
   assert.match(m.calls[0].data.body, /Nike Air Max 90 and 39 more/);
   // The window is closed, not deleted — that is what keeps the replay memory.
-  assert.equal(state.push_bursts["marathon-pe"].windowId, null);
-  assert.ok(state.push_bursts["marathon-pe"].closedAt);
+  assert.equal(state.push_bursts.hub2.windowId, null);
+  assert.ok(state.push_bursts.hub2.closedAt);
 });
 
-test("two stores ordering at once get one notification EACH, not one between them", async () => {
+test("two HUBS ordering at once get one notification EACH, not one between them", async () => {
+  // This was "two stores" while the window was keyed by destShop. The axis
+  // moved with the key, and it had to: the collapse must be keyed by the same
+  // thing the recipients are scoped to, or a burst can swallow an order the
+  // people it reaches were never entitled to hear about. Two different HUBS is
+  // now the case that must not merge.
   const world = WORLD();
-  world.push_audience.trophy = { u_troph: { at: NOW } };
-  world.push_tokens.u_troph = { d9: { token: "tok-B" } };
+  world.push_hub_audience.hub2 = { u_two: { at: NOW } };
+  world.push_tokens.u_two = { d9: { token: "tok-B" } };
   const { ref } = fakeDb(world);
   const m = fakeMessaging();
 
-  const a = await run({ ref }, m, "005", CUSTOMER({ destShop: "marathon-pe" }));
-  const b = await run({ ref }, m, "006", CUSTOMER({ id: "006", destShop: "trophy" }), { newWindowId: () => "W2" });
+  const a = await run({ ref }, m, "005", CUSTOMER({ hub: "hub1", placedAtHub: "hub1" }));
+  const b = await run({ ref }, m, "006", CUSTOMER({ id: "006", hub: "hub2", placedAtHub: "hub2" }), { newWindowId: () => "W2" });
   assert.equal(a.sent, true);
   assert.equal(b.sent, true);
   assert.equal(m.calls.length, 2);
-  assert.deepEqual(m.calls.map((c) => c.data.hub), ["marathon-pe", "trophy"]);
-  // The wrong-shop collapse this keying prevents: one sentence naming one shop
-  // while the other shop's order hides inside its count.
+  assert.deepEqual(m.calls.map((c) => c.data.hub), ["hub1", "hub2"]);
+  // The wrong-hub collapse this keying prevents: one sentence naming one hub
+  // while the other hub's order hides inside its count.
   assert.deepEqual(m.calls.map((c) => c.data.count), ["1", "1"]);
 });
 
@@ -419,7 +439,7 @@ test("A DELIVERY OF ZERO IS NOT A SEND — the burst is put back, not consumed",
   const res = await run({ ref }, m, "005", CUSTOMER());
   assert.equal(res.sent, false);
   assert.equal(res.skipped, "send_failed");
-  const w = state.push_bursts["marathon-pe"];
+  const w = state.push_bursts.hub1;
   assert.equal(w.count, 1, "the count is back for the next order to flush");
   assert.ok(state.push_tokens.u_ware.d1, "and a transient failure still did not cost a registration");
 });
@@ -551,24 +571,24 @@ test("PRUNING: a TRANSIENT failure never costs someone their registration", asyn
 
 // ── THE RECIPIENT SET ────────────────────────────────────────────────────────
 
-test("recipients come from the index, and the wildcard bucket reaches every store", async () => {
+test("recipients come from the ASSIGNED index for that order's hub, and nowhere else", async () => {
   const world = WORLD();
-  world.push_audience.trophy = { u_scoped: { at: NOW } };
-  world.push_tokens.u_scoped = { d5: { token: "tok-SCOPED" } };
+  world.push_hub_audience.hub2.u_two = { at: NOW };
+  world.push_tokens.u_two = { d5: { token: "tok-TWO" } };
   const { ref } = fakeDb(world);
 
   const m1 = fakeMessaging();
-  await run({ ref }, m1, "005", CUSTOMER({ destShop: "marathon-pe" }));
-  assert.deepEqual(m1.calls[0].tokens, ["tok-A"], "the Trophy-scoped user hears nothing about PE");
+  await run({ ref }, m1, "005", CUSTOMER({ hub: "hub1", placedAtHub: "hub1" }));
+  assert.deepEqual(m1.calls[0].tokens, ["tok-A"], "the Hub 2 assignee hears nothing about Hub 1");
 
   const m2 = fakeMessaging();
-  await run({ ref }, m2, "006", CUSTOMER({ id: "006", destShop: "trophy" }), { newWindowId: () => "W2" });
-  assert.deepEqual(m2.calls[0].tokens.sort(), ["tok-A", "tok-SCOPED"], "wildcard + scoped, deduped");
+  await run({ ref }, m2, "006", CUSTOMER({ id: "006", hub: "hub2", placedAtHub: "hub2" }), { newWindowId: () => "W2" });
+  assert.deepEqual(m2.calls[0].tokens.sort(), ["tok-A", "tok-TWO"], "both Hub 2 assignees, and only them");
 });
 
 test("a uid in the index with no tokens contributes nothing and breaks nothing", async () => {
   const world = WORLD();
-  world.push_audience.all.u_ghost = { at: NOW };   // registered once, tokens since revoked
+  world.push_hub_audience.hub1.u_ghost = { at: NOW };  // assigned, but their device is gone
   const { ref } = fakeDb(world);
   const m = fakeMessaging();
   const res = await run({ ref }, m, "005", CUSTOMER());
@@ -576,7 +596,7 @@ test("a uid in the index with no tokens contributes nothing and breaks nothing",
   assert.deepEqual(m.calls[0].tokens, ["tok-A"]);
 });
 
-test("nobody subscribed: it closes the window quietly rather than throwing", async () => {
+test("nobody assigned: it closes the window quietly rather than throwing", async () => {
   const { ref } = fakeDb({ products: { p1: { name: "Nike Air Max 90" } } });
   const m = fakeMessaging();
   const res = await run({ ref }, m, "005", CUSTOMER());
@@ -591,7 +611,7 @@ test("the recipient set is capped, so a corrupted index cannot fan out forever",
   // token only to u_ware, so deleting the cap still produced one token and the
   // assertion passed — it could not fail, which is the same as not existing.
   for (let i = 0; i < MAX_RECIPIENTS + 50; i += 1) {
-    world.push_audience.all[`u${i}`] = { at: NOW };
+    world.push_hub_audience.hub1[`u${i}`] = { at: NOW };
     world.push_tokens[`u${i}`] = { d1: { token: `tok-${i}` } };
   }
   const { ref } = fakeDb(world);
@@ -712,7 +732,9 @@ test("the payload is DATA-ONLY and deep-links to the ORDER, not to a list", asyn
   assert.equal(sent.webpush.fcmOptions.link, sent.data.link);
   // One tag per destination store: a second notification for the same shop
   // REPLACES the first in the tray instead of stacking a column of them.
-  assert.equal(sent.data.tag, "order-marathon-pe");
+  // The tag is PER HUB, so a Hub 2 notification never replaces a Hub 1 one on
+  // the lock screen of somebody assigned to both.
+  assert.equal(sent.data.tag, "order-hub1");
   // FCM rejects a data payload containing a non-string.
   for (const v of Object.values(sent.data)) assert.equal(typeof v, "string");
 });
@@ -763,18 +785,22 @@ test("AN ORDER WITH NO USABLE HUB OPENS THE APP, never a screen that would not l
 // ── DIRTY DATA ───────────────────────────────────────────────────────────────
 
 test("an order naming an unknown destShop still notifies readably", async () => {
+  // The TITLE names the hub now, so an unrecognised destShop can no longer
+  // blank it. It still has to reach the BODY readably rather than as "" or
+  // "undefined", because the store is what tells the picker where the box goes.
   const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
   const res = await run({ ref }, m, "005", CUSTOMER({ destShop: "shop-from-2019" }));
-  assert.equal(res.sent, true, "the wildcard bucket still covers it");
-  assert.match(m.calls[0].data.title, /shop-from-2019/);
+  assert.equal(res.sent, true, "an unknown store is still real work for its hub");
+  assert.match(m.calls[0].data.title, /Hub 1/);
+  assert.match(m.calls[0].data.body, /shop-from-2019/);
   assert.equal(m.calls[0].data.link, "/?push=order&hub=hub1&tab=queue&order=005&at=" + encodeURIComponent(AT));
 });
 
-test("a malformed audience node does not crash the fan-out", async () => {
+test("a malformed assignment index does not crash the fan-out", async () => {
   for (const bad of [null, "nonsense", 42, []]) {
     const world = WORLD();
-    world.push_audience.all = bad;
+    world.push_hub_audience.hub1 = bad;
     const { ref } = fakeDb(world);
     const m = fakeMessaging();
     await assert.doesNotReject(run({ ref }, m, "005", CUSTOMER()));
@@ -794,7 +820,11 @@ test("a half-written order — no product, no size, no qty — still sends somet
   const { ref } = fakeDb(WORLD());
   const m = fakeMessaging();
   const res = await run({ ref }, m, "005", {
-    id: "005", destShop: "marathon-pe", status: "incoming", createdAt: AT,
+    // hub is present because it always is — every producer writes it in the
+    // same object literal as createdAt. Everything a message is BUILT from is
+    // missing; that is what "half-written" means here.
+    id: "005", hub: "hub1", placedAtHub: "hub1",
+    destShop: "marathon-pe", status: "incoming", createdAt: AT,
   });
   assert.equal(res.sent, true);
   assert.equal(typeof m.calls[0].data.body, "string");
@@ -821,7 +851,7 @@ test("a window whose claimer DIED carries its count forward — late, never lost
       nowMs: NOW + i, sleep: noSleep, newWindowId: () => `Wx${i}`,
     });
   }
-  assert.equal(state.push_bursts["marathon-pe"].count, 5);
+  assert.equal(state.push_bursts.hub2.count, 5);
   assert.equal(m.calls.length, 0, "nobody has been told anything yet");
 
   // The window ages out and the next order opens a new one. The five orphans
@@ -863,7 +893,7 @@ test("A FAILED SEND PUTS THE COUNT BACK — a burst is never lost silently", asy
   // The window is re-opened, ALREADY EXPIRED, holding the count. The orders it
   // counted are in `seen` and can never be re-counted, so discarding here would
   // lose them permanently.
-  const w = state.push_bursts["marathon-pe"];
+  const w = state.push_bursts.hub1;
   assert.ok(w.windowId, "a window is open again");
   assert.equal(w.count, 1);
   // startedAt 0 — expired against every possible clock. Anything derived from
@@ -885,15 +915,15 @@ test("A FAILED SEND PUTS THE COUNT BACK — a burst is never lost silently", asy
 
 test("a restore folds into a LIVE window rather than clobbering someone else's claim", async () => {
   const { ref, state } = fakeDb(WORLD());
-  await ref("push_bursts/marathon-pe").transaction(() => ({
+  await ref("push_bursts/hub1").transaction(() => ({
     windowId: "OTHER", startedAt: NOW, count: 3, sample: null, seen: {}, closedAt: null,
   }));
   await restoreBurst({
-    burstRef: ref("push_bursts/marathon-pe"), count: 5,
+    burstRef: ref("push_bursts/hub1"), count: 5,
     captured: { sample: { productId: "p1" } }, closedAt: NOW,
   });
-  assert.equal(state.push_bursts["marathon-pe"].windowId, "OTHER", "the live claim is untouched");
-  assert.equal(state.push_bursts["marathon-pe"].count, 8, "3 live + 5 restored");
+  assert.equal(state.push_bursts.hub1.windowId, "OTHER", "the live claim is untouched");
+  assert.equal(state.push_bursts.hub1.count, 8, "3 live + 5 restored");
 });
 
 test("THE COLLAPSE SURVIVES A SLOW SWEEP — the claimer waits for quiet, not for a clock", async () => {
@@ -929,7 +959,7 @@ test("THE COLLAPSE SURVIVES A SLOW SWEEP — the claimer waits for quiet, not fo
   assert.equal(res.sent, true);
   assert.equal(m.calls.length, 1, "a sweep spanning several ticks is still ONE notification");
   assert.equal(res.count, 41, "the claimer plus every order that landed while it waited");
-  assert.equal(m.calls[0].data.title, "Marathon PE — 41 new orders");
+  assert.equal(m.calls[0].data.title, "Hub 2 — 41 new orders");
 });
 
 test("the wait ends at the ceiling rather than never — a burst that never stops still lands", async () => {
@@ -999,7 +1029,7 @@ test("a claimer that stops beating IS judged abandoned — recovery does not dep
   const m = fakeMessaging();
 
   // A window opened long ago whose claimer beat once and then died.
-  await ref("push_bursts/marathon-pe").transaction(() => ({
+  await ref("push_bursts/hub1").transaction(() => ({
     windowId: "DEAD", startedAt: NOW, heartbeatAt: NOW, count: 7,
     sample: { orderId: "005", productId: "p1", size: "9", qty: 1, hub: "hub1", tab: "queue" },
     seen: {}, closedAt: null,
@@ -1013,7 +1043,7 @@ test("a claimer that stops beating IS judged abandoned — recovery does not dep
   });
   assert.equal(res.sent, true);
   assert.equal(res.count, 8, "7 orphaned + 1 new");
-  assert.equal(state.push_bursts["marathon-pe"].windowId, null, "and the window is closed properly");
+  assert.equal(state.push_bursts.hub1.windowId, null, "and the window is closed properly");
 });
 
 test("a run of failed tick reads flushes; a single blip does NOT", async () => {
