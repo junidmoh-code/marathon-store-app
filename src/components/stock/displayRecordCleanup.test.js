@@ -118,6 +118,60 @@ describe("classifyDisplayRecords — what the evidence says", () => {
     expect(r.byClass.replaced[0].retireQty).toBe(2);
   });
 
+  // ── EVIDENCE IS SPENT ONCE ACTED ON ─────────────────────────────────────
+  // The walk-to-zero this closes: qty 2 with ONE tombstone offers 1, that
+  // lands, and the next load sees qty 1 with the SAME tombstone and offers 1
+  // again — taking the unit that may be the real display at an untracked shop.
+  it("SPENT EVIDENCE IS NOT RE-OFFERED — a partly retired row goes quiet", () => {
+    // bumps 2, qty 1 → one unit has already been retired against this tombstone.
+    const r = run(reg({ p1__6: row({ qty: 1, bumps: 2 }) }), { "marathon-pe": { p1: tomb() } });
+    expect(r.counts.sold).toBe(0);
+    expect(r.actionableCount).toBe(0);
+    expect(r.byClass.unverified[0].why).toMatch(/already been accounted for/);
+  });
+
+  it("the same for a REPLACED row", () => {
+    const r = run(reg({ p1__6: row({ qty: 1, bumps: 2 }) }), { "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8" }) } });
+    expect(r.counts.replaced).toBe(0);
+    expect(r.actionableCount).toBe(0);
+  });
+
+  it("but evidence that has NOT been spent still counts", () => {
+    // bumps 2, qty 2 → nothing retired yet; two tombstones cover both units.
+    const r = run(reg({ p1__6: row({ qty: 2, bumps: 2 }) }), {
+      "marathon-pe": { p1: tomb() }, trophy: { p1: tomb() },
+    });
+    expect(r.byClass.sold[0].retireQty).toBe(2);
+  });
+
+  it("two tombstones and one already retired leaves exactly one to go", () => {
+    const r = run(reg({ p1__6: row({ qty: 1, bumps: 2 }) }), {
+      "marathon-pe": { p1: tomb() }, trophy: { p1: tomb() },
+    });
+    expect(r.byClass.sold[0].retireQty).toBe(1);
+  });
+
+  it("a row written before `bumps` existed is treated as nothing-retired", () => {
+    const r = run(reg({ p1__6: { qty: 1, at: "2026-08-07T10:00:00.000Z" } }), { "marathon-pe": { p1: tomb() } });
+    expect(r.byClass.sold[0].retireQty).toBe(1);
+  });
+
+  it("THE FULL WALK: retiring never takes a row below what the evidence covers", () => {
+    // Simulate the loop the screen drives: classify, retire, re-classify, until
+    // it stops offering. One tombstone must only ever take ONE unit.
+    let qty = 3, bumps = 3;
+    const slots = { "marathon-pe": { p1: tomb() } };
+    let guard = 0;
+    for (;;) {
+      if (++guard > 10) throw new Error("did not converge");
+      const r = run(reg({ p1__6: { qty, bumps, at: "2026-08-07T10:00:00.000Z" } }), slots);
+      if (!r.actionableCount) break;
+      const take = r.byClass.sold[0].retireQty;
+      qty -= take;                       // bumps never decreases
+    }
+    expect(qty).toBe(2);                 // 3 registered − 1 that left = 2 still claimed
+  });
+
   it("a MIS-TAGGED shoe is not 'gone' — existence is existence", () => {
     // The screen must pass an UNFILTERED catalogue. A product whose category
     // was edited away from footwear still exists and its display may still be

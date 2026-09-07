@@ -46,7 +46,9 @@
 //               before slots existed, or one where no shop was picked. There
 //               is NO evidence either way, so it is REPORTED AND NEVER
 //               ACTIONABLE. 582 rows live, and offering a button here is
-//               exactly how a real display gets counted away.
+//               exactly how a real display gets counted away. A row whose
+//               evidence has ALREADY BEEN SPENT on an earlier retire lands
+//               here too, for the same reason: what is left is unexplained.
 //
 // A DEACTIVATED product is deliberately NOT a class of its own. A finished line
 // can still have its last pair standing on a wall, and "we stopped restocking
@@ -135,6 +137,26 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
       ...tombs.map((s) => ({ kind: "tomb", store: s.store, size: s.prevSize ?? null, sizeKey: null, at: s.at, source: s.source })),
     ];
 
+    // ── EVIDENCE IS SPENT ONCE IT HAS BEEN ACTED ON ─────────────────────────
+    // `bumps` is the row's all-time high-water quantity and never decreases
+    // (displayRegistrationStore.highWater), so bumps − qty is how many units
+    // have ALREADY been retired off this row.
+    //
+    // Without subtracting that, the bound below re-offers spent evidence and
+    // walks a row to zero one load at a time: qty 2 with ONE tombstone offers
+    // 1, that lands, and on the next load qty 1 with the SAME one tombstone
+    // offers 1 again — retiring the unit that may be the display genuinely
+    // standing at an untracked shop. The count then expects a pair on the
+    // shelf that is out at a shop and adjusts a real unit away, which is the
+    // exact failure this module exists to prevent, reintroduced by iteration.
+    // (Found tracing a partially-retired row across two loads.)
+    //
+    // Rows written before `bumps` existed have none; they fall back to qty and
+    // yield 0 already-retired, which is right — nothing has been taken off them.
+    const alreadyRetired = Math.max(0, (Number(raw?.bumps) || qty) - qty);
+    // How many units this evidence can still speak for.
+    const unspent = (evidenceCount) => Math.max(0, Math.min(qty, evidenceCount - alreadyRetired));
+
     // ── RETIRE ONLY AS MANY UNITS AS THE EVIDENCE COVERS ────────────────────
     // A register row is a QUANTITY (qty > 1 happens — a second physical display
     // of the same product and size goes through "add another"), and it carries
@@ -164,6 +186,9 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
       cls = "gone"; why = `Merged into another product (${product.mergedInto}) — nothing can sell this record.`;
     } else if (sameSize.length) {
       if (qty > sameSize.length) {
+        // The surplus is self-limiting — it is measured against the floors that
+        // are showing the size RIGHT NOW, so a retire shrinks it on its own and
+        // there is no spent-evidence problem to correct for.
         cls = "over";
         retireQty = qty - sameSize.length;
         why = `Claims ${qty} on display, but only ${sameSize.length} shop ${sameSize.length === 1 ? "floor shows" : "floors show"} this size.`;
@@ -172,15 +197,25 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
       }
     } else if (live.length) {
       const sizes = [...new Set(live.map((s) => s.size ?? s.sizeKey))].join(", ");
-      cls = "replaced";
-      retireQty = Math.min(qty, live.length);
-      why = `The display for this product is now size ${sizes} — this row is the pair it replaced.`
-        + (qty > live.length ? ` ${qty} are registered here and ${live.length} moved, so only ${retireQty} can be retired.` : "");
+      retireQty = unspent(live.length);
+      if (retireQty > 0) {
+        cls = "replaced";
+        why = `The display for this product is now size ${sizes} — this row is the pair it replaced.`
+          + (qty > retireQty ? ` ${qty} are registered here and ${live.length} moved, so only ${retireQty} can be retired.` : "");
+      } else {
+        cls = "unverified";
+        why = `The move to size ${sizes} has already been accounted for. What is left here has no shop on record.`;
+      }
     } else if (tombs.length) {
-      cls = "sold";
-      retireQty = Math.min(qty, tombs.length);
-      why = `The display left ${tombs.length === 1 ? "the floor" : `${tombs.length} floors`} and nothing replaced it.`
-        + (qty > tombs.length ? ` ${qty} are registered here and ${tombs.length} left, so only ${retireQty} can be retired.` : "");
+      retireQty = unspent(tombs.length);
+      if (retireQty > 0) {
+        cls = "sold";
+        why = `The display left ${tombs.length === 1 ? "the floor" : `${tombs.length} floors`} and nothing replaced it.`
+          + (qty > retireQty ? ` ${qty} are registered here and ${tombs.length} left, so only ${retireQty} can be retired.` : "");
+      } else {
+        cls = "unverified";
+        why = "The display that left has already been accounted for. What is left here has no shop on record.";
+      }
     } else {
       cls = "unverified"; why = "No shop was ever recorded for this display — there is no evidence either way.";
     }

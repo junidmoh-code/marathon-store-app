@@ -1,16 +1,16 @@
-# Stale display-record census — 2026-09-07T14:12:00.260Z
+# Stale display-record census — 2026-09-07T16:04:32.673Z
 Read-only. 1037 product ids named by the registers; read by child path, never the /products node.
 1032 of them still have a product record.
 
 ## hub1
 live register rows: 546
-    50  REPLACED    live slot at a DIFFERENT size — the pair it replaced
+    51  REPLACED    live slot at a DIFFERENT size — the pair it replaced
     21  SOLD        only a tombstone — the display left the floor
      1  OVER        claims more units than there are floors showing it
      4  GONE        product deleted or merged away
    289  UNVERIFIED  no slot record at all — NEVER actionable
-   181  MATCHED     live slot, same size — the record is right
-  → offered for retirement: 76
+   180  MATCHED     live slot, same size — the record is right
+  → offered for retirement: 77
 
 ## hub2
 live register rows: 505
@@ -22,11 +22,11 @@ live register rows: 505
    149  MATCHED     live slot, same size — the record is right
   → offered for retirement: 63
 
-## TOTAL OFFERED FOR RETIREMENT ACROSS BOTH HUBS: 139
+## TOTAL OFFERED FOR RETIREMENT ACROSS BOTH HUBS: 140
 Each one currently subtracts a unit from a hub cell's expected-on-shelf
 (offShelf.js), so each one hands a counter a discrepancy that is not real.
 
-### hub1 — REPLACED — showing 8 of 50
+### hub1 — REPLACED — showing 8 of 51
   p1781649925620__7  qty 1  retire 1  registered 2026-08-27T14:37:33.977Z
      Nike SB Dunk Low Green White
      WHY: The display for this product is now size 8 — this row is the pair it replaced.
