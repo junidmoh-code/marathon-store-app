@@ -109,7 +109,7 @@ import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
-import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -9489,7 +9489,6 @@ function AssistantView({ products, onExit, orders = [] }) {
         && GATED_SNEAKER_HUBS.every(h => sneakerAvail(p.id, s, h) <= 0),
     };
   };
-  // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
   // ── THE MARKER, AND THE WHOLE OF WHAT IT DOES ────────────────────────────
   // A size that has a unit on a display shows the small glyph — informational,
   // no tint, no prompt, no gate — so staff can see at a glance which size is

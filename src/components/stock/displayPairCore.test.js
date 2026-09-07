@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import {
   displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey,
-  DISPLAY_EXIT_CREATE_MAX_AGE_MS, displayOnly, pendingDisplayPullsByCell,
+  DISPLAY_EXIT_CREATE_MAX_AGE_MS, pendingDisplayPullsByCell,
   mergePromised, displaySlotStoreFor, depletedTaskRevivable,
 } from "./displayPairCore";
 import { promisedKey } from "./availabilityCore";
@@ -531,23 +531,20 @@ describe("displaySlotRepairs — the divergence as a write", () => {
   });
 });
 
-describe("displayOnly — the marker rule", () => {
-  it("marks only when 0 < avail <= displays", () => {
-    expect(displayOnly(1, 1)).toBe(true);
-    expect(displayOnly(2, 2)).toBe(true);
-    expect(displayOnly(1, 2)).toBe(true);    // stale second slot — still: what's left is on display
+// ─── THE MARKER RULE IS DELETED, NOT DISABLED ────────────────────────────────
+// displayOnly() decided that a size whose last availability was the display
+// pair could not simply be sold: the tile went amber and the tap was diverted
+// into a request. Owner spec 2026-09-07 removed that — the glyph is
+// informational and availability is quantity — and the function went with it,
+// because an unused copy of a deleted rule is how the rule comes back.
+describe("displayOnly is gone", () => {
+  it("is not exported from this module any more", async () => {
+    const mod = await import("./displayPairCore");
+    expect("displayOnly" in mod).toBe(false);
   });
-  it("avail 0 is ✕ territory, NEVER marked — whatever a slot claims", () => {
-    expect(displayOnly(0, 1)).toBe(false);
-    expect(displayOnly(-2, 1)).toBe(false);
-  });
-  it("shelf stock beyond the displays = plain number", () => {
-    expect(displayOnly(3, 1)).toBe(false);
-    expect(displayOnly(1, 0)).toBe(false);
-  });
-  it("garbage reads as unmarked", () => {
-    expect(displayOnly(NaN, 1)).toBe(false);
-    expect(displayOnly(1, undefined)).toBe(false);
+  it("and the slot map it fed still reports the units, which is all the glyph needs", () => {
+    const slots = { "marathon-pe": { p9: { size: "9", sizeKey: "9", bookedHub: "hub1", source: "registration" } } };
+    expect(displayUnitsByCell(slots, "hub1")["p9::9"]).toEqual({ units: 1, stores: ["marathon-pe"], unverified: 0 });
   });
 });
 
