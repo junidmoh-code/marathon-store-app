@@ -236,6 +236,13 @@ describe("a display slot is invisible to every answer the ordering screen gives"
       // a marked cell is never flagged, however many lines are drawn against
       // it — a cell holding three with three lines against it is fully
       // sellable, marker or no marker.
+      //
+      // AND THIS LINE ALONE PROVES NOTHING ABOUT THE ARITHMETIC. It is true
+      // because pass 1's `line.displayPairRequest !== true` guard skips every
+      // line this fuzz builds, so the pull-vs-shelf sums never run here at
+      // all. What it fences is that guard LOOSENING — a plain line becoming
+      // eligible for the pull lane. The arithmetic itself is proved by the
+      // separate pull-lane test below, and only there (review, 2026-09-07).
       expect(alloc.overAllocated.size, at("an ordinary cart line was flagged over-allocated")).toBe(0);
     }
   });
@@ -325,9 +332,13 @@ describe("a display slot is invisible to every answer the ordering screen gives"
         .toBe(0);
       expect(cellAvailability({ cells: { x: { _: { qty: 5 } } }, promised: {}, productId: "x", size: "Free Size" }))
         .toBe(5);
-      // Every promise the generator made is a real, non-negative claim — the
-      // first draft asserted `toBeTruthy()` on an object literal here, which is
-      // true whether it holds anything or not (review, 2026-09-07).
+      // A CHECK ON THE GENERATOR, NOT ON THE SYSTEM — said plainly, because the
+      // first draft of this comment implied otherwise. `promised` is built by
+      // world() as int(r, 4), so it is a non-negative integer by construction;
+      // this only catches a later edit that starts emitting a float or a
+      // negative and quietly changes what every case in this file means. It
+      // replaces an `expect(promised).toBeTruthy()` on an object literal, which
+      // was true whether it held anything or not (review, 2026-09-07).
       for (const v of Object.values(promised)) {
         expect(Number.isInteger(v) && v >= 0, `case ${i}: a promise of ${v}`).toBe(true);
       }
