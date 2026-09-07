@@ -86,13 +86,25 @@ export default function PushAssignmentsCard({ authUser, onExit }) {
 
 function PushAssignmentsAuthed({ onExit }) {
   const [rows, setRows] = useState(null);       // null = still loading
-  const [error, setError] = useState(null);
+  // ── TWO ERROR CHANNELS, NOT ONE STRING ───────────────────────────────────
+  // A single shared message meant any successful save cleared it — so row A's
+  // refusal was erased the moment row B saved, and the reason A had rolled back
+  // was gone while A's switch sat off with no explanation. Rows save
+  // concurrently (only the saving row is disabled), so this is reachable by two
+  // ordinary taps (found by the second-opinion reviewer on PR #573).
+  //
+  // A failure is therefore remembered PER ROW and cleared only by THAT row's
+  // own success. The load failure is its own channel because it is a different
+  // fact about a different thing, and a row save must never be able to erase
+  // "the staff list could not be read".
+  const [loadError, setLoadError] = useState(null);
+  const [failedUids, setFailedUids] = useState({});   // uid → true while its last save was refused
   const [saving, setSaving] = useState({});     // uid → true while a write is in flight
   const [savedAt, setSavedAt] = useState({});   // uid → ms, drives the "Saved ✓" pulse
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
     try {
       // Three small nodes, read once. Deliberately sequential-free: they are
       // independent, and one slow read must not delay the other two.
@@ -130,7 +142,7 @@ function PushAssignmentsAuthed({ onExit }) {
       setRows(list);
     } catch (e) {
       console.error("[push] could not load assignments:", e);
-      setError(e && e.message ? e.message : "Could not load staff accounts.");
+      setLoadError(e && e.message ? e.message : "Could not load staff accounts.");
       setRows([]);
     }
   }, []);
@@ -151,21 +163,16 @@ function PushAssignmentsAuthed({ onExit }) {
     try {
       await update(ref(database), assignmentUpdates(uid, next, serverNowMs()));
       setSavedAt((s) => ({ ...s, [uid]: Date.now() }));
-      // CLEARED ON SUCCESS. The banner below says "that did not save" and names
-      // the un-pasted rules; leaving it up after a save that DID land is the
-      // same lie as a tick that persisted nothing, pointing the other way —
-      // Junid would re-tap an assignment that is already stored, or conclude
-      // the rules are still missing when they are not. A stale warning on this
-      // screen is not clutter, it is wrong information.
-      setError(null);
+      // CLEARED ON SUCCESS, AND ONLY FOR THIS ROW. Leaving a warning up after a
+      // save that DID land is the same lie as a tick that persisted nothing,
+      // pointing the other way: Junid re-taps an assignment already stored, or
+      // concludes the rules are unpublished when they are not. Clearing it for
+      // EVERY row would be the opposite lie — see the note on failedUids.
+      setFailedUids((f) => { if (!f[uid]) return f; const n = { ...f }; delete n[uid]; return n; });
     } catch (e) {
       console.error("[push] assignment save failed:", e);
       setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, hubs: row.hubs } : r)));
-      setError(
-        "That did not save. If this is the first time, the RTDB rules for "
-        + "/push_assignments and /push_hub_audience have not been published yet "
-        + "(PUSH-ASSIGNMENT-RULES-DEPLOY.md).",
-      );
+      setFailedUids((f) => ({ ...f, [uid]: true }));
     } finally {
       setSaving((s) => ({ ...s, [uid]: false }));
     }
@@ -178,6 +185,9 @@ function PushAssignmentsAuthed({ onExit }) {
       r.name.toLowerCase().includes(q) || String(r.email || "").toLowerCase().includes(q));
   }, [rows, search]);
 
+  // Named, so the banner points at the rows that actually failed instead of
+  // saying "something did not save" over a screen of successful ones.
+  const failedNames = (rows || []).filter((r) => failedUids[r.uid]).map((r) => r.name);
   const assignedCount = (rows || []).filter((r) => r.hubs.length > 0).length;
   const undeliverable = (rows || []).filter((r) => r.hubs.length > 0 && r.devices === 0).length;
 
@@ -195,9 +205,19 @@ function PushAssignmentsAuthed({ onExit }) {
           setting of their own. Someone on both hubs hears about both.
         </p>
 
-        {error && (
+        {loadError && (
           <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
-            {error}
+            Could not read the staff list, so this screen may be showing nothing
+            rather than nobody. {loadError}
+          </div>
+        )}
+
+        {failedNames.length > 0 && (
+          <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
+            {failedNames.join(", ")} did not save, and {failedNames.length > 1 ? "those rows have" : "that row has"} been
+            put back. If this is the first time, the RTDB rules for
+            /push_assignments and /push_hub_audience have not been published yet
+            (PUSH-ASSIGNMENT-RULES-DEPLOY.md).
           </div>
         )}
 

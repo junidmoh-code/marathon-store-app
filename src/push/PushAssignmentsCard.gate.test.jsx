@@ -198,6 +198,39 @@ describe("what a tap actually writes", () => {
     expect(JSON.stringify(tree.toJSON())).not.toContain("did not save");
   });
 
+  it("ONE ROW'S SUCCESS DOES NOT ERASE ANOTHER ROW'S REFUSAL", async () => {
+    // Rows save concurrently — only the saving row is disabled — so with one
+    // shared message, B's success wiped A's warning and A sat rolled back with
+    // no explanation of why. Found by the second-opinion reviewer on PR #573
+    // after CodeRabbit rate-limited.
+    getMock.mockImplementation(async (r) => ({
+      val: () => (r.path === "users"
+        ? { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } }
+        : null),
+    }));
+    const tree = await render({ authUser: ADMIN });
+    const swFor = (name) => tree.root.findAll(
+      (n) => n.props && n.props.role === "switch" && n.props["aria-label"].includes(name))[0];
+
+    updateMock.mockRejectedValueOnce(new Error("PERMISSION_DENIED"));
+    await act(async () => { swFor("Ayanda").props.onClick(); });   // fails
+    await act(async () => { swFor("Bongi").props.onClick(); });    // succeeds
+
+    const text = JSON.stringify(tree.toJSON());
+    expect(text).toContain("did not save");
+    expect(text).toContain("Ayanda");
+    expect(swFor("Ayanda").props["aria-checked"]).toBe(false, "put back");
+    expect(swFor("Bongi").props["aria-checked"]).toBe(true, "and Bongi's save stands");
+  });
+
+  it("a row save cannot erase a failure to read the staff list", async () => {
+    // Different facts about different things. The load banner says the screen
+    // may be showing nothing rather than nobody, which no row save resolves.
+    getMock.mockRejectedValue(new Error("PERMISSION_DENIED on /users"));
+    const tree = await render({ authUser: ADMIN });
+    expect(JSON.stringify(tree.toJSON())).toContain("nothing rather than nobody");
+  });
+
   it("a REFUSED write puts the row back — an assignment that looks made and was not is the worst outcome", async () => {
     getMock.mockImplementation(async (r) => ({
       val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),
