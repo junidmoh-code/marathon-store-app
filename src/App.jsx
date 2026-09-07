@@ -8005,14 +8005,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
-  // THE DISPLAY-PAIR CLAIM, WITH NO MINTER ON THIS SCREEN ANY MORE.
-  // The "on display" prompt that used to set this is gone: the marker is
-  // informational, and a marked size adds to the cart like any other. The
-  // state and the branches that read it stay because they are the pull
-  // contract every order already in flight is governed by (#456), and because
-  // rewriting the placement / slot-clearing path is the separate
-  // source-of-truth job this change is fenced out of. Today it is always null.
-  const [qvDisplayPair, setQvDisplayPair]     = useState(null); // { store } — display-pair pull taken
   const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
@@ -8110,7 +8102,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvNa, setQvNa] = useState(null);
   const openQv = (p) => {
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
-    setQvDisplayPair(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
   };
   // Taking an alternative from the ✕ sheet. The quick-view SWAPS to the chosen
@@ -8632,21 +8623,16 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             onClick={() => {
                               // Deselect FIRST — before the out gate — so a
                               // size that went ✕ while selected can still be
-                              // un-stuck. A prompt-minted selection unwinds
-                              // partner mode with it (leaving qvDP on kept the
-                              // Add button live for a cancelled request).
+                              // un-stuck.
                               if (qvSize === sz) {
-                                if (qvDisplayPair) setQvDP(false);
-                                setQvNa(null); setQvDisplayPair(null); setQvSize(null);
+                                setQvNa(null); setQvSize(null);
                                 return;
                               }
                               // A sneaker ✕ tap raises the why-note (snk flag)
                               // instead of dying silently — reserved stock
                               // otherwise reads as "size doesn't exist".
                               if (out) { setQvNa(clothingOrder || deadForOrder(qv) ? { size: sz, left: 0 } : { size: sz, left: 0, snk: true }); return; }
-                              // A plain size selection drops any display-pair
-                              // claim — it belongs to the prompted size only.
-                              setQvNa(null); setQvDisplayPair(null); setQvSize(sz);
+                              setQvNa(null); setQvSize(sz);
                             }}>
                             {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
@@ -8663,14 +8649,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                   {!clothingOrder && (
                   <div>
                     <div className="ad-qlab">Display Partner (optional)</div>
-                    {/* A MANUAL toggle (either direction) drops any display-pair
-                        claim — that claim is only ever minted by the prompt
-                        button, and must never ride a hand-made partner line. */}
-                    {/* The toggle also drops any sneaker ✕ note: partner mode
-                        lifts every ✕, and a note still saying "can't be
-                        ordered" above a now-selectable size contradicts the
-                        screen (adversarial review). */}
-                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); setQvNa(null); }}
+                    {/* The toggle drops any sneaker ✕ note: partner mode lifts
+                        every ✕, and a note still saying "can't be ordered"
+                        above a now-selectable size contradicts the screen
+                        (adversarial review). */}
+                    <button onClick={() => { setQvDP(v => !v); setQvNa(null); }}
                             style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                      border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
                                      background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
@@ -8687,7 +8670,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     const canAdd = clothingOrder ? !!qvSize : (!!qvSize || dp);
                     const doAdd = () => {
                       if (!canAdd) return;
-                      if (dp) { onAddDisplayPartner(qv, qvSize || null, qvDisplayPair); setQv(null); return; }
+                      if (dp) { onAddDisplayPartner(qv, qvSize || null); setQv(null); return; }
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
@@ -9175,18 +9158,6 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `left`, so arriving stock or a shrinking cart drops it on the next
   // snapshot.
   const [naNote, setNaNote]                             = useState(null);
-  // THE DISPLAY-PAIR CLAIM, WITH NO MINTER ON THIS SCREEN ANY MORE.
-  // { store }, stamped onto a cart line so the order clears (and the refill
-  // later re-fills) the RIGHT store's slot. It used to be minted by the "on
-  // display" prompt that a marked size tile opened; that prompt is gone — the
-  // marker is informational and a marked size adds like any other.
-  //
-  // The state and every branch that reads it stay, deliberately. They are the
-  // pull contract that orders already in flight are governed by (#456), and
-  // rewriting the placement / slot-clearing path is the separate display
-  // source-of-truth job this change is explicitly fenced out of. Today it is
-  // always null, so `line.displayPairRequest` is never set from this screen.
-  const [pendingDisplayPair, setPendingDisplayPair]     = useState(null);
   // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
   // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
   const selectedSizes = useMemo(() => {
@@ -9498,10 +9469,20 @@ function AssistantView({ products, onExit, orders = [] }) {
   // tile went amber and the tap was intercepted into a "Request display pair"
   // panel instead of selecting. That divert is deleted (owner spec,
   // 2026-09-07). It confused a marker with a gate, and the two are not the
-  // same thing — a size can hold four units with one of them on a wall, and
-  // blocking the size blocked three sellable pairs. Availability is now
-  // governed by quantity alone, through sneakerOut, exactly as it is for an
-  // unmarked size; a display pair is hub stock (#324) and always was.
+  // same thing.
+  //
+  // THE RULE, STATED HONESTLY, because a loose version of it went into the
+  // first draft of this comment and an independent review caught it: the old
+  // predicate was `0 < available <= displayUnits`, so four units against one
+  // slot did NOT divert. What DID divert was every case where the display
+  // units covered the whole remaining count — one unit with one slot, two
+  // units with two slots — and, because `available` is the RESOLVER's live
+  // remaining number rather than the shelf count, a cell physically holding
+  // four also diverted the moment three of them were promised or in a cart.
+  // The size then offered nothing at all, though a pair was standing right
+  // there. Availability is now governed by quantity alone, through
+  // sneakerOut, exactly as it is for an unmarked size; a display pair is hub
+  // stock (#324) and always was.
   //
   // A display-pair PULL — the flagged line that tells the warehouse to take
   // the shoe off the wall — is no longer minted from this screen at all. The
@@ -9647,7 +9628,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const customerCount     = cart.filter(isCustomerLine).length;
   const refillCount       = cart.length - customerCount;
 
-  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setPendingDisplayPair(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
   // ── TAKING AN ALTERNATIVE ─────────────────────────────────────────────────
   // The sheet STAYS OPEN and swaps to the chosen shoe. Never a bounce back to
@@ -9668,7 +9649,6 @@ function AssistantView({ products, onExit, orders = [] }) {
     const pick = alternativeSelection(row, naNote?.size || pendingSize || "");
     if (!pick) return;
     setNaNote(null);
-    setPendingDisplayPair(null);
     setPendingDisplay(false);
     setPendingDisplayPartner(false);
     setPendingQty(1);
@@ -9728,15 +9708,20 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
       reps = Math.min(reps, Math.max(1, clampLeft));
     }
+    // ── NO DISPLAY-PAIR PULL IS MINTED HERE ANY MORE ────────────────────────
+    // A pull — `displayPairRequest: true` plus the store whose floor the pair
+    // stands on — used to be stamped here whenever the "on display" prompt had
+    // taken a claim. That prompt is deleted (owner spec 2026-09-07: the marker
+    // is informational), and it was the claim's only minter, so the branch
+    // that read it went with the state. Cart state is in memory and never
+    // persisted, so nothing survives that could still carry the flag.
+    //
+    // The ORDER-side readers of `displayPairRequest` are untouched and must
+    // stay: the warehouse "take it off the display" banner, the slot clear at
+    // placement, the refill replay and the out-of-stock reinstate all read it
+    // off records in RTDB, and orders placed before this shipped still carry
+    // it. Re-attaching a minter is the separate display source-of-truth job.
     const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
-    // A display-PAIR pull (the "on display" prompt path): the pair to send IS
-    // the display pair, possibly on ANOTHER store's floor — the flag drives
-    // the warehouse "take it off the display" banner, and the store drives
-    // which slot the order clears / the refill later re-fills.
-    if (pendingDisplayPartner && pendingDisplayPair) {
-      line.displayPairRequest = true;
-      line.displayPairStore = pendingDisplayPair.store || null;
-    }
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
@@ -9765,17 +9750,31 @@ function AssistantView({ products, onExit, orders = [] }) {
       // A sneaker its hub has none available of — same refusal the grid's ✕
       // makes, enforced here too so a stale hover panel can't add past it.
       return 0;
+    } else if (size) {
+      // ── THE QUANTITY CLAMP, WHICH THIS PATH WAS MISSING ──────────────────
+      // The check above is a ZERO check. Without a clamp beside it, a stepper
+      // set to 5 against a cell holding 1 added FIVE lines: five boxes asked
+      // of a hub that has one pair, on the desktop path only, while the phone
+      // sheet's addToCart has clamped all along.
+      //
+      // It was left standing on 2026-09-05 as a pre-existing gap the sourcing
+      // change had not widened. This change widens it: a size whose only unit
+      // is the display pair used to divert into a request that forced qty 1,
+      // and now takes the ordinary path with the stepper live — so the worst
+      // case is five orders against one pair standing on a shop floor
+      // (independent review, 2026-09-07). Closing it here is the smaller edit
+      // by far, and it makes the two surfaces agree.
+      //
+      // The SAME belt addToCart uses, deliberately: the resolver's own
+      // remaining count (which already has the cart in it — recomputing one
+      // double-counts, the defect #570 closed), applied only where the gate
+      // has real data, and never below 1 for a size the zero check already
+      // let through.
+      const { hub: clampHub, available: clampLeft } = sneakerSourcing(p, size);
+      if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
+        reps = Math.min(reps, Math.max(1, clampLeft));
+      }
     }
-    // KNOWN GAP, PRE-EXISTING AND NOT WIDENED HERE (found in review, 2026-09-05).
-    // The sneaker branch above is a ZERO check only; it has no QUANTITY clamp,
-    // so on this desktop path a stepper set to 5 against a cell holding 1 adds
-    // five lines. addToCart (the phone sheet) does clamp — see the belt there.
-    // Left alone deliberately: the clamp lives on the hub1 path too, so adding
-    // it here would change live Hub 1 behaviour, which this change is fenced
-    // out of ("nothing else changes"). Hub 2 is strictly BETTER than yesterday
-    // either way — before this work it had no zero check here at all. Raised
-    // for the owner as its own decision; the one-line fix is to mirror
-    // addToCart's clampHub/sneakerGateReady block into this branch.
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
       : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
@@ -9790,13 +9789,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
   });
   // Desktop Display-Partner request — ONE line, size optional (sneakers only),
-  // mirroring addToCart's requestDisplayPartner branch. `displayPair` (from
-  // the quick-view's display-pair prompt) marks a PULL of the display pair
-  // itself, carrying whose floor it is on.
-  const addDisplayPartner = (p, size, displayPair = null) =>
+  // mirroring addToCart's requestDisplayPartner branch. It took a third
+  // `displayPair` argument that stamped a PULL of the display pair itself;
+  // that argument could only ever come from the quick-view's "on display"
+  // prompt, which is deleted, so it is gone too rather than left as a live
+  // parameter with a dead caller.
+  const addDisplayPartner = (p, size) =>
     setCart(c => [...c, {
       product: p, size: size || null, requestDisplay: false, requestDisplayPartner: true,
-      ...(displayPair ? { displayPairRequest: true, displayPairStore: displayPair.store || null } : {}),
     }]);
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
@@ -9830,6 +9830,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     // line type that names an IDENTIFIED PHYSICAL PAIR rather than "a unit of
     // this size". The claim was minted when Hub 1 could still supply it; if it
     // cannot now, somebody else has taken that pair.
+    //
+    // NOTHING MINTS SUCH A LINE TODAY (owner spec 2026-09-07): the "on display"
+    // prompt that stamped it is deleted along with its claim state, and cart
+    // state is in memory only, so this block cannot currently fire. It is kept
+    // rather than deleted because it only ever REFUSES — it can neither write
+    // nor re-arm anything — and because the display source-of-truth job that
+    // re-attaches a minter will need exactly this check standing on the day it
+    // does. The composer state was deleted for the opposite reason: it was on
+    // the WRITE side, where a dormant copy re-arms silently.
     //
     // FAIL, NEVER REDIRECT. Hub 2 has no display register and no slot for it —
     // an order sent there carries an instruction it cannot act on. Refusing
@@ -10727,21 +10736,15 @@ function AssistantView({ products, onExit, orders = [] }) {
                       // 2026-08-26; it matters most on a size-optional Display
                       // Partner request). It stays tappable even when the size
                       // went ✕ while selected (the disabled attr exempts the
-                      // selected size for exactly this escape). A prompt-minted
-                      // selection unwinds partner mode with it — leaving the
-                      // toggle on kept the Add button live for a request the
-                      // user just cancelled.
+                      // selected size for exactly this escape).
                       if (pendingSize === s) {
-                        if (pendingDisplayPair) setPendingDisplayPartner(false);
-                        setNaNote(null); setPendingDisplayPair(null); setPendingSize("");
+                        setNaNote(null); setPendingSize("");
                         return;
                       }
                       // A sneaker ✕ tap raises the why-note (snk flag) —
                       // reserved stock must not read as "size doesn't exist".
                       if (out) { setNaNote(clothing || deadForOrder(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
-                      // A plain size selection drops any display-pair claim —
-                      // the claim belongs to the size the prompt was about.
-                      setNaNote(null); setPendingDisplayPair(null); setPendingSize(s);
+                      setNaNote(null); setPendingSize(s);
                     }}
                     style={out
                       // THE GLYPH IS GONE (owner spec 2026-09-06). The
@@ -10787,14 +10790,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
                 <button onClick={() => {
-                  // A manual toggle drops any display-pair claim — AND the
-                  // prompt-minted size selection with it: leaving the display-
-                  // only size selected would place a plain line into a shelf
-                  // that is empty on purpose, the exact false-OOS this feature
-                  // kills.
                   setPendingDisplayPartner(v => !v);
-                  if (pendingDisplayPair) setPendingSize("");
-                  setPendingDisplayPair(null);
                   // Partner mode lifts every ✕ — a lingering "can't be
                   // ordered" note would contradict the now-selectable tiles.
                   setNaNote(null);

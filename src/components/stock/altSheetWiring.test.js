@@ -172,9 +172,10 @@ describe("taking an alternative never returns to the catalogue", () => {
   it("and clears every piece of state that belonged to the previous shoe", () => {
     const fn = APP.slice(APP.indexOf("const pickAlternative = (row) => {"));
     const body = fn.slice(0, fn.indexOf("};"));
-    // setDisplayPrompt is gone with the divert it opened — there is no longer
-    // an "on display" sheet for a shoe swap to leave behind.
-    for (const setter of ["setNaNote(null)", "setPendingDisplayPair(null)",
+    // setDisplayPrompt and setPendingDisplayPair are both gone with the divert:
+    // the prompt was the only thing that opened, and the only thing that
+    // minted a display-pair claim, so a shoe swap has neither to leave behind.
+    for (const setter of ["setNaNote(null)",
                           "setPendingDisplay(false)", "setPendingDisplayPartner(false)", "setPendingQty(1)"]) {
       expect(body, `pickAlternative leaves ${setter} behind`).toContain(setter);
     }

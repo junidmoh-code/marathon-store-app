@@ -411,11 +411,13 @@ export const displayRepairKey = (r) =>
 // THE MARKER RULE IS GONE, AND ITS FUNCTION WITH IT (owner spec 2026-09-07).
 //
 // `displayOnly(avail, displayUnits)` used to answer "is the display pair this
-// size's last availability", and the answer turned a size tile amber, took its
-// tap away and diverted it into a display-pair request. That confused a marker
-// with a gate. The glyph says a unit is standing on a floor; it never had any
-// business deciding whether the size could be sold, and a size holding four
-// pairs with one on a wall lost all four.
+// size's last availability" — the predicate was `0 < avail <= displayUnits` —
+// and the answer turned a size tile amber, took its tap away and diverted it
+// into a display-pair request. That confused a marker with a gate. The glyph
+// says a unit is standing on a floor; it never had any business deciding
+// whether the size could be sold. One unit with one slot lost its only sale;
+// and since `avail` was the resolver's LIVE remaining count, a cell physically
+// holding four lost the lot as soon as three were promised or carted.
 //
 // Availability is quantity, through availabilityCore, for a marked size and an
 // unmarked one alike — a display pair has been hub stock since #324. The

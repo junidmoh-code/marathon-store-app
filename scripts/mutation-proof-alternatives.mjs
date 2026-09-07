@@ -440,7 +440,7 @@ const MUTATIONS = [
     id: "G24b",
     guard: "A display-marked size is OFFERED as an alternative — the marker asserts nothing about availability",
     file: APP,
-    kind: "behavioural",
+    kind: "source-pin",
     from: `        return !sneakerOut(p, sz);`,
     to: `        return !sneakerOut(p, sz) && !sneakerDisplayInfo(p, sz);`,
   },
@@ -485,7 +485,7 @@ const MUTATIONS = [
     id: "G25f",
     guard: "…and this sheet waits on no display lane, because it reads none",
     file: APP,
-    kind: "behavioural",
+    kind: "source-pin",
     from: `        if (!ordersSettled) return false;`,
     to: `        if (!ordersSettled) return false;
         if (hub === "hub1" && !displayLaneReady) return false;`,
