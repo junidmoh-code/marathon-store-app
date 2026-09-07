@@ -35,8 +35,9 @@
 // the tab is handed. Nothing else, and nothing until the tab is opened.
 
 import React, { useMemo, useState } from "react";
-import { classifyDisplayRecords, retirePlan, retireKey, retireEffectLine, CLEANUP_CLASSES } from "./displayRecordCleanup";
-import { removeDisplayFact } from "./displayRegistrationStore";
+import { classifyDisplayRecords, retirePlan, retireKey, retireEffectLine, CLEANUP_CLASSES,
+         findUnregisteredDisplays, registerKey } from "./displayRecordCleanup";
+import { removeDisplayFact, recordDisplayFact } from "./displayRegistrationStore";
 import { useDisplaySlots, useDisplayRegister } from "./useStock";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
@@ -72,7 +73,18 @@ function Evidence({ row }) {
   );
 }
 
-export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
+// TWO TABS, ONE COMPONENT (owner ask, 2026-09-07). They are the two directions
+// of the same question and they share every safety rule, so they share the
+// code and differ only in which list they show:
+//
+//   mode="records"      a REGISTER ROW the floors contradict — "double
+//                       displays": the register says one thing, the shop floor
+//                       says another, so the product looks like it is on
+//                       display twice.
+//   mode="unregistered" a FLOOR the register has never heard of — "not
+//                       registered": a display standing at a shop that no
+//                       register row describes.
+export default function DisplayRecordsTab({ products = [], isAdmin = false, mode = "records" }) {
   const [hub, setHub] = useState("hub1");
   const [open, setOpen] = useState(() => new Set(["replaced", "sold", "over", "gone"]));
   const [confirm, setConfirm] = useState(null);     // retireKey awaiting a second tap
@@ -83,6 +95,11 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
 
   const slots = useDisplaySlots(true);
   const register = useDisplayRegister(hub, true);
+  // The unregistered lane judges every floor at once, so it needs the OTHER
+  // hub's register too — a slot booked at hub2 must not read as unregistered
+  // just because this screen is looking at hub1.
+  const otherHub = hub === "hub1" ? "hub2" : "hub1";
+  const otherRegister = useDisplayRegister(otherHub, mode === "unregistered");
 
   // EVERY product, deliberately NOT filtered to footwear. An earlier cut passed
   // a footwear-only map, and this map is what tells "the record is gone" from
@@ -108,6 +125,43 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
     () => classifyDisplayRecords({ register, slots, hub, productsById, catalogueComplete }),
     [register, slots, hub, productsById, catalogueComplete]
   );
+
+  // ── THE UNREGISTERED LANE ─────────────────────────────────────────────────
+  const unregistered = useMemo(() => {
+    if (mode !== "unregistered") return [];
+    return findUnregisteredDisplays({
+      slots,
+      registerByHub: { [hub]: register, [otherHub]: otherRegister },
+      productsById,
+    });
+  }, [mode, slots, register, otherRegister, hub, otherHub, productsById]);
+  const unregPending = unregistered.filter((r) => !done.has(registerKey(r)));
+
+  const registerOne = async (row) => {
+    const k = registerKey(row);
+    setBusy(k); setNote(null);
+    try {
+      // FACT ONLY — recordDisplayFact writes no movement for a pair that was
+      // already booked when it was received. The unit does not move; the
+      // register simply learns what the shop floor already shows.
+      const res = await recordDisplayFact({
+        hub: row.bookedHub,
+        product: { id: row.productId, name: row.productName },
+        size: row.size, store: row.store, slots,
+      });
+      if (!res || res.ok !== true) {
+        setNote({ tone: "err", text: `Could not register ${row.productName}: ${res?.message || "write failed"}` });
+        setBusy(null); return false;
+      }
+      setDone((d) => new Set(d).add(k));
+      setBusy(null); setConfirm(null);
+      if (res.warning) setNote({ tone: "err", text: res.warning });
+      return true;
+    } catch (err) {
+      setNote({ tone: "err", text: `Could not register ${row.productName}: ${String(err?.message || err)}` });
+      setBusy(null); return false;
+    }
+  };
 
   const pending = (cls) => (byClass[cls] || []).filter((r) => !done.has(retireKey(hub, r)));
   const allActionable = useMemo(
@@ -165,6 +219,82 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
 
   if (!isAdmin) {
     return <div style={{ ...card, color: GRAY }}>Display records are admin-only.</div>;
+  }
+
+  if (mode === "unregistered") {
+    const loaded = register != null && otherRegister != null && slots != null;
+    const canAct = unregPending.filter((r) => r.registerable);
+    return (
+      <div style={{ fontFamily: FONT, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={card}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 800, fontSize: 15, color: "#fff" }}>Displays with no record</span>
+            <span style={{ fontWeight: 800, fontSize: 15, color: AMBER }}>{loaded ? unregPending.length : "…"}</span>
+          </div>
+          <p style={{ margin: "10px 0 0", fontSize: 13, color: "rgba(233,238,255,.72)", lineHeight: 1.5 }}>
+            A pair is standing on a shop floor that the display register has never heard of. Almost all
+            of these were put out by a <b style={{ color: "#fff" }}>display refill</b>, which records the shop but
+            never writes a register row.
+            <br /><br />
+            <b style={{ color: "#fff" }}>The stock count is not wrong because of these</b> — it already
+            subtracts them, because it reads the shop record directly. What is missing is the register
+            itself: the list this app manages displays from, and where the style number and label photo
+            live. Registering one <b style={{ color: "#fff" }}>moves no stock</b> — the pair was booked when it
+            was received; the register simply catches up with what the floor already shows.
+          </p>
+        </div>
+
+        {note && (
+          <div style={{ ...card, borderColor: note.tone === "err" ? RED : GREEN, color: note.tone === "err" ? RED : GREEN, fontSize: 13, fontWeight: 700 }}>
+            {note.text}
+          </div>
+        )}
+
+        {loaded && unregPending.length === 0 && (
+          <div style={{ ...card, color: GREEN, fontSize: 13, fontWeight: 700 }}>
+            Every display on a shop floor has a register record. Nothing to do.
+          </div>
+        )}
+
+        {unregPending.map((row) => {
+          const k = registerKey(row);
+          const asking = confirm === k;
+          return (
+            <div key={k} style={{ ...card, display: "flex", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+              <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#fff" }}>{row.productName}</div>
+                <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.6)", marginTop: 2 }}>
+                  Size <b style={{ color: "#fff" }}>{formatSize(row.size ?? row.sizeKey)}</b>
+                  {` · on the floor at ${labelFor(row.store)} · booked at ${labelFor(row.bookedHub)}`}
+                  {row.at ? ` · ${String(row.at).slice(0, 10)}` : ""}
+                </div>
+                <div style={{ fontSize: 12.5, color: row.registerable ? AMBER : GRAY, marginTop: 4 }}>{row.reason}</div>
+              </div>
+              {row.registerable && (
+                <div style={{ flex: "0 0 auto" }}>
+                  {!asking ? (
+                    <button onClick={() => { setConfirm(k); setNote(null); }} disabled={!!busy}
+                      style={{ ...bGray, opacity: busy ? 0.5 : 1 }}>Register it</button>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 300 }}>
+                      <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.7)", lineHeight: 1.45 }}>
+                        Records that this pair is on display at {labelFor(row.store)}. No stock moves.
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button onClick={() => registerOne(row)} disabled={!!busy} style={{ ...bGray, borderColor: BLUE, color: BLUE_L, opacity: busy ? 0.5 : 1 }}>
+                          {busy === k ? "Registering…" : "Confirm"}
+                        </button>
+                        <button onClick={() => setConfirm(null)} disabled={!!busy} style={bGray}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   return (

@@ -46,6 +46,8 @@ import { isCleanupHub } from "./hubCleanupCore";
 
 export const CARD_VIA = "display_registration_card";
 
+const one = async (path) => (await get(ref(database, path))).val();
+
 const regPath = (hub, pid, sizeKey) =>
   `${HUB_COUNT_ROOT}/register/${assertSafeSegment(hub, "hub")}/${assertSafeSegment(pid, "productId")}__${assertSafeSegment(sizeKey, "sizeKey")}`;
 
@@ -86,9 +88,24 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
     const path = regPath(hub, product.id, sizeKey);
     const nowIso = serverNowIso();
 
+    // ── "ALREADY REGISTERED" MEANS THE REGISTER ROW EXISTS ──────────────────
+    // This used to be decided by the SLOT alone, and that is how 52 displays
+    // ended up standing on shop floors that the register has never heard of
+    // (measured 2026-09-07). A display refill writes the SLOT and no register
+    // row; staff then open this card to register the pair properly, the guard
+    // sees a live slot at the same store/size/hub, says "Already registered"
+    // and writes nothing — so the row could never be created through the UI at
+    // all, and every attempt reported success.
+    //
+    // Registration is a register ROW plus a slot. Both are checked now: the
+    // early return is for a genuine duplicate, and a live slot with no row
+    // falls through to the transaction below, which creates it.
     const existingSlot = store ? slots?.[store]?.[product.id] : null;
-    if (store && slotIsLive(existingSlot) && existingSlot.sizeKey === sizeKey && existingSlot.bookedHub === hub) {
-      // Same store, same size, already live: refresh the slot timestamp only.
+    const slotAgrees = store && slotIsLive(existingSlot)
+      && existingSlot.sizeKey === sizeKey && existingSlot.bookedHub === hub;
+    if (slotAgrees && (Number((await one(path))?.qty) || 0) > 0) {
+      // Same store, same size, already live AND on the register: refresh the
+      // slot timestamp only.
       const res = await setDisplaySlot({
         store, productId: product.id, productName: product.name || "",
         size: String(size), bookedHub: hub, source: "registration",

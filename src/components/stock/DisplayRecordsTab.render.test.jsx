@@ -12,10 +12,14 @@ import { create, act } from "react-test-renderer";
 import { readFileSync } from "fs";
 
 const removeDisplayFact = vi.fn(async () => ({ ok: true }));
+const recordDisplayFact = vi.fn(async () => ({ ok: true }));
 let SLOTS = {};
 let REGISTER = {};
 
-vi.mock("./displayRegistrationStore", () => ({ removeDisplayFact: (...a) => removeDisplayFact(...a) }));
+vi.mock("./displayRegistrationStore", () => ({
+  removeDisplayFact: (...a) => removeDisplayFact(...a),
+  recordDisplayFact: (...a) => recordDisplayFact(...a),
+}));
 vi.mock("./useStock", () => ({
   useDisplaySlots: () => SLOTS,
   useDisplayRegister: () => REGISTER,
@@ -31,7 +35,9 @@ const liveSlot = (over = {}) => ({ size: "6", sizeKey: "6", bookedHub: "hub1", s
 
 beforeEach(() => {
   removeDisplayFact.mockClear();
+  recordDisplayFact.mockClear();
   removeDisplayFact.mockImplementation(async () => ({ ok: true }));
+  recordDisplayFact.mockImplementation(async () => ({ ok: true }));
   SLOTS = {}; REGISTER = {};
 });
 
@@ -208,5 +214,82 @@ describe("the screen never writes a slot", () => {
     expect(src).not.toMatch(/setDisplaySlot|clearDisplaySlot/);
     expect(src).not.toMatch(/applyMovement|runTransaction/);
     expect((src.match(/removeDisplayFact/g) || []).length).toBeGreaterThan(0);
+  });
+});
+
+// ─── mode="unregistered" — the other tab ─────────────────────────────────────
+describe("the Not Registered tab", () => {
+  const unregPaint = (props = {}) => {
+    let tree;
+    act(() => { tree = create(<DisplayRecordsTab products={PRODUCTS} isAdmin mode="unregistered" {...props} />); });
+    return tree;
+  };
+
+  it("lists a floor with no register row and offers to register it", () => {
+    REGISTER = {};
+    SLOTS = { "marathon-pe": { p1: liveSlot({ source: "display_refill" }) } };
+    const t = unregPaint();
+    expect(textOf(t)).toContain("Air Force 1 White");
+    expect(textOf(t)).toContain("never heard of it");
+    expect(byLabel(t, /Register it/)).toHaveLength(1);
+  });
+
+  it("SAYS PLAINLY THAT THE COUNT IS NOT WRONG — these are already subtracted", () => {
+    // Overstating this would send someone hunting a stock problem that is not
+    // there. offShelf reads live slots directly.
+    REGISTER = {};
+    SLOTS = { "marathon-pe": { p1: liveSlot() } };
+    const t = unregPaint();
+    expect(textOf(t)).toContain("The stock count is not wrong because of these");
+    expect(textOf(t)).toContain("moves no stock");
+  });
+
+  it("registers through recordDisplayFact after a confirm, with the FLOOR's hub and store", async () => {
+    REGISTER = {};
+    SLOTS = { trophy: { p1: liveSlot({ bookedHub: "hub2", size: "9", sizeKey: "9" }) } };
+    const t = unregPaint();
+    await click(byLabel(t, /Register it/)[0]);
+    expect(recordDisplayFact).not.toHaveBeenCalled();       // one tap only arms it
+    await click(byLabel(t, /^Confirm$/)[0]);
+    expect(recordDisplayFact).toHaveBeenCalledTimes(1);
+    const arg = recordDisplayFact.mock.calls[0][0];
+    // the hub the pair is BOOKED at, not the tab's selected hub
+    expect(arg).toMatchObject({ hub: "hub2", store: "trophy", size: "9" });
+    expect(arg.product).toMatchObject({ id: "p1" });
+  });
+
+  it("a failed registration says so and leaves the row offered", async () => {
+    REGISTER = {};
+    SLOTS = { "marathon-pe": { p1: liveSlot() } };
+    recordDisplayFact.mockImplementation(async () => ({ ok: false, message: "permission denied" }));
+    const t = unregPaint();
+    await click(byLabel(t, /Register it/)[0]);
+    await click(byLabel(t, /^Confirm$/)[0]);
+    expect(textOf(t)).toContain("permission denied");
+    expect(byLabel(t, /^Confirm$/)).toHaveLength(1);
+  });
+
+  it("a floor registered at ANOTHER size is shown WITHOUT a button", () => {
+    // Registering it would claim a second display for one physical pair.
+    REGISTER = { p1__6: { qty: 1 } };
+    SLOTS = { "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8" }) } };
+    const t = unregPaint();
+    expect(textOf(t)).toContain("Air Force 1 White");
+    expect(byLabel(t, /Register it/)).toHaveLength(0);
+  });
+
+  it("says so when there is nothing to do", () => {
+    REGISTER = { p1__6: { qty: 1 } };
+    SLOTS = { "marathon-pe": { p1: liveSlot() } };
+    const t = unregPaint();
+    expect(textOf(t)).toContain("Every display on a shop floor has a register record");
+  });
+
+  it("never retires anything from this tab", () => {
+    REGISTER = {};
+    SLOTS = { "marathon-pe": { p1: liveSlot() } };
+    const t = unregPaint();
+    expect(byLabel(t, /Retire/)).toHaveLength(0);
+    expect(removeDisplayFact).not.toHaveBeenCalled();
   });
 });

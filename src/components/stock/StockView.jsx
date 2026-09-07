@@ -40,7 +40,8 @@ const BASE_TABS = [
   ["recount",   "Counted"],      // PERMANENT counted-stock review (admin-only; owner decision 2026-07-16)
   ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
   ["duplicates","Duplicates"],   // side-by-side twin records + a recommended survivor (admin-only)
-  ["displayrecs","Display Records"], // retire display records a live shop record contradicts (admin-only)
+  ["displayrecs","Double Displays"],  // a register row the shop floor contradicts (admin-only)
+  ["displaynew","Not Registered"],   // a shop floor the register has never heard of (admin-only)
 ];
 
 // Tabs only an ADMIN sees — they write `adjustment` movements, which the rule layer
@@ -48,7 +49,7 @@ const BASE_TABS = [
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
 // Move Excess writes transfer_out (warehouse-permitted at the rule layer) but is a
 // bulk tool — deliberately admin-gated in the UI.
-const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess", "duplicates", "displayrecs"]);
+const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess", "duplicates", "displayrecs", "displaynew"]);
 
 // Desktop shell — icons per tool, grouped in the sidebar, plus a one-line
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
@@ -65,6 +66,8 @@ const TAB_ICON = {
   duplicates: <><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>,
   // The display monitor, matching the shop-side marker glyph.
   displayrecs: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4M8 20h8" /></>,
+  // the same monitor, with a question mark — a floor nobody wrote down
+  displaynew: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4M8 20h8" /><path d="M10 8.2a2 2 0 1 1 2.4 2.2v.8" /></>,
 };
 const TAB_META = {
   transfer: ["Transfer", "Move stock between locations."],
@@ -77,12 +80,13 @@ const TAB_META = {
   count:    ["Count", "Run a stock-take."],
   recount:  ["Counted", "Review & post counted differences."],
   duplicates: ["Duplicates", "Twin records side by side, with a recommended survivor."],
-  displayrecs: ["Display Records", "Retire display records a live shop record contradicts."],
+  displayrecs: ["Double Displays", "A display record the shop floor contradicts — retire the one that is wrong."],
+  displaynew: ["Not Registered", "A display on a shop floor that no record describes."],
 };
 const TAB_GROUPS = [
   ["Move & find", ["transfer", "intransit", "locate", "setqty"]],
   ["Audit", ["history", "adjust", "count", "recount", "excess"]],
-  ["Catalogue", ["duplicates", "displayrecs"]],
+  ["Catalogue", ["duplicates", "displayrecs", "displaynew"]],
 ];
 
 export default function StockView({ products = [], onExit }) {
@@ -122,7 +126,8 @@ export default function StockView({ products = [], onExit }) {
       {tab === "count"    && isAdmin && <CountSession {...shared} />}
       {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
       {tab === "duplicates" && isAdmin && <StockErrorBoundary><DuplicatesTab products={products} registry={registry} /></StockErrorBoundary>}
-      {tab === "displayrecs" && isAdmin && <StockErrorBoundary><DisplayRecordsTab products={products} isAdmin={isAdmin} /></StockErrorBoundary>}
+      {tab === "displayrecs" && isAdmin && <StockErrorBoundary><DisplayRecordsTab products={products} isAdmin={isAdmin} mode="records" /></StockErrorBoundary>}
+      {tab === "displaynew" && isAdmin && <StockErrorBoundary><DisplayRecordsTab products={products} isAdmin={isAdmin} mode="unregistered" /></StockErrorBoundary>}
     </>
   );
 

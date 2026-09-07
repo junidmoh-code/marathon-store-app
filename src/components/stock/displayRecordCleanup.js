@@ -282,3 +282,95 @@ export function retireEffectLine(row) {
   const n = Math.max(1, Number(row.retireQty) || 1);
   return `Retires ${n} display record${n === 1 ? "" : "s"}. No stock moves — the hub simply stops expecting ${n === 1 ? "this pair" : "these pairs"} to be out at a shop, so the next count looks for ${n === 1 ? "it" : "them"} on the shelf.`;
 }
+
+
+// ─── THE OTHER DIRECTION: A DISPLAY NOBODY REGISTERED ────────────────────────
+//
+// (Owner ask, 2026-09-07: "so we know which one is not on display as well".)
+//
+// Everything above judges a REGISTER ROW against the floors. This judges the
+// FLOORS against the register, which is a different fault with a different
+// consequence:
+//
+//   • a stale ROW makes the count expect too FEW on the shelf;
+//   • an unregistered FLOOR leaves the register — the auditable record of what
+//     is on our walls — with a hole in it.
+//
+// THE COUNT IS NOT AT RISK HERE, and saying otherwise would be scaremongering:
+// offShelf.js reads live display SLOTS as its first and most trusted source
+// (they are store-labelled), so an unregistered display is already subtracted
+// from the hub's expected-on-shelf. What it is missing from is the REGISTER —
+// the list Display Registration manages, where the style code and the label
+// capture live, and what the count card names when it says "on display at
+// Marathon PE".
+//
+// HOW THEY HAPPEN, and why there are 52 of them: a display REFILL writes the
+// slot and no register row (App.jsx setDisplayRefillStatus → setDisplaySlot).
+// Every one measured live carries source "display_refill". Staff could not fix
+// them either — recordDisplayFact decided "already registered" from the SLOT
+// alone, so the card looked at the live slot, said the work was done and wrote
+// nothing. That guard is fixed in the same change as this.
+//
+// REGISTERING ONE MOVES NO STOCK. recordDisplayFact on an existing pair records
+// the FACT only (no movement) — the unit was booked when it was received. So
+// this direction is the safe one: the worst case of a wrong registration is a
+// row that this screen's other half will then offer to retire.
+
+/**
+ * Live display slots with no register row behind them.
+ *
+ * @param slots        /settings/displaySlots
+ * @param registerByHub { hub: registerNode } — every hub that keeps a register
+ * @param productsById  catalogue (Map or object), UNFILTERED
+ * @param hubs          the hubs that HAVE a register; a slot booked anywhere
+ *                      else is reported with that named as the reason rather
+ *                      than silently dropped
+ * → [{ store, productId, productName, product, size, sizeKey, bookedHub,
+ *      source, at, reason, registeredSizes }]
+ */
+export function findUnregisteredDisplays({ slots, registerByHub, productsById, hubs = ["hub1", "hub2"] }) {
+  const get = (pid) =>
+    productsById && typeof productsById.get === "function" ? productsById.get(pid) : (productsById || {})[pid];
+  const out = [];
+  for (const [store, byPid] of Object.entries(slots || {})) {
+    for (const [productId, slot] of Object.entries(byPid || {})) {
+      if (!slotIsLive(slot)) continue;
+      const hub = slot.bookedHub;
+      const register = (registerByHub || {})[hub];
+      if (!hubs.includes(hub) || !register) {
+        out.push({
+          store, productId, product: get(productId) || null,
+          productName: get(productId)?.name || slot.productName || "(name not on file)",
+          size: slot.size, sizeKey: slot.sizeKey, bookedHub: hub, source: slot.source, at: slot.at,
+          reason: `Booked at ${hub || "no hub"}, which keeps no display register.`,
+          registeredSizes: [], registerable: false,
+        });
+        continue;
+      }
+      const exact = register[`${productId}__${slot.sizeKey}`];
+      if ((Number(exact?.qty) || 0) > 0) continue;                 // registered and agrees
+      // Registered at ANOTHER size? That is the other tab's business (the row
+      // is "replaced" there), so it is named here but not offered — registering
+      // it would add a SECOND display fact for one physical pair.
+      const otherSizes = Object.keys(register)
+        .filter((k) => k.startsWith(`${productId}__`) && (Number(register[k].qty) || 0) > 0)
+        .map((k) => k.slice(k.lastIndexOf("__") + 2));
+      const product = get(productId) || null;
+      out.push({
+        store, productId, product,
+        productName: product?.name || slot.productName || "(name not on file)",
+        size: slot.size, sizeKey: slot.sizeKey, bookedHub: hub, source: slot.source, at: slot.at,
+        registeredSizes: otherSizes,
+        reason: otherSizes.length
+          ? `Registered at size ${otherSizes.join(", ")}, not ${slot.size}. Fix the size on the Display Records tab instead — registering here would claim a second display.`
+          : "On a shop floor, but the display register has never heard of it.",
+        registerable: otherSizes.length === 0,
+      });
+    }
+  }
+  out.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  return out;
+}
+
+/** Stable identity for one registration, so a screen applies it at most once. */
+export const registerKey = (r) => `${r.store} ${r.productId} ${r.sizeKey} ${r.bookedHub}`;

@@ -12,6 +12,7 @@ import { readFileSync } from "fs";
 import {
   classifyDisplayRecords, splitRegisterKey, retirePlan, retireKey,
   retireEffectLine, CLEANUP_CLASSES, ACTIONABLE_CLASSES,
+  findUnregisteredDisplays, registerKey,
 } from "./displayRecordCleanup";
 
 const P = {
@@ -281,9 +282,15 @@ describe("retirePlan — a slot is NEVER cleared from this screen", () => {
     // leave 0 — wiping the legitimate matched record along with the surplus.
     expect(plan.expectQty).toBe(4);
   });
-  it("the module never names a slot writer", () => {
-    const src = readFileSync(new URL("./displayRecordCleanup.js", import.meta.url), "utf8");
-    expect(src).not.toMatch(/setDisplaySlot|clearDisplaySlot/);
+  it("the module never CALLS a slot writer", () => {
+    // Comments may name them (the header explains how the unregistered rows
+    // come about); code may not touch them. So the check is on the code with
+    // comments stripped, not on the source text.
+    const src = readFileSync(new URL("./displayRecordCleanup.js", import.meta.url), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    expect(src).not.toMatch(/setDisplaySlot\s*\(|clearDisplaySlot\s*\(/);
+    // The one thing it may import from displaySlots is the pure predicate.
+    expect(src).toMatch(/import \{ slotIsLive \} from "\.\/displaySlots"/);
   });
 });
 
@@ -298,5 +305,84 @@ describe("retireKey / retireEffectLine", () => {
     expect(retireEffectLine({ retireQty: 1 })).toBe(
       "Retires 1 display record. No stock moves — the hub simply stops expecting this pair to be out at a shop, so the next count looks for it on the shelf.");
     expect(retireEffectLine({ retireQty: 3 })).toMatch(/Retires 3 display records\..*these pairs.*looks for them/);
+  });
+});
+
+// ─── THE OTHER DIRECTION: a floor the register has never heard of ────────────
+// The consequence is different from a stale row and the tests say so: the COUNT
+// is fine (offShelf reads live slots directly), the REGISTER is what has the
+// hole. So the bar here is lower than for retiring — registering records a fact
+// about a pair that is already booked, and moves nothing.
+describe("findUnregisteredDisplays", () => {
+  const REG = { hub1: { p1__6: { qty: 1 } }, hub2: {} };
+  const slot = (over = {}) => ({ size: "6", sizeKey: "6", bookedHub: "hub1", source: "display_refill", at: "2026-09-01T08:00:00.000Z", ...over });
+  const find = (slots, over = {}) =>
+    findUnregisteredDisplays({ slots, registerByHub: REG, productsById: P, ...over });
+
+  it("a registered floor is not reported", () => {
+    expect(find({ "marathon-pe": { p1: slot() } })).toEqual([]);
+  });
+
+  it("a floor with NO register row for the product is reported and registerable", () => {
+    const r = find({ "marathon-pe": { p2: slot() } });
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ store: "marathon-pe", productId: "p2", size: "6", bookedHub: "hub1", registerable: true });
+    expect(r[0].reason).toMatch(/never heard of it/);
+  });
+
+  it("a floor registered at ANOTHER size is reported but NOT registerable", () => {
+    // That is the Double Displays tab's business — registering here would claim
+    // a SECOND display for one physical pair, which is the bug this all began with.
+    const r = find({ "marathon-pe": { p1: slot({ size: "8", sizeKey: "8" }) } });
+    expect(r).toHaveLength(1);
+    expect(r[0].registerable).toBe(false);
+    expect(r[0].registeredSizes).toEqual(["6"]);
+    expect(r[0].reason).toMatch(/Double Displays|Display Records tab/);
+  });
+
+  it("a tombstoned slot is not a floor", () => {
+    expect(find({ "marathon-pe": { p2: { size: null, sizeKey: null, bookedHub: "hub1" } } })).toEqual([]);
+  });
+
+  it("HUB-AWARE: a hub2 floor is judged against hub2's register, not hub1's", () => {
+    // Without this a hub2 display reads as unregistered purely because the
+    // screen happened to be looking at hub1.
+    const withHub2 = { hub1: {}, hub2: { p1__6: { qty: 1 } } };
+    const r = findUnregisteredDisplays({
+      slots: { "marathon-pe": { p1: slot({ bookedHub: "hub2" }) } },
+      registerByHub: withHub2, productsById: P,
+    });
+    expect(r).toEqual([]);
+  });
+
+  it("a floor booked at a hub with NO register is reported, not silently dropped", () => {
+    const r = find({ "marathon-pine": { p2: slot({ bookedHub: "hub3" }) } });
+    expect(r).toHaveLength(1);
+    expect(r[0].registerable).toBe(false);
+    expect(r[0].reason).toMatch(/keeps no display register/);
+  });
+
+  it("a zero-qty (retired) register row does not count as registered", () => {
+    const spent = { hub1: { p1__6: { qty: 0, retiredAt: "2026-09-01T00:00:00.000Z" } }, hub2: {} };
+    const r = findUnregisteredDisplays({ slots: { "marathon-pe": { p1: slot() } }, registerByHub: spent, productsById: P });
+    expect(r).toHaveLength(1);
+    expect(r[0].registerable).toBe(true);
+  });
+
+  it("newest floor first, and empty inputs are safe", () => {
+    const r = find({
+      "marathon-pe": { p2: slot({ at: "2026-08-01T00:00:00.000Z" }) },
+      trophy: { p3: slot({ at: "2026-09-05T00:00:00.000Z" }) },
+    });
+    expect(r.map((x) => x.productId)).toEqual(["p3", "p2"]);
+    expect(findUnregisteredDisplays({ slots: null, registerByHub: null, productsById: null })).toEqual([]);
+  });
+
+  it("registerKey separates store, product, size and hub", () => {
+    const base = { store: "marathon-pe", productId: "p1", sizeKey: "6", bookedHub: "hub1" };
+    expect(registerKey(base)).toBe(registerKey({ ...base }));
+    for (const k of ["store", "productId", "sizeKey", "bookedHub"]) {
+      expect(registerKey(base)).not.toBe(registerKey({ ...base, [k]: "x" }));
+    }
   });
 });
