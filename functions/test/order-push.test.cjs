@@ -1085,3 +1085,249 @@ test("a run of failed tick reads flushes; a single blip does NOT", async () => {
   assert.ok(res.count > 1, "the wait survived the blip and kept collecting");
   assert.ok(ticks > 1, "one failed read did not end the wait");
 });
+
+// ─── THE SCOPED FAN-OUT ──────────────────────────────────────────────────────
+// Everything above uses WORLD(), where the one staff member is assigned to BOTH
+// hubs — deliberately, so those guards stay guards about collapse, idempotency
+// and pruning. THESE tests build their own fixtures, because every one of them
+// is about who is in the index and who is not.
+//
+// The failure they exist to prevent is the one that has no symptom: somebody is
+// notified whom nobody assigned, or somebody assigned is never notified, and
+// nothing anywhere says so.
+
+/** A world with NOBODY assigned — the default state of every account. */
+const UNASSIGNED = () => ({
+  // A live token and a real device. Under the model this replaces, this person
+  // (stockRole warehouse) was subscribed by default and would be told.
+  push_tokens: { u_ware: { d1: { token: "tok-A", device: "iPhone Safari · installed · d1" } } },
+  products: { p1: { name: "Nike Air Max 90" } },
+});
+
+/** A world where `assigned` maps hub → [uids], each uid given one live token. */
+const ASSIGNED = (assigned) => {
+  const world = { push_hub_audience: {}, push_tokens: {}, products: { p1: { name: "Nike Air Max 90" } } };
+  for (const [hub, uids] of Object.entries(assigned)) {
+    world.push_hub_audience[hub] = {};
+    for (const uid of uids) {
+      world.push_hub_audience[hub][uid] = { at: NOW };
+      world.push_tokens[uid] = { d1: { token: `tok-${uid}` } };
+    }
+  }
+  return world;
+};
+
+const HUB1 = (over = {}) => CUSTOMER({ hub: "hub1", placedAtHub: "hub1", ...over });
+const HUB2 = (over = {}) => CUSTOMER({ id: "006", hub: "hub2", placedAtHub: "hub2", ...over });
+
+test("NO ASSIGNMENT MEANS NOTHING IS SENT — a live token and full permission are not consent", async () => {
+  // The whole model in one test. This person has a registered device, the
+  // browser has granted notifications, and their /users record says warehouse.
+  // Under the model this replaces they were subscribed BY DEFAULT. Junid has
+  // not assigned them, so they hear nothing.
+  const { ref } = fakeDb(UNASSIGNED());
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", HUB1());
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "no_recipients");
+  assert.equal(m.calls.length, 0, "not one device may be reached");
+});
+
+test("nothing else on the record is read as an assignment — not the role, not the shop", async () => {
+  // Every field the old resolver consulted, at once, on both the order and a
+  // /users record sitting in the same database. Still nobody.
+  const world = UNASSIGNED();
+  world.users = { u_ware: { stockRole: "admin", destShop: "marathon-pe", permissions: ["stock"] } };
+  world.notification_prefs = { u_ware: { refillRequests: true, updatedAt: NOW } };
+  world.push_audience = { all: { u_ware: { at: NOW } } };   // the LEGACY index
+  const { ref } = fakeDb(world);
+  const m = fakeMessaging();
+  assert.equal((await run({ ref }, m, "005", HUB1())).skipped, "no_recipients");
+  assert.equal(m.calls.length, 0);
+});
+
+test("a HUB 1 assignee is told about Hub 1 and hears nothing about Hub 2", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"] }));
+
+  const m1 = fakeMessaging();
+  const a = await run({ ref }, m1, "005", HUB1());
+  assert.equal(a.sent, true);
+  assert.deepEqual(m1.calls[0].tokens, ["tok-u_one"]);
+
+  const m2 = fakeMessaging();
+  const b = await run({ ref }, m2, "006", HUB2(), { newWindowId: () => "W2" });
+  assert.equal(b.sent, true);
+  assert.deepEqual(m2.calls[0].tokens, ["tok-u_two"], "and the Hub 1 assignee is not in it");
+});
+
+test("a HUB 2 assignee hears nothing about Hub 1 — the other direction, stated separately", async () => {
+  // Not symmetry for its own sake: hub1 is the fallback value everywhere else
+  // in this codebase (`|| "hub1"`), so a leak is far likelier to run toward it
+  // than away from it, and a test that only ever checked one direction would
+  // miss exactly that.
+  const { ref } = fakeDb(ASSIGNED({ hub2: ["u_two"] }));
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", HUB1());
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "no_recipients");
+  assert.equal(m.calls.length, 0);
+});
+
+test("somebody assigned to BOTH hubs gets both — as two notifications, not one", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_both"], hub2: ["u_both"] }));
+  const m = fakeMessaging();
+  await run({ ref }, m, "005", HUB1());
+  await run({ ref }, m, "006", HUB2(), { newWindowId: () => "W2" });
+  assert.equal(m.calls.length, 2, "two hubs, two orders, two alerts");
+  assert.deepEqual(m.calls.map((c) => c.tokens), [["tok-u_both"], ["tok-u_both"]]);
+  assert.deepEqual(m.calls.map((c) => c.data.hub), ["hub1", "hub2"]);
+  // The lock screen must show both, so they cannot share a tag: a per-store or
+  // per-app tag would let the Hub 2 alert REPLACE the Hub 1 one and this person
+  // would simply never see that Hub 1 had work.
+  assert.equal(new Set(m.calls.map((c) => c.data.tag)).size, 2);
+});
+
+test("PER-HUB BURST COLLAPSE: a Hub 1 burst does not swallow a Hub 2 order", async () => {
+  // The failure this is the whole point of. Both orders land inside ONE window
+  // length, both are destined for the same shop — the exact case the old
+  // destShop key collapsed into a single notification.
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"] }));
+  const m = fakeMessaging();
+
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const claimer = notifyOrderPlaced({
+    db: { ref }, messaging: m, orderId: "005", record: HUB1(), createdAt: AT,
+    nowMs: NOW, sleep: () => held, newWindowId: () => "W1",
+  });
+
+  // A HUB 2 order, same shop, one second later — well inside the Hub 1 window.
+  const other = await notifyOrderPlaced({
+    db: { ref }, messaging: m, orderId: "006", record: HUB2(), createdAt: AT,
+    nowMs: NOW + 1000, sleep: noSleep, newWindowId: () => "W2",
+  });
+  assert.notEqual(other.skipped, "joined_window", "it must NOT join the Hub 1 window");
+  assert.equal(other.sent, true, "it opens and flushes its own");
+  assert.equal(other.count, 1, "and it counts one, not two");
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_two"]);
+
+  release();
+  const first = await claimer;
+  assert.equal(first.sent, true);
+  assert.equal(first.count, 1, "the Hub 1 burst counted only its own order");
+  assert.equal(m.calls.length, 2);
+  assert.deepEqual(m.calls.map((c) => c.data.hub).sort(), ["hub1", "hub2"]);
+});
+
+test("a Hub 1 SWEEP still collapses into one, while a Hub 2 order beside it stays its own", async () => {
+  // Collapse must not be the casualty of scoping: forty Hub 1 orders are still
+  // one notification, and the Hub 2 order that lands in the middle of them is
+  // still a second one.
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"] }));
+  const m = fakeMessaging();
+
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const claimer = notifyOrderPlaced({
+    db: { ref }, messaging: m, orderId: "R056-0", record: ENGINE({ id: "R056-0", hub: "hub1", placedAtHub: "hub1" }),
+    createdAt: AT, nowMs: NOW, sleep: () => held, newWindowId: () => "W1",
+  });
+  for (let i = 1; i < 40; i += 1) {
+    const rec = ENGINE({ id: `R056-${i}`, hub: "hub1", placedAtHub: "hub1" });
+    await notifyOrderPlaced({
+      db: { ref }, messaging: m, orderId: rec.id, record: rec, createdAt: rec.createdAt,
+      nowMs: NOW + i * 10, sleep: noSleep, newWindowId: () => `W${i + 1}`,
+    });
+  }
+  const hub2 = await notifyOrderPlaced({
+    db: { ref }, messaging: m, orderId: "006", record: HUB2(), createdAt: AT,
+    nowMs: NOW + 500, sleep: noSleep, newWindowId: () => "WX",
+  });
+  assert.equal(hub2.sent, true);
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_two"]);
+
+  release();
+  const res = await claimer;
+  assert.equal(res.count, 40, "the sweep is still ONE notification saying 40");
+  assert.equal(m.calls.length, 2);
+  assert.equal(m.calls[1].data.title, "Hub 1 — 40 new orders");
+});
+
+test("AN ORDER WITH NO HUB IS REFUSED — not guessed, not broadcast, and never a crash", async () => {
+  // The decision, stated: the hub is written at creation by every producer, so
+  // a record without one is malformed, not early. There is no safe default —
+  // "hub1" puts another hub's work on Hub 1's phones and "everyone" undoes the
+  // scoping — so it announces nothing. The order is still worked from the
+  // warehouse queue like any other.
+  for (const missing of [{}, { hub: "" }, { hub: "   " }, { hub: null }, { hub: 7 }, { hub: {} }]) {
+    const rec = { ...CUSTOMER(), hub: undefined, placedAtHub: undefined, ...missing };
+    assert.equal(shouldNotify("005", rec, AT), "no_hub", JSON.stringify(missing));
+  }
+  // placedAtHub alone is enough — WarehouseView filters hub3/hubC by it.
+  assert.equal(shouldNotify("005", { ...CUSTOMER(), hub: undefined, placedAtHub: "hub3" }, AT), null);
+
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"] }));
+  const m = fakeMessaging();
+  let res;
+  await assert.doesNotReject(async () => {
+    res = await run({ ref }, m, "005", { ...CUSTOMER(), hub: undefined, placedAtHub: undefined });
+  });
+  assert.equal(res.skipped, "no_hub");
+  assert.equal(m.calls.length, 0, "and nobody is told, rather than everybody");
+});
+
+test("A HUB THAT IS NOT A LEGAL RTDB KEY IS REFUSED before it becomes a path", async () => {
+  // db.ref() throws SYNCHRONOUSLY on one of these, before the send's own
+  // try/catch exists — so the invocation dies rather than degrades — and "/"
+  // would silently split one hub's window across two nodes, stopping the
+  // collapse with nothing to show for it. Same lesson as #269.
+  for (const bad of ["a.b", "a#b", "a$b", "a/b", "a[b", "a]b", "hub.1"]) {
+    assert.equal(shouldNotify("005", CUSTOMER({ hub: bad, placedAtHub: bad }), AT), "bad_hub", bad);
+  }
+  for (const good of ["hub1", "hub2", "hub3", "hubC", "central"]) {
+    assert.equal(shouldNotify("005", CUSTOMER({ hub: good, placedAtHub: good }), AT), null, good);
+  }
+
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"] }));
+  const m = fakeMessaging();
+  let res;
+  await assert.doesNotReject(async () => {
+    res = await run({ ref }, m, "005", CUSTOMER({ hub: "hub/1", placedAtHub: "hub/1" }));
+  });
+  assert.equal(res.skipped, "bad_hub");
+  assert.equal(m.calls.length, 0);
+});
+
+test("a PINE order reaches nobody by construction — no assignment can name hub3", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"] }));
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", CUSTOMER({ hub: "hub3", placedAtHub: "hub3", destShop: "marathon-pine" }));
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "no_recipients", "refused for want of recipients, not for being malformed");
+  assert.equal(m.calls.length, 0);
+});
+
+test("the fan-out reads ONE node to resolve recipients, and it is the hub's own", async () => {
+  // The bandwidth guard. A regression to reading a wildcard bucket, or to
+  // walking /push_assignments, would both still pass every test above.
+  const reads = [];
+  const base = fakeDb(ASSIGNED({ hub1: ["u_one"] }));
+  const spyRef = (path = "") => {
+    const inner = base.ref(path);
+    return { ...inner, async get() { reads.push(path); return inner.get(); } };
+  };
+  await run({ ref: spyRef }, fakeMessaging(), "005", HUB1());
+  // push_bursts/hub1 is the flush tick's own node, not a recipient lookup.
+  const lookups = reads.filter((p) => !p.startsWith("push_bursts"));
+  assert.deepEqual(lookups, ["push_hub_audience/hub1", "push_tokens/u_one"]);
+  assert.equal(reads.filter((p) => p === "users" || p === "push_assignments").length, 0,
+    "never the roster, never the decision node — only the derived index");
+});
+
+test("the STORE is still named, so a picker knows where the box is going", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"] }));
+  const m = fakeMessaging();
+  await run({ ref }, m, "005", HUB1({ destShop: "trophy" }));
+  assert.equal(m.calls[0].data.title, "Hub 1 — new order", "the title names what you are assigned to");
+  assert.match(m.calls[0].data.body, /Trophy/, "the body names where it is going");
+});

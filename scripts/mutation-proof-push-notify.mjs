@@ -22,6 +22,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const PUSH = "functions/lib/order-push.cjs";
+const ASSIGN = "src/push/pushAssignments.js";
+const ASSIGN_TESTS = ["src/push/pushAssignments.test.js", "src/push/PushAssignmentsCard.gate.test.jsx"];
+const RULES_TESTS = ["src/push/pushAssignmentRules.test.js"];
 const SERVER_TESTS = ["test/order-push.test.cjs"];
 const CHIME = "src/push/chime.js";
 const FOREGROUND = "src/push/useForegroundPush.js";
@@ -41,6 +44,108 @@ const MUTATIONS = [
   // A1–A6 below (src/push/pushAssignments.js) and S1–S4 (the scoped fan-out):
   // an absent record means nothing is sent, and no other field may be read as
   // consent.
+
+  // ── ADMIN-ASSIGNED, HUB-SCOPED (2026-09-07) ───────────────────────────────
+  // A1 is the guard the owner named: absence of an assignment MUST mean nothing
+  // is sent. The rest are the ways that sentence quietly stops being true.
+  {
+    id: "A1",
+    guard: "ABSENCE IS OFF — no assignment record means no hubs, whatever else the record carries",
+    file: ASSIGN,
+    from: `  return PUSH_HUBS.filter((hub) => record[hub] === true);`,
+    to: `  return PUSH_HUBS.filter((hub) => record[hub] === true || record.stockRole === "warehouse");`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A2",
+    guard: "Only a REAL boolean counts — a stray string must degrade to silence, not to consent",
+    file: ASSIGN,
+    from: `  return PUSH_HUBS.filter((hub) => record[hub] === true);`,
+    to: `  return PUSH_HUBS.filter((hub) => !!record[hub]);`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A3",
+    guard: "EVERY hub is written on every save — the ones being turned OFF must be nulled",
+    file: ASSIGN,
+    from: `    upd[pushHubAudienceEntryPath(hub, uid)] = want.has(hub) ? { at: nowMs } : null;`,
+    to: `    if (want.has(hub)) upd[pushHubAudienceEntryPath(hub, uid)] = { at: nowMs };`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A4",
+    guard: "Clearing DELETES the record — off is absence, never a stored row of falses",
+    file: ASSIGN,
+    from: `  upd[pushAssignmentPath(uid)] = want.size
+    ? { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs }
+    : null;`,
+    to: `  upd[pushAssignmentPath(uid)] = { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs };`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A5",
+    guard: "A uid RTDB could not store is REFUSED, not handed to the SDK to throw on",
+    file: ASSIGN,
+    from: `  if (!isLegalKey(uid)) throw new Error(\`push assignment: unusable uid "\${uid}"\`);`,
+    to: ``,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A6",
+    guard: "The assignment paths are ADMIN-WRITE — a client-writable index is the whole feature undone",
+    file: "PUSH-ASSIGNMENT-RULES-DEPLOY.md",
+    from: `"push_hub_audience": {
+  ".read":  "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",`,
+    to: `"push_hub_audience": {
+  ".read":  "auth != null",
+  ".write": "auth != null",`,
+    tests: RULES_TESTS,
+  },
+
+  // ── THE SCOPED FAN-OUT ────────────────────────────────────────────────────
+  {
+    id: "S1",
+    guard: "Recipients come from the ASSIGNED index and NOWHERE else — no wildcard, no fallback",
+    file: PUSH,
+    from: `  const snap = await db.ref(\`push_hub_audience/\${hub}\`).get();`,
+    to: `  const snap = await db.ref("push_audience/all").get();`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S2",
+    guard: "The BURST is keyed by the hub — keyed by anything else it swallows another hub's order",
+    file: PUSH,
+    from: `  const hub = hubForOrder(record);
+  const seenKey = replayKey(orderId, record.createdAt);`,
+    to: `  const hub = record.destShop.trim();
+  const seenKey = replayKey(orderId, record.createdAt);`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S3",
+    guard: "An order with NO hub is refused, never defaulted onto a hub that would then be told",
+    file: PUSH,
+    from: `  if (!hub) return "no_hub";`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S4",
+    guard: "A hub that is not a legal RTDB key is refused before db.ref() throws on it",
+    file: PUSH,
+    from: `  if (/[.#$/[\\]]/.test(hub)) return "bad_hub";`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S5",
+    guard: "The lock-screen tag is PER HUB — one tag lets Hub 2 replace Hub 1 for a both-hubs assignee",
+    file: PUSH,
+    from: `      tag: \`order-\${hub}\`,`,
+    to: `      tag: "order",`,
+    nodeTests: SERVER_TESTS,
+  },
 
   // ── DEAD TOKEN PRUNING ────────────────────────────────────────────────────
   {
