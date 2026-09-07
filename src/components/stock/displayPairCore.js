@@ -14,10 +14,10 @@
 //     every one carrying size AND store. Sources: registration (124),
 //     display_refill (56). This is CURRENT state: set at registration and at
 //     display refill, cleared (tombstoned) when the display leaves the floor.
-//   • /settings/hubSneakerCount/register/hub1/{pid}__{sizeKey} — 534 rows /
-//     535 units, all sized, NONE with a store, and NEVER decremented (write-
-//     only-upward history). 110 cells read qty <= registered — mostly ghosts
-//     of displays long sold and replaced.
+//   • /settings/hubSneakerCount/register/hub1/{pid}__{sizeKey} — write-only-
+//     upward history, NONE with a store, NEVER decremented. Read here once as
+//     a second marker source and removed again on 2026-09-07: it is what made
+//     one display draw two glyphs (see displayUnitsByCell below).
 //
 // So THE SLOT IS THE TRUTH and the register is history: this module keys the
 // display flag on live slots only. Joined against live hub1 cells: 165
@@ -45,27 +45,40 @@ import { slotIsLive } from "./displaySlots";
 import { isFootwearProduct, promisedKey, availableUnits, promiseFresh } from "./availabilityCore";
 import { serverNowMs } from "../../utils/serverTime";
 
-// Live display units per hub cell — TWO sources, one map:
+// Live display units per hub cell — ONE SOURCE: the slots.
 //
-//   • SLOTS (store known, current state) — one unit per live hub-booked slot.
-//   • THE REGISTER (size known, store not) — measured 2026-08-26: 381 of the
-//     534 hub1 register rows have NO live slot (71% of registered products
-//     showed no display marker at all), because most registrations never
-//     picked a store and only the slot writer records one. The register rows
-//     all carry the SIZE, which is what the marker needs.
+// THIS USED TO READ TWO NODES AND THAT WAS THE BUG (owner report + census,
+// 2026-09-07; docs/display-marker-findings.md). The second source was the
+// display REGISTER named in the header above, keyed "pid__sizeKey" — write-
+// only-upward history, never replaced, never decremented. A display that
+// changes size does not overwrite its register row; it gets a SECOND one, and
+// the double-count guard could not see across the two because it subtracts
+// within one cell key and two sizes are two keys. Both rows drew a glyph.
+// Diesel Big D Green Orange: slot moved to size 6 by a display refill on
+// 5 Sep, register row still saying size 8 from 22 Aug — marker on both. 51
+// products carried 2+ markers live; reading slots alone gives 0.
 //
-// The two overlap on new-flow registrations (which write both), so register
-// units are counted as the UNEXPLAINED remainder — max(0, regQty − live
-// slots) — exactly offShelf.js's double-count guard. `unverified` says how
-// many of a cell's units came from the store-less register: the register is
-// never decremented, so a ghost row (display long sold and replaced) can
-// keep a glyph alive — the informational tier wears that; the request flow
-// simply carries no store for them and tombstones nothing.
+// The register CANNOT be made to replace: its key IS the size, and it is the
+// hub count's "booked here, standing on a floor" evidence (offShelf.js), which
+// decrementing on a sale would corrupt. So it is not the marker's source, and
+// the app no longer subscribes to it for this purpose at all.
 //
-// `register` is the /settings/hubSneakerCount/register/{hub} node (keys
-// "pid__sizeKey"); pass null to key on slots alone.
+// THE SLOT IS THE ONLY SOURCE, and it is the one that can carry the job:
+//   • one record per product PER STORE, so a replacement OVERWRITES — the
+//     accumulation is impossible by construction, not by cleanup;
+//   • it holds the size captured at SEND time (sentSize -> displayRefillSize ->
+//     setDisplaySlot), which is the settled model's single fact;
+//   • it CLEARS ITSELF when the display sells, and reinstates on a failed pull;
+//   • it names the store, which the request flow needs anyway.
+//
+// Two stores each displaying the same product at different sizes still yield
+// two marked cells. That is not accumulation — that is two real displays.
+//
+// `unverified` is retained on every entry and is now always 0: no marked unit
+// comes from a store-less record any more. Callers that read it (none today)
+// keep working, and the field documents that the store-less tier is gone.
 // → { "pid::sizeKey": { units, stores: [store, ...], unverified } }
-export function displayUnitsByCell(slots, hub, register = null) {
+export function displayUnitsByCell(slots, hub) {
   const out = {};
   for (const [store, byPid] of Object.entries(slots || {})) {
     for (const [pid, slot] of Object.entries(byPid || {})) {
@@ -75,20 +88,6 @@ export function displayUnitsByCell(slots, hub, register = null) {
       out[key].units += 1;
       out[key].stores.push(store);
     }
-  }
-  for (const [regKey, row] of Object.entries(register || {})) {
-    const i = regKey.lastIndexOf("__");
-    if (i <= 0) continue;
-    const pid = regKey.slice(0, i);
-    const sizeKey = regKey.slice(i + 2);
-    if (!sizeKey || sizeKey === "_") continue;
-    const qty = Number(row?.qty) || 0;
-    if (qty <= 0) continue;
-    const key = `${pid}::${sizeKey}`;
-    const cur = (out[key] ||= { units: 0, stores: [], unverified: 0 });
-    const unexplained = Math.max(0, qty - cur.stores.length);
-    cur.units += unexplained;
-    cur.unverified += unexplained;
   }
   return out;
 }

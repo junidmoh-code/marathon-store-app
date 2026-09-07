@@ -51,34 +51,59 @@ describe("displayUnitsByCell — live slots per hub cell", () => {
   });
 });
 
-describe("displayUnitsByCell — the REGISTER as the store-less second source", () => {
+// ─── THE REGISTER IS NOT A SOURCE, AND A SECOND ARGUMENT CANNOT MAKE IT ONE ──
+// It was one until 2026-09-07 and that is the whole duplicate-marker bug: the
+// register is keyed pid__sizeKey and is never decremented, so a display that
+// changed size left its old row drawing a second glyph forever. 51 products
+// carried 2+ markers live. These say the door is shut.
+describe("displayUnitsByCell — ONE SOURCE, and the register is not it", () => {
   // The live /settings/hubSneakerCount/register/{hub} shape: keys pid__sizeKey.
   const REGISTER = {
-    p1__6: { qty: 1 },        // ALSO slot-backed (pe+trophy) — double-count guard case
-    p9__8: { qty: 1 },        // register-only: the 71% case — size known, store not
-    p9__5_5: { qty: 2 },      // register-only, two units, half size
-    p9___: { qty: 1 },        // one-size sentinel — never a display cell
-    p9__9: { qty: 0 },        // zero qty — nothing to show
+    p1__6: { qty: 1 },
+    p9__8: { qty: 1 },        // register-only — would once have drawn a glyph
+    p9__5_5: { qty: 2 },
   };
-  const m = displayUnitsByCell(SLOTS, "hub1", REGISTER);
-  it("a register-only row shows the cell with unverified units and NO stores", () => {
-    expect(m["p9::8"]).toEqual({ units: 1, stores: [], unverified: 1 });
-    expect(m["p9::5_5"]).toEqual({ units: 2, stores: [], unverified: 2 });
+  it("a register-only row draws NOTHING — no slot, no marker", () => {
+    const m = displayUnitsByCell(SLOTS, "hub1", REGISTER);
+    expect(m["p9::8"]).toBeUndefined();
+    expect(m["p9::5_5"]).toBeUndefined();
   });
-  it("DOUBLE-COUNT GUARD: a new-flow registration (slot + register) counts its slots, not the sum", () => {
-    // p1 size 6: two live slots, register qty 1 → unexplained max(0, 1-2)=0.
-    expect(m["p1::6"]).toEqual({ units: 2, stores: ["marathon-pe", "trophy"], unverified: 0 });
+  it("a stray second argument cannot re-open the second source", () => {
+    // The signature takes (slots, hub). Anything passed third is ignored — a
+    // later edit that reinstates the old call site changes no behaviour.
+    expect(displayUnitsByCell(SLOTS, "hub1", REGISTER)).toEqual(displayUnitsByCell(SLOTS, "hub1"));
+    expect(displayUnitsByCell(null, "hub1", { p9__7: { qty: 1 } })).toEqual({});
   });
-  it("sentinel and zero-qty rows contribute nothing", () => {
-    expect(m["p9::_"]).toBeUndefined();
-    expect(m["p9::9"]).toBeUndefined();
+  it("THE BUG, by construction: a replacement REPLACES — one product, one marker", () => {
+    // Registered at 8, then a display refill sends 6. The slot is one record
+    // per product per store, so the refill OVERWRITES it. Under the old
+    // two-source map the size-8 register row survived and both were marked.
+    const registered = { "marathon-pe": { p7: { size: "8", sizeKey: "8", bookedHub: "hub1", source: "registration" } } };
+    const afterRefill = { "marathon-pe": { p7: { size: "6", sizeKey: "6", bookedHub: "hub1", source: "display_refill" } } };
+    const stranded = { p7__8: { qty: 1 } };   // the register row nothing ever clears
+    const before = displayUnitsByCell(registered, "hub1", stranded);
+    const after  = displayUnitsByCell(afterRefill, "hub1", stranded);
+    expect(Object.keys(before)).toEqual(["p7::8"]);
+    expect(Object.keys(after)).toEqual(["p7::6"]);          // exactly one, and it is the NEW size
+    expect(after["p7::8"]).toBeUndefined();
   });
-  it("register alone (no slots) still lights the marker map", () => {
-    const only = displayUnitsByCell(null, "hub1", { p9__7: { qty: 1 } });
-    expect(only["p9::7"]).toEqual({ units: 1, stores: [], unverified: 1 });
+  it("no marked unit is unverified any more — every one names its store", () => {
+    for (const cell of Object.values(displayUnitsByCell(SLOTS, "hub1", REGISTER))) {
+      expect(cell.unverified).toBe(0);
+      expect(cell.stores.length).toBe(cell.units);
+    }
   });
-  it("passing no register keeps the slot-only behaviour byte-identical", () => {
-    expect(displayUnitsByCell(SLOTS, "hub1")).toEqual(displayUnitsByCell(SLOTS, "hub1", null));
+  it("TWO STORES is not accumulation — two real displays keep two marked cells", () => {
+    const two = {
+      "marathon-pe": { p8: { size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration" } },
+      trophy:        { p8: { size: "9", sizeKey: "9", bookedHub: "hub1", source: "registration" } },
+    };
+    expect(Object.keys(displayUnitsByCell(two, "hub1")).sort()).toEqual(["p8::6", "p8::9"]);
+  });
+  it("the module never names the register path", () => {
+    const src = readFileSync(new URL("./displayPairCore.js", import.meta.url), "utf8");
+    expect(src).not.toMatch(/register\s*\)/);                 // no register parameter
+    expect(src.match(/hubSneakerCount/g) || []).toHaveLength(1); // the comment only
   });
 });
 

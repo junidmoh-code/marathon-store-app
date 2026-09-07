@@ -108,7 +108,7 @@ import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } fr
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useDisplaySlotsState, useDisplayRegisterState, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -9037,25 +9037,27 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Pine, like the hub1 stock subscription above.
   const displaySlotsState = useDisplaySlotsState(effectiveStoreMode !== "pine");
   const displaySlots = displaySlotsState.value;
-  // The register joins as the store-less second source: 71% of registered
-  // displays have no slot (store never picked at registration), so keying the
-  // marker on slots alone left most registered displays invisible (owner
-  // report, 2026-08-26). displayUnitsByCell applies the double-count guard.
-  const hub1DisplayRegisterState = useDisplayRegisterState("hub1", effectiveStoreMode !== "pine");
-  const hub1DisplayRegister = hub1DisplayRegisterState.value;
-  // Has the display lane actually ANSWERED? Both sources, no read error. The
+  // THE DISPLAY REGISTER USED TO JOIN HERE AS A SECOND SOURCE AND IT WAS THE
+  // BUG. That node is write-only-upward history keyed pid__sizeKey (its one
+  // reader is now the Display Registration card and the hub count's
+  // offShelf.js); a display that changes size leaves its old row standing, so
+  // one display drew two glyphs (51 products live, 2026-09-07 census —
+  // docs/display-marker-findings.md). The slot is one record per product per
+  // store: a replacement OVERWRITES it and a sale CLEARS it, so accumulation is
+  // impossible by construction. One source, and this screen no longer streams
+  // the ~172 KB register node at all.
+  // Has the display lane actually ANSWERED? The one source, no read error. The
   // tile marker does not need this (a marker that arrives late is harmless);
   // the alternatives strip does, because an empty display map before the
   // subscription answers looks exactly like "nothing is on a floor", and the
   // display-only exclusion would fail open precisely when its evidence is
   // missing (independent review). A read ERROR makes it permanent.
-  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error
-    && hub1DisplayRegisterState.settled && !hub1DisplayRegisterState.error;
+  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error;
   // Has /orders answered at all? See useOrders — the flag rides on the array.
   const ordersSettled = orders?.settled === true;
   const hub1DisplayUnits = useMemo(
-    () => displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister),
-    [displaySlots, hub1DisplayRegister]
+    () => displayUnitsByCell(displaySlots, "hub1"),
+    [displaySlots]
   );
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that

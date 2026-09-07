@@ -141,17 +141,21 @@ export function useDisplaySlotsState(enabled = true) {
 // /settings/hubSneakerCount/register/{hub} → { "pid__sizeKey": row } — the
 // display REGISTER: every registered display's size (qty, style code), but no
 // store and never decremented (write-only-upward history; hubCleanupStore.js
-// is the writer). The display marker reads it as the store-less second source
-// (71% of registered displays have no slot — measured 2026-08-26). Cost,
-// stated: the hub1 node is ~172 KB, subscribed on assistant devices next to
-// the ~60 KB slots node and the ~474 KB hub1 stock subtree.
+// is the writer).
+//
+// THE ASSISTANT SIZE GRID MUST NEVER READ THIS. It did until 2026-09-07, as a
+// second source beside the display slots, and that is exactly what made one
+// display draw two markers: the key carries the size, so a display that
+// changes size leaves its old row behind forever and nothing can clear it
+// (docs/display-marker-findings.md). The marker's one source is
+// /settings/displaySlots — useDisplaySlotsState above.
+//
+// The two callers left are the ones the register is actually FOR: the Display
+// Registration card's own list, and offShelf.js's hub-count evidence. There is
+// deliberately no "…State" variant any more — the readiness flag existed only
+// for the marker lane that no longer reads this node.
 export function useDisplayRegister(hub, enabled = true) {
   return usePath(hub ? `settings/hubSneakerCount/register/${hub}` : null, enabled);
-}
-
-/** The register with its readiness — see useDisplaySlotsState for why. */
-export function useDisplayRegisterState(hub, enabled = true) {
-  return usePathState(hub ? `settings/hubSneakerCount/register/${hub}` : null, enabled);
 }
 
 // /stock_movements -> array sorted newest-first. Optionally filter by productId.

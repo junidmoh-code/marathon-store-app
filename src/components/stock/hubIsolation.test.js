@@ -270,12 +270,13 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // once routing is stock-aware), but it is still DERIVED from sneakerHubOf
     // and still tests for hub1 — that is what this fence is about.
     expect(a).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
-    // useDisplayRegisterState since 2026-09-06 — the alternatives strip needs
-    // to know whether this lane has ANSWERED, not just what it holds (an empty
-    // display map before it loads reads as "nothing is on a floor"). Still
-    // hub1, which is what this fence is about.
-    expect(a).toContain('useDisplayRegisterState("hub1"');
-    expect(a).toContain('displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister)');
+    // ONE SOURCE since 2026-09-07. The register was a second source and it is
+    // what made one display draw two markers; it is gone from this screen
+    // entirely (docs/display-marker-findings.md). Still hub1, which is what
+    // this fence is about — and the register must never come back as a term.
+    expect(a).toContain('displayUnitsByCell(displaySlots, "hub1")');
+    expect(a).not.toMatch(/useDisplayRegister/);
+    expect(a).not.toMatch(/hubSneakerCount\/register/);
   });
   it("hub2's promised map is READY ORDERS ONLY — no pull claims folded in", () => {
     const a = app();
