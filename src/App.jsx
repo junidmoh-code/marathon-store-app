@@ -80,7 +80,6 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
-import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
 import { useForegroundPush } from "./push/useForegroundPush";
@@ -2901,7 +2900,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -3216,7 +3215,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
-          <NotificationSettingsRow push={push} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3268,7 +3266,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
-        <NotificationSettingsRow push={push} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
@@ -18770,9 +18767,12 @@ function AppInner() {
   // member with a persisted role opens straight into their workspace and may go
   // weeks without rendering home. The token has to be refreshed on every app
   // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
-  // from the one component every session mounts. The settings row still owns
-  // the switch; it receives this same object as a prop.
-  const push = usePushRegistration({ user: authUser, permRecord, isSuperAdmin });
+  // from the one component every session mounts.
+  //
+  // There is no switch to own any more: WHO receives is set by Junid on the
+  // Notifications card in Admin (#admin/notifications) and read by the fan-out
+  // from /push_hub_audience. This registers the ADDRESS, nothing else.
+  const push = usePushRegistration({ user: authUser });
   // The in-app half: banner + chime instead of an OS notification while the app
   // is open. No listener at all when push is off.
   // Gated on `ready` (this uid's registration actually returned ON), not merely
@@ -19111,7 +19111,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);

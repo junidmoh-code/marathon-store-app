@@ -8,8 +8,9 @@
 // runners, because this feature spans both halves: the client resolves who is
 // subscribed (vitest) and the server fans out (node --test).
 //
-// The two guards the owner named specifically are M1/M2 (DEFAULT ON — deleting
-// it must go red) and M7/M8 (dead-token pruning). The rest are here because
+// The guard the owner named specifically for this release is A1 (NO ASSIGNMENT
+// MEANS NOTHING IS SENT — deleting it must go red), alongside M7/M8 (dead-token
+// pruning), which predate it. The rest are here because
 // each is a way this feature fails LOUDLY at a staff member and quietly in the
 // logs: a sweep firing four hundred notifications, a redelivery double-sending,
 // a RECYCLED order id swallowing tomorrow's real order as a replay, shadow
@@ -20,10 +21,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
-const PREFS = "src/push/notificationPrefs.js";
 const PUSH = "functions/lib/order-push.cjs";
 const SERVER_TESTS = ["test/order-push.test.cjs"];
-const PREFS_TESTS = ["src/push/notificationPrefs.test.js"];
 const CHIME = "src/push/chime.js";
 const FOREGROUND = "src/push/useForegroundPush.js";
 const FOREGROUND_TESTS = ["src/push/foregroundBanner.test.jsx"];
@@ -34,55 +33,14 @@ const FOCUS = "src/push/useFocusOrder.js";
 const FOCUS_TESTS = ["src/push/focusOrder.test.jsx"];
 
 const MUTATIONS = [
-  // ── DEFAULT ON ────────────────────────────────────────────────────────────
-  {
-    id: "M1",
-    guard: "DEFAULT ON — no preferences record means the ROLE decides, not off",
-    file: PREFS,
-    from: `  const on = explicit === null ? roleDefault : explicit;`,
-    to: `  const on = explicit === true;`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M2",
-    guard: "The default is ON for the roles that actually pick refills",
-    file: PREFS,
-    from: `export const DEFAULT_ON_ROLES = Object.freeze(["warehouse", "admin"]);`,
-    to: `export const DEFAULT_ON_ROLES = Object.freeze([]);`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M3",
-    guard: "An EXPLICIT off beats the role default — a picker who opted out stays out",
-    file: PREFS,
-    from: `  const on = explicit === null ? roleDefault : explicit;`,
-    to: `  const on = explicit === null ? roleDefault : (roleDefault || explicit);`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M4",
-    guard: "A dirty account that opted in lands in a bucket, never in none",
-    file: PREFS,
-    from: `  return [AUDIENCE_ALL];
-}
-
-function normalise(v) {`,
-    to: `  return [];
-}
-
-function normalise(v) {`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M5",
-    guard: "A malformed prefs value is 'never set', not 'off' — a stray string cannot silence a picker",
-    file: PREFS,
-    from: `  const explicit = typeof (prefs && prefs.refillRequests) === "boolean"
-    ? prefs.refillRequests
-    : null;`,
-    to: `  const explicit = prefs && "refillRequests" in prefs ? !!prefs.refillRequests : null;`,
-    tests: PREFS_TESTS,
-  },
+  // ── THE PERSONAL TOGGLE IS GONE (2026-09-07) ──────────────────────────────
+  // M1–M5 guarded src/push/notificationPrefs.js: the default-on role rule, the
+  // explicit-off override, the dirty-account fallback. That module was deleted
+  // with the switch it drove — notifications are ADMIN-ASSIGNED and HUB-SCOPED
+  // now, and the default for everyone is OFF. The guards that replaced them are
+  // A1–A6 below (src/push/pushAssignments.js) and S1–S4 (the scoped fan-out):
+  // an absent record means nothing is sent, and no other field may be read as
+  // consent.
 
   // ── DEAD TOKEN PRUNING ────────────────────────────────────────────────────
   {
