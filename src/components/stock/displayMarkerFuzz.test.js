@@ -223,21 +223,65 @@ describe("a display slot is invisible to every answer the ordering screen gives"
         const h = alloc.hubOf.get(l);
         expect(h === undefined || GATED_SNEAKER_HUBS.includes(h), at(`line routed to ${h}`)).toBe(true);
       }
-      // Over-allocation is a cart-versus-shelf fact. It may never be a
-      // cart-versus-DISPLAY fact: a marked cell holding 3 with 3 lines against
-      // it is fully sellable, marker or no marker.
-      for (const k of alloc.overAllocated) {
-        const [pid] = k.split("::");
-        const drawnLines = lines.filter(l => l.product.id === pid && alloc.hubOf.get(l) === DISPLAY_PAIR_HUB
-          && promisedKey(l.product.id, l.size) === k);
-        const drawn = drawnLines.length;
-        // Ask with a SIZE the key was built from, not a string patched back out
-        // of the key — promisedKey is one-way and un-patching it is how a
-        // half size becomes a different cell.
-        const have = cellAvailability({ cells, promised, productId: pid, size: drawnLines[0]?.size ?? "" });
-        expect(drawn, at(`${k} flagged over-allocated while ${have} were available`)).toBeGreaterThan(have);
-      }
+      // ── OVER-ALLOCATION IS A PULL FACT, AND ORDINARY LINES HAVE NONE ──────
+      // The first draft of this block walked `alloc.overAllocated` and asserted
+      // an invariant inside the loop. That loop never ran: allocateSneakerCart
+      // only ever marks a key over-allocated for a line carrying
+      // displayPairRequest (availabilityCore's pass 1), and no line this fuzz
+      // generates carries one — the flag has no minter left. The block read as
+      // a real check and was vacuous by construction, which is the exact
+      // failure this file's header warns about (review, 2026-09-07).
+      //
+      // So the claim is made the way it is actually true: on the ORDINARY path
+      // a marked cell is never flagged, however many lines are drawn against
+      // it — a cell holding three with three lines against it is fully
+      // sellable, marker or no marker.
+      expect(alloc.overAllocated.size, at("an ordinary cart line was flagged over-allocated")).toBe(0);
     }
+  });
+
+  // ── AND THE PULL LANE'S OWN RULE, EXERCISED FOR REAL ──────────────────────
+  // The flag has no minter on the ordering screen any more, but the allocation
+  // that reads it is live code an order placed before this shipped still runs
+  // through, so its invariant is fuzzed directly with lines that DO carry it:
+  // a key is flagged over-allocated only when the pulls against that cell
+  // genuinely exceed what Hub 1 holds. Never because a marker exists.
+  it("a cell is flagged over-allocated only when the PULLS against it exceed the shelf", () => {
+    // A guard on the guard: the boundary has to be crossed in BOTH directions
+    // across the run, or "flagged === (pulls > have)" is satisfied by a
+    // constant.
+    let flaggedCount = 0, clearCount = 0;
+    for (let i = 0; i < 200; i++) {
+      const r = rng(5000 + i);
+      const { cells, promised } = world(r);
+      const pid = pick(r, PIDS);
+      const sz = pick(r, SIZES.filter(x => x !== "Free Size"));
+      const pulls = 1 + int(r, 4);
+      const lines = Array.from({ length: pulls }, () => ({
+        product: { id: pid, category: "Footwear", productType: "sneaker" },
+        size: sz, requestDisplayPartner: true, displayPairRequest: true,
+      }));
+      const alloc = allocateSneakerCart({
+        lines, hubData: hubData(cells, promised), taggedHubFor: () => DISPLAY_PAIR_HUB,
+      });
+      const have = cellAvailability({ cells, promised, productId: pid, size: sz });
+      // THE RAW KEY, not promisedKey. allocateSneakerCart keys its own maps
+      // `${pid}::${line.size}` with the size UNENCODED (availabilityCore
+      // keyOf), which is a different string from promisedKey's for a half
+      // size — and App.jsx's checkout pre-flight reads it the same raw way, so
+      // the two agree. Asking with the encoded key silently found nothing and
+      // made this test report a missing flag (its own first run did exactly
+      // that).
+      const flagged = alloc.overAllocated.has(`${pid}::${sz}`);
+      expect(flagged, `case ${i}: ${pulls} pulls against ${have} available — flagged ${flagged}`)
+        .toBe(pulls > have);
+      if (flagged) flaggedCount++; else clearCount++;
+      // Every pull is pinned to Hub 1 whatever the shelf says — it names one
+      // identified physical pair and there is nowhere else to send it.
+      for (const l of lines) expect(alloc.hubOf.get(l)).toBe(DISPLAY_PAIR_HUB);
+    }
+    expect(flaggedCount, "no world ever over-drew — the flag side is untested").toBeGreaterThan(20);
+    expect(clearCount, "every world over-drew — the clear side is untested").toBeGreaterThan(20);
   });
 
   // ── THE ONE PLACE DISPLAY DATA MAY STILL TOUCH AVAILABILITY ───────────────
@@ -281,7 +325,12 @@ describe("a display slot is invisible to every answer the ordering screen gives"
         .toBe(0);
       expect(cellAvailability({ cells: { x: { _: { qty: 5 } } }, promised: {}, productId: "x", size: "Free Size" }))
         .toBe(5);
-      expect(promised).toBeTruthy();
+      // Every promise the generator made is a real, non-negative claim — the
+      // first draft asserted `toBeTruthy()` on an object literal here, which is
+      // true whether it holds anything or not (review, 2026-09-07).
+      for (const v of Object.values(promised)) {
+        expect(Number.isInteger(v) && v >= 0, `case ${i}: a promise of ${v}`).toBe(true);
+      }
     }
   });
 });
