@@ -201,6 +201,11 @@ export function retirePlan(row, hub) {
     sizeKey: row.sizeKey,
     slotStores: [],
     times: Math.max(1, Number(row.retireQty) || 1),
+    // The quantity this decision was MADE against. removeDisplayFact aborts if
+    // the row has moved since, so a stale screen cannot retire a surplus that
+    // somebody else has already taken — which would carry the legitimate
+    // matched record down with it.
+    expectQty: Number(row.qty) || 0,
   };
 }
 

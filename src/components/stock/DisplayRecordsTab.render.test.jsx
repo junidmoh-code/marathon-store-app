@@ -117,17 +117,34 @@ describe("what the screen writes", () => {
     await click(byLabel(t, /^Confirm$/)[0]);
     expect(removeDisplayFact).toHaveBeenCalledTimes(1);
     expect(removeDisplayFact).toHaveBeenCalledWith({
-      hub: "hub1", product: { id: "p1", name: "Air Force 1 White" }, sizeKey: "6", slotStores: [],
+      hub: "hub1", product: { id: "p1", name: "Air Force 1 White" }, sizeKey: "6",
+      slotStores: [], units: 1, expectQty: 1,
     });
   });
 
-  it("an OVER-registered row retires ONLY its surplus — one call per unit", async () => {
+  it("an OVER-registered row retires ONLY its surplus, in ONE guarded transaction", async () => {
     REGISTER = { p1__6: { qty: 3 } };
     SLOTS = { "marathon-pe": { p1: liveSlot() } };
     const t = paint();
     await click(byLabel(t, /^Retire$/)[0]);
     await click(byLabel(t, /^Confirm$/)[0]);
-    expect(removeDisplayFact).toHaveBeenCalledTimes(2);   // 3 claimed − 1 floor
+    // ONE call, not one per unit: two calls are not atomic, and a failure
+    // between them leaves a half-retired row.
+    expect(removeDisplayFact).toHaveBeenCalledTimes(1);
+    expect(removeDisplayFact).toHaveBeenCalledWith(expect.objectContaining({ units: 2, expectQty: 3 }));
+  });
+
+  it("a SUPERSEDED retire is NOT marked done — the row stays and says look again", async () => {
+    // Someone else changed the row while this screen had it open. Marking it
+    // done would hide a record that is still there.
+    REGISTER = { p1__6: { qty: 1 } };
+    SLOTS = { "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8" }) } };
+    removeDisplayFact.mockImplementation(async () => ({ ok: true, superseded: true, message: "changed while it was open" }));
+    const t = paint();
+    await click(byLabel(t, /^Retire$/)[0]);
+    await click(byLabel(t, /^Confirm$/)[0]);
+    expect(textOf(t)).toContain("changed while it was open");
+    expect(byLabel(t, /^Retire$/)).toHaveLength(1);      // still offered, not hidden
   });
 
   it("a failed write says so and leaves the row still offered", async () => {

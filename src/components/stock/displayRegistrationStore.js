@@ -187,18 +187,45 @@ export async function editDisplaySize({ hub, product, fromSizeKey, toSize, slotS
 // Retire a display fact (the display came down / never existed). The row is
 // kept at qty 0 — never deleted — so movement linkage and the bumps ladder
 // survive for the count lane and for addExtra's id derivation.
-export async function removeDisplayFact({ hub, product, sizeKey, slotStores = [] }) {
+//
+// `units` retires more than one in ONE transaction, and `expectQty` guards it.
+// Both exist for the Display Records screen (displayRecordCleanup.js), where an
+// over-registered row retires only its SURPLUS — "3 claimed, 1 shop floor shows
+// it, retire 2". Doing that as two unguarded calls was wrong twice over:
+//
+//   • it is not atomic, so a failure between them leaves a half-retired row;
+//   • it cannot tell a stale view from a fresh one. Two admins both looking at
+//     qty 3 would each retire 2 and take the row to 0 — wiping the legitimate
+//     matched record, which then makes the next count expect a pair on the
+//     shelf that is genuinely out at a shop and adjust a real unit away.
+//
+// With expectQty the second writer's transaction aborts and reports
+// `superseded`, exactly like the display-slot fence. Omit both and the
+// behaviour is byte-identical to before.
+//
+// THE TRANSACTION RESULT IS NOW READ. It never was: a transaction that did not
+// commit returned a cheerful { ok: true }, so a caller could mark work done
+// that had not happened.
+export async function removeDisplayFact({ hub, product, sizeKey, slotStores = [], units = 1, expectQty = null }) {
   try {
     if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at hub1/hub2 — not ${hub}.` };
     const path = regPath(hub, product.id, sizeKey);
     const nowIso = serverNowIso();
-    await runTransaction(ref(database, path), (cur) => {
+    const take = Math.max(1, Number(units) || 1);
+    let stale = false;
+    const txn = await runTransaction(ref(database, path), (cur) => {
       if (cur === null) return null;   // nothing there — no-op commit
       const q = Number(cur.qty) || 0;
-      const next = Math.max(0, q - 1);
+      if (expectQty != null && q !== Number(expectQty)) { stale = true; return undefined; }
+      const next = Math.max(0, q - take);
       return { ...cur, qty: next, bumps: highWater(cur, q),
         ...(next === 0 ? { retiredAt: nowIso } : {}), at: nowIso, by: auth.currentUser?.uid || null };
     });
+    if (stale) {
+      return { ok: true, superseded: true,
+        message: "Someone else changed this display record while it was open — reopen the list and look again." };
+    }
+    if (txn && txn.committed === false) return { ok: true, superseded: true, message: "The display record was not changed — try again." };
     const warnings = [];
     for (const store of slotStores) {
       const res = await clearDisplaySlot({ store, productId: product.id, source: "manual" });

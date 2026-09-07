@@ -116,14 +116,22 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
     setBusy(k); setNote(null);
     const plan = retirePlan(row, hub);
     try {
-      // qty is decremented ONE unit per call — an over-registered row retires
-      // only its surplus, so the matched part is left standing.
-      for (let i = 0; i < plan.times; i++) {
-        const res = await removeDisplayFact({ hub: plan.hub, product: plan.product, sizeKey: plan.sizeKey, slotStores: plan.slotStores });
-        if (!res || res.ok !== true) {
-          setNote({ tone: "err", text: `Could not retire ${row.productName}: ${res?.message || "write failed"}` });
-          setBusy(null); return false;
-        }
+      // ONE GUARDED TRANSACTION, not one call per unit. An over-registered row
+      // retires only its surplus, and `expectQty` makes that safe against a
+      // stale view: if someone else has already changed the row, this aborts
+      // rather than taking a legitimate record down with the surplus.
+      const res = await removeDisplayFact({
+        hub: plan.hub, product: plan.product, sizeKey: plan.sizeKey,
+        slotStores: plan.slotStores, units: plan.times, expectQty: plan.expectQty,
+      });
+      if (res && res.ok === true && res.superseded) {
+        // NOT done — the row stays, and the subscription will re-classify it.
+        setNote({ tone: "err", text: res.message || `${row.productName} changed while it was open — look again.` });
+        setBusy(null); setConfirm(null); return false;
+      }
+      if (!res || res.ok !== true) {
+        setNote({ tone: "err", text: `Could not retire ${row.productName}: ${res?.message || "write failed"}` });
+        setBusy(null); return false;
       }
       setDone((d) => new Set(d).add(k));
       setBusy(null); setConfirm(null);
@@ -140,7 +148,8 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
     for (const row of allActionable) {
       // eslint-disable-next-line no-await-in-loop
       const good = await retire(row);
-      if (good) ok++; else { failed++; break; }   // stop on the first failure — do not hammer a broken write
+      if (good) ok++; else { failed++; break; }   // stop on the first failure — do not hammer a broken write, and do not
+                                                  // walk on past a row somebody else is editing
     }
     setBusy(null);
     setNote(failed

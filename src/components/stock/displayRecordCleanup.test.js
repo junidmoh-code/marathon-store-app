@@ -165,11 +165,15 @@ describe("retirePlan — a slot is NEVER cleared from this screen", () => {
     expect(plan.slotStores).toEqual([]);
     // Clearing the live slot here would erase the CURRENT display and re-create
     // the duplicate-marker bug PR #574 closed.
-    expect(plan).toEqual({ hub: "hub1", product: { id: "p1", name: "Air Force 1 White" }, sizeKey: "6", slotStores: [], times: 1 });
+    expect(plan).toEqual({ hub: "hub1", product: { id: "p1", name: "Air Force 1 White" }, sizeKey: "6", slotStores: [], times: 1, expectQty: 1 });
   });
-  it("an OVER row retires only its surplus", () => {
+  it("an OVER row retires only its surplus, guarded by the qty it decided against", () => {
     const r = run(reg({ p1__6: row({ qty: 4 }) }), { "marathon-pe": { p1: liveSlot() } });
-    expect(retirePlan(r.byClass.over[0], "hub1").times).toBe(3);
+    const plan = retirePlan(r.byClass.over[0], "hub1");
+    expect(plan.times).toBe(3);
+    // Without expectQty two admins each looking at qty 4 would each take 3 and
+    // leave 0 — wiping the legitimate matched record along with the surplus.
+    expect(plan.expectQty).toBe(4);
   });
   it("the module never names a slot writer", () => {
     const src = readFileSync(new URL("./displayRecordCleanup.js", import.meta.url), "utf8");
