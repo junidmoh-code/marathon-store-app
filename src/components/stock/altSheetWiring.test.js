@@ -70,8 +70,10 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
     const i = APP.indexOf("sizeAvailable: (p, sz) => {");
     expect(i).toBeGreaterThan(-1);
     const body = APP.slice(i, APP.indexOf("},", i));
-    expect(body).not.toContain("sneakerDisplayOnly");
-    expect(body).not.toContain("displayLaneReady");
+    // NO DISPLAY TERM AT ALL, not merely not the two that were there. A gate
+    // rebuilt out of sneakerDisplayInfo or a fresh readiness flag is the same
+    // bug wearing a different name.
+    expect(body, `a display term is back in sizeAvailable: ${body}`).not.toMatch(/isplay/);
   });
   // And the divert's own reader is gone from the file entirely — not merely
   // unused here. A dormant copy is how a deleted rule comes back.

@@ -343,6 +343,9 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // sneakerDisplayInfo asks hub1DisplayUnits, and only for a size Hub 1
     // serves — the lane is hub1's, and a Hub 2 size must not inherit a marker
     // from it.
+    // The predicate itself, byte-for-byte: widening it to "any gated hub" is
+    // the one-character edit that would put a Hub 1 glyph on a Hub 2 size.
+    expect(app()).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
     expect(app()).toContain('const sneakerDisplayInfo = (p, s) =>');
     expect(app()).toContain('(s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null)');
   });

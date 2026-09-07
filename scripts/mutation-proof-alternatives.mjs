@@ -427,16 +427,22 @@ const MUTATIONS = [
     guard: "The strip is joined to the SHARED resolver, never to a second availability test",
     file: APP,
     kind: "source-pin",
-    from: `        return !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz);`,
+    from: `        return !sneakerOut(p, sz);`,
     to: `        return true;`,
   },
+  // G24b WAS the opposite rule: a display-only size was never OFFERED, because
+  // selling it needed a request flow this sheet has no prompt for. Owner spec
+  // 2026-09-07 removed the flow's monopoly — a marked size sells on the
+  // ordinary path — so the exclusion is a bug, not a guard. What is guarded
+  // now is that it stays gone: a customer standing in front of a shoe that can
+  // be sold this minute must not be told there is nothing.
   {
     id: "G24b",
-    guard: "A DISPLAY-ONLY size is never offered — it is sellable, but only down a path this sheet has no prompt for",
+    guard: "A display-marked size is OFFERED as an alternative — the marker asserts nothing about availability",
     file: APP,
-    kind: "source-pin",
-    from: `&& !sneakerDisplayOnly(p, sz);`,
-    to: `;`,
+    kind: "behavioural",
+    from: `        return !sneakerOut(p, sz);`,
+    to: `        return !sneakerOut(p, sz) && !sneakerDisplayInfo(p, sz);`,
   },
   {
     id: "G25b",
@@ -470,13 +476,19 @@ const MUTATIONS = [
     from: `        if (!ordersSettled) return false;`,
     to: ``,
   },
+  // G25f WAS the display lane's readiness gate. It existed only to make G24b's
+  // exclusion trustworthy, and it went with it: nothing in this sheet reads the
+  // display lane any more, so there is nothing to wait for. The guard that
+  // replaces it is that no readiness gate for it comes back — a reintroduced
+  // wait is a reintroduced exclusion wearing a different name.
   {
     id: "G25f",
-    guard: "…and for the DISPLAY lane on a Hub 1 size — an unanswered display map reads as \"nothing is on a floor\"",
+    guard: "…and this sheet waits on no display lane, because it reads none",
     file: APP,
-    kind: "source-pin",
-    from: `        if (hub === "hub1" && !displayLaneReady) return false;`,
-    to: ``,
+    kind: "behavioural",
+    from: `        if (!ordersSettled) return false;`,
+    to: `        if (!ordersSettled) return false;
+        if (hub === "hub1" && !displayLaneReady) return false;`,
   },
   {
     id: "G25",
