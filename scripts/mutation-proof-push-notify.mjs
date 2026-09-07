@@ -372,8 +372,8 @@ const MUTATIONS = [
     id: "M31",
     guard: "The recipient CAP holds — the old test could not fail because only one uid had a token",
     file: PUSH,
-    from: "  return Array.from(uids).slice(0, MAX_RECIPIENTS);",
-    to: "  return Array.from(uids);",
+    from: "  return Object.keys(val).slice(0, MAX_RECIPIENTS);",
+    to: "  return Object.keys(val);",
     nodeTests: SERVER_TESTS,
   },
   {
