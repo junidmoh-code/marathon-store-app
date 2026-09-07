@@ -9083,7 +9083,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // with the EVENT's instant — which makes the repair indistinguishable from
   // the write that was dropped, so it can never win over a real transition
   // that landed in between. Idempotent, once per repair per session; a repair
-  // that fails is simply found again on the next load. Nothing here runs until
+  // that fails is found again on the next load. Nothing here runs until
   // the slots subscription has actually answered — an empty map before it
   // lands would otherwise read as "no slot" and mint a create.
   const repairedRef = useRef(new Set());
@@ -9094,14 +9094,18 @@ function AssistantView({ products, onExit, orders = [] }) {
       const k = displayRepairKey(r);
       if (repairedRef.current.has(k)) continue;
       repairedRef.current.add(k);
+      // ONE ATTEMPT PER REPAIR PER SESSION, and the key is remembered whatever
+      // the outcome. An earlier cut un-remembered a FAILED repair so it would
+      // "retry" — but the effect re-runs on every /orders snapshot, so a repair
+      // that fails persistently was resubmitted on every unrelated till
+      // transaction, from every device at once (reviewer's case). A failure now
+      // simply waits for the next load, which is when the divergence is found
+      // again. Nothing user-facing waits on this write.
       const done = r.op === "clear"
         ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at })
         : setDisplaySlot({ store: r.store, productId: r.productId, productName: r.productName,
                            size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at });
-      // A failed repair is un-remembered so the next load retries it. The slot
-      // write is the ONLY thing at stake here; nothing user-facing waits on it.
-      done.then((res) => { if (!res || res.ok !== true) repairedRef.current.delete(k); })
-          .catch(() => { repairedRef.current.delete(k); });
+      done.catch(() => {});
     }
   }, [displaySlots, orders, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────

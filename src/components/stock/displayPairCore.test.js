@@ -1,11 +1,12 @@
-// Tests for the display-pair pull decisions (displayPairCore.js). Pure — the
-// module imports no firebase (asserted below); fixtures are built from the
-// STORED shapes the live nodes hold.
+// Tests for the display-pair pull decisions (displayPairCore.js). Every export
+// is a pure function of its arguments — no connection, no read, no write
+// (asserted below); fixtures are built from the STORED shapes the live nodes
+// hold.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import {
   displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey,
-  displayOnly, pendingDisplayPullsByCell,
+  DISPLAY_EXIT_CREATE_MAX_AGE_MS, displayOnly, pendingDisplayPullsByCell,
   mergePromised, displaySlotStoreFor, depletedTaskRevivable,
 } from "./displayPairCore";
 import { promisedKey } from "./availabilityCore";
@@ -119,7 +120,10 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
   const slotAt = (size, at, source = "registration") => ({
     "marathon-pe": { p1: { size, sizeKey: size.replace(".", "_"), bookedHub: "hub1", source, at, productId: "p1" } },
   });
-  const units = (slots, orders) => displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub1");
+  // "now" is PINNED. Creating a slot from nothing is age-bounded, so a fixture
+  // that silently aged past the bound would start passing for the wrong reason.
+  const NOW = Date.parse("2026-09-07T12:00:00.000Z");
+  const units = (slots, orders) => displayUnitsByCell(slotsAfterOrderExits(slots, orders, NOW), "hub1");
 
   it("THE OWNER'S CASE: send size 6, replace with size 8 — ONE marker, and it is 8", () => {
     // The slot write for the replacement was dropped; only the order landed.
@@ -203,8 +207,14 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       placedAtHub: "hub1" }];
     const m = units(slots, orders);
     expect(Object.keys(m)).toEqual(["p1::6"]);
-    // and the repair that persists it is a SET back to 6, not a clear
-    expect(displaySlotRepairs(slots, orders)).toEqual([]);      // slot already reads 6
+    // The repair is a SET back to 6, never a clear. It writes the state the
+    // slot ALREADY shows — what it is really for is the fence: stamping the
+    // reinstate's own instant, so a clear delayed in flight behind it cannot
+    // land afterwards and wipe a display that never left.
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([
+      { op: "set", store: PE, productId: "p1", productName: "", size: "6", bookedHub: "hub1",
+        source: "manual", at: "2026-09-06T10:00:00.000Z", orderId: "306" },
+    ]);
   });
 
   it("a CLASSIC partner order going out of stock does NOT reinstate — that display did sell", () => {
@@ -232,6 +242,27 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                         createdAt: "2026-09-05T09:00:00.000Z" }])).toEqual({});
   });
 
+  it("BUT A CREATE IS AGE-BOUNDED — a stale order may not assert a display onto a floor", () => {
+    // A create is the one unfenced move: with no record, nothing can contradict
+    // it. Live dry run: five of six repairs were refills from 1-2 August, from
+    // BEFORE /settings/displaySlots existed, whose evidence survives only
+    // because their order ids were never recycled. Nothing in the window says
+    // what became of those displays since, so they may not be re-asserted.
+    const stale = (at) => [{ id: "320", productId: "p9", productName: "Nike AF1", destShop: PE,
+                             requestDisplayPartner: true, createdAt: "2026-08-01T08:00:00.000Z",
+                             displayRefillStatus: "refilled", displayRefillSize: "8",
+                             displayRefilledAt: at, displayRefillHub: "hub1" }];
+    const justInside = new Date(NOW - DISPLAY_EXIT_CREATE_MAX_AGE_MS + 1000).toISOString();
+    const justOutside = new Date(NOW - DISPLAY_EXIT_CREATE_MAX_AGE_MS - 1000).toISOString();
+    expect(Object.keys(units({}, stale(justInside)))).toEqual(["p9::8"]);
+    expect(units({}, stale(justOutside))).toEqual({});
+    expect(displaySlotRepairs({}, stale(justOutside), NOW)).toEqual([]);
+    expect(displaySlotRepairs({}, stale(justInside), NOW)).toHaveLength(1);
+    // An UPDATE is fenced by the record's own `at`, so age is no object there.
+    const old = { "marathon-pe": { p9: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-07-01T08:00:00.000Z" } } };
+    expect(Object.keys(units(old, stale(justOutside)))).toEqual(["p9::8"]);
+  });
+
   it("A REPLACEMENT SENT FROM ANOTHER HUB re-points bookedHub, exactly like the writer", () => {
     const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
     const orders = [{ id: "319", productId: "p1", destShop: PE, requestDisplayPartner: true,
@@ -254,14 +285,15 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
     expect(Object.keys(units(slots, [sale, both]))).toEqual(["p1::8"]);
   });
 
-  it("AN EQUAL-INSTANT SLOT is the same transition — applying it is idempotent, like the writers", () => {
-    // displaySlots.js supersededBy() rejects only a STRICTLY newer record, so
-    // an equal-instant write goes through there too. The two must agree.
+  it("AN EQUAL-INSTANT SLOT WINS — the replay is a stand-in, and a stand-in loses ties", () => {
+    // The real writers may win a tie (supersededBy rejects only a strictly
+    // newer record); this replay may not, because equal instants across two
+    // different orders are not one transition. See the tie test below.
     const at = "2026-09-06T10:00:00.000Z";
     const slots = { "marathon-pe": { p1: { size: null, sizeKey: null, bookedHub: "hub1", source: "display_sold", at } } };
     const orders = [{ id: "b", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: at }];
     expect(units(slots, orders)).toEqual({});
-    expect(displaySlotRepairs(slots, orders)).toEqual([]);   // already done — no write
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([]);   // already done — no write
   });
 
   it("EVERY INSTANT IS A FIXED-FORMAT UTC STRING, which is why > is chronological", () => {
@@ -368,10 +400,11 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
 // ordinary fenced writers.
 describe("displaySlotRepairs — the divergence as a write", () => {
   const PE = "marathon-pe";
+  const NOW = Date.parse("2026-09-07T12:00:00.000Z");
   it("a dropped SALE clear becomes a clear, stamped with the ORDER's instant", () => {
     const slots = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z" } } };
     const orders = [{ id: "401", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
-    expect(displaySlotRepairs(slots, orders)).toEqual([
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([
       { op: "clear", store: PE, productId: "p1", source: "display_sold", at: "2026-09-06T09:00:00.000Z", orderId: "401" },
     ]);
   });
@@ -381,7 +414,7 @@ describe("displaySlotRepairs — the divergence as a write", () => {
                       createdAt: "2026-09-01T07:00:00.000Z",
                       displayRefillStatus: "refilled", displayRefillSize: "8",
                       displayRefilledAt: "2026-09-06T09:00:00.000Z", displayRefillHub: "hub1" }];
-    expect(displaySlotRepairs(slots, orders)).toEqual([
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([
       { op: "set", store: PE, productId: "p1", productName: "AF1", size: "8", bookedHub: "hub1",
         source: "display_refill", at: "2026-09-06T09:00:00.000Z", orderId: "402" },
     ]);
@@ -392,18 +425,18 @@ describe("displaySlotRepairs — the divergence as a write", () => {
                       createdAt: "2026-09-01T07:00:00.000Z",
                       displayRefillStatus: "refilled", displayRefillSize: "8",
                       displayRefilledAt: "2026-09-06T09:00:00.000Z", displayRefillHub: "hub1" }];
-    expect(displaySlotRepairs(slots, orders)).toEqual([]);
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([]);
   });
   it("a slot that has moved on since is NOT repaired — the writers' own fence, applied early", () => {
     const slots = { "marathon-pe": { p1: { size: "7", sizeKey: "7", bookedHub: "hub1", source: "registration", at: "2026-09-07T12:00:00.000Z" } } };
     const orders = [{ id: "404", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
-    expect(displaySlotRepairs(slots, orders)).toEqual([]);
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([]);
   });
   it("clearing something already cleared, or never recorded, is not a write", () => {
     const orders = [{ id: "405", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
     expect(displaySlotRepairs({ "marathon-pe": { p1: { size: null, sizeKey: null, at: "2026-09-01T08:00:00.000Z" } } }, orders)).toEqual([]);
-    expect(displaySlotRepairs({}, orders)).toEqual([]);
-    expect(displaySlotRepairs(null, null)).toEqual([]);
+    expect(displaySlotRepairs({}, orders, NOW)).toEqual([]);
+    expect(displaySlotRepairs(null, null, NOW)).toEqual([]);
   });
   it("THE REPAIR AND THE PROJECTION AGREE: applying the repairs yields the projected map", () => {
     // The two must never drift — a repair that writes something the marker
@@ -420,7 +453,7 @@ describe("displaySlotRepairs — the divergence as a write", () => {
     ];
     // apply the repairs to a copy, the way the writers would
     const applied = JSON.parse(JSON.stringify(slots));
-    for (const r of displaySlotRepairs(slots, orders)) {
+    for (const r of displaySlotRepairs(slots, orders, NOW)) {
       const cur = applied[r.store][r.productId];
       applied[r.store][r.productId] = r.op === "clear"
         ? { ...cur, size: null, sizeKey: null, at: r.at }
@@ -428,6 +461,67 @@ describe("displaySlotRepairs — the divergence as a write", () => {
     }
     expect(displayUnitsByCell(applied, "hub1")).toEqual(displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub1"));
   });
+  it("A STALE FENCE IS A REPAIR even when the state already matches", () => {
+    // Reviewer's case: slot says size 8 at 10:00:01, the replacement to 8
+    // happened at 10:00:03 and its write dropped. Content matches, so an
+    // earlier cut wrote nothing — and a clear stamped 10:00:02 then wiped a
+    // display that had been replaced AFTER it. The repair advances the fence.
+    const slots = { "marathon-pe": { p1: { size: "8", sizeKey: "8", bookedHub: "hub1", source: "display_refill", at: "2026-09-07T10:00:01.000Z" } } };
+    const orders = [{ id: "408", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-07T09:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "8",
+                      displayRefilledAt: "2026-09-07T10:00:03.000Z", displayRefillHub: "hub1" }];
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([
+      { op: "set", store: PE, productId: "p1", productName: "", size: "8", bookedHub: "hub1",
+        source: "display_refill", at: "2026-09-07T10:00:03.000Z", orderId: "408" },
+    ]);
+    // and it CONVERGES: once the fence is at the event's instant, no more writes
+    const healed = { "marathon-pe": { p1: { ...slots["marathon-pe"].p1, at: "2026-09-07T10:00:03.000Z" } } };
+    expect(displaySlotRepairs(healed, orders, NOW)).toEqual([]);
+  });
+
+  it("a stale TOMBSTONE fence is not repaired — the write could not land anyway", () => {
+    // clearDisplaySlot refuses to re-stamp an already-cleared record by design,
+    // and the only write that could slip in front of a newer sale event is one
+    // putting a display back on the floor, which should win.
+    const slots = { "marathon-pe": { p1: { size: null, sizeKey: null, at: "2026-09-01T08:00:00.000Z" } } };
+    const orders = [{ id: "409", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
+    expect(displaySlotRepairs(slots, orders, NOW)).toEqual([]);
+  });
+
+  it("A TIE NEVER LETS THE REPLAY OVERWRITE A LANDED WRITE", () => {
+    // The regression an equal-instant rule introduced: PE's slot holds a
+    // replacement stamped T; Trophy's store-scoped feed holds only its own
+    // cross-shop pull, whose clear is ALSO stamped T. Equal timestamps do not
+    // make them one transition, and this replay is never the author of one —
+    // so it loses every tie and writes nothing.
+    const T = "2026-09-07T10:00:00.000Z";
+    const slots = { "marathon-pe": { p1: { size: "8", sizeKey: "8", bookedHub: "hub1", source: "display_refill", at: T } } };
+    const trophyFeed = [{ id: "410", productId: "p1", destShop: "trophy", requestDisplayPartner: true,
+                          displayPairRequest: true, displayPairStore: PE, createdAt: T }];
+    expect(displaySlotRepairs(slots, trophyFeed, NOW)).toEqual([]);
+    expect(Object.keys(displayUnitsByCell(slotsAfterOrderExits(slots, trophyFeed), "hub1"))).toEqual(["p1::8"]);
+  });
+
+  it("TWO ORDERS IN THE SAME MILLISECOND resolve the same way whatever the array order", () => {
+    const T = "2026-09-07T10:00:00.000Z";
+    const slots = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-09-01T08:00:00.000Z" } } };
+    const mk = (id, size) => ({ id, productId: "p1", destShop: PE, requestDisplayPartner: true,
+                                createdAt: "2026-09-01T07:00:00.000Z",
+                                displayRefillStatus: "refilled", displayRefillSize: size,
+                                displayRefilledAt: T, displayRefillHub: "hub1" });
+    const a = mk("501", "6"), b = mk("502", "7");
+    expect(displaySlotRepairs(slots, [a, b], NOW)).toEqual(displaySlotRepairs(slots, [b, a], NOW));
+    expect(displaySlotRepairs(slots, [a, b], NOW)[0].size).toBe("7");   // the higher order id
+  });
+
+  it("the repair key separates a hub correction that leaves size and instant alone", () => {
+    const at = "2026-09-06T09:00:00.000Z";
+    const base = { op: "set", store: PE, productId: "p1", at, size: "6" };
+    expect(displayRepairKey({ ...base, bookedHub: "hub1" }))
+      .not.toBe(displayRepairKey({ ...base, bookedHub: "hub2" }));
+  });
+
   it("displayRepairKey is stable and distinguishes the ops it must", () => {
     const base = { op: "clear", store: PE, productId: "p1", at: "2026-09-06T09:00:00.000Z" };
     expect(displayRepairKey(base)).toBe(displayRepairKey({ ...base }));
@@ -535,10 +629,41 @@ describe("depletedTaskRevivable — the empty-slot loop", () => {
 });
 
 describe("module purity + key-space agreement", () => {
-  it("displayPairCore imports no firebase", () => {
+  // NOT "imports no firebase" — a reviewer pointed out twice that the old
+  // wording was only ever true DIRECTLY: displayPairCore imports slotIsLive
+  // from displaySlots.js, which does import firebase. What actually matters is
+  // that every exported decision here is a PURE FUNCTION of its arguments: it
+  // opens no connection, reads no node and writes nothing, so a caller can run
+  // it on data it already holds and a test can run it on a literal. That is
+  // asserted directly below, and by the fact that this whole file runs with no
+  // firebase mock of any kind.
+  it("displayPairCore names no firebase API and touches no database", () => {
     const src = readFileSync(new URL("./displayPairCore.js", import.meta.url), "utf8");
     expect(src).not.toMatch(/from ["']firebase/);
     expect(src).not.toMatch(/\.\.\/\.\.\/firebase/);
+    // The transitive import is slotIsLive ONLY, which is itself pure. Anything
+    // that reads or writes would show up as one of these. Method calls are
+    // stripped first so the Map's own .get/.set are not mistaken for the
+    // firebase free functions of the same name. (No lookbehind: a parse-time
+    // SyntaxError in src/ blanks the whole app on Safari < 16.4.)
+    const bare = src.replace(/\.\s*\w+\s*\(/g, ".CALL(");
+    for (const api of [/\bref\s*\(/, /\bget\s*\(/, /\bset\s*\(/, /\bupdate\s*\(/,
+                       /\bchild\s*\(/, /runTransaction/, /onValue/, /\bdatabase\b/, /\bauth\b/]) {
+      expect(bare).not.toMatch(api);
+    }
+  });
+  it("and every exported decision is pure: same input, same output, input unmutated", () => {
+    const slots = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-09-01T08:00:00.000Z" } } };
+    const orders = [{ id: "601", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true,
+                      createdAt: "2026-09-06T09:00:00.000Z" }];
+    const now = Date.parse("2026-09-07T12:00:00.000Z");
+    const before = JSON.stringify({ slots, orders });
+    const a = JSON.stringify(displaySlotRepairs(slots, orders, now));
+    const b = JSON.stringify(displaySlotRepairs(slots, orders, now));
+    expect(a).toBe(b);
+    expect(JSON.stringify(slotsAfterOrderExits(slots, orders, now)))
+      .toBe(JSON.stringify(slotsAfterOrderExits(slots, orders, now)));
+    expect(JSON.stringify({ slots, orders })).toBe(before);   // nothing mutated
   });
   it("the display map and the promise map share one key space", () => {
     const m = displayUnitsByCell(SLOTS, "hub1");

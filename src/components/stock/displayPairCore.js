@@ -176,11 +176,22 @@ function displayExitsByStoreProduct(orders) {
     const store = displaySlotStoreFor(o);
     if (!store) continue;
     const key = exitKey(store, o.productId);
+    // Newest instant wins; at equal instants the higher rank (the later
+    // transition on one order) wins; at equal instant AND rank — two different
+    // orders resolved in the same millisecond — the higher order id wins.
+    // Without that last term the answer depended on the order the array
+    // happened to be in, and two devices reading differently-scoped feeds could
+    // write conflicting states at the same timestamp.
+    const orderId = o.id ?? null;
     const put = (at, rank, ev) => {
       if (typeof at !== "string" || !at) return;
       const cur = out.get(key);
-      if (cur && (at < cur.at || (at === cur.at && rank <= cur.rank))) return;
-      out.set(key, { at, rank, orderId: o.id ?? null, productName: o.productName || "", ...ev });
+      if (cur) {
+        if (at < cur.at) return;
+        if (at === cur.at && rank < cur.rank) return;
+        if (at === cur.at && rank === cur.rank && String(orderId) <= String(cur.orderId)) return;
+      }
+      out.set(key, { at, rank, orderId, productName: o.productName || "", ...ev });
     };
     const sized = (size, bookedHub, source) => {
       const raw = String(size);
@@ -202,14 +213,51 @@ function displayExitsByStoreProduct(orders) {
   return out;
 }
 
-// Does this event supersede the slot record it lands on? The slot wins only
-// when it is STRICTLY newer. A slot with no `at` at all is a hand-written
-// record whose place in the order of events is unknowable — it wins too,
-// rather than being guessed at.
-const exitWins = (ev, slot) => {
-  if (!slot) return true;                                   // no record — a SET creates one
+// Does this event supersede the slot record it lands on? THE EVENT MUST BE
+// STRICTLY NEWER.
+//
+// An earlier cut let an equal instant through, reasoning that equal instants
+// are the same transition and applying it is idempotent. That is false ACROSS
+// ORDERS, and a reviewer produced the case: PE's slot holds a replacement
+// stamped T; Trophy's store-scoped feed holds only its own cross-shop pull,
+// whose clear is also stamped T; Trophy's device would then durably clear a
+// replacement that had genuinely landed. Equal timestamps do not establish a
+// common transition, and this replay is never the AUTHOR of a transition — it
+// only stands in for a write that was dropped. So it loses every tie. The real
+// writers keep their own rule (supersededBy lets an equal-instant write
+// through); an author may win a tie, a stand-in may not.
+//
+// A slot with no `at` at all is a hand-written record whose place in the order
+// of events is unknowable — it wins too, rather than being guessed at.
+// ── CREATING A RECORD OUT OF NOTHING IS THE ONE UNFENCED MOVE ────────────────
+// Updating an existing slot is safe at any age: the record's own `at` is the
+// fence, so an event older than the last transition simply loses. CREATING one
+// has no fence — nothing can contradict it — so a stale create asserts that a
+// display is standing on a floor today on the strength of an order from weeks
+// ago, which is exactly the "resurrect a display someone took down" failure
+// this module is not allowed to have.
+//
+// Found in a live dry run: six repairs, and FIVE were refills from 1-2 August,
+// before /settings/displaySlots existed at all (the node was introduced
+// 2026-08-12). Their evidence survives only because /orders recycles ids and
+// theirs happened not to be reused; nothing in the window says what became of
+// those displays in the five weeks since. The sixth was a genuine dropped
+// write from two days earlier — and an UPDATE, so it was fenced anyway.
+//
+// So a create needs the event to still be about NOW. A week is generous for a
+// write that should have landed in the same second, and it cleanly separates a
+// dropped write from a pre-slot artefact.
+export const DISPLAY_EXIT_CREATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const exitWins = (ev, slot, nowMs) => {
+  if (!slot) {
+    // No record at all: only a SET creates one, and only while it is recent.
+    if (ev.sizeKey == null) return false;
+    const t = Date.parse(ev.at);
+    return Number.isFinite(t) && nowMs - t <= DISPLAY_EXIT_CREATE_MAX_AGE_MS;
+  }
   if (typeof slot.at !== "string" || !slot.at) return false;
-  return ev.at >= slot.at;
+  return ev.at > slot.at;
 };
 
 // Is the slot already exactly what the event says? Then the write landed and
@@ -218,6 +266,27 @@ const sameSlotState = (ev, slot) =>
   ev.sizeKey == null
     ? !slotIsLive(slot)
     : !!slot && slot.sizeKey === ev.sizeKey && slot.bookedHub === (ev.bookedHub ?? slot.bookedHub);
+
+// THE STALE FENCE. Matching CONTENT is not enough to skip a repair: the slot's
+// `at` is the fence every later writer is judged against, so a record that says
+// the right thing at the wrong instant is still wrong. Slot size 8 stamped
+// 10:00:01, replacement to size 8 at 10:00:03 whose write dropped — content
+// matches, so nothing is written, and a clear stamped 10:00:02 then wipes a
+// display that had been replaced after it (reviewer's case, reproduced).
+//
+// So a repair is still due when the event is newer than the fence, even though
+// the content agrees. It writes the same state with the right instant, and it
+// costs nothing in the healthy case: a landed write already stamped the event's
+// own instant (App.jsx passes `at`), so `ev.at > slot.at` is false and no write
+// is emitted. One write per stale fence, once, then it converges.
+// SETS ONLY, and that is not an omission. A tombstone with a stale fence is
+// harmless: the only write that could slip between a stale tombstone and a
+// newer sale event is one putting a display BACK on the floor, and that write
+// should win — it is the newer physical truth. clearDisplaySlot also refuses
+// by design to re-stamp an already-cleared record, so a clear repair here
+// would be a write that cannot land.
+const fenceIsStale = (ev, slot) =>
+  ev.sizeKey != null && !!slot && typeof slot.at === "string" && !!slot.at && ev.at > slot.at;
 
 const slotFromExit = (ev, productId, slot) =>
   ev.sizeKey == null
@@ -236,7 +305,7 @@ const slotFromExit = (ev, productId, slot) =>
  * user-reachable data, and `__proto__` as a key on a `{}` literal silently
  * mutates the result's prototype instead of adding a member.
  */
-export function slotsAfterOrderExits(slots, orders) {
+export function slotsAfterOrderExits(slots, orders, nowMs = serverNowMs()) {
   const exits = displayExitsByStoreProduct(orders);
   if (exits.size === 0) return slots || {};
   const out = Object.create(null);
@@ -253,21 +322,21 @@ export function slotsAfterOrderExits(slots, orders) {
       const k = exitKey(store, pid);
       seen.add(k);
       const ev = exits.get(k);
-      const apply = ev && exitWins(ev, slot) && !sameSlotState(ev, slot);
+      const apply = ev && exitWins(ev, slot, nowMs) && !sameSlotState(ev, slot);
       if (apply) changed = true;
       next[pid] = apply ? slotFromExit(ev, pid, slot) : slot;
     }
     out[store] = next;
   }
   for (const [k, ev] of exits) {
-    if (!seen.has(k) && ev.sizeKey != null) { changed = true; break; }
+    if (!seen.has(k) && exitWins(ev, null, nowMs)) { changed = true; break; }
   }
   if (!changed) return slots || {};
   // A replacement for a product this store has no slot record for at all: the
   // writer would have CREATED one, so the projection does too. A clear with no
   // record stays nothing, exactly as clearDisplaySlot no-ops.
   for (const [k, ev] of exits) {
-    if (seen.has(k) || ev.sizeKey == null) continue;
+    if (seen.has(k) || !exitWins(ev, null, nowMs)) continue;
     const i = k.indexOf(" ");
     const store = k.slice(0, i), pid = k.slice(i + 1);
     (out[store] ||= Object.create(null))[pid] = slotFromExit(ev, pid, null);
@@ -288,7 +357,7 @@ export function slotsAfterOrderExits(slots, orders) {
  * → [{ op: "set" | "clear", store, productId, productName, size, bookedHub,
  *      source, at, orderId }]
  */
-export function displaySlotRepairs(slots, orders) {
+export function displaySlotRepairs(slots, orders, nowMs = serverNowMs()) {
   const exits = displayExitsByStoreProduct(orders);
   const out = [];
   if (exits.size === 0) return out;
@@ -296,10 +365,11 @@ export function displaySlotRepairs(slots, orders) {
     const i = k.indexOf(" ");
     const store = k.slice(0, i), productId = k.slice(i + 1);
     const slot = slots?.[store]?.[productId] ?? null;
-    if (!exitWins(ev, slot)) continue;
-    // Already exactly what the event says — the write landed, nothing to do.
-    // (A clear with no record at all is also nothing: clearDisplaySlot no-ops.)
-    if (sameSlotState(ev, slot)) continue;
+    if (!exitWins(ev, slot, nowMs)) continue;
+    // Already exactly what the event says AND stamped no earlier than it — the
+    // write landed, nothing to do. (A clear with no record at all is also
+    // nothing: clearDisplaySlot no-ops, and there is no fence to advance.)
+    if (sameSlotState(ev, slot) && !fenceIsStale(ev, slot)) continue;
     if (ev.sizeKey == null) {
       out.push({ op: "clear", store, productId, source: ev.source, at: ev.at, orderId: ev.orderId });
     } else {
@@ -312,9 +382,14 @@ export function displaySlotRepairs(slots, orders) {
   return out;
 }
 
-/** Stable identity for one repair, so a device applies each at most once. */
+/**
+ * Stable identity for one repair, so a device applies each at most once.
+ * The HUB is in the key: an order's hub can be corrected while its size and
+ * instant stay put, and a key blind to that suppressed the corrected repair
+ * for the rest of the mount, leaving the durable record on the old hub.
+ */
 export const displayRepairKey = (r) =>
-  `${r.op} ${r.store} ${r.productId} ${r.at} ${r.size ?? ""}`;
+  `${r.op} ${r.store} ${r.productId} ${r.at} ${r.size ?? ""} ${r.bookedHub ?? ""}`;
 
 // THE MARKER RULE: the display pair is the ONLY remaining availability.
 //   avail == 0            → ✕ / grey, unchanged (nothing requestable — even

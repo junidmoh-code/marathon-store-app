@@ -276,6 +276,27 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // this fence is about — and the register must never come back as a term.
     expect(a).toContain('displayUnitsByCell(displaySlotsLive, "hub1")');
     expect(a).toContain('slotsAfterOrderExits(displaySlots, orders)');
+    // THE SELF-HEAL IS A WRITE PATH, and these are the four things that keep it
+    // from becoming a write storm. There is no render test for an effect that
+    // only writes, so the wiring is pinned here.
+    //   • it does not run before BOTH subscriptions have answered — an empty
+    //     slots map would otherwise read as "no record" and mint creates;
+    //   • a read ERROR keeps it off, for the same reason;
+    //   • every repair is remembered BEFORE the write and never un-remembered,
+    //     so one attempt per repair per session and a persistent failure
+    //     cannot resubmit on every unrelated till transaction;
+    //   • the event's own instant is passed through, so a repair is judged by
+    //     the writers' fence exactly as the dropped write would have been.
+    expect(a).toContain("if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;");
+    expect(a).toContain("const repairs = displaySlotRepairs(displaySlots, orders);");
+    expect(a).toContain("if (repairedRef.current.has(k)) continue;");
+    expect(a).toContain("repairedRef.current.add(k);");
+    expect(a).not.toMatch(/repairedRef\.current\.delete/);
+    expect(a).toContain("orderId: r.orderId, at: r.at");
+    // and the three exit writers stamp the transition's own instant
+    expect(a).toContain("at: order.createdAt,");
+    expect(a.match(/source: "manual", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
+    expect(a.match(/source: "display_refill", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
     expect(a).not.toMatch(/useDisplayRegister/);
     expect(a).not.toMatch(/hubSneakerCount\/register/);
   });
