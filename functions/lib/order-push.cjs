@@ -196,11 +196,18 @@ const REPLAY_TTL_MS = 30 * 60 * 1000;
 const MAX_SEEN = 250;
 
 // Ceiling on recipients resolved from the index. Not a policy — a blast-radius
-// stop, so a corrupted or abused index cannot turn one order into
-// hundreds of per-user reads. Grounded in the real staff count (~31 accounts),
-// with headroom, rather than in a round number: the console rules scope every
-// audience write to the writer's own uid, so the index cannot legitimately
-// exceed the number of people who work here.
+// stop, so a corrupted index cannot turn one order into hundreds of per-user
+// reads. Grounded in the real staff count (~31 accounts), with headroom,
+// rather than in a round number.
+//
+// The reason it cannot LEGITIMATELY be exceeded changed with the model, and
+// the old sentence here still described the old one. It used to be that the
+// rules scoped every audience write to the writer's own uid, so the index
+// could only ever hold people who had subscribed themselves. It is now that
+// /push_hub_audience is ADMIN-WRITE ONLY — one person maintains it, from one
+// screen, over the accounts that exist — so anything above this number is
+// corruption or a compromised admin session, and neither is a case to fan out
+// for. The cap is what makes that bounded rather than merely unlikely.
 const MAX_RECIPIENTS = 60;
 
 // The FCM error codes that mean "this address is dead, stop writing to it".
