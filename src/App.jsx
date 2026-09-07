@@ -938,6 +938,12 @@ function useOrders(scopeShop = null) {
       // A read ERROR leaves settled FALSE deliberately: the promise map is
       // empty for a reason that has nothing to do with the shelf.
       console.warn("Firebase read error on /orders:", err);
+      // …but an error AFTER a first successful snapshot left `settled` true and
+      // the last array in place, so a consumer went on treating stale evidence
+      // as current (final gate review). The flag says so without disturbing
+      // `settled`, which every other consumer reads: the display self-heal is
+      // the one consumer that WRITES from this evidence, and it stops.
+      setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
     });
     return () => unsub();
   }, [authReady, scopeShop]);
@@ -9088,7 +9094,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // lands would otherwise read as "no slot" and mint a create.
   const repairedRef = useRef(new Set());
   useEffect(() => {
-    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;
+    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled || orders?.error) return;
     const repairs = displaySlotRepairs(displaySlots, orders);
     for (const r of repairs) {
       const k = displayRepairKey(r);
@@ -9101,10 +9107,14 @@ function AssistantView({ products, onExit, orders = [] }) {
       // transaction, from every device at once (reviewer's case). A failure now
       // simply waits for the next load, which is when the divergence is found
       // again. Nothing user-facing waits on this write.
+      // loseTies: a repair decided what to write against a SNAPSHOT, and a real
+      // write stamped the same instant may have landed since. Its own fence is
+      // strict; the transaction's must be too, or the repair could still clear
+      // a replacement that had just arrived.
       const done = r.op === "clear"
-        ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at })
+        ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at, loseTies: true })
         : setDisplaySlot({ store: r.store, productId: r.productId, productName: r.productName,
-                           size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at });
+                           size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at, loseTies: true });
       // The writers resolve { ok: true, superseded } / { ok: true, noop } when a
       // transaction legitimately aborts, which is indistinguishable from "wrote
       // fine" to a bare .catch(). A repair is the one write here nobody is

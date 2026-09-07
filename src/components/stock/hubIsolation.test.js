@@ -287,7 +287,12 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     //     cannot resubmit on every unrelated till transaction;
     //   • the event's own instant is passed through, so a repair is judged by
     //     the writers' fence exactly as the dropped write would have been.
-    expect(a).toContain("if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;");
+    // Both subscriptions must have ANSWERED and neither may be in error — an
+    // /orders error after a first success leaves `settled` true, so the error
+    // flag is checked too.
+    expect(a).toContain("if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled || orders?.error) return;");
+    // and a repair loses ties inside the transaction, not only in its own fence
+    expect(a.match(/loseTies: true/g) || []).toHaveLength(2);
     expect(a).toContain("const repairs = displaySlotRepairs(displaySlots, orders);");
     expect(a).toContain("if (repairedRef.current.has(k)) continue;");
     expect(a).toContain("repairedRef.current.add(k);");
