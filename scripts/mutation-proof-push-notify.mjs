@@ -8,8 +8,9 @@
 // runners, because this feature spans both halves: the client resolves who is
 // subscribed (vitest) and the server fans out (node --test).
 //
-// The two guards the owner named specifically are M1/M2 (DEFAULT ON — deleting
-// it must go red) and M7/M8 (dead-token pruning). The rest are here because
+// The guard the owner named specifically for this release is A1 (NO ASSIGNMENT
+// MEANS NOTHING IS SENT — deleting it must go red), alongside M7/M8 (dead-token
+// pruning), which predate it. The rest are here because
 // each is a way this feature fails LOUDLY at a staff member and quietly in the
 // logs: a sweep firing four hundred notifications, a redelivery double-sending,
 // a RECYCLED order id swallowing tomorrow's real order as a replay, shadow
@@ -20,10 +21,11 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
-const PREFS = "src/push/notificationPrefs.js";
 const PUSH = "functions/lib/order-push.cjs";
+const ASSIGN = "src/push/pushAssignments.js";
+const ASSIGN_TESTS = ["src/push/pushAssignments.test.js", "src/push/PushAssignmentsCard.gate.test.jsx"];
+const RULES_TESTS = ["src/push/pushAssignmentRules.test.js"];
 const SERVER_TESTS = ["test/order-push.test.cjs"];
-const PREFS_TESTS = ["src/push/notificationPrefs.test.js"];
 const CHIME = "src/push/chime.js";
 const FOREGROUND = "src/push/useForegroundPush.js";
 const FOREGROUND_TESTS = ["src/push/foregroundBanner.test.jsx"];
@@ -34,54 +36,115 @@ const FOCUS = "src/push/useFocusOrder.js";
 const FOCUS_TESTS = ["src/push/focusOrder.test.jsx"];
 
 const MUTATIONS = [
-  // ── DEFAULT ON ────────────────────────────────────────────────────────────
-  {
-    id: "M1",
-    guard: "DEFAULT ON — no preferences record means the ROLE decides, not off",
-    file: PREFS,
-    from: `  const on = explicit === null ? roleDefault : explicit;`,
-    to: `  const on = explicit === true;`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M2",
-    guard: "The default is ON for the roles that actually pick refills",
-    file: PREFS,
-    from: `export const DEFAULT_ON_ROLES = Object.freeze(["warehouse", "admin"]);`,
-    to: `export const DEFAULT_ON_ROLES = Object.freeze([]);`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M3",
-    guard: "An EXPLICIT off beats the role default — a picker who opted out stays out",
-    file: PREFS,
-    from: `  const on = explicit === null ? roleDefault : explicit;`,
-    to: `  const on = explicit === null ? roleDefault : (roleDefault || explicit);`,
-    tests: PREFS_TESTS,
-  },
-  {
-    id: "M4",
-    guard: "A dirty account that opted in lands in a bucket, never in none",
-    file: PREFS,
-    from: `  return [AUDIENCE_ALL];
-}
+  // ── THE PERSONAL TOGGLE IS GONE (2026-09-07) ──────────────────────────────
+  // M1–M5 guarded src/push/notificationPrefs.js: the default-on role rule, the
+  // explicit-off override, the dirty-account fallback. That module was deleted
+  // with the switch it drove — notifications are ADMIN-ASSIGNED and HUB-SCOPED
+  // now, and the default for everyone is OFF. The guards that replaced them are
+  // A1–A6 below (src/push/pushAssignments.js) and S1–S4 (the scoped fan-out):
+  // an absent record means nothing is sent, and no other field may be read as
+  // consent.
 
-function normalise(v) {`,
-    to: `  return [];
-}
-
-function normalise(v) {`,
-    tests: PREFS_TESTS,
+  // ── ADMIN-ASSIGNED, HUB-SCOPED (2026-09-07) ───────────────────────────────
+  // A1 is the guard the owner named: absence of an assignment MUST mean nothing
+  // is sent. The rest are the ways that sentence quietly stops being true.
+  {
+    id: "A1",
+    guard: "ABSENCE IS OFF — no assignment record means no hubs, whatever else the record carries",
+    file: ASSIGN,
+    from: `  return PUSH_HUBS.filter((hub) => record[hub] === true);`,
+    to: `  return PUSH_HUBS.filter((hub) => record[hub] === true || record.stockRole === "warehouse");`,
+    tests: ASSIGN_TESTS,
   },
   {
-    id: "M5",
-    guard: "A malformed prefs value is 'never set', not 'off' — a stray string cannot silence a picker",
-    file: PREFS,
-    from: `  const explicit = typeof (prefs && prefs.refillRequests) === "boolean"
-    ? prefs.refillRequests
+    id: "A2",
+    guard: "Only a REAL boolean counts — a stray string must degrade to silence, not to consent",
+    file: ASSIGN,
+    from: `  return PUSH_HUBS.filter((hub) => record[hub] === true);`,
+    to: `  return PUSH_HUBS.filter((hub) => !!record[hub]);`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A3",
+    guard: "EVERY hub is written on every save — the ones being turned OFF must be nulled",
+    file: ASSIGN,
+    from: `    upd[pushHubAudienceEntryPath(hub, uid)] = want.has(hub) ? { at: nowMs } : null;`,
+    to: `    if (want.has(hub)) upd[pushHubAudienceEntryPath(hub, uid)] = { at: nowMs };`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A4",
+    guard: "Clearing DELETES the record — off is absence, never a stored row of falses",
+    file: ASSIGN,
+    from: `  upd[pushAssignmentPath(uid)] = want.size
+    ? { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs }
     : null;`,
-    to: `  const explicit = prefs && "refillRequests" in prefs ? !!prefs.refillRequests : null;`,
-    tests: PREFS_TESTS,
+    to: `  upd[pushAssignmentPath(uid)] = { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs };`,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A5",
+    guard: "A uid RTDB could not store is REFUSED, not handed to the SDK to throw on",
+    file: ASSIGN,
+    from: `  if (!isLegalKey(uid)) throw new Error(\`push assignment: unusable uid "\${uid}"\`);`,
+    to: ``,
+    tests: ASSIGN_TESTS,
+  },
+  {
+    id: "A6",
+    guard: "The assignment paths are ADMIN-WRITE — a client-writable index is the whole feature undone",
+    file: "PUSH-ASSIGNMENT-RULES-DEPLOY.md",
+    from: `"push_hub_audience": {
+  ".read":  "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",`,
+    to: `"push_hub_audience": {
+  ".read":  "auth != null",
+  ".write": "auth != null",`,
+    tests: RULES_TESTS,
+  },
+
+  // ── THE SCOPED FAN-OUT ────────────────────────────────────────────────────
+  {
+    id: "S1",
+    guard: "Recipients come from the ASSIGNED index and NOWHERE else — no wildcard, no fallback",
+    file: PUSH,
+    from: `  const snap = await db.ref(\`push_hub_audience/\${hub}\`).get();`,
+    to: `  const snap = await db.ref("push_audience/all").get();`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S2",
+    guard: "The BURST is keyed by the hub — keyed by anything else it swallows another hub's order",
+    file: PUSH,
+    from: `  const hub = hubForOrder(record);
+  const seenKey = replayKey(orderId, record.createdAt);`,
+    to: `  const hub = record.destShop.trim();
+  const seenKey = replayKey(orderId, record.createdAt);`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S3",
+    guard: "An order with NO hub is refused, never defaulted onto a hub that would then be told",
+    file: PUSH,
+    from: `  if (!hub) return "no_hub";`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S4",
+    guard: "A hub that is not a legal RTDB key is refused before db.ref() throws on it",
+    file: PUSH,
+    from: `  if (/[.#$/[\\]]/.test(hub)) return "bad_hub";`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S5",
+    guard: "The lock-screen tag is PER HUB — one tag lets Hub 2 replace Hub 1 for a both-hubs assignee",
+    file: PUSH,
+    from: `      tag: \`order-\${hub}\`,`,
+    to: `      tag: "order",`,
+    nodeTests: SERVER_TESTS,
   },
 
   // ── DEAD TOKEN PRUNING ────────────────────────────────────────────────────
@@ -309,8 +372,8 @@ function normalise(v) {`,
     id: "M31",
     guard: "The recipient CAP holds — the old test could not fail because only one uid had a token",
     file: PUSH,
-    from: "  return Array.from(uids).slice(0, MAX_RECIPIENTS);",
-    to: "  return Array.from(uids);",
+    from: "  return Object.keys(val).slice(0, MAX_RECIPIENTS);",
+    to: "  return Object.keys(val);",
     nodeTests: SERVER_TESTS,
   },
   {

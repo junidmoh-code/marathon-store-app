@@ -55,43 +55,34 @@ export const PUSH_SW_SCOPE = "/fcm/";
 export const pushTokensPath = (uid) => `push_tokens/${uid}`;
 export const pushTokenPath = (uid, tokenId) => `push_tokens/${uid}/${tokenId}`;
 
-// The explicit preference, when the user has expressed one. ABSENT means
-// "no explicit preference" — which resolves to the role default, not to off.
-// See src/push/notificationPrefs.js.
-export const notificationPrefPath = (uid) => `notification_prefs/${uid}`;
-
-// ── THE TARGETED INDEX ───────────────────────────────────────────────────────
-// The fan-out MUST NOT scan /users (31 records with permissions arrays) or
-// /push_tokens (one node per staff device) to answer "who wants this?". Live
-// bandwidth is the single largest line on this project's bill.
+// ── THE LEGACY AUDIENCE INDEX — KEPT ONLY TO BE EMPTIED ─────────────────────
+// /push_audience was the CLIENT-OWNED index of the old model: each browser
+// wrote its own uid into the buckets its stockRole and destShop resolved to,
+// and the fan-out read the destination's bucket plus the `all` wildcard.
 //
-// So the client — which already knows its own uid, stockRole, destShop and
-// preference — maintains a denormalised index of subscribed users per bucket.
-// The fan-out reads exactly two tiny nodes: the destination's bucket and the
-// `all` bucket. Each entry is a uid → {at} stub, nothing more.
+// That model is gone (2026-09-07). Recipients are now ADMIN-ASSIGNED and
+// HUB-SCOPED — /push_assignments is what Junid sets and /push_hub_audience is
+// what the fan-out reads (src/push/pushAssignments.js). Nothing on the server
+// reads /push_audience any more.
 //
-// Having the CLIENT own the index is sound rather than fragile, because a user
-// with no registered device cannot be notified at all: the index can only ever
-// go stale in the direction of a uid whose tokens are gone, and the fan-out
-// already tolerates that (a uid with no tokens contributes nothing).
+// The paths and the closed bucket list survive for exactly one reason: every
+// app load now passes an EMPTY bucket list through audienceUpdates(), which
+// writes a null at every one of these leaves. That is what makes the live node
+// drain itself instead of sitting there as a stale copy of a model that no
+// longer exists. Deleting the list would strand whatever is already in it.
 export const pushAudiencePath = (bucket) => `push_audience/${bucket}`;
 export const pushAudienceEntryPath = (bucket, uid) => `push_audience/${bucket}/${uid}`;
 
-// Where the fan-out keeps its burst window + replay guard, one node per
-// destination STORE. Server-owned; the client never reads or writes it.
+// Where the fan-out keeps its burst window + replay guard. One node per
+// FULFILLING HUB since 2026-09-07 (it was per destination store before, when
+// the audience was bucketed that way). Server-owned; the client never reads or
+// writes it, and no rule names the key.
 export const pushBurstPath = (hub) => `push_bursts/${hub}`;
 
-// ── BUCKETS ──────────────────────────────────────────────────────────────────
-// `all` is the wildcard bucket: Central-side staff (warehouse / admin) fulfil
-// orders for EVERY destination, so scoping them to one shop would be wrong.
-// The rest are destination keys, matching `destShop` on an order exactly (the
-// three shops), plus the hub keys a destShop-pinned account could carry.
+// ── BUCKETS (LEGACY) ─────────────────────────────────────────────────────────
+// `all` was the wildcard bucket. Retained only as part of the closed list the
+// clear above walks.
 export const AUDIENCE_ALL = "all";
-
-// The CLOSED list of buckets a client may write itself into, and — just as
-// importantly — the closed list it clears itself out of when its resolution
-// changes. Without a closed list, a user who moves from hub2 to hub1 would stay
-// subscribed to hub2 forever, because nothing would know to look there.
 export const AUDIENCE_BUCKETS = Object.freeze([
   AUDIENCE_ALL,
   "hub1",
