@@ -169,7 +169,24 @@ const exitKey = (store, productId) => `${store} ${productId}`;
 
 // One winning transition per (store, product) — { at, rank, sizeKey, size,
 // bookedHub, source, orderId, productName }. sizeKey null = a clear.
+// The projection and the repair list are two views of ONE scan, and App.jsx
+// takes both from the same render. Keyed on the orders ARRAY itself: useOrders
+// hands back a fresh array per snapshot, so an entry is used twice and then
+// becomes collectable with it. Nothing is kept alive and nothing goes stale —
+// a different array is a different scan.
+const exitCache = new WeakMap();
+
 function displayExitsByStoreProduct(orders) {
+  if (orders && typeof orders === "object") {
+    const hit = exitCache.get(orders);
+    if (hit) return hit;
+  }
+  const out = scanDisplayExits(orders);
+  if (orders && typeof orders === "object") exitCache.set(orders, out);
+  return out;
+}
+
+function scanDisplayExits(orders) {
   const out = new Map();
   for (const o of orders || []) {
     if (!o || !o.productId) continue;

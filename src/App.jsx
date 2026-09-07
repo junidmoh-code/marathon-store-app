@@ -9105,7 +9105,21 @@ function AssistantView({ products, onExit, orders = [] }) {
         ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at })
         : setDisplaySlot({ store: r.store, productId: r.productId, productName: r.productName,
                            size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at });
-      done.catch(() => {});
+      // The writers resolve { ok: true, superseded } / { ok: true, noop } when a
+      // transaction legitimately aborts, which is indistinguishable from "wrote
+      // fine" to a bare .catch(). A repair is the one write here nobody is
+      // watching, so it says what happened. `superseded`/`noop` are EXPECTED —
+      // a real transition beat it, which is the fence working — and are logged
+      // as information, not failure.
+      done.then((res) => {
+        if (res && res.ok && (res.superseded || res.noop)) {
+          console.info("[displaySlot] repair skipped — a newer transition stands:", k);
+        } else if (!res || res.ok !== true) {
+          console.warn("[displaySlot] repair FAILED, retrying on next load:", k, res && res.message);
+        }
+      }).catch((err) => {
+        console.warn("[displaySlot] repair threw, retrying on next load:", k, String(err?.message || err));
+      });
     }
   }, [displaySlots, orders, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
