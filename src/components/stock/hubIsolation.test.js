@@ -275,7 +275,11 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // entirely (docs/display-marker-findings.md). Still hub1, which is what
     // this fence is about — and the register must never come back as a term.
     expect(a).toContain('displayUnitsByCell(displaySlotsLive, "hub1")');
-    expect(a).toContain('slotsAfterOrderExits(displaySlots, orders)');
+    expect(a).toContain('slotsAfterOrderExits(displaySlots, ordersForExits)');
+    // An /orders read error means "cannot verify" for EVERY order-derived gate,
+    // not just this one — folded into ordersSettled so all three inherit it.
+    expect(a).toContain("const ordersSettled = orders?.settled === true && orders?.error !== true;");
+    expect(a).toContain("const ordersForExits = ordersSettled ? orders : null;");
     // THE SELF-HEAL IS A WRITE PATH, and these are the four things that keep it
     // from becoming a write storm. There is no render test for an effect that
     // only writes, so the wiring is pinned here.
@@ -290,10 +294,10 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // Both subscriptions must have ANSWERED and neither may be in error — an
     // /orders error after a first success leaves `settled` true, so the error
     // flag is checked too.
-    expect(a).toContain("if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled || orders?.error) return;");
+    expect(a).toContain("if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;");
     // and a repair loses ties inside the transaction, not only in its own fence
     expect(a.match(/loseTies: true/g) || []).toHaveLength(2);
-    expect(a).toContain("const repairs = displaySlotRepairs(displaySlots, orders);");
+    expect(a).toContain("const repairs = displaySlotRepairs(displaySlots, ordersForExits);");
     expect(a).toContain("if (repairedRef.current.has(k)) continue;");
     expect(a).toContain("repairedRef.current.add(k);");
     expect(a).not.toMatch(/repairedRef\.current\.delete/);

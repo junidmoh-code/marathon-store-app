@@ -9060,7 +9060,17 @@ function AssistantView({ products, onExit, orders = [] }) {
   // missing (independent review). A read ERROR makes it permanent.
   const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error;
   // Has /orders answered at all? See useOrders — the flag rides on the array.
-  const ordersSettled = orders?.settled === true;
+  // ANSWERED, AND STILL TRUSTWORTHY. An error after a first successful snapshot
+  // leaves `settled` true with the last array in place, so every order-derived
+  // gate went on treating retained evidence as current. Folding the error in
+  // here reaches all three at once — the alternatives strip, the display-pair
+  // pre-flight and the self-heal — and each already means "cannot verify" by
+  // this flag being false. (CodeRabbit + final gate review.)
+  const ordersSettled = orders?.settled === true && orders?.error !== true;
+  // The projection derives from the same evidence, so it uses it only while it
+  // is trustworthy; without it the marker falls back to the durable slot, which
+  // is exactly the behaviour before any of this.
+  const ordersForExits = ordersSettled ? orders : null;
   // THE EXITS ARE REPLAYED OFF THE ORDERS, not merely written. Every exit —
   // sale, replacement, retire, failed pull — already writes the slot, but all
   // four are best-effort (the ORDER is the fact that must never be lost), so a
@@ -9070,8 +9080,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // the two win, so the marker clears at the sale and moves at the replacement
   // whether or not the slot write landed. No listener, no write, no cleanup.
   const displaySlotsLive = useMemo(
-    () => slotsAfterOrderExits(displaySlots, orders),
-    [displaySlots, orders]
+    () => slotsAfterOrderExits(displaySlots, ordersForExits),
+    [displaySlots, ordersForExits]
   );
   const hub1DisplayUnits = useMemo(
     () => displayUnitsByCell(displaySlotsLive, "hub1"),
@@ -9094,8 +9104,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // lands would otherwise read as "no slot" and mint a create.
   const repairedRef = useRef(new Set());
   useEffect(() => {
-    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled || orders?.error) return;
-    const repairs = displaySlotRepairs(displaySlots, orders);
+    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;
+    const repairs = displaySlotRepairs(displaySlots, ordersForExits);
     for (const r of repairs) {
       const k = displayRepairKey(r);
       if (repairedRef.current.has(k)) continue;
@@ -9131,7 +9141,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         console.warn("[displaySlot] repair threw, retrying on next load:", k, String(err?.message || err));
       });
     }
-  }, [displaySlots, orders, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
+  }, [displaySlots, ordersForExits, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that
   // store's warehouse→shop transfer (order.destShop). A single mis-tap here

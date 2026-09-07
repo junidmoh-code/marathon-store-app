@@ -22,6 +22,28 @@ const db = admin.database();
 const out = [];
 const say = (...a) => { const l = a.join(" "); out.push(l); console.log(l); };
 
+// ── WHAT NEVER GOES INTO THE COMMITTED REPORT ────────────────────────────────
+// This file is checked into the repo, so a payload dump is a publication.
+//   • `by` / `registeredBy` on a slot or register row is a Firebase uid — a
+//     staff identifier, and nothing in this investigation needs it. Dropped.
+//     (The legacy node's `registeredBy` holds a HUB name, not a person, so it
+//     is kept — the redaction is by field meaning, not by field name.)
+//   • `photoUrl` is a getDownloadURL link, which is a BEARER token: it serves
+//     the file to anyone who has the string, for ever, with no rule check.
+//     Committing one publishes the photo. The token is redacted, the path kept.
+const redact = (row) => {
+  if (!row || typeof row !== "object") return row;
+  const out = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (k === "by") continue;                                     // staff uid
+    out[k] = (k === "photoUrl" && typeof v === "string")
+      ? v.replace(/([?&]token=)[^&]*/i, "$1<redacted>")
+      : v;
+  }
+  return out;
+};
+const dumpRow = (row) => JSON.stringify(redact(row));
+
 const AUG6 = "2026-08-06T00:00:00.000Z";
 const bytes = (v) => Buffer.byteLength(JSON.stringify(v ?? null), "utf8");
 const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
@@ -66,8 +88,9 @@ if (!legacy) {
   }
   say("entries:", total, "—", perStore.join(", "));
   say("newest entry:", newest);
-  const sample = Object.entries(Object.values(legacy)[0] || {})[0];
-  say("shape:", JSON.stringify(sample));
+  // FIELD NAMES ONLY — the shape is the finding; a sample row is a payload.
+  const sample = Object.values(Object.values(legacy)[0] || {})[0];
+  say("shape:", Object.keys(sample || {}).sort().join(", "));
 }
 
 // ── 2. THE REGISTER ──────────────────────────────────────────────────────────
@@ -103,7 +126,7 @@ say("## /settings/hubSneakerCount/register/hub1 — the write-only-upward histor
 say("rows:", regRows.length, "— with qty > 0:", [...regByPid.values()].reduce((a, v) => a + v.length, 0));
 say("timestamp fields present:", [...tsFields].join(", ") || "(none)");
 say("NEWEST timestamp:", regNewest, regNewest && regNewest > AUG6 ? "— AFTER 2026-08-06: still being written" : "");
-say("newest row:", JSON.stringify(regNewestRow));
+say("newest row:", regNewestRow && regNewestRow[0], dumpRow(regNewestRow && regNewestRow[1]));
 say("rows timestamped after 2026-08-06:", regAfterAug6, "of", regRows.length);
 say("products with 2+ register rows (qty > 0):", [...regByPid.values()].filter((v) => v.length > 1).length, "of", regByPid.size);
 
@@ -187,8 +210,8 @@ say("SLOTS ONLY   (what it draws now) : marked cells", cellsSlots.size, "— pro
 const dump = async (pid, why) => {
   say("");
   say(`--- ${pid} — ${await nameOf(pid)}  [${why}; markers under both sources: ${markersBoth.get(pid) || 0}]`);
-  for (const s of (slotByPid.get(pid) || [])) say("    SLOT", JSON.stringify(s));
-  for (const r of (regByPid.get(pid) || [])) say("    REG ", r.key, JSON.stringify(r.row));
+  for (const s of (slotByPid.get(pid) || [])) say("    SLOT", dumpRow(s));
+  for (const r of (regByPid.get(pid) || [])) say("    REG ", r.key, dumpRow(r.row));
 };
 
 say("");
