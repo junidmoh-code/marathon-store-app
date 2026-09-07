@@ -31,9 +31,11 @@
 //
 //   MATCHED     a live slot at the same size. The row is right. Left alone.
 //   REPLACED    a live slot for this product at a DIFFERENT size. The display
-//               was replaced; this row describes the pair that went. Actionable.
+//               was replaced; this row describes the pair that went. Actionable,
+//               for as many units as there are moved floors — never the whole row.
 //   SOLD        no live slot, but a tombstone (source display_sold / manual).
-//               The display left the floor and nothing replaced it. Actionable.
+//               The display left the floor and nothing replaced it. Actionable,
+//               for as many units as there are tombstones — never the whole row.
 //   OVER        a live slot at this size, but the row claims MORE units than
 //               there are floors showing it. The surplus is actionable; the
 //               matched part is not, so only the surplus is offered.
@@ -64,8 +66,6 @@ export const CLEANUP_CLASSES = ["replaced", "sold", "over", "gone", "unverified"
 
 /** Which of those a human may act on. `unverified` and `matched` never appear. */
 export const ACTIONABLE_CLASSES = new Set(["replaced", "sold", "over", "gone"]);
-
-const rowKey = (pid, sizeKey) => `${pid}__${sizeKey}`;
 
 /** Split a register key into [productId, sizeKey]. Product ids never contain
  *  "__"; the size key can ("5_5" uses a single underscore), so split on the
@@ -135,10 +135,32 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
       ...tombs.map((s) => ({ kind: "tomb", store: s.store, size: s.prevSize ?? null, sizeKey: null, at: s.at, source: s.source })),
     ];
 
+    // ── RETIRE ONLY AS MANY UNITS AS THE EVIDENCE COVERS ────────────────────
+    // A register row is a QUANTITY (qty > 1 happens — a second physical display
+    // of the same product and size goes through "add another"), and it carries
+    // NO store. So the number of units a piece of evidence can speak for is the
+    // number of shop records behind it, never the whole row.
+    //
+    // The case this closes (senior-architect review): a row of qty 2 where ONE
+    // unit sold at Marathon PE (one tombstone) and the other is genuinely still
+    // standing at Trophy, registered before slots existed so it never produced
+    // one. Retiring the whole row would count that second, real display away.
+    // Bounded by the tombstone count, only the evidenced unit goes.
+    //
+    // The residual is stated rather than papered over: with one row, one
+    // tombstone and one untracked floor, no data can say WHICH unit the row is.
+    // That is exactly why this class is human-reviewed and why the screen shows
+    // the shop and the date on every piece of evidence — the person decides,
+    // with the evidence in front of them, and can leave it.
     let cls, why, retireQty = qty;
     if (catalogueComplete && !product) {
-      cls = "gone"; why = "The product record no longer exists.";
+      cls = "gone";
+      // The screen's catalogue has merged-away records already filtered out
+      // (useProducts), so absence covers both cases and the wording says both.
+      why = "Not in the product list any more — deleted, or merged into another record.";
     } else if (product && product.mergedInto) {
+      // Reachable when the caller passes an UNFILTERED catalogue — the census
+      // script does, and gets the precise reason. Kept for that, not decoration.
       cls = "gone"; why = `Merged into another product (${product.mergedInto}) — nothing can sell this record.`;
     } else if (sameSize.length) {
       if (qty > sameSize.length) {
@@ -151,9 +173,14 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
     } else if (live.length) {
       const sizes = [...new Set(live.map((s) => s.size ?? s.sizeKey))].join(", ");
       cls = "replaced";
-      why = `The display for this product is now size ${sizes} — this row is the pair it replaced.`;
+      retireQty = Math.min(qty, live.length);
+      why = `The display for this product is now size ${sizes} — this row is the pair it replaced.`
+        + (qty > live.length ? ` ${qty} are registered here and ${live.length} moved, so only ${retireQty} can be retired.` : "");
     } else if (tombs.length) {
-      cls = "sold"; why = "The display left the floor and nothing replaced it.";
+      cls = "sold";
+      retireQty = Math.min(qty, tombs.length);
+      why = `The display left ${tombs.length === 1 ? "the floor" : `${tombs.length} floors`} and nothing replaced it.`
+        + (qty > tombs.length ? ` ${qty} are registered here and ${tombs.length} left, so only ${retireQty} can be retired.` : "");
     } else {
       cls = "unverified"; why = "No shop was ever recorded for this display — there is no evidence either way.";
     }

@@ -82,6 +82,58 @@ describe("classifyDisplayRecords — what the evidence says", () => {
     expect(r.actionableCount).toBe(0);
   });
 
+  // ── THE EVIDENCE BOUNDS THE QUANTITY ────────────────────────────────────
+  // A register row is a QUANTITY and carries NO store, so a piece of evidence
+  // can only ever speak for as many units as there are shop records behind it.
+  // Retiring the whole row on one tombstone counts a second, untracked display
+  // away — which is the failure this screen exists to avoid.
+  it("SOLD: one tombstone retires ONE unit of a two-unit row, not both", () => {
+    const r = run(reg({ p1__6: row({ qty: 2 }) }), { "marathon-pe": { p1: tomb() } });
+    expect(r.counts.sold).toBe(1);
+    expect(r.byClass.sold[0].qty).toBe(2);
+    expect(r.byClass.sold[0].retireQty).toBe(1);          // the other may still be on a floor
+    expect(r.byClass.sold[0].why).toMatch(/only 1 can be retired/);
+  });
+
+  it("SOLD: two tombstones for a two-unit row retire both", () => {
+    const r = run(reg({ p1__6: row({ qty: 2 }) }), {
+      "marathon-pe": { p1: tomb() },
+      trophy: { p1: tomb() },
+    });
+    expect(r.byClass.sold[0].retireQty).toBe(2);
+    expect(r.byClass.sold[0].why).not.toMatch(/can be retired/);
+  });
+
+  it("REPLACED: one moved floor retires ONE unit of a two-unit row", () => {
+    const r = run(reg({ p1__6: row({ qty: 2 }) }), { "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8" }) } });
+    expect(r.byClass.replaced[0].retireQty).toBe(1);
+    expect(r.byClass.replaced[0].why).toMatch(/only 1 can be retired/);
+  });
+
+  it("REPLACED: two moved floors for a two-unit row retire both", () => {
+    const r = run(reg({ p1__6: row({ qty: 2 }) }), {
+      "marathon-pe": { p1: liveSlot({ size: "8", sizeKey: "8" }) },
+      trophy: { p1: liveSlot({ size: "9", sizeKey: "9" }) },
+    });
+    expect(r.byClass.replaced[0].retireQty).toBe(2);
+  });
+
+  it("a MIS-TAGGED shoe is not 'gone' — existence is existence", () => {
+    // The screen must pass an UNFILTERED catalogue. A product whose category
+    // was edited away from footwear still exists and its display may still be
+    // standing; calling it deleted and offering it for retirement is how a real
+    // display gets counted away.
+    const clothing = { ...P, p6: { id: "p6", name: "Re-tagged Shoe", productType: "clothing" } };
+    const r = classifyDisplayRecords({ register: reg({ p6__6: row() }), slots: {}, hub: "hub1", productsById: clothing });
+    expect(r.counts.gone).toBe(0);
+    expect(r.counts.unverified).toBe(1);
+  });
+
+  it("an ABSENT record says deleted OR merged, because the screen cannot tell them apart", () => {
+    const r = run(reg({ pX__6: row() }), {});
+    expect(r.byClass.gone[0].why).toMatch(/deleted, or merged into another record/);
+  });
+
   it("GONE: a merged-away product, and a product record that is not there", () => {
     const r = run(reg({ p4__6: row(), pX__6: row() }), {});
     expect(r.counts.gone).toBe(2);

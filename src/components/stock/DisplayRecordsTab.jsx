@@ -41,7 +41,6 @@ import { useDisplaySlots, useDisplayRegister } from "./useStock";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { decodeSizeKey } from "../../utils/sizeKey";
-import { isFootwearProduct } from "./availabilityCore";
 import { CARD, BORDER, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, FONT, bGray, bRed } from "./ui";
 
 const HUBS = ["hub1", "hub2"];
@@ -85,12 +84,17 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
   const slots = useDisplaySlots(true);
   const register = useDisplayRegister(hub, true);
 
-  // FOOTWEAR ONLY, matching Display Registration: the display walls hold shoes,
-  // and a stray clothing row would be judged against slots that never describe
-  // it. The catalogue is also what tells `gone` from `not loaded yet`.
+  // EVERY product, deliberately NOT filtered to footwear. An earlier cut passed
+  // a footwear-only map, and this map is what tells "the record is gone" from
+  // "the record is here" — so a shoe whose category was edited away from
+  // footwear (a data correction, a mis-tag) vanished from it and was offered
+  // for retirement as "no longer exists", while its display could be standing
+  // on a wall (senior-architect review). Existence is existence; the register
+  // only ever holds footwear anyway, because Display Registration is the only
+  // thing that writes it and that screen is footwear-only.
   const productsById = useMemo(() => {
     const m = new Map();
-    for (const p of products || []) if (p && p.id && isFootwearProduct(p)) m.set(p.id, p);
+    for (const p of products || []) if (p && p.id) m.set(p.id, p);
     return m;
   }, [products]);
 
@@ -227,7 +231,8 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
         if (!rows.length && !counts[cls]) return null;
         return (
           <div key={cls} style={card}>
-            <button onClick={() => toggle(cls)} style={{ ...bGray, width: "100%", display: "flex", alignItems: "center", gap: 10, background: "transparent", border: "none", padding: 0, cursor: "pointer" }}>
+            <button onClick={() => toggle(cls)} aria-expanded={isOpen} aria-controls={`disprec-${cls}`}
+              style={{ ...bGray, width: "100%", display: "flex", alignItems: "center", gap: 10, background: "transparent", border: "none", padding: 0, cursor: "pointer" }}>
               <span style={{ width: 9, height: 9, borderRadius: "50%", background: meta.tone, flexShrink: 0 }} />
               <span style={{ fontWeight: 800, fontSize: 15, color: "#fff" }}>{meta.title}</span>
               <span style={{ fontWeight: 800, fontSize: 15, color: meta.tone }}>{rows.length}</span>
@@ -236,7 +241,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false }) {
             <p style={{ margin: "8px 0 0", fontSize: 12.5, color: "rgba(233,238,255,.6)", lineHeight: 1.5 }}>{meta.blurb}</p>
 
             {isOpen && rows.length > 0 && (
-              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div id={`disprec-${cls}`} style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                 {rows.map((row) => {
                   const k = retireKey(hub, row);
                   const asking = confirm === k;
