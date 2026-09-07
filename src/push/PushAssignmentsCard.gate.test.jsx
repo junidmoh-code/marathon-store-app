@@ -181,6 +181,23 @@ describe("what a tap actually writes", () => {
     expect(updateMock.mock.calls[0][1]["push_assignments/u1"].updatedAt).toBe(1_757_000_000_000);
   });
 
+  it("a save that SUCCEEDS clears a warning from an earlier failure", async () => {
+    // A stale "did not save" is not clutter, it is wrong information: it says
+    // the rules are missing when they are not, over an assignment that IS
+    // stored. Found by CodeRabbit on PR #573.
+    getMock.mockImplementation(async (r) => ({
+      val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),
+    }));
+    updateMock.mockRejectedValueOnce(new Error("PERMISSION_DENIED"));
+    const tree = await render({ authUser: ADMIN });
+    const sw = () => tree.root.findAll((n) => n.props && n.props.role === "switch")[0];
+    await act(async () => { sw().props.onClick(); });
+    expect(JSON.stringify(tree.toJSON())).toContain("did not save");
+    await act(async () => { sw().props.onClick(); });
+    expect(sw().props["aria-checked"]).toBe(true, "and the retry actually took");
+    expect(JSON.stringify(tree.toJSON())).not.toContain("did not save");
+  });
+
   it("a REFUSED write puts the row back — an assignment that looks made and was not is the worst outcome", async () => {
     getMock.mockImplementation(async (r) => ({
       val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),

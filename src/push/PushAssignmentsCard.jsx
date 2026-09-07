@@ -151,6 +151,13 @@ function PushAssignmentsAuthed({ onExit }) {
     try {
       await update(ref(database), assignmentUpdates(uid, next, serverNowMs()));
       setSavedAt((s) => ({ ...s, [uid]: Date.now() }));
+      // CLEARED ON SUCCESS. The banner below says "that did not save" and names
+      // the un-pasted rules; leaving it up after a save that DID land is the
+      // same lie as a tick that persisted nothing, pointing the other way —
+      // Junid would re-tap an assignment that is already stored, or conclude
+      // the rules are still missing when they are not. A stale warning on this
+      // screen is not clutter, it is wrong information.
+      setError(null);
     } catch (e) {
       console.error("[push] assignment save failed:", e);
       setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, hubs: row.hubs } : r)));
