@@ -45,7 +45,7 @@ describe("the refusal itself is unchanged", () => {
 
 describe("the alternatives join uses the shared resolver and nothing else", () => {
   it("availability comes from sneakerOut — one definition on this screen", () => {
-    expect(APP).toContain("return !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz);");
+    expect(APP).toContain("return !sneakerOut(p, sz);");
   });
   // AFTER #568 the serving hub is a PER-SIZE answer, so one size of a shoe can
   // be answerable while another is not. The readiness check is explicit at the
@@ -56,17 +56,29 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
   });
   // A RECOMMENDATION asserts availability; a tile merely fails to deny it. So
   // every input must have ANSWERED, not merely be empty — an unanswered
-  // /orders reads as "nothing is promised", an unanswered display lane as
-  // "nothing is on a floor", and both fail OPEN.
+  // /orders reads as "nothing is promised", and that fails OPEN.
   it("nothing is recommended until every input has actually answered", () => {
     expect(APP).toContain("if (!ordersSettled) return false;");
-    expect(APP).toContain('if (hub === "hub1" && !displayLaneReady) return false;');
   });
-  // sneakerOut answers "is there a unit"; it does not answer "can it be sold
-  // down THIS path". A display-only size is sellable, but only through the
-  // display-pair request flow, which this sheet has no prompt for.
-  it("a display-only size is never offered as an alternative", () => {
-    expect(APP).toContain("!sneakerDisplayOnly(p, sz)");
+  // THE MARKER IS NOT AN AVAILABILITY TERM ANY MORE (owner spec 2026-09-07).
+  // A size with a unit on a display is sold on the ordinary path like any
+  // other, so this sheet has nothing to exclude and nothing to wait on. Both
+  // the exclusion and the display-lane readiness gate that existed only to
+  // make it trustworthy are gone — a shoe that can be sold this minute must
+  // not be withheld from a customer standing in front of one.
+  it("a display-marked size is NOT excluded from the alternatives", () => {
+    const i = APP.indexOf("sizeAvailable: (p, sz) => {");
+    expect(i).toBeGreaterThan(-1);
+    const body = APP.slice(i, APP.indexOf("},", i));
+    // NO DISPLAY TERM AT ALL, not merely not the two that were there. A gate
+    // rebuilt out of sneakerDisplayInfo or a fresh readiness flag is the same
+    // bug wearing a different name.
+    expect(body, `a display term is back in sizeAvailable: ${body}`).not.toMatch(/isplay/);
+  });
+  // And the divert's own reader is gone from the file entirely — not merely
+  // unused here. A dormant copy is how a deleted rule comes back.
+  it("the display-only reader no longer exists at all", () => {
+    expect(APP).not.toContain("sneakerDisplayOnly");
   });
   // THE SHARPEST EDGE IN THE BUILD. sneakerOut returns false for an ungated
   // hub meaning "no gate", not "in stock". Offering a Pine shoe on that basis
@@ -132,7 +144,9 @@ describe("the ✕ glyph is gone from every size chip", () => {
   });
   it("all three chips take their styling from the shared theme", () => {
     expect(APP).toContain("phoneSizeChipStyle({ out: true, selected: pendingSize === s })");
-    expect(APP).toContain("quickViewSizeChipStyle({ out: true })");
+    // The quick-view now passes `out` straight through: there is one style for
+    // an available chip whether or not it carries the display glyph.
+    expect(APP).toContain("quickViewSizeChipStyle({ out })");
     expect(APP).toContain("hoverGridSizeChipStyle({ out: true, tappable: snkTappable })");
   });
   // Not a blanket ban on `opacity` — the quantity stepper's disabled "+" uses
@@ -158,7 +172,10 @@ describe("taking an alternative never returns to the catalogue", () => {
   it("and clears every piece of state that belonged to the previous shoe", () => {
     const fn = APP.slice(APP.indexOf("const pickAlternative = (row) => {"));
     const body = fn.slice(0, fn.indexOf("};"));
-    for (const setter of ["setNaNote(null)", "setDisplayPrompt(null)", "setPendingDisplayPair(null)",
+    // setDisplayPrompt and setPendingDisplayPair are both gone with the divert:
+    // the prompt was the only thing that opened, and the only thing that
+    // minted a display-pair claim, so a shoe swap has neither to leave behind.
+    for (const setter of ["setNaNote(null)",
                           "setPendingDisplay(false)", "setPendingDisplayPartner(false)", "setPendingQty(1)"]) {
       expect(body, `pickAlternative leaves ${setter} behind`).toContain(setter);
     }

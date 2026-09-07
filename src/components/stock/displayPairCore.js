@@ -408,16 +408,22 @@ export function displaySlotRepairs(slots, orders, nowMs = serverNowMs()) {
 export const displayRepairKey = (r) =>
   `${r.op} ${r.store} ${r.productId} ${r.at} ${r.size ?? ""} ${r.bookedHub ?? ""}`;
 
-// THE MARKER RULE: the display pair is the ONLY remaining availability.
-//   avail == 0            → ✕ / grey, unchanged (nothing requestable — even
-//                           when a slot claims a display; the books win)
-//   0 < avail <= displays → marked (what's left IS on the display)
-//   avail > displays      → plain number (shelf stock remains)
-export function displayOnly(avail, displayUnits) {
-  const a = Math.max(Number(avail) || 0, 0);
-  const d = Math.max(Number(displayUnits) || 0, 0);
-  return a > 0 && d > 0 && a <= d;
-}
+// THE MARKER RULE IS GONE, AND ITS FUNCTION WITH IT (owner spec 2026-09-07).
+//
+// `displayOnly(avail, displayUnits)` used to answer "is the display pair this
+// size's last availability" — the predicate was `0 < avail <= displayUnits` —
+// and the answer turned a size tile amber, took its tap away and diverted it
+// into a display-pair request. That confused a marker with a gate. The glyph
+// says a unit is standing on a floor; it never had any business deciding
+// whether the size could be sold. One unit with one slot lost its only sale;
+// and since `avail` was the resolver's LIVE remaining count, a cell physically
+// holding four lost the lot as soon as three were promised or carted.
+//
+// Availability is quantity, through availabilityCore, for a marked size and an
+// unmarked one alike — a display pair has been hub stock since #324. The
+// function is deleted rather than left unused: a dormant copy is how a deleted
+// rule comes back. displayUnitsByCell above is what the informational glyph
+// reads, and it is the only reader the tile has left.
 
 // Pending display pulls: an INCOMING (or COMING-TOMORROW) displayPairRequest
 // order is a hard claim on a known unit whose slot has ALREADY been
@@ -442,12 +448,11 @@ const PENDING_PULL_STATUSES = new Set(["incoming", "coming_tomorrow"]);
 // productId::sizeKey with no hub term, so this map may only be netted against a
 // hub whose display-pair lane actually raises these claims — Hub 1's, today.
 // Hub 2's availability deliberately nets ready orders ONLY (App.jsx
-// hub2ReadyPromised): a Hub 2 sneaker structurally cannot produce a pull claim
-// (sneakerDisplayOnly gates on sneakerServedByHub1), so folding this in there
-// would only ever import a Hub 1 claim's ✕ onto an unrelated Hub 2 cell.
+// hub2ReadyPromised): the display-pair lane is hub1-scoped by construction —
+// the slots node is Hub 1's and a pull is a Hub 1 pull — so folding this in
+// there would only ever import a Hub 1 claim's ✕ onto an unrelated Hub 2 cell.
 // IF the display-pair lane is ever extended to Hub 2, this function needs a
-// real hub filter FIRST — widening sneakerServedByHub1 alone would leave Hub 2
-// silently not netting the claims it had started raising.
+// real hub filter FIRST.
 export function pendingDisplayPullsByCell(orders, productsById, nowMs = serverNowMs()) {
   const out = {};
   for (const o of orders || []) {

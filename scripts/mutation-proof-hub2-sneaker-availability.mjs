@@ -230,8 +230,8 @@ const MUTATIONS = [
     guard: "The display-pair lane stays HUB 1's — its slots and register are hub1-scoped",
     file: APP,
     kind: "source-pin",
-    from: `  const sneakerServedByHub1 = (p) => sneakerHubOf(p) === "hub1";`,
-    to: `  const sneakerServedByHub1 = (p) => !!sneakerHubOf(p);`,
+    from: `  const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";`,
+    to: `  const sneakerServedByHub1 = (p, s) => !!sneakerHubOf(p, s);`,
   },
   {
     id: "G17",
