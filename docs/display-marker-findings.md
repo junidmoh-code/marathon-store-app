@@ -4,8 +4,14 @@ Investigation, 7 September 2026. Symptom on the owner's screenshot: **Diesel Big
 D Green Orange** carries the small monitor glyph on **both size 6 and size 8** in
 the assistant/ordering size grid. One product, one display, two markers.
 
-All figures below were read live off `marathon-club-default-rtdb` with
-`scripts/census-display-marker-sources.mjs` (read-only, zero writes).
+Every figure in this document is computed by
+`scripts/census-display-marker-sources.mjs` (read-only, zero writes) and its
+output is committed beside it as **`docs/display-marker-census.txt`** — including
+the full payload dump of the reported product and twenty more. Re-run it and the
+numbers regenerate; nothing here is asserted from a run you cannot repeat.
+
+> Line numbers below are as of commit `868c998` (the diagnosis commit) and drift
+> by ~14 lines after the fix.
 
 ---
 
@@ -41,7 +47,7 @@ hub1DisplayUnits   src/App.jsx:9056
 | Source | Path | Subscribed at | Shape | Lifecycle |
 |---|---|---|---|---|
 | **A — slots** | `/settings/displaySlots/{store}/{productId}` | `App.jsx:9037` via `useDisplaySlotsState` | one record per product **per store**, `{size, sizeKey, bookedHub, source, at}` | **current state.** Set at registration, **replaced** on a display refill, **tombstoned** (`sizeKey: null`) when the display sells |
-| **B — the register** | `/settings/hubSneakerCount/register/hub1/{pid}__{sizeKey}` | `App.jsx:9044` via `useDisplayRegisterState` | one row per product **per size**, `{qty, size, sizeKey, at, bumps}` | **write-only-upward history.** Never replaced, never decremented on a sale, key includes the size so a new size is a NEW row |
+| **B — the register** | `/settings/hubSneakerCount/register/hub1/{pid}__{sizeKey}` | `App.jsx:9044` via `useDisplayRegisterState` | one row per product **per size**, `{qty, size, sizeKey, at, bumps}` | **write-only-upward history.** No sale ever decrements it, and the size is **in the key**, so a new size is a NEW row |
 
 The legacy `/settings/displayRegister` node that PR #324 orphaned is **not** one
 of them — see §6.
@@ -69,11 +75,11 @@ REG   p1778150021679__8 { qty: 1, size: "8", sizeKey: "8",
 
 Registered at size 8 on 22 Aug. Replaced on 5 Sep by a display refill that
 correctly moved the slot to size 6. The size-8 register row was never touched,
-because nothing decrements it. Marker on 6 **and** 8.
+because no sale decrements it. Marker on 6 **and** 8.
 
 Twenty further products with 2+ markers show the identical shape — slot moved by
-a `display_refill`, register row stranded at the old size. Full payload dump:
-`scripts/census-display-marker-sources.mjs`. Samples:
+a `display_refill`, register row stranded at the old size. All twenty are dumped
+in full in `docs/display-marker-census.txt`. Four of them:
 
 | Product | Slot (truth) | Stranded register row |
 |---|---|---|
@@ -91,32 +97,37 @@ a `display_refill`, register row stranded at the old size. Full payload dump:
   `via: "display_registration_card"`
 * register rows carrying a timestamp **after 2026-08-06: 556 of 556.** The whole
   node post-dates PR #324; it is a *newer* record, not #324's leftover.
-* newest slot write: `2026-09-07T09:19:48.838Z` (today).
+* newest slot write: also today.
 
 ## 5. Every writer to source B still in this repo
 
-All in `src/components/stock/hubCleanupStore.js` — the **Display Registration
-card**, which is the register's legitimate home:
+The register's legitimate home is the **Display Registration card**:
 
-| Line | Function | Write |
+| File : line | Function | Write |
 |---|---|---|
 | `hubCleanupStore.js:201, 356` | `registerDisplayUnit` | creates `{pid}__{sizeKey}` (create-once transaction) |
 | `hubCleanupStore.js:381, 411` | `addExtraDisplayUnit` | bumps `qty` / `bumps` on an existing row |
-| `hubCleanupStore.js:125` | `loadRegister` | read |
+| `displayRegistrationStore.js:107` | `recordDisplayFact` | creates a row, or bumps `qty` for a second display |
+| `displayRegistrationStore.js:157-165` | `editDisplaySize` | **moves** the fact between two size keys (atomic multi-path) |
+| `displayRegistrationStore.js:194-199` | `removeDisplayFact` | **decrements** `qty`, floors at 0, stamps `retiredAt` |
 
-Other readers of the register, **both legitimate and left alone**:
+So the register *can* be decremented — by the card, when a person retires or
+re-sizes a display fact. What never decrements it is **a sale**, which is the
+transition the marker cares about.
+
+Readers, **both legitimate and left alone**:
 
 * `src/components/stock/DisplayRegistrationView.jsx:57` — the card's own list.
 * `src/components/stock/offShelf.js:14` — the hub count's "booked here, standing
   on a floor" evidence.
 
 `registerDisplayPair` and `/settings/displayRegister` have **no writer anywhere
-in this repo** — grep returns only test files and the comment in
+in this repo** — grep returns only test files and a comment in
 `docs/COUNT-INTEGRITY.md`. PR #324's removal held.
 
 ## 6. The legacy node PR #324 orphaned
 
-`/settings/displayRegister` still exists in production:
+`/settings/displayRegister` still exists in production (52.9 KB):
 
 ```
 marathon-pe    94 entries
@@ -137,34 +148,75 @@ of the reported bug and deleting it changes nothing on screen.
 
 | Measure | Live value |
 |---|---|
-| Register rows (hub1) | 556 (547 with `qty > 0`) |
-| Live display slots | 467 — hub1 **243**, hub2 206, hub3 18 |
+| Register rows (hub1) | 556 (547 with `qty > 0`) — 175.1 KB |
+| Live display slots | 467 — hub1 **243**, hub2 206, hub3 18 — 119.6 KB |
 | Tombstoned (sold/cleared) slots | 42 |
 | **Marked cells drawn today** (slots + register) | **610** |
 | **Products carrying 2+ display markers today** | **51** of 555 |
-| Register rows whose pid has **no** live hub1 slot | 315 |
+| Register rows whose product has **no** live hub1 slot | 315 |
 | Register rows whose live slot is the **same** size (redundant) | 180 |
 | Register rows whose live slot is a **different** size (**ghost**) | **52** |
 | Marked cells if the marker reads **slots only** | 243 |
 | **Products with 2+ markers if the marker reads slots only** | **0** |
 
-## 8. The verdict
+## 8. The verdict, and where it departs from the brief
 
-The register cannot be made to replace. Its key *is* the size, it is a
-stock-integrity high-water record that the hub count depends on, and decrementing
-it on a sale would corrupt the count it exists to protect. So it cannot be the
-marker's source.
+The register cannot be made to replace on a sale. Its key *is* the size, and it
+is a stock-integrity record the hub count depends on (`offShelf.js`) — teaching
+it to decrement when a display sells would corrupt the count it exists to
+protect. So it cannot be the marker's source.
 
 The slot already is everything the marker needs and the register is not:
 
 * **one slot per product per store** — a replacement overwrites the record, so
   accumulation is impossible *by construction*, not by cleanup;
-* it carries the size captured at **send** time (`sentSize` → `displayRefillSize`
-  → `setDisplaySlot`, `App.jsx:11917`);
-* it **clears itself** when the display sells (`clearDisplaySlot`,
-  `App.jsx:9982`), and reinstates on a failed pull (`App.jsx:11512`);
+* it holds the size that was captured when the replacement pair was **sent**;
+* it **clears itself** when the display sells, and reinstates on a failed pull;
 * it names the store, which the request flow needs anyway.
 
-**The marker reads the slot and nothing else.** 51 products stop lying today; 315
-store-less legacy register rows stop drawing an unverifiable glyph that nothing
-in the system could ever have cleared.
+**The marker reads the slot and nothing else.** 51 products stop lying today.
+
+### Three departures from the letter of the brief, stated
+
+1. **"Remove the surviving writer."** The surviving writer is the Display
+   Registration card, and it was **not** removed. The register is load-bearing
+   for Hub Sneaker Count; deleting its writer would break a different feature to
+   fix this one. It was cut off from the marker instead. If the owner wants the
+   writer itself gone, that is a separate change to the count lane.
+
+2. **"Derive display size from the order's captured `sentSize`."** The field the
+   slot is written from is **`displayRefillSize`**, not `sentSize`, and those are
+   two different things: `sentSize` is the size of the *partner pair dispatched
+   to the customer* (`App.jsx:11749`), while `displayRefillSize` is the size the
+   hub picked for the *replacement that goes onto the display*
+   (`App.jsx:11967`). For "which size is standing on the floor now", only
+   `displayRefillSize` is the right answer; `sentSize` would record the pair that
+   left the building. The spirit of the instruction — one size, captured at send
+   time, on the display order — is met; the named field is not the one used.
+
+3. **315 legacy register rows lose their glyph.** These are store-less
+   registrations from before slots existed. The 2026-08-26 note that added the
+   register as a second source said 71% of registered displays had no slot, and
+   that is what is being given up: those products show no display marker any
+   more. They are also unverifiable and unclearable — 52 of them are provably
+   wrong today, and nothing in the system could ever have retired the rest. A
+   glyph that can never be cleared is not coverage. Attaching a store to those
+   rows needs someone to walk the floors once; until then they are silent.
+
+## 9. Still open, and NOT fixable from this repo
+
+When a display standing at PE or Trophy sells at that shop's till, the POS
+deducts the **shop's** cell and never the **hub** cell the display unit is booked
+into. In `marathon-pos-app`:
+
+* `src/stock/saleStockMovements.js:9` — the policy, in the module header:
+  *"The POS writes ONLY shop (sellable) locations — never warehouse/hub stock."*
+* `src/stock/saleStockMovements.js:93` — `const loc = sellableStockLocation(m.storeId);`
+  — the line that resolves the deduction location, unconditionally to the shop.
+* `src/stock/dispatchOrders.js:43` — `const size = o.sentSize ?? o.size ?? null;`
+  — the origin hub and the physical size *are* already resolved at sale time and
+  stamped as `sourceHub` for returns. Nothing consumes them for a deduction.
+
+So the data needed to close it is already in hand in that repo; the write is not
+made. That is a change to `marathon-pos-app`, not to this one, and this PR does
+not touch it.

@@ -93,90 +93,228 @@ export function displayUnitsByCell(slots, hub) {
   return out;
 }
 
-// ─── THE EXITS: what the ORDER lane says happened after the slot was written ─
+// ─── THE EXITS: replaying them off the ORDER lane, and PERSISTING the repair ─
 //
-// The slot is the durable record and every exit already writes it: a display
+// The slot is the durable record and the exits already write it: a display
 // sale clears it at order creation, a display refill overwrites it with the
-// size that was sent, the registration card's retire clears it, and a failed
-// pull reinstates it. All four are best-effort fire-and-forget writes, because
-// the ORDER is the fact that must never be lost — so a dropped write leaves a
-// marker standing on a shoe that is no longer on the floor, and nothing
-// retries it. That is a human step by another name, and the exits are not
-// allowed to need one.
+// size that was sent, a failed pull reinstates it. All three are best-effort
+// fire-and-forget writes, because the ORDER is the fact that must never be
+// lost — so a dropped write leaves a marker standing on a shoe that is no
+// longer on the floor, and nothing retries it. That is a human step by another
+// name, and the exits are not allowed to need one.
 //
-// So the marker does not trust the slot alone: it replays the SAME exits off
-// the orders the screen is already streaming, and the newer of the two wins.
-// No extra listener, no extra write, no cleanup pass.
+// So the marker replays the SAME three transitions off the orders the screen
+// already streams, and the newer of the two wins. THREE, mirroring the writers
+// in App.jsx exactly — same field, same instant, same resolved hub:
 //
-//   SALE        an order with requestDisplayPartner — the displayed pair is
-//               being sold — clears that store's slot for that product as of
-//               order.createdAt.
-//   REPLACEMENT an order resolved displayRefillStatus:"refilled" carrying
-//               displayRefillSize (the size captured when the pair was
-//               physically SENT) sets that store's slot to that size as of
-//               order.displayRefilledAt.
+//   SALE       requestDisplayPartner — the displayed pair is being sold —
+//              CLEARS that store's slot, as of order.createdAt.
+//   REINSTATE  a display-pair PULL that came back out_of_stock: the pair never
+//              left the floor, so the slot is SET BACK to order.size at
+//              order.outOfStockAt. displayPairRequest only, exactly like the
+//              writer — a classic partner order going out of stock means the
+//              display did sell and the warehouse simply has no replacement.
+//   REPLACEMENT displayRefillStatus "refilled" with displayRefillSize (the
+//              size captured when the pair was physically SENT) SETS the slot
+//              to that size at order.displayRefilledAt.
 //
-// SAME STALENESS RULE AS THE WRITERS (displaySlots.js): an event only counts
-// if it is NEWER than the slot's own `at`. A re-registration after a sale, or
-// a hand correction on the card, is the newer transition and it wins — the
-// replay can never resurrect a display someone has since taken down.
+// A SET whose store has no slot record CREATES one, because setDisplaySlot
+// creates one; a CLEAR with no record does nothing, because clearDisplaySlot
+// no-ops. Anything less and the replay would disagree with the writer it is
+// standing in for.
 //
-// /orders IS EPHEMERAL — ids recycle daily — so this sees only the recent
-// window, and that is exactly the window it is for: the durable write has
-// normally landed, and where it did not, the evidence is still here. Nothing
-// depends on an order surviving.
+// ORDERING. Every instant is an ISO-8601 UTC string from serverNowIso() —
+// always `…Z`, always millisecond precision, so lexicographic comparison IS
+// chronological (pinned in the tests). The slot wins only when it is STRICTLY
+// newer: at equal instants the event is the same transition the slot already
+// records, so applying it is idempotent, and that matches supersededBy() in
+// displaySlots.js, which also lets an equal-instant write through. Two events
+// at the same instant are ranked sale < reinstate < replacement, the order
+// they can only ever occur in on one order, so the projection never depends on
+// the order the array happens to be in.
 //
 // The store an event belongs to is displaySlotStoreFor's answer, not
 // destShop's: a display-pair PULL can take ANOTHER shop's display, and
 // clearing the ordering shop's slot would erase an unrelated live display.
-const DISPLAY_EXIT_CLEARED = { sizeKey: null };
+//
+// ── WHY THE REPLAY IS NOT ENOUGH ON ITS OWN, AND WHAT CLOSES IT ──────────────
+// Two holes, both found in review before this shipped:
+//
+//   • /orders IS EPHEMERAL — ids recycle daily. A repair that lives only in
+//     this projection un-repairs itself the moment the order is overwritten,
+//     and the ghost comes back.
+//   • THE ORDER FEED IS STORE-SCOPED. A store-assigned assistant reads only
+//     destShop == their shop (useOrders(myShop), rules-enforced). When Trophy
+//     pulls a pair standing on Marathon PE's floor, PE's own device never
+//     receives that order and would keep the ghost for ever.
+//
+// So the projection is not the fix; it is how the fix is FOUND.
+// displaySlotRepairs turns each divergence into the exact write the exit
+// dropped, and App.jsx applies it through the ordinary fenced writers. Any
+// device that can see the evidence heals the durable record for every device
+// that cannot — once, idempotently, and with the writers' own staleness fence
+// still deciding. If the write fails again, the next load finds it again.
+//
+// NOT COVERED, and deliberately: the registration card's RETIRE
+// (removeDisplayFact) writes no order, so nothing here can see it. That path
+// is a person standing at the card, and it already tells them in words when
+// its slot clear failed. It is the one exit with a human in the loop, because
+// it is the one exit that is a human.
 
+const EXIT_CLEAR = 0;         // rank at equal instants: the order they occur in
+const EXIT_REINSTATE = 1;
+const EXIT_REPLACE = 2;
+
+const exitKey = (store, productId) => `${store} ${productId}`;
+
+// One winning transition per (store, product) — { at, rank, sizeKey, size,
+// bookedHub, source, orderId, productName }. sizeKey null = a clear.
 function displayExitsByStoreProduct(orders) {
-  const out = new Map();   // "store\u0000pid" -> { at, sizeKey, size }
+  const out = new Map();
   for (const o of orders || []) {
     if (!o || !o.productId) continue;
     const store = displaySlotStoreFor(o);
     if (!store) continue;
-    const key = `${store}\u0000${o.productId}`;
-    const put = (at, ev) => {
+    const key = exitKey(store, o.productId);
+    const put = (at, rank, ev) => {
       if (typeof at !== "string" || !at) return;
       const cur = out.get(key);
-      if (!cur || at > cur.at) out.set(key, { at, ...ev });
+      if (cur && (at < cur.at || (at === cur.at && rank <= cur.rank))) return;
+      out.set(key, { at, rank, orderId: o.id ?? null, productName: o.productName || "", ...ev });
     };
-    if (o.requestDisplayPartner === true) put(o.createdAt, DISPLAY_EXIT_CLEARED);
-    if (o.displayRefillStatus === "refilled" && o.displayRefillSize) {
-      const size = String(o.displayRefillSize);
-      const sizeKey = stockSizeKey(size);
-      if (sizeKey && sizeKey !== "_") put(o.displayRefilledAt, { sizeKey, size });
+    const sized = (size, bookedHub, source) => {
+      const raw = String(size);
+      const sizeKey = stockSizeKey(raw);
+      return sizeKey && sizeKey !== "_" ? { sizeKey, size: raw, bookedHub, source } : null;
+    };
+    if (o.requestDisplayPartner === true) put(o.createdAt, EXIT_CLEAR, { sizeKey: null, source: "display_sold" });
+    // The reinstate writer: App.jsx, status OUT_OF_STOCK on a displayPairRequest.
+    if (o.displayPairRequest === true && o.status === "out_of_stock" && o.size) {
+      const ev = sized(o.size, o.placedAtHub || o.hub || "hub1", "manual");
+      if (ev) put(o.outOfStockAt, EXIT_REINSTATE, ev);
     }
+    // The replacement writer: App.jsx, setDisplayRefillStatus("refilled").
+    if (o.displayRefillStatus === "refilled" && o.displayRefillSize) {
+      const ev = sized(o.displayRefillSize, o.displayRefillHub || o.placedAtHub || o.hub || null, "display_refill");
+      if (ev) put(o.displayRefilledAt, EXIT_REPLACE, ev);
+    }
+  }
+  return out;
+}
+
+// Does this event supersede the slot record it lands on? The slot wins only
+// when it is STRICTLY newer. A slot with no `at` at all is a hand-written
+// record whose place in the order of events is unknowable — it wins too,
+// rather than being guessed at.
+const exitWins = (ev, slot) => {
+  if (!slot) return true;                                   // no record — a SET creates one
+  if (typeof slot.at !== "string" || !slot.at) return false;
+  return ev.at >= slot.at;
+};
+
+// Is the slot already exactly what the event says? Then the write landed and
+// the projection has nothing to add — which is the healthy case, every time.
+const sameSlotState = (ev, slot) =>
+  ev.sizeKey == null
+    ? !slotIsLive(slot)
+    : !!slot && slot.sizeKey === ev.sizeKey && slot.bookedHub === (ev.bookedHub ?? slot.bookedHub);
+
+const slotFromExit = (ev, productId, slot) =>
+  ev.sizeKey == null
+    ? { ...(slot || {}), productId, size: null, sizeKey: null, prevSize: slot?.size ?? null,
+        source: ev.source, at: ev.at, orderId: ev.orderId, derived: "orders" }
+    : { ...(slot || {}), productId, productName: slot?.productName || ev.productName || "",
+        size: ev.size, sizeKey: ev.sizeKey, bookedHub: ev.bookedHub ?? slot?.bookedHub ?? null,
+        source: ev.source, at: ev.at, orderId: ev.orderId, derived: "orders" };
+
+/**
+ * The slots map with every exit the order lane knows about already applied.
+ * Pure: same shape in, same shape out, so every existing slot reader keeps
+ * working. Pass no orders and you get the same object back, untouched.
+ *
+ * Plain objects are built with a null prototype: a store or product id is
+ * user-reachable data, and `__proto__` as a key on a `{}` literal silently
+ * mutates the result's prototype instead of adding a member.
+ */
+export function slotsAfterOrderExits(slots, orders) {
+  const exits = displayExitsByStoreProduct(orders);
+  if (exits.size === 0) return slots || {};
+  const out = Object.create(null);
+  const seen = new Set();
+  // `changed` keeps the common case reference-stable. /orders re-fires on every
+  // till transaction in the shop and useOrders hands back a NEW array each
+  // time, so without this every unrelated sale would rebuild the whole slot
+  // graph and invalidate every memo hanging off it — for a projection that,
+  // when the writers are healthy, changes nothing at all.
+  let changed = false;
+  for (const [store, byPid] of Object.entries(slots || {})) {
+    const next = Object.create(null);
+    for (const [pid, slot] of Object.entries(byPid || {})) {
+      const k = exitKey(store, pid);
+      seen.add(k);
+      const ev = exits.get(k);
+      const apply = ev && exitWins(ev, slot) && !sameSlotState(ev, slot);
+      if (apply) changed = true;
+      next[pid] = apply ? slotFromExit(ev, pid, slot) : slot;
+    }
+    out[store] = next;
+  }
+  for (const [k, ev] of exits) {
+    if (!seen.has(k) && ev.sizeKey != null) { changed = true; break; }
+  }
+  if (!changed) return slots || {};
+  // A replacement for a product this store has no slot record for at all: the
+  // writer would have CREATED one, so the projection does too. A clear with no
+  // record stays nothing, exactly as clearDisplaySlot no-ops.
+  for (const [k, ev] of exits) {
+    if (seen.has(k) || ev.sizeKey == null) continue;
+    const i = k.indexOf(" ");
+    const store = k.slice(0, i), pid = k.slice(i + 1);
+    (out[store] ||= Object.create(null))[pid] = slotFromExit(ev, pid, null);
   }
   return out;
 }
 
 /**
- * The slots map with every exit the order lane knows about already applied.
- * Pure: same shape in, same shape out, so every existing slot reader keeps
- * working. Pass no orders and you get the slots back untouched.
+ * The divergences as WRITES: every slot the order lane says is wrong, with the
+ * exact call that fixes it. App.jsx applies these through setDisplaySlot /
+ * clearDisplaySlot, whose staleness fence still has the final say — so a
+ * repair that has been overtaken by a real transition simply aborts.
+ *
+ * `at` is the EVENT's instant, not now: passed to the writer it makes the
+ * repair indistinguishable from the write that was dropped, so a repair can
+ * never win over something newer that landed in between.
+ *
+ * → [{ op: "set" | "clear", store, productId, productName, size, bookedHub,
+ *      source, at, orderId }]
  */
-export function slotsAfterOrderExits(slots, orders) {
+export function displaySlotRepairs(slots, orders) {
   const exits = displayExitsByStoreProduct(orders);
-  if (exits.size === 0) return slots || {};
-  const out = {};
-  for (const [store, byPid] of Object.entries(slots || {})) {
-    const next = {};
-    for (const [pid, slot] of Object.entries(byPid || {})) {
-      const ev = exits.get(`${store}\u0000${pid}`);
-      // The slot's own transition is newer (or the slot has no timestamp at
-      // all, which only a hand-written record has) — the slot IS the state.
-      if (!ev || typeof slot?.at !== "string" || !(ev.at > slot.at)) { next[pid] = slot; continue; }
-      next[pid] = ev.sizeKey == null
-        ? { ...slot, size: null, sizeKey: null, prevSize: slot.size ?? null, source: "display_sold", at: ev.at, derived: "orders" }
-        : { ...slot, size: ev.size, sizeKey: ev.sizeKey, source: "display_refill", at: ev.at, derived: "orders" };
+  const out = [];
+  if (exits.size === 0) return out;
+  for (const [k, ev] of exits) {
+    const i = k.indexOf(" ");
+    const store = k.slice(0, i), productId = k.slice(i + 1);
+    const slot = slots?.[store]?.[productId] ?? null;
+    if (!exitWins(ev, slot)) continue;
+    // Already exactly what the event says — the write landed, nothing to do.
+    // (A clear with no record at all is also nothing: clearDisplaySlot no-ops.)
+    if (sameSlotState(ev, slot)) continue;
+    if (ev.sizeKey == null) {
+      out.push({ op: "clear", store, productId, source: ev.source, at: ev.at, orderId: ev.orderId });
+    } else {
+      out.push({ op: "set", store, productId,
+        productName: slot?.productName || ev.productName || "",
+        size: ev.size, bookedHub: ev.bookedHub ?? slot?.bookedHub ?? null,
+        source: ev.source, at: ev.at, orderId: ev.orderId });
     }
-    out[store] = next;
   }
   return out;
 }
+
+/** Stable identity for one repair, so a device applies each at most once. */
+export const displayRepairKey = (r) =>
+  `${r.op} ${r.store} ${r.productId} ${r.at} ${r.size ?? ""}`;
 
 // THE MARKER RULE: the display pair is the ONLY remaining availability.
 //   avail == 0            → ✕ / grey, unchanged (nothing requestable — even

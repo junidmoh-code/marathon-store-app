@@ -78,17 +78,34 @@ export async function loadDisplaySlots() {
 const supersededBy = (cur, notAfterIso) =>
   !!(cur && typeof cur.at === "string" && notAfterIso && cur.at > notAfterIso);
 
+// ── THE TRANSITION'S OWN INSTANT (`at`) ──────────────────────────────────────
+// Both writers default to "now, before the round trip". That is right when the
+// caller IS the transition, and wrong when the transition already happened and
+// this write merely records it. The sale clear is the case: it fires only
+// after `await writeOrder(order)`, so on bad wifi it stamps an instant minutes
+// after the sale — long enough for a registration that landed in between to be
+// overwritten by it, and long enough for the same event replayed off the order
+// (displayPairCore's exits, which read order.createdAt) to disagree with it.
+//
+// So a caller who knows the real instant passes it. It becomes BOTH the
+// staleness fence and the stamped `at`, which makes the write and the replay
+// of the same event byte-identical — and makes a REPAIR of a dropped write
+// indistinguishable from the write it stands in for, so it can never win over
+// something newer that landed in between. Omit it and the behaviour is exactly
+// what it was.
+const transitionAt = (at) => (typeof at === "string" && at ? at : serverNowIso());
+
 /**
  * Set (or replace) the slot: this size is on this store's floor now, booked at
  * `bookedHub`. Last INITIATED write wins — the slot IS "current state".
  */
-export async function setDisplaySlot({ store, productId, productName = "", size, bookedHub, source, orderId = null }) {
+export async function setDisplaySlot({ store, productId, productName = "", size, bookedHub, source, orderId = null, at = null }) {
   const rawSize = String(size ?? "").trim();
   const sizeKey = stockSizeKey(rawSize);
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
   if (!rawSize || sizeKey === "_") return { ok: false, message: "A display slot needs a real size." };
   const user = auth.currentUser;
-  const notAfterIso = serverNowIso();
+  const notAfterIso = transitionAt(at);
   const next = {
     productId,
     productName: productName || "",
@@ -118,10 +135,10 @@ export async function setDisplaySlot({ store, productId, productName = "", size,
  * no-op: the shop may raise a display-partner order for a product whose
  * display was never slot-tracked.
  */
-export async function clearDisplaySlot({ store, productId, source = "display_sold", orderId = null }) {
+export async function clearDisplaySlot({ store, productId, source = "display_sold", orderId = null, at = null }) {
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
   const user = auth.currentUser;
-  const notAfterIso = serverNowIso();
+  const notAfterIso = transitionAt(at);
   try {
     const res = await runTransaction(ref(database, slotPath(store, productId)), (cur) => {
       if (!cur || cur.sizeKey == null) return undefined;            // nothing out there — no-op

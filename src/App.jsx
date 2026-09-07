@@ -109,7 +109,7 @@ import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
-import { displayUnitsByCell, slotsAfterOrderExits, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -9071,6 +9071,39 @@ function AssistantView({ products, onExit, orders = [] }) {
     () => displayUnitsByCell(displaySlotsLive, "hub1"),
     [displaySlotsLive]
   );
+  // ── AND THE REPAIR IS PERSISTED, because the projection alone cannot hold ──
+  // Two reasons a derived-only fix un-fixes itself, both found in review:
+  //   • /orders IS EPHEMERAL — ids recycle daily. When the order that proves
+  //     the exit is overwritten, the projection reverts and the ghost is back.
+  //   • THE ORDER FEED IS STORE-SCOPED (useOrders(myShop), rules-enforced).
+  //     When Trophy pulls a pair standing on Marathon PE's floor, PE's own
+  //     device never receives that order and would keep the ghost for ever.
+  // So the device that CAN see the evidence writes the durable record for
+  // every device that cannot, through the ordinary fenced writers, stamped
+  // with the EVENT's instant — which makes the repair indistinguishable from
+  // the write that was dropped, so it can never win over a real transition
+  // that landed in between. Idempotent, once per repair per session; a repair
+  // that fails is simply found again on the next load. Nothing here runs until
+  // the slots subscription has actually answered — an empty map before it
+  // lands would otherwise read as "no slot" and mint a create.
+  const repairedRef = useRef(new Set());
+  useEffect(() => {
+    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;
+    const repairs = displaySlotRepairs(displaySlots, orders);
+    for (const r of repairs) {
+      const k = displayRepairKey(r);
+      if (repairedRef.current.has(k)) continue;
+      repairedRef.current.add(k);
+      const done = r.op === "clear"
+        ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at })
+        : setDisplaySlot({ store: r.store, productId: r.productId, productName: r.productName,
+                           size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at });
+      // A failed repair is un-remembered so the next load retries it. The slot
+      // write is the ONLY thing at stake here; nothing user-facing waits on it.
+      done.then((res) => { if (!res || res.ok !== true) repairedRef.current.delete(k); })
+          .catch(() => { repairedRef.current.delete(k); });
+    }
+  }, [displaySlots, orders, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that
   // store's warehouse→shop transfer (order.destShop). A single mis-tap here
@@ -9843,19 +9876,20 @@ function AssistantView({ products, onExit, orders = [] }) {
         if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;
         // ── THE RESIDUAL, STATED ────────────────────────────────────────────
         // A STORE-LESS claim cannot be verified any further here, and this does
-        // not pretend otherwise. Such a claim was minted when the prompt found
-        // either no slot at all or two — and the register half of
-        // hub1DisplayUnits is write-only-upward history that is NEVER
-        // decremented, so a register-only display reads as present for ever.
-        // A display that has since been sold, with ordinary stock arriving
-        // after it, therefore still passes (independent review, 2026-09-06).
+        // not pretend otherwise. Such a claim is minted when the prompt found
+        // TWO floors showing the same pid+size and refused to guess between
+        // them (displaySlotStoreFor's rule) — so the units are real and named,
+        // but which floor this one is on is not decided.
         //
-        // NOT CLOSED HERE ON PURPOSE. Refusing every store-less claim would
-        // block the 71% of registered displays that have no slot — a live
-        // flow since #456 that nobody asked this PR to change — and the failure
-        // it prevents is the visible one: the warehouse looks, does not find
-        // the pair, and marks it out of stock. Closing it properly means the
-        // register learning to decrement, which is that lane's own work.
+        // THIS USED TO SAY the residual came from the display REGISTER's
+        // never-decremented rows, and that was true until 2026-09-07: the
+        // register is no longer an input to hub1DisplayUnits at all, every
+        // marked unit now names its store, and `unverified` is always 0
+        // (displayPairCore.js). What is left is genuine two-floor ambiguity,
+        // not drift, and it is NOT closed here on purpose — refusing an
+        // ambiguous claim would block a live flow nobody asked this to change,
+        // and the failure it prevents is the visible one: the warehouse looks,
+        // does not find the pair, and marks it out of stock.
         return sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0;
       });
       if (gone) {
@@ -9996,6 +10030,12 @@ function AssistantView({ products, onExit, orders = [] }) {
             clearDisplaySlot({
               store: slotStore, productId: order.productId,
               source: "display_sold", orderId: order.id,
+              // The sale's instant is the ORDER's, not this call's — the write
+              // happens after `await writeOrder` and could otherwise stamp
+              // minutes late, overwriting a registration that landed in
+              // between. It also makes this write and displayPairCore's replay
+              // of the same event identical. (Independent review, PR #574.)
+              at: order.createdAt,
             }).catch(() => {});
           }
         }
@@ -11526,7 +11566,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         setDisplaySlot({
           store: slotStore, productId: order.productId, productName: order.productName || "",
           size: String(order.size), bookedHub: order.placedAtHub || order.hub || "hub1",
-          source: "manual", orderId: order.id,
+          // `now` is the instant stamped on outOfStockAt in the same patch, so
+          // the write and displayPairCore's replay of this reinstate agree.
+          source: "manual", orderId: order.id, at: now,
         }).catch(() => {});
       }
     }
@@ -11933,7 +11975,10 @@ function WarehouseView({ products = [], orders, onExit }) {
             productName: order.productName || "",
             size: String(refillSize),
             bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
-            source: "display_refill", orderId: order.id,
+            // `now` is the same instant this patch writes to displayRefilledAt,
+            // which is what displayPairCore's replay reads — one transition,
+            // one instant, whichever of the two records it.
+            source: "display_refill", orderId: order.id, at: now,
           }).catch(() => {});
         }
       }

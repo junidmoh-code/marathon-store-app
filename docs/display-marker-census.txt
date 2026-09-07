@@ -1,0 +1,122 @@
+# Display-marker census — 2026-09-07T11:27:26.790Z
+Read-only. Node sizes as fetched:
+  /settings/displayRegister                    52.9 KB
+  /settings/displaySlots                       119.6 KB
+  /settings/hubSneakerCount/register/hub1      175.1 KB
+
+## /settings/displayRegister — the node PR #324 orphaned
+entries: 131 — marathon-pe 94, marathon-pine 14, trophy 23
+newest entry: 2026-08-06T08:58:55.890Z
+shape: ["p1777896054649__7",{"orderId":"345","photoUrl":"https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/products%2Fp1777896054649%2Fphoto.jpg?alt=media&token=98c9ea15-6262-4872-870e-82f49efd2af4","productId":"p1777896054649","productName":"Nike Air Force 1 Low CPFM White Red Flea","registeredAt":"2026-08-01T13:42:11.270Z","registeredBy":"hub1","size":"7","source":"display_partner_send"}]
+
+## /settings/hubSneakerCount/register/hub1 — the write-only-upward history
+rows: 556 — with qty > 0: 547
+timestamp fields present: at, retiredAt
+NEWEST timestamp: 2026-09-07T08:27:33.458Z — AFTER 2026-08-06: still being written
+newest row: ["p1787218274779__6",{"at":"2026-09-07T08:27:33.458Z","bumps":1,"by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","productId":"p1787218274779","productName":"Supreme x Nike air force 1 purple","qty":1,"size":"6","sizeKey":"6","via":"display_registration_card"}]
+rows timestamped after 2026-08-06: 556 of 556
+products with 2+ register rows (qty > 0): 10 of 537
+
+## /settings/displaySlots — one record per product per store
+live slots: 467 — by bookedHub: {"hub1":243,"hub2":206,"hub3":18}
+tombstoned (sold / cleared) slots: 42
+newest slot .at: 2026-09-07T10:51:08.584Z
+sources: {"registration/live":209,"display_sold/cleared":39,"display_refill/live":258,"manual/cleared":3}
+
+## the register row against the live slot for the same product
+register rows whose product has NO live hub1 slot : 315
+register rows whose live slot is the SAME size    : 180 (redundant)
+register rows whose live slot is a DIFFERENT size : 52 (GHOST — the duplicate marker)
+
+## THE MARKER
+BOTH SOURCES (what the grid drew): marked cells 610 — products with 2+ markers 51 of 555
+SLOTS ONLY   (what it draws now) : marked cells 243 — products with 2+ markers 0 of 243
+
+## PAYLOADS
+
+--- p1778150021679 — Diesel Big D Green Orange  [the reported product; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-05T11:40:12.985Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"206","productId":"p1778150021679","productName":"Diesel Big D Green Orange","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1778150021679__8 {"aliasTokenCount":9,"at":"2026-08-22T10:41:40.893Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1778150021679_8","productId":"p1778150021679","productName":"Diesel Big D Green Orange","qty":1,"size":"8","sizeKey":"8","styleCodeFrom":"label_alias"}
+
+--- p1777896002434 — Nike Air Force 1 Low Cactus Plant Flea Market Moss  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-05T07:33:54.510Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"012","productId":"p1777896002434","productName":"Nike Air Force 1 Low Cactus Plant Flea Market Moss","size":"8","sizeKey":"8","source":"display_refill"}
+    REG  p1777896002434__7 {"at":"2026-08-07T10:05:46.463Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777896002434_7","productId":"p1777896002434","productName":"Nike Air Force 1 Low Cactus Plant Flea Market Moss","qty":1,"size":"7","sizeKey":"7","styleCode":"DD7069-300","styleCodeFrom":"label","styleCodeNormalised":"DD7069300"}
+
+--- p1777896054649 — Nike Air Force 1 Low CPFM White Red Flea  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-29T12:30:00.332Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"275","productId":"p1777896054649","productName":"Nike Air Force 1 Low CPFM White Red Flea","size":"9","sizeKey":"9","source":"display_refill"}
+    REG  p1777896054649__6 {"at":"2026-08-07T10:12:11.755Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777896054649_6","productId":"p1777896054649","productName":"Nike Air Force 1 Low CPFM White Red Flea","qty":1,"size":"6","sizeKey":"6","styleCode":"DD7050-003","styleCodeFrom":"label","styleCodeNormalised":"DD7050003"}
+
+--- p1777896597672 — Nike Air Force 1 White Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T12:09:29.557Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"145","productId":"p1777896597672","productName":"Nike Air Force 1 White Black","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777896597672__10 {"at":"2026-08-07T10:12:55.168Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777896597672_10","productId":"p1777896597672","productName":"Nike Air Force 1 White Black","qty":1,"size":"10","sizeKey":"10","styleCode":"CU9225-123","styleCodeFrom":"label","styleCodeNormalised":"CU9225123"}
+
+--- p1777906110799 — Nike Zoom Alphafly Next% Green  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T08:39:20.117Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"019","productId":"p1777906110799","productName":"Nike Zoom Alphafly Next% Green","size":"9","sizeKey":"9","source":"display_refill"}
+    REG  p1777906110799__8 {"at":"2026-08-07T09:17:28.592Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777906110799_8","productId":"p1777906110799","productName":"Nike Zoom Alphafly Next% Green","qty":1,"size":"8","sizeKey":"8","styleCode":"FD8315-700","styleCodeFrom":"label","styleCodeNormalised":"FD8315700"}
+
+--- p1777968964541 — Nike Air Max SNDR GORE-TEX Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-16T07:16:30.030Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"272","productId":"p1777968964541","productName":"Nike Air Max SNDR GORE-TEX Black","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777968964541__4 {"at":"2026-08-08T11:27:46.582Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777968964541_4","productId":"p1777968964541","productName":"Nike Air Max SNDR GORE-TEX Black","qty":1,"size":"4","sizeKey":"4","styleCode":"FZ2068-001","styleCodeFrom":"label","styleCodeNormalised":"FZ2068001"}
+
+--- p1777970239202 — Nike Waffle Racer White Pink  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-27T12:45:22.200Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"199","productId":"p1777970239202","productName":"Nike Waffle Racer White Pink","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777970239202__5 {"at":"2026-08-06T12:17:28.270Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777970239202_5","productId":"p1777970239202","productName":"Nike Waffle Racer White Pink","qty":1,"size":"5","sizeKey":"5","styleCode":"DA7245-014","styleCodeFrom":"label","styleCodeNormalised":"DA7245014"}
+
+--- p1777970668766 — Nike Waffle Debut Pink White  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-30T09:01:41.623Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"051","productId":"p1777970668766","productName":"Nike Waffle Debut Pink White","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777970668766__5_5 {"at":"2026-08-06T12:15:12.324Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777970668766_5_5","productId":"p1777970668766","productName":"Nike Waffle Debut Pink White","qty":1,"size":"5.5","sizeKey":"5_5","styleCode":"DA7245-020","styleCodeFrom":"label","styleCodeNormalised":"DA7245020"}
+
+--- p1777971632734 — On Cloud 6 Black White  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T11:13:38.739Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"092","productId":"p1777971632734","productName":"On Cloud 6 Black White","size":"9","sizeKey":"9","source":"display_refill"}
+    REG  p1777971632734__7 {"at":"2026-08-18T07:05:03.260Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777971632734_7","productId":"p1777971632734","productName":"On Cloud 6 Black White","qty":1,"size":"7","sizeKey":"7","styleCode":"FGV1V14","styleCodeFrom":"label","styleCodeNormalised":"FGV1V14"}
+
+--- p1777973172598 — On Cloudsurfer Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T12:15:01.558Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"156","productId":"p1777973172598","productName":"On Cloudsurfer Black","size":"3","sizeKey":"3","source":"display_refill"}
+    REG  p1777973172598__4 {"aliasTokenCount":8,"at":"2026-08-07T14:35:07.133Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777973172598_4","productId":"p1777973172598","productName":"On Cloudsurfer Black","qty":1,"size":"4","sizeKey":"4","styleCodeFrom":"label_alias"}
+
+--- p1777976852290 — Lacoste L-Guard Breaker Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T09:01:17.919Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"031","productId":"p1777976852290","productName":"Lacoste L-Guard Breaker Black","size":"9","sizeKey":"9","source":"display_refill"}
+    REG  p1777976852290__8 {"at":"2026-08-07T13:13:43.804Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777976852290_8","productId":"p1777976852290","productName":"Lacoste L-Guard Breaker Black","qty":1,"size":"8","sizeKey":"8","styleCode":"742SMA004002H","styleCodeFrom":"label","styleCodeNormalised":"742SMA004002H"}
+
+--- p1777977696190 — Lacoste Audyssol White  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-01T10:42:06.309Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"115","productId":"p1777977696190","productName":"Lacoste Audyssol White","size":"8","sizeKey":"8","source":"display_refill"}
+    REG  p1777977696190__6 {"at":"2026-08-07T13:12:54.245Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777977696190_6","productId":"p1777977696190","productName":"Lacoste Audyssol White","qty":1,"size":"6","sizeKey":"6","styleCode":"46SMA01216D2","styleCodeFrom":"label","styleCodeNormalised":"46SMA01216D2"}
+
+--- p1777978205682 — Lacoste Audyssol Full Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T08:51:04.341Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"026","productId":"p1777978205682","productName":"Lacoste Audyssol Full Black","size":"7","sizeKey":"7","source":"display_refill"}
+    REG  p1777978205682__6 {"at":"2026-08-07T13:32:09.816Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777978205682_6","productId":"p1777978205682","productName":"Lacoste Audyssol Full Black","qty":1,"size":"6","sizeKey":"6","styleCode":"46SMA01216B3","styleCodeFrom":"label","styleCodeNormalised":"46SMA01216B3"}
+
+--- p1777978568954 — Nike Air Force 1 What The LA Multi-Color  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-31T09:24:16.670Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"039","productId":"p1777978568954","productName":"Nike Air Force 1 What The LA Multi-Color","size":"3","sizeKey":"3","source":"display_refill"}
+    REG  p1777978568954__5 {"at":"2026-08-07T12:29:25.710Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777978568954_5","productId":"p1777978568954","productName":"Nike Air Force 1 What The LA Multi-Color","qty":1,"size":"5","sizeKey":"5","styleCode":"CT1117-100","styleCodeFrom":"label","styleCodeNormalised":"CT1117100"}
+
+--- p1777979684653 — Lacoste Court Cage Black White  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-01T09:14:38.741Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"068","productId":"p1777979684653","productName":"Lacoste Court Cage Black White","size":"9","sizeKey":"9","source":"display_refill"}
+    REG  p1777979684653__6 {"at":"2026-08-29T13:24:03.973Z","bumps":1,"by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","productId":"p1777979684653","productName":"Lacoste Court Cage Black White","qty":1,"size":"6","sizeKey":"6","via":"display_registration_card"}
+
+--- p1777979694047 — Nike Air Force 1 White  [carries 2+ markers; markers under both sources: 3]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T08:50:14.200Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"032","productId":"p1777979694047","productName":"Nike Air Force 1 White","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777979694047__3 {"at":"2026-08-08T07:01:45.729Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777979694047_3","productId":"p1777979694047","productName":"Nike Air Force 1 White","qty":1,"size":"3","sizeKey":"3","styleCode":"315122-111","styleCodeFrom":"on_file","styleCodeNormalised":"315122111"}
+    REG  p1777979694047__9 {"at":"2026-08-07T08:43:56.757Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777979694047_9","productId":"p1777979694047","productName":"Nike Air Force 1 White","qty":1,"size":"9","sizeKey":"9","styleCode":"315122-111","styleCodeFrom":"label","styleCodeNormalised":"315122111"}
+
+--- p1777980918979 — Lacoste Elite Active Off White  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-06T13:05:45.487Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"183","productId":"p1777980918979","productName":"Lacoste Elite Active Off White","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777980918979__7 {"at":"2026-08-07T12:46:24.030Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777980918979_7","productId":"p1777980918979","productName":"Lacoste Elite Active Off White","qty":1,"size":"7","sizeKey":"7","styleCode":"746SMA00081R5","styleCodeFrom":"label","styleCodeNormalised":"746SMA00081R5"}
+
+--- p1777984220332 — Lacoste Missouri Mid Green  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-05T07:34:35.155Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"009","productId":"p1777984220332","productName":"Lacoste Missouri Mid Green","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777984220332__8 {"at":"2026-08-07T13:07:07.242Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777984220332_8","productId":"p1777984220332","productName":"Lacoste Missouri Mid Green","qty":1,"size":"8","sizeKey":"8","styleCode":"743SMA01694M3","styleCodeFrom":"label","styleCodeNormalised":"743SMA01694M3"}
+
+--- p1777989484106 — Timberland GreenStride Motion 6 Low Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-09-05T10:47:56.828Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"150","productId":"p1777989484106","productName":"Timberland GreenStride Motion 6 Low Black","size":"8","sizeKey":"8","source":"display_refill"}
+    REG  p1777989484106__7 {"aliasTokenCount":3,"at":"2026-08-07T12:10:41.838Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777989484106_7","productId":"p1777989484106","productName":"Timberland GreenStride Motion 6 Low Black","qty":1,"size":"7","sizeKey":"7","styleCodeFrom":"label_alias"}
+
+--- p1777990237129 — Timberland Motion 6 Mid Green  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-28T10:19:52.777Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"073","productId":"p1777990237129","productName":"Timberland Motion 6 Mid Green","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777990237129__9 {"at":"2026-08-07T12:22:45.260Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777990237129_9","productId":"p1777990237129","productName":"Timberland Motion 6 Mid Green","qty":1,"size":"9","sizeKey":"9","styleCode":"A9025","styleCodeFrom":"label","styleCodeNormalised":"A9025"}
+
+--- p1777990411019 — Timberland Motion 6 Mid Black  [carries 2+ markers; markers under both sources: 2]
+    SLOT {"store":"marathon-pe","at":"2026-08-29T08:07:00.732Z","bookedHub":"hub1","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","orderId":"042","productId":"p1777990411019","productName":"Timberland Motion 6 Mid Black","size":"6","sizeKey":"6","source":"display_refill"}
+    REG  p1777990411019__11 {"at":"2026-08-07T13:52:24.621Z","by":"vWfHqbLEPvRMItXhH0B9NvYW0LG3","movementId":"dispreg_hub1_p1777990411019_11","productId":"p1777990411019","productName":"Timberland Motion 6 Mid Black","qty":1,"size":"11","sizeKey":"11","styleCode":"A8425","styleCodeFrom":"label","styleCodeNormalised":"A8425"}
+
+(1 reported + 21 further products dumped in full)

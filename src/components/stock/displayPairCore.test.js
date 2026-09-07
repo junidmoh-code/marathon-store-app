@@ -4,10 +4,12 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import {
-  displayUnitsByCell, slotsAfterOrderExits, displayOnly, pendingDisplayPullsByCell,
+  displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey,
+  displayOnly, pendingDisplayPullsByCell,
   mergePromised, displaySlotStoreFor, depletedTaskRevivable,
 } from "./displayPairCore";
 import { promisedKey } from "./availabilityCore";
+import { serverNowIso } from "../../utils/serverTime";
 
 const SNEAKER = { id: "p1", category: "Footwear", productType: "sneaker" };
 const PERFUME = { id: "pf", categoryKey: "perfumes" };   // NOT footwear
@@ -170,6 +172,9 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
     expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);
   });
 
+  // RETIRE (the registration card) writes NO order, so the replay cannot see
+  // it and cannot repair a dropped clear there — the card says so in words to
+  // the person standing at it. What the replay must not do is UNDO it.
   it("RETURNED TO HUB: an already-tombstoned slot stays gone, orders or none", () => {
     const slots = { "marathon-pe": { p1: { size: null, sizeKey: null, prevSize: "6", bookedHub: "hub1", source: "manual", at: "2026-09-06T12:00:00.000Z" } } };
     expect(units(slots, [])).toEqual({});
@@ -183,6 +188,91 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
     const orders = [{ id: "306", productId: "p1", destShop: PE, requestDisplayPartner: true,
                       createdAt: "2026-09-06T09:00:00.000Z", status: "out_of_stock" }];
     expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);
+  });
+
+  it("THE PULL FAILED AND THE REINSTATE WRITE DROPPED TOO — the display is still marked", () => {
+    // The asymmetric failure two reviewers found: replaying ONLY the sale would
+    // clear a display that never left the floor and there would be nothing to
+    // put it back. The reinstate is the third replayed transition, mirroring
+    // App.jsx's own OUT_OF_STOCK writer field for field.
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");     // neither write landed
+    const orders = [{ id: "306", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      displayPairRequest: true, displayPairStore: PE, size: "6",
+                      createdAt: "2026-09-06T09:00:00.000Z",
+                      status: "out_of_stock", outOfStockAt: "2026-09-06T10:00:00.000Z",
+                      placedAtHub: "hub1" }];
+    const m = units(slots, orders);
+    expect(Object.keys(m)).toEqual(["p1::6"]);
+    // and the repair that persists it is a SET back to 6, not a clear
+    expect(displaySlotRepairs(slots, orders)).toEqual([]);      // slot already reads 6
+  });
+
+  it("a CLASSIC partner order going out of stock does NOT reinstate — that display did sell", () => {
+    // Mirrors the writer, which reinstates for displayPairRequest only: a
+    // classic partner order out of stock means the warehouse has no
+    // replacement, not that the pair is back on the floor.
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const orders = [{ id: "316", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      size: "6", createdAt: "2026-09-06T09:00:00.000Z",
+                      status: "out_of_stock", outOfStockAt: "2026-09-06T10:00:00.000Z" }];
+    expect(units(slots, orders)).toEqual({});
+  });
+
+  it("A REPLACEMENT FOR A PRODUCT WITH NO SLOT RECORD CREATES ONE — the writer would have", () => {
+    // setDisplaySlot creates the record; replaying only over existing records
+    // would silently lose a real marker.
+    const orders = [{ id: "317", productId: "p9", productName: "Nike AF1", destShop: PE,
+                      requestDisplayPartner: true, createdAt: "2026-09-01T08:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "8",
+                      displayRefilledAt: "2026-09-05T09:00:00.000Z", displayRefillHub: "hub1" }];
+    const m = units({}, orders);
+    expect(m["p9::8"]).toEqual({ units: 1, stores: [PE], unverified: 0 });
+    // a CLEAR with no record stays nothing — clearDisplaySlot no-ops
+    expect(units({}, [{ id: "318", productId: "p9", destShop: PE, requestDisplayPartner: true,
+                        createdAt: "2026-09-05T09:00:00.000Z" }])).toEqual({});
+  });
+
+  it("A REPLACEMENT SENT FROM ANOTHER HUB re-points bookedHub, exactly like the writer", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const orders = [{ id: "319", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-01T07:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "8",
+                      displayRefilledAt: "2026-09-05T09:00:00.000Z", displayRefillHub: "hub2" }];
+    expect(units(slots, orders)).toEqual({});                       // no longer hub1's
+    expect(displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub2")["p1::8"].units).toBe(1);
+  });
+
+  it("EQUAL INSTANTS are ranked, not left to array order", () => {
+    const at = "2026-09-06T10:00:01.000Z";
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const sale = { id: "a", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: at };
+    const both = { ...sale, displayRefillStatus: "refilled", displayRefillSize: "8", displayRefilledAt: at };
+    // A replacement at the same instant as the sale is always the later
+    // transition on one order, so it wins whichever way the array is built.
+    expect(Object.keys(units(slots, [both]))).toEqual(["p1::8"]);
+    expect(Object.keys(units(slots, [both, sale]))).toEqual(["p1::8"]);
+    expect(Object.keys(units(slots, [sale, both]))).toEqual(["p1::8"]);
+  });
+
+  it("AN EQUAL-INSTANT SLOT is the same transition — applying it is idempotent, like the writers", () => {
+    // displaySlots.js supersededBy() rejects only a STRICTLY newer record, so
+    // an equal-instant write goes through there too. The two must agree.
+    const at = "2026-09-06T10:00:00.000Z";
+    const slots = { "marathon-pe": { p1: { size: null, sizeKey: null, bookedHub: "hub1", source: "display_sold", at } } };
+    const orders = [{ id: "b", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: at }];
+    expect(units(slots, orders)).toEqual({});
+    expect(displaySlotRepairs(slots, orders)).toEqual([]);   // already done — no write
+  });
+
+  it("EVERY INSTANT IS A FIXED-FORMAT UTC STRING, which is why > is chronological", () => {
+    // The whole ordering rests on this. serverNowIso() is Date#toISOString(),
+    // so every timestamp in play is `YYYY-MM-DDTHH:MM:SS.mmmZ`. Lexicographic
+    // comparison is only chronological for that shape — an offset form like
+    // …+02:00 would sort wrongly — so the writers must never emit one.
+    const iso = serverNowIso();
+    expect(iso).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(readFileSync(new URL("../../utils/serverTime.js", import.meta.url), "utf8"))
+      .toMatch(/toISOString\(\)/);
   });
 
   it("A HAND CORRECTION AFTER THE FACT WINS — the replay never resurrects", () => {
@@ -236,6 +326,17 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
     const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
     expect(slotsAfterOrderExits(slots, [])).toBe(slots);       // nothing to apply, same object
     expect(slotsAfterOrderExits(slots, null)).toBe(slots);
+    // And the healthy case is reference-stable too: /orders re-fires on every
+    // till transaction, and a projection that changes nothing must not
+    // invalidate every memo hanging off the slot map.
+    const landed = [{ id: "z", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-01T07:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "6",
+                      displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
+    expect(slotsAfterOrderExits(slots, landed)).toBe(slots);
+    // A `__proto__` store or product id is data, not a prototype assignment.
+    const evil = { __proto__: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
+    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed))).toBe(null);
     expect(slotsAfterOrderExits(null, [])).toEqual({});
     expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
@@ -257,6 +358,82 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
         displayRefillStatus: "refilled", displayRefillSize: "12", displayRefilledAt: "2026-09-04T09:00:00.000Z" },
     ];
     expect(Object.keys(units(slots, orders))).toEqual(["p1::12"]);   // three replacements, one marker
+  });
+});
+
+// ─── THE REPAIR IS PERSISTED, because the projection alone cannot hold ───────
+// /orders recycles its ids daily and the feed is store-scoped, so a fix that
+// lives only in the projection un-fixes itself. displaySlotRepairs turns each
+// divergence into the write the exit dropped; App.jsx puts it through the
+// ordinary fenced writers.
+describe("displaySlotRepairs — the divergence as a write", () => {
+  const PE = "marathon-pe";
+  it("a dropped SALE clear becomes a clear, stamped with the ORDER's instant", () => {
+    const slots = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z" } } };
+    const orders = [{ id: "401", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
+    expect(displaySlotRepairs(slots, orders)).toEqual([
+      { op: "clear", store: PE, productId: "p1", source: "display_sold", at: "2026-09-06T09:00:00.000Z", orderId: "401" },
+    ]);
+  });
+  it("a dropped REPLACEMENT becomes a set at the sent size and the sending hub", () => {
+    const slots = { "marathon-pe": { p1: { productName: "AF1", size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z" } } };
+    const orders = [{ id: "402", productId: "p1", productName: "AF1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-01T07:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "8",
+                      displayRefilledAt: "2026-09-06T09:00:00.000Z", displayRefillHub: "hub1" }];
+    expect(displaySlotRepairs(slots, orders)).toEqual([
+      { op: "set", store: PE, productId: "p1", productName: "AF1", size: "8", bookedHub: "hub1",
+        source: "display_refill", at: "2026-09-06T09:00:00.000Z", orderId: "402" },
+    ]);
+  });
+  it("NOTHING TO REPAIR when the write landed — the healthy case writes nothing", () => {
+    const slots = { "marathon-pe": { p1: { size: "8", sizeKey: "8", bookedHub: "hub1", source: "display_refill", at: "2026-09-06T09:00:00.000Z" } } };
+    const orders = [{ id: "403", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-01T07:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "8",
+                      displayRefilledAt: "2026-09-06T09:00:00.000Z", displayRefillHub: "hub1" }];
+    expect(displaySlotRepairs(slots, orders)).toEqual([]);
+  });
+  it("a slot that has moved on since is NOT repaired — the writers' own fence, applied early", () => {
+    const slots = { "marathon-pe": { p1: { size: "7", sizeKey: "7", bookedHub: "hub1", source: "registration", at: "2026-09-07T12:00:00.000Z" } } };
+    const orders = [{ id: "404", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
+    expect(displaySlotRepairs(slots, orders)).toEqual([]);
+  });
+  it("clearing something already cleared, or never recorded, is not a write", () => {
+    const orders = [{ id: "405", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }];
+    expect(displaySlotRepairs({ "marathon-pe": { p1: { size: null, sizeKey: null, at: "2026-09-01T08:00:00.000Z" } } }, orders)).toEqual([]);
+    expect(displaySlotRepairs({}, orders)).toEqual([]);
+    expect(displaySlotRepairs(null, null)).toEqual([]);
+  });
+  it("THE REPAIR AND THE PROJECTION AGREE: applying the repairs yields the projected map", () => {
+    // The two must never drift — a repair that writes something the marker
+    // does not already show would make the screen flicker at the next sync.
+    const slots = {
+      "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z" },
+                       p2: { size: "9", sizeKey: "9", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z" } },
+      trophy:        { p1: { size: "7", sizeKey: "7", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z" } },
+    };
+    const orders = [
+      { id: "406", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" },
+      { id: "407", productId: "p2", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-02T09:00:00.000Z",
+        displayRefillStatus: "refilled", displayRefillSize: "11", displayRefilledAt: "2026-09-06T09:00:00.000Z", displayRefillHub: "hub1" },
+    ];
+    // apply the repairs to a copy, the way the writers would
+    const applied = JSON.parse(JSON.stringify(slots));
+    for (const r of displaySlotRepairs(slots, orders)) {
+      const cur = applied[r.store][r.productId];
+      applied[r.store][r.productId] = r.op === "clear"
+        ? { ...cur, size: null, sizeKey: null, at: r.at }
+        : { ...cur, size: r.size, sizeKey: r.size.replace(".", "_"), bookedHub: r.bookedHub, at: r.at };
+    }
+    expect(displayUnitsByCell(applied, "hub1")).toEqual(displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub1"));
+  });
+  it("displayRepairKey is stable and distinguishes the ops it must", () => {
+    const base = { op: "clear", store: PE, productId: "p1", at: "2026-09-06T09:00:00.000Z" };
+    expect(displayRepairKey(base)).toBe(displayRepairKey({ ...base }));
+    expect(displayRepairKey(base)).not.toBe(displayRepairKey({ ...base, op: "set", size: "8" }));
+    expect(displayRepairKey({ ...base, op: "set", size: "8" })).not.toBe(displayRepairKey({ ...base, op: "set", size: "9" }));
+    expect(displayRepairKey(base)).not.toBe(displayRepairKey({ ...base, at: "2026-09-06T09:00:01.000Z" }));
   });
 });
 
