@@ -4,8 +4,8 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import {
-  displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised,
-  displaySlotStoreFor, depletedTaskRevivable,
+  displayUnitsByCell, slotsAfterOrderExits, displayOnly, pendingDisplayPullsByCell,
+  mergePromised, displaySlotStoreFor, depletedTaskRevivable,
 } from "./displayPairCore";
 import { promisedKey } from "./availabilityCore";
 
@@ -104,6 +104,159 @@ describe("displayUnitsByCell — ONE SOURCE, and the register is not it", () => 
     const src = readFileSync(new URL("./displayPairCore.js", import.meta.url), "utf8");
     expect(src).not.toMatch(/register\s*\)/);                 // no register parameter
     expect(src.match(/hubSneakerCount/g) || []).toHaveLength(1); // the comment only
+  });
+});
+
+// ─── THE EXITS ───────────────────────────────────────────────────────────────
+// Every exit writes the slot best-effort; these prove the marker survives the
+// write being dropped, because the same events are replayed off the orders.
+// The four scenarios the owner named: sold, replaced, returned to hub,
+// and a pull that failed (the display never left).
+describe("slotsAfterOrderExits — a display that leaves the floor stops being marked", () => {
+  const PE = "marathon-pe";
+  const slotAt = (size, at, source = "registration") => ({
+    "marathon-pe": { p1: { size, sizeKey: size.replace(".", "_"), bookedHub: "hub1", source, at, productId: "p1" } },
+  });
+  const units = (slots, orders) => displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub1");
+
+  it("THE OWNER'S CASE: send size 6, replace with size 8 — ONE marker, and it is 8", () => {
+    // The slot write for the replacement was dropped; only the order landed.
+    const slots = slotAt("6", "2026-09-01T10:00:00.000Z", "display_refill");
+    const orders = [{
+      id: "206", productId: "p1", destShop: PE, requestDisplayPartner: true,
+      createdAt: "2026-09-01T09:00:00.000Z",           // older than the slot — already applied
+      displayRefillStatus: "refilled", displayRefillSize: "8",
+      displayRefilledAt: "2026-09-05T11:00:00.000Z",
+    }];
+    const m = units(slots, orders);
+    expect(Object.keys(m)).toEqual(["p1::8"]);          // exactly one
+    expect(m["p1::6"]).toBeUndefined();                 // the old size is NOT still marked
+    expect(m["p1::8"].units).toBe(1);
+  });
+
+  it("THE OWNER'S CASE: sell the display — ZERO markers", () => {
+    const slots = slotAt("6", "2026-09-01T10:00:00.000Z");
+    const orders = [{ id: "301", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-06T08:00:00.000Z" }];
+    expect(units(slots, orders)).toEqual({});
+  });
+
+  it("and it clears whatever size sold — the slot is per product, not per size", () => {
+    const slots = slotAt("11", "2026-09-01T10:00:00.000Z");
+    const orders = [{ id: "302", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-06T08:00:00.000Z", size: "6", sentSize: "6" }];
+    expect(units(slots, orders)).toEqual({});
+  });
+
+  it("A PULL TAKES ANOTHER SHOP'S DISPLAY — the slot cleared is that shop's, not the buyer's", () => {
+    const slots = {
+      "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T10:00:00.000Z" } },
+      trophy:        { p1: { size: "9", sizeKey: "9", bookedHub: "hub1", source: "registration", at: "2026-09-01T10:00:00.000Z" } },
+    };
+    // Trophy orders the size; the pair stands on Marathon PE's floor.
+    const orders = [{ id: "303", productId: "p1", destShop: "trophy", requestDisplayPartner: true,
+                      displayPairRequest: true, displayPairStore: PE,
+                      createdAt: "2026-09-06T08:00:00.000Z" }];
+    const m = units(slots, orders);
+    expect(m["p1::6"]).toBeUndefined();                          // PE's display went
+    expect(m["p1::9"]).toEqual({ units: 1, stores: ["trophy"], unverified: 0 });  // Trophy's did not
+  });
+
+  it("A PULL THAT REFUSES TO GUESS (displayPairStore null) touches nothing", () => {
+    const slots = slotAt("6", "2026-09-01T10:00:00.000Z");
+    const orders = [{ id: "304", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      displayPairRequest: true, displayPairStore: null,
+                      createdAt: "2026-09-06T08:00:00.000Z" }];
+    expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);
+  });
+
+  it("RETURNED TO HUB: an already-tombstoned slot stays gone, orders or none", () => {
+    const slots = { "marathon-pe": { p1: { size: null, sizeKey: null, prevSize: "6", bookedHub: "hub1", source: "manual", at: "2026-09-06T12:00:00.000Z" } } };
+    expect(units(slots, [])).toEqual({});
+    expect(units(slots, [{ id: "305", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-05T08:00:00.000Z" }])).toEqual({});
+  });
+
+  it("THE PULL FAILED — the reinstated slot is NEWER, so the sale event cannot re-clear it", () => {
+    // Order created 09:00 (cleared the slot), warehouse marked out_of_stock and
+    // reinstated the slot at 10:00. The display never left the floor.
+    const slots = slotAt("6", "2026-09-06T10:00:00.000Z", "manual");
+    const orders = [{ id: "306", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-06T09:00:00.000Z", status: "out_of_stock" }];
+    expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);
+  });
+
+  it("A HAND CORRECTION AFTER THE FACT WINS — the replay never resurrects", () => {
+    // The card re-registered size 7 at 12:00; the refill order says 8 at 11:00.
+    const slots = slotAt("7", "2026-09-06T12:00:00.000Z");
+    const orders = [{ id: "307", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-01T09:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "8",
+                      displayRefilledAt: "2026-09-06T11:00:00.000Z" }];
+    expect(Object.keys(units(slots, orders))).toEqual(["p1::7"]);
+  });
+
+  it("SALE THEN REPLACEMENT ON THE SAME ORDER: the later event is the state", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const sale = { id: "308", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                   createdAt: "2026-09-02T09:00:00.000Z" };
+    expect(units(slots, [sale])).toEqual({});                       // sold — nothing marked
+    const refilled = { ...sale, displayRefillStatus: "refilled", displayRefillSize: "8",
+                       displayRefilledAt: "2026-09-03T09:00:00.000Z" };
+    expect(Object.keys(units(slots, [refilled]))).toEqual(["p1::8"]);  // replaced — one marker, the new size
+  });
+
+  it("a depleted refill leaves the slot cleared — no unit came back", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const orders = [{ id: "309", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-02T09:00:00.000Z",
+                      displayRefillStatus: "stockDepleted", displayRefillStockDepletedAt: "2026-09-03T09:00:00.000Z" }];
+    expect(units(slots, orders)).toEqual({});
+  });
+
+  it("ordinary orders are not display exits and change nothing", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const orders = [
+      { id: "310", productId: "p1", destShop: PE, createdAt: "2026-09-06T09:00:00.000Z" },                     // plain sale
+      { id: "311", productId: "p1", destShop: PE, requestDisplay: true, createdAt: "2026-09-06T09:00:00.000Z" },// "show me one"
+      { id: "312", productId: "p2", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" },
+    ];
+    expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);
+  });
+
+  it("a one-size sentinel refill size can never mint a marker", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const orders = [{ id: "313", productId: "p1", destShop: PE, requestDisplayPartner: true,
+                      createdAt: "2026-09-01T07:00:00.000Z",
+                      displayRefillStatus: "refilled", displayRefillSize: "Free Size",
+                      displayRefilledAt: "2026-09-06T09:00:00.000Z" }];
+    expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);   // untouched, no "p1::_"
+  });
+
+  it("is a pure projection: no orders, no timestamps, no slots — all safe and unchanged", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    expect(slotsAfterOrderExits(slots, [])).toBe(slots);       // nothing to apply, same object
+    expect(slotsAfterOrderExits(slots, null)).toBe(slots);
+    expect(slotsAfterOrderExits(null, [])).toEqual({});
+    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
+    // A slot with no `at` is a hand-written record; the replay leaves it alone
+    // rather than guessing which came first.
+    const noAt = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1" } } };
+    expect(Object.keys(units(noAt, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }]))).toEqual(["p1::6"]);
+    // An event with no timestamp is not an event.
+    expect(Object.keys(units(slots, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true }]))).toEqual(["p1::6"]);
+  });
+
+  it("ACCUMULATION IS IMPOSSIBLE: whatever the orders say, a store keeps at most one marked size per product", () => {
+    const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
+    const orders = [
+      { id: "a", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-02T08:00:00.000Z",
+        displayRefillStatus: "refilled", displayRefillSize: "8", displayRefilledAt: "2026-09-02T09:00:00.000Z" },
+      { id: "b", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-03T08:00:00.000Z",
+        displayRefillStatus: "refilled", displayRefillSize: "10", displayRefilledAt: "2026-09-03T09:00:00.000Z" },
+      { id: "c", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-04T08:00:00.000Z",
+        displayRefillStatus: "refilled", displayRefillSize: "12", displayRefilledAt: "2026-09-04T09:00:00.000Z" },
+    ];
+    expect(Object.keys(units(slots, orders))).toEqual(["p1::12"]);   // three replacements, one marker
   });
 });
 

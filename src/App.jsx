@@ -109,7 +109,7 @@ import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
-import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { displayUnitsByCell, slotsAfterOrderExits, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -9055,9 +9055,21 @@ function AssistantView({ products, onExit, orders = [] }) {
   const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error;
   // Has /orders answered at all? See useOrders — the flag rides on the array.
   const ordersSettled = orders?.settled === true;
+  // THE EXITS ARE REPLAYED OFF THE ORDERS, not merely written. Every exit —
+  // sale, replacement, retire, failed pull — already writes the slot, but all
+  // four are best-effort (the ORDER is the fact that must never be lost), so a
+  // dropped write would leave a marker standing on a shoe that has left the
+  // floor with nothing to retry it. slotsAfterOrderExits replays the same
+  // events from the orders this screen already streams and lets the newer of
+  // the two win, so the marker clears at the sale and moves at the replacement
+  // whether or not the slot write landed. No listener, no write, no cleanup.
+  const displaySlotsLive = useMemo(
+    () => slotsAfterOrderExits(displaySlots, orders),
+    [displaySlots, orders]
+  );
   const hub1DisplayUnits = useMemo(
-    () => displayUnitsByCell(displaySlots, "hub1"),
-    [displaySlots]
+    () => displayUnitsByCell(displaySlotsLive, "hub1"),
+    [displaySlotsLive]
   );
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that

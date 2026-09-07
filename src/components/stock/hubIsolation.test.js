@@ -274,7 +274,8 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // what made one display draw two markers; it is gone from this screen
     // entirely (docs/display-marker-findings.md). Still hub1, which is what
     // this fence is about — and the register must never come back as a term.
-    expect(a).toContain('displayUnitsByCell(displaySlots, "hub1")');
+    expect(a).toContain('displayUnitsByCell(displaySlotsLive, "hub1")');
+    expect(a).toContain('slotsAfterOrderExits(displaySlots, orders)');
     expect(a).not.toMatch(/useDisplayRegister/);
     expect(a).not.toMatch(/hubSneakerCount\/register/);
   });

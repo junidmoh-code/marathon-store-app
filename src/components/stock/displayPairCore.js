@@ -42,6 +42,7 @@
 // Pure module — no firebase; callers feed it data they already hold.
 
 import { slotIsLive } from "./displaySlots";
+import { stockSizeKey } from "../../utils/sizeKey";
 import { isFootwearProduct, promisedKey, availableUnits, promiseFresh } from "./availabilityCore";
 import { serverNowMs } from "../../utils/serverTime";
 
@@ -88,6 +89,91 @@ export function displayUnitsByCell(slots, hub) {
       out[key].units += 1;
       out[key].stores.push(store);
     }
+  }
+  return out;
+}
+
+// ─── THE EXITS: what the ORDER lane says happened after the slot was written ─
+//
+// The slot is the durable record and every exit already writes it: a display
+// sale clears it at order creation, a display refill overwrites it with the
+// size that was sent, the registration card's retire clears it, and a failed
+// pull reinstates it. All four are best-effort fire-and-forget writes, because
+// the ORDER is the fact that must never be lost — so a dropped write leaves a
+// marker standing on a shoe that is no longer on the floor, and nothing
+// retries it. That is a human step by another name, and the exits are not
+// allowed to need one.
+//
+// So the marker does not trust the slot alone: it replays the SAME exits off
+// the orders the screen is already streaming, and the newer of the two wins.
+// No extra listener, no extra write, no cleanup pass.
+//
+//   SALE        an order with requestDisplayPartner — the displayed pair is
+//               being sold — clears that store's slot for that product as of
+//               order.createdAt.
+//   REPLACEMENT an order resolved displayRefillStatus:"refilled" carrying
+//               displayRefillSize (the size captured when the pair was
+//               physically SENT) sets that store's slot to that size as of
+//               order.displayRefilledAt.
+//
+// SAME STALENESS RULE AS THE WRITERS (displaySlots.js): an event only counts
+// if it is NEWER than the slot's own `at`. A re-registration after a sale, or
+// a hand correction on the card, is the newer transition and it wins — the
+// replay can never resurrect a display someone has since taken down.
+//
+// /orders IS EPHEMERAL — ids recycle daily — so this sees only the recent
+// window, and that is exactly the window it is for: the durable write has
+// normally landed, and where it did not, the evidence is still here. Nothing
+// depends on an order surviving.
+//
+// The store an event belongs to is displaySlotStoreFor's answer, not
+// destShop's: a display-pair PULL can take ANOTHER shop's display, and
+// clearing the ordering shop's slot would erase an unrelated live display.
+const DISPLAY_EXIT_CLEARED = { sizeKey: null };
+
+function displayExitsByStoreProduct(orders) {
+  const out = new Map();   // "store\u0000pid" -> { at, sizeKey, size }
+  for (const o of orders || []) {
+    if (!o || !o.productId) continue;
+    const store = displaySlotStoreFor(o);
+    if (!store) continue;
+    const key = `${store}\u0000${o.productId}`;
+    const put = (at, ev) => {
+      if (typeof at !== "string" || !at) return;
+      const cur = out.get(key);
+      if (!cur || at > cur.at) out.set(key, { at, ...ev });
+    };
+    if (o.requestDisplayPartner === true) put(o.createdAt, DISPLAY_EXIT_CLEARED);
+    if (o.displayRefillStatus === "refilled" && o.displayRefillSize) {
+      const size = String(o.displayRefillSize);
+      const sizeKey = stockSizeKey(size);
+      if (sizeKey && sizeKey !== "_") put(o.displayRefilledAt, { sizeKey, size });
+    }
+  }
+  return out;
+}
+
+/**
+ * The slots map with every exit the order lane knows about already applied.
+ * Pure: same shape in, same shape out, so every existing slot reader keeps
+ * working. Pass no orders and you get the slots back untouched.
+ */
+export function slotsAfterOrderExits(slots, orders) {
+  const exits = displayExitsByStoreProduct(orders);
+  if (exits.size === 0) return slots || {};
+  const out = {};
+  for (const [store, byPid] of Object.entries(slots || {})) {
+    const next = {};
+    for (const [pid, slot] of Object.entries(byPid || {})) {
+      const ev = exits.get(`${store}\u0000${pid}`);
+      // The slot's own transition is newer (or the slot has no timestamp at
+      // all, which only a hand-written record has) — the slot IS the state.
+      if (!ev || typeof slot?.at !== "string" || !(ev.at > slot.at)) { next[pid] = slot; continue; }
+      next[pid] = ev.sizeKey == null
+        ? { ...slot, size: null, sizeKey: null, prevSize: slot.size ?? null, source: "display_sold", at: ev.at, derived: "orders" }
+        : { ...slot, size: ev.size, sizeKey: ev.sizeKey, source: "display_refill", at: ev.at, derived: "orders" };
+    }
+    out[store] = next;
   }
   return out;
 }
