@@ -15,7 +15,7 @@ import {
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
   parseAllowedAccountTails, accountVerdict, EFT_ACCOUNTS_ENV_VAR,
   maskAccountValue, looksPaymentShaped,
-  eftMessageKey, poolWriteDecision, eftPoolRecord,
+  eftMessageKey, poolWriteDecision, eftPoolRecord, eftRetryPlan,
   eftMessageRoute, looksLikeStrangerPayment, unknownBankRecord, UNKNOWN_BANK_RAW_LIMIT,
 } from "./eftCore.mjs";
 
@@ -762,5 +762,33 @@ describe("the stranger path stays a bystander", () => {
   it("counts what it noted, so a run says so out loud", () => {
     expect(POLLER).toMatch(/eftUnknownBank: unknownBankThisRun/);
     expect(POLLER).toMatch(/from a bank not set up — see \/eft_pool/);
+  });
+});
+
+describe("eftRetryPlan — re-running a refused notification after the fix", () => {
+  const refused = { outcome: "refused-parse", reason: "No payment-notification reader exists for absa.co.za yet.", messageId: "<abc@absa>", at: 1, from: "ibreply@absa.co.za" };
+  const key = "f".repeat(40);
+
+  it("plans the archive, the claim clear and the unread for a refusal at its message key", () => {
+    const plan = eftRetryPlan({ poolKey: key, record: refused, seenRow: { state: "done" }, at: 5000 });
+    expect(plan.ok).toBe(true);
+    expect(plan.messageId).toBe("<abc@absa>");
+    expect(plan.archiveKey).toBe(`${key}-retried-5000`);
+    expect(plan.archived).toMatchObject({ ...refused, retriedAt: 5000, retriedFrom: key });
+    expect(plan.seenPath).toBe(`card_batch_intake_seen/${key}`);
+  });
+
+  it("never re-runs a recorded payment", () => {
+    const plan = eftRetryPlan({ poolKey: key, record: { ...refused, outcome: "recorded", status: "unmatched" }, seenRow: {}, at: 1 });
+    expect(plan.ok).toBe(false);
+    expect(plan.why).toMatch(/RECORDED payment .* never re-run/);
+  });
+
+  it("refuses a bad key, a missing record, a missing claim row, a missing Message-ID, and an unknown-bank sighting", () => {
+    expect(eftRetryPlan({ poolKey: "nope", record: refused, seenRow: {}, at: 1 }).ok).toBe(false);
+    expect(eftRetryPlan({ poolKey: key, record: null, seenRow: {}, at: 1 }).why).toMatch(/No \/eft_pool record/);
+    expect(eftRetryPlan({ poolKey: key, record: refused, seenRow: null, at: 1 }).why).toMatch(/No claim row/);
+    expect(eftRetryPlan({ poolKey: key, record: { ...refused, messageId: null }, seenRow: {}, at: 1 }).why).toMatch(/Message-ID/);
+    expect(eftRetryPlan({ poolKey: key, record: { ...refused, outcome: "unknown-bank" }, seenRow: {}, at: 1 }).why).toMatch(/unknown-bank/);
   });
 });
