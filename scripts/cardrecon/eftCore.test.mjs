@@ -804,6 +804,11 @@ describe("eviction list — what the poller must forget, whatever its in-memory 
     const out = mergeEvictions({ old: 10, kept: 1800 }, ["n1", "n2"], 2000, 500);
     expect(out).toEqual({ kept: 1800, n1: 2000, n2: 2000 });
   });
+  it("an entry re-cached AFTER its eviction survives — the eviction has done its work", () => {
+    const entries = { k: 1500, stale: 900 };
+    expect(applyEvictions(entries, { k: 1000, stale: 1000 }, 2000, 5000)).toBe(1);
+    expect(entries).toEqual({ k: 1500 });
+  });
   it("both tolerate null inputs", () => {
     expect(applyEvictions({}, null, 1, 1)).toBe(0);
     expect(mergeEvictions(null, null, 1, 1)).toEqual({});

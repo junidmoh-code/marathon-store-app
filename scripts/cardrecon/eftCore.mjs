@@ -792,11 +792,18 @@ export function eftRetryPlan({ poolKey, record, seenRow, at }) {
 // (logs/card-recon-evict.json, key → ms), and the poller applies that list to
 // its in-memory cache at load AND again at every save. Entries age out with
 // the cache's own window. PURE; tested in eftCore.test.mjs.
+// An eviction only beats a cache entry OLDER than itself: once the poller has
+// re-read the ledger and re-cached the message (a newer timestamp), the
+// eviction has done its work and must not keep deleting the fresh entry at
+// every save for the rest of its window.
 export function applyEvictions(entries, evictions, nowMs, maxAgeMs) {
   let removed = 0;
   for (const [key, at] of Object.entries(evictions ?? {})) {
     if (!Number.isFinite(at) || nowMs - at > maxAgeMs) continue;
-    if (key in (entries ?? {})) { delete entries[key]; removed++; }
+    if (!(key in (entries ?? {}))) continue;
+    const cachedAt = entries[key];
+    if (Number.isFinite(cachedAt) && cachedAt > at) continue; // re-cached after the eviction — keep it
+    delete entries[key]; removed++;
   }
   return removed;
 }
