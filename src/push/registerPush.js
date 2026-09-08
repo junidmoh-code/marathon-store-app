@@ -15,15 +15,27 @@
 // three weeks old is a device that has not opened the app in three weeks — which
 // is the only signal anyone has for pruning by hand.
 //
-// ── NO TOKEN, NO LISTENER, NO COST WHEN IT IS OFF ───────────────────────────
-// `wanted: false` does not merely skip registration — it actively REVOKES:
-// deletes the FCM token, deletes the /push_tokens row, and clears the user out
-// of every audience bucket. Nothing subscribes, nothing is stored, the fan-out
-// cannot find them, and the messaging SDK is never even imported. Turning it off
-// costs nothing and leaves nothing behind.
+// ── A TOKEN IS AN ADDRESS, NOT A SUBSCRIPTION ───────────────────────────────
+// Since 2026-09-07 every signed-in browser that ALREADY has OS permission
+// registers, unconditionally. That is not "everyone is subscribed": nothing is
+// ever sent to a token whose uid is not in the admin-assigned hub index
+// (src/push/pushAssignments.js), and the default for everyone is no assignment
+// at all. Registering the address up front is what lets an assignment take
+// effect on the next order rather than on that person's next app load.
 //
-// Firebase Messaging is loaded with a DYNAMIC import for the same reason: a
-// staff member with notifications off never downloads the SDK at all.
+// A browser that has NEVER been granted permission is left completely alone —
+// no prompt, no write, no error. There is no user gesture to prompt from any
+// more, and a prompt fired from an effect is ignored by Chrome and held against
+// the site by Safari. It shows up instead on the admin card, as a person an
+// assignment cannot reach.
+//
+// `wanted: false` remains the REVOKE path — sign-out and the shared tablet. It
+// deletes the FCM token, deletes the /push_tokens row, and clears the user out
+// of every legacy audience bucket, leaving nothing behind.
+//
+// Firebase Messaging is loaded with a DYNAMIC import so a browser that cannot
+// register (no permission, no support, an iPhone in a tab) never downloads the
+// SDK at all.
 
 import { get, ref, remove, runTransaction, update } from "firebase/database";
 import { database } from "../firebase";
@@ -59,12 +71,13 @@ function setRegisteredMarker(uid) {
 }
 
 // Every non-registering outcome is a NAMED state rather than a bare false, so
-// the toggle can say what is actually wrong instead of "notifications are off".
+// the admin card can say what is actually wrong with a person's device instead
+// of just "no token".
 export const PUSH_STATE = Object.freeze({
-  OFF: "off",                       // the user (or their role default) wants nothing
+  OFF: "off",                       // revoked — sign-out, or a handed-over tablet
   UNSUPPORTED: "unsupported",       // no service worker / no Push API in this browser
   NEEDS_INSTALL: "needs-install",   // iOS Safari in a tab: push needs the Home Screen copy
-  NEEDS_PERMISSION: "needs-permission", // never asked — the toggle prompts on tap
+  NEEDS_PERMISSION: "needs-permission", // never asked, and nothing asks any more
   BLOCKED: "blocked",               // the user said no; only OS settings can undo it
   MISCONFIGURED: "misconfigured",   // no VAPID key in the build
   ERROR: "error",
@@ -72,8 +85,8 @@ export const PUSH_STATE = Object.freeze({
 });
 
 /** iOS grants web push ONLY to a Home-Screen install, and only from 16.4.
- *  Detecting it lets the settings row say "Add to Home Screen" instead of
- *  failing with a meaningless browser error. */
+ *  Detecting it lets the admin card say "needs Home Screen install" instead of
+ *  reporting a meaningless browser error. */
 function iosNeedsInstall(nav = typeof navigator === "undefined" ? null : navigator) {
   if (!nav) return false;
   const ua = String(nav.userAgent || "");
@@ -102,9 +115,14 @@ export async function registerMessagingWorker() {
   return navigator.serviceWorker.register(PUSH_SW_URL, { scope: PUSH_SW_SCOPE });
 }
 
-// The audience index this device's user should appear in, written as ONE
-// multi-path update: the wanted buckets set, every other known bucket cleared.
-// A closed bucket list is what makes the clear possible — see pushConfig.js.
+// The LEGACY audience index, written as ONE multi-path update: the wanted
+// buckets set, every other known bucket cleared. A closed bucket list is what
+// makes the clear possible — see pushConfig.js.
+//
+// Every caller now passes an EMPTY list, so in practice this only ever CLEARS.
+// That is deliberate: the fan-out stopped reading /push_audience on 2026-09-07
+// and each app load now drains this uid's leaves out of it. Kept general rather
+// than hard-coded to [] so the sign-out revoke path keeps working unchanged.
 function audienceUpdates(uid, buckets, nowMs) {
   const want = new Set(Array.isArray(buckets) ? buckets : []);
   const upd = {};
@@ -119,7 +137,11 @@ function audienceUpdates(uid, buckets, nowMs) {
  *
  * @param {object} args
  * @param {string} args.uid
- * @param {boolean} args.wanted   resolved subscription (see notificationPrefs.js)
+ * @param {boolean} args.wanted   register an address for this device. Always true
+ *        since 2026-09-07 (src/push/usePush.js) — a token is an ADDRESS, not a
+ *        subscription, and who is actually SENT to is decided by the admin
+ *        assignment index the fan-out reads. `false` remains the sign-out and
+ *        shared-tablet revoke path.
  * @param {string[]} args.buckets audience buckets to appear in when wanted
  * @param {boolean} [args.promptIfNeeded] ask for OS permission — ONLY ever true
  *        on a real user gesture; browsers ignore (and Safari penalises) a

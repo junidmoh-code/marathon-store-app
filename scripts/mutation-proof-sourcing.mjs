@@ -43,6 +43,9 @@ const SUITE = [
   "src/components/stock/hubIsolation.test.js",
   "src/components/stock/hub2SneakerAvailability.test.js",
   "src/components/stock/availabilityCore.test.js",
+  // The display marker's own suite: G21/G21b reintroduce a divert and an amber
+  // chip into a size tile, and this is what notices.
+  "src/components/stock/displayMarkerInformational.test.js",
 ];
 
 const MUTATIONS = [
@@ -231,21 +234,51 @@ const MUTATIONS = [
     from: `          : (cartAllocation.hubOf.get(item) || computeHubForItem(item));`,
     to: `          : computeHubForItem(item);`,
   },
+  // G21 WAS the display-only gate's own guard. That gate is deleted (owner
+  // spec 2026-09-07): the display marker is informational, so there is no
+  // second availability computation left for it to get wrong. What replaces it
+  // is the guard that the gate stays deleted — a divert put back into a size
+  // tile's tap handler is the exact regression, and it is invisible on screen.
   {
     id: "G21",
-    guard: "sneakerDisplayOnly reads the resolver's remaining count — recomputing one subtracts the whole cart from Hub 1 for units that were never Hub 1's",
+    guard: "The display marker never intercepts a tap — a marked size selects and adds on the ordinary path",
     file: APP,
     kind: "source-pin",
-    from: `    if (hub !== DISPLAY_PAIR_HUB || !Number.isFinite(available)) return null;`,
-    to: `    if (!Number.isFinite(available)) return null;`,
+    from: `                      if (out) { setNaNote(clothing || deadForOrder(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }`,
+    to: `                      if (out) { setNaNote(clothing || deadForOrder(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
+                      if (dispInfo) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispInfo.stores }); return; }`,
+  },
+  {
+    id: "G21b",
+    guard: "…and a marked chip is not a different chip either — an amber tile is a different affordance whatever the handler does",
+    file: APP,
+    kind: "source-pin",
+    from: `                      : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>`,
+    to: `                      : dispInfo ? { position:"relative", color:"#FBBF24", border:"2px solid rgba(251,191,36,.45)" }
+                      : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>`,
+  },
+  {
+    id: "G23",
+    guard: "The DESKTOP quick-add clamps quantity too — a stepper at five against a cell holding one asked for five boxes",
+    file: APP,
+    kind: "source-pin",
+    from: `      const { hub: clampHub, available: clampLeft } = sneakerSourcing(p, size);`,
+    to: `      const { hub: clampHub, available: clampLeft } = { hub: null, available: null };`,
   },
   {
     id: "G22",
     guard: "The quantity clamp reads it too — recomputing double-counts the cart and silently short-fills an add",
     file: APP,
     kind: "source-pin",
-    from: `      reps = Math.min(reps, Math.max(1, clampLeft));`,
-    to: `      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize, clampHub) - sneakerInCart(selected.id, pendingSize)));`,
+    // WIDENED: the same clamp expression now appears on BOTH surfaces (the
+    // desktop quick-add gained it, G23), so the anchor carries the line above
+    // it to stay unique to the phone sheet.
+    from: `      pendingSize && !pendingDisplayPartner ? sneakerSourcing(selected, pendingSize) : { hub: null, available: null };
+    if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
+      reps = Math.min(reps, Math.max(1, clampLeft));`,
+    to: `      pendingSize && !pendingDisplayPartner ? sneakerSourcing(selected, pendingSize) : { hub: null, available: null };
+    if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
+      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize, clampHub) - sneakerInCart(selected.id, pendingSize)));`,
   },
 
   // ── 3. NOTHING #568 DID MAY MOVE ─────────────────────────────────────────

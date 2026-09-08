@@ -80,9 +80,9 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
-import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
+import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -109,7 +109,7 @@ import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
-import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -2650,6 +2650,15 @@ const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  push_alerts: (
+    // lucide-style "bell + check": the alert bell with a small tick, so it
+    // reads as "who is signed up for alerts" rather than as an alert itself.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h14"/>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      <path d="m16 17 2 2 4-4"/>
+    </svg>
+  ),
   user_management: (
     // lucide-style "user + cog": person silhouette with a small adjust-mark to
     // distinguish from the customers_db two-people icon. Same stroke/weight.
@@ -2907,7 +2916,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -3058,6 +3067,13 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
+      // Order alerts — WHO is told when a shop places an order, and for which
+      // hub. Super-admin ONLY, on the email, exactly like the route below it:
+      // this is a decision about other people's phones, and Junid's /users
+      // record carries no permissions array, so a permission-keyed gate would
+      // lock out the one person the card exists for. GATE 1 of 3; the RTDB rule
+      // on /push_assignments is the one that actually enforces it.
+      isSuperAdmin && { key:"push_alerts", icon:RoleIcons.push_alerts, name:"Order Alerts", desc:"Who is alerted, and for which hub", onClick:()=>(window.location.hash = "#admin/notifications") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
@@ -3222,7 +3238,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
-          <NotificationSettingsRow push={push} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3274,7 +3289,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
-        <NotificationSettingsRow push={push} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
@@ -7987,7 +8001,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayOnly, sneakerDisplayInfo,
+                            hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
                             alternativesFor,
                             deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
@@ -8005,8 +8019,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
-  const [qvDisplayPrompt, setQvDisplayPrompt] = useState(null); // { size, stores } — "on display" prompt
-  const [qvDisplayPair, setQvDisplayPair]     = useState(null); // { store } — display-pair pull taken
   const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
@@ -8104,7 +8116,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvNa, setQvNa] = useState(null);
   const openQv = (p) => {
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
-    setQvDisplayPrompt(null); setQvDisplayPair(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
   };
   // Taking an alternative from the ✕ sheet. The quick-view SWAPS to the chosen
@@ -8373,16 +8384,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // with the deactivation/clothing rule (#445).
                               const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz), deactivated: deadForOrder(p) })
                                 || (!clothingOrder && !!sneakerOut?.(p, sz));
-                              // "Only the display pair is left": the hover
-                              // grid has no room for the prompt (its own
-                              // standing note), so a marked tap opens the
-                              // quick-view with the prompt already up.
-                              const dOnly = !out && !clothingOrder && !deadForOrder(p)
-                                ? sneakerDisplayOnly?.(p, sz) : null;
-                              // Quiet tier — glyph on any AVAILABLE size that
-                              // is on a display; amber only when it is the
-                              // last one. Never on a ✕/deactivated tile — the
-                              // ✕ is authoritative (the drift rule).
+                              // THE GLYPH IS INFORMATIONAL AND NOTHING ELSE.
+                              // It says "a unit of this size is on a floor" —
+                              // it does not gate the tile. Never on a
+                              // ✕/deactivated tile: the ✕ is authoritative
+                              // (the drift rule), and a cell the books call
+                              // empty must not advertise a display.
                               const dInfo = !clothingOrder && !out && !deadForOrder(p) ? sneakerDisplayInfo?.(p, sz) : null;
                               // THE THIRD SIZE-CHIP SURFACE. The spec says
                                 // the unavailable chip becomes tappable, and
@@ -8402,7 +8409,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                       // whose stock is reserved for an uncollected
                                       // order must not read as "doesn't exist".
                                       : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
-                                    : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
                                     : dInfo ? "This size is on a display" : undefined}
                                   // No line-through, for the same reason the ✕
                                   // went: the size number is the content. And
@@ -8411,7 +8417,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                   // this tile reading as an ordinary blue chip
                                   // at 32%, a fifth of a signal (CodeRabbit).
                                   style={out ? hoverGridSizeChipStyle({ out: true, tappable: snkTappable })
-                                    : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
                                     : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
                                     e.stopPropagation();
@@ -8422,7 +8427,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                     // same qvNa the quick-view's own out-tap uses.
                                     if (snkTappable) { openQv(p); setQvNa({ size: sz, left: 0, snk: true }); return; }
                                     if (out) return;
-                                    if (dOnly) { openQv(p); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
                                     // quickAdd returns 0 when the cart already
                                     // holds everything the hub has — no ✓ flash
                                     // for an add that didn't happen.
@@ -8437,7 +8441,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                     const b = e.currentTarget;
                                     b.classList.add("flash");
                                     setTimeout(() => b.classList.remove("flash"), 430);
-                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
+                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
                               );
                             })}
                           </div>
@@ -8613,12 +8617,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         // lacks, and that lane stays Hub 1's.
                         const snkOut = !clothingOrder && !qvDP && !deadForOrder(qv) && !!sneakerOut?.(qv, sz);
                         const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz), deactivated: deadForOrder(qv) }) || snkOut;
-                        // "Only the display pair is left" — marked, not
-                        // blocked; tapping opens the display-pair prompt.
-                        const dOnly = !out && !clothingOrder && !qvDP && !deadForOrder(qv)
-                          ? sneakerDisplayOnly?.(qv, sz) : null;
-                        // Quiet tier — same rule as the phone sheet and the
-                        // hover grid: never on a ✕/deactivated tile.
+                        // Informational glyph only — same rule as the phone
+                        // sheet and the hover grid: never on a ✕/deactivated
+                        // tile, and it gates nothing.
                         const dInfo = !clothingOrder && !out && !deadForOrder(qv)
                           ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
@@ -8627,83 +8628,46 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             // line-through that made a half size unreadable on
                             // a 34px tile. sizeChipTheme carries the four-axis
                             // container difference that replaces both.
-                            style={out ? quickViewSizeChipStyle({ out: true })
-                              : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
-                              : dInfo ? { position:"relative" } : quickViewSizeChipStyle({ out: false })}
+                            // ONE STYLE FOR EVERY AVAILABLE CHIP. A marked size
+                            // is not a different kind of chip; the glyph in the
+                            // corner is the whole difference (it is absolutely
+                            // positioned, and quickViewSizeChipStyle already
+                            // carries the position:relative it needs).
+                            style={quickViewSizeChipStyle({ out })}
                             onClick={() => {
                               // Deselect FIRST — before the out gate — so a
                               // size that went ✕ while selected can still be
-                              // un-stuck. A prompt-minted selection unwinds
-                              // partner mode with it (leaving qvDP on kept the
-                              // Add button live for a cancelled request).
+                              // un-stuck.
                               if (qvSize === sz) {
-                                if (qvDisplayPair) setQvDP(false);
-                                setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(null);
+                                setQvNa(null); setQvSize(null);
                                 return;
                               }
                               // A sneaker ✕ tap raises the why-note (snk flag)
                               // instead of dying silently — reserved stock
                               // otherwise reads as "size doesn't exist".
                               if (out) { setQvNa(clothingOrder || deadForOrder(qv) ? { size: sz, left: 0 } : { size: sz, left: 0, snk: true }); return; }
-                              if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
-                              // A plain size selection drops any display-pair
-                              // claim — it belongs to the prompted size only.
-                              setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(sz);
+                              setQvNa(null); setQvSize(sz);
                             }}>
                             {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
-                              <span aria-label={dOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                              <span aria-label="this size is on a display" style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                               </span>
                             ) : null}
                           </button>
                         );
                       })}
                     </div>
-                    {/* Display-pair prompt — the quick-view twin of the phone
-                        sheet's panel: one button, flags the line as a pull of
-                        the display pair itself. */}
-                    {qvDisplayPrompt && (
-                      <div style={{ background:"rgba(251,191,36,.1)", border:"1px solid rgba(251,191,36,.4)", borderRadius:10, padding:"10px 12px", marginTop:8 }}>
-                        <div style={{ color:"#FBBF24", fontSize:12.5, fontWeight:800, marginBottom:3 }}>
-                          Size {formatSize(qvDisplayPrompt.size)} — on display
-                        </div>
-                        <div style={{ color:"#E8D5A8", fontSize:11.5, fontWeight:600, marginBottom:8 }}>
-                          The only size {formatSize(qvDisplayPrompt.size)} at Hub 1 is the display pair{qvDisplayPrompt.stores?.length ? ` (on ${qvDisplayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : " (registered as a display — the shop wasn't recorded)"}.
-                        </div>
-                        <div style={{ display:"flex", gap:8 }}>
-                          <button onClick={() => {
-                              setQvSize(qvDisplayPrompt.size);
-                              setQvDP(true);
-                              setQvQty(1);
-                              // Store only when unambiguous — see the phone
-                              // sheet's twin: never guess whose slot to clear.
-                              setQvDisplayPair({ store: qvDisplayPrompt.stores?.length === 1 ? qvDisplayPrompt.stores[0] : null });
-                              setQvDisplayPrompt(null);
-                            }}
-                            style={{ flex:1, padding:"8px 10px", borderRadius:8, border:"1px solid rgba(251,191,36,.6)", background:"rgba(251,191,36,.16)", color:"#FBBF24", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-                            Request display pair
-                          </button>
-                          <button onClick={() => setQvDisplayPrompt(null)}
-                            style={{ padding:"8px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,.16)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.6)", fontWeight:700, fontSize:11.5, cursor:"pointer", fontFamily:"inherit" }}>
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                   {/* Display Partner request — sneakers only; one line, size optional. */}
                   {!clothingOrder && (
                   <div>
                     <div className="ad-qlab">Display Partner (optional)</div>
-                    {/* A MANUAL toggle (either direction) drops any display-pair
-                        claim — that claim is only ever minted by the prompt
-                        button, and must never ride a hand-made partner line. */}
-                    {/* The toggle also drops any sneaker ✕ note: partner mode
-                        lifts every ✕, and a note still saying "can't be
-                        ordered" above a now-selectable size contradicts the
-                        screen (adversarial review). */}
-                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); setQvNa(null); }}
+                    {/* The toggle drops any sneaker ✕ note: partner mode lifts
+                        every ✕, and a note still saying "can't be ordered"
+                        above a now-selectable size contradicts the screen
+                        (adversarial review). */}
+                    <button onClick={() => { setQvDP(v => !v); setQvNa(null); }}
                             style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                      border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
                                      background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
@@ -8720,7 +8684,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     const canAdd = clothingOrder ? !!qvSize : (!!qvSize || dp);
                     const doAdd = () => {
                       if (!canAdd) return;
-                      if (dp) { onAddDisplayPartner(qv, qvSize || null, qvDisplayPair); setQv(null); return; }
+                      if (dp) { onAddDisplayPartner(qv, qvSize || null); setQv(null); return; }
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
@@ -9208,12 +9172,6 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `left`, so arriving stock or a shrinking cart drops it on the next
   // snapshot.
   const [naNote, setNaNote]                             = useState(null);
-  // Display-pair prompt — { size, stores } while the "on display" sheet is
-  // open for a tapped marked tile; pendingDisplayPair — { store } once the
-  // request button was taken, stamped onto the cart line so the order clears
-  // (and the refill later re-fills) the RIGHT store's slot.
-  const [displayPrompt, setDisplayPrompt]               = useState(null);
-  const [pendingDisplayPair, setPendingDisplayPair]     = useState(null);
   // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
   // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
   const selectedSizes = useMemo(() => {
@@ -9516,41 +9474,37 @@ function AssistantView({ products, onExit, orders = [] }) {
         && GATED_SNEAKER_HUBS.every(h => sneakerAvail(p.id, s, h) <= 0),
     };
   };
-  // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
-  // Marked, not blocked: the tile keeps its number, gains a corner display
-  // icon + warning tint, and tapping it offers "Request display pair" instead
-  // of a plain select. Fires only when the resolver's availability is fully
-  // covered by live display slots (displayPairCore.displayOnly); a cell at 0
-  // stays ✕ exactly as before, whatever a slot claims. Returns null or
-  // { stores } (whose floor the pair is on — from the slot, so the request
-  // can clear and later refill the RIGHT store's slot).
-  const sneakerDisplayOnly = (p, s) => {
-    if (!s || !hub1CellsState.settled || hub1CellsState.error) return null;
-    // ── THE RESOLVER'S OWN REMAINING COUNT, NOT A SECOND SUBTRACTION ────────
-    // This computed `sneakerAvail(hub1) - sneakerInCart` — the whole cart taken
-    // off Hub 1 regardless of which hub those cart units actually came from.
-    // Harmless while the tile could never fall back; a live fault the moment it
-    // could. A Hub-2-tagged shoe with one ordinary pair at Hub 2 and one
-    // DISPLAY pair at Hub 1: add the Hub 2 pair, sourcing correctly falls back
-    // to Hub 1, and this then computed 1 − 1 = 0 and returned null — so the
-    // chip offered a plain add of a pair standing on a shop floor, with no
-    // prompt, no display flag and no slot bookkeeping (independent review,
-    // reproduced 2026-09-06).
-    //
-    // sneakerServedByHub1 already routes through the same resolver, so the
-    // remaining count comes from THERE and the two cannot disagree.
-    const { hub, available } = sneakerSourcing(p, s);
-    if (hub !== DISPLAY_PAIR_HUB || !Number.isFinite(available)) return null;
-    const d = hub1DisplayUnits[promisedKey(p.id, s)];
-    if (!d) return null;
-    return displayOnly(available, d.units) ? { stores: d.stores } : null;
-  };
-  // THE QUIET TIER (owner ask, 2026-08-26): a size that is on a display shows
-  // the small glyph ALWAYS — informational, no tint, no prompt — so staff can
-  // see at a glance which size is out on a floor. It only escalates to the
-  // amber marker + "Request display pair" prompt when the display pair is the
-  // last availability (sneakerDisplayOnly above). Same slots data the screen
-  // already streams; needs no availability read, so no settled gate.
+  // ── THE MARKER, AND THE WHOLE OF WHAT IT DOES ────────────────────────────
+  // A size that has a unit on a display shows the small glyph — informational,
+  // no tint, no prompt, no gate — so staff can see at a glance which size is
+  // out on a floor. That is the entire feature.
+  //
+  // It used to escalate: when the display pair was the LAST availability the
+  // tile went amber and the tap was intercepted into a "Request display pair"
+  // panel instead of selecting. That divert is deleted (owner spec,
+  // 2026-09-07). It confused a marker with a gate, and the two are not the
+  // same thing.
+  //
+  // THE RULE, STATED HONESTLY, because a loose version of it went into the
+  // first draft of this comment and an independent review caught it: the old
+  // predicate was `0 < available <= displayUnits`, so four units against one
+  // slot did NOT divert. What DID divert was every case where the display
+  // units covered the whole remaining count — one unit with one slot, two
+  // units with two slots — and, because `available` is the RESOLVER's live
+  // remaining number rather than the shelf count, a cell physically holding
+  // four also diverted the moment three of them were promised or in a cart.
+  // The size then offered nothing at all, though a pair was standing right
+  // there. Availability is now governed by quantity alone, through
+  // sneakerOut, exactly as it is for an unmarked size; a display pair is hub
+  // stock (#324) and always was.
+  //
+  // A display-pair PULL — the flagged line that tells the warehouse to take
+  // the shoe off the wall — is no longer minted from this screen at all. The
+  // "Request Display Partner" button is the one request path, and it is
+  // untouched.
+  //
+  // Same slots data the screen already streams; needs no availability read,
+  // so no settled gate.
   const sneakerDisplayInfo = (p, s) =>
     (s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
 
@@ -9600,24 +9554,17 @@ function AssistantView({ products, onExit, orders = [] }) {
       // #568 the serving hub is a per-size answer and a product-level gate
       // would vouch for sizes routed to a hub that has not settled.
       availabilityKnown: (p) => !!sneakerHubOf(p),
-      // ONE DEFINITION OF AVAILABLE, PLUS ONE OF "SELLABLE HOW".
+      // ONE DEFINITION OF AVAILABLE, AND IT IS sneakerOut.
       //
-      // sneakerOut answers "is there a unit"; it does NOT answer "can it be
-      // sold down this path". A size whose only remaining unit is the Hub 1
-      // DISPLAY PAIR reads as available — correctly, per the #324 "displays
-      // are hub stock" policy — but selling it requires the display-pair
-      // request flow, which stamps the line so the warehouse card says "take
-      // it off the display" and the slot register is told the pair left. This
-      // sheet has no such prompt and pickAlternative deliberately clears every
-      // display-pair flag, so offering that size here would create a plain
-      // cart line for a pair that is on a shop floor: a phantom display
-      // survives the physical shipment and staff hunt for a box that is not
-      // there (senior-architect review, and the #456 "slots are truth" rule).
+      // A display-marked size used to be excluded from this sheet outright:
+      // selling it required the display-pair request flow, which this sheet has
+      // no prompt for, so recommending it would have created a plain cart line
+      // for a pair standing on a wall. That reasoning went with the divert. A
+      // marked size is now sold on the ordinary path like any other — the
+      // marker asserts nothing about availability — so there is nothing left
+      // for this sheet to exclude, and a shoe that can be sold this minute is
+      // no longer hidden from a customer standing in front of one.
       //
-      // So a display-only size is simply NOT OFFERED as an alternative. The
-      // shoe still appears if it has other sizes; the customer is never sent
-      // down a path this screen cannot complete. Hub 1 only, matching
-      // sneakerDisplayOnly's own scope.
       // PER SIZE, and every input must have ANSWERED — not merely be empty.
       //
       // sneakerOut returns false for an unready hub meaning "no gate", NOT "in
@@ -9625,24 +9572,20 @@ function AssistantView({ products, onExit, orders = [] }) {
       // its own hub, so one size of a shoe can be answerable while another is
       // not.
       //
-      // The other two are the same mistake in the other two inputs, and an
-      // independent review found both (2026-09-06). Before /orders answers,
-      // the ready-promise map is EMPTY — identical to "nothing is promised" —
-      // so a pair already spoken for reads as free. Before the display lane
-      // answers, hub1DisplayUnits is empty — identical to "nothing is on a
-      // floor" — so the display-only exclusion fails open exactly when its
-      // evidence is missing. Neither matters for a TILE (a marker that arrives
-      // late is harmless); both matter for a RECOMMENDATION, which asserts
-      // availability rather than merely failing to deny it.
+      // ordersSettled is the same mistake in the other input, and an
+      // independent review found it (2026-09-06). Before /orders answers, the
+      // ready-promise map is EMPTY — identical to "nothing is promised" — so a
+      // pair already spoken for reads as free. That does not matter for a TILE
+      // (a marker that arrives late is harmless); it matters for a
+      // RECOMMENDATION, which asserts availability rather than merely failing
+      // to deny it.
       //
-      // displayLaneReady is only required for a size HUB 1 would serve: the
-      // display-pair lane is hub1-scoped, so a Hub 2 size is not waiting on it.
+      // The display lane is NOT waited on any more: nothing here reads it.
       sizeAvailable: (p, sz) => {
         const hub = sneakerHubOf(p, sz);
         if (!sneakerGateReady(hub)) return false;
         if (!ordersSettled) return false;
-        if (hub === "hub1" && !displayLaneReady) return false;
-        return !sneakerOut(p, sz) && !sneakerDisplayOnly(p, sz);
+        return !sneakerOut(p, sz);
       },
       // ── SUGGESTING IS NOT THE SAME AS PERMITTING ──────────────────────
       // isDeactivated, NOT deadForOrder. deadForOrder is Pine-exempt (#566:
@@ -9699,7 +9642,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const customerCount     = cart.filter(isCustomerLine).length;
   const refillCount       = cart.length - customerCount;
 
-  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
 
   // ── TAKING AN ALTERNATIVE ─────────────────────────────────────────────────
   // The sheet STAYS OPEN and swaps to the chosen shoe. Never a bounce back to
@@ -9720,8 +9663,6 @@ function AssistantView({ products, onExit, orders = [] }) {
     const pick = alternativeSelection(row, naNote?.size || pendingSize || "");
     if (!pick) return;
     setNaNote(null);
-    setDisplayPrompt(null);
-    setPendingDisplayPair(null);
     setPendingDisplay(false);
     setPendingDisplayPartner(false);
     setPendingQty(1);
@@ -9781,15 +9722,20 @@ function AssistantView({ products, onExit, orders = [] }) {
     if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
       reps = Math.min(reps, Math.max(1, clampLeft));
     }
+    // ── NO DISPLAY-PAIR PULL IS MINTED HERE ANY MORE ────────────────────────
+    // A pull — `displayPairRequest: true` plus the store whose floor the pair
+    // stands on — used to be stamped here whenever the "on display" prompt had
+    // taken a claim. That prompt is deleted (owner spec 2026-09-07: the marker
+    // is informational), and it was the claim's only minter, so the branch
+    // that read it went with the state. Cart state is in memory and never
+    // persisted, so nothing survives that could still carry the flag.
+    //
+    // The ORDER-side readers of `displayPairRequest` are untouched and must
+    // stay: the warehouse "take it off the display" banner, the slot clear at
+    // placement, the refill replay and the out-of-stock reinstate all read it
+    // off records in RTDB, and orders placed before this shipped still carry
+    // it. Re-attaching a minter is the separate display source-of-truth job.
     const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
-    // A display-PAIR pull (the "on display" prompt path): the pair to send IS
-    // the display pair, possibly on ANOTHER store's floor — the flag drives
-    // the warehouse "take it off the display" banner, and the store drives
-    // which slot the order clears / the refill later re-fills.
-    if (pendingDisplayPartner && pendingDisplayPair) {
-      line.displayPairRequest = true;
-      line.displayPairStore = pendingDisplayPair.store || null;
-    }
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
@@ -9818,17 +9764,31 @@ function AssistantView({ products, onExit, orders = [] }) {
       // A sneaker its hub has none available of — same refusal the grid's ✕
       // makes, enforced here too so a stale hover panel can't add past it.
       return 0;
+    } else if (size) {
+      // ── THE QUANTITY CLAMP, WHICH THIS PATH WAS MISSING ──────────────────
+      // The check above is a ZERO check. Without a clamp beside it, a stepper
+      // set to 5 against a cell holding 1 added FIVE lines: five boxes asked
+      // of a hub that has one pair, on the desktop path only, while the phone
+      // sheet's addToCart has clamped all along.
+      //
+      // It was left standing on 2026-09-05 as a pre-existing gap the sourcing
+      // change had not widened. This change widens it: a size whose only unit
+      // is the display pair used to divert into a request that forced qty 1,
+      // and now takes the ordinary path with the stepper live — so the worst
+      // case is five orders against one pair standing on a shop floor
+      // (independent review, 2026-09-07). Closing it here is the smaller edit
+      // by far, and it makes the two surfaces agree.
+      //
+      // The SAME belt addToCart uses, deliberately: the resolver's own
+      // remaining count (which already has the cart in it — recomputing one
+      // double-counts, the defect #570 closed), applied only where the gate
+      // has real data, and never below 1 for a size the zero check already
+      // let through.
+      const { hub: clampHub, available: clampLeft } = sneakerSourcing(p, size);
+      if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
+        reps = Math.min(reps, Math.max(1, clampLeft));
+      }
     }
-    // KNOWN GAP, PRE-EXISTING AND NOT WIDENED HERE (found in review, 2026-09-05).
-    // The sneaker branch above is a ZERO check only; it has no QUANTITY clamp,
-    // so on this desktop path a stepper set to 5 against a cell holding 1 adds
-    // five lines. addToCart (the phone sheet) does clamp — see the belt there.
-    // Left alone deliberately: the clamp lives on the hub1 path too, so adding
-    // it here would change live Hub 1 behaviour, which this change is fenced
-    // out of ("nothing else changes"). Hub 2 is strictly BETTER than yesterday
-    // either way — before this work it had no zero check here at all. Raised
-    // for the owner as its own decision; the one-line fix is to mirror
-    // addToCart's clampHub/sneakerGateReady block into this branch.
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
       : { product: p, size, requestDisplay: false, requestDisplayPartner: false };
@@ -9843,13 +9803,14 @@ function AssistantView({ products, onExit, orders = [] }) {
     return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
   });
   // Desktop Display-Partner request — ONE line, size optional (sneakers only),
-  // mirroring addToCart's requestDisplayPartner branch. `displayPair` (from
-  // the quick-view's display-pair prompt) marks a PULL of the display pair
-  // itself, carrying whose floor it is on.
-  const addDisplayPartner = (p, size, displayPair = null) =>
+  // mirroring addToCart's requestDisplayPartner branch. It took a third
+  // `displayPair` argument that stamped a PULL of the display pair itself;
+  // that argument could only ever come from the quick-view's "on display"
+  // prompt, which is deleted, so it is gone too rather than left as a live
+  // parameter with a dead caller.
+  const addDisplayPartner = (p, size) =>
     setCart(c => [...c, {
       product: p, size: size || null, requestDisplay: false, requestDisplayPartner: true,
-      ...(displayPair ? { displayPairRequest: true, displayPairStore: displayPair.store || null } : {}),
     }]);
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
@@ -9883,6 +9844,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     // line type that names an IDENTIFIED PHYSICAL PAIR rather than "a unit of
     // this size". The claim was minted when Hub 1 could still supply it; if it
     // cannot now, somebody else has taken that pair.
+    //
+    // NOTHING MINTS SUCH A LINE TODAY (owner spec 2026-09-07): the "on display"
+    // prompt that stamped it is deleted along with its claim state, and cart
+    // state is in memory only, so this block cannot currently fire. It is kept
+    // rather than deleted because it only ever REFUSES — it can neither write
+    // nor re-arm anything — and because the display source-of-truth job that
+    // re-attaches a minter will need exactly this check standing on the day it
+    // does. The composer state was deleted for the opposite reason: it was on
+    // the WRITE side, where a dormant copy re-arms silently.
     //
     // FAIL, NEVER REDIRECT. Hub 2 has no display register and no slot for it —
     // an order sent there carries an instruction it cannot act on. Refusing
@@ -10308,7 +10278,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo}
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayInfo={sneakerDisplayInfo}
           alternativesFor={alternativesFor} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
@@ -10740,41 +10710,6 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </div>
               );
             })()}
-            {/* Display-pair prompt — opened by tapping a marked (amber) size
-                tile: the only remaining size at Hub 1 is the display pair.
-                One button; taking it flags the line so the warehouse card
-                says "take it off the display" and the slot bookkeeping
-                targets the right store. */}
-            {displayPrompt && (
-              <div style={{ background:"rgba(251,191,36,.1)", border:"1px solid rgba(251,191,36,.4)", borderRadius:10, padding:"11px 12px", marginBottom:"0.65rem" }}>
-                <div style={{ color:"#FBBF24", fontSize:"0.92rem", fontWeight:800, marginBottom:4 }}>
-                  Size {formatSize(displayPrompt.size)} — on display
-                </div>
-                <div style={{ color:"#E8D5A8", fontSize:"0.8rem", fontWeight:600, marginBottom:10 }}>
-                  The only size {formatSize(displayPrompt.size)} at Hub 1 is the display pair{displayPrompt.stores?.length ? ` (on ${displayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : " (registered as a display — the shop wasn't recorded)"}.
-                </div>
-                <div style={{ display:"flex", gap:8 }}>
-                  <button onClick={() => {
-                      setPendingSize(displayPrompt.size);
-                      setPendingDisplayPartner(true);
-                      // Store only when UNAMBIGUOUS — two stores each showing
-                      // this size means we refuse to guess whose slot to
-                      // tombstone; the prompt copy names them all and the
-                      // picker takes whichever pair they find.
-                      setPendingDisplayPair({ store: displayPrompt.stores?.length === 1 ? displayPrompt.stores[0] : null });
-                      setPendingQty(1);
-                      setDisplayPrompt(null);
-                    }}
-                    style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(251,191,36,.6)", background:"rgba(251,191,36,.16)", color:"#FBBF24", fontWeight:800, fontSize:"0.85rem", cursor:"pointer" }}>
-                    Request display pair
-                  </button>
-                  <button onClick={() => setDisplayPrompt(null)}
-                    style={{ padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.16)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.6)", fontWeight:700, fontSize:"0.8rem", cursor:"pointer" }}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
             <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
               {selectedSizes.map(s => {
                 // Clothing sizes the serving hub has ZERO of are greyed out and
@@ -10790,16 +10725,14 @@ function AssistantView({ products, onExit, orders = [] }) {
                 const clothing = (selected.productType || "sneaker") === "clothing";
                 const snkOut = !clothing && !pendingDisplayPartner && !deadForOrder(selected) && sneakerOut(selected, s);
                 const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s), deactivated: deadForOrder(selected) }) || snkOut;
-                // "Only the display pair is left" — the tile STAYS the size
-                // number (the grid is built on single characters and flips
-                // constantly); it gains a corner display glyph + amber tint,
-                // and tapping it opens the display-pair prompt above instead
-                // of selecting. Suppressed while the partner toggle is on
-                // (that flow already exists to ask for what hub1 lacks).
-                const dispOnly = !out && !clothing && !pendingDisplayPartner && !deadForOrder(selected)
-                  ? sneakerDisplayOnly(selected, s) : null;
-                // The quiet tier: any AVAILABLE size on a display carries the
-                // glyph — amber only when the display pair is the last one.
+                // ── THE MARKER IS INFORMATIONAL, FULL STOP ──────────────
+                // Any AVAILABLE size that has a unit standing on a floor
+                // carries the corner glyph. It says so and nothing else: the
+                // tile selects, adds and steps exactly like an unmarked one,
+                // and availability is governed by quantity through sneakerOut
+                // alone. A display pair IS hub stock (#324), so one pair out
+                // on a wall must never cost the shop the other three in the
+                // box — which is precisely what the old divert did.
                 // Never on a ✕/deactivated tile: the ✕ is authoritative
                 // (displayPairCore's drift rule — a cell the books call empty
                 // must not advertise a display), and the two on one 34px tile
@@ -10817,22 +10750,15 @@ function AssistantView({ products, onExit, orders = [] }) {
                       // 2026-08-26; it matters most on a size-optional Display
                       // Partner request). It stays tappable even when the size
                       // went ✕ while selected (the disabled attr exempts the
-                      // selected size for exactly this escape). A prompt-minted
-                      // selection unwinds partner mode with it — leaving the
-                      // toggle on kept the Add button live for a request the
-                      // user just cancelled.
+                      // selected size for exactly this escape).
                       if (pendingSize === s) {
-                        if (pendingDisplayPair) setPendingDisplayPartner(false);
-                        setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize("");
+                        setNaNote(null); setPendingSize("");
                         return;
                       }
                       // A sneaker ✕ tap raises the why-note (snk flag) —
                       // reserved stock must not read as "size doesn't exist".
                       if (out) { setNaNote(clothing || deadForOrder(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
-                      if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
-                      // A plain size selection drops any display-pair claim —
-                      // the claim belongs to the size the prompt was about.
-                      setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
+                      setNaNote(null); setPendingSize(s);
                     }}
                     style={out
                       // THE GLYPH IS GONE (owner spec 2026-09-06). The
@@ -10844,13 +10770,13 @@ function AssistantView({ products, onExit, orders = [] }) {
                       // converge them. The size number reads clearly, which is
                       // the whole reason the glyph could go.
                       ? phoneSizeChipStyle({ out: true, selected: pendingSize === s })
-                      : dispOnly
-                        ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?"#FBBF24":"rgba(251,191,36,.45)", background: pendingSize===s?"rgba(251,191,36,.18)":"rgba(251,191,36,.08)", color:"#FBBF24", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }
-                        : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>
+                      // ONE STYLE FOR EVERY AVAILABLE CHIP — marked or not.
+                      // The glyph is the whole difference.
+                      : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>
                     <SizeTag size={s} />{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                     {dispInfo ? (
-                      <span aria-label={dispOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={dispOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                      <span aria-label="this size is on a display" style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                       </span>
                     ) : null}
                   </button>
@@ -10878,14 +10804,7 @@ function AssistantView({ products, onExit, orders = [] }) {
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
                 <button onClick={() => {
-                  // A manual toggle drops any display-pair claim — AND the
-                  // prompt-minted size selection with it: leaving the display-
-                  // only size selected would place a plain line into a shelf
-                  // that is empty on purpose, the exact false-OOS this feature
-                  // kills.
                   setPendingDisplayPartner(v => !v);
-                  if (pendingDisplayPair) setPendingSize("");
-                  setPendingDisplayPair(null);
                   // Partner mode lifts every ✕ — a lingering "can't be
                   // ordered" note would contradict the now-selectable tiles.
                   setNaNote(null);
@@ -18867,9 +18786,12 @@ function AppInner() {
   // member with a persisted role opens straight into their workspace and may go
   // weeks without rendering home. The token has to be refreshed on every app
   // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
-  // from the one component every session mounts. The settings row still owns
-  // the switch; it receives this same object as a prop.
-  const push = usePushRegistration({ user: authUser, permRecord, isSuperAdmin });
+  // from the one component every session mounts.
+  //
+  // There is no switch to own any more: WHO receives is set by Junid on the
+  // Notifications card in Admin (#admin/notifications) and read by the fan-out
+  // from /push_hub_audience. This registers the ADDRESS, nothing else.
+  const push = usePushRegistration({ user: authUser });
   // The in-app half: banner + chime instead of an OS notification while the app
   // is open. No listener at all when push is off.
   // Gated on `ready` (this uid's registration actually returned ON), not merely
@@ -18935,6 +18857,11 @@ function AppInner() {
   // Management routes. This constant only recognises the HASH — it grants
   // nothing. Authorization happens at the mount below.
   const wantUserMgmt = hash === "#admin/users" || hash === "#admin/users/" || hash.startsWith("#admin/users/");
+  // /#admin/notifications — ORDER ALERTS, the card where recipients are
+  // assigned hub by hub. Like wantUserMgmt this recognises the HASH only and
+  // grants nothing; authorization happens at the mount below, and the real
+  // enforcement is the RTDB rule on /push_assignments.
+  const wantPushAssign = hash === "#admin/notifications" || hash === "#admin/notifications/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -19186,7 +19113,18 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantUserMgmt) {
+  if (wantPushAssign) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted at all, so none of its
+    // reads happen. Layer 1 is the tile; layer 3 — the only one that is
+    // ENFORCEMENT rather than UI — is the RTDB rule that refuses the write
+    // (PUSH-ASSIGNMENT-RULES-DEPLOY.md). The component re-checks this same
+    // condition independently, so deleting either client layer still leaves a
+    // working client gate.
+    view = isSuperAdmin
+      ? <PushAssignmentsCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantUserMgmt) {
     // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
     // A REAL check: a non-super-admin never gets UserManagement mounted at all,
     // so none of its state, effects or subscriptions are created. They get the
@@ -19208,7 +19146,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);

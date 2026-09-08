@@ -47,19 +47,10 @@ describe("routing and availability are ONE computation", () => {
     expect(end, "the clamp no longer sits before the line it builds").toBeGreaterThan(i);
     expect(APP.slice(i, end)).not.toContain("sneakerInCart(selected.id, pendingSize)");
   });
-  it("the display-only check does too", () => {
-    expect(APP).toContain("const { hub, available } = sneakerSourcing(p, s);");
-    // BOUNDED TO THE FUNCTION BODY, not a fixed window. A 900-character slice
-    // stopped short of the statements after the explanatory block, so the very
-    // line this pins could be reintroduced below it and still pass — and this
-    // file is in the mutation harness's suite, so a weak pin weakens the proof
-    // (CodeRabbit).
-    const i = APP.indexOf("const sneakerDisplayOnly = (p, s) => {");
-    expect(i).toBeGreaterThan(-1);
-    const end = APP.indexOf("\n  };", i);
-    expect(end, "sneakerDisplayOnly's body no longer ends where expected").toBeGreaterThan(i);
-    expect(APP.slice(i, end)).not.toContain("- sneakerInCart(p.id, s)");
-  });
+  // The display-only check that used to be pinned here is deleted (owner spec
+  // 2026-09-07): the display marker is informational and gates nothing, so
+  // there is no second availability computation left for it to get wrong.
+  // altSheetWiring.test.js holds the fence that it stays deleted.
   it("sneakerHubOf is derived from that same call — no second route", () => {
     expect(APP).toContain("const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;");
   });

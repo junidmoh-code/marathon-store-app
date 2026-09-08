@@ -329,13 +329,25 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(cellAvailability({ cells, promised: pull, productId: "s1", size: "8" })).toBe(0);   // hub1's netting
     expect(cellAvailability({ cells, promised: {}, productId: "s1", size: "8" })).toBe(1);     // hub2's
   });
-  it("the display-only check still asks Hub 1 explicitly", () => {
-    // It asks by NAME through the shared constant now, and takes its remaining
-    // count from the resolver instead of recomputing one — recomputing is how
-    // the whole cart came to be subtracted from Hub 1 for units that were never
-    // Hub 1's. Still hub1-scoped, which is what this fence is about.
-    expect(app()).toContain("if (hub !== DISPLAY_PAIR_HUB || !Number.isFinite(available)) return null;");
-    expect(app()).toContain('const d = hub1DisplayUnits[promisedKey(p.id, s)];');
+  // THE DISPLAY-ONLY CHECK IS GONE (owner spec 2026-09-07). It was the amber
+  // tier: when the display pair was a size's last Hub 1 availability the tile
+  // stopped selecting and diverted into a request. A marker is not a gate, so
+  // it was deleted. What this fence was protecting — that the display lane
+  // never reaches Hub 2 — is now protected by there being no lane-driven gate
+  // at all, and by the two pins below on the readers that remain.
+  it("the deleted display-only gate has not come back anywhere", () => {
+    expect(app()).not.toContain("sneakerDisplayOnly");
+    expect(app()).not.toContain("displayOnly(available");
+  });
+  it("the glyph's own reader is hub1-scoped and appearance-only", () => {
+    // sneakerDisplayInfo asks hub1DisplayUnits, and only for a size Hub 1
+    // serves — the lane is hub1's, and a Hub 2 size must not inherit a marker
+    // from it.
+    // The predicate itself, byte-for-byte: widening it to "any gated hub" is
+    // the one-character edit that would put a Hub 1 glyph on a Hub 2 size.
+    expect(app()).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
+    expect(app()).toContain('const sneakerDisplayInfo = (p, s) =>');
+    expect(app()).toContain('(s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null)');
   });
 });
 
