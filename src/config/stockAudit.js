@@ -21,12 +21,13 @@ export const AUDIT_STORES = [
   { id: "trophy", label: "Trophy" },
 ];
 
-// The hubs that answer customer orders, and so the hubs that can turn one away.
-// Matches AUDIT_HUBS in functions/lib/stock-audit.cjs.
+// The hubs this audit covers. Hub 3 serves Pine, which is out of scope for the
+// whole feature. Matches AUDIT_HUBS in functions/lib/stock-audit.cjs — the
+// writer and the reader must agree on the set, or a chip would open a node
+// nothing ever fills.
 export const AUDIT_HUBS = [
   { id: "hub1", label: "Hub 1" },
   { id: "hub2", label: "Hub 2" },
-  { id: "hub3", label: "Hub 3" },
 ];
 
 // Every place a row can name. Held here rather than read from /locations so the
@@ -38,7 +39,6 @@ export const LOCATION_LABEL = {
   trophy: "Trophy",
   hub1: "Hub 1",
   hub2: "Hub 2",
-  hub3: "Hub 3",
 };
 export const locationLabel = (id) => LOCATION_LABEL[id] || id || "—";
 

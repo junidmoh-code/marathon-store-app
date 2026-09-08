@@ -185,8 +185,19 @@ test("REJECTIONS AND NEGATIVE CELLS ARE NOT IN THIS TAB", () => {
 test("each hub gets its own list, and the legacy `hub` field still names one", () => {
   const at = (hub) => sa.buildOutOfStock({ hub, nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS, orders: ORDERS }).rows;
   assert.deepEqual(at("hub2").map((r) => r.k), ["shoe__11__hub2"]);
-  assert.deepEqual(at("hub3").map((r) => r.k), ["boot__9__hub3"]);   // order 10 has only `hub`
+  // order 10 carries no placedAtHub, only the older `hub` field
+  assert.deepEqual(at("hub3").map((r) => r.k), ["boot__9__hub3"]);
   assert.deepEqual(at("central"), []);
+});
+
+test("HUB 3 IS OUT OF SCOPE — the pass never writes it a list", () => {
+  // Hub 3 answers customer orders too, but it serves Pine, which is out of
+  // scope for the whole feature. buildOutOfStock still WORKS for it (above) —
+  // it is the covered set that excludes it, so nothing can quietly re-add a
+  // chip for a node that is never filled.
+  assert.deepEqual(sa.AUDIT_HUBS, ["hub1", "hub2"]);
+  assert.equal(sa.AUDIT_HUBS.includes("hub3"), false);
+  assert.deepEqual(sa.AUDIT_STORES, ["marathon-pe", "trophy"]);
 });
 
 test("a phantom leads the list, whatever the timestamps say", () => {

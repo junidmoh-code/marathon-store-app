@@ -123,7 +123,7 @@ test("the due pass reads EXACTLY its own state — nothing the scan already read
   const shallow = [];
   const res = await run(db, { shallowKeys: async (_app, p) => { shallow.push(p); return []; } });
   assert.equal(res.saDate, "2026-09-07");
-  assert.deepEqual(res.wrote, ["hub1", "hub2", "hub3", "marathon-pe", "trophy"]);
+  assert.deepEqual(res.wrote, ["hub1", "hub2", "marathon-pe", "trophy"]);
 
   // The hub lists cost NOTHING to read: /orders, /stock and /products are all
   // already in the scan's memory. Only the shops' own rotation stamps are read.
@@ -145,7 +145,6 @@ test("the due pass reads EXACTLY its own state — nothing the scan already read
   assert.deepEqual(shallow, [
     "settings/stockAudit/hub/hub1/results",
     "settings/stockAudit/hub/hub2/results",
-    "settings/stockAudit/hub/hub3/results",
     "settings/stockAudit/marathon-pe/results",
     "settings/stockAudit/trophy/results",
   ]);
@@ -185,7 +184,6 @@ test("one snapshot per hub and per shop, and the batch is remembered", async () 
   assert.deepEqual(db._writes, [
     "settings/stockAudit/hub/hub1/latest",
     "settings/stockAudit/hub/hub2/latest",
-    "settings/stockAudit/hub/hub3/latest",
     "settings/stockAudit/marathon-pe/latest",
     "settings/stockAudit/state/batch/marathon-pe",
     "settings/stockAudit/trophy/latest",

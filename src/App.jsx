@@ -71,7 +71,6 @@ import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard"
 // Stock Audit — the daily shelf-walk lists (Out of Stock / Not Selling). Both
 // are precomputed once a day inside refillHealthScan; the screen reads one
 // small node per store and nothing else.
-import StockAuditCard from "./components/stock/StockAuditCard";
 import StockAuditView from "./components/stock/StockAuditView";
 import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
@@ -2584,6 +2583,11 @@ function CustomerDrillModal({ drill, detail, onClose, fmt }) {
 // ─── ROLE SELECTOR ────────────────────────────────────────────────────────────
 // ── Role icon SVGs (match HTML design exactly) ─────────────────────────────
 const RoleIcons = {
+  stock_audit: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/><path d="M9 11l3 3 7-7"/>
+    </svg>
+  ),
   stock: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 9h18M3 15h18"/><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/>
@@ -2979,13 +2983,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const displayRegCard = (canAccessStock || isSuperAdmin)
     ? <DisplayRegistrationCard onOpen={() => onSelect(ROLES.DISPLAY_REGISTRATION)} />
     : null;
-  // Stock Audit — the two daily shelf-walk lists, Marathon PE and Trophy. Same
-  // identity as Stock, because the screen adjusts stock. Readless card: the
-  // lists are per-store and a home badge would cost two subscriptions for a
-  // number nobody acts on from the home screen.
-  const stockAuditCard = stockAuditVisibleForViewer({ canAccessStock, isSuperAdmin })
-    ? <StockAuditCard onOpen={() => onSelect(ROLES.STOCK_AUDIT)} />
-    : null;
   // Shopify Publishing — the online-store push pipeline (clean names,
   // condition grades, nominations). An ordinary row in the Administration
   // group now (owner spec 2026-08-14 — the oversized home card is gone),
@@ -3047,6 +3044,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
       canAccessStock                                           && { key:"health", icon:RoleIcons.health, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
+      // Stock Audit — the two daily shelf-walk lists (sneaker out-of-stock
+      // checks per hub, the clothing rotation per shop). An ordinary tile in
+      // this group rather than a standalone card at the top of the screen: the
+      // oversized cards above are TEMPORARY surfaces carrying live state a tile
+      // cannot show, and this one carries none. (Owner, 2026-09-08.)
+      canAccessStock                                           && { key:"stock_audit", icon:RoleIcons.stock_audit, name:"Stock Audit", desc:"Out of stock checks & audit", onClick:()=>onSelect(ROLES.STOCK_AUDIT) },
       // Attention — the BUYING read of the same stock: what to reorder, what's
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
@@ -3221,7 +3224,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
           {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
           {displayRegCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{displayRegCard}</div>}
-          {stockAuditCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".21s" }}>{stockAuditCard}</div>}
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
@@ -3285,7 +3287,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
         {hubCountCard}
         {stockHoldCard}
         {displayRegCard}
-        {stockAuditCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -19634,7 +19635,9 @@ function AppInner() {
     ? <DisplayRegistrationView products={products} orders={orders} ordersScope={myShop} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.STOCK_AUDIT) view = stockAuditRouteOpen
-    ? <StockAuditView actorRole={stockRole} onExit={() => setRole(null)} />
+    // `products` is the list App already streams for every screen — the row
+    // photos come off it, so a picture costs the audit snapshot nothing.
+    ? <StockAuditView products={products} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;

@@ -43,10 +43,13 @@ const { saDateStringFromMs, SAST_OFFSET_MS } = require("./sa-time.cjs");
 // config key would invite a third store to appear without anyone deciding it.
 const AUDIT_STORES = ["marathon-pe", "trophy"];
 
-// The hubs that answer customer orders. Measured on live /orders 2026-09-08:
-// every one of the three produces sold-out and coming-tomorrow answers
-// (hub1 20, hub2 14, hub3 7 in a single day), so all three get a list.
-const AUDIT_HUBS = ["hub1", "hub2", "hub3"];
+// The hubs this audit covers. Hub 3 answers customer orders too — it produced
+// 7 sold-out lines on the day this was measured — but it serves Pine, which is
+// out of scope for the whole feature exactly as Pine is out of scope for the
+// clothing rotation. Owner decision 2026-09-08. Dropping it here is what stops
+// its list being written at all; the card cannot show a chip for a node the
+// pass never fills.
+const AUDIT_HUBS = ["hub1", "hub2"];
 
 // The two answers that send a customer away, and the order field that records
 // each. Nothing else belongs in Tab A: a rejected refill request is two
