@@ -107,8 +107,8 @@ const MUTATIONS = [
   {
     id: "$3", file: VIEW, tests: VIEW_TESTS,
     guard: "the results day comes from SERVER time — a wrong device date must not file under the wrong day",
-    from: `  const saDate = useMemo(() => saDateOf(serverNowMs()), []);`,
-    to: `  const saDate = useMemo(() => saDateOf(Date.now()), []);`,
+    from: `  const [saDate, setSaDate] = useState(() => saDateOf(serverNowMs()));`,
+    to: `  const [saDate, setSaDate] = useState(() => saDateOf(Date.now()));`,
   },
 
   // ── Tab A ─────────────────────────────────────────────────────────────────
