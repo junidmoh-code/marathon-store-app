@@ -112,6 +112,40 @@ Pure modules, tested via the normal `npm test`:
   are simply not promised to strangers. Measure before changing the list:
   `node scripts/shopify/census-online-locations.mjs --exclude <ids>`.
 
+### Writing a quantity to Shopify: read Shopify FIRST
+
+`inventorySetQuantities` is a compare-and-set — `changeFromQuantity` must be
+supplied and the write fails if Shopify no longer holds that value. It is the
+only thing standing between a push and an overwritten sale, and it only works
+if the baseline is read **before** the `/stock` snapshot.
+
+`setAvailable` therefore takes the baseline as a **required** parameter
+(`readAvailable()` produces it). There is no default and no internal re-read,
+because either would let a caller silently re-open the bug this replaced: the
+function used to read the baseline itself, immediately before mutating, so the
+window it guarded was its own read → its own write — microseconds — while the
+window that mattered (the caller's `/stock` snapshot → the write) was
+unguarded. A sale landing there moved Shopify's number, the fresh read adopted
+the moved number, the compare-and-set passed, and the sale was overwritten by a
+total computed before it happened.
+
+A rejection is **not an error** — it is the guard working. It arrives as
+`InventoryMovedError`, the CLI prints `↺ stock moved mid-push`, the sweep keeps
+the marker, and `reconcile.mjs` lets it fall to the transient handler (never
+`refuse()`, which would consume the intent and block the product permanently
+for a passing event).
+
+> **⚠️ WHAT THIS DOES NOT FIX.** There is **no Shopify order webhook** — checked,
+> nothing in `functions/` subscribes to `orders/create`. An online sale is never
+> deducted from `/stock`. So the number computed from `/stock` is systematically
+> high by whatever has sold online, and the continuous sweep **re-adds every
+> unit sold online** on its next pass. The ordering above makes a *collision*
+> visible; it does not make the app's count right. Closing that needs the
+> webhook: an HTTP function with HMAC verification, idempotency by order id,
+> Shopify variant → `pid`+size resolution, and a movement written through
+> `applyMovement` so it is auditable — plus a decision about the ~689 units
+> already sold and never deducted.
+
 ### Trusting a location again (or distrusting a new one)
 
 Not a one-line edit — the list is mirrored into two Cloud Functions and named

@@ -26,7 +26,7 @@ import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
 import { syncProduct, sweepDirty, locationNames } from "./inventorySync.mjs";
-import { requireSingleLocation } from "./inventory.mjs";
+import { requireSingleLocation, InventoryMovedError } from "./inventory.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -107,6 +107,9 @@ const locationId = await orDie(requireSingleLocation(graphql), "could not resolv
 // The location NAMES too — desiredFor would otherwise re-read them per product.
 const locNames = await orDie(locationNames(db), "could not read the location names");
 let drifted = 0, variants = 0, zeroed = 0;
+// Products whose push was refused because Shopify moved under it. Counted
+// separately: they are not failures and not successes, they are "come back".
+const moved = [];
 const zeroRows = [];
 // Products the app calls live that Shopify no longer has. Collected separately
 // because it is the OPPOSITE failure from an oversell, and would otherwise be
@@ -115,7 +118,20 @@ const gone = [];
 for (const pid of pids) {
   let r;
   try { r = await syncProduct(db, graphql, pid, { commit: COMMIT, locationId, locNames }); }
-  catch (e) { console.log(`✗ ${pid}: ${String(e?.message || e)}`); continue; }
+  catch (e) {
+    // A compare-and-set rejection is NOT this program failing — it is the guard
+    // working: something sold while this product was being pushed, so the
+    // number computed a moment earlier is stale and was refused. Said in its
+    // own words, because "✗ p123: userErrors [...]" would send an operator
+    // looking for a bug that is not there.
+    if (e instanceof InventoryMovedError) {
+      moved.push(pid);
+      console.log(`↺ ${pid}: stock moved mid-push (a sale landed) — nothing written, re-run to pick it up`);
+      continue;
+    }
+    console.log(`✗ ${pid}: ${String(e?.message || e)}`);
+    continue;
+  }
   if (r.ok === false) { console.log(`✗ ${pid}: ${r.why}`); if (r.productGone) gone.push(pid); continue; }
   if (r.staleVariants?.length) console.log(`  ⚠ ${pid}: ${r.staleVariants.length} variant(s) point at inventory items Shopify does not know — id map stale, the rest were still corrected`);
   if (r.skipped || !r.drift?.length) continue;
@@ -133,6 +149,12 @@ for (const pid of pids) {
   }
 }
 console.log(`\n${drifted} product(s), ${variants} variant(s) drifted · ${zeroed} sellable at zero stock`);
+if (moved.length) {
+  console.log(`\n${moved.length} product(s) refused — stock moved mid-push:`);
+  for (const p of moved) console.log(`  ${p}`);
+  console.log(`  ↑ NOT an error. Something sold between reading Shopify and writing to it,`);
+  console.log(`    so the write was refused rather than replacing the sale. Re-run.`);
+}
 if (zeroRows.length) {
   console.log(`\nSELLABLE AT ZERO — these could be bought and not shipped:`);
   for (const z of zeroRows) console.log(`  ${z.pid} ${z.sizeKey}  shopify was offering ${z.shopify}`);
