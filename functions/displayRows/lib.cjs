@@ -284,21 +284,32 @@ function closeUpdates(basePath, { at, reason, via, movementId }) {
  * @param cellQty          /stock/{hub}/{productId}/{sizeKey}/qty, read now.
  * → { store, rowId } | null, with `why` when it refuses.
  */
-function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs }) {
-  // ── THE STALENESS BOUND, checked before anything else ─────────────────────
-  // See HUB_INFERENCE_MAX_AGE_MS. A movement with no readable instant is also
-  // refused: "we cannot tell how old this is" is not "it is fresh".
-  // A STRING, and only a string. `Date.parse(12345)` coerces to "12345" and
-  // parses it as the YEAR 12345 — a movement carrying epoch millis instead of
-  // an ISO instant would have read as fresh by three hundred centuries. Every
-  // live `sold` movement carries an ISO `ts`; anything else is unknown, and
-  // unknown is a refusal. (Found by the test below, which passed a number in.)
+/**
+ * THE STALENESS BOUND, on its own so the trigger can check it BEFORE spending
+ * any reads. See HUB_INFERENCE_MAX_AGE_MS for why it exists.
+ *
+ * A movement with no readable instant is refused: "we cannot tell how old this
+ * is" is not "it is fresh". A STRING, and only a string — `Date.parse(12345)`
+ * coerces to "12345" and parses it as the YEAR 12345, so a movement carrying
+ * epoch millis instead of an ISO instant would have read as fresh by three
+ * hundred centuries. (Found by a test that passed a number in.) A future-dated
+ * sale is refused too: a wrong clock is not evidence.
+ *
+ * → null when it is fresh enough; the refusal reason otherwise.
+ */
+function hubSaleTooOld(movementTs, nowMs) {
   const ts = typeof movementTs === "string" ? Date.parse(movementTs) : NaN;
-  if (!Number.isFinite(ts)) return { ok: false, why: "the sale carries no readable instant, so its age cannot be judged" };
+  if (!Number.isFinite(ts)) return "the sale carries no readable instant, so its age cannot be judged";
   const age = Number(nowMs) - ts;
   if (!(age >= 0 && age <= HUB_INFERENCE_MAX_AGE_MS)) {
-    return { ok: false, why: `the sale is ${Math.round(age / 1000)}s old — too long to attribute it from the hub's stock now` };
+    return `the sale is ${Math.round(age / 1000)}s old — too long to attribute it from the hub's stock now`;
   }
+  return null;
+}
+
+function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs }) {
+  const tooOld = hubSaleTooOld(movementTs, nowMs);
+  if (tooOld) return { ok: false, why: tooOld };
 
   const candidates = [];
   for (const [store, rows] of Object.entries(openRowsByStore || {})) {
@@ -345,5 +356,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, leaseDecision,
 };

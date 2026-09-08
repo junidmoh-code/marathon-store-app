@@ -37,7 +37,7 @@
 const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
-  classifyMovement, decideCloses, claimClose, resolveHubSale, leaseDecision, rowIsOpen,
+  classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, leaseDecision, rowIsOpen,
   DISPLAY_STORES,
 } = require("./lib.cjs");
 
@@ -113,6 +113,15 @@ exports.closeDisplayRowOnSale = onValueCreated(
       // and for why a bare hub sale must never close anything. Reads are
       // ordered so the cheap one comes first: the two stores' row nodes, and
       // the stock cell only if a single candidate survives.
+      // THE AGE GATE FIRST, so a stale movement costs no reads at all. It is
+      // re-checked inside resolveHubSale (a helper must not depend on its
+      // caller's discipline), and this is the cheap version of the same test.
+      const tooOld = hubSaleTooOld(m.ts, nowMs);
+      if (tooOld) {
+        console.log(`closeDisplayRowOnSale: hub sale ${movementId} closed nothing — ${tooOld}`);
+        await done([], tooOld);
+        return;
+      }
       const perStore = {};
       let candidates = 0;
       for (const s of DISPLAY_STORES) {
