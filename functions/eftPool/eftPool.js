@@ -7,11 +7,17 @@
 // search needs (lib/eft-pool.cjs publicEftView). Staff never gain client read
 // on the node, and no rule change ships with this build.
 //
-//   eftPoolSearch   any active POS identity: the forgiving search — partial
-//                   reference, payer name, standalone amount. Used payments
-//                   come back too, marked used with slip/cashier/customer,
-//                   because "it says used, slip 00123, Tuesday, Ahmed" ends a
-//                   counter argument in five seconds.
+//   eftPoolSearch   any active POS identity: the forgiving search by
+//                   REFERENCE and PAYER NAME — partial, case-blind, typo-
+//                   tolerant. NEVER by amount: "550" finding any R550 payment
+//                   is how one customer's sale gets settled against another
+//                   customer's money; the amount is on every row for the
+//                   cashier to CONFIRM, and a request carrying an amount field
+//                   is refused outright. Three characters minimum, ten results,
+//                   no browsing. Used payments come back too, marked used with
+//                   slip/cashier/customer (or "settled outside POS", who, when,
+//                   why), because "it says used, slip 00123, Tuesday, Ahmed"
+//                   ends a counter argument in five seconds.
 //   eftPoolSettle   the consume-once lifecycle: settle (unmatched → used,
 //                   BEFORE the sale is written — a lost race must stop the
 //                   sale, not follow it), attach (the committed sale's slip
@@ -28,6 +34,12 @@
 //                   held visibly at /eft_unallocated. Never silently swallowed.
 //                   A fourth action, "allocate", is the OWNER assigning a held
 //                   remainder to a customer — same mint, same records.
+//                   A fifth, "markUsed", is the OWNER marking a payment as
+//                   settled OUTSIDE the POS (no sale attached; a typed reason,
+//                   actor and server time on the record). Owner-only, checked
+//                   server-side; the SAME transaction as a till's settle, so
+//                   it cannot race a till into a double-settle; undone only by
+//                   eftPoolReverse, which keeps both records.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -53,10 +65,11 @@ const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 
-const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, searchEftPool } = require("../lib/eft-pool.cjs");
+const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEftPool } = require("../lib/eft-pool.cjs");
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MIN, OUTSIDE_POS_REASON_MAX,
 } = require("../lib/eft-settle.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
@@ -263,15 +276,23 @@ async function resolveCustomer(data) {
 // ─── SEARCH ──────────────────────────────────────────────────────────────────
 exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
-  const query = String(request.data?.query ?? "").slice(0, 120);
-  // A QUERY IS REQUIRED. An empty search would return the newest payments
-  // wholesale — payer names and amounts of customers who have nothing to do
-  // with this sale — turning the search into a browsable directory of the
-  // pool. The till's modal pre-fills the amount due, so a real sale always
-  // arrives here with a query; refusing short ones costs nothing but the
-  // enumeration. (Independent architect review, this PR.) The refused call
-  // skips the database read entirely.
-  if (query.trim().length < 2) return { results: [], searched: 0, needQuery: true };
+  const data = request.data ?? {};
+  // AMOUNT IS NOT A SEARCH KEY — not hidden in the UI, refused at the door.
+  // "550" finds ANY R550 payment, which is how one customer's sale gets
+  // settled against another customer's money with neither of them able to
+  // tell. A till build that still sends an amount field is refused loudly
+  // rather than quietly answered with nothing.
+  if (data.amount != null || data.amountCents != null) {
+    throw new HttpsError("invalid-argument", "Amount is not a search key — search by the reference or the payer's name.");
+  }
+  const query = String(data.query ?? "").slice(0, 120);
+  // A QUERY IS REQUIRED — three characters of letters and digits at least. An
+  // empty or short search would return the newest payments wholesale — payer
+  // names and amounts of customers who have nothing to do with this sale —
+  // turning the search into a browsable directory of the pool. The refused
+  // call skips the database read entirely. (searchEftPool applies the same
+  // floor after normalisation, so a query of punctuation is refused too.)
+  if (normaliseText(query).length < EFT_MIN_QUERY) return { results: [], searched: 0, needQuery: true };
   // The TAIL, never the node — the pool grows by a record per payment for
   // ever, and a till search is about this week's customers.
   const snap = await admin.database()
@@ -290,8 +311,9 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   const action = String(data.action ?? "");
   const attemptId = String(data.attemptId ?? "").slice(0, 60);
   // The lifecycle actions are holder-scoped and need the attempt id; the
-  // owner's allocate acts on a finished settlement and has none.
-  if (!attemptId && action !== "allocate") {
+  // owner's allocate acts on a finished settlement and has none, and the
+  // owner's markUsed mints its own (the mark's moment) inside the decision.
+  if (!attemptId && action !== "allocate" && action !== "markUsed") {
     throw new HttpsError("invalid-argument", "The request carries no attempt id.");
   }
   const uid = request.auth.uid;
@@ -377,6 +399,25 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     }
     console.log(`eftPoolSettle: allocate ${key} → customer ${customer.id} by owner`);
     return { ok: true, already: decision.already === true, remainder, customer };
+  } else if (action === "markUsed") {
+    // THE OWNER'S MARK-AS-USED: a payment settled outside the POS (paid before
+    // the pool existed, matched on a statement, refunded in cash) is marked
+    // used with NO sale attached. Owner-only, enforced HERE — a hidden button
+    // is not the control. It runs through the very same transaction as a
+    // till's settle (markUsedOutsidePosDecision delegates to settleDecision),
+    // so a till settling the same payment in the same instant gets exactly
+    // one winner. Undone only by eftPoolReverse, which keeps both records.
+    if (!isOwner(request)) {
+      throw new HttpsError("permission-denied", "Only the owner can mark a payment as settled outside the POS.");
+    }
+    const reason = String(data.reason ?? "").trim().slice(0, OUTSIDE_POS_REASON_MAX);
+    if (reason.length < OUTSIDE_POS_REASON_MIN) throw new HttpsError("invalid-argument", "A short reason is required — it stays on the record.");
+    decision = await runPoolTransaction(key, (current) => markUsedOutsidePosDecision(current, {
+      at: now, actorUid: uid, actorName: "owner", reason,
+    }));
+    if (!decision.ok) throw refusalToError(decision);
+    console.log(`eftPoolSettle: markUsed ${key} by owner ${uid} — ${reason}`);
+    return { ok: true, already: decision.already === true, remainder: null };
   } else if (action === "release") {
     decision = await runPoolTransaction(key, (current) => {
       if (current?.used && current.used.cashierUid !== uid && !isOwner(request)) {

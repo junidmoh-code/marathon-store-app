@@ -734,3 +734,86 @@ export function eftPaymentKey(baseKey, group, groupCount) {
   if (groupCount === 1) return baseKey;
   return createHash("sha256").update(`${baseKey}|doc|bad:${group.rawText}`).digest("hex").slice(0, 40);
 }
+
+// ─── RE-RUNNING A REFUSED NOTIFICATION, AFTER THE REASON IS FIXED ───────────
+// A refusal is final by design: the claim is done, the message is read, and
+// "try again in five minutes" is the wrong answer to a message the reader has
+// judged. When the reason was a MISSING READER (the Absa notification of
+// 2026-09-01 refused with "No payment-notification reader exists for
+// absa.co.za yet"; the reader shipped the same day in #540) the fix lands and
+// the message still has to be re-run by hand — retry-eft-message.mjs is that
+// hand, and this is the whole of its judgement, pure so it is testable:
+//
+//   · a RECORDED payment is never re-run — it is evidence, and re-running it
+//     can only produce a duplicate refusal or a second payment;
+//   · the record's key must be the MESSAGE key (the claim row lives there).
+//     A batched message's per-payment keys differ from the message key and a
+//     refusal among them cannot be re-run by this path — say so;
+//   · the refused record is NOT deleted (a feed that quietly deletes its own
+//     failures cannot be audited) — it is MOVED to `<key>-retried-<ms>` with a
+//     retriedAt stamp so the original key is free for the re-run's own
+//     create-only write, and the owner's tab keeps showing both.
+export function eftRetryPlan({ poolKey, record, seenRow, at }) {
+  if (!/^[0-9a-f]{40}$/.test(String(poolKey ?? ""))) {
+    return { ok: false, why: "That is not a pool key (40 hex characters — the record's node name on the EFT payments tab)." };
+  }
+  if (!record || typeof record !== "object") {
+    return { ok: false, why: `No /eft_pool record exists at ${poolKey}.` };
+  }
+  if (record.outcome === "recorded") {
+    return { ok: false, why: `That record is a RECORDED payment (${record.status}). A recorded payment is evidence and is never re-run.` };
+  }
+  if (record.outcome === "unknown-bank") {
+    return { ok: false, why: "That is an unknown-bank sighting, not a refusal: the message was never claimed or marked read, so there is nothing to undo. Add the bank's domain to EFT_ALLOWED_DOMAINS and a reader, and the next tick reads it." };
+  }
+  if (!seenRow) {
+    return { ok: false, why: `No claim row exists at card_batch_intake_seen/${poolKey}. Either the message was batched (its payments carry per-payment keys and the claim sits under the message key — find the message key on the sibling records) or the claim was already cleared. Nothing to undo here.` };
+  }
+  if (!record.messageId) {
+    return { ok: false, why: "The record carries no Message-ID, so the message cannot be found in the mailbox to mark unread." };
+  }
+  if (!Number.isInteger(at)) return { ok: false, why: "No timestamp for the archive key." };
+  return {
+    ok: true,
+    messageId: record.messageId,
+    archiveKey: `${poolKey}-retried-${at}`,
+    archived: { ...record, retriedAt: at, retriedBy: "retry-eft-message.mjs", retriedFrom: poolKey },
+    seenPath: `card_batch_intake_seen/${poolKey}`,
+  };
+}
+
+// ─── EVICTIONS THE POLLER MUST HONOUR ────────────────────────────────────────
+// The poller's local processed cache (logs/card-recon-processed.json) is a
+// read-modify-write of one file, and a tick can hold its in-memory copy for
+// minutes. A retry script that deletes keys from the file while a tick is in
+// flight is silently undone when that tick saves its stale copy — the exact
+// "poller skips the message for ever" this eviction exists to end. So the
+// retry scripts ALSO append the keys to an eviction list
+// (logs/card-recon-evict.json, key → ms), and the poller applies that list to
+// its in-memory cache at load AND again at every save. Entries age out with
+// the cache's own window. PURE; tested in eftCore.test.mjs.
+// An eviction only beats a cache entry OLDER than itself: once the poller has
+// re-read the ledger and re-cached the message (a newer timestamp), the
+// eviction has done its work and must not keep deleting the fresh entry at
+// every save for the rest of its window.
+export function applyEvictions(entries, evictions, nowMs, maxAgeMs) {
+  let removed = 0;
+  for (const [key, at] of Object.entries(evictions ?? {})) {
+    if (!Number.isFinite(at) || nowMs - at > maxAgeMs) continue;
+    if (!(key in (entries ?? {}))) continue;
+    const cachedAt = entries[key];
+    if (Number.isFinite(cachedAt) && cachedAt >= at) continue; // re-cached at or after the eviction — keep it
+    delete entries[key]; removed++;
+  }
+  return removed;
+}
+
+/** The eviction list with new keys merged in and stale ones dropped. */
+export function mergeEvictions(existing, keys, nowMs, maxAgeMs) {
+  const out = {};
+  for (const [key, at] of Object.entries(existing ?? {})) {
+    if (Number.isFinite(at) && nowMs - at <= maxAgeMs) out[key] = at;
+  }
+  for (const key of keys ?? []) out[key] = nowMs;
+  return out;
+}

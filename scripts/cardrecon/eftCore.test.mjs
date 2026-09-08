@@ -15,7 +15,7 @@ import {
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
   parseAllowedAccountTails, accountVerdict, EFT_ACCOUNTS_ENV_VAR,
   maskAccountValue, looksPaymentShaped,
-  eftMessageKey, poolWriteDecision, eftPoolRecord,
+  eftMessageKey, poolWriteDecision, eftPoolRecord, eftRetryPlan, applyEvictions, mergeEvictions,
   eftMessageRoute, looksLikeStrangerPayment, unknownBankRecord, UNKNOWN_BANK_RAW_LIMIT,
 } from "./eftCore.mjs";
 
@@ -762,5 +762,55 @@ describe("the stranger path stays a bystander", () => {
   it("counts what it noted, so a run says so out loud", () => {
     expect(POLLER).toMatch(/eftUnknownBank: unknownBankThisRun/);
     expect(POLLER).toMatch(/from a bank not set up — see \/eft_pool/);
+  });
+});
+
+describe("eftRetryPlan — re-running a refused notification after the fix", () => {
+  const refused = { outcome: "refused-parse", reason: "No payment-notification reader exists for absa.co.za yet.", messageId: "<abc@absa>", at: 1, from: "ibreply@absa.co.za" };
+  const key = "f".repeat(40);
+
+  it("plans the archive, the claim clear and the unread for a refusal at its message key", () => {
+    const plan = eftRetryPlan({ poolKey: key, record: refused, seenRow: { state: "done" }, at: 5000 });
+    expect(plan.ok).toBe(true);
+    expect(plan.messageId).toBe("<abc@absa>");
+    expect(plan.archiveKey).toBe(`${key}-retried-5000`);
+    expect(plan.archived).toMatchObject({ ...refused, retriedAt: 5000, retriedFrom: key });
+    expect(plan.seenPath).toBe(`card_batch_intake_seen/${key}`);
+  });
+
+  it("never re-runs a recorded payment", () => {
+    const plan = eftRetryPlan({ poolKey: key, record: { ...refused, outcome: "recorded", status: "unmatched" }, seenRow: {}, at: 1 });
+    expect(plan.ok).toBe(false);
+    expect(plan.why).toMatch(/RECORDED payment .* never re-run/);
+  });
+
+  it("refuses a bad key, a missing record, a missing claim row, a missing Message-ID, and an unknown-bank sighting", () => {
+    expect(eftRetryPlan({ poolKey: "nope", record: refused, seenRow: {}, at: 1 }).ok).toBe(false);
+    expect(eftRetryPlan({ poolKey: key, record: null, seenRow: {}, at: 1 }).why).toMatch(/No \/eft_pool record/);
+    expect(eftRetryPlan({ poolKey: key, record: refused, seenRow: null, at: 1 }).why).toMatch(/No claim row/);
+    expect(eftRetryPlan({ poolKey: key, record: { ...refused, messageId: null }, seenRow: {}, at: 1 }).why).toMatch(/Message-ID/);
+    expect(eftRetryPlan({ poolKey: key, record: { ...refused, outcome: "unknown-bank" }, seenRow: {}, at: 1 }).why).toMatch(/unknown-bank/);
+  });
+});
+
+describe("eviction list — what the poller must forget, whatever its in-memory copy says", () => {
+  it("applyEvictions removes listed keys that are still fresh, ignores stale or unknown ones", () => {
+    const entries = { a: 1, b: 2, c: 3 };
+    const removed = applyEvictions(entries, { a: 1000, b: 10, zzz: 1000 }, 2000, 1500);
+    expect(removed).toBe(1);
+    expect(entries).toEqual({ b: 2, c: 3 }); // b's eviction is older than the window
+  });
+  it("mergeEvictions keeps fresh entries, drops stale ones, stamps new keys now", () => {
+    const out = mergeEvictions({ old: 10, kept: 1800 }, ["n1", "n2"], 2000, 500);
+    expect(out).toEqual({ kept: 1800, n1: 2000, n2: 2000 });
+  });
+  it("an entry re-cached AFTER its eviction survives — the eviction has done its work", () => {
+    const entries = { k: 1500, same: 1000, stale: 900 };
+    expect(applyEvictions(entries, { k: 1000, same: 1000, stale: 1000 }, 2000, 5000)).toBe(1);
+    expect(entries).toEqual({ k: 1500, same: 1000 }); // an equal timestamp is not older
+  });
+  it("both tolerate null inputs", () => {
+    expect(applyEvictions({}, null, 1, 1)).toBe(0);
+    expect(mergeEvictions(null, null, 1, 1)).toEqual({});
   });
 });

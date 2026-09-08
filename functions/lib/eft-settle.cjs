@@ -102,6 +102,69 @@ function settleDecision(current, settlement) {
   };
 }
 
+// ─── SETTLED OUTSIDE THE POS — the owner's mark-as-used ──────────────────────
+// A payment that was settled by hand — paid before the pool existed, matched
+// on a bank statement, refunded in cash — has no sale to attach and would sit
+// "unmatched" for ever, findable and settleable by any till. The owner marks
+// it used instead. THE SAME TRANSITION, THE SAME TRANSACTION: this delegates
+// to settleDecision, so a till settling the same payment in the same instant
+// races it exactly as two tills race each other — one winner, the loser told
+// who has it, never a silent double-settle. The whole payment is applied
+// (nothing was owed on a sale the POS never saw, so no remainder is stamped)
+// and the settlement carries who did it, when and why, for the counter and
+// for the record. Reversal is the ordinary owner reversal: the settlement
+// moves whole to `reversals`, outsidePos included — both records survive.
+const OUTSIDE_POS_REASON_MIN = 3;
+const OUTSIDE_POS_REASON_MAX = 300;
+
+/**
+ * unmatched → used with no sale, by the owner. `mark` carries
+ * { at, actorUid, actorName, reason } as the callable resolved them.
+ * @returns same shape as settleDecision
+ */
+function markUsedOutsidePosDecision(current, mark) {
+  const m = mark ?? {};
+  const reason = String(m.reason ?? "").trim();
+  if (reason.length < OUTSIDE_POS_REASON_MIN) {
+    return refuse("bad-reason", "A short reason is required — it stays on the record.");
+  }
+  if (typeof m.actorUid !== "string" || !m.actorUid || typeof m.actorName !== "string" || !m.actorName) {
+    return refuse("bad-actor", "The mark does not say who is marking — refused.");
+  }
+  if (!Number.isInteger(m.at)) return refuse("bad-time", "The mark carries no server time — refused.");
+  const base = settleDecision(current, {
+    // The attempt id is the mark's own moment: nothing else can hold it, so a
+    // second tap is a second attempt and loses to the first — exactly one
+    // winner, never two marks on one payment.
+    attemptId: `outside-pos-${m.at}`,
+    at: m.at,
+    cashierUid: m.actorUid,
+    cashierName: m.actorName,
+    storeId: null,
+    tillId: null,
+    customerId: null,
+    customerName: null,
+    appliedCents: current?.amountCents,
+  });
+  if (!base.ok || base.already) return base;
+  return {
+    ok: true,
+    value: {
+      ...base.value,
+      used: {
+        ...base.value.used,
+        sale: null,
+        outsidePos: {
+          reason: reason.slice(0, OUTSIDE_POS_REASON_MAX),
+          actorUid: m.actorUid,
+          actorName: m.actorName,
+          at: m.at,
+        },
+      },
+    },
+  };
+}
+
 // ─── THE REMAINDER — where the rest of a partially-applied payment goes ──────
 // A payment bigger than the sale it settles is STILL consumed whole (consume-
 // once is per payment, never per rand), so the difference is money the shop
@@ -159,6 +222,11 @@ function remainderPlanOf(poolKey, used, amountCents) {
 function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey }) {
   if (!current || current.status !== "used" || !current.used) {
     return refuse("not-held", "No settlement is holding this payment — the sale cannot be attached.");
+  }
+  // A payment the owner marked as settled OUTSIDE the POS has no sale and can
+  // never acquire one — that is a reversal conversation, not an attach.
+  if (current.used.outsidePos) {
+    return refuse("settled-outside", "This payment was marked as settled outside the POS — no sale can be attached to it. The owner can reverse the mark.");
   }
   if (current.used.attemptId !== attemptId) {
     return refuse("not-holder", "A different settlement holds this payment.");
@@ -250,6 +318,11 @@ function releaseDecision(current, { attemptId, at, reason }) {
       .some((a) => a?.attemptId === attemptId && a?.ended === "released");
     if (alreadyReleased) return { ok: true, already: true };
     return refuse("not-held", "No settlement is holding this payment.");
+  }
+  // The owner's mark-as-used is not a till's hold: it is undone by a reversal
+  // (both records kept), never by a release.
+  if (current.used.outsidePos) {
+    return refuse("settled-outside", "This payment was marked as settled outside the POS — only the owner's reversal undoes that.");
   }
   if (current.used.attemptId !== attemptId) {
     return refuse("not-holder", "A different settlement holds this payment — it cannot be released from this till.");
@@ -346,6 +419,7 @@ function poolTransactionStep(decide, capture) {
 
 module.exports = {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MIN, OUTSIDE_POS_REASON_MAX,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
 };
