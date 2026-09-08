@@ -65,7 +65,9 @@ function Evidence({ row }) {
         <div key={i} style={{ fontSize: 12, color: e.kind === "live" ? BLUE_L : GRAY }}>
           {e.kind === "live"
             ? `On display at ${labelFor(e.store)} — size ${formatSize(e.size ?? e.sizeKey)}`
-            : `Left ${labelFor(e.store)}${e.size ? ` — was size ${formatSize(e.size)}` : ""}`}
+            : e.kind === "unattributed"
+              ? `Left ${labelFor(e.store)}${e.size ? ` — was size ${formatSize(e.size)}` : ""} · no hub on the record, so it counts for neither`
+              : `Left ${labelFor(e.store)}${e.size ? ` — was size ${formatSize(e.size)}` : ""}`}
           {e.at ? <span style={{ color: "rgba(255,255,255,.35)" }}>{`  ·  ${String(e.at).slice(0, 10)}`}</span> : null}
         </div>
       ))}

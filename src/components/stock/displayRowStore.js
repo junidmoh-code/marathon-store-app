@@ -78,8 +78,31 @@ async function apply(updates) {
  * work is fenced out of. Stated, not papered over.
  */
 async function rowsNow(store, productId) {
-  const byRow = (await get(ref(database, `${storeRowsPath(store)}/${rowSegment(productId)}`))).val() || {};
-  return { [store]: { [productId]: byRow } };
+  // KEYED WITH THE SANITISED IDS, because that is what openRowsFor looks up.
+  // The first cut read the sanitised PATH and then keyed the returned map with
+  // the RAW ids — so for any id carrying an RTDB-illegal character the read
+  // succeeded and the lookup missed, `byRow` came back empty, the plan closed
+  // nothing and opened a second row beside the live one. That is verbatim the
+  // failure openRowsFor's own docstring says its sanitised lookup exists to
+  // stop, put back on the other side of the same call.
+  // (Adversarial review of the fix round.)
+  const st = rowSegment(store), pid = rowSegment(productId);
+  const byRow = (await get(ref(database, `${storeRowsPath(store)}/${pid}`))).val() || {};
+  return { [st]: { [pid]: byRow } };
+}
+
+/** The ledger read that a write DEPENDS ON. A failure is a refusal, not a
+ *  shrug: falling back to the caller's snapshot restores the exact staleness
+ *  the re-read exists to remove, and does it silently — the operator taps Send,
+ *  sees success, and a second row appears on the wall. Every other failure in
+ *  this module is reported; this one was swallowed.
+ *  (Adversarial review of the fix round.) */
+async function rowsNowOrRefuse(store, productId) {
+  try {
+    return { ok: true, rows: await rowsNow(store, productId) };
+  } catch (err) {
+    return { ok: false, message: `the display records could not be read (${err?.message || err}) — nothing was changed, try again` };
+  }
 }
 
 /**
@@ -96,11 +119,16 @@ async function rowsNow(store, productId) {
 export async function sendDisplayRow({ rows, store, productId, productName, size, bookedHub,
                                        orderId = null, requestedAt = null, orderPatch = null, at = null }) {
   try {
-    const when = at || serverNowIso();
     // Freshest truth wins over the caller's snapshot. See rowsNow.
-    const live = await rowsNow(store, productId).catch(() => rows);
+    const fresh = await rowsNowOrRefuse(store, productId);
+    if (!fresh.ok) return { ok: false, message: fresh.message };
+    // `when` IS STAMPED AFTER THE READ, not before it. Stamped first, the slot
+    // mirror's instant was already one round trip old by the time the write
+    // landed, so a legitimate send was that much likelier to lose the staleness
+    // fence and come back `superseded`. (Adversarial review of the fix round.)
+    const when = at || serverNowIso();
     const plan = sendPlan({
-      rows: live, store, productId, productName, size, bookedHub,
+      rows: fresh.rows, store, productId, productName, size, bookedHub,
       // `requestedAt` is the ORDER's own instant for the "requested" timeline
       // entry. It was accepted by the caller and by sendPlan and DROPPED right
       // here — not destructured, so never forwarded — which left every timeline
@@ -136,10 +164,15 @@ export async function sendDisplayRow({ rows, store, productId, productName, size
 export async function registerDisplayRow({ rows, store, productId, productName, size, bookedHub,
                                            via = "wall_walk", keepOpen = false, at = null }) {
   try {
-    const when = at || serverNowIso();
     // keepOpen deliberately closes nothing, so it needs no re-read; the
     // replacement path does. See rowsNow.
-    const live = keepOpen ? rows : await rowsNow(store, productId).catch(() => rows);
+    let live = rows;
+    if (!keepOpen) {
+      const fresh = await rowsNowOrRefuse(store, productId);
+      if (!fresh.ok) return { ok: false, message: fresh.message };
+      live = fresh.rows;
+    }
+    const when = at || serverNowIso();   // after the read — see sendDisplayRow
     const plan = openRowPlan({
       rows: live, store, productId, productName, size, bookedHub,
       rowId: rowIdFor(when), at: when, by: uid(), via, keepOpen,
@@ -179,8 +212,15 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
     // snapshot. Deciding "was that the last one?" from a stale map is how a
     // slot gets tombstoned while a row is still open — the count then stops
     // subtracting a pair that is genuinely on a wall. (CodeRabbit.)
-    const after = await rowsNow(row.store, row.productId).catch(() => rows);
-    const survivors = openRowsFor(after, row.store, row.productId).filter((r) => r.rowId !== row.rowId);
+    //
+    // The ROW IS ALREADY CLOSED at this point, so a failed read here cannot be
+    // a refusal — it can only leave the mirror unsynced, which is reported.
+    const after = await rowsNowOrRefuse(row.store, row.productId);
+    if (!after.ok) {
+      return { ok: true, stockMoved: false,
+        warning: "The display record is closed, but the count's display slot could not be checked — reopen the tab and confirm the wall's record looks right." };
+    }
+    const survivors = openRowsFor(after.rows, row.store, row.productId).filter((r) => r.rowId !== row.rowId);
     let warning = null;
     let res;
     if (survivors.length === 0) {
@@ -234,8 +274,7 @@ export async function closeDisplayRowForPartnerSale({ store, productId, size = n
   try {
     if (!store || !productId) return { ok: false, message: "Store and product are required." };
     const when = at || serverNowIso();
-    const byRow = (await get(ref(database, `${storeRowsPath(store)}/${rowSegment(productId)}`))).val() || {};
-    const rows = { [store]: { [productId]: byRow } };
+    const rows = await rowsNow(store, productId);
     let open = openRowsFor(rows, store, productId);
     const wantKey = size == null ? null : stockSizeKey(String(size));
     if (wantKey && wantKey !== "_") {

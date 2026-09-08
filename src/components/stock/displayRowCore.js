@@ -270,6 +270,47 @@ export function filterCandidates(list, { q = "", brand = "" } = {}) {
   });
 }
 
+/**
+ * THE OTHER HALF OF THE WALL WALK: products that ARE registered at this store.
+ *
+ * The list above is deliberately "things with NO record". That leaves a real
+ * case with no surface anywhere: a display taken off a wall and sent back to
+ * the hub is ONE open row — too few for the Duplicate Displays tab, and
+ * excluded from the wall-walk list precisely because it HAS a record. Its row
+ * stayed open forever while offShelf kept subtracting the unit from the hub's
+ * expected on-shelf, which is the discrepancy this whole feature exists to
+ * remove. (Adversarial review of the fix round; the trigger cannot close it
+ * either, because a shop→hub transfer can never be the display.)
+ *
+ * So a SEARCH reaches both halves. It is search-only on purpose: unfiltered,
+ * this would be a list of every display in the shop, which is a different
+ * screen for a different job.
+ *
+ * → [{ productId, product, productName, brand, rows }]
+ */
+export function registeredDisplays({ rows, store, productsById, q = "", brand = "" }) {
+  const needle = String(q || "").trim().toLowerCase();
+  if (!needle) return [];
+  const get = (pid) =>
+    productsById && typeof productsById.get === "function" ? productsById.get(pid) : (productsById || {})[pid];
+  const b = String(brand || "").trim().toLowerCase();
+  const out = [];
+  for (const [key, list] of openRowIndex(rows)) {
+    const i = key.indexOf("::");
+    if (key.slice(0, i) !== seg(store)) continue;
+    const productId = key.slice(i + 2);
+    const product = get(productId) || null;
+    const productName = product?.name || list[0].productName || "(name not on file)";
+    const brandOf = product?.brand || "";
+    if (b && String(brandOf).toLowerCase() !== b) continue;
+    const hay = `${productName} ${productId} ${brandOf}`.toLowerCase();
+    if (!hay.includes(needle)) continue;
+    out.push({ productId, product, productName, brand: brandOf, rows: list });
+  }
+  out.sort((a, b2) => String(a.productName).localeCompare(String(b2.productName)));
+  return out;
+}
+
 /** The brands present in a candidate list, for the filter chips. */
 export function brandsOf(list) {
   return [...new Set((list || []).map((c) => c.brand).filter(Boolean))].sort();
@@ -413,8 +454,9 @@ function closeFields(row, { at, by, reason, via, detail }) {
 }
 
 /**
- * Close ONE named row. The Duplicate tab's per-size tap, the sale trigger, the
- * return and the cancellation all land here.
+ * Close ONE named row. The Duplicate tab's per-size tap, the till trigger, the
+ * wall walk's "not on the wall any more" (reason `returned`), and the refill
+ * undo (reason `cancelled`) all land here.
  *
  * Closing NEVER moves stock, and the module says so in the only place a reader
  * can act on it: `stockMoved: false` on the result, and the sentence the UI

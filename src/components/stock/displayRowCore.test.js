@@ -10,7 +10,7 @@ import {
   unregisteredDisplayCandidates, filterCandidates, brandsOf,
   rowTimeline, sendPlan, closeRowPlan, openRowPlan, closeEffectLine,
   isOpenDisplayRequest, openRequestIndex, hasOpenDisplayRequest, duplicateOpenRequests,
-  requestStoreFor, rowPath, CLOSE_REASONS,
+  requestStoreFor, rowPath, CLOSE_REASONS, registeredDisplays,
 } from "./displayRowCore";
 
 const row = (o = {}) => ({
@@ -365,5 +365,55 @@ describe("CLAUSE 1 — one open request per product per store", () => {
   it("a request with no store or no product is not indexed — it cannot be matched", () => {
     expect(hasOpenDisplayRequest([req({ destShop: null })], { store: "trophy", productId: "p1" })).toBe(false);
     expect(hasOpenDisplayRequest([req({ productId: null })], { store: "trophy", productId: "p1" })).toBe(false);
+  });
+});
+
+
+// ── THE OTHER HALF OF THE WALL WALK ─────────────────────────────────────────
+// A display taken off a wall and sent back to the hub is ONE open row: too few
+// for the Duplicate tab, and excluded from the wall-walk list precisely because
+// it HAS a record. It appeared on no screen at all and its row stayed open
+// forever while offShelf kept subtracting the unit. This is the surface that
+// reaches it. (Adversarial review of the fix round.)
+describe("registeredDisplays — reaching a wall that has exactly one record", () => {
+  const catalogue = { p1: { id: "p1", name: "Air Max", brand: "Nike" } };
+
+  it("is SEARCH-ONLY — unfiltered it would be every display in the shop", () => {
+    const l = ledger(row());
+    expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "" })).toEqual([]);
+    expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "   " })).toEqual([]);
+  });
+
+  it("finds a single open row at this store, which no other screen shows", () => {
+    const l = ledger(row());
+    const out = registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "air" });
+    expect(out).toHaveLength(1);
+    expect(out[0].rows.map((r) => r.rowId)).toEqual(["r1"]);
+    // and the Duplicate tab genuinely cannot: one row is not a duplicate.
+    expect(duplicateDisplayGroups({ rows: l, productsById: catalogue })).toEqual([]);
+    // nor does the wall-walk list, which only holds products with NO record.
+    expect(unregisteredDisplayCandidates({
+      cells: { p1: { 9: { qty: 1 } } }, rows: l, store: "trophy", hub: "hub1", productsById: catalogue,
+    })).toEqual([]);
+  });
+
+  it("is scoped to the store being walked", () => {
+    const l = ledger(row({ store: "marathon-pe" }));
+    expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "air" })).toEqual([]);
+    expect(registeredDisplays({ rows: l, store: "marathon-pe", productsById: catalogue, q: "air" })).toHaveLength(1);
+  });
+
+  it("ignores closed rows, matches on name / id / brand, and honours the brand filter", () => {
+    expect(registeredDisplays({ rows: ledger(row({ status: "closed" })), store: "trophy", productsById: catalogue, q: "air" })).toEqual([]);
+    const l = ledger(row());
+    for (const q of ["air", "p1", "nike"]) {
+      expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q }), q).toHaveLength(1);
+    }
+    expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "air", brand: "Adidas" })).toEqual([]);
+  });
+
+  it("reports every open row when a wall holds more than one", () => {
+    const l = ledger(row({ rowId: "a" }), row({ rowId: "b", size: "10", sizeKey: "10" }));
+    expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "air" })[0].rows).toHaveLength(2);
   });
 });

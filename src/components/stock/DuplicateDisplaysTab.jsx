@@ -91,6 +91,29 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
   // picks; when they agree there is nothing to ask. (CodeRabbit.)
   const hubsOf = (g) => [...new Set(g.rows.map((r) => r.bookedHub).filter(Boolean))];
 
+  // WHICH HUB THE NEW ROW GETS, resolved at PICK time and never earlier.
+  //
+  // Three ways this went wrong before (adversarial review of the fix round):
+  //   • `addHub` outlived its validity — pick hub1, someone closes the hub1 row
+  //     from another device, the group collapses to hub2 only, the picker is
+  //     skipped and the stale hub1 is written anyway;
+  //   • a group of [hub1, null] has ONE named hub, so it skipped the question
+  //     and applied hub1 — the same guess by another route;
+  //   • a group where EVERY row is hubless wrote bookedHub null, minting the
+  //     one row the till trigger can never close while it blocks every other
+  //     close at that wall.
+  // So: the choice must still be among the group's current hubs, a hubless row
+  // present means the group cannot speak for itself, and a group with no hub at
+  // all offers the two real hubs. Nothing here falls back to a guess.
+  const hubChoiceFor = (g) => {
+    const named = hubsOf(g);
+    const anyHubless = g.rows.some((r) => !r.bookedHub);
+    if (named.length === 1 && !anyHubless) return { needsPick: false, hub: named[0], options: named };
+    const options = named.length ? (anyHubless ? [...named, ...GATED_SNEAKER_HUBS.filter((h) => !named.includes(h))] : named)
+                                 : [...GATED_SNEAKER_HUBS];
+    return { needsPick: true, hub: null, options };
+  };
+
   const addSize = async (group, size, hub) => {
     const k = `${group.store}::${group.productId}`;
     setBusy(k); setNote(null);
@@ -192,20 +215,20 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
 
             <div style={{ marginTop: 10 }}>
               {adding === gk ? (() => {
-                const hubs = hubsOf(g);
-                // The records disagree about which hub holds this product's
-                // display, so the operator says which one the new pair came
-                // out of. Nothing here guesses — the same rule as the size.
-                if (hubs.length > 1 && !addHub) {
+                const choice = hubChoiceFor(g);
+                // A hub picked earlier that the group no longer offers is
+                // DISCARDED, not carried: the rows moved under the operator.
+                const picked = choice.options.includes(addHub) ? addHub : null;
+                if (choice.needsPick && !picked) {
                   return (
                     <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                       <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>Which hub is this pair booked at?</div>
                       <div style={{ fontSize: 12, color: "rgba(233,238,255,.65)", lineHeight: 1.5 }}>
-                        The records here disagree ({hubs.map((h) => labelFor(h)).join(" and ")}), so this cannot be
-                        assumed. Pick the hub the pair on the wall came from.
+                        The records here do not agree on one hub, so it cannot be assumed. Pick the hub the pair on
+                        the wall came out of.
                       </div>
                       <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-                        {hubs.map((h) => (
+                        {choice.options.map((h) => (
                           <button key={h} type="button" onClick={() => setAddHub(h)} style={bGray}>{labelFor(h)}</button>
                         ))}
                         <button type="button" onClick={() => { setAdding(null); setAddHub(null); }} style={bGray}>Cancel</button>
@@ -213,14 +236,15 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
                     </div>
                   );
                 }
+                const hub = choice.needsPick ? picked : choice.hub;
                 return (
                   <SizePicker
                     sizes={sizes}
                     busy={busy === gk}
                     title="Which size is actually on the wall?"
-                    note="Nothing is chosen for you. Pick the size you can see, and it is registered at this shop alongside the records above — then close the ones that are not there."
+                    note={`Nothing is chosen for you. Pick the size you can see, and it is registered at this shop (booked at ${labelFor(hub)}) alongside the records above — then close the ones that are not there.`}
                     confirmLabel="Register"
-                    onPick={(sz) => addSize(g, sz, addHub || hubs[0] || null)}
+                    onPick={(sz) => addSize(g, sz, hub)}
                     onCancel={() => { setAdding(null); setAddHub(null); }}
                   />
                 );

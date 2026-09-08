@@ -53,7 +53,7 @@ const admin = require("firebase-admin");
 admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
 
-const { openRowPlan, slotIsLiveish } = await (async () => {
+const { openRowPlan, rowPath, rowSegment, slotIsLiveish } = await (async () => {
   const core = await import("../src/components/stock/displayRowCore.js");
   return { ...core, slotIsLiveish: (s) => !!s && typeof s.sizeKey === "string" && s.sizeKey && s.sizeKey !== "_" };
 })();
@@ -85,8 +85,14 @@ for (const [store, byPid] of Object.entries(slots)) {
       at, by: slot.by || null, via: "seed",
     });
     if (!plan.ok) { console.warn(`skip ${store}/${productId}: ${plan.message}`); continue; }
-    const rowId = Object.keys(plan.updates)[0].split("/").pop();
-    planned.push({ store, productId, rowId, row: Object.values(plan.updates)[0] });
+    // Taken by its OWN path, not by position. `Object.values(plan.updates)[0]`
+    // is correct only while the plan emits exactly one entry (rows: {} and no
+    // orderId); the day it emits two, position would silently take a
+    // close-field fragment and write it as a row.
+    const rowId = `seed${String(at).replace(/[^0-9]/g, "")}`;
+    const row = plan.updates[rowPath(store, productId, rowId)];
+    if (!row) { console.warn(`skip ${store}/${productId}: the plan did not produce the expected row path`); continue; }
+    planned.push({ store, productId, rowId, row });
     seeded++;
     perStore[store] = (perStore[store] || 0) + 1;
   }
@@ -108,7 +114,10 @@ if (!APPLY) {
 // adding a second row beside it.
 let wrote = 0, skipped = 0;
 for (const { store, productId, rowId, row } of planned) {
-  const ref = db.ref(`settings/displayRows/${store}/${productId}`);
+  // SANITISED, like every other writer. The plan writes rowPath()'s segmented
+  // path; building this ref from the raw ids would write somewhere else, or
+  // throw out of db.ref() and abort the migration mid-run.
+  const ref = db.ref(`settings/displayRows/${rowSegment(store)}/${rowSegment(productId)}`);
   // eslint-disable-next-line no-await-in-loop
   const res = await ref.transaction((cur) => (cur === null ? { [rowId]: row } : undefined));
   if (res.committed) wrote++; else skipped++;

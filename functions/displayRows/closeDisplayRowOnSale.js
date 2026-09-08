@@ -55,8 +55,8 @@
 const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
-  classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, leaseDecision, rowIsOpen,
-  DISPLAY_STORES,
+  classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, splitByHub,
+  leaseDecision, rowIsOpen, DISPLAY_STORES,
 } = require("./lib.cjs");
 
 if (!admin.apps.length) {
@@ -81,7 +81,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
   async (event) => {
     const m = event.data.val();
     const hit = classifyMovement(m);
-    if (!hit) return;                       // not a sale or return at a display store
+    if (!hit) return;                       // not a sale this trigger acts on
 
     const db = admin.database();
     const movementId = event.params.movementId;
@@ -158,9 +158,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
         // present at all makes the attribution unknowable, which is the honest
         // answer — and the safe one, because refusing costs a missed close and
         // closing the wrong row costs a real display.
-        const open = decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER);
-        const closable = open.filter(({ row }) => row.bookedHub === hit.hub);
-        const blockers = open.filter(({ row }) => !row.bookedHub);
+        const { closable, blockers } = splitByHub(decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER), hit.hub);
         if (closable.length) perStore[s] = closable;
         candidates += closable.length + blockers.length;
       }

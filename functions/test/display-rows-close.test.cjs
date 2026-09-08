@@ -285,3 +285,41 @@ test("TWO ROWS ON ONE WALL is ambiguous too, so a duplicated wall never auto-clo
   assert.equal(r.ok, false);
   assert.match(r.why, /2 display records claim this size/);
 });
+
+// ── THE CALLER'S OWN ACCOUNTING, now that it is a testable helper ───────────
+// The earlier test hand-fed resolveHubSale an ambiguityCount and proved only
+// that the helper honours a number — never that the trigger computes it.
+
+const { splitByHub } = require("../displayRows/lib.cjs");
+
+test("splitByHub: this hub closes, no hub blocks, another hub is ignored", () => {
+  const rows = [
+    { rowId: "here",  row: { bookedHub: "hub1" } },
+    { rowId: "none",  row: { bookedHub: null } },
+    { rowId: "other", row: { bookedHub: "hub2" } },
+    { rowId: "blank", row: {} },
+  ];
+  const { closable, blockers } = splitByHub(rows, "hub1");
+  assert.deepEqual(closable.map((r) => r.rowId), ["here"]);
+  assert.deepEqual(blockers.map((r) => r.rowId), ["none", "blank"]);
+});
+
+test("splitByHub survives an empty or malformed list", () => {
+  assert.deepEqual(splitByHub(null, "hub1"), { closable: [], blockers: [] });
+  assert.deepEqual(splitByHub([null, {}], "hub1").blockers.length, 2);
+});
+
+test("the hubless-only case reports the TRUE reason, not 'no open row here'", () => {
+  // candidates empty (nothing closable) but one blocker: the refusal recorded
+  // on the lease has to say WHY, and "no display record for this size at this
+  // hub" is simply false when a hubless row is sitting right there.
+  const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0, ambiguityCount: 1 }));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /name no hub/);
+});
+
+test("a genuinely empty wall still reports the empty reason", () => {
+  const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0, ambiguityCount: 0 }));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no open row at this hub/);
+});

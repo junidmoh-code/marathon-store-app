@@ -106,7 +106,7 @@ export function splitRegisterKey(key) {
  * never actionable. (CodeRabbit.)
  */
 function slotsForProduct(slots, productId, hub) {
-  const live = [], tombs = [];
+  const live = [], tombs = [], unattributed = [];
   for (const [store, byPid] of Object.entries(slots || {})) {
     const s = byPid ? byPid[productId] : null;
     if (!s) continue;
@@ -114,9 +114,17 @@ function slotsForProduct(slots, productId, hub) {
       if (s.bookedHub === hub) live.push({ store, ...s });
     } else if (s.bookedHub === hub) {
       tombs.push({ store, ...s });
+    } else if (!s.bookedHub) {
+      // NOT SPENDABLE, BUT NOT INVISIBLE. It is a real record of a display that
+      // left; it just cannot say whose hub's books it was on, so it cannot
+      // authorise a retirement at either. It is still shown to the operator,
+      // because telling them "no shop was ever recorded" when a departure IS on
+      // file is a lie the screen has no business telling.
+      // (Adversarial review of the fix round.)
+      unattributed.push({ store, ...s });
     }
   }
-  return { live, tombs };
+  return { live, tombs, unattributed };
 }
 
 /**
@@ -203,11 +211,12 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
     if (qty <= 0) continue;                       // already retired — not a record any more
 
     const product = get(productId) || null;
-    const { live, tombs } = slotsForProduct(slots, productId, hub);
+    const { live, tombs, unattributed } = slotsForProduct(slots, productId, hub);
     const sameSize = live.filter((s) => s.sizeKey === sizeKey);
     const evidence = [
       ...live.map((s) => ({ kind: "live", store: s.store, size: s.size, sizeKey: s.sizeKey, at: s.at, source: s.source })),
       ...tombs.map((s) => ({ kind: "tomb", store: s.store, size: s.prevSize ?? null, sizeKey: null, at: s.at, source: s.source })),
+      ...unattributed.map((s) => ({ kind: "unattributed", store: s.store, size: s.prevSize ?? null, sizeKey: null, at: s.at, source: s.source })),
     ];
 
     // The budget above already has this product's already-retired units taken
@@ -295,6 +304,9 @@ export function classifyDisplayRecords({ register, slots, hub, productsById, cat
         cls = "unverified";
         why = "The display that left has already been accounted for. What is left here has no shop on record.";
       }
+    } else if (unattributed.length) {
+      cls = "unverified";
+      why = `A display for this product left ${unattributed.length === 1 ? "a shop" : `${unattributed.length} shops`}, but the record does not say which hub's books it was on — so it cannot retire a row at this hub or the other one. Re-register it with a shop to make it countable.`;
     } else {
       cls = "unverified"; why = "No shop was ever recorded for this display — there is no evidence either way.";
     }

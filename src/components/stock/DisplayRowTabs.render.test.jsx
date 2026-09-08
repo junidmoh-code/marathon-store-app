@@ -214,3 +214,62 @@ describe("Unregistered Displays — the wall walk", () => {
     expect(byLabel(tree, /Pine/)).toHaveLength(0);
   });
 });
+
+
+// ── THE RETURNED DISPLAY — the case that had no screen at all ───────────────
+describe("Unregistered Displays — a wall that already has a record", () => {
+  beforeEach(() => { CELLS = { p1: { 9: { qty: 2 } }, p2: { 8: { qty: 1 } } }; });
+
+  const search = (tree, q) => {
+    const input = tree.root.findAll((n) => n.type === "input")[0];
+    act(() => { input.props.onChange({ target: { value: q } }); });
+  };
+
+  it("a search reaches a product with ONE open row, which no other screen lists", () => {
+    ROWS = ledger(row({ store: "marathon-pe" }));
+    const tree = paintWall();
+    // Not in the walk list — it HAS a record.
+    expect(textOf(tree)).not.toContain("Already on");
+    search(tree, "air force");
+    // The heading is JSX children, so assert on the rendered TEXT, not on the
+    // JSON of the tree — interpolated pieces are separate children there.
+    const heading = tree.root.findAll((n) => n.type === "div")
+      .map(textIn).find((t) => t.startsWith("Already on"));
+    expect(heading).toContain("Marathon PE");
+    expect(heading).toContain("1 match");
+    expect(byLabel(tree, /Not on the wall any more/)).toHaveLength(1);
+  });
+
+  it("closing it records `returned` and moves no stock", async () => {
+    ROWS = ledger(row({ store: "marathon-pe" }));
+    const tree = paintWall();
+    search(tree, "air force");
+    await click(byLabel(tree, /Not on the wall any more/)[0]);
+    expect(closeDisplayRow).toHaveBeenCalledTimes(1);
+    expect(closeDisplayRow.mock.calls[0][0].reason).toBe("returned");
+    expect(textOf(tree)).toContain("No stock moved");
+  });
+
+  it("a WRONG SIZE is corrected by registering the real one — the old row is replaced", async () => {
+    ROWS = ledger(row({ store: "marathon-pe", size: "9", sizeKey: "9" }));
+    const tree = paintWall();
+    search(tree, "air force");
+    await click(byLabel(tree, /A different size is on the wall/)[0]);
+    expect(byLabel(tree, /Pick a size/)[0].props.disabled).toBe(true);   // still nothing preselected
+    await click(byLabel(tree, /^10$/)[0]);
+    await click(byLabel(tree, /Register — size 10/)[0]);
+    expect(registerDisplayRow).toHaveBeenCalledTimes(1);
+    // keepOpen falsy → the old row is closed as `replaced` by the same plan.
+    expect(registerDisplayRow.mock.calls[0][0].keepOpen).toBeFalsy();
+    expect(registerDisplayRow.mock.calls[0][0].size).toBe("10");
+  });
+
+  it("a wall with TWO records offers no close here — that is the Duplicate tab's job", () => {
+    ROWS = ledger(row({ store: "marathon-pe", rowId: "a" }),
+                  row({ store: "marathon-pe", rowId: "b", size: "10", sizeKey: "10" }));
+    const tree = paintWall();
+    search(tree, "air force");
+    expect(byLabel(tree, /Not on the wall any more/)).toHaveLength(0);
+    expect(textOf(tree)).toContain("sort that out on Duplicate Displays");
+  });
+});

@@ -3620,8 +3620,12 @@ exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothing
 // Gen-2 RTDB onCreate on /stock_movements/{movementId}, the SAME node
 // onClothingSale watches. A `sold` movement at Marathon PE or Trophy closes the
 // open display row for that product at that store, matched on the row's own
-// CAPTURED SIZE; a transfer_out from the shop back into a hub closes it as
-// "returned". Idempotent (a lease under /settings/displayRows_meta, plus the
+// CAPTURED SIZE. A sale out of a HUB cell (which is how sneakers sell) closes
+// one only when the evidence leaves no alternative — see the module header.
+// A shop→hub transfer is deliberately NOT treated as a display return: a
+// display stays booked at its hub, so it is not in the shop's cell and a
+// transfer out of a shop can never be the display pair.
+// Idempotent (a lease under /settings/displayRows_meta, plus the
 // structural guarantee that only OPEN rows are ever closed), and it needs no
 // change to marathon-pos-app — the till already writes the movement.
 // See functions/displayRows/closeDisplayRowOnSale.js for the whole contract.

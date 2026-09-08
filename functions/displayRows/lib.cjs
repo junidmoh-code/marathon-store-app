@@ -318,15 +318,19 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguity
   for (const [store, rows] of Object.entries(openRowsByStore || {})) {
     for (const r of rows || []) candidates.push({ store, rowId: r.rowId });
   }
-  if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
-  // The caller may count MORE explanations than it offers as closable — a row
-  // with no bookedHub is an equally good reason for the empty cell but must
-  // never be the row that gets closed. When the two numbers disagree, the
-  // attribution is not knowable.
+  // THE BLOCKER CHECK COMES FIRST, and the order is the whole point. The caller
+  // may count MORE explanations than it offers as closable — a row with no
+  // bookedHub is an equally good reason for the empty cell but must never be
+  // the row that gets closed. When the ONLY explanation is a hubless row,
+  // `candidates` is empty AND blockers is not, and returning "no open row at
+  // this hub" first recorded a refusal reason that was simply false — which
+  // defeats the point of recording it. (Adversarial review of the fix round.)
   const total = ambiguityCount == null ? candidates.length : ambiguityCount;
   if (total > candidates.length) {
-    return { ok: false, why: `${total - candidates.length} display record(s) here name no hub, so which one sold is not knowable` };
+    const n = total - candidates.length;
+    return { ok: false, why: `${n} display record${n === 1 ? "" : "s"} here name no hub, so which one sold is not knowable` };
   }
+  if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
   if (candidates.length > 1) {
     // Two rows on ONE wall land here too, so a duplicated wall's sales never
     // close automatically — the residual persists exactly where it is already
@@ -355,6 +359,33 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguity
 }
 
 /**
+ * SPLIT ONE STORE'S OPEN ROWS INTO THE ONES A HUB SALE MAY CLOSE AND THE ONES
+ * THAT MERELY BLOCK IT.
+ *
+ * This lived inline in the trigger, where nothing could test it — the test that
+ * "covered" the rule hand-fed resolveHubSale a number and proved only that the
+ * helper honours one, never that the caller computes it. (Adversarial review of
+ * the fix round.)
+ *
+ *   CLOSABLE  booked at this hub. It said where it is, and it is here.
+ *   BLOCKER   no bookedHub at all. An equally good explanation for the empty
+ *             cell, so it makes the attribution unknowable — but it never
+ *             claimed to be at this hub, so it is never the row closed.
+ *   IGNORED   booked at ANOTHER hub. It explains nothing about THIS hub's cell,
+ *             so it neither closes nor blocks. Stated because "ignored" is a
+ *             third outcome and silence about it reads like an oversight.
+ */
+function splitByHub(openRows, hub) {
+  const closable = [], blockers = [];
+  for (const entry of openRows || []) {
+    const h = entry && entry.row ? entry.row.bookedHub : null;
+    if (h === hub) closable.push(entry);
+    else if (!h) blockers.push(entry);
+  }
+  return { closable, blockers };
+}
+
+/**
  * The lease decision — returns the record to write, or undefined to ABORT the
  * transaction (already done, or somebody else holds a fresh lease).
  * Same shape as displayChecks/lib.cjs processedClaimDecision, deliberately.
@@ -367,5 +398,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, leaseDecision,
 };

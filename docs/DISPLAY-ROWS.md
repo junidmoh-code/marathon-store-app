@@ -82,7 +82,7 @@ follows, fenced, and its failure is **reported**, never swallowed.
 | 2 | Send = ONE atomic write (close old, open new, clear request) | `displayRowCore.sendPlan` → `displayRowStore.sendDisplayRow`, called from `setDisplayRefillStatus` |
 | 3 | Close at sale, server-side, no POS change | `functions/displayRows/closeDisplayRowOnSale.js` + `lib.cjs` — see **Where a sale comes from** below. Plus the app-side close when a Display Partner request is raised (`closeDisplayRowForPartnerSale`), which is the moment this app first learns a display is leaving |
 | 4 | Duplicate Displays tab | `DuplicateDisplaysTab.jsx` |
-| 5 | Unregistered Displays tab (wall walk + scan) | `UnregisteredDisplaysTab.jsx` |
+| 5 | Unregistered Displays tab (wall walk + scan) | `UnregisteredDisplaysTab.jsx`. A search also reaches walls that DO have a record (`registeredDisplays`), which is where a returned display or a wrong-size record is corrected |
 | 6 | Timeline on every row | `displayRowCore.rowTimeline`, `displayRowUi.RowHistory` |
 
 ## Where a sale comes from — the thing that nearly defeated clause 3
@@ -146,6 +146,16 @@ an operator closes one of them as a correction, then the redelivery finds one
 candidate and closes it on a premise that was explicitly rejected. A movement is
 adjudicated once. Cost: one small write per in-scope sale, ~600/day.
 
+**Return-to-hub is a person's action, not an inference.** A first cut closed on
+a shop→hub `transfer_out`. That is wrong by construction: a display stays
+*booked at its hub*, so it is not in the shop's cell at all, and a transfer out
+of a shop therefore moves ordinary shop stock. It would have closed a real
+display every time a shop sent excess back. The person who takes a display down
+closes it on the **Unregistered Displays** tab — search for it, or scan it — with
+reason `returned`. That surface exists because a returned display is *one* open
+row: too few for the Duplicate tab, and excluded from the wall-walk list because
+it already has a record, so before it there was no screen that could reach it.
+
 **A duplicated wall never auto-closes.** Two open rows for one size — on one wall
 or across two — is ambiguous, and ambiguous is a refusal. So the population the
 Duplicate Displays tab exists for is exactly the population whose sales need a
@@ -171,8 +181,8 @@ node --import ./scripts/lib/appModuleLoader.mjs scripts/seed-display-rows.mjs   
 node --import ./scripts/lib/appModuleLoader.mjs scripts/seed-display-rows.mjs --apply
 ```
 
-Dry run on 2026-09-08: **461 rows to open** (marathon-pe 348, trophy 113) from
-479 live slots — 44 tombstones skipped, 18 Pine slots skipped (booked at hub3,
+Dry run on 2026-09-08: **460 rows to open** (marathon-pe 347, trophy 113) from
+478 live slots — 48 tombstones skipped, 18 Pine slots skipped (booked at hub3,
 outside `GATED_SNEAKER_HUBS`). Re-runnable: a wall+product that already has any
 row is skipped.
 

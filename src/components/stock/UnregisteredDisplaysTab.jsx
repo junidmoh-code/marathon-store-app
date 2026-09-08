@@ -39,8 +39,8 @@
 // HUB 1 AND HUB 2 ONLY, per GATED_SNEAKER_HUBS.
 
 import React, { useMemo, useState } from "react";
-import { unregisteredDisplayCandidates, filterCandidates, brandsOf, openRowsFor } from "./displayRowCore";
-import { registerDisplayRow } from "./displayRowStore";
+import { unregisteredDisplayCandidates, filterCandidates, brandsOf, openRowsFor, registeredDisplays } from "./displayRowCore";
+import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
 import { raiseDisplayRequest } from "./displayRequestStore";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { GATED_SNEAKER_HUBS, isFootwearProduct } from "./availabilityCore";
@@ -99,6 +99,13 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
     [ready, cells, rows, store, hub, productsById]
   );
   const brands = useMemo(() => brandsOf(candidates), [candidates]);
+  // The other half of the walk, reachable by SEARCH: displays this wall already
+  // has a record for. Without it a returned display — one open row — appeared
+  // on no screen at all. See registeredDisplays.
+  const registered = useMemo(
+    () => (ready ? registeredDisplays({ rows, store, productsById, q, brand }) : []),
+    [ready, rows, store, productsById, q, brand]
+  );
   const filtered = useMemo(() => filterCandidates(candidates, { q, brand }), [candidates, q, brand]);
   const shown = filtered.slice(0, (page + 1) * PAGE);
 
@@ -139,12 +146,51 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
     setNote({ tone: "ok", text: `Display partner requested for ${product.name} at ${labelFor(store)} — order #${res.orderId}. The warehouse picks the size when it sends it.` });
   };
 
+  // ── THE RECORD SAYS ONE THING AND THE WALL SAYS ANOTHER ───────────────────
+  //
+  // Two actions that exist ONLY here, and the tab would be incomplete without
+  // them (adversarial review of the fix round found both missing):
+  //
+  //   IT IS GONE      A display taken off a wall and sent back to the hub is
+  //                   ONE open row. The Duplicate tab only lists walls with
+  //                   MORE than one, and this tab's list only holds products
+  //                   with NONE — so a returned display appeared on no screen
+  //                   at all and its row stayed open forever, with offShelf
+  //                   still subtracting the unit from the hub's expected
+  //                   on-shelf. The till trigger cannot close it either: a
+  //                   shop→hub transfer can never be the display (a display is
+  //                   booked at the hub, not in the shop's cell). So the person
+  //                   who took it down closes it, with reason `returned`.
+  //
+  //   WRONG SIZE      The record says 9, the wall holds 10 — a send whose
+  //                   operator picked wrong, or a seeded row from a stale slot.
+  //                   Registering the real size closes the wrong row
+  //                   (`replaced`) and opens the right one, which is the only
+  //                   correction path there is; the till trigger will never
+  //                   close a size-9 row on a size-10 sale, and WILL close it
+  //                   on an unrelated size-9 sale.
+  //
+  // Neither moves stock.
+  const closeScanned = async (product, row, reason) => {
+    setBusy(product.id); setNote(null);
+    const res = await closeDisplayRow({ rows, row, reason, via: "wall_walk",
+                                        detail: { reason, store } });
+    setBusy(null); setActing(null);
+    if (!res.ok) { setNote({ tone: "err", text: `Could not close that record: ${res.message}` }); return; }
+    setScanned((v) => (v ? { ...v, rows: v.rows.filter((r) => r.rowId !== row.rowId) } : v));
+    setNote({ tone: res.warning ? "err" : "ok",
+              text: res.warning || `Closed the size ${formatSize(row.size)} record at ${labelFor(store)}. No stock moved.` });
+  };
+
   // ── SCAN TO CHECK ─────────────────────────────────────────────────────────
   // The reader hands back a product it resolved from the label. The answer is
   // read from the LEDGER, not from the catalogue: "is this shoe registered on
   // THIS wall, and at what size".
   const onScanResolved = (product) => {
     setScanOpen(false);
+    // A picker left open from the PREVIOUS scan would render over the new
+    // result and walk straight past its guards. (Adversarial review.)
+    setActing(null);
     if (!product?.id) { setNote({ tone: "err", text: "That label did not resolve to a product on file." }); return; }
     // "Not registered on this wall" read off an unanswered ledger is a lie the
     // operator would act on. Refuse to answer rather than answer wrongly.
@@ -229,7 +275,9 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                   sizes={sizesOf(scanned.product)}
                   busy={busy === scanned.product.id}
                   title="Which size is on the wall?"
-                  note="Nothing is chosen for you — pick the size you are looking at."
+                  note={scanned.rows.length
+                    ? `The record says size ${formatSize(scanned.rows[0].size)}. Pick what is actually there — the old record is closed and the new one opened. No stock moves.`
+                    : "Nothing is chosen for you — pick the size you are looking at."}
                   confirmLabel="Register"
                   onPick={(sz) => onWall(scanned.product, sz)}
                   onCancel={() => setActing(null)}
@@ -254,9 +302,22 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                         {busy === scanned.product.id ? "Requesting…" : "Not on the wall — request a display"}
                       </button>
                     </>
+                  ) : scanned.rows.length === 1 ? (
+                    <>
+                      {/* The record already names a size. These two say what a
+                          person standing at the wall can actually see: it is a
+                          different size, or it is not there at all. */}
+                      <button type="button" onClick={() => setActing(`scan:${scanned.product.id}`)} disabled={!!busy} style={bGray}>
+                        A different size is on the wall
+                      </button>
+                      <button type="button" onClick={() => closeScanned(scanned.product, scanned.rows[0], "returned")}
+                        disabled={!!busy} style={bGray}>
+                        {busy === scanned.product.id ? "Closing…" : "Not on the wall any more — close the record"}
+                      </button>
+                    </>
                   ) : (
-                    <span style={{ fontSize: 12, color: GRAY, alignSelf: "center" }}>
-                      Already on this wall's record. If the wall disagrees, fix it on Duplicate Displays.
+                    <span style={{ fontSize: 12, color: AMBER, alignSelf: "center" }}>
+                      {scanned.rows.length} records claim this wall — sort that out on Duplicate Displays.
                     </span>
                   )}
                   <button type="button" onClick={() => setScanned(null)} disabled={!!busy} style={bGray}>Done</button>
@@ -303,7 +364,62 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
         <div style={{ ...card, color: GRAY, fontSize: 13 }}>Loading the display records…</div>
       )}
 
-      {ready && filtered.length === 0 && (
+      {registered.length > 0 && (
+        <div style={{ ...card, borderColor: "rgba(74,222,128,.3)" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: GREEN, marginBottom: 8 }}>
+            Already on {labelFor(store)}'s record — {registered.length} match{registered.length === 1 ? "" : "es"}
+          </div>
+          <div style={{ fontSize: 12, color: "rgba(233,238,255,.6)", lineHeight: 1.5, marginBottom: 10 }}>
+            These are not part of the walk list, because the record already has them. They are here so a display that
+            came OFF a wall can be closed — nothing else shows a wall with exactly one record on it.
+            <b style={{ color: "#fff" }}> Closing moves no stock.</b>
+          </div>
+          {registered.map((g) => (
+            <div key={g.productId} style={{ border: BORDER, borderRadius: 12, padding: 11, marginBottom: 8, background: "rgba(255,255,255,.02)" }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <Photo url={g.product?.photoUrl || g.product?.photo} size={40} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff" }}>{g.productName}</div>
+                  {g.rows.map((r) => <RowLine key={r.rowId} row={r} />)}
+                  <HistoryToggle row={g.rows[0]} />
+                </div>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                {acting === `reg:${g.productId}` ? (
+                  <SizePicker
+                    sizes={sizesOf(g.product)}
+                    busy={busy === g.productId}
+                    title="Which size is actually on the wall?"
+                    note={`The record says size ${g.rows.map((r) => formatSize(r.size)).join(", ")}. Pick what is there — the old record closes and the new one opens. No stock moves.`}
+                    confirmLabel="Register"
+                    onPick={(sz) => onWall(g.product || { id: g.productId, name: g.productName }, sz)}
+                    onCancel={() => setActing(null)}
+                  />
+                ) : (
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => { setActing(`reg:${g.productId}`); setNote(null); }} disabled={!!busy} style={bGray}>
+                      A different size is on the wall
+                    </button>
+                    {g.rows.length === 1 && (
+                      <button type="button" disabled={!!busy} style={bGray}
+                        onClick={() => closeScanned(g.product || { id: g.productId, name: g.productName }, g.rows[0], "returned")}>
+                        {busy === g.productId ? "Closing…" : "Not on the wall any more — close the record"}
+                      </button>
+                    )}
+                    {g.rows.length > 1 && (
+                      <span style={{ fontSize: 12, color: AMBER, alignSelf: "center" }}>
+                        {g.rows.length} records — sort that out on Duplicate Displays.
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {ready && filtered.length === 0 && registered.length === 0 && (
         <div style={{ ...card, fontSize: 13, color: "rgba(233,238,255,.75)", lineHeight: 1.6 }}>
           <b style={{ color: GREEN }}>Nothing to check here.</b>
           <br /><br />

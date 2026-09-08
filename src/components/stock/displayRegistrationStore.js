@@ -128,12 +128,19 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
       return { ...cur, qty: q, bumps: highWater(cur, q), retiredAt: null, at: nowIso, by: auth.currentUser?.uid || null };
     });
     if (already) {
-      // Refresh the slot's timestamp only. `at: nowIso` is load-bearing:
-      // nowIso is stamped BEFORE the transaction, and without passing it this
-      // write used CALL time — minutes later on bad wifi — so the staleness
-      // fence would judge a newer slot transition as older and overwrite its
-      // size and bookedHub. Every other writer in this module already passes
-      // the transition's own instant; this branch did not. (CodeRabbit.)
+      // Re-assert the slot for a display already wholly recorded. `at: nowIso`
+      // is load-bearing, and the direction matters — an earlier draft of this
+      // comment had it backwards (adversarial review):
+      //
+      //   supersededBy aborts when the STORED record is NEWER than `at`. So a
+      //   LATER `at` (call time, minutes out on bad wifi) makes this write WIN
+      //   and clobber a transition that landed in between; nowIso — stamped
+      //   before the transaction, i.e. earlier — makes it correctly LOSE.
+      //
+      // And this is a full record replacement, not a timestamp touch:
+      // setDisplaySlot writes the whole slot object. That is right here (the
+      // caller is re-registering this very display, so `source: "registration"`
+      // is the truth) but it is why the instant has to be honest.
       const res = await setDisplaySlot({
         store, productId: product.id, productName: product.name || "",
         size: String(size), bookedHub: hub, source: "registration", at: nowIso,

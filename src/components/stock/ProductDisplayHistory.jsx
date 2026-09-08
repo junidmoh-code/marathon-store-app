@@ -57,8 +57,12 @@ export default function ProductDisplayHistory({ productId, registry }) {
       // yesterday sorted below a brief one that closed in June. A closed row's
       // own time is closedAt. (CodeRabbit.)
       .sort((a, b) => (rowIsOpen(b) ? 1 : 0) - (rowIsOpen(a) ? 1 : 0)
-        || String(rowIsOpen(b) ? b.openedAt : b.closedAt || b.openedAt || "")
-             .localeCompare(String(rowIsOpen(a) ? a.openedAt : a.closedAt || a.openedAt || "")));
+        // The `|| ""` wraps the WHOLE ternary. Left on the false branch only, an
+        // open row with no openedAt stringified to "undefined", which sorts
+        // above every ISO date and jumped it to the top instead of the bottom.
+        // (Adversarial review of the fix round.)
+        || String((rowIsOpen(b) ? b.openedAt : b.closedAt || b.openedAt) || "")
+             .localeCompare(String((rowIsOpen(a) ? a.openedAt : a.closedAt || a.openedAt) || "")));
   }, [rows, productId]);
 
   if (!productId) return null;
