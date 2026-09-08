@@ -1095,7 +1095,14 @@ for (const { pid, want } of capped) {
 
     // An id the baseline does not carry is one Shopify could not resolve;
     // sending it would make inventorySetQuantities reject the whole mutation
-    // and leave every other size on this product uncorrected.
+    // and leave every other size on this product uncorrected. Dropped is not
+    // done, so the ones left out are named in the log rather than vanishing.
+    const unresolvedInv = Object.entries(finalMap.variants)
+      .filter(([, v]) => !invBaseline.has(v.shopifyInventoryItemId))
+      .map(([sizeKey]) => sizeKey);
+    if (unresolvedInv.length) {
+      console.error(`  ⚠ ${pid}: ${unresolvedInv.length} size(s) NOT priced — Shopify does not know their inventory items (${unresolvedInv.join(", ")}); id map stale`);
+    }
     try {
       await setAvailable(
         graphql,

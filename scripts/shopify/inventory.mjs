@@ -245,7 +245,7 @@ export async function setAvailable(graphql, locationId, items, baseline) {
     `mutation ($input: InventorySetQuantitiesInput!, $key: String!) {
       inventorySetQuantities(input: $input) @idempotent(key: $key) {
         inventoryAdjustmentGroup { reason }
-        userErrors { field message }
+        userErrors { field message code }
       }
     }`,
     {
@@ -268,7 +268,19 @@ export async function setAvailable(graphql, locationId, items, baseline) {
     // A compare-and-set rejection is not a bug in this program — it is the
     // guard doing its job, and it means a sale landed mid-push. Named, so the
     // caller reports "stock moved" instead of "Shopify errored".
-    if (errs.some((e) => /changeFromQuantity|compare|stale|does not match/i.test(String(e?.message)))) {
+    //
+    // CLASSIFIED BY `code`, NOT BY WORDING. InventorySetQuantitiesUserError
+    // carries CHANGE_FROM_QUANTITY_STALE for exactly this case. Matching the
+    // message text instead would misread an unrelated validation error as a
+    // sale — turning a real refusal into "harmless, retry" — and would break
+    // silently the day Shopify rephrases it. The regex survives only as the
+    // fallback for an error that arrives without a code. (CodeRabbit, #589.)
+    const moved = errs.some((e) => (
+      e?.code
+        ? e.code === "CHANGE_FROM_QUANTITY_STALE"
+        : /changeFromQuantity|compare|stale|does not match/i.test(String(e?.message))
+    ));
+    if (moved) {
       throw new InventoryMovedError(
         `Shopify's quantity moved between the baseline read and the write — a sale ` +
           `landed mid-push. Nothing was written; the next run recomputes. ` +

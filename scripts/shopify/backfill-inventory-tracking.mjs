@@ -280,15 +280,19 @@ for (const pid of pids) {
     }
 
     if (untracked.length) await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));
-    await setAvailable(
-      graphql, locId,
-      items.filter((i) => invBaseline.has(i.inventoryItemId)),
-      invBaseline,
-    );
+    // Ids the baseline could not resolve are dropped so one unknown variant
+    // cannot make Shopify reject the whole mutation — but DROPPED IS NOT
+    // DONE. Reported by name, because "quantities-refreshed" on a product
+    // whose sizes were silently skipped is the report lying about its own
+    // work. (CodeRabbit, #589.)
+    const writable = items.filter((i) => invBaseline.has(i.inventoryItemId));
+    const unresolved = items.filter((i) => !invBaseline.has(i.inventoryItemId));
+    await setAvailable(graphql, locId, writable, invBaseline);
     results.push({
       pid, status: untracked.length ? "tracked" : "quantities-refreshed",
       detail: `${bp.title} · ${untracked.length} variant(s) tracked · quantities ${JSON.stringify(totals)}` +
-        (retiredKeys.length ? ` · ${retiredKeys.length} retired size(s) zeroed (${retiredKeys.join(", ")})` : ""),
+        (retiredKeys.length ? ` · ${retiredKeys.length} retired size(s) zeroed (${retiredKeys.join(", ")})` : "") +
+        (unresolved.length ? ` · ⚠ ${unresolved.length} variant(s) NOT written — Shopify does not know their inventory items (id map stale)` : ""),
     });
   } catch (e) {
     results.push({ pid, status: "failed", detail: String(e?.message || e) });

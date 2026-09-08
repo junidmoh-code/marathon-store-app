@@ -642,8 +642,8 @@ describe("locationNames — only the shelves that feed the storefront", () => {
 // refuses a write whose changeFromQuantity does not match it. A fake that
 // accepted every write could not tell the two orderings apart, which is exactly
 // how the original bug survived its tests.
-function shopifyWithCas(initial) {
-  const state = { available: initial, writes: [], reads: 0, sequence: [] };
+function shopifyWithCas(initial, seq = []) {
+  const state = { available: initial, writes: [], reads: 0, sequence: seq };
   const graphql = vi.fn(async (query, vars) => {
     if (query.includes("locations(first: 2)")) {
       return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
@@ -653,8 +653,12 @@ function shopifyWithCas(initial) {
       state.writes.push(q);
       state.sequence.push("shopify:write");
       if (q.changeFromQuantity !== state.available) {
+        // Shaped like the real InventorySetQuantitiesUserError, `code` and
+        // all — the production path classifies on the code now, so a fake
+        // without one would exercise only the fallback.
         return { inventorySetQuantities: { userErrors: [
-          { field: ["quantities"], message: "changeFromQuantity does not match the current quantity" },
+          { field: ["quantities"], code: "CHANGE_FROM_QUANTITY_STALE",
+            message: "changeFromQuantity does not match the current quantity" },
         ] } };
       }
       state.available = q.quantity;
@@ -722,19 +726,23 @@ describe("syncProduct — Shopify is read BEFORE /stock", () => {
   const store = () => withProduct("p1", { appQty: 9, marker: 1 });
 
   it("reads Shopify first — the ordering IS the guarantee", async () => {
+    // ONE sequence, shared by both fakes. The first version of this test gave
+    // each fake its own array and then compared nothing across them, so the
+    // assertion it advertised — that Shopify is read before /stock — was not
+    // actually made: it passed for either ordering. A test whose whole subject
+    // is ordering has to observe both systems on one timeline. (CodeRabbit, #589.)
     const seq = [];
-    const { graphql, state } = shopifyWithCas(7);
+    const { graphql, state } = shopifyWithCas(7, seq);
     const db = dbWatchingStock(store(), seq);
     await syncProduct(db, graphql, "p1", { commit: true });
-    const order = state.sequence.concat(seq).length && [...seq];
-    // The first Shopify read must precede the first /stock read.
-    const firstStock = seq.indexOf("stock:read");
-    expect(firstStock).toBeGreaterThanOrEqual(0);
-    expect(state.reads).toBeGreaterThan(0);
-    // And the write carried the pre-snapshot baseline.
+
+    expect(seq).toContain("shopify:read");
+    expect(seq).toContain("stock:read");
+    expect(seq.indexOf("shopify:read")).toBeLessThan(seq.indexOf("stock:read"));
+    // …and the write comes last, carrying the pre-snapshot baseline.
+    expect(seq.at(-1)).toBe("shopify:write");
     expect(state.writes[0].changeFromQuantity).toBe(7);
     expect(state.writes[0].quantity).toBe(9);
-    expect(order.length).toBeGreaterThan(0);
   });
 
   it("a sale landing while /stock is read FAILS the write instead of overwriting it", async () => {
@@ -745,10 +753,11 @@ describe("syncProduct — Shopify is read BEFORE /stock", () => {
     // OLD ORDERING: /stock read first, Shopify read after the sale → baseline 6
     // → compare-and-set passes → 9 written → the sold unit is back on sale.
     // THIS ORDERING: baseline 7, taken before the sale → the write is refused.
-    const { graphql, state } = shopifyWithCas(7);
     const seq = [];
+    const { graphql, state } = shopifyWithCas(7, seq);
     const db = dbWatchingStock(store(), seq, () => { state.available = 6; });
     await expect(syncProduct(db, graphql, "p1", { commit: true })).rejects.toThrow(InventoryMovedError);
+    expect(seq.indexOf("shopify:read")).toBeLessThan(seq.indexOf("stock:read"));
     expect(state.available).toBe(6);            // the sale stands
     expect(state.writes[0].changeFromQuantity).toBe(7);
   });
