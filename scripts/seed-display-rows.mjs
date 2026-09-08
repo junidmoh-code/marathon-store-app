@@ -90,8 +90,10 @@ for (const [store, byPid] of Object.entries(slots)) {
     // orderId); the day it emits two, position would silently take a
     // close-field fragment and write it as a row.
     const rowId = `seed${String(at).replace(/[^0-9]/g, "")}`;
+    // `plan.ok` is already false whenever rowPath refuses, so this cannot be
+    // null here — it is read rather than re-checked, so the write below uses
+    // the plan's OWN path and never a second derivation of it.
     const path = rowPath(store, productId, rowId);
-    if (!path) { console.warn(`skip ${store}/${productId}: an id cannot be an RTDB key`); continue; }
     const row = plan.updates[path];
     if (!row) { console.warn(`skip ${store}/${productId}: the plan did not produce the expected row path`); continue; }
     planned.push({ store, productId, rowId, path, row });

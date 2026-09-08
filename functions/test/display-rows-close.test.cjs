@@ -309,9 +309,46 @@ test("splitByHub: this hub closes, no hub blocks, another hub is ignored", () =>
   assert.deepEqual(blockers.map((r) => r.rowId), ["none", "blank"]);
 });
 
+// HUB IS TESTED BEFORE AGE. Testing age first made a row on ANOTHER hub's books
+// block a sale whenever it happened to postdate it — and the recorded reason
+// then blamed a row that explains nothing about this hub's cell.
+test("a row at another hub never blocks, however new it is", () => {
+  const SALE = "2026-09-08T10:00:00.000Z";
+  const out = splitByHub([
+    { rowId: "mine",  row: { bookedHub: "hub1", openedAt: "2026-09-01T00:00:00.000Z" } },
+    { rowId: "other", row: { bookedHub: "hub2", openedAt: "2026-09-08T10:00:05.000Z" } },
+  ], "hub1", SALE);
+  assert.deepEqual(out.closable.map((r) => r.rowId), ["mine"]);
+  assert.deepEqual(out.blockers, []);
+  assert.equal(resolveHubSale({
+    openRowsByStore: { trophy: out.closable }, cellQty: 0,
+    movementTs: SALE, nowMs: Date.parse(SALE) + 1000,
+  }).ok, true);
+});
+
+// "UNKNOWN AGE" IS ITS OWN ANSWER. A row whose openedAt was lost predates every
+// sale in reality — it just cannot prove it. It blocks, and it is NOT reported
+// as "registered after this sale", which would be a false statement written
+// permanently into the lease.
+test("a row with no openedAt blocks, and is described truthfully", () => {
+  const SALE = "2026-09-08T10:00:00.000Z";
+  const out = splitByHub([{ rowId: "lost", row: { bookedHub: "hub1" } }], "hub1", SALE);
+  assert.deepEqual(out.unknownAge.map((r) => r.rowId), ["lost"]);
+  assert.deepEqual(out.postSale, []);
+  const r = resolveHubSale({
+    openRowsByStore: {}, cellQty: 0, movementTs: SALE,
+    nowMs: Date.parse(SALE) + 1000, unknownAgeCount: 1,
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /does not say when it was registered/);
+  assert.doesNotMatch(r.why, /registered after this sale/);
+  assert.doesNotMatch(r.why, /no hub/);
+});
+
 test("splitByHub survives an empty or malformed list", () => {
   assert.deepEqual(splitByHub(null, "hub1"),
-    { closable: [], hubless: [], postSale: [], blockers: [] });
+    { closable: [], hubless: [], postSale: [], unknownAge: [], blockers: [] });
+  // No openedAt and no movementTs constraint → "before" → hubless, not unknown.
   assert.equal(splitByHub([null, {}], "hub1").hubless.length, 2);
 });
 

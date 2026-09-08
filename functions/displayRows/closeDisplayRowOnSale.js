@@ -157,7 +157,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
         return;
       }
       const perStore = {};
-      let candidates = 0, hublessCount = 0, postSaleCount = 0;
+      let candidates = 0, hublessCount = 0, postSaleCount = 0, unknownAgeCount = 0;
       for (const s of DISPLAY_STORES) {
         // eslint-disable-next-line no-await-in-loop
         const rows = (await db.ref(`${ROWS}/${s}/${productId}`).get()).val();
@@ -174,24 +174,26 @@ exports.closeDisplayRowOnSale = onValueCreated(
         // present at all makes the attribution unknowable, which is the honest
         // answer — and the safe one, because refusing costs a missed close and
         // closing the wrong row costs a real display.
-        const { closable, hubless, postSale } = splitByHub(
+        const { closable, hubless, postSale, unknownAge } = splitByHub(
           decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER), hit.hub, m.ts);
         if (closable.length) perStore[s] = closable;
         candidates += closable.length;
         hublessCount += hubless.length;
         postSaleCount += postSale.length;
+        unknownAgeCount += unknownAge.length;
       }
-      if (!candidates && !hublessCount && !postSaleCount) {
+      if (!candidates && !hublessCount && !postSaleCount && !unknownAgeCount) {
         await done([], "no display record for this size at this hub"); return;
       }
       const cellQty = (await db.ref(`stock/${hit.hub}/${productId}/${sizeKey}/qty`).get()).val();
-      // `candidates` is the AMBIGUITY count (closable + hubless blockers);
-      // `perStore` is the CLOSABLE set. When they disagree, something on a wall
-      // is an unattributable explanation for the empty cell and the sale is
-      // refused rather than pinned on the row that happens to name a hub.
+      // `candidates` counts only the CLOSABLE rows; the three blocker kinds are
+      // counted separately so the refusal can name the one it actually hit.
+      // Any blocker at all means something on a wall is an unattributable
+      // explanation for the empty cell, and the sale is refused rather than
+      // pinned on the row that happens to name a hub.
       const verdict = resolveHubSale({
         openRowsByStore: perStore, cellQty, movementTs: m.ts, nowMs,
-        hublessCount, postSaleCount,
+        hublessCount, postSaleCount, unknownAgeCount,
       });
       if (!verdict.ok) {
         // A refusal is the CORRECT outcome, not a failure — but it is recorded

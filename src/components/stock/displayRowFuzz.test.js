@@ -157,13 +157,25 @@ describe("no path opens a second open row for one product at one store", () => {
           // THE TILL — a sale, decided by the SERVER's own copy of the rule.
           const byRow = ((rows[store] || {})[productId]) || {};
           const sizeKey = stockSizeKey(size);
-          // `at` IS PASSED, because the trigger always passes the movement's
-          // instant now. Without it the walk exercised a code path production
-          // no longer takes and the fourth parameter had zero fuzz coverage —
-          // so a regression in rowPredatesSale would be invisible to the one
-          // test whose job is holding the two copies together.
-          // (Adversarial review of the fix round.)
-          const closes = srv.decideCloses(byRow, sizeKey, 1, at);
+          // ── THE SALE INSTANT IS IN THE PAST, AND THAT IS THE POINT ─────────
+          // Passing `at` was not enough: the walk's clock only moves forward,
+          // so every row already predated it and the exclusion branch was never
+          // taken. Mutation-checked and confirmed vacuous — patching
+          // rowPredatesSale to `return true` left every test green, which is
+          // the precise shape of a test that looks like coverage and is not.
+          // (Adversarial review.)
+          //
+          // A real sale is delivered LATE, so the instant it carries is older
+          // than "now". Rewinding it makes rows opened in between genuinely
+          // post-sale, which is the case the filter exists for.
+          const saleAt = new Date(clock - Math.floor(rand() * 20000)).toISOString();
+          const closes = srv.decideCloses(byRow, sizeKey, 1, saleAt);
+          // THE PROPERTY, asserted rather than assumed: nothing the sale closes
+          // may have been registered after it.
+          for (const { row: r } of closes) {
+            expect(String(r.openedAt) <= saleAt,
+              `seed ${seed} step ${step}: closed a row opened at ${r.openedAt}, after a sale at ${saleAt}`).toBe(true);
+          }
           let updates = {};
           for (const { rowId: rid } of closes) {
             Object.assign(updates, srv.closeUpdates(rowPath(store, productId, rid), {

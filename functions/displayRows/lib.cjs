@@ -314,7 +314,7 @@ function hubSaleTooOld(movementTs, nowMs) {
 }
 
 function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs,
-                          ambiguityCount = null, hublessCount = 0, postSaleCount = 0 }) {
+                          hublessCount = 0, postSaleCount = 0, unknownAgeCount = 0 }) {
   const tooOld = hubSaleTooOld(movementTs, nowMs);
   if (tooOld) return { ok: false, why: tooOld };
 
@@ -329,19 +329,19 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs,
   // `candidates` is empty AND blockers is not, and returning "no open row at
   // this hub" first recorded a refusal reason that was simply false — which
   // defeats the point of recording it. (Adversarial review of the fix round.)
-  // The caller reports its two blocker kinds separately so the refusal can say
-  // which one it hit. `ambiguityCount` remains supported for callers that only
-  // have a total.
+  // The caller reports each blocker kind separately so the refusal names the one
+  // it actually hit. There is no longer a single opaque "ambiguityCount": it
+  // was dead in production and, if a caller had passed it alongside these, the
+  // sentence could have enumerated a different number than the total it used.
   const hublessN = Number(hublessCount) || 0;
   const postSaleN = Number(postSaleCount) || 0;
-  const total = ambiguityCount == null ? candidates.length + hublessN + postSaleN : ambiguityCount;
-  if (total > candidates.length) {
+  const unknownN = Number(unknownAgeCount) || 0;
+  if (hublessN || postSaleN || unknownN) {
     const why = [];
     if (postSaleN) why.push(`${postSaleN} display record${postSaleN === 1 ? " was" : "s were"} registered after this sale`);
+    if (unknownN) why.push(`${unknownN} display record${unknownN === 1 ? " does" : "s do"} not say when it was registered`);
     if (hublessN) why.push(`${hublessN} display record${hublessN === 1 ? " names" : "s name"} no hub`);
-    const n = total - candidates.length;
-    if (!why.length) why.push(`${n} display record${n === 1 ? " is" : "s are"} an equally good explanation`);
-    return { ok: false, why: `${why.join(" and ")}, so which one sold is not knowable` };
+    return { ok: false, why: `${why.join(", ")}, so which one sold is not knowable` };
   }
   if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
   if (candidates.length > 1) {
@@ -387,48 +387,70 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs,
  * helper honours one, never that the caller computes it. (Adversarial review of
  * the fix round.)
  *
- *   CLOSABLE  booked at this hub. It said where it is, and it is here.
- *   BLOCKER   no bookedHub at all. An equally good explanation for the empty
- *             cell, so it makes the attribution unknowable — but it never
- *             claimed to be at this hub, so it is never the row closed.
- *   IGNORED   booked at ANOTHER hub. It explains nothing about THIS hub's cell,
- *             so it neither closes nor blocks. Stated because "ignored" is a
- *             third outcome and silence about it reads like an oversight.
+ *   CLOSABLE   booked at this hub, and already open when the sale happened.
+ *   HUBLESS    no bookedHub at all. An equally good explanation for the empty
+ *              cell, so it makes the attribution unknowable — but it never
+ *              claimed to be at this hub, so it is never the row closed.
+ *   POST-SALE  opened AFTER the sale. It cannot be the pair that sold, and its
+ *              presence still muddies the question.
+ *   UNKNOWN    no readable openedAt. It might predate the sale or not; it
+ *              blocks for the same reason, but it is NOT "registered after the
+ *              sale" and must not be reported as though it were.
+ *   IGNORED    booked at ANOTHER hub. It explains nothing about THIS hub's
+ *              cell, so it neither closes nor blocks.
+ *
+ * HUB IS TESTED BEFORE AGE, and the order is load-bearing. Testing age first
+ * put a row booked at hub2 into the blocker set whenever it happened to
+ * postdate a hub1 sale — so a hub1 sale with an empty hub1 cell and exactly one
+ * hub1 row was refused because of a row on another hub's books, and told to
+ * blame it. This docstring already said other-hub rows neither close nor block;
+ * the code did not agree with it. (Adversarial review.)
  */
 function splitByHub(openRows, hub, movementTs = null) {
-  const closable = [], hubless = [], postSale = [];
+  const closable = [], hubless = [], postSale = [], unknownAge = [];
   for (const entry of openRows || []) {
     const row = (entry && entry.row) || {};
-    // AGE FIRST. A row registered AFTER the sale cannot be the pair the sale
-    // took — the display it describes went up later. Trigger delivery is
-    // at-least-once and can lag, and the two-minute freshness bound is about
-    // the STOCK CELL, not about the ledger: a wall walk inside that window
-    // registers a row this sale would then have closed. A row whose age cannot
-    // be read is treated the same way, because "unknown" is not "before".
-    // It still BLOCKS: it is an open record at this size and this wall, so its
-    // presence makes the attribution unknowable even though it cannot be the
-    // answer. (CodeRabbit.)
-    if (!rowPredatesSale(row, movementTs)) { postSale.push(entry); continue; }
     const h = row.bookedHub;
+    if (h && h !== hub) continue;                        // another hub's books — irrelevant here
+    const age = rowAgeVsSale(row, movementTs);
+    if (age === "after") { postSale.push(entry); continue; }
+    if (age === "unknown") { unknownAge.push(entry); continue; }
     if (h === hub) closable.push(entry);
-    else if (!h) hubless.push(entry);
+    else hubless.push(entry);
   }
-  // TWO KINDS OF BLOCKER, REPORTED APART. Collapsing them made a post-sale row
-  // — which names the right hub — refuse with "names no hub", and a refusal
-  // reason that is false is exactly the fault the previous round said it was
-  // fixing. `blockers` stays as the total, for callers that only need a count.
-  return { closable, hubless, postSale, blockers: [...hubless, ...postSale] };
+  // THREE KINDS OF BLOCKER, REPORTED APART. Collapsing them is how a refusal
+  // ends up stating something false — first a post-sale row reported as "names
+  // no hub", then an unknown-age row reported as "registered after this sale".
+  // `blockers` stays as the total, for callers that only need a count.
+  return { closable, hubless, postSale, unknownAge,
+           blockers: [...hubless, ...postSale, ...unknownAge] };
 }
 
-/** Was this row already open when the sale happened? `null` movementTs means
- *  the caller is not applying an ordering constraint (the pure unit tests). */
-function rowPredatesSale(row, movementTs) {
-  if (movementTs == null) return true;
+/**
+ * Where this row sits relative to the sale: "before" | "after" | "unknown".
+ *
+ * "unknown" is its own answer, not a synonym for "after". A row whose openedAt
+ * was lost (a hand-fixed record, a partial write, an older shape) predates
+ * every sale in reality — it just cannot prove it. It must still block, because
+ * it might be the pair that sold; it must NOT be described as "registered after
+ * this sale", because that is a claim about it that is false and it goes into
+ * the lease as the permanent answer to "why did this not close?".
+ * (Adversarial review.)
+ *
+ * `null` movementTs means the caller is applying no ordering constraint.
+ */
+function rowAgeVsSale(row, movementTs) {
+  if (movementTs == null) return "before";
   const sale = typeof movementTs === "string" ? Date.parse(movementTs) : NaN;
-  if (!Number.isFinite(sale)) return false;          // cannot order it → cannot use it
-  const opened = typeof row.openedAt === "string" ? Date.parse(row.openedAt) : NaN;
-  if (!Number.isFinite(opened)) return false;        // same
-  return opened <= sale;
+  if (!Number.isFinite(sale)) return "unknown";
+  const opened = typeof (row && row.openedAt) === "string" ? Date.parse(row.openedAt) : NaN;
+  if (!Number.isFinite(opened)) return "unknown";
+  return opened <= sale ? "before" : "after";
+}
+
+/** The boolean the row selectors want: may this row be closed by that sale? */
+function rowPredatesSale(row, movementTs) {
+  return rowAgeVsSale(row, movementTs) === "before";
 }
 
 /**
@@ -444,5 +466,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, leaseDecision,
 };

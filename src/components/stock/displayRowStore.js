@@ -314,8 +314,19 @@ export async function closeDisplayRowForPartnerSale({ store, productId, size = n
       }
     }
     if (wantKey) {
+      // A SIZE THAT MATCHES NOTHING IS A REFUSAL, not a fallback to the whole
+      // list. `if (exact.length) open = exact;` kept the FULL list on a miss, so
+      // an order for size 9 closed the wall's only open row even when that row
+      // says size 10 — the record and the shop are contradicting each other,
+      // which is exactly the case a human has to look at. The docstring above
+      // already promised this; the code did not do it.
+      // (Adversarial review.)
       const exact = open.filter((r) => r.sizeKey === wantKey);
-      if (exact.length) open = exact;
+      if (!exact.length) {
+        return { ok: true, closed: null,
+          message: `the wall's display record is a different size to the one that sold — left for the Duplicate Displays tab` };
+      }
+      open = exact;
     }
     if (open.length !== 1) {
       return { ok: true, closed: null,
