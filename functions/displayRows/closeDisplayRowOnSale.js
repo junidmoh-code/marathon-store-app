@@ -314,8 +314,17 @@ exports.closeDisplayRowOnSale = onValueCreated(
     // `Object.values(...)` in RTDB key order, and `seed…` ids sort after `r…` —
     // two writers would have picked different survivors. (Spec-conformance
     // review.)
+    //
+    // THE rowId TIEBREAK IS PART OF "THE SAME WAY", and leaving it out made the
+    // sentence above false. openRowsFor breaks an equal `openedAt` on rowId;
+    // this did not, so two rows opened in the same millisecond — a seed run, or
+    // two sends inside one clock tick — could order differently here than on
+    // the client, and the two writers would mirror DIFFERENT survivors into the
+    // same slot. Exactly the divergence the comment claims to prevent.
+    // (Peer review, marathon-store-app-display-f8.)
     const stillOpen = Object.values(after).filter(rowIsOpen)
-      .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || "")));
+      .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || ""))
+        || String(a.rowId || "").localeCompare(String(b.rowId || "")));
     const slotRef = db.ref(`${ROWS.replace("displayRows", "displaySlots")}/${store}/${productId}`);
     if (stillOpen.length === 0) {
       // Tombstone, never delete — the same contract clearDisplaySlot keeps on
@@ -336,7 +345,19 @@ exports.closeDisplayRowOnSale = onValueCreated(
         if (cur && typeof cur.at === "string" && cur.at > at) return undefined;
         return {
           ...(cur || {}), productId, productName: keep.productName || (cur && cur.productName) || "",
-          size: keep.size, sizeKey: keep.sizeKey, bookedHub: keep.bookedHub || null,
+          // `?? keep.sizeKey`, and it is not defensive padding. `rowIsOpen`
+          // requires a good sizeKey and says NOTHING about `size`, so a row
+          // written by a hand-fix, an older shape or a partial write can be
+          // open, be the survivor, and carry no `size` at all. The Admin SDK
+          // REJECTS undefined inside a transaction value, so this threw — and
+          // the throw landed AFTER the rows were closed, with the lease still
+          // `done: false` on a fresh `at`. A redelivery inside LEASE_MS then
+          // aborts on the fresh lease and the slot mirror is never written at
+          // all: rows closed, slot still claiming a pair that has gone, and no
+          // retry that can fix it. sizeKey is always present on an open row by
+          // definition, so it is the correct stand-in.
+          // (Peer review, marathon-store-app-display-f8.)
+          size: keep.size ?? keep.sizeKey, sizeKey: keep.sizeKey, bookedHub: keep.bookedHub || null,
           // THE SURVIVOR'S OWN PROVENANCE, not a blanket "registration". The
           // client mirror was fixed to keep this and the trigger was not, so a
           // till sale quietly rewrote which order put the surviving pair on the

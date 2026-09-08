@@ -33,8 +33,22 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 
 // ── the in-memory tree ──────────────────────────────────────────────────────
+// A value the Admin SDK would REFUSE. `undefined` anywhere inside a write is a
+// throw from the real SDK, and this fake used to accept it silently — which is
+// how `size: keep.size` shipped: `rowIsOpen` never requires a `size`, so an
+// open survivor without one produced `size: undefined`, the real SDK would have
+// thrown mid-mirror, and every test here passed. A fake that accepts what the
+// real thing rejects is not a test, it is a second implementation with laxer
+// rules. (Peer review, marathon-store-app-display-f8.)
+function assertWritable(v, where) {
+  if (v === undefined) throw new Error(`firebase.database: undefined value at ${where}`);
+  if (v === null || typeof v !== "object") return;
+  for (const [k, x] of Object.entries(v)) assertWritable(x, `${where}/${k}`);
+}
+
 function makeDb() {
   let root = {};
+  let reads = 0;
   const at = (p) => {
     const parts = String(p).split("/").filter(Boolean);
     let n = root;
@@ -54,22 +68,27 @@ function makeDb() {
   // that thought it was exercising the retry was exercising the ordinary path.
   const hooks = new Map();
   const ref = (p = "") => ({
-    async get() { const v = at(p); return { val: () => (v === undefined ? null : v) }; },
+    async get() { reads++; const v = at(p); return { val: () => (v === undefined ? null : v) }; },
     async transaction(fn) {
       const h = hooks.get(p);
       if (h) { hooks.delete(p); h(); }
       const cur = at(p);
       const next = fn(cur === undefined ? null : cur);
       if (next === undefined) return { committed: false, snapshot: { val: () => (cur === undefined ? null : cur) } };
+      assertWritable(next, p);
       put(p, next);
       return { committed: true, snapshot: { val: () => next } };
     },
     async update(obj) {
+      // `null` is a legitimate DELETE in a multi-path update; `undefined` is
+      // not, and the real SDK throws on it.
+      for (const [k, v] of Object.entries(obj)) assertWritable(v === null ? null : v, k);
       if (!p) { for (const [k, v] of Object.entries(obj)) put(k, v); return; }
       for (const [k, v] of Object.entries(obj)) put(`${p}/${k}`, v);
     },
   });
   return { ref, _root: () => root, _set: (p, v) => put(p, v), _get: at,
+           _reads: () => reads, _resetReads: () => { reads = 0; },
            _raceOn: (p, fn) => hooks.set(p, fn) };
 }
 
@@ -235,13 +254,36 @@ test("a HUB sale refuses on a row that names no hub, and blames the right thing"
   assert.match(db._get("settings/displayRows_meta/hub1/processed/m1").refused, /names no hub/);
 });
 
-test("a stale hub sale is refused before it spends a single read", async () => {
+// THE "BEFORE IT SPENDS A READ" HALF WAS UNVERIFIABLE AS WRITTEN, and deleting
+// the early `hubSaleTooOld` gate entirely left this green: `resolveHubSale`
+// re-checks the same bound and emits a byte-identical string, which was all the
+// test asserted. So the test proved the REFUSAL and claimed the ORDERING. The
+// fake now counts reads, and the count is the assertion — the gate exists to
+// stop a stale sale walking every display store's rows, and that is a cost, not
+// a message. (Peer review, marathon-store-app-display-f8.)
+test("a stale hub sale is refused BEFORE it spends a read, not merely refused", async () => {
   const db = makeDb();
   db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));
+  db._set(`${ROWS}/marathon-pe/p1/a`, openRow({ rowId: "a", store: "marathon-pe" }));
   db._set("stock/hub1/p1/9/qty", 0);
+  db._resetReads();
   await run(db, soldAt("hub1", { ts: "2026-09-08T09:50:00.000Z" }));   // 10 minutes old
   assert.equal(db._get(`${ROWS}/trophy/p1/a`).status, "open");
   assert.match(db._get("settings/displayRows_meta/hub1/processed/m1").refused, /too long to attribute/);
+  // The age gate runs before the row walk. A fresh hub sale reads both display
+  // stores' rows AND the hub cell; a stale one must read none of them.
+  assert.equal(db._reads(), 0,
+    `a refused stale sale still spent ${db._reads()} read(s) — the age gate has moved after the reads again`);
+});
+
+test("...and the same sale, fresh, DOES spend those reads — so the count above means something", async () => {
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));
+  db._set(`${ROWS}/marathon-pe/p1/a`, openRow({ rowId: "a", store: "marathon-pe" }));
+  db._set("stock/hub1/p1/9/qty", 0);
+  db._resetReads();
+  await run(db, soldAt("hub1"));
+  assert.ok(db._reads() > 0, "a fresh hub sale read nothing — the control proves nothing");
 });
 
 // ── the mirror follows the ledger, never leads it ───────────────────────────
@@ -292,4 +334,115 @@ test("a movement with no readable instant refuses out loud instead of closing no
   await run(db, soldAt("trophy", { ts: 1788864000000 }));    // epoch millis, not ISO
   assert.equal(db._get(`${ROWS}/trophy/p1/a`).status, "open");
   assert.match(db._get("settings/displayRows_meta/trophy/processed/m1").refused, /no readable instant/);
+});
+
+// ─── THE MIRROR'S SURVIVOR BRANCH — four properties nothing asserted ─────────
+//
+// A mutation pass over the shipped harness found that two of the three
+// production fixes it was written for were not actually covered by it: the
+// survivor branch could be reverted to `source: "registration", orderId: null`
+// and the refusal-reason branch could be turned to `if (false)`, and every test
+// stayed green. Only the TOMBSTONE branch asserted provenance, and only the
+// pure helper was tested for the refusal sentence — which is exactly how the
+// original defects slipped through in the first place.
+// (Peer review, marathon-store-app-display-f8.)
+
+test("the survivor's OWN provenance is mirrored — not a blanket 'registration'", async () => {
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells
+  db._set(`${ROWS}/trophy/p1/b`, openRow({                                       // survives
+    rowId: "b", size: "10", sizeKey: "10", openedAt: "2026-09-02T00:00:00.000Z",
+    openedVia: "send", requestOrderId: "417",
+  }));
+  await run(db, soldAt("trophy"));
+  const slot = db._get("settings/displaySlots/trophy/p1");
+  assert.equal(slot.sizeKey, "10");
+  // A till sale must not rewrite which order put the surviving pair on the wall.
+  assert.equal(slot.source, "display_refill", "the survivor's send provenance was overwritten");
+  assert.equal(slot.orderId, "417", "the survivor's originating order was dropped");
+});
+
+test("a survivor that was NOT sent reads as a registration, not a refill", async () => {
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));
+  db._set(`${ROWS}/trophy/p1/b`, openRow({
+    rowId: "b", size: "10", sizeKey: "10", openedAt: "2026-09-02T00:00:00.000Z",
+    openedVia: "wall_walk", requestOrderId: null,
+  }));
+  await run(db, soldAt("trophy"));
+  const slot = db._get("settings/displaySlots/trophy/p1");
+  assert.equal(slot.source, "registration");
+  assert.equal(slot.orderId, null);
+});
+
+test("TWO survivors: the newest is mirrored, and the tiebreak matches the client's", async () => {
+  // Every earlier fixture had exactly one survivor, so `stillOpen[length - 1]`
+  // could be flipped to `[0]` and nothing noticed — while WHICH row the slot
+  // mirrors is precisely the thing that drifts between the two writers.
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells (size 9)
+  db._set(`${ROWS}/trophy/p1/b`, openRow({ rowId: "b", size: "10", sizeKey: "10", openedAt: "2026-09-02T00:00:00.000Z" }));
+  db._set(`${ROWS}/trophy/p1/c`, openRow({ rowId: "c", size: "11", sizeKey: "11", openedAt: "2026-09-03T00:00:00.000Z" }));
+  await run(db, soldAt("trophy"));
+  assert.equal(db._get("settings/displaySlots/trophy/p1").sizeKey, "11",
+    "the slot mirrored the OLDEST survivor; the wall shows the newest");
+});
+
+test("two survivors sharing an openedAt break on rowId — the SAME tiebreak openRowsFor uses", async () => {
+  // Without the rowId tiebreak the order here is RTDB key order, and the client
+  // and the trigger would mirror different survivors into the same slot. Two
+  // rows can share an instant easily: a seed run, or two sends inside one tick.
+  const SAME = "2026-09-02T00:00:00.000Z";
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells
+  db._set(`${ROWS}/trophy/p1/seedZ`, openRow({ rowId: "seedZ", size: "10", sizeKey: "10", openedAt: SAME }));
+  db._set(`${ROWS}/trophy/p1/r001`, openRow({ rowId: "r001", size: "11", sizeKey: "11", openedAt: SAME }));
+  await run(db, soldAt("trophy"));
+  // "seedZ" > "r001" by localeCompare, so seedZ is last and is the survivor.
+  assert.equal(db._get("settings/displaySlots/trophy/p1").sizeKey, "10",
+    "the equal-instant tiebreak is not rowId, so the two writers can disagree");
+});
+
+test("an open survivor with NO `size` mirrors its sizeKey instead of throwing mid-write", async () => {
+  // rowIsOpen requires a good sizeKey and says nothing about `size`, so a
+  // hand-fixed or older-shape row can be open, be the survivor, and carry no
+  // size. `size: keep.size` then handed the Admin SDK an undefined — a THROW,
+  // landing AFTER the rows were closed with the lease still done:false on a
+  // fresh `at`. A redelivery inside LEASE_MS aborts on that lease, so the slot
+  // is never mirrored at all and no retry can fix it.
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells
+  const noSize = openRow({ rowId: "b", sizeKey: "10", openedAt: "2026-09-02T00:00:00.000Z" });
+  delete noSize.size;
+  db._set(`${ROWS}/trophy/p1/b`, noSize);
+  await run(db, soldAt("trophy"));                                               // must not throw
+  const slot = db._get("settings/displaySlots/trophy/p1");
+  assert.equal(slot.sizeKey, "10");
+  assert.equal(slot.size, "10", "size fell through as undefined — the real SDK rejects that");
+  // and the movement is finished, so no redelivery is left wedged behind a lease
+  assert.equal(db._get("settings/displayRows_meta/trophy/processed/m1").done, true);
+});
+
+test("THE REFUSAL SENTENCE IS WIRED, not just implemented — an undatable row is not called post-sale", async () => {
+  // The branch that produces it could be turned to `if (false)` and every test
+  // stayed green, because only the pure helper was covered. This drives the
+  // trigger and reads what it actually wrote onto the lease.
+  const db = makeDb();
+  const undatable = openRow({ rowId: "a" });
+  delete undatable.openedAt;
+  db._set(`${ROWS}/trophy/p1/a`, undatable);
+  await run(db, soldAt("trophy"));
+  assert.equal(db._get(`${ROWS}/trophy/p1/a`).status, "open", "an undatable row was closed by a sale");
+  const lease = db._get("settings/displayRows_meta/trophy/processed/m1");
+  assert.match(lease.refused, /no readable registration time/);
+  assert.doesNotMatch(lease.refused, /registered after this sale/,
+    "the lease records a claim about this row that is false");
+});
+
+test("a genuinely post-sale row IS called post-sale, through the trigger", async () => {
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a", openedAt: "2026-09-08T10:00:30.000Z" }));
+  await run(db, soldAt("trophy"));
+  assert.equal(db._get(`${ROWS}/trophy/p1/a`).status, "open");
+  assert.match(db._get("settings/displayRows_meta/trophy/processed/m1").refused, /registered after this sale/);
 });
