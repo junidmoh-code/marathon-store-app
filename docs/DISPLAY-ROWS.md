@@ -196,20 +196,34 @@ registers what is actually seen.
 ## RULES TO PASTE (console, by hand — `database.rules.json` is not touched)
 
 Both new subtrees live under `/settings`, which the live rules already allow a
-signed-in non-anonymous user to write, so **nothing here is blocking**. The
+signed-in non-anonymous user to write, so **nothing here is blocking** — read
+back from the live database on 2026-09-08 rather than from the local file, which
+is known to have drifted:
+
+```
+"settings": { ".read": "auth != null",
+              ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'" }
+```
+ The
 hardening rule to paste when convenient, alongside the one `displaySlots` is
 still waiting for:
 
 ```json
 "displayRows": {
   ".read":  "auth != null",
-  ".write": "auth != null && auth.provider != 'anonymous'"
+  ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
 },
 "displayRows_meta": {
   ".read":  "auth != null",
-  ".write": "auth != null && auth.provider != 'anonymous'"
+  ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
 }
 ```
+
+**`auth.token.firebase.sign_in_provider`, not `auth.provider`.** An earlier draft
+of this block wrote the latter, which is not a field on this database's tokens —
+it evaluates to null, so `null != 'anonymous'` is TRUE and the rule would have
+been a no-op that looked like a restriction. The live rules use the long form
+everywhere; verified by reading them back on 2026-09-08.
 
 placed inside the existing `"settings"` node.
 
