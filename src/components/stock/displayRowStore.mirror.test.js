@@ -18,13 +18,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 let DB = {};                        // path -> value
+let GET_THROWS = null;              // set to an Error to make the ledger re-read fail
 const updates = [];
 const slotCalls = [];
 const clearCalls = [];
 
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => path,
-  get: async (path) => ({ val: () => (DB[path] === undefined ? null : DB[path]) }),
+  get: async (path) => { if (GET_THROWS) throw GET_THROWS; return { val: () => (DB[path] === undefined ? null : DB[path]) }; },
   update: async (_ref, obj) => { updates.push(obj); for (const [k, v] of Object.entries(obj)) DB[k] = v; },
 }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
@@ -34,7 +35,7 @@ vi.mock("./displaySlots", () => ({
   clearDisplaySlot: async (a) => { clearCalls.push(a); return { ok: true }; },
 }));
 
-const { closeDisplayRow } = await import("./displayRowStore");
+const { closeDisplayRow, sendDisplayRow, registerDisplayRow } = await import("./displayRowStore");
 
 const row = (o = {}) => ({
   rowId: "r1", store: "trophy", productId: "p1", productName: "AF1",
@@ -44,7 +45,7 @@ const row = (o = {}) => ({
 });
 const ROWS = "settings/displayRows/trophy/p1";
 
-beforeEach(() => { DB = {}; updates.length = 0; slotCalls.length = 0; clearCalls.length = 0; });
+beforeEach(() => { DB = {}; GET_THROWS = null; updates.length = 0; slotCalls.length = 0; clearCalls.length = 0; });
 
 describe("closing one of several re-points the slot at the survivor", () => {
   it("a survivor with NO `size` mirrors its sizeKey — never the string 'undefined'", async () => {
@@ -111,5 +112,71 @@ describe("closing one of several re-points the slot at the survivor", () => {
     await closeDisplayRow({ rows: { trophy: { p1: { a: gone, b: stale } } }, row: gone, reason: "corrected" });
     expect(clearCalls).toHaveLength(1);
     expect(slotCalls).toHaveLength(0);
+  });
+});
+
+// ─── FAIL CLOSED, AND PIN IT ────────────────────────────────────────────────
+//
+// Every writer here re-reads the ledger before planning, because the caller's
+// snapshot can be stale and a stale snapshot is how a send opens a second row
+// beside one it could not see. That re-read used to be `.catch(() => rows)` —
+// fail OPEN, silently, straight back to the snapshot the re-read exists to
+// remove, with the operator shown success. It was fixed to fail closed and
+// nothing pinned it, so the regression was one `.catch` away from returning
+// unnoticed.
+//
+// Same class as the sizeless survivor above: a value reaching a sink by a path
+// nobody tested. (Peer review, marathon-store-app-display-f8.)
+describe("a ledger re-read that fails is a REFUSAL, never a fallback to the caller's snapshot", () => {
+  const stale = { trophy: { p1: { a: row({ rowId: "a" }) } } };
+
+  it("sendDisplayRow refuses and writes NOTHING", async () => {
+    GET_THROWS = new Error("permission_denied");
+    const res = await sendDisplayRow({
+      rows: stale, store: "trophy", productId: "p1", productName: "AF1",
+      size: "10", bookedHub: "hub1", orderId: "417",
+    });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/could not be read/);
+    expect(updates).toHaveLength(0);          // no rows written
+    expect(slotCalls).toHaveLength(0);        // and no mirror either
+  });
+
+  it("registerDisplayRow refuses and writes NOTHING", async () => {
+    GET_THROWS = new Error("permission_denied");
+    const res = await registerDisplayRow({
+      rows: stale, store: "trophy", productId: "p1", productName: "AF1",
+      size: "10", bookedHub: "hub1",
+    });
+    expect(res.ok).toBe(false);
+    expect(updates).toHaveLength(0);
+    expect(slotCalls).toHaveLength(0);
+  });
+
+  it("closeDisplayRow has ALREADY closed the row, so it warns instead of refusing", async () => {
+    // The asymmetry is deliberate and worth pinning as itself: the close is
+    // applied BEFORE the survivors are read, so a failed read here cannot be a
+    // refusal — the row IS closed. It can only leave the mirror unsynced, and
+    // the operator has to be told rather than shown a clean success.
+    const gone = row({ rowId: "a" });
+    DB[ROWS] = { a: { ...gone, status: "closed" } };
+    GET_THROWS = new Error("permission_denied");
+    const res = await closeDisplayRow({ rows: {}, row: gone, reason: "corrected" });
+    expect(res.ok).toBe(true);
+    expect(res.warning).toMatch(/could not be checked/);
+    expect(slotCalls).toHaveLength(0);
+    expect(clearCalls).toHaveLength(0);
+  });
+
+  it("a keepOpen registration needs no re-read, so it is unaffected", async () => {
+    // The Duplicate tab's "the size on the wall is not listed" path closes
+    // nothing, so it has nothing to be stale about.
+    GET_THROWS = new Error("permission_denied");
+    const res = await registerDisplayRow({
+      rows: {}, store: "trophy", productId: "p1", productName: "AF1",
+      size: "10", bookedHub: "hub1", keepOpen: true,
+    });
+    expect(res.ok).toBe(true);
+    expect(updates.length).toBeGreaterThan(0);
   });
 });
