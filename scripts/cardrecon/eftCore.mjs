@@ -781,3 +781,39 @@ export function eftRetryPlan({ poolKey, record, seenRow, at }) {
     seenPath: `card_batch_intake_seen/${poolKey}`,
   };
 }
+
+// ─── EVICTIONS THE POLLER MUST HONOUR ────────────────────────────────────────
+// The poller's local processed cache (logs/card-recon-processed.json) is a
+// read-modify-write of one file, and a tick can hold its in-memory copy for
+// minutes. A retry script that deletes keys from the file while a tick is in
+// flight is silently undone when that tick saves its stale copy — the exact
+// "poller skips the message for ever" this eviction exists to end. So the
+// retry scripts ALSO append the keys to an eviction list
+// (logs/card-recon-evict.json, key → ms), and the poller applies that list to
+// its in-memory cache at load AND again at every save. Entries age out with
+// the cache's own window. PURE; tested in eftCore.test.mjs.
+// An eviction only beats a cache entry OLDER than itself: once the poller has
+// re-read the ledger and re-cached the message (a newer timestamp), the
+// eviction has done its work and must not keep deleting the fresh entry at
+// every save for the rest of its window.
+export function applyEvictions(entries, evictions, nowMs, maxAgeMs) {
+  let removed = 0;
+  for (const [key, at] of Object.entries(evictions ?? {})) {
+    if (!Number.isFinite(at) || nowMs - at > maxAgeMs) continue;
+    if (!(key in (entries ?? {}))) continue;
+    const cachedAt = entries[key];
+    if (Number.isFinite(cachedAt) && cachedAt >= at) continue; // re-cached at or after the eviction — keep it
+    delete entries[key]; removed++;
+  }
+  return removed;
+}
+
+/** The eviction list with new keys merged in and stale ones dropped. */
+export function mergeEvictions(existing, keys, nowMs, maxAgeMs) {
+  const out = {};
+  for (const [key, at] of Object.entries(existing ?? {})) {
+    if (Number.isFinite(at) && nowMs - at <= maxAgeMs) out[key] = at;
+  }
+  for (const key of keys ?? []) out[key] = nowMs;
+  return out;
+}

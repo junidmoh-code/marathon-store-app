@@ -30,13 +30,13 @@
 //
 //   node scripts/cardrecon/retry-eft-message.mjs <poolKey>
 //   node scripts/cardrecon/retry-eft-message.mjs <poolKey> --execute
-import { readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { ImapFlow } from "imapflow";
 import { parseEnvText } from "./intakeCore.mjs";
-import { EFT_POOL_PATH, eftRetryPlan } from "./eftCore.mjs";
+import { EFT_POOL_PATH, eftRetryPlan, envelopeCandidateKeys, mergeEvictions, applyEvictions } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -61,6 +61,53 @@ if (!user || !pass) {
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DATABASE_URL });
 const db = admin.database();
+
+// ONE RETRY AT A TIME. Both cache files are read-modify-written without a
+// lock; two retries in the same second would each undo the other's write.
+// A create-exclusive lock file refuses the second run instead.
+const RETRY_LOCK = join(REPO, "logs", "card-recon-retry.lock");
+let lockFd = null;
+try { lockFd = openSync(RETRY_LOCK, "wx"); }
+catch { console.error(`Another retry is running (${RETRY_LOCK} exists). Wait for it, or remove the file if it is stale.`); process.exit(1); }
+process.on("exit", () => { try { closeSync(lockFd); unlinkSync(RETRY_LOCK); } catch { /* already gone */ } });
+
+// ─── THE LOCAL PROCESSED CACHE MUST FORGET THE MESSAGE TOO ───────────────────
+// The poller keeps logs/card-recon-processed.json: keys the claim ledger has
+// confirmed "done", plus a per-IMAP-uid marker, so a tick never re-asks RTDB
+// about the same fortnight of mail. Clearing the claim row alone is therefore
+// NOT enough — the next tick sees the uid marker, skips the message, and says
+// "nothing unprocessed" for ever. (Found the hard way on the Absa re-run of
+// 2026-09-08: the retry ran clean and the poller ignored the mail until the
+// cache file was deleted by hand.) Evict every key this message could sit
+// under: its candidate ledger keys and its uid marker(s).
+// TWO WRITES, AND THE SECOND IS THE ONE THAT HOLDS. Deleting the keys from the
+// cache file is undone by any tick that was already in flight (it holds its
+// own copy for minutes and saves it back). The eviction LIST is what the
+// poller honours at load and at every save, so the keys are recorded there
+// too — a tick that was mid-flight forgets them the moment it saves.
+const EVICT_WINDOW_MS = 30 * 86400000;
+function evictFromProcessedCache({ repo, messageId, uidValidity, uids }) {
+  const doomed = [
+    ...(envelopeCandidateKeys({ messageId }) ?? []),
+    ...uids.map((uid) => `u:${String(uidValidity ?? "")}:${uid}`),
+  ];
+  const now = Date.now();
+  const evictFile = join(repo, "logs", "card-recon-evict.json");
+  let existing = {};
+  try { existing = JSON.parse(readFileSync(evictFile, "utf8")) || {}; } catch { /* first eviction */ }
+  const evictions = mergeEvictions(existing, doomed, now, EVICT_WINDOW_MS);
+  writeFileSync(evictFile, JSON.stringify(evictions));
+  const file = join(repo, "logs", "card-recon-processed.json");
+  if (!existsSync(file)) return 0;
+  let entries;
+  try { entries = JSON.parse(readFileSync(file, "utf8")) || {}; } catch { return 0; }
+  // The same timestamp rule as the poller's own: an entry the poller cached
+  // at or after this eviction (it reprocessed the mail between the claim
+  // clear and now) is newer and stays. (CodeRabbit.)
+  const evicted = applyEvictions(entries, evictions, now, EVICT_WINDOW_MS);
+  if (evicted) writeFileSync(file, JSON.stringify(entries));
+  return evicted;
+}
 
 const record = (await db.ref(`${EFT_POOL_PATH}/${target}`).get()).val();
 const seenRow = (await db.ref(`card_batch_intake_seen/${target}`).get()).val();
@@ -90,14 +137,18 @@ if (!EXECUTE) {
 const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user, pass }, logger: false });
 await client.connect();
 let unflagged = 0;
+let uidValidity = null;
+const seenUids = [];
 try {
   const lock = await client.getMailboxLock(String(env.CARD_RECON_IMAP_MAILBOX || "INBOX").trim());
   try {
+    uidValidity = client.mailbox?.uidValidity ?? null;
     const uids = await client.search({ header: { "message-id": plan.messageId } }, { uid: true });
     if (!uids?.length) throw new Error("no message with that Message-ID is in the mailbox any more — nothing was changed");
     for (const uid of uids) {
       await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
       unflagged++;
+      seenUids.push(uid);
     }
   } finally { lock.release(); }
 } finally {
@@ -116,5 +167,14 @@ console.log("refused record archived under its retried key; the original key is 
 
 await db.ref(plan.seenPath).remove();
 console.log("claim cleared");
+
+// THE CACHE LAST, after the claim is gone. Evicting first opened a window: a
+// tick reading the ledger between the eviction and the clear still found
+// "done", re-cached the key with a NEWER timestamp, and that entry then beat
+// the eviction for good. With the claim cleared first, a tick that reads now
+// finds nothing done and processes the mail; a tick that read earlier holds
+// an older entry the eviction removes at its next save. (Delta review.)
+const evicted = evictFromProcessedCache({ repo: REPO, messageId: plan.messageId, uidValidity, uids: seenUids });
+console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted now, and recorded on the eviction list the poller honours at its next save`);
 console.log(`\nDone. The next tick treats it as new mail. The first attempt's refusal stays on the EFT payments tab under ${plan.archiveKey}.`);
 await admin.app().delete();

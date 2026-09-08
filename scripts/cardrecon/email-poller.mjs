@@ -72,7 +72,7 @@ import {
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
-import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey } from "./eftCore.mjs";
+import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey, applyEvictions } from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
 // mini borrows it (scripts/shopify, scripts/social). One copy, one version.
@@ -234,17 +234,32 @@ function config() {
 // deleted, the next tick simply re-reads the ledger once per message and
 // rebuilds it. Pruned past the lookback window so it cannot grow unbounded.
 const PROCESSED_CACHE_FILE = join(REPO, "logs", "card-recon-processed.json");
+// THE EVICTION LIST. A retry script (retry-eft-message.mjs, retry-intake-
+// message.mjs) that wants a message looked at again cannot just delete its
+// keys from the cache file: a tick in flight holds its own copy for minutes
+// and would write the keys straight back. So the scripts also record the keys
+// here, and this program forgets them at load AND at every save — whatever
+// its in-memory copy says. Entries age out with the cache's own window.
+const EVICT_FILE = join(REPO, "logs", "card-recon-evict.json");
+function readEvictions() {
+  try { return JSON.parse(readFileSync(EVICT_FILE, "utf8")) || {}; } catch { return {}; }
+}
 function loadProcessedCache(lookbackDays) {
   let entries = {};
   try { entries = JSON.parse(readFileSync(PROCESSED_CACHE_FILE, "utf8")) || {}; } catch { /* first run, or corrupt — rebuilt from the ledger */ }
-  const oldest = Date.now() - (lookbackDays + 3) * 86400000;
+  const windowMs = (lookbackDays + 3) * 86400000;
+  const oldest = Date.now() - windowMs;
   let dirty = false;
   for (const [k, at] of Object.entries(entries)) {
     if (!Number.isFinite(at) || at < oldest) { delete entries[k]; dirty = true; }
   }
-  return { entries, dirty };
+  if (applyEvictions(entries, readEvictions(), Date.now(), windowMs)) dirty = true;
+  return { entries, dirty, windowMs };
 }
 function saveProcessedCache(cache) {
+  // Re-read the eviction list at the moment of writing: a retry that ran
+  // while this tick was in flight is honoured, never overwritten.
+  if (applyEvictions(cache.entries, readEvictions(), Date.now(), cache.windowMs)) cache.dirty = true;
   if (!cache.dirty) return;
   try { writeFileSync(PROCESSED_CACHE_FILE, JSON.stringify(cache.entries)); }
   catch (err) { console.warn(`⚠ could not write ${PROCESSED_CACHE_FILE} (${err.message}) — the ledger is the truth; this only costs re-reads`); }
