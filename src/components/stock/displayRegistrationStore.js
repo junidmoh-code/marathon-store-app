@@ -100,29 +100,41 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
     // Registration is a register ROW plus a slot. Both are checked now: the
     // early return is for a genuine duplicate, and a live slot with no row
     // falls through to the transaction below, which creates it.
+    // The row check lives INSIDE the transaction below, for the same reason the
+    // store-less one does: a pre-transaction get let two concurrent callers
+    // both see "no row" and both bump. The first cut of this fix read the row
+    // with its own `await` up here and walked straight back into that race
+    // (CodeRabbit, and it is PR #460's finding a second time). All that is
+    // decided out here is whether the SLOT agrees — a fact about data this
+    // caller was handed, not a read that can go stale against itself.
     const existingSlot = store ? slots?.[store]?.[product.id] : null;
-    const slotAgrees = store && slotIsLive(existingSlot)
-      && existingSlot.sizeKey === sizeKey && existingSlot.bookedHub === hub;
-    if (slotAgrees && (Number((await one(path))?.qty) || 0) > 0) {
-      // Same store, same size, already live AND on the register: refresh the
-      // slot timestamp only.
+    const slotAgrees = !!(store && slotIsLive(existingSlot)
+      && existingSlot.sizeKey === sizeKey && existingSlot.bookedHub === hub);
+
+    // The store-less duplicate guard lives INSIDE the transaction: a
+    // pre-transaction get let two concurrent store-less submissions both pass
+    // and both bump (CodeRabbit, PR #460). Aborting on an existing row makes
+    // the second submission fail deterministically whatever the interleaving.
+    let already = false;
+    const txn = await runTransaction(ref(database, path), (cur) => {
+      if (cur === null) return rowFor(product, size, sizeKey, nowIso);
+      if (!store) return undefined;   // exists + no store → abort, report duplicate
+      // The slot already shows this exact display AND the row exists: this is
+      // a re-registration of something wholly recorded, not a second physical
+      // display. Abort rather than bump — deciding it in here is what makes it
+      // safe against a concurrent caller.
+      if (slotAgrees && (Number(cur.qty) || 0) > 0) { already = true; return undefined; }
+      const q = (Number(cur.qty) || 0) + 1;
+      return { ...cur, qty: q, bumps: highWater(cur, q), retiredAt: null, at: nowIso, by: auth.currentUser?.uid || null };
+    });
+    if (already) {
+      // Refresh the slot's timestamp only, exactly as before.
       const res = await setDisplaySlot({
         store, productId: product.id, productName: product.name || "",
         size: String(size), bookedHub: hub, source: "registration",
       });
       return { ok: true, already: true, warning: slotWarning(res, "Already registered") };
     }
-
-    // The store-less duplicate guard lives INSIDE the transaction: a
-    // pre-transaction get let two concurrent store-less submissions both pass
-    // and both bump (CodeRabbit, PR #460). Aborting on an existing row makes
-    // the second submission fail deterministically whatever the interleaving.
-    const txn = await runTransaction(ref(database, path), (cur) => {
-      if (cur === null) return rowFor(product, size, sizeKey, nowIso);
-      if (!store) return undefined;   // exists + no store → abort, report duplicate
-      const q = (Number(cur.qty) || 0) + 1;
-      return { ...cur, qty: q, bumps: highWater(cur, q), retiredAt: null, at: nowIso, by: auth.currentUser?.uid || null };
-    });
     if (!txn.committed) {
       return { ok: false, message: "Already registered (shop not recorded). If this is a SECOND display, pick its shop; to fix the size, use Change size." };
     }

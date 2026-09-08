@@ -9,8 +9,8 @@
 //   node --import ./scripts/lib/appModuleLoader.mjs scripts/census-display-record-cleanup.mjs [outfile]
 //
 // NO WHOLE-NODE READS beyond the two nodes that ARE the subject. /products is
-// never pulled: name / merge / deactivation are read ONE CHILD AT A TIME, and
-// only for the pids the register actually names.
+// never pulled: ONE product record is read per pid the register names, by its
+// own path, and only for those pids.
 import { createRequire } from "module";
 import { writeFileSync } from "fs";
 
@@ -47,13 +47,13 @@ const productsById = new Map();
 const list = [...pids];
 for (let i = 0; i < list.length; i += 40) {
   await Promise.all(list.slice(i, i + 40).map(async (pid) => {
-    const [name, deactivated, mergedInto] = await Promise.all([
-      db.ref(`products/${pid}/name`).once("value").then((s) => s.val()),
-      db.ref(`products/${pid}/deactivated`).once("value").then((s) => s.val()),
-      db.ref(`products/${pid}/mergedInto`).once("value").then((s) => s.val()),
-    ]);
-    if (name != null || deactivated != null || mergedInto != null) {
-      productsById.set(pid, { id: pid, name, deactivated, mergedInto });
+    // EXISTENCE IS THE PARENT, not any one field. Keying it on `name` meant a
+    // record that exists but has no name read as deleted, and the classifier
+    // would call its display "gone" and offer it for retirement (CodeRabbit).
+    // One read of the parent answers existence and gives all three fields.
+    const p = await db.ref(`products/${pid}`).once("value").then((s) => s.val());
+    if (p) {
+      productsById.set(pid, { id: pid, name: p.name, deactivated: p.deactivated, mergedInto: p.mergedInto });
     }
   }));
 }

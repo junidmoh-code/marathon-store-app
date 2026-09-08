@@ -72,8 +72,10 @@ function world(seed) {
 
 const liveSlotsFor = (slots, pid, hub) =>
   Object.values(slots).map((b) => b[pid]).filter((s) => s && s.sizeKey && s.bookedHub === hub);
-const tombsFor = (slots, pid) =>
-  Object.values(slots).map((b) => b[pid]).filter((s) => s && s.sizeKey == null);
+// HUB-SCOPED, like the module: a display sold off hub2's books is not evidence
+// about a hub1 row. A tombstone with no bookedHub counts for whichever hub asks.
+const tombsFor = (slots, pid, hub) =>
+  Object.values(slots).map((b) => b[pid]).filter((s) => s && s.sizeKey == null && (!s.bookedHub || s.bookedHub === hub));
 
 describe("property fuzz — classifyDisplayRecords never over-offers", () => {
   const SEEDS = Array.from({ length: 400 }, (_, i) => i + 1);
@@ -92,7 +94,7 @@ describe("property fuzz — classifyDisplayRecords never over-offers", () => {
             if (!ACTIONABLE_CLASSES.has(cls)) continue;
 
             const live = liveSlotsFor(slots, row.productId, hub);
-            const tombs = tombsFor(slots, row.productId);
+            const tombs = tombsFor(slots, row.productId, hub);
             const sameSize = live.filter((s) => s.sizeKey === row.sizeKey);
 
             if (cls === "gone") {
@@ -160,7 +162,7 @@ describe("property fuzz — classifyDisplayRecords never over-offers", () => {
         // this hub never exceed the shop records that could justify them.
         for (const pid of PIDS) {
           const live = liveSlotsFor(slots, pid, hub).length;
-          const tombs = tombsFor(slots, pid).length;
+          const tombs = tombsFor(slots, pid, hub).length;
           let retired = 0;
           for (const [k, r] of Object.entries(register)) {
             if (!k.startsWith(`${pid}__`)) continue;

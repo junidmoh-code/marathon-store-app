@@ -84,9 +84,20 @@ export function splitRegisterKey(key) {
 }
 
 /**
- * Every display slot record for one product, split into the live ones booked
- * at THIS hub and the tombstones (whatever hub they were booked at — a
- * tombstone carries no bookedHub claim worth trusting once it is cleared).
+ * Every display slot record for one product at THIS hub, split into the live
+ * floors and the tombstones.
+ *
+ * BOTH ARE HUB-SCOPED. Tombstones were not, on the reasoning that a cleared
+ * slot's bookedHub is not worth trusting — but clearDisplaySlot keeps every
+ * other field when it tombstones (`{...cur, sizeKey: null}`), so bookedHub
+ * survives and is exactly as good as it was. Counting them loose meant a
+ * display sold off HUB 2's books added a unit to hub 1's evidence budget, and
+ * could justify retiring a hub 1 row that nothing had contradicted.
+ * (CodeRabbit.)
+ *
+ * A tombstone with NO bookedHub at all is counted for whichever hub is asking:
+ * it is a genuine record of a display that left, and dropping it would lose
+ * evidence rather than invent it — the safe direction is to keep it.
  */
 function slotsForProduct(slots, productId, hub) {
   const live = [], tombs = [];
@@ -95,7 +106,7 @@ function slotsForProduct(slots, productId, hub) {
     if (!s) continue;
     if (slotIsLive(s)) {
       if (s.bookedHub === hub) live.push({ store, ...s });
-    } else {
+    } else if (!s.bookedHub || s.bookedHub === hub) {
       tombs.push({ store, ...s });
     }
   }
