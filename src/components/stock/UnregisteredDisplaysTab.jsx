@@ -294,7 +294,7 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                   busy={busy === scanned.product.id}
                   title="Which size is on the wall?"
                   note={scanned.rows.length
-                    ? `The record says size ${formatSize(scanned.rows[0].size)}. Pick what is actually there — the old record is closed and the new one opened. No stock moves.`
+                    ? `The record says size ${formatSize(rowSizeText(scanned.rows[0]))}. Pick what is actually there — the old record is closed and the new one opened. No stock moves.`
                     : "Nothing is chosen for you — pick the size you are looking at."}
                   confirmLabel="Register"
                   onPick={(sz) => onWall(scanned.product, sz, scanned.rows[0] || null)}
