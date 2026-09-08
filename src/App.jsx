@@ -109,6 +109,7 @@ import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { displayFloorsAtOrderTime, displayLocationNote } from "./components/stock/displayLocationNote";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -10002,6 +10003,35 @@ function AssistantView({ products, onExit, orders = [] }) {
           // destShop when one shop pulls another's display).
           displayPairRequest: item.displayPairRequest === true,
           displayPairStore: item.displayPairRequest === true ? (item.displayPairStore || null) : null,
+          // ── WHERE A UNIT OF THIS SIZE IS KNOWN TO BE STANDING ───────────────
+          // A NOTE, NOT AN INSTRUCTION. #576 made the display marker
+          // informational, which was right — but the amber "take it off the
+          // display" banner only ever existed on the divert's output, so the
+          // warehouse stopped being told anything at all: the picker walks to
+          // an empty size slot with "Mark as Out of Stock" one tap away, while
+          // the pair is on a wall twenty metres off.
+          //
+          // This writes the floors, and nothing else. It sets no pull flag, so
+          // it pins no hub, clears no slot, schedules no refill and changes no
+          // allocation — the order still asks for "a unit of this size", and
+          // the card still only SUGGESTS a second look before a refusal. The
+          // rule is displayLocationNote.js so the "never an instruction" fences
+          // test the predicate this line consults.
+          displayOnFloorAt: displayFloorsAtOrderTime({
+            displayUnits: hub1DisplayUnits[promisedKey(item.product.id, item.size)],
+            placedHub, productType: isClothingCustomer ? "clothing" : (item.product.productType || "sneaker"),
+            isPull: item.displayPairRequest === true,
+            isPartnerRequest: item.requestDisplayPartner === true,
+            // BOTH LANES, not just the slots one. hub1DisplayUnits is built
+            // from displaySlotsLive, which is the durable slot node with the
+            // ORDER-lane exits replayed over it (slotsAfterOrderExits) — so
+            // before /orders answers it is the raw slot node, and a display
+            // sale whose best-effort slot clear was dropped still reads as
+            // live. Stamping that into a durable order record freezes a ghost
+            // location that the later repair cannot reach (independent review,
+            // 2026-09-08).
+            laneReady: displayLaneReady && ordersSettled,
+          }),
           status: STATUS.INCOMING,
           createdAt: now,
           updatedAt: now,
@@ -12409,6 +12439,30 @@ function WarehouseView({ products = [], orders, onExit }) {
                       </div>
                     </div>
                   ) : null;
+                  // THE QUIETER TWIN, for an ordinary line whose size is known
+                  // to be showing on a floor. Deliberately not amber and
+                  // deliberately not an instruction: the pull banner names a
+                  // pair and tells the picker to take it, because the pull flow
+                  // reserved that pair. This reserved nothing, so it claims
+                  // nothing — it says where to look before deciding there is
+                  // nothing to send. displayLocationNote returns null whenever
+                  // the pull banner applies, so a card can never show both.
+                  const floorNote = displayLocationNote(order);
+                  const displayFloorBanner = floorNote ? (
+                    <div style={{ background:"rgba(157,188,255,.10)", border:"1px solid rgba(157,188,255,.35)", borderRadius:10, padding:"8px 11px", marginBottom:8, display:"flex", gap:8, alignItems:"flex-start" }}>
+                      <span aria-hidden="true" style={{ flex:"0 0 auto", marginTop:1 }}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.85)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                      </span>
+                      <div>
+                        <div style={{ color:"#9DBCFF", fontSize:12, fontWeight:800, letterSpacing:".03em" }}>
+                          WAS ON A DISPLAY at {floorNote.stores.map(st => labelFor(st)).join(" / ")} when this was ordered{floorNote.when ? ` (${floorNote.when})` : ""}
+                        </div>
+                        <div style={{ color:"rgba(216,226,255,.72)", fontSize:11.5, fontWeight:600, marginTop:2 }}>
+                          If the shelf is empty, check the display before marking it out of stock.
+                        </div>
+                      </div>
+                    </div>
+                  ) : null;
                   if (needsSentSize) {
                     // ── STAGED, CONFIRMED SEND (owner fix 2026-08-06) ────────
                     // No inline size buttons: the card shows SEND; sizes appear
@@ -12432,7 +12486,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                     };
                     return (
                       <div style={{ padding:"0 12px 10px 16px" }}>
-                        {displayPairBanner}
+                        {displayPairBanner}{displayFloorBanner}
                         {flow.step === "idle" && (
                           <div style={{ display:"flex", gap:8 }}>
                             <button onClick={() => d({ type: "OPEN_SEND" })}
@@ -12502,7 +12556,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                   }
                   return (
                     <div style={{ padding:"0 12px 10px 16px" }}>
-                      {displayPairBanner}
+                      {displayPairBanner}{displayFloorBanner}
                       {!pickerOpen ? (
                         // 2×2 action grid — Sent / OOS on top row, Tomorrow / Substitute on bottom.
                         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
