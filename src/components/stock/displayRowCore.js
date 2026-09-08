@@ -397,7 +397,7 @@ function timelineText(e, row) {
 // tap, a re-delivered trigger) rewrites the same event key with the same value
 // instead of appending a second copy of the same fact to the timeline.
 
-const evId = (what, stamp) => `${what}_${String(stamp).replace(/[.#$/[\]\s:]/g, "-")}`;
+export const evId = (what, stamp) => `${what}_${String(stamp).replace(/[.#$/[\]\s:]/g, "-")}`;
 
 /**
  * CLAUSE 2 — the SEND. One update:

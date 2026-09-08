@@ -34,7 +34,7 @@ import { database, auth } from "../../firebase";
 import { serverNowIso } from "../../utils/serverTime";
 import {
   DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowSegment, rowSizeText,
-  rowPath, rowIsOpen, CLOSE_REASON_TEXT,
+  rowPath, rowIsOpen, CLOSE_REASON_TEXT, evId,
 } from "./displayRowCore";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
@@ -249,9 +249,25 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
     // before, which is the guard it gets. This path had neither.
     const base = rowPath(row.store, row.productId, row.rowId);
     if (!base) return { ok: false, message: `"${row.store}" or "${row.productId}" cannot be an RTDB key, so no display record could be closed.` };
+    // THE READ BEFORE THE TRANSACTION IS NOT REDUNDANT. `runTransaction` can
+    // fire its callback with `null` on the first attempt when the SDK has no
+    // cached value for the path, and returning `undefined` from that attempt
+    // ABORTS rather than retrying against server data. A close tapped on a
+    // freshly-loaded tab would then report "already closed" about a row that is
+    // open. Reading first both primes the cache and gives a definite answer, so
+    // a null inside the transaction can only mean the row really is gone.
+    // (A known trap in this codebase — see the RTDB txn notes.)
+    const before = (await get(ref(database, base))).val();
+    if (before == null) return { ok: false, message: "That display record no longer exists — reopen the tab." };
     const claim = await runTransaction(ref(database, base), (cur) => {
+      if (cur == null) return undefined;                      // genuinely gone; `before` proved it existed
       if (!rowIsOpen(cur)) return undefined;                  // already closed — leave every field alone
-      const e = `closed_${String(when).replace(/[.#$/[\]\s:]/g, "-")}`;
+      // evId, NOT a third inline copy of it. The client's send path, the
+      // server's claimClose and this all derive the same id from the same
+      // instant, so a replay rewrites one entry instead of appending a second.
+      // Inlining it here is exactly the copy-the-rule-and-drift habit this
+      // feature has already produced five times.
+      const e = evId("closed", when);
       return {
         ...cur, status: "closed", closedAt: when, closedBy: uid(),
         closedReason: reason, closedVia: via || null,

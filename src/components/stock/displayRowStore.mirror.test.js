@@ -17,15 +17,42 @@
 // write. This one is silent, which is worse. (CodeRabbit.)
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-let DB = {};                        // path -> value
-let GET_THROWS = null;              // set to an Error to make the ledger re-read fail
+let DB = {};                        // path -> value (coarse keys, walked by readPath)
+
+// Resolve "a/b/c" against DB whether it was seeded flat ("a/b" -> {c:…}) or
+// deeper. Mirrors how RTDB answers any path in the tree.
+const readPath = (path) => {
+  if (DB[path] !== undefined) return DB[path];
+  const parts = String(path).split("/");
+  for (let i = parts.length - 1; i > 0; i--) {
+    const head = parts.slice(0, i).join("/");
+    if (DB[head] !== undefined) {
+      let n = DB[head];
+      for (const k of parts.slice(i)) { if (n == null || typeof n !== "object") return undefined; n = n[k]; }
+      return n;
+    }
+  }
+  return undefined;
+};
+let GET_THROWS = null;              // Error -> every get() throws
+let GET_THROWS_AFTER = null;        // Error -> get() throws from the Nth call on
+let GET_CALLS = 0;
 const updates = [];
 const slotCalls = [];
 const clearCalls = [];
 
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => path,
-  get: async (path) => { if (GET_THROWS) throw GET_THROWS; return { val: () => (DB[path] === undefined ? null : DB[path]) }; },
+  // Path-aware, because the code reads BOTH a collection path
+  // ("settings/displayRows/{store}/{pid}") and a single row beneath it. A flat
+  // key lookup answered null for the deeper path and made a real read look like
+  // a missing row.
+  get: async (path) => {
+    GET_CALLS += 1;
+    if (GET_THROWS) throw GET_THROWS;
+    if (GET_THROWS_AFTER && GET_CALLS >= GET_THROWS_AFTER.from) throw GET_THROWS_AFTER.err;
+    return { val: () => (readPath(path) === undefined ? null : readPath(path)) };
+  },
   update: async (_ref, obj) => { updates.push(obj); for (const [k, v] of Object.entries(obj)) DB[k] = v; },
   // The real thing: `undefined` ABORTS and hands back the current value.
   runTransaction: async (path, fn) => {
@@ -56,7 +83,7 @@ const row = (o = {}) => ({
 });
 const ROWS = "settings/displayRows/trophy/p1";
 
-beforeEach(() => { DB = {}; GET_THROWS = null; updates.length = 0; slotCalls.length = 0; clearCalls.length = 0; });
+beforeEach(() => { DB = {}; GET_THROWS = null; GET_THROWS_AFTER = null; GET_CALLS = 0; updates.length = 0; slotCalls.length = 0; clearCalls.length = 0; });
 
 describe("closing one of several re-points the slot at the survivor", () => {
   it("a survivor with NO `size` mirrors its sizeKey — never the string 'undefined'", async () => {
@@ -164,19 +191,42 @@ describe("a ledger re-read that fails is a REFUSAL, never a fallback to the call
     expect(slotCalls).toHaveLength(0);
   });
 
-  it("closeDisplayRow has ALREADY closed the row, so it warns instead of refusing", async () => {
-    // The asymmetry is deliberate and worth pinning as itself: the close is
-    // applied BEFORE the survivors are read, so a failed read here cannot be a
-    // refusal — the row IS closed. It can only leave the mirror unsynced, and
-    // the operator has to be told rather than shown a clean success.
+  it("closeDisplayRow REFUSES when it cannot read the row it is about to close", async () => {
+    // Stronger than it used to be, and deliberately. The close now reads the
+    // row before its transaction (to prime the cache against RTDB's null-first
+    // behaviour), so an unreadable ledger is caught BEFORE anything is written
+    // — a refusal, with nothing changed, instead of a blind write.
     const gone = row({ rowId: "a" });
     DB[ROWS] = { a: gone };
     GET_THROWS = new Error("permission_denied");
     const res = await closeDisplayRow({ rows: {}, row: gone, reason: "corrected" });
+    expect(res.ok).toBe(false);
+    expect(DB[ROWS].a.status).toBe("open");     // untouched
+    expect(slotCalls).toHaveLength(0);
+    expect(clearCalls).toHaveLength(0);
+  });
+
+  it("but once the row IS closed, a failed SURVIVOR read only warns", async () => {
+    // The asymmetry, pinned: the close has landed, so this can no longer be a
+    // refusal — it can only leave the mirror unsynced, and the operator must be
+    // told rather than shown a clean success.
+    const gone = row({ rowId: "a" });
+    DB[ROWS] = { a: gone };
+    GET_THROWS_AFTER = { from: 2, err: new Error("permission_denied") };   // 1st read ok, 2nd throws
+    const res = await closeDisplayRow({ rows: {}, row: gone, reason: "corrected" });
     expect(res.ok).toBe(true);
+    expect(DB[ROWS].a.status).toBe("closed");   // the close DID land
     expect(res.warning).toMatch(/could not be checked/);
     expect(slotCalls).toHaveLength(0);
     expect(clearCalls).toHaveLength(0);
+  });
+
+  it("a row that has vanished between the tab loading and the tap is refused", async () => {
+    const gone = row({ rowId: "a" });
+    DB[ROWS] = {};                              // nothing there any more
+    const res = await closeDisplayRow({ rows: {}, row: gone, reason: "corrected" });
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/no longer exists/);
   });
 
   it("a keepOpen registration needs no re-read, so it is unaffected", async () => {
