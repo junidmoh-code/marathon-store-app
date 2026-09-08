@@ -356,8 +356,12 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
 
   it("is a pure projection: no orders, no timestamps, no slots — all safe and unchanged", () => {
     const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
-    expect(slotsAfterOrderExits(slots, [])).toBe(slots);       // nothing to apply, same object
-    expect(slotsAfterOrderExits(slots, null)).toBe(slots);
+    // NOW is pinned on every call. Without it these read the real clock, and
+    // the create bound (DISPLAY_EXIT_CREATE_MAX_AGE_MS) silently aged the
+    // fixtures out on 2026-09-08 — the suite went red on a date change rather
+    // than a code change. A fixture that rots is a fixture that lies.
+    expect(slotsAfterOrderExits(slots, [], NOW)).toBe(slots);   // nothing to apply, same object
+    expect(slotsAfterOrderExits(slots, null, NOW)).toBe(slots);
     // And the healthy case is reference-stable too: /orders re-fires on every
     // till transaction, and a projection that changes nothing must not
     // invalidate every memo hanging off the slot map.
@@ -365,12 +369,12 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       createdAt: "2026-09-01T07:00:00.000Z",
                       displayRefillStatus: "refilled", displayRefillSize: "6",
                       displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
-    expect(slotsAfterOrderExits(slots, landed)).toBe(slots);
+    expect(slotsAfterOrderExits(slots, landed, NOW)).toBe(slots);
     // A `__proto__` store or product id is data, not a prototype assignment.
     const evil = { __proto__: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
-    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed))).toBe(null);
-    expect(slotsAfterOrderExits(null, [])).toEqual({});
-    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
+    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed, NOW))).toBe(null);
+    expect(slotsAfterOrderExits(null, [], NOW)).toEqual({});
+    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }], NOW)).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
     // rather than guessing which came first.
     const noAt = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1" } } };
