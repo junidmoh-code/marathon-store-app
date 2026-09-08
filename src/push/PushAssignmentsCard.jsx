@@ -33,18 +33,59 @@
 // still leaves a working client gate), but the answer to "can a non-admin write
 // an assignment" is 3, and only 3.
 //
-// ── WHAT IT READS ───────────────────────────────────────────────────────────
-// Three ONE-SHOT reads on open, never a subscription: /users (the roster —
-// there is no other index of staff, and this is the same read UserManagement
-// already does), /push_assignments and /push_tokens. All three are small, this
-// screen is opened by one person occasionally, and a `get()` rather than an
-// `onValue()` means closing the tab ends the cost. Saves reconcile optimistically
-// against the local mirror, so nothing needs a live listener to stay honest.
+// ── WHAT IT READS, AND WHY IT IS SHAPED LIKE THIS ───────────────────────────
+// ONE-SHOT reads on open, never a subscription: this screen is opened by one
+// person occasionally, and a `get()` rather than an `onValue()` means closing
+// the tab ends the cost. Saves reconcile optimistically against the local
+// mirror, so nothing needs a live listener to stay honest.
+//
+//   /users              the roster. There is no other index of staff. Read in
+//                       BOUNDED PAGES (src/push/pagedRead.js), not as one
+//                       unbounded node fetch.
+//   /push_assignments   the decisions. Same paged read.
+//   /push_tokens/{uid}  ONE READ PER ROW. Not the node.
+//
+// ── WHY /push_tokens IS READ ONE UID AT A TIME ──────────────────────────────
+// This screen shipped reading `push_tokens` whole, and it had never worked:
+// the live rules put .read on `push_tokens/$uid` and NOTHING on the node above
+// it, so the whole-node read was refused for everybody — the account owner
+// included. It sat inside a Promise.all with the two reads that DO succeed, so
+// one refusal rejected all three, and a screen whose /users read had already
+// come back fine reported "0 of 0 assigned" under an error banner.
+//
+// The lesson is not "widen the rule". A node-level .read on /push_tokens would
+// make the whole-node fetch legal and would still be the wrong read: it would
+// hand the client every device token in the business to count the ones next to
+// 35 names. The read is now per-uid, which is bounded by the roster and needs
+// only the admin to be allowed at the SAME per-uid path the owner already is
+// (PUSH-TOKENS-ADMIN-READ-RULE.md).
+//
+// ── THREE FAILURES, THREE ANSWERS, NEVER ONE catch ──────────────────────────
+// The three reads fail independently and mean different things, so they are
+// settled independently:
+//
+//   the roster fails  → there is no screen. The banner stands and the list is
+//                       NOT rendered as empty, because an empty list says
+//                       "nobody is on staff" when the truth is "I could not
+//                       look".
+//   assignments fail  → the names are real but every switch would render off,
+//                       which reads as "nobody is assigned". The count says so
+//                       instead of showing 0, and the switches are disabled:
+//                       toggling from an unknown baseline would write one hub
+//                       and silently clear the other.
+//   tokens fail       → the only thing lost is "can this person be reached".
+//                       The list still works. Those rows say "device unknown"
+//                       rather than "no device", which is a different claim.
+//
+// This is what makes the screen usable BEFORE the per-uid token rule is
+// pasted: the staff list loads, assignments load, and the device column alone
+// says it does not know.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { get, ref, update } from "firebase/database";
 import { database } from "../firebase";
 import { serverNowMs } from "../utils/serverTime";
+import { readByKeyPages } from "./pagedRead";
 import {
   PUSH_HUBS,
   PUSH_HUB_LABEL,
@@ -98,58 +139,112 @@ function PushAssignmentsAuthed({ onExit }) {
   // fact about a different thing, and a row save must never be able to erase
   // "the staff list could not be read".
   const [loadError, setLoadError] = useState(null);
+  // Assignments and device counts fail SEPARATELY from the roster and mean
+  // separate things — see the header. `null` is "fine", a string is the reason.
+  const [assignError, setAssignError] = useState(null);
+  const [tokensError, setTokensError] = useState(null);
+  const [truncated, setTruncated] = useState(false);
   const [failedUids, setFailedUids] = useState({});   // uid → true while its last save was refused
   const [saving, setSaving] = useState({});     // uid → true while a write is in flight
   const [savedAt, setSavedAt] = useState({});   // uid → ms, drives the "Saved ✓" pulse
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
-    setLoadError(null);
-    try {
-      // Three small nodes, read once. Deliberately sequential-free: they are
-      // independent, and one slow read must not delay the other two.
-      const [usersSnap, assignSnap, tokensSnap] = await Promise.all([
-        get(ref(database, "users")),
-        get(ref(database, PUSH_ASSIGNMENTS_PATH)),
-        get(ref(database, "push_tokens")),
-      ]);
-      const users = usersSnap.val() || {};
-      const assignments = assignSnap.val() || {};
-      const tokens = tokensSnap.val() || {};
+    setLoadError(null); setAssignError(null); setTokensError(null); setTruncated(false);
 
-      const list = Object.entries(users)
-        // A uid that could not be a path segment cannot be assigned, and must
-        // not be offered as if it could — the save would throw at the SDK.
-        .filter(([uid]) => isLegalKey(uid))
-        .map(([uid, rec]) => {
-          const devices = tokens[uid] && typeof tokens[uid] === "object"
-            ? Object.values(tokens[uid]).filter((d) => d && typeof d.token === "string").length
-            : 0;
-          return {
-            uid,
-            name: String((rec && rec.displayName) || (rec && rec.username) || uid),
-            email: (rec && rec.email) || null,
-            // Shown, never consulted. They are on the row so Junid can tell one
-            // Sipho from another — NOT because either one implies an
-            // assignment. See src/push/pushAssignments.js.
-            stockRole: (rec && rec.stockRole) || null,
-            destShop: (rec && rec.destShop) || null,
-            devices,
-            hubs: assignedHubs(assignments[uid]),
-          };
-        })
-        .sort((a, b) => a.name.localeCompare(b.name));
-      setRows(list);
-    } catch (e) {
-      console.error("[push] could not load assignments:", e);
+    // The two node reads are independent, so neither waits on the other and
+    // neither can reject the other. allSettled, not all: that IS the bug.
+    const [usersRes, assignRes] = await Promise.allSettled([
+      readByKeyPages(ref(database, "users")),
+      readByKeyPages(ref(database, PUSH_ASSIGNMENTS_PATH)),
+    ]);
+
+    // ── THE ROSTER IS THE SCREEN ───────────────────────────────────────────
+    // Without it there is nothing to show, and `rows` deliberately stays null
+    // so the render puts up the "could not read" state rather than the "no
+    // staff accounts match that" empty state. Those are different sentences
+    // about different worlds.
+    if (usersRes.status !== "fulfilled") {
+      const e = usersRes.reason;
+      console.error("[push] could not load the staff roster:", e);
       setLoadError(e && e.message ? e.message : "Could not load staff accounts.");
-      setRows([]);
+      setRows(null);
+      return;
     }
+    const users = usersRes.value.data;
+    if (!usersRes.value.complete) setTruncated(true);
+
+    let assignments = {};
+    if (assignRes.status === "fulfilled") {
+      assignments = assignRes.value.data;
+      if (!assignRes.value.complete) setTruncated(true);
+    } else {
+      const e = assignRes.reason;
+      console.error("[push] could not load assignments:", e);
+      setAssignError(e && e.message ? e.message : "Could not read who is assigned.");
+    }
+
+    const list = Object.entries(users)
+      // A uid that could not be a path segment cannot be assigned, and must
+      // not be offered as if it could — the save would throw at the SDK.
+      .filter(([uid]) => isLegalKey(uid))
+      .map(([uid, rec]) => ({
+        uid,
+        name: String((rec && rec.displayName) || (rec && rec.username) || uid),
+        email: (rec && rec.email) || null,
+        // Shown, never consulted. They are on the row so Junid can tell one
+        // Sipho from another — NOT because either one implies an
+        // assignment. See src/push/pushAssignments.js.
+        stockRole: (rec && rec.stockRole) || null,
+        destShop: (rec && rec.destShop) || null,
+        // null = not known yet / could not be read. NOT the same as 0.
+        devices: null,
+        hubs: assignRes.status === "fulfilled" ? assignedHubs(assignments[uid]) : [],
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // The list is usable now. Devices are an enrichment and must never hold it
+    // up or take it down.
+    setRows(list);
+
+    // ── DEVICES: ONE BOUNDED READ PER ROW ──────────────────────────────────
+    // Bounded by the roster, in small batches so 35 rows do not open 35
+    // sockets at once. Every one is settled: a refusal leaves that row's count
+    // at null, which the row renders as "device unknown".
+    const counts = {};
+    let anyRefused = false;
+    const BATCH = 8;
+    for (let i = 0; i < list.length; i += BATCH) {
+      const slice = list.slice(i, i + BATCH);
+      const settled = await Promise.allSettled(
+        slice.map((r) => get(ref(database, `push_tokens/${r.uid}`))));
+      settled.forEach((res, j) => {
+        if (res.status !== "fulfilled") { anyRefused = true; return; }
+        const v = res.value.val();
+        counts[slice[j].uid] = v && typeof v === "object"
+          ? Object.values(v).filter((d) => d && typeof d.token === "string").length
+          : 0;
+      });
+    }
+    if (anyRefused) {
+      console.error("[push] device counts unavailable — see PUSH-TOKENS-ADMIN-READ-RULE.md");
+      setTokensError("The rule that lets this screen see devices is not published yet.");
+    }
+    setRows((prev) => (prev === null ? prev
+      : prev.map((r) => (r.uid in counts ? { ...r, devices: counts[r.uid] } : r))));
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
   const toggleHub = useCallback(async (uid, hub) => {
+    // NO WRITE FROM AN UNKNOWN BASELINE. assignmentUpdates always writes BOTH
+    // hubs — setting one and nulling the other is what stops a person moved
+    // off Hub 2 from still hearing about it. If the read of /push_assignments
+    // failed, every row's `hubs` is [] because we do not know, not because it
+    // is empty, so a single tap would silently clear the other hub's real
+    // assignment. The switches are disabled for this reason; the guard is here
+    // as well because a disabled attribute is not enforcement.
+    if (assignError) return;
     const row = (rows || []).find((r) => r.uid === uid);
     if (!row || saving[uid]) return;
     const next = row.hubs.includes(hub) ? row.hubs.filter((h) => h !== hub) : [...row.hubs, hub];
@@ -176,7 +271,7 @@ function PushAssignmentsAuthed({ onExit }) {
     } finally {
       setSaving((s) => ({ ...s, [uid]: false }));
     }
-  }, [rows, saving]);
+  }, [rows, saving, assignError]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -188,7 +283,11 @@ function PushAssignmentsAuthed({ onExit }) {
   // Named, so the banner points at the rows that actually failed instead of
   // saying "something did not save" over a screen of successful ones.
   const failedNames = (rows || []).filter((r) => failedUids[r.uid]).map((r) => r.name);
-  const assignedCount = (rows || []).filter((r) => r.hubs.length > 0).length;
+  // Both are counts of KNOWN facts. `assignedCount` is not computed at all
+  // when the assignment read failed — rendering 0 there would be the read's
+  // failure dressed up as an answer — and `undeliverable` counts only rows
+  // whose device count actually came back (0, not null).
+  const assignedCount = assignError ? null : (rows || []).filter((r) => r.hubs.length > 0).length;
   const undeliverable = (rows || []).filter((r) => r.hubs.length > 0 && r.devices === 0).length;
 
   return (
@@ -212,6 +311,33 @@ function PushAssignmentsAuthed({ onExit }) {
           </div>
         )}
 
+        {assignError && (
+          <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
+            These are the real staff accounts, but who is already assigned could
+            not be read — the switches below show nothing known, not nobody
+            assigned. They are locked until it can be read, because switching
+            one from an unknown starting point would quietly clear the other
+            hub. {assignError}
+          </div>
+        )}
+
+        {tokensError && (
+          <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
+            Assignments work, but this screen cannot see whose device can
+            actually be reached, so every row says “device unknown”.
+            {" "}{tokensError} (PUSH-TOKENS-ADMIN-READ-RULE.md)
+          </div>
+        )}
+
+        {truncated && (
+          <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
+            There are more accounts than this screen reads in one go, so this is
+            not the whole list. Nobody is assigned or unassigned by that — it
+            just means the list needs paging before it can be trusted as
+            complete.
+          </div>
+        )}
+
         {failedNames.length > 0 && (
           <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
             {failedNames.join(", ")} did not save, and {failedNames.length > 1 ? "those rows have" : "that row has"} been
@@ -223,7 +349,11 @@ function PushAssignmentsAuthed({ onExit }) {
 
         {rows !== null && (
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "0 0 14px", fontSize: 12, color: TEXT_2 }}>
-            <span><strong style={{ color: "#fff" }}>{assignedCount}</strong> of {rows.length} assigned</span>
+            {assignedCount === null ? (
+              <span style={{ color: AMBER }}>{rows.length} accounts · assignments could not be read</span>
+            ) : (
+              <span><strong style={{ color: "#fff" }}>{assignedCount}</strong> of {rows.length} assigned</span>
+            )}
             {undeliverable > 0 && (
               <span style={{ color: AMBER }}>
                 <strong>{undeliverable}</strong> assigned with no device — they will not receive anything
@@ -239,7 +369,17 @@ function PushAssignmentsAuthed({ onExit }) {
           style={{ width: "100%", boxSizing: "border-box", marginBottom: 14, padding: "11px 13px", borderRadius: 11, border: `1px solid ${DIVIDER}`, background: CARD, color: "#fff", fontSize: 14, fontFamily: "inherit", outline: "none" }}
         />
 
-        {rows === null ? (
+        {rows === null && loadError ? (
+          // NOT an empty list. "No staff accounts match that" over a failed
+          // read is the screen asserting something it does not know.
+          <div style={{ color: AMBER, fontSize: 13, lineHeight: 1.6, padding: "26px 4px" }}>
+            The staff list could not be read, so there is nothing to show here —
+            this is not an empty roster.
+            <button onClick={load} style={{ display: "block", marginTop: 12, background: "transparent", border: 0, color: BLUE, fontSize: 14, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", padding: 0 }}>
+              Try again
+            </button>
+          </div>
+        ) : rows === null ? (
           <div style={{ color: TEXT_2, fontSize: 13, padding: "26px 4px" }}>Loading staff accounts…</div>
         ) : filtered.length === 0 ? (
           <div style={{ color: TEXT_2, fontSize: 13, padding: "26px 4px" }}>No staff accounts match that.</div>
@@ -251,6 +391,7 @@ function PushAssignmentsAuthed({ onExit }) {
                 row={row}
                 last={i === filtered.length - 1}
                 busy={!!saving[row.uid]}
+                locked={!!assignError}
                 saved={savedAt[row.uid] && Date.now() - savedAt[row.uid] < 2200}
                 onToggle={(hub) => toggleHub(row.uid, hub)}
               />
@@ -270,7 +411,7 @@ function PushAssignmentsAuthed({ onExit }) {
   );
 }
 
-function StaffRow({ row, last, busy, saved, onToggle }) {
+function StaffRow({ row, last, busy, saved, locked, onToggle }) {
   // The sub-line is IDENTITY, not a rule: it exists so two people with similar
   // names are distinguishable. "No stock role" and "no shop" are printed rather
   // than hidden precisely because those accounts are the ones that used to be
@@ -294,10 +435,16 @@ function StaffRow({ row, last, busy, saved, onToggle }) {
         <span style={{ display: "block", fontSize: 11.5, color: TEXT_2, marginTop: 2 }}>
           {bits.join(" · ")}
           {" · "}
-          <span style={{ color: row.devices > 0 ? GREEN : (row.hubs.length ? AMBER : TEXT_2), fontWeight: row.devices > 0 ? 600 : 700 }}>
-            {row.devices > 0
-              ? `${row.devices} device${row.devices > 1 ? "s" : ""}`
-              : "no device"}
+          {/* THREE STATES, NOT TWO. `null` is "the read did not come back",
+              which is a different claim from "this person has no device" —
+              flagging an assignment as undeliverable on a failed read would
+              send Junid chasing a phone that is working fine. */}
+          <span style={{ color: row.devices === null ? TEXT_2 : (row.devices > 0 ? GREEN : (row.hubs.length ? AMBER : TEXT_2)), fontWeight: row.devices > 0 ? 600 : 700 }}>
+            {row.devices === null
+              ? "device unknown"
+              : row.devices > 0
+                ? `${row.devices} device${row.devices > 1 ? "s" : ""}`
+                : "no device"}
           </span>
         </span>
       </span>
@@ -312,10 +459,11 @@ function StaffRow({ row, last, busy, saved, onToggle }) {
               role="switch"
               aria-checked={on}
               aria-label={`${PUSH_HUB_LABEL[hub]} alerts for ${row.name}`}
-              disabled={busy}
+              disabled={busy || locked}
               onClick={() => onToggle(hub)}
               style={{
-                minWidth: 62, padding: "8px 10px", borderRadius: 10, cursor: busy ? "wait" : "pointer",
+                minWidth: 62, padding: "8px 10px", borderRadius: 10, cursor: busy ? "wait" : (locked ? "not-allowed" : "pointer"),
+                opacity: locked ? 0.45 : 1,
                 fontFamily: "inherit", fontSize: 12.5, fontWeight: 700,
                 color: on ? "#fff" : "rgba(233,238,255,.45)",
                 background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.045)",

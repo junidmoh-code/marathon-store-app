@@ -21,11 +21,38 @@ globalThis.window = globalThis.window || {
 };
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
 
-const getMock = vi.fn(async () => ({ val: () => ({}) }));
+// ── THE FAKE HAS TO MODEL THE QUERY, NOT SWALLOW IT ─────────────────────────
+// The roster is read in bounded pages (src/push/pagedRead.js), so the fake
+// database must return a snapshot that supports forEach and must honour
+// orderByKey/startAfter/limitToFirst. A fake that ignored the constraints and
+// handed back every child would make the paging untestable and would let a
+// broken cursor pass — the same trap as a fake that ignores its options
+// argument. `snapshotFor` below is the ONE place the query is interpreted.
+const getMock = vi.fn(async () => ({}));
 const updateMock = vi.fn(async () => {});
+
+const snapshotFor = (value, constraints) => {
+  const paged = constraints.some((c) => c.kind === "limitToFirst");
+  if (!paged || !value || typeof value !== "object") {
+    return { val: () => (value === undefined ? null : value), forEach: () => false };
+  }
+  const after = constraints.find((c) => c.kind === "startAfter");
+  const limit = constraints.find((c) => c.kind === "limitToFirst");
+  const keys = Object.keys(value).sort()
+    .filter((k) => (after ? k > after.value : true))
+    .slice(0, limit.value);
+  return {
+    val: () => Object.fromEntries(keys.map((k) => [k, value[k]])),
+    forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => value[k] })) return true; return false; },
+  };
+};
 
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
+  query: (node, ...constraints) => ({ path: node.path, constraints }),
+  orderByKey: () => ({ kind: "orderByKey" }),
+  limitToFirst: (n) => ({ kind: "limitToFirst", value: n }),
+  startAfter: (v) => ({ kind: "startAfter", value: v }),
   get: (...args) => getMock(...args),
   update: (...args) => updateMock(...args),
 }));
@@ -36,6 +63,20 @@ const PushAssignmentsCard = (await import("./PushAssignmentsCard.jsx")).default;
 
 const ADMIN = { uid: "admin-uid", email: "gunidmoh@gmail.com", displayName: "Junid" };
 const STAFF = { uid: "staff-uid", email: "rashid@marathon.internal" };
+
+// Serves any world object keyed by top-level path, including the per-uid
+// `push_tokens/{uid}` reads the card now issues.
+const worldReader = (world) => async (r) => {
+  const direct = Object.prototype.hasOwnProperty.call(world, r.path) ? world[r.path] : undefined;
+  if (direct !== undefined) return snapshotFor(direct, r.constraints || []);
+  const slash = r.path.indexOf("/");
+  if (slash > 0) {
+    const parent = world[r.path.slice(0, slash)];
+    const child = parent && parent[r.path.slice(slash + 1)];
+    return snapshotFor(child === undefined ? null : child, r.constraints || []);
+  }
+  return snapshotFor(null, r.constraints || []);
+};
 
 const render = async (props) => {
   let tree;
@@ -59,13 +100,41 @@ describe("a refused viewer reads NOTHING", () => {
   });
 
   it("the super-admin DOES read — so the two above are not vacuous", async () => {
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     await render({ authUser: ADMIN });
     const paths = getMock.mock.calls.map((c) => c[0].path).sort();
-    expect(paths).toEqual(["push_assignments", "push_tokens", "users"]);
+    expect(paths).toEqual(["push_assignments", "push_tokens/u1", "users"]);
+  });
+
+  it("NEVER reads the /push_tokens node — the live rules refuse it, and it is every token in the business", async () => {
+    // This is the bug the screen shipped with: a whole-node read of
+    // /push_tokens is denied for everyone (the rules put .read on $uid only),
+    // and it took the two reads that DO work down with it.
+    getMock.mockImplementation(worldReader({
+      users: { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } },
+    }));
+    await render({ authUser: ADMIN });
+    const paths = getMock.mock.calls.map((c) => c[0].path);
+    expect(paths).not.toContain("push_tokens");
+    expect(paths).toContain("push_tokens/u1");
+    expect(paths).toContain("push_tokens/u2");
+  });
+
+  it("the node reads are BOUNDED — orderByKey + limitToFirst, never an open fetch", async () => {
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
+    await render({ authUser: ADMIN });
+    for (const path of ["users", "push_assignments"]) {
+      const call = getMock.mock.calls.find((c) => c[0].path === path);
+      const kinds = (call[0].constraints || []).map((c) => c.kind);
+      expect(kinds, `${path} must be a bounded query`).toContain("limitToFirst");
+      expect(kinds, `${path} must be ordered by key`).toContain("orderByKey");
+    }
   });
 
   it("reads ONCE, not on a subscription — closing the screen ends the cost", async () => {
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     await render({ authUser: ADMIN });
+    // roster + assignments + one token read for the one account. No listener.
     expect(getMock).toHaveBeenCalledTimes(3);
   });
 });
@@ -106,9 +175,7 @@ describe("the roster it shows", () => {
     push_assignments: { u_ware: { hub1: true, hub2: false, updatedAt: 1 } },
     push_tokens: { u_ware: { d1: { token: "tok-A" } }, u_bare: { d1: { device: "no token string" } } },
   };
-  const withWorld = () => {
-    getMock.mockImplementation(async (r) => ({ val: () => world[r.path] || null }));
-  };
+  const withWorld = () => { getMock.mockImplementation(worldReader(world)); };
 
   const rowSwitches = (tree) =>
     tree.root.findAll((n) => n.props && n.props.role === "switch");
@@ -153,9 +220,7 @@ describe("the roster it shows", () => {
 
 describe("what a tap actually writes", () => {
   it("writes the record AND the index in ONE multi-path update, nothing else", async () => {
-    getMock.mockImplementation(async (r) => ({
-      val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),
-    }));
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     const tree = await render({ authUser: ADMIN });
     const hub1 = tree.root.findAll((n) => n.props && n.props.role === "switch")[0];
     await act(async () => { hub1.props.onClick(); });
@@ -171,9 +236,7 @@ describe("what a tap actually writes", () => {
   });
 
   it("the stamp comes from serverNowMs, not the device clock", async () => {
-    getMock.mockImplementation(async (r) => ({
-      val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),
-    }));
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     const tree = await render({ authUser: ADMIN });
     await act(async () => {
       tree.root.findAll((n) => n.props && n.props.role === "switch")[0].props.onClick();
@@ -185,9 +248,7 @@ describe("what a tap actually writes", () => {
     // A stale "did not save" is not clutter, it is wrong information: it says
     // the rules are missing when they are not, over an assignment that IS
     // stored. Found by CodeRabbit on PR #573.
-    getMock.mockImplementation(async (r) => ({
-      val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),
-    }));
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     updateMock.mockRejectedValueOnce(new Error("PERMISSION_DENIED"));
     const tree = await render({ authUser: ADMIN });
     const sw = () => tree.root.findAll((n) => n.props && n.props.role === "switch")[0];
@@ -203,10 +264,8 @@ describe("what a tap actually writes", () => {
     // shared message, B's success wiped A's warning and A sat rolled back with
     // no explanation of why. Found by the second-opinion reviewer on PR #573
     // after CodeRabbit rate-limited.
-    getMock.mockImplementation(async (r) => ({
-      val: () => (r.path === "users"
-        ? { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } }
-        : null),
+    getMock.mockImplementation(worldReader({
+      users: { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } },
     }));
     const tree = await render({ authUser: ADMIN });
     const swFor = (name) => tree.root.findAll(
@@ -232,9 +291,7 @@ describe("what a tap actually writes", () => {
   });
 
   it("a REFUSED write puts the row back — an assignment that looks made and was not is the worst outcome", async () => {
-    getMock.mockImplementation(async (r) => ({
-      val: () => (r.path === "users" ? { u1: { displayName: "Ayanda" } } : null),
-    }));
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     updateMock.mockRejectedValueOnce(new Error("PERMISSION_DENIED"));
     const tree = await render({ authUser: ADMIN });
     const sw = () => tree.root.findAll((n) => n.props && n.props.role === "switch")[0];
