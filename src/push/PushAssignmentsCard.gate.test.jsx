@@ -574,6 +574,23 @@ describe("a PARTIAL assignment read is an unknown one, not an empty one", () => 
   });
 });
 
+describe("the FIRST refusal is the one reported", () => {
+  it("even when that first rejection carries no reason at all", async () => {
+    // `if (!firstRefusal)` tested the truthiness of what was stored rather
+    // than whether anything had been: a rejection with an undefined reason
+    // never locked in, so a LATER row's refusal quietly took its place and the
+    // banner blamed the wrong thing.
+    getMock.mockImplementation(async (r) => {
+      if (r.path === "push_tokens/u1") return Promise.reject(undefined);
+      if (r.path === "push_tokens/u2") throw new Error("A LATER AND DIFFERENT REASON");
+      return worldReader({ users: { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } } })(r);
+    });
+    const t = flattenTree(await render({ authUser: ADMIN }));
+    expect(t, "the first refusal had no message to quote").toContain("The read did not come back");
+    expect(t, "a later refusal must not overwrite the first").not.toContain("A LATER AND DIFFERENT REASON");
+  });
+});
+
 describe("a uid called __proto__ is a row, not a disappearance", () => {
   it("keeps an account whose key would set an accumulator's prototype", async () => {
     // data["__proto__"] = rec on a plain {} sets the prototype, and the record
