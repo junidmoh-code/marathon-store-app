@@ -20,7 +20,7 @@
 //
 //   node scripts/cardrecon/retry-intake-message.mjs <intakeId|messageKey>
 //   node scripts/cardrecon/retry-intake-message.mjs <intakeId|messageKey> --execute
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -53,6 +53,15 @@ if (!user || !pass) {
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DATABASE_URL });
 const db = admin.database();
+
+// ONE RETRY AT A TIME. Both cache files are read-modify-written without a
+// lock; two retries in the same second would each undo the other's write.
+// A create-exclusive lock file refuses the second run instead.
+const RETRY_LOCK = join(REPO, "logs", "card-recon-retry.lock");
+let lockFd = null;
+try { lockFd = openSync(RETRY_LOCK, "wx"); }
+catch { console.error(`Another retry is running (${RETRY_LOCK} exists). Wait for it, or remove the file if it is stale.`); process.exit(1); }
+process.on("exit", () => { try { closeSync(lockFd); unlinkSync(RETRY_LOCK); } catch { /* already gone */ } });
 
 // ─── THE LOCAL PROCESSED CACHE MUST FORGET THE MESSAGE TOO ───────────────────
 // The poller keeps logs/card-recon-processed.json: keys the claim ledger has
@@ -147,11 +156,14 @@ try {
   try { await client.logout(); } catch { /* going anyway */ }
 }
 console.log(`marked ${unflagged} message(s) unread`);
-const evicted = evictFromProcessedCache({ repo: REPO, messageId: record.messageId, uidValidity, uids: seenUids });
-console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted now, and recorded on the eviction list the poller honours at its next save`);
 
 await db.ref(`${SEEN_PATH}/${record.messageKey}`).remove();
 console.log("claim cleared");
+
+// THE CACHE LAST, after the claim is gone — see retry-eft-message.mjs for
+// the window that evicting first would open. (Delta review.)
+const evicted = evictFromProcessedCache({ repo: REPO, messageId: record.messageId, uidValidity, uids: seenUids });
+console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted now, and recorded on the eviction list the poller honours at its next save`);
 
 // The refused ROW STAYS — it is the record of what happened, and a feed that
 // quietly deletes its own failures is one nobody can audit. But it is STAMPED,

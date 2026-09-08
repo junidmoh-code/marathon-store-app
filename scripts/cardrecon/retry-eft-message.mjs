@@ -30,7 +30,7 @@
 //
 //   node scripts/cardrecon/retry-eft-message.mjs <poolKey>
 //   node scripts/cardrecon/retry-eft-message.mjs <poolKey> --execute
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -61,6 +61,15 @@ if (!user || !pass) {
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DATABASE_URL });
 const db = admin.database();
+
+// ONE RETRY AT A TIME. Both cache files are read-modify-written without a
+// lock; two retries in the same second would each undo the other's write.
+// A create-exclusive lock file refuses the second run instead.
+const RETRY_LOCK = join(REPO, "logs", "card-recon-retry.lock");
+let lockFd = null;
+try { lockFd = openSync(RETRY_LOCK, "wx"); }
+catch { console.error(`Another retry is running (${RETRY_LOCK} exists). Wait for it, or remove the file if it is stale.`); process.exit(1); }
+process.on("exit", () => { try { closeSync(lockFd); unlinkSync(RETRY_LOCK); } catch { /* already gone */ } });
 
 // ─── THE LOCAL PROCESSED CACHE MUST FORGET THE MESSAGE TOO ───────────────────
 // The poller keeps logs/card-recon-processed.json: keys the claim ledger has
@@ -142,8 +151,6 @@ try {
   try { await client.logout(); } catch { /* going anyway */ }
 }
 console.log(`marked ${unflagged} message(s) unread`);
-const evicted = evictFromProcessedCache({ repo: REPO, messageId: plan.messageId, uidValidity, uids: seenUids });
-console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted now, and recorded on the eviction list the poller honours at its next save`);
 
 // THEN THE RECORD: archive copy created, then the original removed, then the
 // claim cleared — in that order, so a crash at any point leaves something
@@ -156,5 +163,14 @@ console.log("refused record archived under its retried key; the original key is 
 
 await db.ref(plan.seenPath).remove();
 console.log("claim cleared");
+
+// THE CACHE LAST, after the claim is gone. Evicting first opened a window: a
+// tick reading the ledger between the eviction and the clear still found
+// "done", re-cached the key with a NEWER timestamp, and that entry then beat
+// the eviction for good. With the claim cleared first, a tick that reads now
+// finds nothing done and processes the mail; a tick that read earlier holds
+// an older entry the eviction removes at its next save. (Delta review.)
+const evicted = evictFromProcessedCache({ repo: REPO, messageId: plan.messageId, uidValidity, uids: seenUids });
+console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted now, and recorded on the eviction list the poller honours at its next save`);
 console.log(`\nDone. The next tick treats it as new mail. The first attempt's refusal stays on the EFT payments tab under ${plan.archiveKey}.`);
 await admin.app().delete();
