@@ -366,9 +366,46 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       displayRefillStatus: "refilled", displayRefillSize: "6",
                       displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
     expect(slotsAfterOrderExits(slots, landed)).toBe(slots);
-    // A `__proto__` store or product id is data, not a prototype assignment.
-    const evil = { __proto__: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
-    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed))).toBe(null);
+    // A `__proto__` store id is DATA, not a prototype assignment. RTDB will
+    // hand back whatever key a writer put there, and a shop id is a key.
+    //
+    // WRITTEN AS A COMPUTED KEY, because the obvious spelling does not test
+    // this at all. The original fixture was `{ __proto__: { p1: {…} } }`: in an
+    // object literal `__proto__:` SETS the prototype rather than creating a
+    // property, and `{ ...evil }` copies own enumerable keys only — so the
+    // payload was discarded and the function under test received `{ ok: {} }`,
+    // a plain object with nothing adversarial in it (independent review,
+    // 2026-09-08). `["__proto__"]:` creates a real own key, which is the thing
+    // RTDB can actually produce and the thing this line claims to check.
+    //
+    // AND THE INSTANT IS PINNED. The projection only builds a fresh
+    // null-prototype map when it has a change to make, and the change here is
+    // the CREATE lane, which must clear the seven-day bound in exitWins. Left
+    // to default, this assertion held for exactly seven days after the
+    // fixture's instant and then began failing on the clock alone — it did, on
+    // 2026-09-08. `__proto__` being data has no date in it, so the instant is
+    // pinned rather than the bound moved.
+    const evil = { ["__proto__"]: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } }, ok: {} };
+    expect(Object.hasOwn(evil, "__proto__")).toBe(true);          // the fixture is real
+    const justAfter = Date.parse("2026-09-01T09:00:00.000Z");
+    const evilOut = slotsAfterOrderExits(evil, landed, justAfter);
+    expect(Object.getPrototypeOf(evilOut)).toBe(null);
+    // The adversarial store came through as an ordinary key, carrying its own
+    // slot, and did not become the output's prototype.
+    expect(Object.keys(evilOut).sort()).toEqual(["__proto__", "marathon-pe", "ok"]);
+    expect(Object.hasOwn(evilOut, "__proto__")).toBe(true);
+    expect(evilOut["__proto__"].p1.sizeKey).toBe("6");
+    // A product id may be `__proto__` too, and the per-store map has to be
+    // built the same way. `ok` is the store that goes through the COPY loop —
+    // "marathon-pe" is minted by the create lane below it, which builds its map
+    // separately, so asserting on that one leaves the loop untested (mutation
+    // check: making the loop's map a plain `{}` went green until this moved).
+    expect(Object.getPrototypeOf(evilOut.ok)).toBe(null);
+    const evilPid = { ok: { ["__proto__"]: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
+    const pidOut = slotsAfterOrderExits(evilPid, landed, justAfter);
+    expect(Object.getPrototypeOf(pidOut.ok)).toBe(null);
+    expect(Object.hasOwn(pidOut.ok, "__proto__")).toBe(true);
+    expect(pidOut.ok["__proto__"].sizeKey).toBe("6");
     expect(slotsAfterOrderExits(null, [])).toEqual({});
     expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
