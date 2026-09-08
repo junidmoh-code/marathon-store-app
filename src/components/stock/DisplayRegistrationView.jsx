@@ -13,6 +13,15 @@
 //      every live slot holding the old size is re-pointed.
 //   3. REMOVE — the display came down or the row never matched reality.
 //
+// ── AND THE TWO CLEANUP TABS LIVE HERE TOO ──────────────────────────────────
+// (Owner correction, 2026-09-08.) Duplicate Displays and Unregistered Displays
+// shipped inside the Stock console, which was a misreading: "leave the Display
+// Registry untouched" meant do not change how Hub 1 and Hub 2 REGISTER, not
+// build the new screens somewhere else. This card is where an operator looks
+// for anything about a display wall, so the two tabs sit beside Hub 1 and Hub 2
+// as siblings. Hub 1 and Hub 2 keep their registration behaviour byte for byte
+// — every line of it is below, unchanged; the tabs only decide what renders.
+//
 // Reads: the products list (passed in), one register subscription for the
 // picked hub (~172 KB, the same node the shop marker already streams) and the
 // slots node (~60 KB). Writers live in displayRegistrationStore.js.
@@ -30,6 +39,9 @@ import { formatSize } from "../../utils/sizeLabel";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { isFootwearProduct } from "./availabilityCore";
 import { recordDisplayFact, editDisplaySize, removeDisplayFact } from "./displayRegistrationStore";
+import { usePermissions } from "../PermissionsContext";
+import DuplicateDisplaysTab from "./DuplicateDisplaysTab";
+import UnregisteredDisplaysTab from "./UnregisteredDisplaysTab";
 
 const HUBS = ["hub1", "hub2"];
 const STORES = ["marathon-pe", "trophy", "marathon-pine"];
@@ -42,8 +54,20 @@ const chip = (on, tone = BLUE) => ({
   color: on ? (tone === AMBER ? AMBER : BLUE_L) : "rgba(233,238,255,.6)",
 });
 
-export default function DisplayRegistrationView({ products = [], onExit }) {
-  const [hub, setHub] = useState("hub1");
+export default function DisplayRegistrationView({ products = [], orders = [], ordersScope = null, onExit }) {
+  // The same derivation StockView uses, from the same context — not a prop, so
+  // the two screens cannot disagree about who is an admin.
+  const { permRecord, isSuperAdmin } = usePermissions();
+  const isAdmin = isSuperAdmin || permRecord?.stockRole === "admin";
+  // "hub1" | "hub2" register the way they always have; the two cleanup tabs are
+  // read-mostly screens over the ROW ledger and share only the chip strip.
+  const [pane, setPane] = useState("hub1");
+  // Every existing line below reads `hub`, and it keeps meaning exactly what it
+  // meant: the hub whose register is being edited. The cleanup panes do not use
+  // it, so it stays pinned to a real hub rather than becoming nullable and
+  // rippling through the registration code this change must not touch.
+  const hub = pane === "hub2" ? "hub2" : "hub1";
+  const isRegisterPane = pane === "hub1" || pane === "hub2";
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(null);
   const [size, setSize] = useState("");
@@ -181,12 +205,25 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
         <button onClick={onExit} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.18)", color: "rgba(255,255,255,.7)", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Exit</button>
       </div>
 
-      {/* hub picker */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      {/* PANE PICKER — Hub 1 and Hub 2 register; the two cleanup tabs are their
+          siblings. The cleanup panes are admin-only, so a non-admin sees the
+          two hub chips exactly as before rather than a chip that refuses. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         {HUBS.map((h) => (
-          <button key={h} onClick={() => { setHub(h); setEditing(null); }} style={chip(hub === h)}>{h === "hub1" ? "Hub 1" : "Hub 2"}</button>
+          <button key={h} onClick={() => { setPane(h); setEditing(null); }} style={chip(pane === h)}>{h === "hub1" ? "Hub 1" : "Hub 2"}</button>
         ))}
+        {isAdmin && (
+          <>
+            <button onClick={() => { setPane("dupes"); setEditing(null); }} style={chip(pane === "dupes", AMBER)}>Duplicate Displays</button>
+            <button onClick={() => { setPane("wall"); setEditing(null); }} style={chip(pane === "wall", AMBER)}>Unregistered Displays</button>
+          </>
+        )}
       </div>
+
+      {pane === "dupes" && <DuplicateDisplaysTab products={products} isAdmin={isAdmin} />}
+      {pane === "wall" && <UnregisteredDisplaysTab products={products} orders={orders} ordersScope={ordersScope} isAdmin={isAdmin} />}
+
+      {isRegisterPane && (<>
 
       {/* search / scan */}
       <input value={query} onChange={(e) => setQuery(e.target.value)}
@@ -298,6 +335,7 @@ export default function DisplayRegistrationView({ products = [], onExit }) {
           Scan a shoe's label or barcode, or search its name, to register or fix its display size.
         </div>
       )}
+      </>)}
     </div>
   );
 }

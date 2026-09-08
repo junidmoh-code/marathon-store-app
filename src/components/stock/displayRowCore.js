@@ -560,9 +560,27 @@ export const closeEffectLine = (row) =>
 //
 // A display request is an ORDER carrying `requestDisplayPartner: true`. It is
 // OPEN from the moment it is placed until the refill task resolves
-// (`displayRefillStatus` set) or the order leaves the lane. The 15-minute timer
-// only decides WHEN the task becomes visible in the warehouse tab — it raises
-// nothing and it picks nothing.
+// (`displayRefillStatus` set) or the order leaves the lane.
+//
+// ── THE 15-MINUTE TIMER DOES RAISE SOMETHING, AND THIS GUARD MISSED IT ──────
+// An earlier version of this comment said the timer "only decides WHEN the task
+// becomes visible — it raises nothing". That described the implementation and
+// denied the behaviour, and the behaviour is what the guard has to fence.
+//
+// Marking a Display Partner order READY stamps `displayRefillScheduledAt`
+// (App.jsx, the status patch), and DISPLAY_REFILL_DELAY_MS surfaces it as a
+// refill task fifteen minutes later. No human raises that task. A wall that has
+// one is a wall already owed a pair — which is the whole thing this clause
+// exists to count.
+//
+// It still picks NO SIZE: the task carries the order's own fields and the
+// operator chooses at Send. The absolute rule is untouched by this.
+//
+// The hole it left was live and measured on 2026-09-08: order #188 (Trophy,
+// p1778857649789) sat `status: "collected"` with `displayRefillStatus: null`
+// and a task scheduled 317 minutes earlier. `collected` made this predicate
+// answer "not open", so a second request for that wall would have passed both
+// entry points and two pairs would have been walked to it.
 //
 // The store a request belongs to is the store whose wall the pair goes on:
 // `displayPairStore` when the order is a cross-store pull, otherwise the
@@ -598,9 +616,16 @@ export const requestStoreFor = (order) =>
  */
 export function isOpenDisplayRequest(order) {
   if (!order || order.requestDisplayPartner !== true) return false;
+  if (order.cancelled === true) return false;
+  // A SCHEDULED-BUT-UNRESOLVED REFILL TASK IS AN OPEN REQUEST, whatever the
+  // order's own status says. This is the auto-raised one, and it outlives the
+  // customer's half of the order: the shopper collects, `status` becomes
+  // `collected`, and the WALL is still owed the pair the warehouse has not sent
+  // yet. Checked BEFORE the status tests, which is the whole fix — those tests
+  // are about the customer's order, and this clause is about the wall.
+  if (order.displayRefillScheduledAt && !order.displayRefillStatus) return true;
   if (order.displayRefillStatus) return false;          // resolved: refilled / stockDepleted
   if (order.status === "collected" || order.status === "out_of_stock") return false;
-  if (order.cancelled === true) return false;
   return true;
 }
 

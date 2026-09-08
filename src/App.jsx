@@ -19546,7 +19546,12 @@ function AppInner() {
         actorRole={stockRole} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.DISPLAY_REGISTRATION) view = displayRegRouteOpen
-    ? <DisplayRegistrationView products={products} onExit={() => setRole(null)} />
+    // `orders`/`ordersScope` are for the Unregistered Displays tab that now
+    // lives inside this card: the wall walk raises display requests, and its
+    // one-open-request guard is only as wide as the order feed it can see, so
+    // it needs the scope to refuse a wall it cannot read. Same two props the
+    // Stock console passed it before the move.
+    ? <DisplayRegistrationView products={products} orders={orders} ordersScope={myShop} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;

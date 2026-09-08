@@ -476,3 +476,64 @@ describe("path segments refuse rather than collide", () => {
     expect(openRowsFor(l, "trophy", "p.1")).toEqual([]);
   });
 });
+
+// ─── THE AUTO-RAISED TASK IS AN OPEN REQUEST ────────────────────────────────
+//
+// Marking a Display Partner order READY stamps displayRefillScheduledAt, and
+// DISPLAY_REFILL_DELAY_MS surfaces it as a refill task fifteen minutes later
+// with no human raising it. The guard did not count those, because it tested
+// the CUSTOMER's order status — and a shopper who has collected leaves a wall
+// that is still owed the pair the warehouse has not sent.
+//
+// Measured live 2026-09-08: order #188 (Trophy, p1778857649789), status
+// "collected", displayRefillStatus null, task scheduled 317 minutes earlier.
+// The predicate answered "not open", so a second request for that wall passed
+// both entry points.
+describe("a pending auto-raised refill task keeps the wall fenced", () => {
+  const task = (o = {}) => ({
+    id: "188", requestDisplayPartner: true, productId: "p1778857649789",
+    destShop: "trophy", displayRefillScheduledAt: "2026-09-08T12:00:00.000Z",
+    displayRefillStatus: null, status: "ready", ...o,
+  });
+
+  it("THE LIVE CASE: collected, but the refill task is still pending", () => {
+    expect(isOpenDisplayRequest(task({ status: "collected" }))).toBe(true);
+  });
+
+  it("and the guard therefore refuses a second request for that wall", () => {
+    const orders = [task({ status: "collected" })];
+    expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p1778857649789" })).toBe(true);
+    // a different wall, and a different product, are untouched
+    expect(hasOpenDisplayRequest(orders, { store: "marathon-pe", productId: "p1778857649789" })).toBe(false);
+    expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p2" })).toBe(false);
+  });
+
+  it("still open while the task waits at ready", () => {
+    expect(isOpenDisplayRequest(task())).toBe(true);
+  });
+
+  it("RESOLVED closes it, on either outcome, whatever the status", () => {
+    for (const st of ["refilled", "stockDepleted"]) {
+      expect(isOpenDisplayRequest(task({ displayRefillStatus: st })), st).toBe(false);
+      expect(isOpenDisplayRequest(task({ displayRefillStatus: st, status: "collected" })), st).toBe(false);
+    }
+  });
+
+  it("a CANCELLED order is closed even with a task pending — nothing is owed", () => {
+    expect(isOpenDisplayRequest(task({ cancelled: true }))).toBe(false);
+  });
+
+  it("no task scheduled falls back to the order's own status, as before", () => {
+    const noTask = { requestDisplayPartner: true, productId: "p1", destShop: "trophy",
+                     displayRefillScheduledAt: null, displayRefillStatus: null };
+    expect(isOpenDisplayRequest({ ...noTask, status: "incoming" })).toBe(true);
+    expect(isOpenDisplayRequest({ ...noTask, status: "collected" })).toBe(false);
+    expect(isOpenDisplayRequest({ ...noTask, status: "out_of_stock" })).toBe(false);
+  });
+
+  it("a cancelled refill re-opens the wall — displayRefillScheduledAt cleared", () => {
+    // The status patch nulls scheduledAt when a READY order leaves the lane for
+    // anything but COLLECTED, so the wall stops being fenced.
+    expect(isOpenDisplayRequest(task({ displayRefillScheduledAt: null, status: "out_of_stock" }))).toBe(false);
+  });
+});
