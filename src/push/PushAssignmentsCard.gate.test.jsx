@@ -300,3 +300,157 @@ describe("what a tap actually writes", () => {
     expect(JSON.stringify(tree.toJSON())).toContain("did not save");
   });
 });
+
+// ─── WHAT THE SCREEN SAYS WHEN A READ DOES NOT COME BACK ─────────────────────
+// The bug this screen shipped with was not that a read failed — it was that a
+// failed read was reported as an answer: "0 of 0 assigned", under a banner, on
+// a roster that had loaded fine. Every test below pins the difference between
+// "I do not know" and "nobody".
+describe("a read that fails is never rendered as an answer", () => {
+  const STAFF_WORLD = {
+    users: {
+      u_ware: { displayName: "Ayanda", stockRole: "warehouse", destShop: "marathon-pe" },
+      u_bare: { displayName: "Bongi" },
+      u_till: { stockRole: "pos", posAccess: { role: "cashier", displayName: "yasmin" } },
+    },
+    push_assignments: { u_ware: { hub1: true, hub2: false, updatedAt: 1 } },
+    push_tokens: { u_ware: { d1: { token: "tok-A" } } },
+  };
+  // A reader that serves the world but REFUSES the named top-level nodes, the
+  // way the live rules refuse one of them today.
+  const refusing = (world, deny) => {
+    const ok = worldReader(world);
+    return async (r) => {
+      if (deny.some((d) => r.path === d || r.path.startsWith(`${d}/`))) {
+        throw new Error(`PERMISSION_DENIED at /${r.path}`);
+      }
+      return ok(r);
+    };
+  };
+  // The rendered TEXT, not the JSON. JSX splits "{n} of {m} assigned" into
+  // three children, so a JSON.stringify assertion for the sentence a person
+  // actually reads on screen would fail against a perfectly correct render —
+  // and, worse, pass for a wrong one that happened to be split differently.
+  const flatten = (node) => {
+    if (node === null || node === undefined || node === false) return "";
+    if (Array.isArray(node)) return node.map(flatten).join("");
+    if (typeof node === "object") return flatten(node.children);
+    return String(node);
+  };
+  const text = (tree) => flatten(tree.toJSON());
+
+  // ── 1. the roster read fails ───────────────────────────────────────────
+  it("a failed roster read shows the banner and NEVER an empty list", async () => {
+    getMock.mockImplementation(refusing(STAFF_WORLD, ["users"]));
+    const tree = await render({ authUser: ADMIN });
+    const t = text(tree);
+    expect(t, "the banner stands").toContain("nothing rather than nobody");
+    expect(t, "and says plainly that this is not an empty roster").toContain("not an empty roster");
+    expect(t, "the empty-list wording must not appear").not.toContain("No staff accounts match that");
+    expect(t, "and no count is asserted").not.toContain("assigned</span>");
+    expect(tree.root.findAll((n) => n.props && n.props.role === "switch")).toHaveLength(0);
+  });
+
+  it("a roster read that succeeds does NOT show that banner — so the above is not vacuous", async () => {
+    getMock.mockImplementation(worldReader(STAFF_WORLD));
+    const t = text(await render({ authUser: ADMIN }));
+    expect(t).not.toContain("nothing rather than nobody");
+    expect(t).toContain("Ayanda");
+  });
+
+  // ── 2. the assignment read fails ───────────────────────────────────────
+  it("the assigned count reflects real assignments, not a failed read", async () => {
+    getMock.mockImplementation(worldReader(STAFF_WORLD));
+    const t = text(await render({ authUser: ADMIN }));
+    // Two visible accounts (the till is excluded), one of them assigned.
+    expect(t).toContain("1 of 2 assigned");
+  });
+
+  it("a failed assignment read says so instead of counting 0 of N", async () => {
+    // 0 of 2 would be a claim that nobody is assigned. Ayanda IS assigned.
+    getMock.mockImplementation(refusing(STAFF_WORLD, ["push_assignments"]));
+    const tree = await render({ authUser: ADMIN });
+    const t = text(tree);
+    expect(t).toContain("assignments could not be read");
+    expect(t).not.toContain("of 2 assigned");
+    expect(t, "the names still load — only the decisions are unknown").toContain("Ayanda");
+  });
+
+  it("and LOCKS the switches, because one tap would clear the other hub", async () => {
+    // assignmentUpdates always writes BOTH hubs. With every row showing [] for
+    // "unknown", turning hub2 on would null out Ayanda's real hub1 entry.
+    getMock.mockImplementation(refusing(STAFF_WORLD, ["push_assignments"]));
+    const tree = await render({ authUser: ADMIN });
+    const switches = tree.root.findAll((n) => n.props && n.props.role === "switch");
+    expect(switches.length).toBeGreaterThan(0);
+    expect(switches.every((n) => n.props.disabled === true)).toBe(true);
+    await act(async () => { switches[0].props.onClick(); });
+    expect(updateMock, "and the guard holds even if the attribute is bypassed").not.toHaveBeenCalled();
+  });
+
+  // ── 3. the device reads fail ───────────────────────────────────────────
+  it("a refused device read says 'device unknown', not 'no device'", async () => {
+    getMock.mockImplementation(refusing(STAFF_WORLD, ["push_tokens"]));
+    const tree = await render({ authUser: ADMIN });
+    const t = text(tree);
+    expect(t).toContain("device unknown");
+    expect(t).not.toContain("no device");
+    expect(t, "and points at the rule that fixes it").toContain("PUSH-TOKENS-ADMIN-READ-RULE.md");
+  });
+
+  it("THE LIST STILL WORKS with devices refused — this is the live state today", async () => {
+    // Until the per-uid rule is pasted, this is exactly what the owner sees.
+    // The whole point of the fix is that the screen is usable here.
+    getMock.mockImplementation(refusing(STAFF_WORLD, ["push_tokens"]));
+    const tree = await render({ authUser: ADMIN });
+    expect(text(tree)).not.toContain("nothing rather than nobody");
+    expect(text(tree)).toContain("of 2 assigned");
+    const switches = tree.root.findAll((n) => n.props && n.props.role === "switch");
+    expect(switches.every((n) => n.props.disabled)).toBe(false);
+    await act(async () => { switches[0].props.onClick(); });
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a device read that SUCCEEDS reports the real count — so 'unknown' means something", async () => {
+    getMock.mockImplementation(worldReader(STAFF_WORLD));
+    const t = text(await render({ authUser: ADMIN }));
+    expect(t).toContain("1 device");
+    expect(t).toContain("no device");        // Bongi, who genuinely has none
+    expect(t).not.toContain("device unknown");
+  });
+
+  // ── 4. the roster itself ───────────────────────────────────────────────
+  it("excludes the till login and says how many it hid", async () => {
+    getMock.mockImplementation(worldReader(STAFF_WORLD));
+    const tree = await render({ authUser: ADMIN });
+    const labels = tree.root.findAll((n) => n.props && n.props.role === "switch")
+      .map((n) => n.props["aria-label"]).join("|");
+    expect(labels).toContain("Ayanda");
+    expect(labels).toContain("Bongi");
+    expect(labels, "a till has no browser to notify").not.toContain("u_till");
+    expect(text(tree)).toContain("1 till login not shown");
+  });
+
+  it("an account with NO stockRole is still on the list", async () => {
+    // The 9 live accounts with no stockRole are the ones this screen exists
+    // for. Absence of a role is not evidence of being a till.
+    getMock.mockImplementation(worldReader({
+      users: { u_bare: { displayName: "Bongi" }, u_none: {} },
+    }));
+    const tree = await render({ authUser: ADMIN });
+    const labels = tree.root.findAll((n) => n.props && n.props.role === "switch")
+      .map((n) => n.props["aria-label"]).join("|");
+    expect(labels).toContain("Bongi");
+    expect(labels).toContain("u_none");
+    expect(text(tree)).not.toContain("till login");
+  });
+
+  it("keeps a 'pos' account that has a real identity — Zee is a person", async () => {
+    getMock.mockImplementation(worldReader({
+      users: { zee: { displayName: "Zee", username: "zee", role: "admin", stockRole: "pos" } },
+    }));
+    const tree = await render({ authUser: ADMIN });
+    expect(tree.root.findAll((n) => n.props && n.props.role === "switch")
+      .map((n) => n.props["aria-label"]).join("|")).toContain("Zee");
+  });
+});
