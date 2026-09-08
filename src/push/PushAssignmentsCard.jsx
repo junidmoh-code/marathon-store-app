@@ -153,7 +153,12 @@ function PushAssignmentsAuthed({ onExit }) {
   // separate things — see the header. `null` is "fine", a string is the reason.
   const [assignError, setAssignError] = useState(null);
   const [tokensError, setTokensError] = useState(null);
-  const [truncated, setTruncated] = useState(false);
+  // ONE FLAG PER FACT. These were briefly a single `truncated` boolean fed by
+  // both reads, which meant a truncated ASSIGNMENTS read raised the ROSTER's
+  // banner — telling Junid a staff account might be missing when every one of
+  // them was present and only the decisions were partial. Two different
+  // sentences about two different nodes need two different flags.
+  const [rosterTruncated, setRosterTruncated] = useState(false);
   const [hiddenPos, setHiddenPos] = useState(0);   // till logins left off the list
   const [failedUids, setFailedUids] = useState({});   // uid → true while its last save was refused
   const [saving, setSaving] = useState({});     // uid → true while a write is in flight
@@ -178,7 +183,7 @@ function PushAssignmentsAuthed({ onExit }) {
     const gen = ++loadGen.current;
     const live = () => loadGen.current === gen;
     setLoading(true);
-    setLoadError(null); setAssignError(null); setTokensError(null); setTruncated(false); setHiddenPos(0);
+    setLoadError(null); setAssignError(null); setTokensError(null); setRosterTruncated(false); setHiddenPos(0);
 
     // The two node reads are independent, so neither waits on the other and
     // neither can reject the other. allSettled, not all: that IS the bug.
@@ -202,7 +207,7 @@ function PushAssignmentsAuthed({ onExit }) {
       return;
     }
     const users = usersRes.value.data;
-    if (!usersRes.value.complete) setTruncated(true);
+    if (!usersRes.value.complete) setRosterTruncated(true);
 
     let assignments = Object.create(null);
     // ── A PARTIAL ASSIGNMENT READ IS AN UNKNOWN ONE ────────────────────────
@@ -218,7 +223,6 @@ function PushAssignmentsAuthed({ onExit }) {
       assignments = assignRes.value.data;
       assignOk = true;
     } else if (assignRes.status === "fulfilled") {
-      setTruncated(true);
       setAssignError("There are more assignments than this screen reads in one go, so what is already set cannot be shown in full.");
     } else {
       const e = assignRes.reason;
@@ -271,7 +275,11 @@ function PushAssignmentsAuthed({ onExit }) {
     // at null, which the row renders as "device unknown".
     const counts = Object.create(null);   // a uid may be "__proto__"; see pagedRead.js
     let anyRefused = false;
+    // A captured FLAG, not the truthiness of what was captured: a rejection
+    // whose reason is undefined would leave `firstRefusal` falsy for ever and
+    // let a later batch's refusal quietly take its place.
     let firstRefusal = null;
+    let refusalCaptured = false;
     const BATCH = 8;
     for (let i = 0; i < list.length; i += BATCH) {
       if (!live()) return;
@@ -281,7 +289,7 @@ function PushAssignmentsAuthed({ onExit }) {
       settled.forEach((res, j) => {
         if (res.status !== "fulfilled") {
           anyRefused = true;
-          if (!firstRefusal) firstRefusal = res.reason;
+          if (!refusalCaptured) { firstRefusal = res.reason; refusalCaptured = true; }
           return;
         }
         const v = res.value.val();
@@ -404,7 +412,7 @@ function PushAssignmentsAuthed({ onExit }) {
           </div>
         )}
 
-        {truncated && (
+        {rosterTruncated && (
           <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
             There are more staff accounts than this screen reads in one go, so
             this is not the whole list and somebody may be missing from it.

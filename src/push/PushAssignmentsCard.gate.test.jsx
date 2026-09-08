@@ -554,6 +554,24 @@ describe("a PARTIAL assignment read is an unknown one, not an empty one", () => 
     await act(async () => { switches[0].props.onClick(); });
     expect(updateMock, "a truncated read is an unknown baseline").not.toHaveBeenCalled();
   });
+
+  it("and does NOT claim a staff account is missing — the roster read was complete", async () => {
+    // A single shared `truncated` flag raised the ROSTER's banner here, which
+    // says "somebody may be missing from it" over a roster that is complete.
+    // Two facts, two flags, two sentences.
+    getMock.mockImplementation(async (r) => {
+      const base = worldReader({ users: { a0: { displayName: "Ayanda" } } });
+      if (r.path !== "push_assignments") return base(r);
+      const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
+      const after = r.constraints.find((c) => c.kind === "startAfter");
+      let n = after ? Number(after.value.slice(1)) + 1 : 0;
+      const keys = Array.from({ length: limit }, () => `k${String(n++).padStart(8, "0")}`);
+      return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => ({ hub1: true }) })) return true; return false; } };
+    });
+    const t = flattenTree(await render({ authUser: ADMIN }));
+    expect(t, "the assignment banner is the right one").toContain("assignments could not be read");
+    expect(t, "the roster banner must NOT fire").not.toContain("more staff accounts than this screen reads");
+  });
 });
 
 describe("a uid called __proto__ is a row, not a disappearance", () => {
