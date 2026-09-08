@@ -382,6 +382,19 @@ const MUTATIONS = [
     to: `  if (!Number.isFinite(target) || target < 0) {`,
   },
 
+  {
+    id: "S8", file: LIB, nodeTests: LIB_TESTS,
+    guard: "A MISSING MINT TIME SHOWS THE WORK — zero would read every stamp in history as walked and blank the list",
+    from: `    else batchAt = Number(prevBatchAt) > 0 ? Number(prevBatchAt) : nowMs;`,
+    to: `    else batchAt = Number(prevBatchAt) || 0;`,
+  },
+  {
+    id: "S9", file: LIB, nodeTests: LIB_TESTS,
+    guard: "a carried batch reports the day it was MINTED, not whichever day it is read on",
+    from: `    batchDate: saDateStringFromMs(batchAt),`,
+    to: `    batchDate: saDate,`,
+  },
+
   // ── the fence this PR did not move ────────────────────────────────────────
   {
     id: "M45", file: SCAN, nodeTests: ["test/refill-cadence.test.cjs"],

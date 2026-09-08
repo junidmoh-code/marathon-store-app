@@ -417,7 +417,12 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
     // show nothing. A batch emptied by being CHECKED is a different thing and
     // is handled below — that one should show as finished, not restart.
     if (!picked.length) picked = selectRotationBatch({ universe, rotationState, batchSize: cfg.batchSize });
-    else batchAt = Number(prevBatchAt) || 0;
+    // A carried batch with NO recorded mint time falls back to now, not to
+    // zero. Zero would make every stamp in history read as "walked for this
+    // batch" and blank the whole list; now makes none of them, and the batch is
+    // shown in full. Both are wrong in that state, but only one of them hides
+    // work — an audit must fail towards showing the shelf, never away from it.
+    else batchAt = Number(prevBatchAt) > 0 ? Number(prevBatchAt) : nowMs;
   }
 
   // ── A BATCH ALREADY WALKED MUST NOT COME BACK AS A QUESTION ────────────────
@@ -470,7 +475,12 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
   });
 
   return {
-    rows, universeSize: universe.length, refreshed: fresh, batchDate: saDate,
+    rows, universeSize: universe.length, refreshed: fresh,
+    // The day the batch was MINTED, not the day the pass ran — otherwise a
+    // batch carried since Monday reports itself as Thursday's, and the one
+    // field that could tell staff how old their list is would agree with
+    // whatever day they happened to read it.
+    batchDate: saDateStringFromMs(batchAt),
     batchAt, batchPids, walked: walked.size,
   };
 }

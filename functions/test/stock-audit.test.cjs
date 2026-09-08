@@ -381,6 +381,41 @@ test("a batch already walked does not come back on the next non-rotation day", (
   assert.equal(wed.batchPids.length, 3);
 });
 
+test("a carried batch with no mint time shows the work rather than hiding it", () => {
+  // State written before this field existed, or a hand-edited node. Zero would
+  // make every stamp in history read as walked and blank the list; an audit
+  // must fail towards showing the shelf.
+  const rot = sa.buildRotation({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-08",
+    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS, displayKeys: [],
+    rotationState: { tee: { at: NOW - 864e5, o: "present" }, hood: { at: NOW - 2 * 864e5, o: "present" } },
+    prevBatchPids: ["tee", "hood"], prevBatchAt: 0,
+  });
+  assert.deepEqual(rot.rows.map((r) => r.p).sort(), ["hood", "tee"]);
+  assert.equal(rot.walked, 0);
+});
+
+test("a carried batch reports the day it was MINTED, not the day the pass ran", () => {
+  const MON = Date.parse("2026-09-07T06:00:00.000Z");
+  const rot = sa.buildRotation({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-10",
+    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS, displayKeys: [],
+    rotationState: {}, prevBatchPids: ["tee"], prevBatchAt: MON,
+  });
+  assert.equal(rot.batchDate, "2026-09-07");
+  // and a freshly minted one reports today
+  const mint = sa.buildRotation({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-09",
+    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS, displayKeys: [],
+    rotationState: {}, prevBatchPids: null,
+  });
+  assert.equal(mint.batchDate, sa.buildStoreSnapshot({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-09",
+    stock: STOCK, products: PRODUCTS, refillRequests: {}, movements: [], routes: ROUTES,
+    rotationState: {}, displayKeys: [], prevBatchPids: null,
+  }).rotation.batchDate);
+});
+
 test("a stamp from BEFORE this batch was minted does not count as walked", () => {
   // The whole point of a rotation is that a product checked months ago comes
   // round again. Comparing against the batch's mint time, not merely "has a
