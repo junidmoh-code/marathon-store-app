@@ -276,10 +276,30 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
       };
     });
     if (!claim.committed) {
+      const wonBy = claim.snapshot && claim.snapshot.val();
+      // ── AN ABORT IS NOT ALWAYS A LOST RACE ──────────────────────────────
+      // `rowIsOpen` is STRICTER than `status !== "closed"`: it also demands a
+      // usable sizeKey. So a row that is genuinely open but carries a missing
+      // or all-underscore size aborts here too — and calling that "already
+      // closed" is false twice over. It tells the operator the work is done,
+      // and the wall-walk's `closeScanned` treats any ok:true as success and
+      // drops the row from the scan list. The row stays open and the one screen
+      // that could reach it stops offering it. The row's own `status` tells the
+      // two cases apart. (CodeRabbit.)
+      //
+      // RESIDUAL, stated because the refusal does not resolve it: a malformed
+      // open row is invisible to every list here (they all filter through
+      // rowIsOpen), so "fix the record first" currently means a hand repair.
+      // Loosening rowIsOpen on this path alone would put the client and the
+      // server's claimClose out of step, which is the trade this feature has
+      // already paid for four times. Left as an honest refusal.
+      if (wonBy && wonBy.status === "open") {
+        return { ok: false,
+          message: "That display record is open but carries no usable size, so it could not be closed — the record needs fixing first." };
+      }
       // Someone got there first. Report what the record actually says rather
       // than a bare failure — the operator's intent (this pair is not on the
       // wall) has been satisfied, just not by them.
-      const wonBy = claim.snapshot && claim.snapshot.val();
       const how = wonBy && wonBy.closedReason ? CLOSE_REASON_TEXT[wonBy.closedReason] || wonBy.closedReason : "closed";
       return { ok: true, stockMoved: false, alreadyClosed: true,
         warning: `That display record had already been closed (${how}) — left as it was, so the earlier reason is not overwritten.` };

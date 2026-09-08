@@ -59,7 +59,11 @@ vi.mock("firebase/database", () => ({
     const parts = String(path).split("/");
     const leaf = parts.pop();
     const parent = parts.join("/");
-    const cur = (DB[parent] || {})[leaf];
+    // readPath, the same resolver `get` uses. Reading DB[parent][leaf] directly
+    // agreed only while every test seeded the flat ROWS key; a deeper or
+    // shallower seed made `cur` null, the callback abort, and the test pass as
+    // an alreadyClosed race instead of exercising the close. (CodeRabbit.)
+    const cur = readPath(path);
     const next = fn(cur === undefined ? null : cur);
     if (next === undefined) return { committed: false, snapshot: { val: () => (cur === undefined ? null : cur) } };
     DB[parent] = { ...(DB[parent] || {}), [leaf]: next };
@@ -331,5 +335,31 @@ describe("a close never overwrites a close that got there first", () => {
     const res = await closeDisplayRow({ rows: {}, row: bad, reason: "corrected" });
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/cannot be stored as a path|cannot be an RTDB key/);
+  });
+});
+
+describe("an abort is not always a lost race", () => {
+  it("an OPEN row with an unusable sizeKey is REFUSED, not reported as already closed", async () => {
+    // rowIsOpen also demands a usable sizeKey, so a malformed-but-open row
+    // aborts the CAS. Calling that "already closed" is false twice over: the
+    // work is not done, and the wall walk's closeScanned drops any ok:true from
+    // the scan list — so the row would stay open with no screen able to reach
+    // it. (CodeRabbit.)
+    for (const bad of ["", "_", "___", undefined]) {
+      DB[ROWS] = { a: { ...row({ rowId: "a" }), sizeKey: bad } };
+      const res = await closeDisplayRow({ rows: {}, row: row({ rowId: "a" }), reason: "returned" });
+      expect(res.ok, `sizeKey=${String(bad)}`).toBe(false);
+      expect(res.alreadyClosed, `sizeKey=${String(bad)}`).toBeUndefined();
+      expect(res.message).toMatch(/no usable size/);
+      expect(DB[ROWS].a.status).toBe("open");        // and it stays open, truthfully
+    }
+  });
+
+  it("a genuinely CLOSED row still reports as already closed, with its reason", async () => {
+    DB[ROWS] = { a: { ...row({ rowId: "a" }), status: "closed", closedReason: "sold", closedVia: "pos_sale" } };
+    const res = await closeDisplayRow({ rows: {}, row: row({ rowId: "a" }), reason: "corrected" });
+    expect(res.ok).toBe(true);
+    expect(res.alreadyClosed).toBe(true);
+    expect(res.warning).toMatch(/sold/i);
   });
 });
