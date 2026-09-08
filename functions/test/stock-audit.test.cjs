@@ -140,7 +140,117 @@ test("saHour reads SAST, not UTC", () => {
   assert.equal(sa.saHour(Date.parse("2026-09-08T22:30:00.000Z")), 0);   // next SA day
 });
 
-// ── TAB A ────────────────────────────────────────────────────────────────────
+// ── TAB A — PER HUB, SNEAKERS, THE TWO ANSWERS THAT TURN A CUSTOMER AWAY ─────
+test("the hub list is the sneaker lines that hub answered with sold-out or tomorrow", () => {
+  const { rows, total } = sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS, orders: ORDERS,
+  });
+  assert.ok(rows.length >= 2, `fixture must produce real rows, got ${rows.length}`);
+  assert.equal(total, rows.length);
+  const by = Object.fromEntries(rows.map((r) => [r.k, r]));
+
+  // sold out against a cell the hub still believes holds three
+  assert.deepEqual(
+    { r: by["shoe__9__hub1"].r, q: by["shoe__9__hub1"].q, w: by["shoe__9__hub1"].w, s: by["shoe__9__hub1"].s },
+    { r: "out_of_stock", q: 3, w: "hub1", s: "9" });
+  // two customers refused the same size is ONE shelf to walk to
+  assert.equal(by["shoe__9__hub1"].c, 2);
+
+  assert.equal(by["boot__7__hub1"].r, "coming_tomorrow");
+  assert.equal(by["boot__7__hub1"].q, 0);
+
+  // RESOLVED lines are not checks — found and handed over
+  assert.equal(by["boot__8__hub1"], undefined, "a collected order is not a shelf to walk to");
+  assert.equal(by["boot__10__hub1"], undefined, "an order made ready is not either");
+  // out of window, never refused at all, out of scope, another hub's shelf
+  assert.equal(by["shoe__6__hub1"], undefined);
+  assert.equal(by["shoe__12__hub1"], undefined);
+  assert.equal(rows.some((r) => r.p === "tee"), false, "clothing is not in this tab");
+  assert.equal(rows.some((r) => r.w !== "hub1"), false, "and neither is another hub's shelf");
+});
+
+test("REJECTIONS AND NEGATIVE CELLS ARE NOT IN THIS TAB", () => {
+  // The tab is customers turned away, not two warehouses disagreeing. A refill
+  // request refused, and a cell gone negative, are both real problems that
+  // belong somewhere else.
+  const { rows } = sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: CFG, products: PRODUCTS,
+    stock: { hub1: { shoe: { 4: { qty: -6 } } } }, orders: {},
+  });
+  assert.deepEqual(rows, [], "a negative cell alone puts nothing on the list");
+});
+
+test("each hub gets its own list, and the legacy `hub` field still names one", () => {
+  const at = (hub) => sa.buildOutOfStock({ hub, nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS, orders: ORDERS }).rows;
+  assert.deepEqual(at("hub2").map((r) => r.k), ["shoe__11__hub2"]);
+  assert.deepEqual(at("hub3").map((r) => r.k), ["boot__9__hub3"]);   // order 10 has only `hub`
+  assert.deepEqual(at("central"), []);
+});
+
+test("a phantom leads the list, whatever the timestamps say", () => {
+  const { rows } = sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS, orders: ORDERS,
+  });
+  assert.equal(rows[0].k, "shoe__9__hub1");
+  assert.equal(rows[0].r, "out_of_stock");
+  assert.ok(rows[0].q > 0);
+  // and the rest follow the freshest answer
+  assert.equal(rows[1].k, "boot__7__hub1");
+});
+
+test("sold-out outranks coming-tomorrow on one cell, whichever was recorded last", () => {
+  const mk = (o) => ({ productType: "sneaker", placedAtHub: "hub1", productId: "shoe", size: "9", ...o });
+  const run = (orders) => sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS, orders,
+  }).rows[0];
+  const tom = mk({ comingTomorrowAt: iso(1 * 3600e3) });
+  const out = mk({ outOfStockAt: iso(5 * 3600e3) });
+  assert.equal(run({ a: out, b: tom }).r, "out_of_stock");
+  assert.equal(run({ b: tom, a: out }).r, "out_of_stock");
+  assert.equal(run({ a: out, b: tom }).c, 2);
+});
+
+test("the hub cap keeps the worst rows and says it truncated", () => {
+  const orders = {}, products = {}, hub1 = {};
+  for (let i = 0; i < 200; i++) {
+    const pid = `p${String(i).padStart(3, "0")}`;
+    products[pid] = { name: `Shoe ${i}`, category: "Footwear" };
+    hub1[pid] = { 9: { qty: i < 5 ? 2 : 0 } };          // the first five are phantoms
+    orders[`o${i}`] = { productType: "sneaker", placedAtHub: "hub1", productId: pid,
+                        productName: `Shoe ${i}`, size: "9", outOfStockAt: iso(3600e3) };
+  }
+  const { rows, total, truncated } = sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: sa.auditConfig({ maxOutOfStockRows: 20 }),
+    stock: { hub1 }, products, orders,
+  });
+  assert.equal(total, 200);
+  assert.equal(truncated, true);
+  assert.equal(rows.length, 20);
+  assert.equal(rows.slice(0, 5).every((r) => r.q > 0), true, "every phantom survives the cap");
+  assert.equal("at" in rows[0], false, "`at` is a sort key, never snapshot bytes");
+});
+
+test("the cell key is /stock's own fold, so a half size names the cell that exists", () => {
+  assert.equal(sa.stockSizeKey("5.5"), "5_5");
+  assert.equal(sa.stockSizeKey(5.5), "5_5");
+  assert.equal(sa.stockSizeKey(" 8"), "_8");
+  assert.equal(sa.stockSizeKey("Free Size"), "_");
+  assert.equal(sa.stockSizeKey(null), "_");
+  const { rows } = sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: CFG, products: PRODUCTS,
+    stock: { hub1: { shoe: { "5_5": { qty: 2 } } } },
+    orders: { a: { productType: "sneaker", placedAtHub: "hub1", productId: "shoe",
+                   productName: "AF1", size: "5.5", outOfStockAt: iso(3600e3) } },
+  });
+  assert.equal(rows[0].sk, "5_5", "the KEY is the cell's own");
+  assert.equal(rows[0].s, "5.5", "the LABEL is what the person holding the shoe reads");
+  assert.equal(sa.sizeLabel("_"), "One size");
+  assert.equal(sa.sizeLabel("ONE_SIZE"), "ONE_SIZE", "a broad underscore replace would mangle this");
+  assert.equal(sa.sizeLabel("XXXL"), "XXXL");
+  assert.equal(rows[0].q, 2, "the row must read the cell that actually holds the units");
+});
+
+
 test("the rotation universe is clothing this shop HOLDS and has NOT SOLD", () => {
   const all = sa.rotationUniverse({ store: "marathon-pe", stock: STOCK, products: PRODUCTS });
   assert.deepEqual(all.map((x) => x.pid).sort(), ["belt", "hood", "tee"]);

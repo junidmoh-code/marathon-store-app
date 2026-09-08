@@ -173,11 +173,17 @@ function nameOf(products, pid) {
   return String(products?.[pid]?.name || pid);
 }
 
-// Decode "_" back to the empty/one-size label the shop screens use. Every other
-// key round-trips through the engine encoder unchanged for clothing sizes
-// (S–XXXL contain no illegal character), so this is the only case to handle.
+// The size as a human reads it, from the /stock key it is stored under.
+//
+// Mirrors src/utils/sizeKey.js decodeSizeKey: only digit_digit becomes a
+// decimal ("5_5" -> "5.5"), never a broad underscore replace, which would
+// mangle "ONE_SIZE" and the "_" sentinel. Clothing runs S–XXXL and needed
+// nothing but the sentinel — but Tab A is SNEAKERS, where half sizes are
+// ordinary, and a row reading "5_5" is a row that looks like a bug to the
+// person holding the shoe.
 function sizeLabel(sizeKey) {
-  return sizeKey === "_" ? "One size" : sizeKey;
+  if (sizeKey === "_") return "One size";
+  return String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2");
 }
 
 // ─── TAB A — OUT OF STOCK CHECKS (per hub, sneakers) ─────────────────────────
