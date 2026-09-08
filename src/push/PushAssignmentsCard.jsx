@@ -4,13 +4,22 @@
 //
 // ── WHAT IT HAS TO SHOW, AND WHY EACH IS DELIBERATE ─────────────────────────
 //
-//   EVERY ACCOUNT, not the ones with a stockRole. Of ~31 staff accounts, 7
-//   carry no stockRole at all and several carry no destShop. Under the model
-//   this replaces those people were invisible to the whole feature — they had
-//   no role default, so nothing resolved for them, and nobody could tell.
-//   They are exactly the accounts most likely to need an explicit decision, so
+//   EVERY PERSON, not the ones with a stockRole. Of 35 accounts, 9 carry no
+//   stockRole at all and several carry no destShop. Under the model this
+//   replaces those people were invisible to the whole feature — they had no
+//   role default, so nothing resolved for them, and nobody could tell. They
+//   are exactly the accounts most likely to need an explicit decision, so
 //   filtering the list by any field would hide the people the screen exists
-//   for. Nothing is hidden; the missing fields are shown as missing.
+//   for. Their missing fields are shown as missing, never used to exclude them.
+//
+//   THE ONE EXCLUSION IS TILL LOGINS, and it is a positive identification, not
+//   a filter: the POS app shares this Firebase project and writes a /users
+//   record for every till login, which arrives with stockRole "pos" and NO
+//   store-app identity at all — so nine rows on this screen were named after a
+//   raw Firebase uid, for accounts with no browser to notify. They are not
+//   people and cannot receive anything. The predicate and the reason a
+//   stockRole test alone is wrong (it would hide Zee) live in
+//   src/push/staffRoster.js. Anything ambiguous still shows.
 //
 //   WHETHER A DEVICE CAN ACTUALLY BE REACHED. An assignment to somebody with no
 //   live push token is a decision that will never produce a notification —
@@ -86,6 +95,7 @@ import { get, ref, update } from "firebase/database";
 import { database } from "../firebase";
 import { serverNowMs } from "../utils/serverTime";
 import { readByKeyPages } from "./pagedRead";
+import { partitionRoster } from "./staffRoster";
 import {
   PUSH_HUBS,
   PUSH_HUB_LABEL,
@@ -144,13 +154,14 @@ function PushAssignmentsAuthed({ onExit }) {
   const [assignError, setAssignError] = useState(null);
   const [tokensError, setTokensError] = useState(null);
   const [truncated, setTruncated] = useState(false);
+  const [hiddenPos, setHiddenPos] = useState(0);   // till logins left off the list
   const [failedUids, setFailedUids] = useState({});   // uid → true while its last save was refused
   const [saving, setSaving] = useState({});     // uid → true while a write is in flight
   const [savedAt, setSavedAt] = useState({});   // uid → ms, drives the "Saved ✓" pulse
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
-    setLoadError(null); setAssignError(null); setTokensError(null); setTruncated(false);
+    setLoadError(null); setAssignError(null); setTokensError(null); setTruncated(false); setHiddenPos(0);
 
     // The two node reads are independent, so neither waits on the other and
     // neither can reject the other. allSettled, not all: that IS the bug.
@@ -184,11 +195,24 @@ function PushAssignmentsAuthed({ onExit }) {
       setAssignError(e && e.message ? e.message : "Could not read who is assigned.");
     }
 
-    const list = Object.entries(users)
+    // ── WHO IS ON THE LIST ─────────────────────────────────────────────────
+    // Two exclusions, both positive identifications, both counted rather than
+    // silent: a uid that cannot be an RTDB path segment, and a POS till login.
+    // Everything else is shown, however sparse its record.
+    const candidates = Object.entries(users)
       // A uid that could not be a path segment cannot be assigned, and must
       // not be offered as if it could — the save would throw at the SDK.
       .filter(([uid]) => isLegalKey(uid))
       .map(([uid, rec]) => ({
+        uid,
+        record: rec,
+        hubs: assignRes.status === "fulfilled" ? assignedHubs(assignments[uid]) : [],
+      }));
+    const { visible, hiddenPosOnly } = partitionRoster(candidates);
+    setHiddenPos(hiddenPosOnly);
+
+    const list = visible
+      .map(({ uid, record: rec, hubs }) => ({
         uid,
         name: String((rec && rec.displayName) || (rec && rec.username) || uid),
         email: (rec && rec.email) || null,
@@ -199,7 +223,7 @@ function PushAssignmentsAuthed({ onExit }) {
         destShop: (rec && rec.destShop) || null,
         // null = not known yet / could not be read. NOT the same as 0.
         devices: null,
-        hubs: assignRes.status === "fulfilled" ? assignedHubs(assignments[uid]) : [],
+        hubs,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -353,6 +377,14 @@ function PushAssignmentsAuthed({ onExit }) {
               <span style={{ color: AMBER }}>{rows.length} accounts · assignments could not be read</span>
             ) : (
               <span><strong style={{ color: "#fff" }}>{assignedCount}</strong> of {rows.length} assigned</span>
+            )}
+            {hiddenPos > 0 && (
+              // Stated, not silent. A row quietly missing from this screen is
+              // a person who can never be assigned and nobody would know to
+              // look for.
+              <span>
+                {hiddenPos} till login{hiddenPos > 1 ? "s" : ""} not shown
+              </span>
             )}
             {undeliverable > 0 && (
               <span style={{ color: AMBER }}>
