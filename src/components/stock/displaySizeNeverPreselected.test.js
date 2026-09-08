@@ -132,3 +132,42 @@ describe("the one-request guard cannot silently outgrow the feed it reads", () =
     expect(WALL).toContain("const canRequest = !ordersScope || ordersScope === store;");
   });
 });
+
+// ─── CLAUSE 1 SITS ON THE PATH THAT MINTS THE TASK ──────────────────────────
+//
+// The READY re-stamp IS the auto-raise — it schedules the refill task the
+// warehouse sees fifteen minutes later, and nothing raises it by hand. The
+// guard sat on the two places a request is CREATED and not on the two that
+// RE-OPEN one, which left two reachable routes to two pairs on one wall
+// (OOS→Available re-stamping a cleared order, and an undo re-opening one after
+// a newer request was raised).
+//
+// These are source pins because neither path is reachable from a unit test —
+// they live inside WarehouseView's status handler and its undo, both of which
+// need the whole warehouse screen. The predicate itself is exercised properly
+// in displayRowCore.test.js. (Spec-conformance review.)
+describe("the re-openers ask the guard before they re-open", () => {
+  it("the READY re-stamp is conditional on no OTHER open request", () => {
+    // The stamp must not be an unconditional `= now` any more.
+    expect(APP).toContain("patch.displayRefillScheduledAt     = blockers.length ? null : now;");
+    expect(APP).toMatch(/otherOpenDisplayRequests\(orders, \{ store: reqStore, productId: order\.productId, exceptId: order\.id \}\)/);
+  });
+
+  it("the READY path still lets the CUSTOMER's half through — no early return", () => {
+    // Withholding the wall's task must never swallow the order_ready WhatsApp
+    // or the insight log. An early return in that branch would do both.
+    const readyBranch = APP.slice(APP.indexOf("CLAUSE 1 ON THE PATH THAT ACTUALLY MINTS"), APP.indexOf("Phase 14B: refill task routes by where"));
+    expect(readyBranch).not.toMatch(/\breturn;/);
+  });
+
+  it("the refill undo refuses when another request holds the wall", () => {
+    expect(APP).toMatch(/otherOpenDisplayRequests\(orders, \{ store: undoStore, productId: order\.productId, exceptId: order\.id \}\)/);
+    expect(APP).toMatch(/if \(undoBlockers\.length\) \{[\s\S]{0,400}?return;/);
+  });
+
+  it("both re-openers exclude the order in hand, or they would block themselves", () => {
+    const uses = APP.match(/otherOpenDisplayRequests\([^)]*\)/g) || [];
+    expect(uses.length).toBeGreaterThanOrEqual(2);
+    for (const u of uses) expect(u).toMatch(/exceptId: order\.id/);
+  });
+});

@@ -9,7 +9,7 @@ import {
   duplicateDisplayGroups, duplicateRowCount,
   unregisteredDisplayCandidates, filterCandidates, brandsOf,
   rowTimeline, sendPlan, closeRowPlan, openRowPlan, closeEffectLine,
-  isOpenDisplayRequest, openRequestIndex, hasOpenDisplayRequest, duplicateOpenRequests,
+  isOpenDisplayRequest, openRequestIndex, hasOpenDisplayRequest, otherOpenDisplayRequests, duplicateOpenRequests,
   requestStoreFor, rowPath, CLOSE_REASONS, registeredDisplays, rowSegment, storeRowsPath,
 } from "./displayRowCore";
 
@@ -535,5 +535,62 @@ describe("a pending auto-raised refill task keeps the wall fenced", () => {
     // The status patch nulls scheduledAt when a READY order leaves the lane for
     // anything but COLLECTED, so the wall stops being fenced.
     expect(isOpenDisplayRequest(task({ displayRefillScheduledAt: null, status: "out_of_stock" }))).toBe(false);
+  });
+});
+
+// ─── THE GUARD ON THE PATHS THAT RE-OPEN A REQUEST ──────────────────────────
+//
+// The one-open-request guard sat on the two places a request is CREATED, and
+// not on the two that RE-OPEN one — the READY re-stamp and the refill undo.
+// Both are second-openers, and both had reachable routes to two pairs on one
+// wall:
+//
+//   OOS -> Available: order A goes out of stock, scheduledAt is cleared and A
+//     reads closed; order B is raised for the same wall and correctly passes;
+//     A's "Available" button runs updateStatus(READY) and re-stamps A. Two due
+//     tasks.
+//   Undo after a newer request: A reads "refilled" so B passes the guard; the
+//     operator then undoes A, which nulls displayRefillStatus and leaves
+//     scheduledAt. Two.
+//
+// Both need `exceptId`: the order in hand is the one about to be opened, and
+// without the exclusion it would block itself. (Spec-conformance review.)
+describe("a re-opener asks whether any OTHER request is open", () => {
+  const req = (id, o = {}) => ({
+    id, requestDisplayPartner: true, productId: "p1", destShop: "trophy",
+    displayRefillScheduledAt: "2026-09-08T12:00:00.000Z", displayRefillStatus: null,
+    status: "ready", ...o,
+  });
+
+  it("an order does not block itself", () => {
+    const orders = [req("100")];
+    expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p1", exceptId: "100" })).toBe(false);
+    // ...but it does block a DIFFERENT order re-opening onto the same wall
+    expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p1", exceptId: "101" })).toBe(true);
+  });
+
+  it("without exceptId the behaviour is exactly what it was", () => {
+    const orders = [req("100")];
+    expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p1" })).toBe(true);
+    expect(hasOpenDisplayRequest([], { store: "trophy", productId: "p1" })).toBe(false);
+  });
+
+  it("the id comparison survives a numeric id meeting a string one", () => {
+    // /orders ids are daily counters and reach this as both shapes.
+    expect(hasOpenDisplayRequest([req(100)], { store: "trophy", productId: "p1", exceptId: "100" })).toBe(false);
+    expect(hasOpenDisplayRequest([req("100")], { store: "trophy", productId: "p1", exceptId: 100 })).toBe(false);
+  });
+
+  it("otherOpenDisplayRequests NAMES the blocker, so a refusal is actionable", () => {
+    const orders = [req("100"), req("101"), req("102", { destShop: "marathon-pe" })];
+    const blockers = otherOpenDisplayRequests(orders, { store: "trophy", productId: "p1", exceptId: "100" });
+    expect(blockers.map((o) => o.id)).toEqual(["101"]);
+    expect(otherOpenDisplayRequests(orders, { store: "trophy", productId: "p1", exceptId: "999" }).length).toBe(2);
+    expect(otherOpenDisplayRequests(orders, { store: null, productId: "p1" })).toEqual([]);
+  });
+
+  it("a RESOLVED other order is not a blocker — the wall is free again", () => {
+    const orders = [req("101", { displayRefillStatus: "refilled" })];
+    expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p1", exceptId: "100" })).toBe(false);
   });
 });

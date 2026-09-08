@@ -40,6 +40,7 @@ import { decodeSizeKey } from "../../utils/sizeKey";
 import { isFootwearProduct } from "./availabilityCore";
 import { recordDisplayFact, editDisplaySize, removeDisplayFact } from "./displayRegistrationStore";
 import { usePermissions } from "../PermissionsContext";
+import StockErrorBoundary from "./StockErrorBoundary";
 import DuplicateDisplaysTab from "./DuplicateDisplaysTab";
 import UnregisteredDisplaysTab from "./UnregisteredDisplaysTab";
 
@@ -78,7 +79,11 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const [note, setNote] = useState(null);         // { tone: "ok"|"err"|"warn", text }
 
   const slots = useDisplaySlots(true);
-  const register = useDisplayRegister(hub, true);
+  // Only while a register pane is showing: the hub register is ~172 KB and
+  // the cleanup panes do not read it. `hub` pins to hub1 off those panes, so
+  // without this the card would stream Hub 1's register the whole time an
+  // operator is browsing the wall walk. (Senior-architect review.)
+  const register = useDisplayRegister(hub, isRegisterPane);
 
   // SNEAKERS ONLY (owner ask, 2026-08-26): the display walls hold footwear —
   // clothing, perfume and accessories never appear here, by search or by scan.
@@ -220,8 +225,16 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
         )}
       </div>
 
-      {pane === "dupes" && <DuplicateDisplaysTab products={products} isAdmin={isAdmin} />}
-      {pane === "wall" && <UnregisteredDisplaysTab products={products} orders={orders} ordersScope={ordersScope} isAdmin={isAdmin} />}
+      {/* THE ERROR BOUNDARY MOVES WITH THEM. In the Stock console both tabs were
+          wrapped in StockErrorBoundary, so a render throw degraded to "this one
+          tab is broken" and the rest of the console stayed usable. Unwrapped
+          here, the only boundary left is AppErrorBoundary — mounted once per
+          ROLE — so a bad row shape in the wall walk would tear down the whole
+          Display Registration card, taking an operator's half-finished Hub 1
+          registration with it. Moving a screen has to move what was protecting
+          it. (Senior-architect review.) */}
+      {pane === "dupes" && <StockErrorBoundary><DuplicateDisplaysTab products={products} isAdmin={isAdmin} /></StockErrorBoundary>}
+      {pane === "wall" && <StockErrorBoundary><UnregisteredDisplaysTab products={products} orders={orders} ordersScope={ordersScope} isAdmin={isAdmin} /></StockErrorBoundary>}
 
       {isRegisterPane && (<>
 

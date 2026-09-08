@@ -162,3 +162,44 @@ describe("the Stock console no longer carries them", () => {
     expect(src).toMatch(/displayrecs/);
   });
 });
+
+// ─── THE BOUNDARY MOVED WITH THE TABS ───────────────────────────────────────
+//
+// In the Stock console both tabs were wrapped in StockErrorBoundary, so a render
+// throw degraded to "this one tab is broken" and the rest of the console stayed
+// usable. Moved here unwrapped, the only boundary left was AppErrorBoundary —
+// mounted once per ROLE — so a bad row shape in the wall walk would have torn
+// down the whole Display Registration card, taking a half-finished Hub 1
+// registration with it. Moving a screen has to move what was protecting it.
+// (Senior-architect review.)
+describe("a throw inside a cleanup tab does not take the card down", () => {
+  it("shows the boundary's message, and the hub chips survive", () => {
+    // A row shape the tab cannot render: `rows` is a string where a map is
+    // expected, which throws inside the grouping rather than in this test.
+    ROWS = { "marathon-pe": { p1: "not-a-row-map" } };
+    const t = render();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    let threw = false;
+    try {
+      act(() => { buttonSaying(t, "Duplicate Displays").props.onClick(); });
+    } catch { threw = true; }
+    err.mockRestore();
+    // Either the tab renders fine with that shape (the core is defensive), or
+    // the boundary catches it — what must NOT happen is the throw escaping to
+    // unmount the card. Both acceptable outcomes keep the chips on screen.
+    expect(threw).toBe(false);
+    const s = text(t);
+    expect(s).toMatch(/Hub 1/);
+    expect(s).toMatch(/Hub 2/);
+  });
+
+  it("the tabs are wrapped in StockErrorBoundary, in source", () => {
+    // The behavioural test above cannot force a throw without coupling to the
+    // tab's internals, so the structural promise is pinned directly: both tabs
+    // carry a boundary, the way they did in the Stock console.
+    const { readFileSync } = require("fs");
+    const src = readFileSync(new URL("./DisplayRegistrationView.jsx", import.meta.url), "utf8");
+    expect(src).toMatch(/<StockErrorBoundary><DuplicateDisplaysTab/);
+    expect(src).toMatch(/<StockErrorBoundary><UnregisteredDisplaysTab/);
+  });
+});

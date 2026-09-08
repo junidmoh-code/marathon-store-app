@@ -654,9 +654,23 @@ export function openRequestIndex(orders) {
  * already getting one) is cheap to get wrong in the safe direction — the
  * operator can always raise it again once the first resolves.
  */
-export function hasOpenDisplayRequest(orders, { store, productId }) {
+export function hasOpenDisplayRequest(orders, { store, productId, exceptId = null }) {
   if (!store || !productId) return false;
-  return (openRequestIndex(orders).get(`${store}::${productId}`) || []).length > 0;
+  const list = openRequestIndex(orders).get(`${store}::${productId}`) || [];
+  // `exceptId` is for the paths that RE-OPEN an existing request rather than
+  // raise a new one — the READY re-stamp and the refill undo. They have to ask
+  // "is any OTHER request open for this wall", because the order in their hand
+  // is the one they are about to open and would otherwise block itself.
+  return list.some((o) => !exceptId || String(o.id) !== String(exceptId));
+}
+
+/** The other open requests for this wall, so a refusal can NAME the one that
+ *  blocked it. A message that says which order to look at is actionable; "there
+ *  is already one" sends an operator hunting. */
+export function otherOpenDisplayRequests(orders, { store, productId, exceptId = null }) {
+  if (!store || !productId) return [];
+  return (openRequestIndex(orders).get(`${store}::${productId}`) || [])
+    .filter((o) => !exceptId || String(o.id) !== String(exceptId));
 }
 
 /** Products holding MORE THAN ONE open request, for the census and the report. */

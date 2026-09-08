@@ -112,7 +112,7 @@ import { sellableLocations, labelFor, transferTargets, warehouseLocations } from
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
-import { hasOpenDisplayRequest, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
+import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -11799,7 +11799,36 @@ function WarehouseView({ products = [], orders, onExit }) {
         // Resolved through the UNFILTERED index — an order stamped with a
         // merged-away productId must still route by its survivor's hubs.
         const product = resolveProductById(order.productId);
-        patch.displayRefillScheduledAt     = now;
+        // ── CLAUSE 1 ON THE PATH THAT ACTUALLY MINTS THE TASK ──────────────
+        // This line IS the auto-raise: it schedules the refill task the
+        // warehouse sees fifteen minutes later, and nothing raises it by hand.
+        // The one-open-request guard sat on the two places a request is CREATED
+        // and not here, where one is RE-OPENED — so the reachable second-opener
+        // was:
+        //
+        //   order A goes out of stock  -> scheduledAt cleared, A reads closed
+        //   someone raises order B for the same wall  -> guard passes, correctly
+        //   A's "Available" button  -> markSentWithTransfer -> READY -> re-stamp
+        //   result: two due tasks, two pairs walked to one wall.
+        //
+        // A wall that already has an open request does not get a second task.
+        // The order still goes READY — that is the customer's half and it is
+        // real — it simply does not schedule a duplicate refill.
+        // (Spec-conformance review.)
+        const reqStore = requestStoreFor(order);
+        const blockers = reqStore
+          ? otherOpenDisplayRequests(orders, { store: reqStore, productId: order.productId, exceptId: order.id })
+          : [];
+        //
+        // NO EARLY RETURN. The order still goes READY and everything the
+        // CUSTOMER's half depends on still happens — the insight log, the
+        // order_ready WhatsApp, the normal write below. Only the wall's refill
+        // task is withheld. Returning here would have silently swallowed a
+        // customer notification to enforce a rule about a display wall.
+        patch.displayRefillScheduledAt     = blockers.length ? null : now;
+        if (blockers.length) {
+          console.warn(`Display refill NOT scheduled for #${order.id}: order #${blockers[0].id} already holds an open display request for ${order.productId} at ${reqStore}.`);
+        }
         // Phase 14B: refill task routes by where the order was placed —
         // Pine-placed orders go to Hub 3's refill section. Falls back to the
         // product's stocking hub for legacy orders without placedAtHub.
@@ -12280,6 +12309,26 @@ function WarehouseView({ products = [], orders, onExit }) {
   // alone so the original 15-min window resumes from where it was.
   const undoDisplayRefill = async (order) => {
     const now = serverNowIso();
+    // ── CLAUSE 1 REACHES THE UNDO TOO ──────────────────────────────────────
+    // An undo RE-OPENS this order's refill task: it nulls displayRefillStatus
+    // and deliberately leaves displayRefillScheduledAt, so the wall is owed a
+    // pair again. That makes it a second-opener, and it had no guard — so if a
+    // newer request was raised for the same wall while this one read as
+    // "refilled", undoing produced two open tasks and two pairs would be walked
+    // to one wall.
+    //
+    // Refused rather than silently skipped, because an undo is a deliberate
+    // operator action and they need to know why nothing happened — and the
+    // message names the order to look at instead of sending them hunting.
+    // (Spec-conformance review.)
+    const undoStore = requestStoreFor(order);
+    const undoBlockers = undoStore
+      ? otherOpenDisplayRequests(orders, { store: undoStore, productId: order.productId, exceptId: order.id })
+      : [];
+    if (undoBlockers.length) {
+      window.alert(`Order #${undoBlockers[0].id} already has an open display request for this shoe at ${SHOP_LABELS[undoStore] || undoStore}. Undoing this one would send a second pair to the same wall — resolve that task instead. Nothing was changed.`);
+      return;
+    }
     // THE SAME READINESS GATE THE SEND HAS, for the same reason and in the
     // opposite direction. An unanswered subscription and an empty ledger are
     // the same null, so an undo before the node answers would find no rows,
