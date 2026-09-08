@@ -367,8 +367,25 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
     expect(slotsAfterOrderExits(slots, landed)).toBe(slots);
     // A `__proto__` store or product id is data, not a prototype assignment.
+    //
+    // The projection only builds a fresh (null-prototype) map when it has a
+    // change to make, and the change here is the CREATE lane: `landed` names a
+    // store this slot map has no record for, so it has to clear the seven-day
+    // create bound (`DISPLAY_EXIT_CREATE_MAX_AGE_MS`) to count. With `nowMs`
+    // left to default this assertion held for exactly seven days after the
+    // fixture's instant and then began failing on the clock alone — it did, on
+    // 2026-09-08. The claim being made is that `__proto__` is data, which has
+    // no date in it, so the instant is pinned here rather than the bound moved.
     const evil = { __proto__: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
-    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed))).toBe(null);
+    const justAfter = Date.parse("2026-09-01T09:00:00.000Z");
+    const evilOut = slotsAfterOrderExits({ ...evil, ok: {} }, landed, justAfter);
+    expect(Object.getPrototypeOf(evilOut)).toBe(null);
+    // And the pin is not doing the assertion's work for it: the fresh map is
+    // only built when there is a change, so this proves the create lane really
+    // fired. Without it a future bound change would make the line above pass by
+    // returning the caller's own object, which has an Object prototype — i.e.
+    // it would fail loudly, not silently, but the intent is worth stating.
+    expect(Object.keys(evilOut).sort()).toEqual(["marathon-pe", "ok"]);
     expect(slotsAfterOrderExits(null, [])).toEqual({});
     expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
