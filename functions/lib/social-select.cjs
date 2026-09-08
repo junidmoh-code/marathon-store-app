@@ -83,12 +83,14 @@ const KIND_KEYS = POST_KINDS.map((k) => k.key);
 // to a page that says sold out — which is the exact class of bug the parity
 // test was written for, one location wider. Going quieter on 43 products is
 // the right side of that trade.
-// Immutable FOR REAL. `Object.freeze(new Set([...]))` does not stop `.add()`,
-// `.delete()` or `.clear()` — a Set's entries live in internal slots, so
-// freezing seals its own properties and nothing else, while `Object.isFrozen`
-// still answers true. This set decides what a stranger can buy, so its
-// mutators refuse instead of pretending. (Mirror of sealedSet in
-// scripts/shopify/inventory.mjs, where the full reasoning lives.)
+// `Object.freeze(new Set([...]))` does not stop `.add()`, `.delete()` or
+// `.clear()` — a Set's entries live in internal slots, so freezing seals its
+// own properties and nothing else, while `Object.isFrozen` still answers true.
+// This set decides what a stranger can buy, so its mutators refuse instead of
+// pretending. It shadows the instance methods, which stops every ordinary
+// mutation; `Set.prototype.add.call(set, x)` still gets through and is left
+// open on purpose. (Mirror of sealedSet in scripts/shopify/inventory.mjs,
+// where that trade-off is argued out.)
 function sealedSet(ids) {
   const set = new Set(ids);
   for (const method of ["add", "delete", "clear"]) {

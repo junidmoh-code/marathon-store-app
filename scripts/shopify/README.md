@@ -114,9 +114,13 @@ Pure modules, tested via the normal `npm test`:
 
 ### Trusting a location again (or distrusting a new one)
 
-Not a one-line edit — the list is mirrored into two Cloud Functions, so
-**five files and three deploys**. The contract tests fail loudly if you miss
-one, which is what they are for.
+Not a one-line edit — the list is mirrored into two Cloud Functions and named
+by three test files, so **six files, three named function deploys, a mini pull,
+a full inventory correction and a search-index rebuild**. (The first version of
+this paragraph said five files while listing six below it, which is a small
+thing except that this paragraph exists because the comment it replaced
+undercounted the same work.) The contract tests fail loudly if you miss a
+copy, which is what they are for.
 
 1. Measure it first: `node scripts/shopify/census-online-locations.mjs --exclude hub3`
    (the census compares an explicit baseline against an explicit proposal, so

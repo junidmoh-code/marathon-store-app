@@ -63,9 +63,21 @@ import { stockSizeKey } from "../../src/utils/sizeKey.js";
 // went from 2 back to 14. The safeguard was decorative, and the test that
 // asserted `Object.isFrozen` certified the decoration.
 //
-// So the mutators are replaced with throwers. That is a real refusal — the
-// only kind worth writing next to a number that decides what a stranger can
-// buy.
+// So the mutators are shadowed with throwers. WHAT THAT DOES AND DOES NOT
+// STOP, stated exactly, because the whole point of this block is that a
+// confident comment is not a guarantee:
+//
+//   STOPS   set.add("x") / set.delete("x") / set.clear() — every ordinary
+//           way a line of code in this repo would change it, deliberately or
+//           by accident. That is the failure being defended against.
+//   DOES NOT STOP  Set.prototype.add.call(set, "x"), which reaches the
+//           internal slots without touching the instance's own properties.
+//           Reproduced: it appends and does not throw. Closing it needs a
+//           Proxy, and a Proxy would have to re-bind every method on every
+//           `get` — including the `.has()` this trigger calls on every stock
+//           movement, the busiest write path in the database. Not worth it
+//           for a bypass nobody reaches by accident. It is named here rather
+//           than left for the next reviewer to find.
 function sealedSet(ids) {
   const set = new Set(ids);
   for (const method of ["add", "delete", "clear"]) {

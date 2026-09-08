@@ -130,7 +130,13 @@ for (let i = 0; i < livePids.length; i += BATCH) {
 }
 console.log(`  …${livePids.length}/${livePids.length} scanned      \n`);
 
-console.log("── 1. WHAT EACH LOCATION CONTRIBUTES TO THE STOREFRONT TODAY ──────────");
+// The heading names the POOL these figures are measured on. It used to say
+// "TODAY", which stopped being true the moment the exclusion shipped: a
+// location under discussion contributes 0 today by definition, and the number
+// worth seeing is what it HOLDS — measured on the baseline, which is what
+// makes "and here is what dropping it would cost" a comparison rather than a
+// tautology.
+console.log("── 1. WHAT EACH LOCATION HOLDS FOR LIVE PRODUCTS (baseline pool) ──────");
 const totalUnits = sum(Object.fromEntries(Object.entries(contrib).map(([k, v]) => [k, v.units])));
 const order = Object.entries(contrib).sort((a, b) => b[1].units - a[1].units);
 for (const [loc, v] of order) {

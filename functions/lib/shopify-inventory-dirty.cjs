@@ -45,12 +45,14 @@
 // never marked and the storefront drifts silently; in the other, a marker is
 // written forever with nothing to do. The contract test in
 // scripts/shopify/inventorySync.test.mjs pins them by IMPORT.
-// Immutable FOR REAL. `Object.freeze(new Set([...]))` does not stop `.add()`,
-// `.delete()` or `.clear()` — a Set's entries live in internal slots, so
-// freezing seals its own properties and nothing else, while `Object.isFrozen`
-// still answers true. This set decides what a stranger can buy, so its
-// mutators refuse instead of pretending. (Mirror of sealedSet in
-// scripts/shopify/inventory.mjs, where the full reasoning lives.)
+// `Object.freeze(new Set([...]))` does not stop `.add()`, `.delete()` or
+// `.clear()` — a Set's entries live in internal slots, so freezing seals its
+// own properties and nothing else, while `Object.isFrozen` still answers true.
+// This set decides what a stranger can buy, so its mutators refuse instead of
+// pretending. It shadows the instance methods, which stops every ordinary
+// mutation; `Set.prototype.add.call(set, x)` still gets through and is left
+// open on purpose. (Mirror of sealedSet in scripts/shopify/inventory.mjs,
+// where that trade-off is argued out.)
 function sealedSet(ids) {
   const set = new Set(ids);
   for (const method of ["add", "delete", "clear"]) {
