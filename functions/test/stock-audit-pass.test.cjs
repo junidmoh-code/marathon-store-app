@@ -237,3 +237,38 @@ test("the standing batch is carried on a non-rotation day and re-minted on one",
   assert.equal(snap2.rotation.refreshed, true);
   assert.deepEqual(snap2.rotation.rows.map((r) => r.p), ["a"], "the checked product goes to the back");
 });
+
+// ── the one call that is not the Admin SDK ───────────────────────────────────
+test("the shallow read is BOUNDED — a stalled fetch must not hold the scan's run lock", async () => {
+  const calls = [];
+  const realFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url, signal: opts?.signal });
+    return { ok: true, json: async () => ({ "a__M": true, "b__L": true }) };
+  };
+  try {
+    const app = { options: { databaseURL: "https://db.example.com", credential: { getAccessToken: async () => ({ access_token: "t" }) } } };
+    const keys = await pass.restShallowKeys(app, "displayChecks_active/trophy");
+    assert.deepEqual(keys, ["a__M", "b__L"]);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\?shallow=true$/);
+    // The token travels in the header, never the query string (logs).
+    assert.equal(calls[0].url.includes("t"), calls[0].url.includes("t"));
+    assert.equal(/access_token|auth=/.test(calls[0].url), false);
+    // AN ABORT SIGNAL IS PRESENT AND ARMED. `fetch` has no default timeout, and
+    // this runs inside refillHealthScan while it holds the engine's exclusive
+    // run lock — a hang would let the 10-minute steal fire under a live run.
+    assert.ok(calls[0].signal, "no AbortSignal was passed to fetch");
+    assert.equal(typeof calls[0].signal.aborted, "boolean");
+    assert.ok(pass.SHALLOW_TIMEOUT_MS > 0 && pass.SHALLOW_TIMEOUT_MS <= 60e3);
+  } finally { global.fetch = realFetch; }
+});
+
+test("a non-OK shallow response is an error, not an empty key list", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 403, json: async () => ({}) });
+  try {
+    const app = { options: { databaseURL: "https://db.example.com", credential: { getAccessToken: async () => ({ access_token: "t" }) } } };
+    await assert.rejects(() => pass.restShallowKeys(app, "displayChecks_active/trophy"), /403/);
+  } finally { global.fetch = realFetch; }
+});

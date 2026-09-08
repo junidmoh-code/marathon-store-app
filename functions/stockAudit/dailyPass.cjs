@@ -45,10 +45,24 @@ const RESULTS_KEEP_DAYS = 60;
 // not cost the node's full weight. The OAuth token travels in the header, never
 // the query string (query strings leak into logs) — the rule scripts/lib
 // established and the reason that helper exists.
+// BOUNDED, because this is the only call in the pass that is not the Admin SDK.
+// `fetch` has no default timeout: a stalled connection hangs forever, and this
+// runs INSIDE refillHealthScan while it holds the engine's exclusive run lock.
+// A hang would burn the function's whole invocation, let the 10-minute lock
+// steal fire, and let a second run start against state the first still thinks
+// it owns — the audit's cheapest read taking down the thing that restocks the
+// shops. The timeout lands on the per-store failure path like any other error:
+// the list is still built, the display signal reads "unavailable", and the
+// screen says so. (CodeRabbit, PR #580.)
+const SHALLOW_TIMEOUT_MS = 15e3;
+
 async function restShallowKeys(app, path) {
   const token = await app.options.credential.getAccessToken();
   const res = await fetch(`${app.options.databaseURL}/${path}.json?shallow=true`, {
     headers: { Authorization: `Bearer ${token.access_token}` },
+    // Covers the response body too, not just the connection: a server that
+    // sends headers and then stalls mid-body is the same hang.
+    signal: AbortSignal.timeout(SHALLOW_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`shallow read of /${path} failed: ${res.status}`);
   const val = await res.json();
@@ -160,4 +174,4 @@ async function runStockAuditPass({
   return { saDate, stores: written };
 }
 
-module.exports = { runStockAuditPass, prunableResultDays, restShallowKeys, CONFIG_PATH, STATE_PATH, RESULTS_KEEP_DAYS };
+module.exports = { runStockAuditPass, prunableResultDays, restShallowKeys, CONFIG_PATH, STATE_PATH, RESULTS_KEEP_DAYS, SHALLOW_TIMEOUT_MS };

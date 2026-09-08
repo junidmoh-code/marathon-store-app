@@ -21,7 +21,7 @@
 // rotates on its own three mornings a week; a list that only appears when
 // somebody remembers to press something is a list nobody reads.
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { CARD, BORDER, BLUE, BLUE_L, GRAY, GREEN, RED, AMBER, FONT, input, tabOn, tabOff } from "./ui";
 import { usePathState } from "./useStock";
 import { formatSize } from "../../utils/sizeLabel";
@@ -121,7 +121,25 @@ export default function StockAuditView({ onExit, actorRole = null }) {
 
   // Server-anchored, so a till with a wrong date does not read yesterday's
   // results node and re-offer rows that were already actioned.
-  const saDate = useMemo(() => saDateOf(serverNowMs()), []);
+  //
+  // AND IT FOLLOWS MIDNIGHT. It was frozen at mount, which is wrong on the one
+  // screen most likely to be left open: a shop tablet standing on the counter
+  // overnight would keep reading and WRITING yesterday's results node, so the
+  // morning's actions would file under the wrong day and the rows they closed
+  // would not disappear. The effect below re-reads the SA date exactly when it
+  // changes, and the subscription follows the new path. (CodeRabbit, PR #580.)
+  const [saDate, setSaDate] = useState(() => saDateOf(serverNowMs()));
+  useEffect(() => {
+    // Next SA midnight, from server time. Re-armed each time it fires, so a
+    // screen left up for a week keeps up rather than drifting one day per
+    // mount. The +1s puts the tick safely past the boundary.
+    const now = serverNowMs();
+    const nextMidnight = Date.parse(`${saDate}T00:00:00.000Z`) + 864e5 - 2 * 60 * 60 * 1000;
+    const delay = Math.max(nextMidnight - now, 1000) + 1000;
+    const t = setTimeout(() => setSaDate(saDateOf(serverNowMs())), delay);
+    return () => clearTimeout(t);
+  }, [saDate]);
+
   const { snap, results } = useStoreAudit(store, saDate);
   const [busy, setBusy] = useState(null);        // the key currently being written
   const [note, setNote] = useState(null);        // { tone, text }
@@ -141,7 +159,15 @@ export default function StockAuditView({ onExit, actorRole = null }) {
   };
 
   const data = snap.value;
+  // WHAT IS ALREADY ACTIONED IS NOT KNOWN UNTIL THE READ ANSWERS. `results.value
+  // || {}` read "not answered yet" and "the read was denied" as "nothing has
+  // been done today" — so rows staff had already closed would come back, and
+  // they would be invited to action them again against a list that cannot show
+  // the work. usePathState tells the three states apart; the list waits for
+  // the answer, and if it never comes the rows are shown but not actionable.
+  // (CodeRabbit, PR #580.)
   const done = results.value || {};
+  const resultsKnown = results.settled && !results.error;
 
   const oosRows = useMemo(
     () => (data?.oos?.rows || []).filter((r) => !done[r.k]),
@@ -183,26 +209,32 @@ export default function StockAuditView({ onExit, actorRole = null }) {
         <div style={{ ...rowBox, borderColor: `${note.tone}55`, color: note.tone, fontSize: 12.5, marginBottom: 10 }}>{note.text}</div>
       )}
 
-      {!snap.settled ? <Empty text="Loading…" />
+      {results.settled && results.error && (
+        <div style={{ ...rowBox, color: AMBER, fontSize: 12.5, marginBottom: 10 }}>
+          Cannot read today&rsquo;s checks — this list may show work already done.
+        </div>
+      )}
+
+      {!snap.settled || !results.settled ? <Empty text="Loading…" />
         : snap.error ? <Empty text="Cannot read this store's list." />
         : !data ? <Empty text="Nothing yet." />
         : tab === "oos"
           ? <OutOfStock rows={oosRows} total={data.oos?.total || 0} truncated={!!data.oos?.truncated}
-              busy={busy} onAction={(row, outcome, actual) =>
+              busy={busy} canAct={resultsKnown} onAction={(row, outcome, actual) =>
                 act(row.k, () => recordOutOfStockOutcome({ store, row, outcome, actual, actorRole }))} />
           : <NotSelling data={data} rows={rotRows} mode={mode} setMode={setMode}
-              busy={busy} onAction={(row, outcome, sizes) =>
+              busy={busy} canAct={resultsKnown} onAction={(row, outcome, sizes) =>
                 act(row.p, () => recordRotationOutcome({ store, row, outcome, sizes, actorRole }))} />}
     </div>
   );
 }
 
 // ── TAB A ────────────────────────────────────────────────────────────────────
-function OutOfStock({ rows, total, truncated, busy, onAction }) {
+function OutOfStock({ rows, total, truncated, busy, canAct, onAction }) {
   if (!rows.length) return <Empty text={total ? "All checked." : "Nothing to check."} />;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {rows.map((r) => <OosRow key={r.k} r={r} busy={busy === r.k} onAction={onAction} />)}
+      {rows.map((r) => <OosRow key={r.k} r={r} busy={busy === r.k || !canAct} onAction={onAction} />)}
       {truncated && (
         <div style={{ fontSize: 11.5, color: GRAY, textAlign: "center", padding: "6px 0" }}>
           Showing {rows.length} of {total}.
@@ -316,7 +348,7 @@ function RotationRow({ row, title, sub, signals, busy, onAction }) {
 // lost by acting there: a rotation outcome is a judgement about a product on a
 // floor, and it should be recorded where the whole product is in view.
 // (Adversarial architecture review, PR #580.)
-function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
+function NotSelling({ data, rows, mode, setMode, busy, canAct, onAction }) {
   const displayKnown = data.displaySignal !== "unavailable";
   const sizeRows = useMemo(
     () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, key: `${r.p}__${z.sk}` }))),
@@ -335,7 +367,7 @@ function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {mode === "product"
             ? rows.map((r) => (
-                <RotationRow key={r.p} row={r} busy={busy === r.p} onAction={onAction}
+                <RotationRow key={r.p} row={r} busy={busy === r.p || !canAct} onAction={onAction}
                   title={r.n} sub={(r.z || []).map((z) => `${formatSize(z.s)} ${z.q}`).join(" · ")}
                   signals={{ sold: r.sold, disp: r.disp, slow: r.slow, displayKnown }} />
               ))

@@ -306,6 +306,32 @@ const MUTATIONS = [
     to: `      {false && (`,
   },
 
+  // ── CodeRabbit, PR #580 ───────────────────────────────────────────────────
+  {
+    id: "CR1", file: PASS, nodeTests: PASS_TESTS,
+    guard: "THE SHALLOW FETCH IS BOUNDED — a hang would burn the invocation while the scan holds its run lock",
+    from: `    signal: AbortSignal.timeout(SHALLOW_TIMEOUT_MS),\n`,
+    to: ``,
+  },
+  {
+    id: "CR2", file: VIEW, tests: VIEW_TESTS,
+    guard: "THE RESULTS DAY FOLLOWS SA MIDNIGHT — a tablet left overnight must not write to yesterday",
+    from: `    const t = setTimeout(() => setSaDate(saDateOf(serverNowMs())), delay);`,
+    to: `    const t = setTimeout(() => {}, delay);`,
+  },
+  {
+    id: "CR3", file: VIEW, tests: VIEW_TESTS,
+    guard: "UNANSWERED IS NOT 'NOTHING DONE' — the list waits for the results read",
+    from: `      {!snap.settled || !results.settled ? <Empty text="Loading…" />`,
+    to: `      {!snap.settled ? <Empty text="Loading…" />`,
+  },
+  {
+    id: "CR3b", file: VIEW, tests: VIEW_TESTS,
+    guard: "…and an unreadable results node disables the actions rather than inviting duplicate work",
+    from: `  const resultsKnown = results.settled && !results.error;`,
+    to: `  const resultsKnown = true;`,
+  },
+
   // ── the fence this PR did not move ────────────────────────────────────────
   {
     id: "M45", file: SCAN, nodeTests: ["test/refill-cadence.test.cjs"],

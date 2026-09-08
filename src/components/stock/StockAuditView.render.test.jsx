@@ -16,7 +16,9 @@ const SUBSCRIBED = [];
 vi.mock("../../firebase", () => ({ database: { fake: true }, auth: { currentUser: { uid: "u1" } } }));
 vi.mock("firebase/database", () => ({ ref: () => ({}), onValue: () => () => {} }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: () => () => {} }));
-vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => Date.parse("2026-09-07T09:00:00.000Z") }));
+// A movable clock, so the midnight-rollover test can advance it.
+const NOW_MS = { v: Date.parse("2026-09-07T09:00:00.000Z") };
+vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => NOW_MS.v }));
 
 const SNAPSHOTS = {
   "settings/stockAudit/marathon-pe/latest": {
@@ -46,10 +48,19 @@ const SNAPSHOTS = {
   "settings/stockAudit/marathon-pe/results/2026-09-07": { "b__M__marathon-pe": { outcome: "confirmed_empty" } },
 };
 
+// usePathState reports THREE states RTDB's null conflates, so the fake must too
+// — a fake that always answers "settled, no error" cannot witness the
+// difference between "nothing is actioned" and "we could not find out".
+const READ = { settled: true, error: false };
 vi.mock("./useStock", () => ({
   usePathState: (path, enabled) => {
     if (enabled && path) SUBSCRIBED.push(path);
-    return { value: SNAPSHOTS[path] ?? null, settled: true, error: false };
+    const isResults = String(path).includes("/results/");
+    return {
+      value: SNAPSHOTS[path] ?? null,
+      settled: isResults ? READ.settled : true,
+      error: isResults ? READ.error : false,
+    };
   },
 }));
 
@@ -172,6 +183,48 @@ describe("StockAuditView", () => {
       expect(s).not.toContain("No display");
       expect(s).toContain("No sale");            // the signal that IS known still shows
     } finally { pe.displaySignal = was; }
+  });
+
+  it("waits for the results read before offering a list", () => {
+    // "Not answered yet" is not "nothing has been done today". Showing the list
+    // early would bring back rows staff already closed.
+    READ.settled = false;
+    try {
+      const t = mount();
+      expect(text(t)).toContain("Loading");
+      expect(text(t)).not.toContain("Nike Tee Black");
+    } finally { READ.settled = true; }
+  });
+
+  it("an unreadable results node shows the rows but refuses to act on them", () => {
+    READ.error = true;
+    try {
+      const t = mount();
+      const s = text(t);
+      expect(s).toContain("may show work already done");
+      expect(s).toContain("Nike Tee Black");                    // still informative
+      expect(buttonWith(t, "Confirmed empty").props.disabled).toBe(true);
+      expect(buttonWith(t, "Adjust").props.disabled).toBe(true);
+      expect(buttonWith(t, "Flag").props.disabled).toBe(true);
+    } finally { READ.error = false; }
+  });
+
+  it("the results day follows SA midnight instead of freezing at mount", () => {
+    // A shop tablet left on the counter overnight would otherwise keep reading
+    // AND WRITING yesterday's results node all morning.
+    vi.useFakeTimers();
+    try {
+      SUBSCRIBED.length = 0;
+      let t;
+      act(() => { t = TestRenderer.create(<StockAuditView onExit={() => {}} />); });
+      expect(SUBSCRIBED).toContain("settings/stockAudit/marathon-pe/results/2026-09-07");
+      SUBSCRIBED.length = 0;
+      // serverNowMs is mocked at 2026-09-07T09:00Z = 11:00 SAST; SA midnight is
+      // 13 hours away.
+      NOW_MS.v = Date.parse("2026-09-08T01:00:00.000Z");        // 03:00 SAST, next day
+      act(() => { vi.advanceTimersByTime(14 * 3600e3); });
+      expect(SUBSCRIBED).toContain("settings/stockAudit/marathon-pe/results/2026-09-08");
+    } finally { vi.useRealTimers(); NOW_MS.v = Date.parse("2026-09-07T09:00:00.000Z"); }
   });
 
   it("says so plainly when there is nothing, rather than spinning", () => {
