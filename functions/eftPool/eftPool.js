@@ -69,7 +69,7 @@ const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEf
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MIN, OUTSIDE_POS_REASON_MAX,
 } = require("../lib/eft-settle.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
@@ -411,7 +411,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       throw new HttpsError("permission-denied", "Only the owner can mark a payment as settled outside the POS.");
     }
     const reason = String(data.reason ?? "").trim().slice(0, OUTSIDE_POS_REASON_MAX);
-    if (reason.length < 3) throw new HttpsError("invalid-argument", "A short reason is required — it stays on the record.");
+    if (reason.length < OUTSIDE_POS_REASON_MIN) throw new HttpsError("invalid-argument", "A short reason is required — it stays on the record.");
     decision = await runPoolTransaction(key, (current) => markUsedOutsidePosDecision(current, {
       at: now, actorUid: uid, actorName: "owner", reason,
     }));

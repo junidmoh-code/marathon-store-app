@@ -14,9 +14,12 @@
 //      for the re-run's create-only write, which would otherwise find the old
 //      refusal and refuse to overwrite it;
 //   2. the claim at /card_batch_intake_seen/<key> is cleared;
-//   3. the message's \Seen flag is removed, so the next tick's search returns
-//      it and it goes through the UNCHANGED reader path — with whatever reader
-//      exists now.
+//   3. the message's \Seen flag is removed — the same courtesy the slip retry
+//      pays: the poller's own memory is the claim ledger (it searches by date
+//      and dedupes on the claim row, never on \Seen), so the flag is for the
+//      person reading the mailbox, and the cleared claim is what makes the
+//      next tick put the message through the UNCHANGED reader path with
+//      whatever reader exists now.
 //
 // IT WILL NOT RE-RUN A RECORDED PAYMENT. A payment that landed is evidence;
 // re-running it can only produce a duplicate refusal or a second record. The
@@ -79,17 +82,11 @@ if (!EXECUTE) {
   process.exit(0);
 }
 
-// THE RECORD FIRST: archive copy created, then the original removed. A crash
-// between the two leaves both (visible, harmless); a crash before the first
-// leaves everything as it was.
-await db.ref(`${EFT_POOL_PATH}/${plan.archiveKey}`).set(plan.archived);
-await db.ref(`${EFT_POOL_PATH}/${target}`).remove();
-console.log("refused record archived under its retried key; the original key is free");
-
-// THE MAILBOX NEXT. If the flag comes off and the claim then fails to clear,
-// the next tick sees the message, finds the claim done, and marks it read
-// again — no harm. The other order leaves a cleared claim on a message the
-// search will never return, which is a payment nobody is coming back for.
+// THE MAILBOX FIRST, and nothing in the database until it succeeds: a mailbox
+// failure (the message gone, a bad password) then leaves the pool record and
+// the claim exactly as they were — no archived copy with an orphaned claim
+// row that would keep the poller skipping a message nobody can re-run.
+// (Independent architect review, this PR.)
 const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user, pass }, logger: false });
 await client.connect();
 let unflagged = 0;
@@ -97,7 +94,7 @@ try {
   const lock = await client.getMailboxLock(String(env.CARD_RECON_IMAP_MAILBOX || "INBOX").trim());
   try {
     const uids = await client.search({ header: { "message-id": plan.messageId } }, { uid: true });
-    if (!uids?.length) throw new Error("no message with that Message-ID is in the mailbox any more");
+    if (!uids?.length) throw new Error("no message with that Message-ID is in the mailbox any more — nothing was changed");
     for (const uid of uids) {
       await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
       unflagged++;
@@ -107,6 +104,15 @@ try {
   try { await client.logout(); } catch { /* going anyway */ }
 }
 console.log(`marked ${unflagged} message(s) unread`);
+
+// THEN THE RECORD: archive copy created, then the original removed, then the
+// claim cleared — in that order, so a crash at any point leaves something
+// visible and nothing lost: both copies (harmless), or the archive with the
+// claim still set (re-run the script; eftRetryPlan refuses the missing
+// original, and the claim row is cleared by hand from the line it prints).
+await db.ref(`${EFT_POOL_PATH}/${plan.archiveKey}`).set(plan.archived);
+await db.ref(`${EFT_POOL_PATH}/${target}`).remove();
+console.log("refused record archived under its retried key; the original key is free");
 
 await db.ref(plan.seenPath).remove();
 console.log("claim cleared");

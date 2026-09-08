@@ -419,7 +419,7 @@ function poolTransactionStep(decide, capture) {
 
 module.exports = {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MIN, OUTSIDE_POS_REASON_MAX,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
 };
