@@ -28,13 +28,50 @@
 // other way is a webhook, not a sweep — a poll must never be the mechanism for
 // money that has already changed hands.
 
-// stock/in_transit is NOT sellable (src/components/stock/locations.js marks it
-// kind "transit", sellable false). It is excluded from the network total the
-// push computes, so a movement WITHIN it cannot change what Shopify should
-// show. The movement's other leg fires its own event at a sellable location.
-// This list must stay in step with UNSELLABLE_LOCATIONS in
-// scripts/shopify/inventory.mjs — the contract test pins them together.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
+// ── LOCATIONS WHOSE MOVEMENTS CANNOT CHANGE THE STOREFRONT ───────────────────
+// A movement at one of these cannot alter the number the push computes, so
+// marking on it would write a marker that the sweep picks up, finds no drift
+// for, and clears — cost with no effect. Two reasons, kept apart because they
+// are two different facts (the full reasoning is on the source of truth,
+// scripts/shopify/inventory.mjs):
+//
+//   UNSELLABLE — /stock/in_transit: not sellable by nature. The movement's
+//     other leg fires its own event at a location that does count.
+//   UNTRUSTED  — hub3 and marathon-pine: real, sellable stock whose COUNT is
+//     not trusted enough to promise online (owner decision, 2026-09-08).
+//
+// This list MUST stay in step with ONLINE_EXCLUDED_LOCATIONS in
+// scripts/shopify/inventory.mjs. Out of step in one direction a movement is
+// never marked and the storefront drifts silently; in the other, a marker is
+// written forever with nothing to do. The contract test in
+// scripts/shopify/inventorySync.test.mjs pins them by IMPORT.
+// `Object.freeze(new Set([...]))` does not stop `.add()`, `.delete()` or
+// `.clear()` — a Set's entries live in internal slots, so freezing seals its
+// own properties and nothing else, while `Object.isFrozen` still answers true.
+// This set decides what a stranger can buy, so its mutators refuse instead of
+// pretending. It shadows the instance methods, which stops every ordinary
+// mutation; `Set.prototype.add.call(set, x)` still gets through and is left
+// open on purpose. (Mirror of sealedSet in scripts/shopify/inventory.mjs,
+// where that trade-off is argued out.)
+function sealedSet(ids) {
+  const set = new Set(ids);
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, {
+      value: () => {
+        throw new TypeError(
+          `ONLINE_EXCLUDED_LOCATIONS is immutable — ${method}() would change what the shop sells`
+        );
+      },
+    });
+  }
+  return Object.freeze(set);
+}
+
+const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
+const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
+  ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
+]);
 
 const DIRTY_PATH = "shopify_inventory_dirty";
 
@@ -87,7 +124,9 @@ function isLiveOn(node) {
  */
 async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid, before }) {
   if (!loc || !pid) return { marked: false, why: "no location or product id" };
-  if (UNSELLABLE_LOCATIONS.has(loc)) return { marked: false, why: `${loc} is not sellable` };
+  if (ONLINE_EXCLUDED_LOCATIONS.has(loc)) {
+    return { marked: false, why: `${loc} does not count toward online availability` };
+  }
 
   const after = (await db.ref(`stock/${loc}/${pid}`).get()).val();
   if (!sellableChanged(before, after)) return { marked: false, why: "no sellable change" };
@@ -107,6 +146,7 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
 module.exports = {
   DIRTY_PATH,
   UNSELLABLE_LOCATIONS,
+  ONLINE_EXCLUDED_LOCATIONS,
   sellableQty,
   sellableChanged,
   isLiveOn,

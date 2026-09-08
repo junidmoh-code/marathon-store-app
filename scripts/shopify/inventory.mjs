@@ -1,29 +1,121 @@
 // ── Inventory for the Shopify push — ONE location, ONE sellable pool ─────────
 // Shopify has exactly ONE location, deliberately (owner decision, slice 1):
-// inventory is the NETWORK total available per size — every /stock location
-// summed, negative cells clamped to 0 (the app's own convention: negatives
-// are bookkeeping artefacts, never sellable). Never create locations
-// mirroring PE / Pine / Trophy / the hubs.
+// inventory is the network total available per size — every /stock location
+// that COUNTS TOWARD ONLINE AVAILABILITY summed, negative cells clamped to 0
+// (the app's own convention: negatives are bookkeeping artefacts, never
+// sellable). Never create locations mirroring PE / Pine / Trophy / the hubs.
+//
+// "Every location" was literally true until 2026-09-08; it is not any more.
+// ONLINE_EXCLUDED_LOCATIONS below is the pool, and the block comment on it is
+// the reason. The one-Shopify-location decision is UNCHANGED — the shop still
+// has exactly one pool; what narrowed is which of our shelves feed it.
 //
 // networkTotals is pure (unit-tested against a /stock-shaped tree);
 // requireSingleLocation and setAvailable do the I/O.
 import { stockSizeKey } from "../../src/utils/sizeKey.js";
 
+// ── WHICH LOCATIONS MAY BE SOLD TO A WEB CUSTOMER ────────────────────────────
+// Two separate reasons a location's units must not reach the storefront. They
+// are kept as two sets because they are two different facts about the world,
+// and one of them will change back one day while the other never will.
+//
+// UNSELLABLE — the stock is not sellable BY NATURE. /stock/in_transit holds
+// boxes that left their source and have not landed (count-integrity holds
+// included); src/components/stock/locations.js marks it kind "transit",
+// sellable false. Pushing it as available would let the storefront sell stock
+// nobody can pick. This set is a property of the system and is not a policy.
+//
+// UNTRUSTED — the stock may well be sellable, but the COUNT is not believed.
+// Hub 3 and Pine keep their own /stock cells, get refilled, get counted and
+// get reported exactly as before; what changed (owner decision, 2026-09-08) is
+// that their numbers are no longer accurate enough to promise a stranger on
+// the internet. The owner's framing is the specification: "I'd rather a
+// product show as unavailable than sell something I can't fulfil." So a
+// A location enters this set when its count stops being trustworthy and leaves
+// it when the count is trusted again. That is NOT a one-line edit, and this
+// comment said it was: the list is mirrored into two Cloud Functions and named
+// by three test files, and the change needs a mini pull, three named function
+// deploys, a full inventory correction and a search-index rebuild. The whole
+// sequence is written down under "Trusting a location again" in
+// scripts/shopify/README.md; measure it first with
+// scripts/shopify/census-online-locations.mjs.
+//
+// Measured at the time of the decision, across 1,203 live products:
+//   marathon-pine  1,668 units on 268 live products (10.5% of the pool)
+//   hub3               4 units on   3 live products ( 0.0%)
+// and 43 live products — 3.6% of the live catalogue — fall to zero and go
+// unavailable. Hub 3 alone takes NOTHING to zero; Pine is the whole cost.
+//
+// ONLINE_EXCLUDED_LOCATIONS is the union, and it is the only one anything
+// reads.
+//
+// ── IMMUTABLE FOR REAL, NOT BY Object.freeze ─────────────────────────────────
+// This set is shared BY REFERENCE with the reconciler, the tracking backfill,
+// the continuous sweep and (mirrored) two Cloud Functions. A line that mutated
+// it would change what the shop sells, globally and silently — so it must not
+// be mutable.
+//
+// `Object.freeze(new Set([...]))` DOES NOT DO THAT, and the first version of
+// this file claimed it did. Freezing seals a Set's own properties; the entries
+// live in internal slots, so `.add()`, `.delete()` and `.clear()` all still
+// work and `Object.isFrozen()` still answers true. A reviewer reproduced it:
+// deleting marathon-pine from the frozen set succeeded and the network total
+// went from 2 back to 14. The safeguard was decorative, and the test that
+// asserted `Object.isFrozen` certified the decoration.
+//
+// So the mutators are shadowed with throwers. WHAT THAT DOES AND DOES NOT
+// STOP, stated exactly, because the whole point of this block is that a
+// confident comment is not a guarantee:
+//
+//   STOPS   set.add("x") / set.delete("x") / set.clear() — every ordinary
+//           way a line of code in this repo would change it, deliberately or
+//           by accident. That is the failure being defended against.
+//   DOES NOT STOP  Set.prototype.add.call(set, "x"), which reaches the
+//           internal slots without touching the instance's own properties.
+//           Reproduced: it appends and does not throw. Closing it needs a
+//           Proxy, and a Proxy would have to re-bind every method on every
+//           `get` — including the `.has()` this trigger calls on every stock
+//           movement, the busiest write path in the database. Not worth it
+//           for a bypass nobody reaches by accident. It is named here rather
+//           than left for the next reviewer to find.
+function sealedSet(ids) {
+  const set = new Set(ids);
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, {
+      value: () => {
+        throw new TypeError(
+          `ONLINE_EXCLUDED_LOCATIONS is immutable — ${method}() would change what the shop sells`
+        );
+      },
+    });
+  }
+  return Object.freeze(set);
+}
+
+export const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
+export const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+export const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
+  ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
+]);
+
 // stockTree = the whole /stock value: { location: { productId: { sizeKey: cell } } }
 // where a cell is the movement-stamped object { qty, lastType, mv, … } the
 // applyMovement pipeline writes (a bare number is tolerated for old data).
 // → { [sizeKey]: networkQty } for this product's sizes (encoded keys).
-// stock/in_transit is NOT sellable (src/components/stock/locations.js marks it
-// kind "transit", sellable false — boxes that left their source but haven't
-// landed, incl. count-integrity holds). Pushing it as available would let the
-// storefront sell stock nobody can pick.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
 
-export function networkTotals(stockTree, productId, sizes) {
+// `excluded` is the pool to leave out, and it defaults to the one in force.
+// It is a PARAMETER rather than a hard reference for one reason: a tool that
+// has to compare policies — "what does the storefront show today, and what
+// would it show if Pine stopped counting?" — must be able to ask both
+// questions of the SAME arithmetic. Without it the census could only ever run
+// the current policy against itself and would report every change as costing
+// nothing, which is exactly the wrong answer to be confident about. Nothing in
+// the push path passes it; the default is the policy.
+export function networkTotals(stockTree, productId, sizes, excluded = ONLINE_EXCLUDED_LOCATIONS) {
   const totals = {};
   for (const size of sizes) totals[stockSizeKey(size)] = 0;
   for (const [loc, perProduct] of Object.entries(stockTree || {})) {
-    if (UNSELLABLE_LOCATIONS.has(loc)) continue;
+    if (excluded.has(loc)) continue;
     const cells = perProduct?.[productId];
     if (!cells) continue;
     for (const [key, cell] of Object.entries(cells)) {

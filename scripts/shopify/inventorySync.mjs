@@ -35,7 +35,9 @@
 // this file walks every live product a slice at a time, reading no marker and
 // clearing none. Markers are the fast path, not the only path.
 
-import { networkTotals, requireSingleLocation, setAvailable } from "./inventory.mjs";
+import {
+  networkTotals, requireSingleLocation, setAvailable, ONLINE_EXCLUDED_LOCATIONS,
+} from "./inventory.mjs";
 
 // The node the trigger writes to and this sweep drains.
 export const DIRTY_PATH = "shopify_inventory_dirty";
@@ -64,7 +66,10 @@ export async function desiredFor(db, pid, locNames = null) {
   // strings off the top of it. Once per product, over 866 products, that is
   // ~4.6 GB of reads per full run, and it is why the first correction pass was
   // on course to take hours. /locations is a ten-row config node.
-  const locs = locNames || Object.keys((await db.ref("locations").get()).val() || {});
+  // locationNames() rather than a raw /locations read, so the caller that
+  // passes nothing gets the same FILTERED list as the sweep that passes one —
+  // otherwise the cheap path and the convenient path read different shelves.
+  const locs = locNames || (await locationNames(db));
   const tree = {};
   for (const loc of locs) {
     const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
@@ -73,9 +78,24 @@ export async function desiredFor(db, pid, locNames = null) {
   return { map, totals: networkTotals(tree, pid, sizes) };
 }
 
-/** The location names, read once and passed down. */
+/**
+ * The location names that can affect what the storefront is told, read once
+ * and passed down.
+ *
+ * FILTERED AT THE SOURCE, not only inside networkTotals. A location in
+ * ONLINE_EXCLUDED_LOCATIONS cannot change the answer — networkTotals drops it
+ * either way — so fetching its cells is a point read per product per sweep
+ * bought for nothing. With in_transit, hub3 and marathon-pine excluded that is
+ * three reads saved on every product on every pass, and the backstop walks the
+ * whole live catalogue continuously.
+ *
+ * networkTotals still filters. This is a saving, never the guarantee: the
+ * guarantee has to live next to the arithmetic, where a caller that passes its
+ * own locNames (the CLI does) cannot route around it.
+ */
 export async function locationNames(db) {
-  return Object.keys((await db.ref("locations").get()).val() || {});
+  return Object.keys((await db.ref("locations").get()).val() || {})
+    .filter((id) => !ONLINE_EXCLUDED_LOCATIONS.has(id));
 }
 
 /**

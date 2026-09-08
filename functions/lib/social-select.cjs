@@ -63,12 +63,53 @@ const POST_KINDS = [
 ];
 const KIND_KEYS = POST_KINDS.map((k) => k.key);
 
-// /stock/in_transit is not sellable — boxes that left their source and have
-// not landed, count-integrity holds included. Copied from
-// scripts/shopify/inventory.mjs UNSELLABLE_LOCATIONS, and pinned to it by test:
-// the two must agree or the storefront and the social engine would disagree
-// about what the shop has.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
+// ── LOCATIONS THAT DO NOT COUNT TOWARD ONLINE AVAILABILITY ───────────────────
+// MIRROR of scripts/shopify/inventory.mjs — that file carries the full
+// reasoning and is the source; this is a copy only because a CJS Cloud
+// Function cannot import the ESM script. socialStockParity.diff.test.js pins
+// the two SETS equal, not just the sums, so a location added there and
+// forgotten here is a red test rather than a live divergence.
+//
+// Two reasons, deliberately separate:
+//   UNSELLABLE — not sellable by nature (/stock/in_transit: boxes that left
+//     their source and have not landed, count-integrity holds included).
+//   UNTRUSTED  — sellable, but the count is not believed (hub3 and
+//     marathon-pine, owner decision 2026-09-08).
+//
+// WHY THE SOCIAL SELECTOR MUST FOLLOW THE STOREFRONT. This module decides
+// which products are worth posting about, and a post now carries a product
+// LINK (Shop the Feed). If social counted Pine's units and the storefront did
+// not, the engine would pick a product, write a caption, and link a stranger
+// to a page that says sold out — which is the exact class of bug the parity
+// test was written for, one location wider. Going quieter on 43 products is
+// the right side of that trade.
+// `Object.freeze(new Set([...]))` does not stop `.add()`, `.delete()` or
+// `.clear()` — a Set's entries live in internal slots, so freezing seals its
+// own properties and nothing else, while `Object.isFrozen` still answers true.
+// This set decides what a stranger can buy, so its mutators refuse instead of
+// pretending. It shadows the instance methods, which stops every ordinary
+// mutation; `Set.prototype.add.call(set, x)` still gets through and is left
+// open on purpose. (Mirror of sealedSet in scripts/shopify/inventory.mjs,
+// where that trade-off is argued out.)
+function sealedSet(ids) {
+  const set = new Set(ids);
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, {
+      value: () => {
+        throw new TypeError(
+          `ONLINE_EXCLUDED_LOCATIONS is immutable — ${method}() would change what the shop sells`
+        );
+      },
+    });
+  }
+  return Object.freeze(set);
+}
+
+const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
+const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
+  ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
+]);
 
 // How long after a product appears in a post before it may appear in another.
 // Not a rule anybody asked for — a decision, made because a queue that
@@ -142,7 +183,7 @@ function availableUnits(stockByLocation, sizes) {
   for (const size of Array.isArray(sizes) ? sizes : []) totals[stockSizeKey(size)] = 0;
   if (!Object.keys(totals).length) return 0;
   for (const [loc, cells] of Object.entries(stockByLocation || {})) {
-    if (UNSELLABLE_LOCATIONS.has(loc)) continue;
+    if (ONLINE_EXCLUDED_LOCATIONS.has(loc)) continue;
     if (!cells || typeof cells !== "object") continue;
     for (const [key, cell] of Object.entries(cells)) {
       if (!(key in totals)) continue;   // sizes not in the record don't ship
@@ -579,7 +620,7 @@ function pickForKind(kind, candidates, { used = new Set(), count = null } = {}) 
 module.exports = {
   OUTFIT_CORE, isFullBody, PAIRING_SHAPES, PAIRING_EVERY_N_POSTS,
   WARDROBE_CONTEXT, contextsOf, sharedContext, fitsWith,
-  POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS,
+  POST_KINDS, KIND_KEYS, OUTFIT_SLOTS, UNSELLABLE_LOCATIONS, ONLINE_EXCLUDED_LOCATIONS,
   REPOST_COOLDOWN_DAYS, W_SALES, W_NEW, NEW_FULL_DAYS, NEW_ZERO_DAYS,
   availableUnits, stockSizeKey, productHandle, outfitSlot, buildCandidates, pickForKind,
 };

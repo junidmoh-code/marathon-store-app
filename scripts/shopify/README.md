@@ -102,3 +102,54 @@ Pure modules, tested via the normal `npm test`:
 - Shopify has exactly ONE location, deliberately: inventory is one sellable
   pool. Never create locations mirroring PE / Pine / Trophy / the hubs;
   per-location breakdown becomes a metafield in a later slice.
+- **Not every shelf feeds that pool.** `ONLINE_EXCLUDED_LOCATIONS` in
+  `inventory.mjs` is the list that does not count toward what a web customer is
+  offered, and it is the union of two separate ideas:
+  `UNSELLABLE_LOCATIONS` (`in_transit` — stock that physically cannot be
+  picked) and `UNTRUSTED_LOCATIONS` (`hub3`, `marathon-pine` — real, sellable
+  stock whose COUNT is not believed; owner decision 2026-09-08). Excluded
+  locations keep their `/stock` cells, their refills and their reporting; they
+  are simply not promised to strangers. Measure before changing the list:
+  `node scripts/shopify/census-online-locations.mjs --exclude <ids>`.
+
+### Trusting a location again (or distrusting a new one)
+
+Not a one-line edit — the list is mirrored into two Cloud Functions and named
+by three test files, so **six files, three named function deploys, a mini pull,
+a full inventory correction and a search-index rebuild**. (The first version of
+this paragraph said five files while listing six below it, which is a small
+thing except that this paragraph exists because the comment it replaced
+undercounted the same work.) The contract tests fail loudly if you miss a
+copy, which is what they are for.
+
+1. Measure it first: `node scripts/shopify/census-online-locations.mjs --exclude hub3`
+   (the census compares an explicit baseline against an explicit proposal, so
+   it keeps working after the policy changes).
+2. Edit the set in all three copies —
+   `scripts/shopify/inventory.mjs` (source of truth),
+   `functions/lib/social-select.cjs`,
+   `functions/lib/shopify-inventory-dirty.cjs`.
+3. Update the two tests that name the ids —
+   `scripts/shopify/inventorySync.test.mjs`,
+   `src/components/social/socialStockParity.diff.test.js` —
+   plus the behavioural cases in `functions/test/shopify-inventory-dirty.test.cjs`.
+4. Merge, then **`git pull` on the Mac mini** (`/Users/marathonclub/marathon-store-app`).
+   Nothing auto-pulls it, and the mini is what runs the reconciler every two
+   minutes. Skip this and the mini's OLD arithmetic re-pushes the old
+   quantities on its next tick and quietly undoes step 6.
+5. Deploy BY NAME (the Firebase project is shared with the POS app — a bare
+   functions deploy would clobber it):
+   `firebase deploy --only functions:shopifyInventoryDirty,functions:generateSocialPosts,functions:socialDailyAutopilot`
+6. Correct the live quantities in one pass:
+   `node scripts/shopify/sync-inventory.mjs --all` (dry) then `--all --commit`.
+   This is REQUIRED, not a shortcut. Changing the list writes no dirty markers,
+   so the only thing that would fix the existing products is the backstop
+   sweep — 40 products per due tick, and a tick is due every 30 minutes by day
+   or 3 hours overnight. That is ~15 hours of the storefront offering stock on
+   the old policy.
+7. Rebuild the storefront search index:
+   `node scripts/shopify/build-search-index.mjs --commit`.
+   `/search_index/docs` caches Shopify's `availableForSale` per size, and the
+   reconciler's per-tick sweep only ADDS missing docs and removes orphans — it
+   never refreshes one. Without this, search keeps answering `inStock: true`
+   for products the shop has just taken off sale.

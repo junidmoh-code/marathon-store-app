@@ -15,8 +15,11 @@
 // and the CONDITIONS of the clear, which a fake can drive into races an
 // emulator cannot be made to produce on demand.
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "fs";
-import { sweepDirty, sweepBacklog, syncProduct, clearMarker, DIRTY_PATH } from "./inventorySync.mjs";
+import {
+  sweepDirty, sweepBacklog, syncProduct, clearMarker, DIRTY_PATH, locationNames,
+} from "./inventorySync.mjs";
+import { ONLINE_EXCLUDED_LOCATIONS } from "./inventory.mjs";
+import { createRequire } from "node:module";
 
 // ── A fake RTDB just rich enough for this module ─────────────────────────────
 // get() reads a path out of a plain object; transaction() runs the updater
@@ -553,20 +556,71 @@ describe("sweepDirty — one pid's failure never costs the batch", () => {
 
 // ── The one constant that lives in two languages ─────────────────────────────
 // The Cloud Function trigger (functions/lib/shopify-inventory-dirty.cjs, CJS)
-// decides whether a movement is worth marking; this module's push
-// (inventory.mjs, ESM) decides what is sellable. They must agree on which
-// locations are not sellable, or a movement at a location one of them thinks is
-// sellable is either never marked (a silent drift) or marked forever (a marker
-// that never finds anything to do). Nothing but this test connects them.
-describe("the unsellable-location list is shared with the trigger", () => {
+// decides whether a movement is worth MARKING; this module's push
+// (inventory.mjs, ESM) decides what is SOLD. They must agree on which locations
+// do not count toward online availability, or a movement at a location one of
+// them counts and the other does not is either never marked (a silent drift on
+// the storefront) or marked forever (a marker with nothing to do). Nothing but
+// this test connects them.
+//
+// IT IMPORTS, IT DOES NOT SCRAPE. The previous version regex-matched the text
+// `const UNSELLABLE_LOCATIONS = new Set([...])` out of inventory.mjs. That
+// passed for the wrong reason the moment the meaningful set stopped being the
+// one it matched: on 2026-09-08 the effective list became the UNION of an
+// unsellable set and an untrusted set, the scraped declaration still existed
+// and still said `in_transit`, and a green test would have certified a pinning
+// that was no longer pinning anything. A test that reads source text tests the
+// spelling; importing the value tests the value.
+describe("the excluded-location list is shared with the trigger", () => {
   it("matches functions/lib/shopify-inventory-dirty.cjs exactly", async () => {
     const { createRequire } = await import("module");
     const require = createRequire(import.meta.url);
-    const { UNSELLABLE_LOCATIONS } = require("../../functions/lib/shopify-inventory-dirty.cjs");
-    const src = readFileSync(new URL("./inventory.mjs", import.meta.url), "utf8");
-    const m = src.match(/const UNSELLABLE_LOCATIONS = new Set\(\[([^\]]*)\]\)/);
-    expect(m, "inventory.mjs no longer declares UNSELLABLE_LOCATIONS the way this test reads it").toBeTruthy();
-    const fromEsm = m[1].split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    expect(fromEsm.sort()).toEqual([...UNSELLABLE_LOCATIONS].sort());
+    const { ONLINE_EXCLUDED_LOCATIONS: fromTrigger } =
+      require("../../functions/lib/shopify-inventory-dirty.cjs");
+    expect([...fromTrigger].sort()).toEqual([...ONLINE_EXCLUDED_LOCATIONS].sort());
+  });
+
+  it("both sides refuse to count the untrusted locations", () => {
+    const { ONLINE_EXCLUDED_LOCATIONS: fromTrigger } =
+      createRequire(import.meta.url)("../../functions/lib/shopify-inventory-dirty.cjs");
+    for (const id of ["in_transit", "hub3", "marathon-pine"]) {
+      expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `push must not count ${id}`).toBe(true);
+      expect(fromTrigger.has(id), `trigger must not mark on ${id}`).toBe(true);
+    }
+  });
+});
+
+// ── AND THE READS THE SWEEP DOES NOT MAKE ────────────────────────────────────
+// locationNames() is what decides which /stock cells the backstop fetches for
+// every live product on every pass. A location that cannot change the answer
+// must not be fetched — and, more importantly, a location that CAN must never
+// be dropped here, because that would be a silent narrowing of what the shop
+// offers with no test anywhere else to catch it.
+describe("locationNames — only the shelves that feed the storefront", () => {
+  const registry = {
+    central: true, hub1: true, hub2: true, hub3: true,
+    "marathon-pe": true, "marathon-pine": true, trophy: true,
+    studio: true, base: true, in_transit: true,
+  };
+  const dbWith = (locations) => ({
+    ref: () => ({ get: async () => ({ val: () => locations }) }),
+  });
+
+  it("drops the excluded locations and keeps every trusted one", async () => {
+    const names = await locationNames(dbWith(registry));
+    expect(names.sort()).toEqual(
+      ["base", "central", "hub1", "hub2", "marathon-pe", "studio", "trophy"].sort()
+    );
+  });
+
+  it("an unseeded /locations node returns nothing rather than guessing", async () => {
+    expect(await locationNames(dbWith(null))).toEqual([]);
+  });
+
+  it("a NEW location nobody has classified still counts — silence must not hide stock", async () => {
+    // The safe default for an unknown location is to COUNT it: an uncounted
+    // shelf understates availability invisibly, and the loud failure (an
+    // oversell) is the one the tracking/DENY policy already catches.
+    expect(await locationNames(dbWith({ hub4: true }))).toEqual(["hub4"]);
   });
 });
