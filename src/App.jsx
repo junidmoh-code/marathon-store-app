@@ -8993,10 +8993,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     [hub1ReadyPromised, hub1PullPromised]
   );
   // Hub 2's promises: READY ORDERS ONLY, and deliberately so. The display-pair
-  // pull lane (pendingDisplayPullsByCell) is a HUB 1 build — its slots and its
-  // register are hub1-scoped — and that map is NOT hub-scoped, so folding it in
-  // here would let a Hub 1 pull claim ✕ an unrelated Hub 2 cell. Same reason
-  // the display marker below stays Hub 1 only.
+  // PULL lane (pendingDisplayPullsByCell) is a HUB 1 build — it is charged,
+  // verified and netted at hub1 — and that map is NOT hub-scoped, so folding it
+  // in here would let a Hub 1 pull claim ✕ an unrelated Hub 2 cell.
+  //
+  // This used to end "same reason the display marker below stays Hub 1 only",
+  // and that sentence is now wrong twice over: the MARKER reads the serving
+  // hub's slots (2026-09-08), and the slots node it reads was never hub1-scoped
+  // — every hub's shops book rows in it. Only the pull is Hub 1's, and it is
+  // the pull this paragraph is about.
   const hub2ReadyPromised = useMemo(
     () => readyPromisedByCell(orders, "hub2", productsById),
     [orders, productsById, promiseTick]
@@ -9052,9 +9057,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // conflated, because one of them can refuse a sale and the other cannot:
   //
   //   THE MARKER (informational). "Is a unit of this size standing on a shop
-  //   floor?" Every hub can answer it, because every hub's shops have walls.
-  //   It draws a glyph and nothing else — it nets nothing, gates nothing and
-  //   blocks nothing (#576).
+  //   floor?" Any hub CAN answer it — every hub's shops have walls — and it
+  //   draws a glyph and nothing else: it nets nothing, gates nothing and blocks
+  //   nothing (#576).
   //
   //   THE PULL (contractual). "May this order name an identified physical pair
   //   and instruct the warehouse to take it off a wall?" That is HUB 1 ONLY,
@@ -9066,15 +9071,37 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // Before this the marker rode the pull lane's map and the pull lane's
   // predicate, so it inherited hub1 scope it never needed — and Trophy's 113
-  // hub2-booked displays and every one of Pine's hub3 ones drew nothing at all,
-  // though each names a real shop and a real size (live census 2026-09-08).
-  // They are separate names now so that widening one can never quietly widen
-  // the other.
-  const displayUnitsByHub = useMemo(() => ({
-    hub1: displayUnitsByCell(displaySlotsLive, "hub1"),
-    hub2: displayUnitsByCell(displaySlotsLive, "hub2"),
-    hub3: displayUnitsByCell(displaySlotsLive, "hub3"),
-  }), [displaySlotsLive]);
+  // hub2-booked displays drew nothing at all, though each names a real shop and
+  // a real size (live census 2026-09-08). They are separate names now so that
+  // widening one can never quietly widen the other.
+  //
+  // ── ONE MAP PER GATED HUB, AND PINE IS NOT ONE OF THEM ────────────────────
+  // The first cut of this built a hub3 map too and the commit said Pine's
+  // displays would now be marked. They are not, and the map was unreachable
+  // dead code that read as a delivered promise (independent review, 2026-09-08).
+  // The glyph asks the SERVING hub, the serving hub comes from sneakerHubOf,
+  // and that runs through gatedSneakerHub — which answers only from
+  // GATED_SNEAKER_HUBS, ["hub1", "hub2"]. A Pine sneaker resolves to no hub at
+  // all on this screen: availabilityKnown is false for it, sneakerOut declines
+  // to answer, and the alternatives sheet says so in as many words. The marker
+  // cannot be wider than the availability lane it hangs off, and making it so
+  // would mean widening the sneaker gate — a stock-routing change, not a glyph.
+  //
+  // So the maps are built FROM the gate rather than from a list written beside
+  // it. Pine's 18 hub3 slots stay unmarked, which is the truth and is now said
+  // out loud; and if hub3 is ever admitted to the sneaker gate, the marker
+  // follows it in the same commit instead of needing to be remembered.
+  //
+  // AND MARKING PINE WOULD TAKE MORE THAN A WIDER GATE, which is the other
+  // reason not to fake it here: a Pine device does not subscribe to the slots
+  // node at all (displaySlotsState above is passed `!== "pine"`), so
+  // displaySlotsLive is empty there whatever this map contains. Marking Pine
+  // means a new listener on a Pine device plus a hub source for the glyph that
+  // stops short of the availability gate — a data-cost decision and a
+  // stock-routing one. Neither is a glyph change, and neither is this PR.
+  const displayUnitsByHub = useMemo(() => Object.fromEntries(
+    GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
+  ), [displaySlotsLive]);
   // THE PULL LANE'S MAP. Hub 1, and it stays Hub 1 — the checkout pre-flight is
   // its only reader. If the pull lane is ever extended to another hub, that
   // change has to give pendingDisplayPullsByCell a real hub filter FIRST
@@ -9537,16 +9564,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // Same slots data the screen already streams; needs no availability read,
   // so no settled gate.
-  // EVERY HUB'S WALLS, not just Hub 1's. The glyph answers "is a unit of this
-  // size standing on a shop floor", and the slot that answers it is the one
-  // booked at the hub THIS SIZE resolves to — Trophy's displays are booked
-  // hub2, Pine's hub3, and both are as real as PE's hub1 ones. Reading the
+  // THE SERVING HUB'S WALLS, not just Hub 1's. The glyph answers "is a unit of
+  // this size standing on a shop floor", and the slot that answers it is the
+  // one booked at the hub THIS SIZE resolves to — Trophy's displays are booked
+  // hub2 and are as real as PE's hub1 ones. Reading the
   // serving hub's own map is what keeps that honest: a Hub 2 size is marked by
   // a Hub 2 slot, never by a Hub 1 one, so the marker cannot claim a wall that
   // has nothing to do with the shelf the pair would come off.
   //
   // Still appearance-only. It nets nothing into availability and the caller
-  // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph.
+  // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph —
+  // which is also what a Pine/hub3 shoe gets, because gatedSneakerHub answers
+  // for hub1 and hub2 only and the glyph may not outrun the availability lane.
   const sneakerDisplayInfo = (p, s) => {
     if (!s) return null;
     const hub = sneakerHubOf(p, s);
@@ -9988,10 +10017,18 @@ function AssistantView({ products, onExit, orders = [] }) {
         // routing is byte-for-byte what it was.
         // ── A DISPLAY-PAIR LINE'S HUB IS FIXED, NOT RESOLVED ──────────────
         // A displayPairRequest names an IDENTIFIED PHYSICAL PAIR standing on a
-        // named shop's floor, registered against Hub 1 (the whole display lane
-        // is hub1-scoped — slots, register, sneakerServedByHub1). "Which hub
-        // can supply this size" is not a question that applies to it: there is
-        // exactly one such pair and it is where it is.
+        // named shop's floor, booked against Hub 1. "Which hub can supply this
+        // size" is not a question that applies to it: there is exactly one such
+        // pair and it is where it is.
+        //
+        // The PULL is what is Hub 1's — it is charged at hub1, verified against
+        // hub1 in the checkout pre-flight, and netted through a claim map with
+        // no hub term in its key. This used to say "the whole display lane is
+        // hub1-scoped — slots, register, sneakerServedByHub1", and none of that
+        // premise survives: the register stopped feeding the grid in #574, and
+        // the slots node holds every hub's rows and is read per serving hub by
+        // the marker since 2026-09-08. The conclusion is unchanged and it never
+        // rested on the premise.
         //
         // Sending it through the stock-aware resolver did apply that question,
         // and if Hub 1's availability hit zero between the request and

@@ -18,7 +18,8 @@ The live branch is **`feat/display-marker-all-hubs`**, one commit ahead of
 
 That commit is pushed, and **PR #578** is open for it. Working tree is clean — no
 staged, unstaged or untracked change, so the killed session left nothing half-written
-on disk. `git diff origin/main HEAD --stat`:
+on disk. `git diff origin/main HEAD --stat`, **as the audit found the branch** (one commit,
+`fc28a23`; the branch has grown since):
 
     src/App.jsx                                        | 69 +++++--
     src/components/stock/displayMarkerAllHubs.test.js  | 135 +++++++++++
@@ -61,3 +62,25 @@ The fixture's event is stamped `2026-09-01T08:00:00.000Z`; the suite started fai
 once wall-clock passed 2026-09-08T08:00Z, roughly four hours before this audit ran.
 The assertion is about `__proto__` being data, which has nothing to do with the clock,
 so the fix pins `nowMs` at the call rather than moving the bound.
+
+## What the audit did NOT catch, and the reviews did
+
+Recorded here because the audit above says "nothing is half-done", and on one
+count that was too generous. `fc28a23` claimed to make **every** hub's displays
+draw a glyph, Pine's hub3 rows included, and it does not. Three independent
+reviewers reached the finding separately.
+
+The glyph reads the map of the hub the size resolves to, that hub comes from
+`sneakerHubOf` → `gatedSneakerHub`, and `GATED_SNEAKER_HUBS` is
+`["hub1", "hub2"]` — so `sneakerHubOf` can never return `"hub3"` and the hub3
+map was unreachable. Independently, a Pine device never subscribes to the slots
+node at all (`useDisplaySlotsState(effectiveStoreMode !== "pine")`), so there
+would be nothing in it to read even if the gate allowed it.
+
+The real win is Trophy's 228 hub2-booked rows, which is what the change
+delivers. Pine needs a wider sneaker gate plus a new listener on a Pine device —
+a stock-routing decision and a data-cost one, neither of them a glyph change.
+The maps are now built from `GATED_SNEAKER_HUBS` rather than a hand-written
+list, so the marker cannot again be claimed wider than the availability lane it
+hangs off, and the residual is pinned by tests in `hubIsolation.test.js` and
+`displayMarkerAllHubs.test.js`.

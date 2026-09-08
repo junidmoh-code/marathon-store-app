@@ -37,7 +37,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gatedSneakerHub, GATED_SNEAKER_HUBS, readyPromisedByCell, cellAvailability, promisedKey } from "./availabilityCore";
+import { gatedSneakerHub, GATED_SNEAKER_HUBS, readyPromisedByCell, cellAvailability, promisedKey, resolveSneakerSourcing } from "./availabilityCore";
 import { centralFedRow, CENTRAL_FED_HUBS, tomorrowTapOutcome } from "./tomorrowGate";
 import { orderSizeOut } from "../../utils/deactivation";
 import { decodeSizeKey } from "../../utils/sizeKey";
@@ -264,7 +264,7 @@ describe("Hub 2 clothing behaves exactly as it did before this change", () => {
 // pendingDisplayPullsByCell is NOT hub-scoped at all. Letting Hub 2 ride those
 // would put a Hub 1 pull claim's ✕ on an unrelated Hub 2 cell.
 describe("the display-pair lane did not follow the gate to Hub 2", () => {
-  it("the marker predicate is still hub1-only, separate from sneakerHubOf", () => {
+  it("the PULL predicate is still hub1-only, separate from sneakerHubOf", () => {
     const a = app();
     // Takes the size since 2026-09-06 (the serving hub is a per-size answer
     // once routing is stock-aware), but it is still DERIVED from sneakerHubOf
@@ -272,9 +272,16 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(a).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
     // ONE SOURCE since 2026-09-07. The register was a second source and it is
     // what made one display draw two markers; it is gone from this screen
-    // entirely (docs/display-marker-findings.md). Still hub1, which is what
-    // this fence is about — and the register must never come back as a term.
-    expect(a).toContain('displayUnitsByCell(displaySlotsLive, "hub1")');
+    // entirely (docs/display-marker-findings.md). The register must never come
+    // back as a term.
+    //
+    // THE PULL'S MAP IS STILL HUB 1'S, and it is named rather than spelled out
+    // now: the per-hub maps are derived from GATED_SNEAKER_HUBS, so the literal
+    // this used to pin no longer appears anywhere. What matters is unchanged —
+    // the pull reads hub1's map and only hub1's, under its own name.
+    expect(a).toContain("const hub1DisplayUnits = displayUnitsByHub.hub1;");
+    expect((a.match(/hub1DisplayUnits\[/g) || []).length,
+      "hub1DisplayUnits grew a reader — if that is the marker, the lanes have merged").toBe(1);
     expect(a).toContain('slotsAfterOrderExits(displaySlots, ordersForExits)');
     // An /orders read error means "cannot verify" for EVERY order-derived gate,
     // not just this one — folded into ordersSettled so all three inherit it.
@@ -356,10 +363,32 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(app()).toContain('return hub ? (displayUnitsByHub[hub]?.[promisedKey(p.id, s)] || null) : null;');
     expect(app()).not.toContain('sneakerServedByHub1(p, s) ? hub1DisplayUnits');
   });
-  it("…and every hub has its own map, built from the same slots by hub", () => {
-    for (const h of ["hub1", "hub2", "hub3"]) {
-      expect(app(), `no map for ${h}`).toContain(`${h}: displayUnitsByCell(displaySlotsLive, "${h}"),`);
-    }
+  // ONE MAP PER GATED HUB, AND THE LIST IS NOT WRITTEN TWICE. The first cut
+  // hardcoded hub1/hub2/hub3 and this pin held it byte-for-byte — which meant
+  // it fenced a hub3 map that sneakerHubOf can never key into, because
+  // gatedSneakerHub answers only from GATED_SNEAKER_HUBS (review, 2026-09-08).
+  // The maps are derived from that constant now, so the marker can never be
+  // wider — or narrower — than the availability lane it hangs off.
+  it("…and the maps are derived from the sneaker gate, not from a list beside it", () => {
+    expect(app()).toContain('GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
+    expect(app(), "a hardcoded hub map is back beside the derived one")
+      .not.toMatch(/hub[123]: displayUnitsByCell\(displaySlotsLive/);
+  });
+  // THE RESIDUAL, PINNED SO IT CANNOT BE CLAIMED AWAY AGAIN. Pine's hub3 slots
+  // draw no glyph, and the reason is upstream of anything the marker does:
+  // hub3 is not in the sneaker gate, so no size ever resolves to it. The
+  // commit that widened the marker said Pine was fixed; it was not. If hub3
+  // is ever admitted to the gate this test goes red and the claim can be made.
+  it("but hub3 is NOT in the gate, so Pine draws nothing — stated, not implied", () => {
+    expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
+    const pineShoe = { id: "p3", category: "Footwear", productType: "sneaker" };
+    expect(gatedSneakerHub(pineShoe, "hub3")).toBe(null);
+    // …and a null tagged hub yields no serving hub at all, which is the input
+    // sneakerDisplayInfo turns into "no glyph".
+    expect(resolveSneakerSourcing({
+      product: pineShoe, taggedHub: gatedSneakerHub(pineShoe, "hub3"), size: "7",
+      hubData: { hub1: { cells: {}, promised: {}, ready: true }, hub2: { cells: {}, promised: {}, ready: true } },
+    }).hub).toBe(null);
   });
   // THE HALF THAT MAY NOT WIDEN. pendingDisplayPullsByCell is keyed
   // pid::sizeKey with NO hub term, so it may only be netted against a hub whose

@@ -168,12 +168,20 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 
 // ── WHERE A DISPLAY PAIR LIVES ───────────────────────────────────────────────
-// The display-pair lane is hub1-scoped by construction: the slots node, the
-// register and sneakerServedByHub1 all name hub1. A line flagged
-// displayPairRequest is therefore a HUB 1 pull of one identified physical pair,
-// and its hub is a FACT rather than a routing question — see the placement
-// path, where sending it through the stock-aware resolver could redirect it to
-// a hub that has no display register at all.
+// The display PULL lane is hub1-scoped by construction: the pull is charged at
+// hub1 in allocateSneakerCart, the checkout pre-flight verifies it against
+// hub1, and pendingDisplayPullsByCell is keyed pid::sizeKey with NO hub term,
+// so it may only ever be netted against a hub whose lane actually raises such
+// claims. A line flagged displayPairRequest is therefore a HUB 1 pull of one
+// identified physical pair, and its hub is a FACT rather than a routing
+// question — see the placement path, where sending it through the stock-aware
+// resolver could redirect it to a hub that has no display lane at all.
+//
+// NOT the slots node, and this comment used to say otherwise ("the slots node,
+// the register and sneakerServedByHub1 all name hub1"). The register stopped
+// feeding the size grid in #574; the slots node always held every hub's rows
+// and since 2026-09-08 the informational marker reads it per serving hub. Only
+// the pull is Hub 1's, and only the pull can refuse a sale.
 export const DISPLAY_PAIR_HUB = "hub1";
 export function gatedSneakerHub(product, routedHub) {
   if (!isFootwearProduct(product)) return null;

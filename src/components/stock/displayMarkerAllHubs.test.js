@@ -5,13 +5,25 @@
 //
 //   slot rows by bookedHub   hub1 270   hub2 228   hub3 18
 //   drawing a glyph          hub1 only — 242 at marathon-pe, 6 at trophy
-//   drawing nothing at all   every one of Trophy's 113 hub2 displays, and
-//                            every one of Pine's, which are all hub3
+//   drawing nothing at all   every one of Trophy's 113 hub2 displays
 //
-// Pine showed zero markers. Trophy showed six. Each of those slots names a real
-// shop, a real product and a real size — they were invisible only because the
-// marker rode the display-PULL lane's map and predicate, and the pull lane is
-// Hub 1's by construction.
+// Trophy showed six. Each of the rest names a real shop, a real product and a
+// real size — they were invisible only because the marker rode the display-PULL
+// lane's map and predicate, and the pull lane is Hub 1's by construction.
+//
+// ── WHAT THIS DOES NOT FIX, SAID FIRST ───────────────────────────────────────
+// PINE IS NOT FIXED. The first version of this file, and the commit it shipped
+// with, said Pine's 18 hub3 slots would now be marked. They are not, and three
+// independent reviewers caught the same overstatement (2026-09-08). The glyph
+// asks the SERVING hub, and a serving hub comes from gatedSneakerHub, which
+// answers only from GATED_SNEAKER_HUBS = ["hub1", "hub2"] — a Pine sneaker
+// resolves to no hub at all on this screen, which is why sneakerOut declines to
+// answer for it and the alternatives sheet says as much. On top of that a Pine
+// device never subscribes to the slots node, so there is nothing to read there
+// anyway. Marking Pine needs a wider sneaker gate and a new listener: a
+// stock-routing change and a data-cost one, neither of them a glyph. The
+// residual is pinned below and in hubIsolation, so it cannot be claimed away
+// again without a test going red.
 //
 // ── THE TWO LANES, AND WHY THE SPLIT IS THE WHOLE CHANGE ────────────────────
 //
@@ -36,7 +48,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { displayUnitsByCell } from "./displayPairCore";
-import { promisedKey, cellAvailability, cellBlockInfo, allocateSneakerCart, resolveSneakerSourcing } from "./availabilityCore";
+import { promisedKey, gatedSneakerHub, GATED_SNEAKER_HUBS } from "./availabilityCore";
 
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
 
@@ -61,9 +73,14 @@ describe("every hub's walls are readable, and each map holds only its own", () =
     expect(mapFor("hub2")[promisedKey("p1", "9")]).toEqual({ units: 1, stores: ["trophy"], unverified: 0 });
     expect(mapFor("hub2")[promisedKey("p2", "8")]).toEqual({ units: 1, stores: ["trophy"], unverified: 0 });
   });
-  // AND PINE, WHICH SHOWED ZERO MARKERS LIVE.
-  it("Hub 3 sees Pine's wall — Pine showed none at all", () => {
+  // AND PINE, WHICH THE SCREEN STILL CANNOT MARK. displayUnitsByCell will
+  // happily build a hub3 map — the data is there and correct — but nothing on
+  // the ordering screen can key into it, because no size resolves to hub3. The
+  // map builder is not the limit; the sneaker gate is.
+  it("hub3 slots are readable as data, but no size can ever resolve to hub3", () => {
     expect(mapFor("hub3")[promisedKey("p3", "7")]).toEqual({ units: 1, stores: ["marathon-pine"], unverified: 0 });
+    expect(GATED_SNEAKER_HUBS).toEqual(["hub1", "hub2"]);
+    expect(gatedSneakerHub({ id: "p3", category: "Footwear", productType: "sneaker" }, "hub3")).toBe(null);
   });
 
   // NO CROSS-CONTAMINATION, and this is the half that matters most. A size Hub 2
@@ -92,80 +109,24 @@ describe("every hub's walls are readable, and each map holds only its own", () =
   });
 });
 
-// ─── THE WIDENED MARKER IS AS INERT AS THE NARROW ONE WAS ────────────────────
+// ─── "AND IT IS STILL INERT ON THE WIDER LANE" LIVES IN THE FUZZ ─────────────
 //
-// #576 proved a HUB 1 marked size still selects, adds and steps. Widening the
-// glyph to hub2 and hub3 puts the same claim on two lanes it was never made
-// about, and "it is only a glyph" has to be shown there too rather than
-// assumed — a Trophy assistant losing a sale to a Trophy display is the same
-// lost sale, and until 2026-09-08 no Trophy size drew a glyph at all, so no
-// test in the tree had ever exercised one.
-describe("a HUB 2 marked size behaves exactly like an unmarked one", () => {
-  const SNEAKER = { id: "p1", category: "Footwear", productType: "sneaker" };
-  // Trophy's wall holds the one on display; Hub 2 holds the stock the size is
-  // actually served from. The glyph and the shelf are the same hub, which is
-  // the arrangement the split was built to produce.
-  const world = (qty) => ({
-    hub1: { cells: {}, promised: {}, ready: true },
-    hub2: { cells: { p1: { 9: { qty } } }, promised: {}, ready: true },
-  });
-
-  it("the glyph is really there — otherwise the rest of this block is vacuous", () => {
-    expect(mapFor("hub2")[promisedKey("p1", "9")].units).toBe(1);
-  });
-
-  // FOUR UNITS AT TROPHY, ONE ON TROPHY'S WALL: four available, not zero.
-  it("four in stock with one on Trophy's wall still offers four", () => {
-    const { hub, available } = resolveSneakerSourcing({
-      product: SNEAKER, taggedHub: "hub2", size: "9", hubData: world(4) });
-    expect(hub).toBe("hub2");
-    expect(available).toBe(4);
-  });
-
-  // THE HARDEST CASE ON THE WIDER LANE: the display pair is the only unit.
-  // A display is hub stock (#324); the tile does not get to refuse the sale.
-  it("one in stock and it IS the display — still sellable, and charged to Hub 2", () => {
-    const line = { product: SNEAKER, size: "9" };
-    const alloc = allocateSneakerCart({
-      lines: [line], hubData: world(1), taggedHubFor: () => "hub2" });
-    expect(alloc.hubOf.get(line)).toBe("hub2");
-    expect(alloc.overAllocated.has(promisedKey("p1", "9"))).toBe(false);
-    // Plain line: nothing on the marker's path stamps a pull flag, and a pull
-    // flag on a hub2 line would be a Hub 1 claim raised on the wrong lane.
-    expect(line.displayPairRequest).toBeUndefined();
-  });
-
-  // AT ZERO, IDENTICAL TO AN UNMARKED SIZE AT ZERO — the ✕ is authoritative and
-  // says nothing about a display, on this lane as on Hub 1's.
-  it("quantity 0 with a Trophy slot registered is out, exactly as with none", () => {
-    const marked = cellAvailability({ cells: { p1: { 9: { qty: 0 } } }, promised: {}, productId: "p1", size: "9" });
-    const plain  = cellAvailability({ cells: { p1: {} }, promised: {}, productId: "p1", size: "9" });
-    expect(marked).toBe(0);
-    expect(marked).toBe(plain);
-    const why = cellBlockInfo({ cells: { p1: { 9: { qty: 0 } } }, promised: {}, productId: "p1", size: "9" });
-    expect(JSON.stringify(why)).not.toMatch(/display/i);
-  });
-
-  // THE TILE DIFFERENTIAL, on Hub 2 this time: the same cell composed once with
-  // Trophy's slots and once with the slots node emptied must agree on
-  // everything that governs the tile, and differ only in the glyph.
-  it("the Hub 2 tile is identical with the slots and without them, bar the glyph", () => {
-    const tile = (qty, slotsNode) => {
-      const info = cellBlockInfo({ cells: { p1: { 9: { qty } } }, promised: {}, productId: "p1", size: "9" });
-      const mk = displayUnitsByCell(slotsNode, "hub2")[promisedKey("p1", "9")];
-      return { booked: info.booked, promised: info.promised, available: info.available,
-               out: info.available <= 0, glyph: info.available > 0 && !!mk };
-    };
-    for (const qty of [0, 1, 2, 4, 10]) {
-      const marked = tile(qty, SLOTS), plain = tile(qty, {});
-      for (const f of ["booked", "promised", "available", "out"]) {
-        expect(marked[f], `qty ${qty}: Trophy's slots changed ${f}`).toBe(plain[f]);
-      }
-      expect(plain.glyph).toBe(false);
-      expect(marked.glyph, `qty ${qty}: the glyph did not follow availability`).toBe(qty > 0);
-    }
-  });
-});
+// This file had a hand-written Hub 2 version of #576's behavioural block, and
+// it was struck out as decoration: the slots node was never passed to
+// resolveSneakerSourcing or allocateSneakerCart — it cannot be, they take no
+// such parameter — so "four in stock with one on Trophy's wall still offers
+// four" was two pure functions with disjoint inputs being observed not to share
+// them, and the tile helper compared cellBlockInfo against itself and then
+// checked a glyph rule the test had written a line earlier (two independent
+// reviews, 2026-09-08).
+//
+// The property is real and worth holding; the way to hold it is a differential
+// over worlds nobody chose. It lives in displayMarkerFuzz.test.js, in "the
+// widened marker reads the serving hub, and only the serving hub": the serving
+// hub comes from the REAL resolver over random stock, the glyph is read the way
+// App.jsx reads it, and the case that bites — the other hub holds a slot for
+// this cell and the serving hub does not — is counted to prove it occurred.
+// A hub1 fallback introduced there goes red on the first case.
 
 // ─── THE WIRING ──────────────────────────────────────────────────────────────
 // Source pins, and labelled as such: the predicates live in AssistantView,
@@ -176,10 +137,14 @@ describe("the wiring keeps the two lanes apart", () => {
     expect(APP).toContain("const sneakerDisplayInfo = (p, s) => {");
     expect(APP).toContain("return hub ? (displayUnitsByHub[hub]?.[promisedKey(p.id, s)] || null) : null;");
   });
-  it("and there is a map per hub, built from the same slots node", () => {
-    for (const h of ["hub1", "hub2", "hub3"]) {
-      expect(APP, `no map for ${h}`).toContain(`${h}: displayUnitsByCell(displaySlotsLive, "${h}"),`);
-    }
+  // DERIVED FROM THE GATE, NOT LISTED BESIDE IT. The first cut wrote hub1,
+  // hub2 and hub3 out by hand, and the hub3 entry was unreachable — a map no
+  // caller could key into, reading as a delivered promise. Building it from
+  // GATED_SNEAKER_HUBS makes the marker exactly as wide as the availability
+  // lane it hangs off, in both directions and without anyone remembering.
+  it("and there is one map per GATED hub, derived from the gate itself", () => {
+    expect(APP).toContain('GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])');
+    expect(APP, "a hardcoded per-hub map is back").not.toMatch(/hub[123]: displayUnitsByCell\(displaySlotsLive/);
   });
   // THE FENCE THE CLEANUP SESSION ASKED FOR. Widening the marker must not be
   // readable as having widened the pull.
