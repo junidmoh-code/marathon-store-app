@@ -268,12 +268,18 @@ describe("the wiring in App.jsx", () => {
     expect(APP).toContain("const floorNote = displayLocationNote(order);");
   });
 
-  // THE CARD REPORTS EVIDENCE AND ASKS. It must not tell a picker to take the
-  // pair off the wall: an ordinary send records NO display exit (the slot clear
-  // and the refill scheduling are both gated on requestDisplayPartner), so a
-  // note that invited it would strip a display and leave its slot standing.
-  it("the card never instructs a picker to take the display pair", () => {
+  // THE CARD REPORTS EVIDENCE AND STOPS. Two things it must never do:
+  //
+  //   • tell a picker to take the pair off the wall — an ordinary send records
+  //     NO display exit (the slot clear and the refill scheduling are both
+  //     gated on requestDisplayPartner), so a note that invited it would strip
+  //     a display and leave its slot standing against a shoe that had gone;
+  //   • ask anyone to go and report it afterwards. That is a human step by
+  //     another name, it names no one, it is unenforceable, and a gap that
+  //     LOOKS covered is worse than one that is visibly open.
+  it("the card never instructs a picker to take the pair, nor to go and tell somebody", () => {
     expect(APP).not.toContain("Any pair of this size is fine to send");
+    expect(APP).not.toContain("tell whoever keeps the display register");
     expect(APP).toContain("WAS ON A DISPLAY at ");
     expect(APP).toContain("confirm it is still on the wall");
     // Past tense, dated from the order itself.

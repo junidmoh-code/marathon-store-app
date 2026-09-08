@@ -12458,7 +12458,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                           WAS ON A DISPLAY at {floorNote.stores.map(st => labelFor(st)).join(" / ")} when this was ordered{floorNote.when ? ` (${floorNote.when})` : ""}
                         </div>
                         <div style={{ color:"rgba(216,226,255,.72)", fontSize:11.5, fontWeight:600, marginTop:2 }}>
-                          If the shelf is empty, check there before marking it out of stock — but confirm it is still on the wall, and tell whoever keeps the display register if you take it.
+                          If the shelf is empty, check there before marking it out of stock — confirm it is still on the wall first.
                         </div>
                       </div>
                     </div>

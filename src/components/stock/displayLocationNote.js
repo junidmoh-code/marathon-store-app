@@ -44,12 +44,18 @@
 // against a shoe that had gone, and every later order would inherit the false
 // location (independent review, 2026-09-08).
 //
-// The note therefore reports EVIDENCE and asks for confirmation. It says where
-// the pair was recorded and WHEN, it asks the picker to check that it is still
-// there, and it asks them to say so if they take it. It does not tell anyone to
-// take anything. Closing the loop properly — capturing the display source at
-// dispatch and recording its exit — is the display source-of-truth job, and
-// this note is deliberately no substitute for it.
+// The note therefore reports EVIDENCE and stops. It says where the pair was
+// recorded and WHEN, and it asks the picker to confirm it is still there before
+// refusing the order. It does not tell anyone to take anything.
+//
+// AND IT ASKS NOBODY TO GO AND TELL SOMEBODY. A draft ended "…and tell whoever
+// keeps the display register if you take it", which is a human step by another
+// name — the standing rule on this codebase is automated or not at all — and it
+// would not have worked: it names no one, it is unenforceable, and pretending a
+// gap is covered is worse than leaving it visibly open. Closing the loop is
+// capturing the display source AT DISPATCH and recording its exit, which is the
+// display source-of-truth job. This note is deliberately no substitute for it,
+// and says so rather than gesturing at one.
 //
 // THE TENSE MATTERS. "IS on a display" asserts a present fact from a snapshot
 // that may be days old by the time a picker reads it, and no later slot repair
