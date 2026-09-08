@@ -180,3 +180,26 @@ describe("a ledger re-read that fails is a REFUSAL, never a fallback to the call
     expect(updates.length).toBeGreaterThan(0);
   });
 });
+
+describe("the mirrored size is the one a person wrote on a box", () => {
+  it("a sizeless HALF-size survivor mirrors 9.5, not the raw key 9_5", async () => {
+    // `?? keep.sizeKey` wrote the RTDB-safe key into the slot's HUMAN `size`
+    // field. A 9.5 display then became a slot reading "9_5", permanently, on
+    // every screen that shows a slot size. Swapping "undefined" for "9_5" is a
+    // better bug, not a fixed one. (Adversarial review of PR #585.)
+    const gone = row({ rowId: "a" });
+    const half = row({ rowId: "b", sizeKey: "9_5", openedAt: "2026-09-02T00:00:00.000Z" });
+    delete half.size;
+    DB[ROWS] = { a: { ...gone, status: "closed" }, b: half };
+    await closeDisplayRow({ rows: {}, row: gone, reason: "corrected" });
+    expect(slotCalls[0].size).toBe("9.5");
+  });
+
+  it("a survivor that HAS its size is untouched by the decode", async () => {
+    const gone = row({ rowId: "a" });
+    const keep = row({ rowId: "b", size: "9.5", sizeKey: "9_5", openedAt: "2026-09-02T00:00:00.000Z" });
+    DB[ROWS] = { a: { ...gone, status: "closed" }, b: keep };
+    await closeDisplayRow({ rows: {}, row: gone, reason: "corrected" });
+    expect(slotCalls[0].size).toBe("9.5");
+  });
+});

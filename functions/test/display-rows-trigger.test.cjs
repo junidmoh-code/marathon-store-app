@@ -493,3 +493,30 @@ test("a survivor with NO rowId field still sorts on its key, not on empty string
 // (src/components/stock/displayRowFuzz.test.js): functions/ cannot import src/,
 // and src/ is ESM with extensionless specifiers that require() cannot resolve.
 // The shared rule it compares is lib.cjs's openRowsInOrder.
+
+test("a sizeless HALF-size survivor mirrors 9.5, not the raw key 9_5", async () => {
+  // The fallback added for the sizeless survivor wrote the RTDB-safe KEY into
+  // the slot's HUMAN `size` field, so a 9.5 display became a slot reading
+  // "9_5" — permanently, and on every screen that shows a slot size. Swapping
+  // the word "undefined" for the string "9_5" is a better bug, not a fixed one.
+  // (Adversarial review of PR #585.)
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells
+  const half = openRow({ rowId: "b", sizeKey: "9_5", openedAt: "2026-09-02T00:00:00.000Z" });
+  delete half.size;
+  db._set(`${ROWS}/trophy/p1/b`, half);
+  await run(db, soldAt("trophy"));
+  const slot = db._get("settings/displaySlots/trophy/p1");
+  assert.equal(slot.size, "9.5");
+  assert.equal(slot.sizeKey, "9_5");        // the KEY stays encoded, as it must
+});
+
+test("rowSizeText leaves letters and the one-size sentinel alone", () => {
+  const { rowSizeText: f } = require("../displayRows/lib.cjs");
+  assert.equal(f({ size: "9.5", sizeKey: "9_5" }), "9.5");   // its own size wins
+  assert.equal(f({ sizeKey: "9_5" }), "9.5");
+  assert.equal(f({ sizeKey: "M" }), "M");
+  assert.equal(f({ sizeKey: "_" }), "_");
+  assert.equal(f({ sizeKey: "ONE_SIZE" }), "ONE_SIZE");      // not a digit pair
+  assert.equal(f({}), undefined);
+});

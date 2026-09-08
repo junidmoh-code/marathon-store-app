@@ -7,7 +7,7 @@
 // cannot drift into two different promises about what a tap does.
 
 import React, { useState } from "react";
-import { rowTimeline, OPEN_VIA_TEXT, closeEffectLine } from "./displayRowCore";
+import { rowTimeline, OPEN_VIA_TEXT, closeEffectLine, rowSizeText } from "./displayRowCore";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { CARD, BORDER, BLUE, BLUE_L, GREEN, GRAY, AMBER, FONT, bGray } from "./ui";
@@ -136,7 +136,7 @@ export function HistoryToggle({ row }) {
 export function RowLine({ row }) {
   return (
     <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.72)" }}>
-      Size <b style={{ color: "#fff" }}>{formatSize(row.size ?? row.sizeKey)}</b>
+      Size <b style={{ color: "#fff" }}>{formatSize(rowSizeText(row))}</b>
       {` · registered ${String(row.openedAt || "").slice(0, 10) || "date not recorded"}`}
       {` · ${OPEN_VIA_TEXT[row.openedVia] || "source not recorded"}`}
       {row.bookedHub ? ` · booked at ${labelFor(row.bookedHub)}` : " · no hub on the record"}

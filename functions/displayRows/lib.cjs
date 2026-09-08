@@ -108,6 +108,29 @@ function encodeSizeKey(size) {
   return size.replace(ILLEGAL_RTDB_CHARS, "_");
 }
 
+// The inverse, duplicated from src/utils/sizeKey.js's decodeSizeKey for the
+// same reason the encoder is: functions/ cannot import src/. Only digit_digit →
+// digit.digit, so "M", "XL" and the "_" sentinel pass through untouched. The
+// two copies are differential-tested from the src side alongside the encoder.
+//
+// It exists because the mirror's `size` fallback needs it. `rowIsOpen` requires
+// a sizeKey and says nothing about `size`, so the survivor's human size can be
+// missing — and falling back to the raw KEY writes "9_5" into the slot's human
+// `size` field, which every screen showing a slot size then displays, forever.
+// (Adversarial review of PR #585.)
+function decodeSizeKey(key) {
+  if (typeof key !== "string") return key;
+  return key.replace(/(\d)_(\d)/g, "$1.$2");
+}
+
+/** The size a row shows a person: its own, else its key decoded. Mirrors
+ *  displayRowCore.rowSizeText on the client. */
+function rowSizeText(row) {
+  if (row && row.size != null) return row.size;
+  const k = row && row.sizeKey;
+  return typeof k === "string" ? decodeSizeKey(k) : k;
+}
+
 function stockSizeKey(size) {
   if (size == null || size === "" || size === "Free Size") return "_";
   return encodeSizeKey(size);
@@ -563,5 +586,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, ageRefusalReason, openRowsInOrder, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, ageRefusalReason, openRowsInOrder, decodeSizeKey, rowSizeText, leaseDecision,
 };
