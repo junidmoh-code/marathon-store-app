@@ -121,11 +121,19 @@ export function allRows(rows) {
 }
 
 /** The open rows for one (store, product), oldest first — a stable order, so
- *  "close all but the one you keep" is the same list on every device. */
+ *  "close all but the one you keep" is the same list on every device.
+ *
+ *  THE LOOKUP IS SANITISED, and it has to be: rowPath() runs store and product
+ *  id through `seg()` before writing, so a caller who passes a raw id
+ *  containing an RTDB-illegal character would WRITE to the sanitised key and
+ *  READ from the raw one. The send would then find no open row to close, open a
+ *  second beside it, and manufacture the exact duplicate this ledger exists to
+ *  surface. Every id in play today is already segment-safe, which is precisely
+ *  why the mismatch would sit there unnoticed until one was not. */
 export function openRowsFor(rows, store, productId) {
-  const byRow = ((rows || {})[store] || {})[productId] || {};
+  const byRow = ((rows || {})[seg(store)] || {})[seg(productId)] || {};
   return Object.entries(byRow)
-    .map(([rowId, row]) => ({ ...row, store, productId, rowId }))
+    .map(([rowId, row]) => ({ ...row, store: seg(store), productId: seg(productId), rowId }))
     .filter(rowIsOpen)
     .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || "")) || a.rowId.localeCompare(b.rowId));
 }
