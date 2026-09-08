@@ -246,9 +246,15 @@ const MUTATIONS = [
   // ── the five the adversarial architecture review found ────────────────────
   {
     id: "F1", file: STORE, tests: STORE_TESTS,
-    guard: "CONFIRMED EMPTY CORRECTS A PHANTOM — a cell still reading stock is set to zero, not just ticked off",
-    from: `  if (outcome === "confirmed_empty" && Number(row.q) > 0) {`,
+    guard: "CONFIRMED EMPTY CORRECTS A PHANTOM — a cell that disagrees is set to zero, not just ticked off",
+    from: `  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {`,
     to: `  if (false) {`,
+  },
+  {
+    id: "F1n", file: STORE, tests: STORE_TESTS,
+    guard: "…including a NEGATIVE cell, which is wrong by definition and would otherwise return every day forever",
+    from: `  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {`,
+    to: `  if (outcome === "confirmed_empty" && Number(row.q) > 0) {`,
   },
   {
     id: "F1b", file: STORE, tests: STORE_TESTS,

@@ -97,6 +97,18 @@ describe("Tab A outcomes", () => {
     expect(state.updates[0][`${RESULTS}/p1__L__hub2`]).toMatchObject({ outcome: "confirmed_empty", actual: 0, movementId: "mv1" });
   });
 
+  it("confirmed empty against a NEGATIVE cell corrects it up to zero", async () => {
+    // A negative cell is wrong by definition. Leaving it would bring the same
+    // row back tomorrow, unchanged, every day — the button that describes what
+    // the person did has to actually fix it.
+    state.cells["stock/hub2/p1/L"] = { qty: -2 };
+    const res = await store.recordOutOfStockOutcome({
+      store: "marathon-pe", row: { ...OOS_ROW, q: -2, r: "negative_cell" }, outcome: "confirmed_empty",
+    });
+    expect(res.ok).toBe(true);
+    expect(state.movements[0]).toMatchObject({ type: "adjustment", qty: 2, to: "hub2", from: null, expect: { qty: -2 } });
+  });
+
   it("a REFUSED confirmed-empty correction records nothing either", async () => {
     state.cells["stock/hub2/p1/L"] = { qty: 7 };
     state.applyResult = { ok: false, reason: "stale_expectation" };

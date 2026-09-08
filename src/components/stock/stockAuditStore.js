@@ -90,13 +90,18 @@ export async function adjustCellTo({ loc, productId, size, actual, what, store, 
 // "Confirmed empty" means the human walked to the shelf and there is nothing on
 // it. What that implies depends on what the system believed:
 //
-//   believed <= 0  →  the shelf and the system agree. Record the check, write
+//   believed = 0   →  the shelf and the system agree. Record the check, write
 //                     no movement; an adjustment that changes nothing is
 //                     ledger noise.
-//   believed  > 0  →  they DISAGREE, and this is the exact phantom the tab
+//   believed > 0   →  they DISAGREE, and this is the exact phantom the tab
 //                     exists to find — a line rejected against a cell that
-//                     still reads seven. So the cell is corrected to zero
-//                     through the same single adjustment path.
+//                     still reads seven. The cell is corrected to zero.
+//   believed < 0   →  they disagree the other way. A negative cell is
+//                     arithmetic that already happened and is wrong by
+//                     definition; an empty shelf means zero, not minus two.
+//                     Corrected too — otherwise the one button that describes
+//                     what the person did leaves the cell wrong and the row
+//                     comes back tomorrow unchanged, every day, forever.
 //
 // This button used to record in both cases. That was the worst hole in the
 // feature: staff confirming an empty shelf would close the row, no correction
@@ -111,7 +116,7 @@ export async function recordOutOfStockOutcome({ store, row, outcome, actual, act
   if (!uid) return { ok: false, reason: "not_authenticated" };
 
   let movementId = null;
-  if (outcome === "confirmed_empty" && Number(row.q) > 0) {
+  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {
     const res = await adjustCellTo({
       loc: row.w, productId: row.p, size: decodeSizeKey(row.sk),
       actual: 0, what: "confirmed empty", store, actorRole,
