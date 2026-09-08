@@ -184,10 +184,25 @@ function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, r
   const upstream = source ? (routes?.[source] || null) : null;  // and its supplier (central)
   const since = nowMs - cfg.lookbackHours * 3600e3;
 
-  // First writer wins. The sources below are pushed in descending evidential
-  // strength, so a line seen twice keeps the stronger reading rather than
-  // whichever source happened to run last.
-  const add = (row) => { if (!rows.has(row.k)) rows.set(row.k, row); };
+  // THE STRONGER READING WINS, not the first one to arrive.
+  //
+  // This was first-writer-wins, on the assumption that pushing the sources in
+  // descending evidential strength was enough. It is not, and the hole is
+  // inside a single source: /refill_requests is iterated in RTDB child order,
+  // which for push-id keys is chronological, so two records for the SAME
+  // product+size+place are seen oldest first. An old still-open request
+  // (rank 2) would then claim the cell and silently drop a NEWER human
+  // rejection against a cell that still reads positive (rank 1) — which is the
+  // single loudest phantom this tab exists to surface, and the first row a cap
+  // would truncate away. Duplicate records for one cell are not hypothetical
+  // here; requests that outlive their engine lock have happened before.
+  //
+  // Comparing rank makes the outcome independent of iteration order.
+  // (Adversarial architecture review, PR #580.)
+  const add = (row) => {
+    const cur = rows.get(row.k);
+    if (!cur || row.rank < cur.rank) rows.set(row.k, row);
+  };
 
   // ── 3. negative cells (strongest evidence: it already happened) ────────────
   for (const loc of [store, source, upstream].filter(Boolean)) {

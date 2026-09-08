@@ -60,15 +60,40 @@ const rowBox = { background: CARD, border: BORDER, borderRadius: 13, padding: "1
 const nameStyle = { fontSize: 14, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const subStyle = { fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 3 };
 
-// applyMovement's refusal reasons, said plainly. `expect_mismatch` is the one
+// applyMovement's refusal reasons, said plainly. `stale_expectation` is the one
 // staff will actually meet: stock moved between the list being built and the
 // tap, so the correction was refused rather than applied to a base nobody
 // counted. The honest instruction is to look again, not to retry blindly.
-const FAILURE = {
-  expect_mismatch: "Stock changed while you were looking. Check the shelf again.",
+//
+// THE STRING IS A CONTRACT WITH applyMovement.js, not a name chosen here. It
+// shipped as "expect_mismatch" — a plausible invention that matches nothing —
+// so the one message this feature built for its headline race never fired, and
+// staff met a raw reason code instead. The unit test could not catch it because
+// the mock invented the same wrong string on both sides. stockAuditReasons.test
+// now reads applyMovement's own source, so a rename there fails here.
+// (Adversarial architecture review, PR #580.)
+export const STALE = "stale_expectation";
+//
+// EVERY reason applyMovement can return is answered here — stockAuditReasons
+// .test reads its source and fails if one appears without a sentence. A
+// correction that refuses is a correction staff must understand; a raw code is
+// a dead end at a shelf.
+export const FAILURE = {
+  [STALE]: "Stock changed while you were looking. Check the shelf again.",
   insufficient_stock: "Not enough on hand to remove.",
+  stock_received: "Stock arrived here since the list was built. Check the shelf again.",
   not_authenticated: "Signed out — sign in and try again.",
+  retries_exhausted: "Could not save — try again in a moment.",
+  write_failed: "Could not save — try again in a moment.",
+  invalid_state: "Could not save — try again in a moment.",
+  invalid_type: "Could not save — try again in a moment.",
   invalid_quantity: "Enter a quantity of 0 or more.",
+  missing_location: "This row has no location.",
+  missing_product_or_size: "This row is missing a product or size.",
+  qty_must_be_positive: "Enter a quantity of 0 or more.",
+  adjustment_requires_reason: "Could not save — try again in a moment.",
+  expect_requires_single_cell: "Could not save — try again in a moment.",
+  unknown_outcome: "Could not save — try again in a moment.",
   no_sizes: "Nothing to adjust on this row.",
 };
 function failureText(res) {
@@ -144,6 +169,15 @@ export default function StockAuditView({ onExit, actorRole = null }) {
           <button key={s.id} onClick={() => setStore(s.id)} style={chip(store === s.id)}>{s.label}</button>
         ))}
       </div>
+
+      {/* The pass rides on refillHealthScan, which stands down entirely while the
+          refill engine is off or Central has a receiving session open — so on
+          those days no list is recomputed. Staff must never act on a stale list
+          believing it is this morning's, so the date is stated whenever it is
+          not today's. Silence would be the lie. */}
+      {data && data.saDate && data.saDate !== saDate && (
+        <div style={{ ...rowBox, color: AMBER, fontSize: 12.5, marginBottom: 10 }}>{`Built ${data.saDate}.`}</div>
+      )}
 
       {note && (
         <div style={{ ...rowBox, borderColor: `${note.tone}55`, color: note.tone, fontSize: 12.5, marginBottom: 10 }}>{note.text}</div>
@@ -230,7 +264,7 @@ function Signals({ sold, disp, slow }) {
 // The four outcomes. All of them stamp and send the product to the back of the
 // rotation; only "Not there" moves stock, and only ever to zero, through the
 // same single adjustment path.
-function RotationRow({ row, title, sub, signals, sizes, busy, onAction }) {
+function RotationRow({ row, title, sub, signals, busy, onAction }) {
   const [confirm, setConfirm] = useState(false);
   return (
     <div style={{ ...rowBox, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
@@ -247,7 +281,7 @@ function RotationRow({ row, title, sub, signals, sizes, busy, onAction }) {
         // deliberate press.
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 12, color: GRAY, flex: 1 }}>Set to zero?</span>
-          <button disabled={busy} style={actionBtn(RED)} onClick={() => { setConfirm(false); onAction(row, "not_there", sizes); }}>Yes</button>
+          <button disabled={busy} style={actionBtn(RED)} onClick={() => { setConfirm(false); onAction(row, "not_there"); }}>Yes</button>
           <button disabled={busy} style={actionBtn(GRAY)} onClick={() => setConfirm(false)}>Cancel</button>
         </div>
       ) : (
@@ -262,12 +296,22 @@ function RotationRow({ row, title, sub, signals, sizes, busy, onAction }) {
   );
 }
 
+// THE SIZE VIEW READS; THE PRODUCT VIEW ACTS.
+//
+// It offered the same buttons at first, and that quietly broke the rotation's
+// one guarantee. The check stamp is per PRODUCT — that is what the ordering is
+// built on — so confirming a single size present stamped the whole product as
+// freshly checked and sent its other sizes, which nobody had looked at, to the
+// back of a fourteen-week queue. Starving a product is exactly what this
+// rotation exists to prevent.
+//
+// The product row already lists every size with its quantity, so nothing is
+// lost by acting there: a rotation outcome is a judgement about a product on a
+// floor, and it should be recorded where the whole product is in view.
+// (Adversarial architecture review, PR #580.)
 function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
   const sizeRows = useMemo(
-    // `row` rides along so a size-view action stamps the same product record a
-    // product-view action would — one rotation stamp per product, whichever
-    // view the human was looking at.
-    () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, row: r, key: `${r.p}__${z.sk}` }))),
+    () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, key: `${r.p}__${z.sk}` }))),
     [rows]
   );
   return (
@@ -282,12 +326,16 @@ function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
             ? rows.map((r) => (
                 <RotationRow key={r.p} row={r} busy={busy === r.p} onAction={onAction}
                   title={r.n} sub={(r.z || []).map((z) => `${formatSize(z.s)} ${z.q}`).join(" · ")}
-                  signals={{ sold: r.sold, disp: r.disp, slow: r.slow }} sizes={null} />
+                  signals={{ sold: r.sold, disp: r.disp, slow: r.slow }} />
               ))
             : sizeRows.map((z) => (
-                <RotationRow key={z.key} row={z.row} busy={busy === z.p} onAction={onAction}
-                  title={z.n} sub={`${formatSize(z.s)} · ${z.q}`}
-                  signals={{ sold: z.sold, disp: z.disp, slow: z.slow }} sizes={[{ sk: z.sk }]} />
+                <div key={z.key} style={rowBox}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={nameStyle}>{z.n}</div>
+                    <div style={subStyle}>{formatSize(z.s)} · {z.q}</div>
+                  </div>
+                  <Signals sold={z.sold} disp={z.disp} slow={z.slow} />
+                </div>
               ))}
         </div>
       )}

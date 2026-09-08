@@ -87,16 +87,38 @@ export async function adjustCellTo({ loc, productId, size, actual, what, store, 
 // ── TAB A outcomes ───────────────────────────────────────────────────────────
 // `row` is a snapshot row: { k, p, n, s, sk, w, q, r }.
 //
-// "Confirmed empty" records that a human looked and the shelf matches what the
-// system said. It deliberately writes NO movement: there is nothing to correct,
-// and an adjustment that changes no quantity is ledger noise. A cell that is
-// wrong is the other button's job.
+// "Confirmed empty" means the human walked to the shelf and there is nothing on
+// it. What that implies depends on what the system believed:
+//
+//   believed <= 0  →  the shelf and the system agree. Record the check, write
+//                     no movement; an adjustment that changes nothing is
+//                     ledger noise.
+//   believed  > 0  →  they DISAGREE, and this is the exact phantom the tab
+//                     exists to find — a line rejected against a cell that
+//                     still reads seven. So the cell is corrected to zero
+//                     through the same single adjustment path.
+//
+// This button used to record in both cases. That was the worst hole in the
+// feature: staff confirming an empty shelf would close the row, no correction
+// would be written, and the cell would never come back — not negative, and its
+// triggering request aged past the lookback window by the next pass. The tool
+// would have quietly buried the very defect it was built to surface, behind
+// the one button whose label best describes what the person just did.
+// (Adversarial architecture review, PR #580.)
 export async function recordOutOfStockOutcome({ store, row, outcome, actual, actorRole, nowMs = serverNowMs() }) {
   if (!OOS_OUTCOMES.includes(outcome)) return { ok: false, reason: "unknown_outcome" };
   const uid = actor();
   if (!uid) return { ok: false, reason: "not_authenticated" };
 
   let movementId = null;
+  if (outcome === "confirmed_empty" && Number(row.q) > 0) {
+    const res = await adjustCellTo({
+      loc: row.w, productId: row.p, size: decodeSizeKey(row.sk),
+      actual: 0, what: "confirmed empty", store, actorRole,
+    });
+    if (!res.ok) return res;                       // NOT recorded — rule 3 (confirm)
+    movementId = res.movementId || null;
+  }
   if (outcome === "adjusted") {
     // The row's size key is what /stock is keyed by; applyMovement re-encodes,
     // so it must be handed the DECODED size or a half size would round-trip
@@ -117,6 +139,7 @@ export async function recordOutOfStockOutcome({ store, row, outcome, actual, act
       productId: row.p, sizeKey: row.sk, where: row.w,
       believed: row.q,
       ...(outcome === "adjusted" ? { actual: Number(actual), movementId } : {}),
+      ...(outcome === "confirmed_empty" && movementId ? { actual: 0, movementId } : {}),
     },
   });
   return { ok: true, movementId };

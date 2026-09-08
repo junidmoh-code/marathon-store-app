@@ -75,13 +75,34 @@ describe("adjustCellTo", () => {
 });
 
 describe("Tab A outcomes", () => {
-  it("confirmed empty records the check and moves NO stock", async () => {
-    const res = await store.recordOutOfStockOutcome({ store: "marathon-pe", row: OOS_ROW, outcome: "confirmed_empty" });
+  it("confirmed empty against a cell that AGREES moves no stock", async () => {
+    const agreed = { ...OOS_ROW, q: 0 };
+    const res = await store.recordOutOfStockOutcome({ store: "marathon-pe", row: agreed, outcome: "confirmed_empty" });
     expect(res.ok).toBe(true);
     expect(state.movements).toHaveLength(0);
     expect(state.updates[0][`${RESULTS}/p1__L__hub2`]).toMatchObject({
-      outcome: "confirmed_empty", at: NOW, by: "u9", where: "hub2", believed: 7,
+      outcome: "confirmed_empty", at: NOW, by: "u9", where: "hub2", believed: 0,
     });
+  });
+
+  it("confirmed empty against a cell that still reads STOCK corrects it to zero", async () => {
+    // The phantom: the system says 7, the human just looked and the shelf is
+    // empty. Recording that without a correction would bury the defect the tab
+    // exists to find — the row never comes back (it is not negative, and its
+    // request ages out of the lookback window).
+    state.cells["stock/hub2/p1/L"] = { qty: 7 };
+    const res = await store.recordOutOfStockOutcome({ store: "marathon-pe", row: OOS_ROW, outcome: "confirmed_empty" });
+    expect(res.ok).toBe(true);
+    expect(state.movements[0]).toMatchObject({ type: "adjustment", qty: 7, from: "hub2", expect: { qty: 7 } });
+    expect(state.updates[0][`${RESULTS}/p1__L__hub2`]).toMatchObject({ outcome: "confirmed_empty", actual: 0, movementId: "mv1" });
+  });
+
+  it("a REFUSED confirmed-empty correction records nothing either", async () => {
+    state.cells["stock/hub2/p1/L"] = { qty: 7 };
+    state.applyResult = { ok: false, reason: "stale_expectation" };
+    const res = await store.recordOutOfStockOutcome({ store: "marathon-pe", row: OOS_ROW, outcome: "confirmed_empty" });
+    expect(res.ok).toBe(false);
+    expect(state.updates).toHaveLength(0);
   });
 
   it("adjust writes the movement first and records the result after", async () => {
@@ -94,10 +115,10 @@ describe("Tab A outcomes", () => {
 
   it("a REFUSED adjustment records nothing — the row must stay on the list", async () => {
     state.cells["stock/hub2/p1/L"] = { qty: 7 };
-    state.applyResult = { ok: false, reason: "expect_mismatch" };
+    state.applyResult = { ok: false, reason: "stale_expectation" };
     const res = await store.recordOutOfStockOutcome({ store: "marathon-pe", row: OOS_ROW, outcome: "adjusted", actual: 0 });
     expect(res.ok).toBe(false);
-    expect(res.reason).toBe("expect_mismatch");
+    expect(res.reason).toBe("stale_expectation");
     expect(state.updates).toHaveLength(0);
   });
 

@@ -223,6 +223,29 @@ test("the same line missing from two places is two rows, never one", () => {
   assert.deepEqual(rows.map((r) => r.w).sort(), ["hub2", "marathon-pe"]);
 });
 
+test("the STRONGER reading wins a collision, whatever order the records arrive in", () => {
+  // Two records for the SAME cell: an old still-open request (rank 2) and a
+  // newer human rejection against a source that still reads 7 (rank 1 — the
+  // loudest phantom the tab can produce). RTDB iterates push-ids
+  // chronologically, so the old one is seen FIRST; a first-writer-wins dedup
+  // would drop the rejection.
+  const both = {
+    "-old": { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "open",
+              createdAt: iso(2 * 3600e3), createdFrom: { source: "hub2" } },
+    "-new": { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
+              resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
+  };
+  const run = (rr) => sa.buildOutOfStock({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG,
+    stock: { "marathon-pe": {}, hub2: STOCK.hub2, central: {} },
+    products: PRODUCTS, refillRequests: rr, routes: ROUTES,
+  }).rows.find((r) => r.k === "tee__L__hub2");
+
+  assert.equal(run(both).r, "rejected");
+  // and the same answer with the records the other way round
+  assert.equal(run({ "-new": both["-new"], "-old": both["-old"] }).r, "rejected");
+});
+
 test("a request with no recorded source falls back to the route table", () => {
   const { rows } = sa.buildOutOfStock({
     store: "marathon-pe", nowMs: NOW, cfg: CFG,

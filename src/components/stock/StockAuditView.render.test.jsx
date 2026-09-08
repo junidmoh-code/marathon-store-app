@@ -38,7 +38,7 @@ const SNAPSHOTS = {
     },
   },
   "settings/stockAudit/trophy/latest": {
-    store: "trophy", saDate: "2026-09-07",
+    store: "trophy", saDate: "2026-09-04",
     oos: { total: 1, truncated: false, rows: [{ k: "z__S__central", p: "z", n: "Trophy Only Tee", s: "S", sk: "S", w: "central", q: 0, r: "unfillable" }] },
     rotation: { batchDate: "2026-09-07", refreshed: true, universeSize: 10, cycleBatches: 1, rows: [] },
   },
@@ -117,6 +117,41 @@ describe("StockAuditView", () => {
     s = text(t);
     expect(s).toContain("Nike Tee Black");
     expect(s).toContain("Puma Shorts");
+  });
+
+  it("the SIZE view reads; only the product view acts", () => {
+    // A rotation stamp is per PRODUCT, so a per-size outcome would mark sizes
+    // nobody looked at as freshly checked and starve them for a full cycle.
+    const t = mount();
+    tap(t, "Not Selling");
+    expect(buttonWith(t, "Present but slow")).toBeTruthy();
+    expect(buttonWith(t, "Not on display")).toBeTruthy();
+
+    tap(t, "Sizes");
+    expect(buttonWith(t, "Present but slow")).toBeUndefined();
+    expect(buttonWith(t, "Not on display")).toBeUndefined();
+    expect(buttonWith(t, "Not there")).toBeUndefined();
+    // still a read of the same batch
+    expect(text(t)).toContain("No sale");
+  });
+
+  it("a list that is not today's says which day it was built", () => {
+    // The pass rides on refillHealthScan, which stands down entirely while the
+    // engine is off or Central is receiving — so a list can be days old, and
+    // silence about that is the lie.
+    const t = mount();
+    expect(text(t)).not.toContain("Built ");    // Marathon PE's list is today's
+    tap(t, "Trophy");                          // Trophy's is three days old
+    expect(text(t)).toContain("Built 2026-09-04");
+  });
+
+  it("Out of Stock offers the three outcomes, and the quantity box only on Adjust", () => {
+    const t = mount();
+    expect(buttonWith(t, "Confirmed empty")).toBeTruthy();
+    expect(buttonWith(t, "Flag")).toBeTruthy();
+    expect(t.root.findAllByType("input")).toHaveLength(0);
+    tap(t, "Adjust");
+    expect(t.root.findAllByType("input")).toHaveLength(1);
   });
 
   it("says so plainly when there is nothing, rather than spinning", () => {
