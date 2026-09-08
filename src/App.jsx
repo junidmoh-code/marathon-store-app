@@ -19206,7 +19206,7 @@ function AppInner() {
     ? <DisplayRegistrationView products={products} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.STOCK_AUDIT) view = stockAuditRouteOpen
-    ? <StockAuditView onExit={() => setRole(null)} />
+    ? <StockAuditView actorRole={stockRole} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;

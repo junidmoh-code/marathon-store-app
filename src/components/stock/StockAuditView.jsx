@@ -22,11 +22,12 @@
 // somebody remembers to press something is a list nobody reads.
 
 import React, { useMemo, useState } from "react";
-import { CARD, BORDER, BLUE, BLUE_L, GRAY, GREEN, RED, AMBER, FONT, tabOn, tabOff } from "./ui";
+import { CARD, BORDER, BLUE, BLUE_L, GRAY, GREEN, RED, AMBER, FONT, input, tabOn, tabOff } from "./ui";
 import { usePathState } from "./useStock";
 import { formatSize } from "../../utils/sizeLabel";
 import { AUDIT_STORES, snapshotPath, resultsPath, saDateOf, locationLabel } from "../../config/stockAudit";
 import { serverNowMs } from "../../utils/serverTime";
+import { recordOutOfStockOutcome, recordRotationOutcome } from "./stockAuditStore";
 
 // Short status words, not sentences. Staff need to know which shelf and what
 // the system thinks; they do not need a description of the mechanism.
@@ -50,9 +51,29 @@ const pill = (tone) => ({
   border: `1px solid ${tone}44`, background: `${tone}1A`, color: tone, whiteSpace: "nowrap",
 });
 
+const actionBtn = (tone) => ({
+  padding: "7px 11px", borderRadius: 9, fontSize: 12, fontWeight: 800, cursor: "pointer",
+  fontFamily: FONT, border: `1px solid ${tone}55`, background: `${tone}14`, color: tone,
+});
+
 const rowBox = { background: CARD, border: BORDER, borderRadius: 13, padding: "12px 14px", display: "flex", gap: 12, alignItems: "center" };
 const nameStyle = { fontSize: 14, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 const subStyle = { fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 3 };
+
+// applyMovement's refusal reasons, said plainly. `expect_mismatch` is the one
+// staff will actually meet: stock moved between the list being built and the
+// tap, so the correction was refused rather than applied to a base nobody
+// counted. The honest instruction is to look again, not to retry blindly.
+const FAILURE = {
+  expect_mismatch: "Stock changed while you were looking. Check the shelf again.",
+  insufficient_stock: "Not enough on hand to remove.",
+  not_authenticated: "Signed out — sign in and try again.",
+  invalid_quantity: "Enter a quantity of 0 or more.",
+  no_sizes: "Nothing to adjust on this row.",
+};
+function failureText(res) {
+  return FAILURE[res?.reason] || `Could not save (${res?.reason || "unknown"}).`;
+}
 
 function Empty({ text }) {
   return <div style={{ ...rowBox, justifyContent: "center", color: GRAY, fontSize: 13, padding: "26px 14px" }}>{text}</div>;
@@ -68,7 +89,7 @@ function useStoreAudit(store, saDate) {
   return { snap, results };
 }
 
-export default function StockAuditView({ onExit }) {
+export default function StockAuditView({ onExit, actorRole = null }) {
   const [tab, setTab] = useState("oos");
   const [store, setStore] = useState(AUDIT_STORES[0].id);
   const [mode, setMode] = useState("product");         // Tab B: product view / size view
@@ -77,6 +98,22 @@ export default function StockAuditView({ onExit }) {
   // results node and re-offer rows that were already actioned.
   const saDate = useMemo(() => saDateOf(serverNowMs()), []);
   const { snap, results } = useStoreAudit(store, saDate);
+  const [busy, setBusy] = useState(null);        // the key currently being written
+  const [note, setNote] = useState(null);        // { tone, text }
+
+  // One writer for both tabs. The row leaves the list only because the RESULTS
+  // node it just wrote came back through the subscription — never because this
+  // component optimistically hid it. A refused adjustment must stay on screen.
+  const act = async (key, fn) => {
+    if (busy) return;
+    setBusy(key); setNote(null);
+    try {
+      const res = await fn();
+      if (!res?.ok) setNote({ tone: RED, text: failureText(res) });
+    } catch (e) {
+      setNote({ tone: RED, text: e?.message || "Failed." });
+    } finally { setBusy(null); }
+  };
 
   const data = snap.value;
   const done = results.value || {};
@@ -108,36 +145,67 @@ export default function StockAuditView({ onExit }) {
         ))}
       </div>
 
+      {note && (
+        <div style={{ ...rowBox, borderColor: `${note.tone}55`, color: note.tone, fontSize: 12.5, marginBottom: 10 }}>{note.text}</div>
+      )}
+
       {!snap.settled ? <Empty text="Loading…" />
         : snap.error ? <Empty text="Cannot read this store's list." />
         : !data ? <Empty text="Nothing yet." />
         : tab === "oos"
-          ? <OutOfStock rows={oosRows} total={data.oos?.total || 0} truncated={!!data.oos?.truncated} />
-          : <NotSelling data={data} rows={rotRows} mode={mode} setMode={setMode} />}
+          ? <OutOfStock rows={oosRows} total={data.oos?.total || 0} truncated={!!data.oos?.truncated}
+              busy={busy} onAction={(row, outcome, actual) =>
+                act(row.k, () => recordOutOfStockOutcome({ store, row, outcome, actual, actorRole }))} />
+          : <NotSelling data={data} rows={rotRows} mode={mode} setMode={setMode}
+              busy={busy} onAction={(row, outcome, sizes) =>
+                act(row.p, () => recordRotationOutcome({ store, row, outcome, sizes, actorRole }))} />}
     </div>
   );
 }
 
 // ── TAB A ────────────────────────────────────────────────────────────────────
-function OutOfStock({ rows, total, truncated }) {
+function OutOfStock({ rows, total, truncated, busy, onAction }) {
   if (!rows.length) return <Empty text={total ? "All checked." : "Nothing to check."} />;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {rows.map((r) => {
-        const meta = REASON[r.r] || { text: r.r, tone: GRAY };
-        return (
-          <div key={r.k} style={rowBox}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={nameStyle}>{r.n}</div>
-              <div style={subStyle}>{formatSize(r.s)} · {locationLabel(r.w)} · system {r.q}</div>
-            </div>
-            <span style={pill(meta.tone)}>{meta.text}</span>
-          </div>
-        );
-      })}
+      {rows.map((r) => <OosRow key={r.k} r={r} busy={busy === r.k} onAction={onAction} />)}
       {truncated && (
         <div style={{ fontSize: 11.5, color: GRAY, textAlign: "center", padding: "6px 0" }}>
           Showing {rows.length} of {total}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// One Tab A row. The quantity input only appears once "Adjust" is tapped —
+// a number box on every row invites a number nobody counted.
+function OosRow({ r, busy, onAction }) {
+  const [adjusting, setAdjusting] = useState(false);
+  const [qty, setQty] = useState("");
+  const meta = REASON[r.r] || { text: r.r, tone: GRAY };
+  return (
+    <div style={{ ...rowBox, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={nameStyle}>{r.n}</div>
+          <div style={subStyle}>{formatSize(r.s)} · {locationLabel(r.w)} · system {r.q}</div>
+        </div>
+        <span style={pill(meta.tone)}>{meta.text}</span>
+      </div>
+      {adjusting ? (
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input value={qty} onChange={(e) => setQty(e.target.value)} inputMode="numeric" placeholder="On the shelf"
+            style={{ ...input, flex: 1, minWidth: 0 }} />
+          <button disabled={busy} style={actionBtn(GREEN)}
+            onClick={() => onAction(r, "adjusted", qty.trim())}>Save</button>
+          <button disabled={busy} style={actionBtn(GRAY)} onClick={() => setAdjusting(false)}>Cancel</button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button disabled={busy} style={actionBtn(GREEN)} onClick={() => onAction(r, "confirmed_empty")}>Confirmed empty</button>
+          <button disabled={busy} style={actionBtn(BLUE_L)} onClick={() => setAdjusting(true)}>Adjust</button>
+          <button disabled={busy} style={actionBtn(AMBER)} onClick={() => onAction(r, "flagged")}>Flag</button>
         </div>
       )}
     </div>
@@ -159,9 +227,47 @@ function Signals({ sold, disp, slow }) {
   );
 }
 
-function NotSelling({ data, rows, mode, setMode }) {
+// The four outcomes. All of them stamp and send the product to the back of the
+// rotation; only "Not there" moves stock, and only ever to zero, through the
+// same single adjustment path.
+function RotationRow({ row, title, sub, signals, sizes, busy, onAction }) {
+  const [confirm, setConfirm] = useState(false);
+  return (
+    <div style={{ ...rowBox, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={nameStyle}>{title}</div>
+          <div style={subStyle}>{sub}</div>
+        </div>
+        <Signals {...signals} />
+      </div>
+      {confirm ? (
+        // Second tap. "Not there" writes the shelf to zero, and a mis-tap on a
+        // product view would zero every size at once — that is worth one more
+        // deliberate press.
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: GRAY, flex: 1 }}>Set to zero?</span>
+          <button disabled={busy} style={actionBtn(RED)} onClick={() => { setConfirm(false); onAction(row, "not_there", sizes); }}>Yes</button>
+          <button disabled={busy} style={actionBtn(GRAY)} onClick={() => setConfirm(false)}>Cancel</button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button disabled={busy} style={actionBtn(GREEN)} onClick={() => onAction(row, "present")}>Present</button>
+          <button disabled={busy} style={actionBtn(RED)} onClick={() => setConfirm(true)}>Not there</button>
+          <button disabled={busy} style={actionBtn(AMBER)} onClick={() => onAction(row, "not_on_display")}>Not on display</button>
+          <button disabled={busy} style={actionBtn(BLUE_L)} onClick={() => onAction(row, "slow")}>Present but slow</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
   const sizeRows = useMemo(
-    () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, key: `${r.p}__${z.sk}` }))),
+    // `row` rides along so a size-view action stamps the same product record a
+    // product-view action would — one rotation stamp per product, whichever
+    // view the human was looking at.
+    () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, row: r, key: `${r.p}__${z.sk}` }))),
     [rows]
   );
   return (
@@ -174,22 +280,14 @@ function NotSelling({ data, rows, mode, setMode }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {mode === "product"
             ? rows.map((r) => (
-                <div key={r.p} style={rowBox}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={nameStyle}>{r.n}</div>
-                    <div style={subStyle}>{(r.z || []).map((z) => `${formatSize(z.s)} ${z.q}`).join(" · ")}</div>
-                  </div>
-                  <Signals sold={r.sold} disp={r.disp} slow={r.slow} />
-                </div>
+                <RotationRow key={r.p} row={r} busy={busy === r.p} onAction={onAction}
+                  title={r.n} sub={(r.z || []).map((z) => `${formatSize(z.s)} ${z.q}`).join(" · ")}
+                  signals={{ sold: r.sold, disp: r.disp, slow: r.slow }} sizes={null} />
               ))
             : sizeRows.map((z) => (
-                <div key={z.key} style={rowBox}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={nameStyle}>{z.n}</div>
-                    <div style={subStyle}>{formatSize(z.s)} · {z.q}</div>
-                  </div>
-                  <Signals sold={z.sold} disp={z.disp} slow={z.slow} />
-                </div>
+                <RotationRow key={z.key} row={z.row} busy={busy === z.p} onAction={onAction}
+                  title={z.n} sub={`${formatSize(z.s)} · ${z.q}`}
+                  signals={{ sold: z.sold, disp: z.disp, slow: z.slow }} sizes={[{ sk: z.sk }]} />
               ))}
         </div>
       )}
