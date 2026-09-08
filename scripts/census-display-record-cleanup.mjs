@@ -98,7 +98,14 @@ for (const hub of HUBS) {
       say(`     ${row.productName}${row.deactivated ? "  [deactivated line]" : ""}`);
       say(`     WHY: ${row.why}`);
       for (const e of row.evidence) {
-        say(`     ${e.kind === "live" ? "LIVE SLOT" : "TOMBSTONE"}  ${e.store}  ${e.kind === "live" ? `size ${e.size}` : `was ${e.size}`}  (${e.source})  ${e.at}`);
+        // THREE kinds, not two. `unattributed` is a departure with no hub on
+        // the record — it is real evidence that a display left, and it counts
+        // for NEITHER hub, so printing it as a plain TOMBSTONE claimed a hub
+        // attribution the record does not have. (CodeRabbit.)
+        const label = e.kind === "live" ? "LIVE SLOT"
+          : e.kind === "unattributed" ? "LEFT (no hub — counts for neither)"
+          : "TOMBSTONE";
+        say(`     ${label}  ${e.store}  ${e.kind === "live" ? `size ${e.size}` : `was ${e.size}`}  (${e.source})  ${e.at}`);
       }
     }
   }

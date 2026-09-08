@@ -180,8 +180,13 @@ test("two walls claiming the size is ambiguous, and ambiguous is a refusal", () 
 test("one wall, and the hub cell now empty: the sale could not have been anything else", () => {
   assert.deepEqual(resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0 })),
     { ok: true, store: "trophy", rowId: "a" });
-  // Negative cells happen (they clamp to 0 elsewhere); they are still empty.
-  assert.equal(resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: -1 })).ok, true);
+  // A NEGATIVE cell is NOT empty. It means the books are already wrong about
+  // that shelf, which is not evidence that the unit which sold was the display.
+  // An earlier cut accepted it and would have closed the only matching row on
+  // the strength of a number nobody trusts. (CodeRabbit.)
+  const neg = resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: -1 }));
+  assert.equal(neg.ok, false);
+  assert.match(neg.why, /not a shelf state/);
 });
 
 test("an ABSENT cell is zero stock; an unreadable one is a refusal", () => {
@@ -322,4 +327,51 @@ test("a genuinely empty wall still reports the empty reason", () => {
   const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0, ambiguityCount: 0 }));
   assert.equal(r.ok, false);
   assert.match(r.why, /no open row at this hub/);
+});
+
+
+// ── A ROW OPENED AFTER THE SALE CANNOT BE WHAT THE SALE SOLD ────────────────
+// Trigger delivery is at-least-once and can lag; the two-minute bound governs
+// the STOCK CELL, not the ledger, so a wall walk inside that window registers a
+// row an older sale would otherwise have closed. (CodeRabbit.)
+
+const { rowPredatesSale } = require("../displayRows/lib.cjs");
+const SALE_TS = "2026-09-08T10:00:00.000Z";
+const before = { openedAt: "2026-09-08T09:00:00.000Z" };
+const after  = { openedAt: "2026-09-08T10:00:01.000Z" };
+
+test("rowPredatesSale: before yes, after no, unreadable no, unconstrained yes", () => {
+  assert.equal(rowPredatesSale(before, SALE_TS), true);
+  assert.equal(rowPredatesSale({ openedAt: SALE_TS }, SALE_TS), true);   // same instant counts
+  assert.equal(rowPredatesSale(after, SALE_TS), false);
+  assert.equal(rowPredatesSale({}, SALE_TS), false);                     // unknown is not "before"
+  assert.equal(rowPredatesSale({ openedAt: 12345 }, SALE_TS), false);    // a number is not an instant
+  assert.equal(rowPredatesSale(after, "nonsense"), false);               // unorderable sale
+  assert.equal(rowPredatesSale(after, null), true);                      // no constraint asked for
+});
+
+test("decideCloses will not close a row registered after the sale", () => {
+  const byRow = {
+    old: { status: "open", sizeKey: "9", openedAt: before.openedAt },
+    new: { status: "open", sizeKey: "9", openedAt: after.openedAt },
+  };
+  assert.deepEqual(decideCloses(byRow, "9", 5, SALE_TS).map((r) => r.rowId), ["old"]);
+  // and with no ordering asked for, both are candidates (the pure unit path)
+  assert.equal(decideCloses(byRow, "9", 5).length, 2);
+});
+
+test("a post-sale row still BLOCKS a hub attribution — it cannot be the answer, but it muddies it", () => {
+  const rows = [
+    { rowId: "old", row: { bookedHub: "hub1", openedAt: before.openedAt } },
+    { rowId: "new", row: { bookedHub: "hub1", openedAt: after.openedAt } },
+  ];
+  const { closable, blockers } = splitByHub(rows, "hub1", SALE_TS);
+  assert.deepEqual(closable.map((r) => r.rowId), ["old"]);
+  assert.deepEqual(blockers.map((r) => r.rowId), ["new"]);
+  // so the sale refuses rather than closing the one row it could still reach
+  const r = resolveHubSale(fresh({
+    openRowsByStore: { trophy: closable }, cellQty: 0,
+    ambiguityCount: closable.length + blockers.length,
+  }));
+  assert.equal(r.ok, false);
 });

@@ -10,7 +10,7 @@ import {
   unregisteredDisplayCandidates, filterCandidates, brandsOf,
   rowTimeline, sendPlan, closeRowPlan, openRowPlan, closeEffectLine,
   isOpenDisplayRequest, openRequestIndex, hasOpenDisplayRequest, duplicateOpenRequests,
-  requestStoreFor, rowPath, CLOSE_REASONS, registeredDisplays,
+  requestStoreFor, rowPath, CLOSE_REASONS, registeredDisplays, rowSegment, storeRowsPath,
 } from "./displayRowCore";
 
 const row = (o = {}) => ({
@@ -415,5 +415,53 @@ describe("registeredDisplays — reaching a wall that has exactly one record", (
   it("reports every open row when a wall holds more than one", () => {
     const l = ledger(row({ rowId: "a" }), row({ rowId: "b", size: "10", sizeKey: "10" }));
     expect(registeredDisplays({ rows: l, store: "trophy", productsById: catalogue, q: "air" })[0].rows).toHaveLength(2);
+  });
+});
+
+
+// ── A PATH SEGMENT IS REFUSED, NEVER MANGLED ────────────────────────────────
+// It used to replace each illegal character with "_", which is lossy and
+// therefore collides: `p.1` and `p_1` both became `p_1`, so a send for one
+// product could close or overwrite the other's rows. Nothing in play is unsafe
+// (store ids are a fixed set, product ids are `p{epoch}`), so refusing costs
+// nothing real and a collision costs a wall's history. (CodeRabbit.)
+describe("path segments refuse rather than collide", () => {
+  it("a safe id passes through unchanged", () => {
+    for (const id of ["marathon-pe", "trophy", "p1786451460573", "r20260908100000000", "hub1"]) {
+      expect(rowSegment(id), id).toBe(id);
+    }
+  });
+
+  it("every RTDB-illegal character is a refusal, not a substitution", () => {
+    for (const bad of ["p.1", "p#1", "p$1", "p/1", "p[1", "p]1", "p 1", "p\t1", ""]) {
+      expect(rowSegment(bad), JSON.stringify(bad)).toBeNull();
+    }
+    // THE COLLISION ITSELF: these two must not resolve to the same thing.
+    expect(rowSegment("p.1")).toBeNull();
+    expect(rowSegment("p_1")).toBe("p_1");
+  });
+
+  it("rowPath and storeRowsPath propagate the refusal", () => {
+    expect(rowPath("trophy", "p1", "r1")).toBe("settings/displayRows/trophy/p1/r1");
+    expect(rowPath("trophy", "p.1", "r1")).toBeNull();
+    expect(rowPath("tro phy", "p1", "r1")).toBeNull();
+    expect(rowPath("trophy", "p1", "r 1")).toBeNull();
+    expect(storeRowsPath("trophy")).toBe("settings/displayRows/trophy");
+    expect(storeRowsPath("mar athon")).toBeNull();
+  });
+
+  it("no plan is ever built onto a refused path", () => {
+    const at = "2026-09-08T10:00:00.000Z";
+    const bad = sendPlan({ rows: {}, store: "trophy", productId: "p.1", size: "9", rowId: "r1", at });
+    expect(bad.ok).toBe(false);
+    expect(bad.message).toMatch(/cannot be stored as a path/);
+    expect(openRowPlan({ rows: {}, store: "tro phy", productId: "p1", size: "9", rowId: "r1", at }).ok).toBe(false);
+    expect(closeRowPlan({ row: { ...row(), productId: "p.1" }, at, reason: "sold" }).ok).toBe(false);
+  });
+
+  it("and an unusable id simply has no rows, rather than reading somebody else's", () => {
+    const l = ledger(row({ productId: "p_1" }));
+    expect(openRowsFor(l, "trophy", "p_1")).toHaveLength(1);
+    expect(openRowsFor(l, "trophy", "p.1")).toEqual([]);
   });
 });

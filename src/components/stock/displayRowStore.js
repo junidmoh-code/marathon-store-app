@@ -276,8 +276,19 @@ export async function closeDisplayRowForPartnerSale({ store, productId, size = n
     const when = at || serverNowIso();
     const rows = await rowsNow(store, productId);
     let open = openRowsFor(rows, store, productId);
-    const wantKey = size == null ? null : stockSizeKey(String(size));
-    if (wantKey && wantKey !== "_") {
+    // ONLY `size == null` MEANS "no size on the order". A supplied size that is
+    // blank or encodes to underscores was falling through to the no-size branch,
+    // so a partner sale could close the only open row even when that row is a
+    // different size — the guess this feature refuses to make, reached by an
+    // input nobody checked. (CodeRabbit.)
+    let wantKey = null;
+    if (size != null) {
+      wantKey = stockSizeKey(String(size));
+      if (/^_+$/.test(wantKey)) {
+        return { ok: true, closed: null, message: "the order's size is unreadable, so no display record was closed" };
+      }
+    }
+    if (wantKey) {
       const exact = open.filter((r) => r.sizeKey === wantKey);
       if (exact.length) open = exact;
     }

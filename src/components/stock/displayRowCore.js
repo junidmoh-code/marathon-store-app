@@ -90,16 +90,42 @@ export const OPEN_VIA_TEXT = {
   seed:         "Carried over from the display slot",
 };
 
-const seg = (s) => String(s ?? "").replace(/[.#$/[\]\s]/g, "_");
+// ── PATH SEGMENTS: REFUSE, NEVER MANGLE ─────────────────────────────────────
+//
+// This used to REPLACE every RTDB-illegal character with "_", which is lossy
+// and therefore collides: `p.1` and `p_1` both become `p_1`, so a send for one
+// product could close, merge or overwrite the other's ledger rows. (CodeRabbit.)
+//
+// The reversible-encoding fix would need a migration. It is not needed, because
+// nothing in play is unsafe: store ids are the fixed set (`marathon-pe`,
+// `trophy`), product ids are `p{epoch-millis}`, and row ids are minted here
+// from digits. So the honest answer is to REFUSE an unsafe id rather than
+// silently rewrite it onto a path that may belong to something else — the same
+// rule the rest of this feature follows everywhere it cannot be certain.
+//
+// `seg` returns null for anything unsafe; `rowPath` returns null in turn, and
+// every plan builder refuses on a null path. A refusal is visible; a collision
+// is not.
+const SAFE_SEGMENT = /^[^.#$/[\]\s]+$/;
+const seg = (s) => {
+  const v = String(s ?? "");
+  return SAFE_SEGMENT.test(v) ? v : null;
+};
 
 /** The same segment rule, exported, so a caller building a targeted path by
- *  hand cannot use a different one from the one the writers use. */
+ *  hand cannot use a different one from the one the writers use. Null means
+ *  "this id cannot be a path segment" — refuse, do not substitute. */
 export const rowSegment = seg;
 
-export const rowPath = (store, productId, rowId) =>
-  `${DISPLAY_ROWS_ROOT}/${seg(store)}/${seg(productId)}/${seg(rowId)}`;
+export const rowPath = (store, productId, rowId) => {
+  const a = seg(store), b = seg(productId), c = seg(rowId);
+  return a && b && c ? `${DISPLAY_ROWS_ROOT}/${a}/${b}/${c}` : null;
+};
 
-export const storeRowsPath = (store) => `${DISPLAY_ROWS_ROOT}/${seg(store)}`;
+export const storeRowsPath = (store) => {
+  const a = seg(store);
+  return a ? `${DISPLAY_ROWS_ROOT}/${a}` : null;
+};
 
 /** A row is OPEN when it says so. Anything else — closed, malformed, missing —
  *  is not a display anyone should be told about. Read positively, so a field
@@ -142,9 +168,11 @@ export function allRows(rows) {
  *  surface. Every id in play today is already segment-safe, which is precisely
  *  why the mismatch would sit there unnoticed until one was not. */
 export function openRowsFor(rows, store, productId) {
-  const byRow = ((rows || {})[seg(store)] || {})[seg(productId)] || {};
+  const st = seg(store), pid = seg(productId);
+  if (!st || !pid) return [];                       // an id that cannot be a path has no rows
+  const byRow = ((rows || {})[st] || {})[pid] || {};
   return Object.entries(byRow)
-    .map(([rowId, row]) => ({ ...row, store: seg(store), productId: seg(productId), rowId }))
+    .map(([rowId, row]) => ({ ...row, store: st, productId: pid, rowId }))
     .filter(rowIsOpen)
     .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || "")) || a.rowId.localeCompare(b.rowId));
 }
@@ -399,15 +427,21 @@ export function sendPlan({ rows, store, productId, productName = "", size, booke
   if (!raw || /^_+$/.test(sizeKey)) return { ok: false, message: "A display row needs the size the operator picked." };
   if (!rowId) return { ok: false, message: "A display row needs an id." };
   if (!at) return { ok: false, message: "A display row needs the instant of the transition." };
+  const path = rowPath(store, productId, rowId);
+  // A null path means one of the ids cannot be an RTDB key. Refuse rather than
+  // write it somewhere else — see the note on `seg`.
+  if (!path) return { ok: false, message: "That store, product or row id cannot be stored as a path — it holds a character RTDB keys cannot." };
 
   const updates = {};
   const closed = [];
   for (const open of openRowsFor(rows, store, productId)) {
-    closed.push(open.rowId);
-    Object.assign(updates, closeFields(open, {
+    const fields = closeFields(open, {
       at, by, reason: "replaced", via,
       detail: { reason: "replaced", replacedBy: rowId, orderId },
-    }));
+    });
+    if (!fields) return { ok: false, message: `A display record on this wall has an id that cannot be stored as a path (${open.rowId}) — nothing was changed.` };
+    closed.push(open.rowId);
+    Object.assign(updates, fields);
   }
 
   const events = {};
@@ -422,7 +456,7 @@ export function sendPlan({ rows, store, productId, productName = "", size, booke
   }
   events[evId("sent", at)] = { at, what: via === "send" ? "sent" : "registered", by, detail: { size: raw, orderId } };
 
-  updates[rowPath(store, productId, rowId)] = {
+  updates[path] = {
     rowId, store, productId, productName: productName || "",
     size: raw, sizeKey, bookedHub: bookedHub || null,
     status: "open",
@@ -441,6 +475,7 @@ export function sendPlan({ rows, store, productId, productName = "", size, booke
  *  fields a merge might have changed. It writes exactly what it knows. */
 function closeFields(row, { at, by, reason, via, detail }) {
   const base = rowPath(row.store, row.productId, row.rowId);
+  if (!base) return null;
   const e = evId("closed", at);
   return {
     [`${base}/status`]: "closed",
@@ -466,11 +501,9 @@ export function closeRowPlan({ row, at, by = null, reason, via = "manual", detai
   if (!row || !row.rowId) return { ok: false, message: "No row to close." };
   if (!CLOSE_REASONS.includes(reason)) return { ok: false, message: `Unknown close reason "${reason}".` };
   if (!at) return { ok: false, message: "A close needs the instant of the transition." };
-  return {
-    ok: true,
-    stockMoved: false,
-    updates: closeFields(row, { at, by, reason, via, detail: detail || { reason } }),
-  };
+  const updates = closeFields(row, { at, by, reason, via, detail: detail || { reason } });
+  if (!updates) return { ok: false, message: "That display record's ids cannot be stored as a path — nothing was changed." };
+  return { ok: true, stockMoved: false, updates };
 }
 
 /**

@@ -190,10 +190,13 @@ function rowIsOpen(row) {
  * @param qty     how many units moved
  * → [{ rowId, row }] — oldest first, at most `qty` of them, possibly empty.
  */
-function decideCloses(byRow, sizeKey, qty) {
+function decideCloses(byRow, sizeKey, qty, movementTs = null) {
   const open = Object.entries(byRow || {})
     .map(([rowId, row]) => ({ rowId, row }))
-    .filter(({ row }) => rowIsOpen(row) && row.sizeKey === sizeKey);
+    // `movementTs` excludes rows opened AFTER the sale — see rowPredatesSale.
+    // Omitted, nothing is excluded, which is what the hub path wants (it does
+    // its own age split in splitByHub so it can COUNT what it excludes).
+    .filter(({ row }) => rowIsOpen(row) && row.sizeKey === sizeKey && rowPredatesSale(row, movementTs));
   open.sort((a, b) =>
     String(a.row.openedAt || "").localeCompare(String(b.row.openedAt || "")) || a.rowId.localeCompare(b.rowId));
   return open.slice(0, Math.max(0, Number(qty) || 0));
@@ -352,8 +355,15 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguity
   if (!Number.isFinite(q)) {
     return { ok: false, why: "the hub's stock for this size could not be read, so the sale cannot be attributed" };
   }
-  if (q > 0) {
-    return { ok: false, why: `the hub still holds ${q} of this size, so the sale need not have been the display` };
+  // EXACTLY ZERO, not "zero or less". A negative cell means the books are
+  // already wrong about that shelf — it is not evidence that the unit which
+  // sold was the display, and treating it as such closes the only matching row
+  // and moves the slot mirror on the strength of a number nobody trusts.
+  // (CodeRabbit.)
+  if (q !== 0) {
+    return { ok: false, why: q > 0
+      ? `the hub still holds ${q} of this size, so the sale need not have been the display`
+      : `the hub's count for this size is ${q}, which is not a shelf state anything can be concluded from` };
   }
   return { ok: true, ...candidates[0] };
 }
@@ -375,14 +385,36 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguity
  *             so it neither closes nor blocks. Stated because "ignored" is a
  *             third outcome and silence about it reads like an oversight.
  */
-function splitByHub(openRows, hub) {
+function splitByHub(openRows, hub, movementTs = null) {
   const closable = [], blockers = [];
   for (const entry of openRows || []) {
-    const h = entry && entry.row ? entry.row.bookedHub : null;
+    const row = (entry && entry.row) || {};
+    // AGE FIRST. A row registered AFTER the sale cannot be the pair the sale
+    // took — the display it describes went up later. Trigger delivery is
+    // at-least-once and can lag, and the two-minute freshness bound is about
+    // the STOCK CELL, not about the ledger: a wall walk inside that window
+    // registers a row this sale would then have closed. A row whose age cannot
+    // be read is treated the same way, because "unknown" is not "before".
+    // It still BLOCKS: it is an open record at this size and this wall, so its
+    // presence makes the attribution unknowable even though it cannot be the
+    // answer. (CodeRabbit.)
+    if (!rowPredatesSale(row, movementTs)) { blockers.push(entry); continue; }
+    const h = row.bookedHub;
     if (h === hub) closable.push(entry);
     else if (!h) blockers.push(entry);
   }
   return { closable, blockers };
+}
+
+/** Was this row already open when the sale happened? `null` movementTs means
+ *  the caller is not applying an ordering constraint (the pure unit tests). */
+function rowPredatesSale(row, movementTs) {
+  if (movementTs == null) return true;
+  const sale = typeof movementTs === "string" ? Date.parse(movementTs) : NaN;
+  if (!Number.isFinite(sale)) return false;          // cannot order it → cannot use it
+  const opened = typeof row.openedAt === "string" ? Date.parse(row.openedAt) : NaN;
+  if (!Number.isFinite(opened)) return false;        // same
+  return opened <= sale;
 }
 
 /**
@@ -398,5 +430,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, leaseDecision,
 };

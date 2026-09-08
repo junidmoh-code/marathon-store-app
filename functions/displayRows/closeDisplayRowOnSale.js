@@ -158,7 +158,8 @@ exports.closeDisplayRowOnSale = onValueCreated(
         // present at all makes the attribution unknowable, which is the honest
         // answer — and the safe one, because refusing costs a missed close and
         // closing the wrong row costs a real display.
-        const { closable, blockers } = splitByHub(decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER), hit.hub);
+        const { closable, blockers } = splitByHub(
+          decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER), hit.hub, m.ts);
         if (closable.length) perStore[s] = closable;
         candidates += closable.length + blockers.length;
       }
@@ -186,7 +187,10 @@ exports.closeDisplayRowOnSale = onValueCreated(
     } else {
       // ── The rows for this (store, product). ONE keyed read, never the node. ─
       const byRow = (await db.ref(`${ROWS}/${store}/${productId}`).get()).val();
-      closes = decideCloses(byRow, sizeKey, qty);
+      // `m.ts` excludes rows opened AFTER this sale: delivery is at-least-once
+      // and can lag, and a wall walk inside that window would otherwise have
+      // its brand-new row closed by an older sale. (CodeRabbit.)
+      closes = decideCloses(byRow, sizeKey, qty, m.ts);
     }
     // Nothing on the wall to close — the overwhelmingly common case: an
     // ordinary shelf sale of a size no display is registered at.

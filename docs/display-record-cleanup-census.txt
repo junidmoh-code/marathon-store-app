@@ -1,32 +1,36 @@
-# Stale display-record census — 2026-09-08T13:56:12.350Z
+# Stale display-record census — 2026-09-08T14:53:26.284Z
 Read-only. 1042 product ids named by the registers; read by child path, never the /products node.
 1035 of them still have a product record.
 
 ## hub1
 live register rows: 547
-    47  REPLACED    live slot at a DIFFERENT size — the pair it replaced
-    21  SOLD        only a tombstone — the display left the floor
+    49  REPLACED    live slot at a DIFFERENT size — the pair it replaced
+    17  SOLD        only a tombstone — the display left the floor
      1  OVER        claims more units than there are floors showing it
      4  GONE        product deleted or merged away
    293  UNVERIFIED  no slot record at all — NEVER actionable
-   181  MATCHED     live slot, same size — the record is right
-  → offered for retirement: 72
+   183  MATCHED     live slot, same size — the record is right
+  → offered for retirement: 70
 
 ## hub2
 live register rows: 509
     45  REPLACED    live slot at a DIFFERENT size — the pair it replaced
-    13  SOLD        only a tombstone — the display left the floor
+    12  SOLD        only a tombstone — the display left the floor
      0  OVER        claims more units than there are floors showing it
     10  GONE        product deleted or merged away
    291  UNVERIFIED  no slot record at all — NEVER actionable
-   150  MATCHED     live slot, same size — the record is right
-  → offered for retirement: 68
+   151  MATCHED     live slot, same size — the record is right
+  → offered for retirement: 67
 
-## TOTAL OFFERED FOR RETIREMENT ACROSS BOTH HUBS: 140
+## TOTAL OFFERED FOR RETIREMENT ACROSS BOTH HUBS: 137
 Each one currently subtracts a unit from a hub cell's expected-on-shelf
 (offShelf.js), so each one hands a counter a discrepancy that is not real.
 
-### hub1 — REPLACED — showing 8 of 47
+### hub1 — REPLACED — showing 8 of 49
+  p1782055077934__6  qty 1  retire 1  registered 2026-08-27T14:34:27.429Z
+     Nike SB Dunk Low Grey White
+     WHY: The display for this product is now size 7 — this row is the pair it replaced.
+     LIVE SLOT  marathon-pe  size 7  (display_refill)  2026-09-08T14:13:43.027Z
   p1781423315735__9  qty 1  retire 1  registered 2026-08-24T12:13:48.987Z
      Lacoste Graduate Pro White Green
      WHY: The display for this product is now size 6 — this row is the pair it replaced.
@@ -55,12 +59,8 @@ Each one currently subtracts a unit from a hub cell's expected-on-shelf
      On Cloud 6 Black White
      WHY: The display for this product is now size 9 — this row is the pair it replaced.
      LIVE SLOT  marathon-pe  size 9  (display_refill)  2026-09-06T11:13:38.739Z
-  p1781530018866__6  qty 1  retire 1  registered 2026-08-16T10:37:18.002Z
-     Nike Air Force 1 Low Travis Scott Cactus Jack
-     WHY: The display for this product is now size 7 — this row is the pair it replaced.
-     LIVE SLOT  marathon-pe  size 7  (display_refill)  2026-09-02T14:38:48.652Z
 
-### hub1 — SOLD — showing 8 of 21
+### hub1 — SOLD — showing 8 of 17
   p1777896503209__8  qty 1  retire 1  registered 2026-09-01T10:02:27.125Z
      Nike Air Force 1 Supreme Black
      WHY: The display left the floor and nothing replaced it.
@@ -69,14 +69,6 @@ Each one currently subtracts a unit from a hub cell's expected-on-shelf
      Nike sb pink with orange 
      WHY: The display left the floor and nothing replaced it.
      TOMBSTONE  marathon-pe  was 6  (display_sold)  2026-09-04T07:05:37.252Z
-  p1782055077934__6  qty 1  retire 1  registered 2026-08-27T14:34:27.429Z
-     Nike SB Dunk Low Grey White
-     WHY: The display left the floor and nothing replaced it.
-     TOMBSTONE  marathon-pe  was 6  (display_sold)  2026-09-08T11:23:22.775Z
-  p1779610355274__6  qty 1  retire 1  registered 2026-08-24T10:44:05.574Z
-     Lacoste Powercourt White Black
-     WHY: The display left the floor and nothing replaced it.
-     TOMBSTONE  marathon-pe  was 6  (display_sold)  2026-09-08T12:57:28.558Z
   p1779086741005__8  qty 1  retire 1  registered 2026-08-24T09:59:18.052Z
      Lacoste Court Cage White Navy Pink
      WHY: The display left the floor and nothing replaced it.
@@ -93,6 +85,14 @@ Each one currently subtracts a unit from a hub cell's expected-on-shelf
      Diesel Slide Full Black
      WHY: The display left the floor and nothing replaced it.
      TOMBSTONE  marathon-pe  was 7  (display_sold)  2026-09-02T08:06:37.636Z
+  p1778150447748__7  qty 1  retire 1  registered 2026-08-22T11:04:12.381Z
+     Diesel Slide Black White
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 7  (display_sold)  2026-08-27T12:07:45.963Z
+  p1780740402191__5_5  qty 1  retire 1  registered 2026-08-20T13:18:04.860Z
+     Nike Air Force 1 Black
+     WHY: The display left the floor and nothing replaced it.
+     TOMBSTONE  marathon-pe  was 5.5  (display_sold)  2026-09-02T11:50:31.751Z
 
 ### hub1 — OVER — showing 1 of 1
   p1778841647046__5_5  qty 2  retire 0  registered 2026-08-20T12:32:50.483Z
@@ -149,11 +149,11 @@ Each one currently subtracts a unit from a hub cell's expected-on-shelf
      WHY: The display for this product is now size 5 — this row is the pair it replaced.
      LIVE SLOT  marathon-pe  size 5  (display_refill)  2026-08-29T08:17:06.414Z
 
-### hub2 — SOLD — showing 8 of 13
-  p1788275028234__6  qty 1  retire 1  registered 2026-09-06T08:24:16.509Z
-     Louis Vuitton lv trainer sneaker  cream & grey
+### hub2 — SOLD — showing 8 of 12
+  p1778857649789__6  qty 1  retire 1  registered 2026-09-05T09:16:38.047Z
+     Alexander McQueen Oversized White Grey Suede
      WHY: The display left the floor and nothing replaced it.
-     TOMBSTONE  trophy  was 6  (display_sold)  2026-09-08T13:52:26.843Z
+     TOMBSTONE  trophy  was 6  (display_sold)  2026-09-08T14:09:19.756Z
   p1785153420278__9  qty 1  retire 1  registered 2026-09-02T13:59:09.596Z
      Adidas campus black white 
      WHY: The display left the floor and nothing replaced it.
@@ -178,10 +178,10 @@ Each one currently subtracts a unit from a hub cell's expected-on-shelf
      Air Jordan 1 Low Black Grey
      WHY: The display left the floor and nothing replaced it.
      TOMBSTONE  marathon-pe  was 3  (display_sold)  2026-09-05T10:31:29.048Z
-  p1778143527367__8  qty 1  retire 1  registered 2026-08-10T09:59:48.060Z
-     Air Jordan 4 Retro Red Cement
+  p1779015887768__9  qty 1  retire 1  registered 2026-08-09T11:18:20.279Z
+     Dr. Martens Lowell Black Leather
      WHY: The display left the floor and nothing replaced it.
-     TOMBSTONE  marathon-pe  was 8  (display_sold)  2026-09-08T13:42:28.730Z
+     TOMBSTONE  trophy  was 9  (display_sold)  2026-08-28T13:58:32.844Z
 
 ### hub2 — GONE — showing 8 of 10
   p1778144705339__10  qty 1  retire 1  registered 2026-09-01T12:34:53.676Z

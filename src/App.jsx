@@ -12224,7 +12224,17 @@ function WarehouseView({ products = [], orders, onExit }) {
       // eslint-disable-next-line no-await-in-loop
       const res = await closeDisplayRow({ rows: displayRows, row, reason: "cancelled", via: "undo",
                                           detail: { reason: "cancelled", orderId: order.id }, at: now });
-      if (!res.ok) console.warn(`Undo could not close display row ${row.rowId}: ${res.message}`);
+      if (!res.ok) {
+        // STOP, exactly as the send path does. Warning and carrying on let the
+        // order reset to "not refilled" while the row stayed OPEN — a wall with
+        // a record for a task the app now treats as unresolved, and no visible
+        // error. It self-heals on the next send (which closes every open row
+        // for that wall) but until then it is the very state this ledger exists
+        // to prevent. (CodeRabbit.)
+        console.warn(`Undo could not close display row ${row.rowId}: ${res.message}`);
+        window.alert(`The display record could not be reopened (${res.message}). Nothing was changed — try again.`);
+        return;
+      }
     }
     updateOrder(order.id, {
       displayRefillStatus:          null,
