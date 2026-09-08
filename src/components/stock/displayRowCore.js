@@ -286,6 +286,66 @@ export function unregisteredDisplayCandidates({ cells, rows, store, hub, product
 
 /** Free-text + brand filter for the wall-walk list. Pure so the tab's paging
  *  and the tests agree on what "page 2" means. */
+/**
+ * THE SAME WALK, WITHOUT ASKING THE OPERATOR WHICH HUB.
+ *
+ * (Owner, 2026-09-08: the screen loses its Hub 1 / Hub 2 tabs.) The hub picker
+ * was never a question about the WALL — a display is a shoe standing in Marathon
+ * PE or Trophy, and which warehouse shelf it came off is bookkeeping. Asking an
+ * operator to pick a hub before they can look for a shoe made them answer a
+ * question they had no way to know the answer to.
+ *
+ * So both gated hubs are walked at once and merged by product. Each size still
+ * carries the hub that actually holds it, because `bookedHub` on the row must
+ * name a real shelf — and when the operator picks a size, THAT is the hub the
+ * row is booked at. A size held at both hubs takes them in GATED_SNEAKER_HUBS
+ * order, which is deterministic rather than "whichever object key came first".
+ *
+ * @param cellsByHub { hub1: cells, hub2: cells } — each as useStockCellsState gives them
+ */
+export function unregisteredAcrossHubs({ cellsByHub = {}, rows, store, productsById, hubs = ["hub1", "hub2"],
+                                         predicate = null, isFootwear = () => true }) {
+  // `predicate` is the accurate name: this filter is not only "is it a shoe" —
+  // it also drops DEACTIVATED lines, which hold stock and must never be offered
+  // a new display. `isFootwear` stays as the older alias.
+  const keep = predicate || isFootwear;
+  const byProduct = new Map();
+  for (const hub of hubs) {
+    const list = unregisteredDisplayCandidates({
+      cells: cellsByHub[hub] || {}, rows, store, hub, productsById, isFootwear: keep,
+    });
+    for (const c of list) {
+      const prev = byProduct.get(c.productId);
+      if (!prev) { byProduct.set(c.productId, { ...c, hub: undefined, sizes: c.sizes.map((s) => ({ ...s, hub })) }); continue; }
+      // Same shoe on a second hub's shelves: add its units, and add any size the
+      // first hub did not have. A size BOTH hubs hold keeps the earlier hub —
+      // GATED_SNEAKER_HUBS order — and sums the quantity, so the count on the
+      // card is the network's, not one shelf's.
+      prev.hubUnits += c.hubUnits;
+      for (const s of c.sizes) {
+        const hit = prev.sizes.find((x) => x.sizeKey === s.sizeKey);
+        if (hit) hit.qty += s.qty;
+        else prev.sizes.push({ ...s, hub });
+      }
+    }
+  }
+  const out = [...byProduct.values()];
+  for (const c of out) {
+    c.sizes.sort((a, b) => a.sizeKey.localeCompare(b.sizeKey, undefined, { numeric: true }));
+  }
+  out.sort((a, b) => String(a.productName).localeCompare(String(b.productName)));
+  return out;
+}
+
+/** The hub a picked size is actually held at, for `bookedHub`. Falls back to
+ *  null rather than guessing a hub the shoe is not on — a row that names no hub
+ *  is a supported shape; one that names the wrong hub is a lie the till trigger
+ *  will act on. */
+export const hubForSize = (candidate, size) => {
+  const key = stockSizeKey(String(size));
+  return (candidate?.sizes || []).find((s) => s.sizeKey === key)?.hub ?? null;
+};
+
 export function filterCandidates(list, { q = "", brand = "" } = {}) {
   const needle = String(q || "").trim().toLowerCase();
   const b = String(brand || "").trim().toLowerCase();
