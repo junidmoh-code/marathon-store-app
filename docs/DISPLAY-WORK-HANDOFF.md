@@ -67,9 +67,61 @@ transaction (a pre-transaction read walks back into PR #460's race).
 
 If #577 or anything after it calls `recordDisplayFact`, take #575's version.
 
+## 3d. CORRECTION — how many markers #574 actually turned off
+
+PR #574 said "315 store-less legacy rows lose their glyph". **That understated
+it, because it counted the wrong thing.** The marker is drawn per CELL
+(`pid::sizeKey`), so the population that went dark is register cells with no
+live slot AT THAT CELL — not rows whose product has no slot anywhere.
+
+Both measured against live RTDB on 2026-09-08:
+
+| | |
+|---|---|
+| active register cells with **no live slot at that cell** | **360**, across 353 products ← the real number |
+| active rows whose **product** has no live hub1 slot | 310, across 307 products ← what #574 reported |
+
+The marker session measured 361 independently; the one-row difference is a day's
+drift on a live system. Their figure is the correct one and #574's was wrong.
+Junid has separately noticed the symptom ("most things don't even have the sign
+anymore"). **This is an open decision for him**, not something either session
+should settle alone — three options are on the table (widen the lane to hub2/3
+slots, bring the register back as a store-less count-only source, or re-register
+physically).
+
+One hard constraint on that decision, verified field by field across all 558
+register rows: **no row carries any store / shop / branch / location field.**
+Fields present are `aliasTokenCount, at, bumps, by, movedFrom, movementId,
+productId, productName, qty, retiredAt, size, sizeKey, styleCode,
+styleCodeFrom, styleCodeNormalised, via`. So a register→slot backfill
+structurally cannot say whose wall a display is on; only re-registration can.
+
+A warning for the "widen the lane" option, **narrowed after the marker session
+checked it against the code and was right**: `displayPairCore.js`'s header says
+`pendingDisplayPullsByCell` is not hub-scoped, and I read that as "widening the
+marker is dangerous". It is not. The hazard fires when the **pull lane** widens,
+not when the **glyph** does:
+
+* `sneakerDisplayInfo` (App.jsx:9508) is appearance-only — it feeds two render
+  sites and nets nothing into any availability, allocation or ✕;
+* `hub1Promised` (App.jsx:8992) merges pull claims into **Hub 1 only**; hub2
+  nets ready orders alone;
+* the one checkout reader of `hub1DisplayUnits` (App.jsx:9876) is gated on
+  `item.displayPairRequest === true`, which a glyph never sets;
+* and since #576 nothing mints `displayPairRequest` on the ordering screen at
+  all — the divert was its only minter. The 48h claims still in flight are all
+  Hub 1 orders placed before that shipped.
+
+So widening the informational predicate would draw ~225 more markers without
+touching a promised map. The fence still matters for whoever later widens the
+PULL lane, which is why the marker session is writing it as **two** predicates —
+informational (hub-wide) and pull (hub1, with the fence comment moved to sit on
+it) — rather than one widened one.
+
 ## 4. Live numbers as of 2026-09-08 (read-only census, both hubs)
 
-* register rows: hub1 546, hub2 505
+* live slots by booked hub: hub1 249 (marathon-pe 243, trophy 6, pine 0), hub2 207, hub3 18
+* register rows: hub1 546 active of 558, hub2 505
 * **contradicted and offered for retirement: 124** (replaced 88, sold 31, gone 5)
 * **reported, never actionable: 593 unverified + over** — no shop was ever
   recorded, so there is no evidence either way

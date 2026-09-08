@@ -318,9 +318,21 @@ const slotFromExit = (ev, productId, slot) =>
  * Pure: same shape in, same shape out, so every existing slot reader keeps
  * working. Pass no orders and you get the same object back, untouched.
  *
- * Plain objects are built with a null prototype: a store or product id is
- * user-reachable data, and `__proto__` as a key on a `{}` literal silently
- * mutates the result's prototype instead of adding a member.
+ * WHEN IT BUILDS a map, it builds it with a null prototype: a store or product
+ * id is user-reachable data, and `__proto__` as a key on a `{}` literal
+ * silently mutates the result's prototype instead of adding a member.
+ *
+ * WHEN IT DOES NOT — no exits to apply, or none that change anything — it hands
+ * the CALLER'S OWN object straight back, prototype and all. That is the whole
+ * point of the reference-stable path (a fresh map on every /orders snapshot
+ * would invalidate every memo hanging off it), but it means the null-prototype
+ * guarantee is a property of the returned map only when this function actually
+ * built one. It is not a laundering step for an untrusted object.
+ *
+ * Harmless with every caller today, all of which pass the RTDB snapshot. Stated
+ * because the previous wording read as an unconditional promise, and that is
+ * exactly the sentence someone would later rely on. (Spotted by the
+ * marathon-store-app-marker session reviewing across our two branches.)
  */
 export function slotsAfterOrderExits(slots, orders, nowMs = serverNowMs()) {
   const exits = displayExitsByStoreProduct(orders);

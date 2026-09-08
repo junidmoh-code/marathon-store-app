@@ -370,9 +370,18 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       displayRefillStatus: "refilled", displayRefillSize: "6",
                       displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
     expect(slotsAfterOrderExits(slots, landed, NOW)).toBe(slots);
-    // A `__proto__` store or product id is data, not a prototype assignment.
+    // A `__proto__` store or product id is data, not a prototype assignment —
+    // on the branch that BUILDS a map. The early returns hand the caller's own
+    // object back untouched (that is the reference-stable path), so this asserts
+    // the guarantee where it exists and the line below pins that it is not
+    // claimed where it does not.
     const evil = { __proto__: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
     expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed, NOW))).toBe(null);
+    // NOT laundered: with nothing to apply, the caller's object comes back as
+    // it was. Pinned so the docstring and the code cannot drift apart again.
+    const asIs = { ok: {} };
+    expect(slotsAfterOrderExits(asIs, [], NOW)).toBe(asIs);
+    expect(Object.getPrototypeOf(slotsAfterOrderExits(asIs, [], NOW))).toBe(Object.prototype);
     expect(slotsAfterOrderExits(null, [], NOW)).toEqual({});
     expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }], NOW)).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
