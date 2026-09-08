@@ -4,8 +4,26 @@
 //
 // A display unit sells at Marathon PE or Trophy and the open display row for
 // that product AND that captured size closes, server-side, from any till, with
-// NO change to marathon-pos-app and no POS deploy. Also closes on a return to
-// the hub. Cancellation is closed by the app that cancels (the refill undo).
+// NO change to marathon-pos-app and no POS deploy.
+//
+// ── RETURN-TO-HUB IS NOT INFERRED HERE, AND CANNOT BE ────────────────────────
+// The spec asks this function to close on a return to the hub as well, and a
+// first cut did: a `transfer_out` from a shop into hub1/hub2, matched on
+// product and size. That is wrong BY CONSTRUCTION, not merely risky.
+//
+// A display unit stays BOOKED AT ITS HUB (PR #324, "displays are hub stock" —
+// displaySlots.js's own header). It is therefore NOT in the shop's stock cell.
+// A `transfer_out` FROM a shop moves a unit that WAS in that shop's cell, so by
+// definition it is not the display pair — it is ordinary shop stock going back.
+// Closing a display row on it would take a real display off the record every
+// time a shop returns excess. (CodeRabbit found the movement was generic;
+// checking it against the booking model showed it can never be the display.)
+//
+// Live confirmation: ZERO shop→hub `transfer_out` movements in the newest 6,000.
+//
+// A display that genuinely comes back off a wall is closed by the person who
+// took it down, on the Duplicate Displays tab, with reason `returned`.
+// Cancellation is likewise closed by the app that cancels (the refill undo).
 //
 // THE FAULT IT REMOVES, stated by the branch that could not fix it: "A plain
 // sale of the display pair leaves the slot standing… Receive an ordinary size 9
@@ -50,7 +68,7 @@ if (!admin.apps.length) {
 const ROWS = "settings/displayRows";
 const META = "settings/displayRows_meta";
 
-const REASON = { sold: "sold", sold_hub: "sold", returned: "returned" };
+const REASON = { sold: "sold", sold_hub: "sold" };
 
 exports.closeDisplayRowOnSale = onValueCreated(
   {
@@ -127,22 +145,35 @@ exports.closeDisplayRowOnSale = onValueCreated(
       for (const s of DISPLAY_STORES) {
         // eslint-disable-next-line no-await-in-loop
         const rows = (await db.ref(`${ROWS}/${s}/${productId}`).get()).val();
-        // `bookedHub === hub` OR NO HUB AT ALL. A row with a null bookedHub is
-        // a real display that cannot name its hub (a seed row, or one written
-        // before the eligibility gate); excluding it from the CANDIDATE list
-        // also excluded it from the AMBIGUITY COUNT, so a wall whose row was
-        // an equally good explanation for the empty cell was silently ignored
-        // and the other wall's row was closed as "the only possibility".
-        // Counting them is what makes "there is nothing else it could have
-        // been" true rather than merely stated. (Independent second-brain
-        // review.)
-        const open = decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER)
-          .filter(({ row }) => !row.bookedHub || row.bookedHub === hit.hub);
-        if (open.length) { perStore[s] = open; candidates += open.length; }
+        // ── A ROW WITH NO HUB BLOCKS, BUT IS NEVER THE ONE CLOSED ────────────
+        // Two reviewers pulled in opposite directions here and both were right
+        // about half of it. The second-brain review: excluding a null-hub row
+        // from the candidate list also excluded it from the AMBIGUITY COUNT, so
+        // a wall that was an equally good explanation for the empty cell was
+        // ignored and the other wall's row closed as "the only possibility".
+        // CodeRabbit: including it in the CLOSE set lets an unrelated hub's
+        // sale close a row that never claimed to be at that hub.
+        //
+        // So it counts toward ambiguity and is never closed. A null-hub row
+        // present at all makes the attribution unknowable, which is the honest
+        // answer — and the safe one, because refusing costs a missed close and
+        // closing the wrong row costs a real display.
+        const open = decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER);
+        const closable = open.filter(({ row }) => row.bookedHub === hit.hub);
+        const blockers = open.filter(({ row }) => !row.bookedHub);
+        if (closable.length) perStore[s] = closable;
+        candidates += closable.length + blockers.length;
       }
       if (!candidates) { await done([], "no display record for this size at this hub"); return; }
       const cellQty = (await db.ref(`stock/${hit.hub}/${productId}/${sizeKey}/qty`).get()).val();
-      const verdict = resolveHubSale({ openRowsByStore: perStore, cellQty, movementTs: m.ts, nowMs });
+      // `candidates` is the AMBIGUITY count (closable + hubless blockers);
+      // `perStore` is the CLOSABLE set. When they disagree, something on a wall
+      // is an unattributable explanation for the empty cell and the sale is
+      // refused rather than pinned on the row that happens to name a hub.
+      const verdict = resolveHubSale({
+        openRowsByStore: perStore, cellQty, movementTs: m.ts, nowMs,
+        ambiguityCount: candidates,
+      });
       if (!verdict.ok) {
         // A refusal is the CORRECT outcome, not a failure — but it is recorded
         // in both places a human might look: the log, and the lease itself, so
@@ -180,8 +211,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
     // the candidate list is re-read once if the first pass runs out, because a
     // concurrent close may have been landing while we were reading.
     const at = new Date(nowMs).toISOString();
-    const via = kind === "returned" ? "return_to_hub"
-      : kind === "sold_hub" ? "pos_sale_hub" : "pos_sale";
+    const via = kind === "sold_hub" ? "pos_sale_hub" : "pos_sale";
     const closed = [];
     let wanted = qty;
     for (let pass = 0; pass < 2 && wanted > 0; pass++) {
@@ -210,8 +240,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
         // walking on to close another row would turn one sale into two closes.
         // (Independent second-brain review.)
         const beat = res.snapshot && res.snapshot.val();
-        const bySale = beat && typeof beat.closedVia === "string"
-          && (beat.closedVia.startsWith("pos_sale") || beat.closedVia === "return_to_hub");
+        const bySale = beat && typeof beat.closedVia === "string" && beat.closedVia.startsWith("pos_sale");
         if (!bySale) {
           console.log(`closeDisplayRowOnSale: ${movementId} stopped at ${rowId} — closed by ${beat && beat.closedVia}, which is a human correction, not a sale`);
           wanted = 0;
@@ -251,7 +280,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
       await slotRef.transaction((cur) => {
         if (!cur || cur.sizeKey == null) return undefined;               // nothing out there
         if (typeof cur.at === "string" && cur.at > at) return undefined; // newer truth won
-        return { ...cur, size: null, sizeKey: null, source: REASON[kind] === "sold" ? "display_sold" : "manual",
+        return { ...cur, size: null, sizeKey: null, source: "display_sold",
                  at, by: `system:closeDisplayRowOnSale`, orderId: null, prevSize: cur.size || null };
       });
     } else {

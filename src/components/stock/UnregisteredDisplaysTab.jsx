@@ -236,13 +236,29 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                 />
               ) : (
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-                  <button type="button" onClick={() => setActing(`scan:${scanned.product.id}`)} disabled={!!busy} style={bGray}>
-                    On the wall
-                  </button>
-                  <button type="button" onClick={() => notOnWall(scanned.product)} disabled={!!busy || !canRequest}
-                    style={{ ...bGray, opacity: canRequest ? 1 : 0.5, cursor: canRequest ? "pointer" : "not-allowed" }}>
-                    {busy === scanned.product.id ? "Requesting…" : "Not on the wall — request a display"}
-                  </button>
+                  {/* A SCAN THAT IS ALREADY REGISTERED OFFERS NEITHER ACTION.
+                      The result itself has just said this shoe is on this wall,
+                      so "register it" would mint a duplicate and "request a
+                      display" would send a second pair to a wall that has one —
+                      and the request guard cannot catch that, because it checks
+                      for an open REQUEST, not for a display already standing
+                      there. The operator closes the record on the Duplicate
+                      Displays tab if the wall disagrees. (CodeRabbit.) */}
+                  {scanned.rows.length === 0 ? (
+                    <>
+                      <button type="button" onClick={() => setActing(`scan:${scanned.product.id}`)} disabled={!!busy} style={bGray}>
+                        On the wall
+                      </button>
+                      <button type="button" onClick={() => notOnWall(scanned.product)} disabled={!!busy || !canRequest}
+                        style={{ ...bGray, opacity: canRequest ? 1 : 0.5, cursor: canRequest ? "pointer" : "not-allowed" }}>
+                        {busy === scanned.product.id ? "Requesting…" : "Not on the wall — request a display"}
+                      </button>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 12, color: GRAY, alignSelf: "center" }}>
+                      Already on this wall's record. If the wall disagrees, fix it on Duplicate Displays.
+                    </span>
+                  )}
                   <button type="button" onClick={() => setScanned(null)} disabled={!!busy} style={bGray}>Done</button>
                 </div>
               )}

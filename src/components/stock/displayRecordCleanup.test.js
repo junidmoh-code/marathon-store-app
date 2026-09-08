@@ -25,7 +25,11 @@ const P = {
 const reg = (rows) => rows;
 const row = (over = {}) => ({ qty: 1, at: "2026-08-07T10:00:00.000Z", ...over });
 const liveSlot = (over = {}) => ({ size: "6", sizeKey: "6", bookedHub: "hub1", source: "registration", at: "2026-09-01T08:00:00.000Z", ...over });
-const tomb = (over = {}) => ({ size: null, sizeKey: null, prevSize: "6", source: "display_sold", at: "2026-09-02T08:00:00.000Z", ...over });
+// A tombstone CARRIES ITS HUB. clearDisplaySlot keeps every field but sizeKey
+// when it tombstones, so bookedHub survives a clear and is as good as it was.
+// A tombstone that names no hub is not evidence for any hub — see the test at
+// the end of this block for why keeping it was actively unsafe.
+const tomb = (over = {}) => ({ size: null, sizeKey: null, prevSize: "6", bookedHub: "hub1", source: "display_sold", at: "2026-09-02T08:00:00.000Z", ...over });
 
 const run = (register, slots, over = {}) =>
   classifyDisplayRecords({ register, slots, hub: "hub1", productsById: P, ...over });
@@ -100,6 +104,34 @@ describe("classifyDisplayRecords — what the evidence says", () => {
     expect(r.byClass.sold[0].qty).toBe(2);
     expect(r.byClass.sold[0].retireQty).toBe(1);          // the other may still be on a floor
     expect(r.byClass.sold[0].why).toMatch(/only 1 can be retired/);
+  });
+
+  // ── A TOMBSTONE WITH NO HUB IS NOT EVIDENCE FOR ANY HUB ──────────────────
+  // It used to be counted for whichever hub was asking, on the reasoning that
+  // dropping it "loses evidence rather than inventing it". That is backwards:
+  // ONE departed display then enters hub1's budget AND hub2's, so if each hub
+  // holds a row for the product the same departure authorises two retirements —
+  // and the second raises expected-on-shelf for a display that may still be
+  // standing on a wall. (CodeRabbit.)
+  it("a tombstone that names no hub is unverified, not spendable", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: tomb({ bookedHub: null }) } });
+    expect(r.counts.sold).toBe(0);
+    expect(r.counts.unverified).toBe(1);
+    expect(r.byClass.unverified[0].retireQty).toBe(0);
+  });
+
+  it("and the SAME hubless tombstone cannot be spent by the other hub either", () => {
+    const slots = { "marathon-pe": { p1: tomb({ bookedHub: null }) } };
+    for (const hub of ["hub1", "hub2"]) {
+      const r = run(reg({ p1__6: row() }), slots, { hub });
+      expect(r.actionableCount, hub).toBe(0);
+    }
+  });
+
+  it("a tombstone from the OTHER hub is not this hub's evidence", () => {
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: tomb({ bookedHub: "hub2" }) } });
+    expect(r.counts.sold).toBe(0);
+    expect(r.counts.unverified).toBe(1);
   });
 
   it("SOLD: two tombstones for a two-unit row retire both", () => {

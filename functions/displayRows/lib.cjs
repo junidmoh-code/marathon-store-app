@@ -17,9 +17,9 @@
 //             product AND the row's CAPTURED SIZE. The size match is what stops
 //             an ordinary shelf sale of size 8 closing the display record for
 //             the size 10 standing on the wall.
-//   RETURNED  a `transfer_out` FROM the display store TO a hub, same product,
-//             same size — the display came back off the wall.
-// Anything else is ignored, loudly doing nothing.
+// A shop→hub transfer is NOT a display return — a display stays booked at its
+// hub and is therefore not in the shop's cell, so a transfer out of a shop is
+// ordinary shop stock. See the trigger header. Anything else is ignored.
 //
 // ── SIZE MATCHING IS ON THE KEY, NOT THE LABEL ───────────────────────────────
 // A movement carries a human size ("9.5"); a row carries both `size` and
@@ -59,7 +59,7 @@
  *  also what makes the trigger cheap on every unrelated stock movement. */
 const DISPLAY_STORES = ["marathon-pe", "trophy"];
 
-/** The hubs a display may be booked at, and therefore returned to. */
+/** The hubs a display may be booked at. */
 const DISPLAY_HUBS = ["hub1", "hub2"];
 
 const LEASE_MS = 5 * 60 * 1000;
@@ -115,7 +115,7 @@ function stockSizeKey(size) {
 
 /**
  * Is this movement one that can close a display row, and at which store?
- * → { kind: "sold" | "returned", store, productId, sizeKey, qty } | null
+ * → { kind: "sold" | "sold_hub", store|hub, productId, sizeKey, qty } | null
  */
 function classifyMovement(m) {
   if (!m || typeof m !== "object") return null;
@@ -159,10 +159,13 @@ function classifyMovement(m) {
   if (m.type === "sold" && DISPLAY_HUBS.includes(m.from)) {
     return { kind: "sold_hub", hub: m.from, store: null, productId: m.productId, sizeKey, qty };
   }
-  // A display coming back off the wall: out of the SHOP, into a HUB.
-  if (m.type === "transfer_out" && DISPLAY_STORES.includes(m.from) && DISPLAY_HUBS.includes(m.to)) {
-    return { kind: "returned", store: m.from, productId: m.productId, sizeKey, qty };
-  }
+  // A shop→hub transfer is DELIBERATELY NOT a display return. A display unit
+  // stays booked at its hub and is therefore not in the shop's cell at all, so
+  // a transfer_out FROM a shop moves ordinary shop stock and can never be the
+  // display pair. Closing a row on one would take a real display off the record
+  // every time a shop sends excess back. See the trigger's header.
+  // (CodeRabbit found the movement was generic; the booking model makes it
+  // impossible rather than merely ambiguous.)
   return null;
 }
 
@@ -307,7 +310,7 @@ function hubSaleTooOld(movementTs, nowMs) {
   return null;
 }
 
-function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs }) {
+function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguityCount = null }) {
   const tooOld = hubSaleTooOld(movementTs, nowMs);
   if (tooOld) return { ok: false, why: tooOld };
 
@@ -316,6 +319,14 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs }) {
     for (const r of rows || []) candidates.push({ store, rowId: r.rowId });
   }
   if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
+  // The caller may count MORE explanations than it offers as closable — a row
+  // with no bookedHub is an equally good reason for the empty cell but must
+  // never be the row that gets closed. When the two numbers disagree, the
+  // attribution is not knowable.
+  const total = ambiguityCount == null ? candidates.length : ambiguityCount;
+  if (total > candidates.length) {
+    return { ok: false, why: `${total - candidates.length} display record(s) here name no hub, so which one sold is not knowable` };
+  }
   if (candidates.length > 1) {
     // Two rows on ONE wall land here too, so a duplicated wall's sales never
     // close automatically — the residual persists exactly where it is already

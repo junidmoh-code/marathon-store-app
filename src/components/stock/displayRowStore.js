@@ -60,6 +60,29 @@ async function apply(updates) {
 }
 
 /**
+ * THE ROWS FOR ONE (store, product), READ NOW.
+ *
+ * Every replacement path used to build its plan from the caller's SUBSCRIPTION
+ * snapshot, which can be arbitrarily stale — a tab left open, a slow listener,
+ * a device that just woke. A plan built on a stale snapshot closes rows that no
+ * longer exist and misses the one that does, which opens a second row beside
+ * it. (CodeRabbit.)
+ *
+ * One keyed read immediately before the plan shrinks that window from "however
+ * old the snapshot is" to a single round trip. It does NOT make the write a
+ * compare-and-set — RTDB has no cross-path CAS and a multi-path update cannot
+ * be a transaction, so a genuinely concurrent second sender can still land a
+ * second row. That residual is what the Duplicate Displays tab is for, it is
+ * the same window every hand-operated correction card in this app carries, and
+ * closing it properly means a server writer plus a rules change, which this
+ * work is fenced out of. Stated, not papered over.
+ */
+async function rowsNow(store, productId) {
+  const byRow = (await get(ref(database, `${storeRowsPath(store)}/${rowSegment(productId)}`))).val() || {};
+  return { [store]: { [productId]: byRow } };
+}
+
+/**
  * CLAUSE 2 — the operator tapped Send and PICKED A SIZE.
  *
  * `size` comes from the operator and from nowhere else. There is no default
@@ -74,8 +97,10 @@ export async function sendDisplayRow({ rows, store, productId, productName, size
                                        orderId = null, requestedAt = null, orderPatch = null, at = null }) {
   try {
     const when = at || serverNowIso();
+    // Freshest truth wins over the caller's snapshot. See rowsNow.
+    const live = await rowsNow(store, productId).catch(() => rows);
     const plan = sendPlan({
-      rows, store, productId, productName, size, bookedHub,
+      rows: live, store, productId, productName, size, bookedHub,
       // `requestedAt` is the ORDER's own instant for the "requested" timeline
       // entry. It was accepted by the caller and by sendPlan and DROPPED right
       // here — not destructured, so never forwarded — which left every timeline
@@ -112,8 +137,11 @@ export async function registerDisplayRow({ rows, store, productId, productName, 
                                            via = "wall_walk", keepOpen = false, at = null }) {
   try {
     const when = at || serverNowIso();
+    // keepOpen deliberately closes nothing, so it needs no re-read; the
+    // replacement path does. See rowsNow.
+    const live = keepOpen ? rows : await rowsNow(store, productId).catch(() => rows);
     const plan = openRowPlan({
-      rows, store, productId, productName, size, bookedHub,
+      rows: live, store, productId, productName, size, bookedHub,
       rowId: rowIdFor(when), at: when, by: uid(), via, keepOpen,
     });
     if (!plan.ok) return { ok: false, message: plan.message };
@@ -147,7 +175,12 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
     if (!plan.ok) return { ok: false, message: plan.message };
     await apply(plan.updates);
 
-    const survivors = openRowsFor(rows, row.store, row.productId).filter((r) => r.rowId !== row.rowId);
+    // THE SURVIVORS ARE READ AFTER THE CLOSE, not taken from the caller's
+    // snapshot. Deciding "was that the last one?" from a stale map is how a
+    // slot gets tombstoned while a row is still open — the count then stops
+    // subtracting a pair that is genuinely on a wall. (CodeRabbit.)
+    const after = await rowsNow(row.store, row.productId).catch(() => rows);
+    const survivors = openRowsFor(after, row.store, row.productId).filter((r) => r.rowId !== row.rowId);
     let warning = null;
     let res;
     if (survivors.length === 0) {

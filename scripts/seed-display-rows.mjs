@@ -29,15 +29,22 @@
 //     duplicates that are physically standing on the walls today will surface
 //     as the next send opens a second row beside a first that was already there
 //     — and as the wall walk registers what is actually seen.
-//   • THE 44 TOMBSTONED SLOTS. A cleared slot describes a display that has
+//   • THE TOMBSTONED SLOTS (~48). A cleared slot describes a display that has
 //     already left; seeding it as an open row would assert a pair that is not
 //     there. They are counted and skipped.
 //   • HUB 3. Pine's 18 displays are booked at hub3, outside GATED_SNEAKER_HUBS.
 //     Counted, skipped, and reported — not silently dropped.
 //
-// IT IS RE-RUNNABLE. A (store, product) that already has ANY row — open or
-// closed — is skipped, so a second run adds nothing. That makes a partial run
-// safe to finish rather than something to unpick.
+// IT IS RE-RUNNABLE, AND THE EXISTENCE CHECK IS PART OF THE WRITE. A (store,
+// product) that already has ANY row — open or closed — is skipped, so a second
+// run adds nothing and a partial run is safe to finish.
+//
+// Each row is written as a TRANSACTION on `/settings/displayRows/{store}/{pid}`
+// that aborts if the node is not empty, rather than as one bulk multi-path
+// update built from a snapshot read at the start. A send landing between the
+// read and the write would otherwise have added a second row beside it —
+// creating, during the migration, exactly the duplicate this ledger exists to
+// surface. (CodeRabbit.) ~460 small transactions, once.
 
 import { createRequire } from "module";
 
@@ -46,7 +53,7 @@ const admin = require("firebase-admin");
 admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
 
-const { openRowPlan, rowPath, slotIsLiveish } = await (async () => {
+const { openRowPlan, slotIsLiveish } = await (async () => {
   const core = await import("../src/components/stock/displayRowCore.js");
   return { ...core, slotIsLiveish: (s) => !!s && typeof s.sizeKey === "string" && s.sizeKey && s.sizeKey !== "_" };
 })();
@@ -60,7 +67,7 @@ const [slots, existing] = await Promise.all([
 ]);
 
 let live = 0, tombstoned = 0, offHub = 0, alreadySeeded = 0, seeded = 0;
-const updates = {};
+const planned = [];          // [{ store, productId, rowId, row }]
 const perStore = {};
 
 for (const [store, byPid] of Object.entries(slots)) {
@@ -78,7 +85,8 @@ for (const [store, byPid] of Object.entries(slots)) {
       at, by: slot.by || null, via: "seed",
     });
     if (!plan.ok) { console.warn(`skip ${store}/${productId}: ${plan.message}`); continue; }
-    Object.assign(updates, plan.updates);
+    const rowId = Object.keys(plan.updates)[0].split("/").pop();
+    planned.push({ store, productId, rowId, row: Object.values(plan.updates)[0] });
     seeded++;
     perStore[store] = (perStore[store] || 0) + 1;
   }
@@ -89,22 +97,22 @@ console.log(`  tombstoned (skipped) ${tombstoned}`);
 console.log(`  booked off hub1/hub2 ${offHub}   (Pine's wall — hub3, out of scope)`);
 console.log(`  already have a row   ${alreadySeeded}`);
 console.log(`ROWS TO OPEN          ${seeded}`, perStore);
-console.log(`update paths          ${Object.keys(updates).length}`);
 
 if (!APPLY) {
   console.log("\nDRY RUN — nothing written. Re-run with --apply.");
   process.exit(0);
 }
 
-// In chunks: one 500-path update is fine, a 2,000-path one is a large single
-// write over a shared node. Chunking costs nothing here because the seed is
-// idempotent per (store, product) — a chunk that lands is simply skipped next
-// run.
-const entries = Object.entries(updates);
-const CHUNK = 200;
-for (let i = 0; i < entries.length; i += CHUNK) {
-  await db.ref().update(Object.fromEntries(entries.slice(i, i + CHUNK)));
-  console.log(`  wrote ${Math.min(i + CHUNK, entries.length)}/${entries.length}`);
+// ONE TRANSACTION PER (store, product). It writes only onto an EMPTY node, so a
+// send that lands mid-migration wins and the seed steps aside rather than
+// adding a second row beside it.
+let wrote = 0, skipped = 0;
+for (const { store, productId, rowId, row } of planned) {
+  const ref = db.ref(`settings/displayRows/${store}/${productId}`);
+  // eslint-disable-next-line no-await-in-loop
+  const res = await ref.transaction((cur) => (cur === null ? { [rowId]: row } : undefined));
+  if (res.committed) wrote++; else skipped++;
+  if ((wrote + skipped) % 50 === 0) console.log(`  ${wrote + skipped}/${planned.length} (wrote ${wrote}, skipped ${skipped})`);
 }
-console.log("done.");
+console.log(`done. wrote ${wrote}, skipped ${skipped} (a skip means a real row appeared first — correct).`);
 process.exit(0);

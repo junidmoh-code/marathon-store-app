@@ -33,17 +33,21 @@ test("Pine is deliberately out of scope — its displays are booked at hub3", ()
   assert.equal(DISPLAY_STORES.includes("marathon-pine"), false);
 });
 
-test("only a sale or a return-to-hub closes anything", () => {
+test("only a SALE closes anything", () => {
   assert.equal(classifyMovement(sold({ type: "received" })), null);
   assert.equal(classifyMovement(sold({ type: "adjustment" })), null);
   assert.equal(classifyMovement(sold({ type: "transfer_in" })), null);
-  assert.equal(classifyMovement({ type: "transfer_out", from: "trophy", to: "hub1", productId: "p1", size: "9" }).kind,
-    "returned");
-  // Shop to shop is not a return to the hub.
-  assert.equal(classifyMovement({ type: "transfer_out", from: "trophy", to: "marathon-pe", productId: "p1", size: "9" }),
-    null);
-  // Hub 3 is not a hub this display lane books into.
-  assert.equal(classifyMovement({ type: "transfer_out", from: "trophy", to: "hub3", productId: "p1", size: "9" }), null);
+  // A SHOP→HUB TRANSFER IS NOT A DISPLAY RETURN, and this is the assertion that
+  // says so. A display stays BOOKED at its hub, so it is not in the shop's cell
+  // at all; a transfer_out from a shop therefore moves ordinary shop stock and
+  // can never be the display pair. An earlier cut classified it as "returned"
+  // and would have closed a real display every time a shop sent excess back.
+  // (CodeRabbit found the movement was generic; the booking model makes it
+  // impossible rather than merely ambiguous.)
+  for (const to of ["hub1", "hub2", "hub3", "marathon-pe", "central"]) {
+    assert.equal(classifyMovement({ type: "transfer_out", from: "trophy", to, productId: "p1", size: "9" }), null,
+      `transfer_out trophy→${to}`);
+  }
 });
 
 test("a one-size or size-less movement can never be a display row", () => {
@@ -256,6 +260,22 @@ test("a sale stamped in the FUTURE is refused too — a wrong clock is not evide
     movementTs: new Date(NOW + 60 * 1000).toISOString(), nowMs: NOW,
   });
   assert.equal(r.ok, false);
+});
+
+test("a row that names NO hub blocks the close without ever being closed", () => {
+  // It is an equally good explanation for the empty cell, so it makes the
+  // attribution unknowable — but it never claimed to be at this hub, so it must
+  // not be the row that gets closed. Both reviewers were half right; this is
+  // the shape that satisfies both.
+  const r = resolveHubSale(fresh({
+    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0, ambiguityCount: 2,
+  }));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /name no hub/);
+  // With no hubless row in play the same input closes normally.
+  assert.equal(resolveHubSale(fresh({
+    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0, ambiguityCount: 1,
+  })).ok, true);
 });
 
 test("TWO ROWS ON ONE WALL is ambiguous too, so a duplicated wall never auto-closes", () => {

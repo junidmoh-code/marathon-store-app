@@ -123,11 +123,19 @@ describe("no path opens a second open row for one product at one store", () => {
           root = applyUpdate(root, plan.updates);
           // The request was cleared by the SAME write.
           expect(root.orders[`o${step}`].displayRefillStatus).toBe("refilled");
+          // A SEND IS A NORMAL WRITER, so it must leave the wall clean and the
+          // allowance is withdrawn. Without this the invariant stayed permanently
+          // relaxed for that key once ONE keepOpen add had touched it, so a send
+          // that later regressed and stopped closing the previous row would have
+          // gone unnoticed for the rest of the walk. (CodeRabbit.)
+          deliberateDuplicates.delete(`${store}::${productId}`);
         } else if (op < 0.60) {
           // THE WALL WALK — "ON THE WALL", pick the size, register.
           const plan = openRowPlan({ rows, store, productId, size, bookedHub: pick(HUBS), rowId, at, via: "wall_walk" });
           expect(plan.ok).toBe(true);
           root = applyUpdate(root, plan.updates);
+          // Also a normal writer: a wall walk REPLACES what the record says.
+          deliberateDuplicates.delete(`${store}::${productId}`);
         } else if (op < 0.68) {
           // THE DELIBERATE SECOND ROW — the Duplicate tab's "the size on the
           // wall is not listed", which exists to create the state a human then

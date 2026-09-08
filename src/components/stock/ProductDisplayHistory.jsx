@@ -51,10 +51,14 @@ export default function ProductDisplayHistory({ productId, registry }) {
     if (!productId) return [];
     return allRows(rows)
       .filter((r) => r.productId === productId)
-      // Open first, then newest-closed first — what is on a wall now matters
-      // more than what was on one in July.
+      // Open first, then newest-CLOSED first. The comparator used openedAt for
+      // everything, which sorts closed rows by when the pair went ON the wall
+      // rather than when it came off — so a long-standing display that closed
+      // yesterday sorted below a brief one that closed in June. A closed row's
+      // own time is closedAt. (CodeRabbit.)
       .sort((a, b) => (rowIsOpen(b) ? 1 : 0) - (rowIsOpen(a) ? 1 : 0)
-        || String(b.openedAt || "").localeCompare(String(a.openedAt || "")));
+        || String(rowIsOpen(b) ? b.openedAt : b.closedAt || b.openedAt || "")
+             .localeCompare(String(rowIsOpen(a) ? a.openedAt : a.closedAt || a.openedAt || "")));
   }, [rows, productId]);
 
   if (!productId) return null;

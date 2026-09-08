@@ -54,6 +54,7 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
   const { value: rows, settled: loaded } = useDisplayRowsState(true);
   const [confirm, setConfirm] = useState(null);   // `${store}::${pid}::${rowId}` awaiting a second tap
   const [adding, setAdding] = useState(null);     // `${store}::${pid}` — the "not listed" picker
+  const [addHub, setAddHub] = useState(null);     // which hub, when the group's rows disagree
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
 
@@ -82,7 +83,15 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
     else setNote({ tone: "ok", text: `Closed the size ${formatSize(row.size)} record for ${group.productName} at ${labelFor(row.store)}. No stock moved.` });
   };
 
-  const addSize = async (group, size) => {
+  // THE HUB THE NEW ROW IS BOOKED AT, when the group agrees on one.
+  // duplicateDisplayGroups groups by (store, product), so a group can hold a
+  // hub1 row AND a hub2 row — and `rows[0]` is only the OLDEST row, not a
+  // decision. Copying its hub onto a newly registered size guessed, and the
+  // slot mirror then carried the guess. When the rows disagree the operator
+  // picks; when they agree there is nothing to ask. (CodeRabbit.)
+  const hubsOf = (g) => [...new Set(g.rows.map((r) => r.bookedHub).filter(Boolean))];
+
+  const addSize = async (group, size, hub) => {
     const k = `${group.store}::${group.productId}`;
     setBusy(k); setNote(null);
     // keepOpen: the operator is about to decide which of the existing rows
@@ -90,9 +99,9 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
     // they are standing at the wall and we are not.
     const res = await registerDisplayRow({
       rows, store: group.store, productId: group.productId, productName: group.productName,
-      size, bookedHub: group.rows[0]?.bookedHub || null, via: "wall_walk", keepOpen: true,
+      size, bookedHub: hub, via: "wall_walk", keepOpen: true,
     });
-    setBusy(null); setAdding(null);
+    setBusy(null); setAdding(null); setAddHub(null);
     if (!res.ok) { setNote({ tone: "err", text: `Could not register size ${formatSize(size)}: ${res.message}` }); return; }
     setNote({ tone: "ok", text: `Registered size ${formatSize(size)} at ${labelFor(group.store)}. Now close the sizes that are not on the wall.` });
   };
@@ -182,18 +191,41 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
             </div>
 
             <div style={{ marginTop: 10 }}>
-              {adding === gk ? (
-                <SizePicker
-                  sizes={sizes}
-                  busy={busy === gk}
-                  title="Which size is actually on the wall?"
-                  note="Nothing is chosen for you. Pick the size you can see, and it is registered at this shop alongside the records above — then close the ones that are not there."
-                  confirmLabel="Register"
-                  onPick={(sz) => addSize(g, sz)}
-                  onCancel={() => setAdding(null)}
-                />
-              ) : (
-                <button type="button" onClick={() => { setAdding(gk); setNote(null); }} disabled={!!busy}
+              {adding === gk ? (() => {
+                const hubs = hubsOf(g);
+                // The records disagree about which hub holds this product's
+                // display, so the operator says which one the new pair came
+                // out of. Nothing here guesses — the same rule as the size.
+                if (hubs.length > 1 && !addHub) {
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                      <div style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>Which hub is this pair booked at?</div>
+                      <div style={{ fontSize: 12, color: "rgba(233,238,255,.65)", lineHeight: 1.5 }}>
+                        The records here disagree ({hubs.map((h) => labelFor(h)).join(" and ")}), so this cannot be
+                        assumed. Pick the hub the pair on the wall came from.
+                      </div>
+                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                        {hubs.map((h) => (
+                          <button key={h} type="button" onClick={() => setAddHub(h)} style={bGray}>{labelFor(h)}</button>
+                        ))}
+                        <button type="button" onClick={() => { setAdding(null); setAddHub(null); }} style={bGray}>Cancel</button>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <SizePicker
+                    sizes={sizes}
+                    busy={busy === gk}
+                    title="Which size is actually on the wall?"
+                    note="Nothing is chosen for you. Pick the size you can see, and it is registered at this shop alongside the records above — then close the ones that are not there."
+                    confirmLabel="Register"
+                    onPick={(sz) => addSize(g, sz, addHub || hubs[0] || null)}
+                    onCancel={() => { setAdding(null); setAddHub(null); }}
+                  />
+                );
+              })() : (
+                <button type="button" onClick={() => { setAdding(gk); setAddHub(null); setNote(null); }} disabled={!!busy}
                   style={{ ...bGray, opacity: busy ? 0.5 : 1 }}>
                   The size on the wall is not listed
                 </button>

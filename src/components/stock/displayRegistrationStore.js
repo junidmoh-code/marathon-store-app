@@ -128,10 +128,15 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
       return { ...cur, qty: q, bumps: highWater(cur, q), retiredAt: null, at: nowIso, by: auth.currentUser?.uid || null };
     });
     if (already) {
-      // Refresh the slot's timestamp only, exactly as before.
+      // Refresh the slot's timestamp only. `at: nowIso` is load-bearing:
+      // nowIso is stamped BEFORE the transaction, and without passing it this
+      // write used CALL time — minutes later on bad wifi — so the staleness
+      // fence would judge a newer slot transition as older and overwrite its
+      // size and bookedHub. Every other writer in this module already passes
+      // the transition's own instant; this branch did not. (CodeRabbit.)
       const res = await setDisplaySlot({
         store, productId: product.id, productName: product.name || "",
-        size: String(size), bookedHub: hub, source: "registration",
+        size: String(size), bookedHub: hub, source: "registration", at: nowIso,
       });
       return { ok: true, already: true, warning: slotWarning(res, "Already registered") };
     }

@@ -95,9 +95,15 @@ export function splitRegisterKey(key) {
  * could justify retiring a hub 1 row that nothing had contradicted.
  * (CodeRabbit.)
  *
- * A tombstone with NO bookedHub at all is counted for whichever hub is asking:
- * it is a genuine record of a display that left, and dropping it would lose
- * evidence rather than invent it — the safe direction is to keep it.
+ * A tombstone with NO bookedHub at all IS DROPPED, and the first cut had this
+ * backwards. It reasoned that keeping it "loses evidence rather than inventing
+ * it", so keeping was the safe direction. It is not: counted for whichever hub
+ * is asking, ONE departed display enters hub1's budget AND hub2's, so if each
+ * hub holds a row for that product the same departure authorises TWO
+ * retirements. The second retirement raises expected-on-shelf for a display
+ * that may still be standing on a wall — the exact negative-adjustment failure
+ * this module is shaped to avoid. Unexplained is unverified, and unverified is
+ * never actionable. (CodeRabbit.)
  */
 function slotsForProduct(slots, productId, hub) {
   const live = [], tombs = [];
@@ -106,7 +112,7 @@ function slotsForProduct(slots, productId, hub) {
     if (!s) continue;
     if (slotIsLive(s)) {
       if (s.bookedHub === hub) live.push({ store, ...s });
-    } else if (!s.bookedHub || s.bookedHub === hub) {
+    } else if (s.bookedHub === hub) {
       tombs.push({ store, ...s });
     }
   }
