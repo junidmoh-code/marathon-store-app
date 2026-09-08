@@ -404,12 +404,14 @@ test("the out-of-stock cap cannot be filled entirely by SHARED upstream rows", (
   const products = {}, pe = {}, hub2 = {};
   for (let i = 0; i < 200; i++) {
     const pid = `u${String(i).padStart(3, "0")}`;
-    products[pid] = { name: `Upstream ${i}`, productType: "clothing" };
+    // Names that sort AHEAD of the shop's own rows — otherwise the alphabetical
+    // tiebreak hides the starvation by luck rather than by design.
+    products[pid] = { name: `Adidas Upstream ${i}`, productType: "clothing" };
     hub2[pid] = { M: { qty: -1 } };
   }
   for (let i = 0; i < 40; i++) {
     const pid = `s${String(i).padStart(3, "0")}`;
-    products[pid] = { name: `Shop ${i}`, productType: "clothing" };
+    products[pid] = { name: `Zulu Shop ${i}`, productType: "clothing" };
     pe[pid] = { M: { qty: -1 } };
   }
   const { rows, total, truncated } = sa.buildOutOfStock({

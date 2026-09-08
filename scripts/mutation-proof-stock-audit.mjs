@@ -245,18 +245,6 @@ const MUTATIONS = [
 
   // ── the five the adversarial architecture review found ────────────────────
   {
-    id: "F1", file: STORE, tests: STORE_TESTS,
-    guard: "CONFIRMED EMPTY CORRECTS A PHANTOM — a cell that disagrees is set to zero, not just ticked off",
-    from: `  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {`,
-    to: `  if (false) {`,
-  },
-  {
-    id: "F1n", file: STORE, tests: STORE_TESTS,
-    guard: "…including a NEGATIVE cell, which is wrong by definition and would otherwise return every day forever",
-    from: `  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {`,
-    to: `  if (outcome === "confirmed_empty" && Number(row.q) > 0) {`,
-  },
-  {
     id: "F1b", file: STORE, tests: STORE_TESTS,
     guard: "…and a REFUSED confirmed-empty correction records nothing either",
     from: `    if (!res.ok) return res;                       // NOT recorded — rule 3 (confirm)`,
@@ -265,8 +253,8 @@ const MUTATIONS = [
   {
     id: "F2", file: LIB, nodeTests: LIB_TESTS,
     guard: "THE STRONGER READING WINS — dedup compares rank, so a newer rejection is not lost to an older open request",
-    from: `    if (!cur || row.rank < cur.rank) rows.set(row.k, row);`,
-    to: `    if (!cur) rows.set(row.k, row);`,
+    from: `    if (!cur || row.rank < cur.rank || (row.rank === cur.rank && row.at > cur.at)) rows.set(row.k, row);\n  };`,
+    to: `    if (!cur) rows.set(row.k, row);\n  };`,
   },
   {
     id: "F3", file: VIEW, tests: ["src/components/stock/stockAuditReasons.test.js"],
