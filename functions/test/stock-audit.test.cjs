@@ -403,6 +403,41 @@ test("the snapshot carries only what the card renders, and stays small", () => {
   assert.ok(JSON.stringify(snap).length < 50 * 1024);
 });
 
+// THE SIZE BUDGET, AT LIVE SCALE. The fixture above is small enough to pass
+// this on nothing, so here it is again at the real numbers: 1,400 clothing
+// products at the store (live count 2026-09-08 was 1,300 held at Marathon PE),
+// a full S–XXXL run each, catalogue-length names, and enough recent unavailable
+// requests to fill the Tab A cap. A future field added to a row multiplies by
+// 120 and by 30 — this is what stops that being discovered on the bill.
+test("the snapshot stays inside its size budget at live catalogue scale", () => {
+  const NAME = "Nike Sportswear Tech Fleece Full-Zip Hoodie Heather Grey/Black";
+  const SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"];
+  const products = {}, pe = {}, hub2 = {}, rr = {};
+  for (let i = 0; i < 1400; i++) {
+    const pid = `p17812345678${String(i).padStart(4, "0")}`;
+    products[pid] = { name: `${NAME} ${i}`, productType: "clothing" };
+    pe[pid] = {}; hub2[pid] = {};
+    for (const sz of SIZES) { pe[pid][sz] = { qty: 3 }; hub2[pid][sz] = { qty: i % 3 === 0 ? -2 : 0 }; }
+  }
+  let n = 0;
+  for (const pid of Object.keys(products).slice(0, 400)) {
+    rr[`r${n++}`] = { requestingLocation: "marathon-pe", productId: pid, size: "XXXL", status: "cancelled",
+                      resolvedAt: iso(3600e3), createdFrom: { source: "hub2" } };
+  }
+  const snap = sa.buildStoreSnapshot({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
+    stock: { "marathon-pe": pe, hub2, central: {} }, products, refillRequests: rr, movements: [],
+    routes: ROUTES, rotationState: {}, displayKeys: [], prevBatchPids: null,
+  });
+  assert.equal(snap.oos.rows.length, CFG.maxOutOfStockRows);   // the cap is doing work
+  assert.equal(snap.oos.truncated, true);
+  assert.ok(snap.oos.total > 3000);
+  assert.equal(snap.rotation.rows.length, CFG.batchSize);
+  assert.equal(snap.rotation.universeSize, 1400);
+  const bytes = JSON.stringify(snap).length;
+  assert.ok(bytes < 50 * 1024, `snapshot is ${(bytes / 1024).toFixed(1)} KB — the budget is 50 KB`);
+});
+
 test("the snapshot is JSON-safe: no undefined reaches an RTDB write", () => {
   // A product record with no name, a request with no size, a cell with no qty —
   // every one of these produced an `undefined` in an early draft, and RTDB
