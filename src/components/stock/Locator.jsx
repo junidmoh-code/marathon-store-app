@@ -12,6 +12,7 @@ import { BLUE_L, GREEN, RED, GRAY, BORDER } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
+import ProductDisplayHistory from "./ProductDisplayHistory";
 
 function Thumb({ product, size = 42 }) {
   const url = product?.photoUrl;
@@ -121,6 +122,11 @@ export default function Locator({ products, registry }) {
               ))}
             </div>
           )}
+
+          {/* CLAUSE 6 — the display timeline, from the product. Read-only, and
+              deliberately here rather than on the Display Registry, which this
+              work is fenced out of. */}
+          <ProductDisplayHistory productId={productId} registry={registry} />
         </div>
       )}
     </div>

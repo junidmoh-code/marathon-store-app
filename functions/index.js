@@ -3616,6 +3616,22 @@ exports.orderPlacedPush = onValueWritten(
 //   firebase deploy --only functions:onClothingSale
 exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
 
+// ─── closeDisplayRowOnSale — the display record closes itself at the till ─────
+// Gen-2 RTDB onCreate on /stock_movements/{movementId}, the SAME node
+// onClothingSale watches. A `sold` movement at Marathon PE or Trophy closes the
+// open display row for that product at that store, matched on the row's own
+// CAPTURED SIZE. A sale out of a HUB cell (which is how sneakers sell) closes
+// one only when the evidence leaves no alternative — see the module header.
+// A shop→hub transfer is deliberately NOT treated as a display return: a
+// display stays booked at its hub, so it is not in the shop's cell and a
+// transfer out of a shop can never be the display pair.
+// Idempotent (a lease under /settings/displayRows_meta, plus the
+// structural guarantee that only OPEN rows are ever closed), and it needs no
+// change to marathon-pos-app — the till already writes the movement.
+// See functions/displayRows/closeDisplayRowOnSale.js for the whole contract.
+// DEPLOY (scoped): firebase deploy --only functions:closeDisplayRowOnSale
+exports.closeDisplayRowOnSale = require("./displayRows/closeDisplayRowOnSale.js").closeDisplayRowOnSale;
+
 // ─── DISPLAY CHECKS — wakeHeldChecks (scheduled hold→wake sweep, no UI) ────────
 // Every 5 min (Africa/Johannesburg), walks the active index
 // /displayChecks_active/{store} and moves held checks through stock_seen → grace

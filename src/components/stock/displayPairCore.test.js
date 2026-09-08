@@ -356,8 +356,12 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
 
   it("is a pure projection: no orders, no timestamps, no slots — all safe and unchanged", () => {
     const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
-    expect(slotsAfterOrderExits(slots, [])).toBe(slots);       // nothing to apply, same object
-    expect(slotsAfterOrderExits(slots, null)).toBe(slots);
+    // NOW is pinned on every call. Without it these read the real clock, and
+    // the create bound (DISPLAY_EXIT_CREATE_MAX_AGE_MS) silently aged the
+    // fixtures out on 2026-09-08 — the suite went red on a date change rather
+    // than a code change. A fixture that rots is a fixture that lies.
+    expect(slotsAfterOrderExits(slots, [], NOW)).toBe(slots);   // nothing to apply, same object
+    expect(slotsAfterOrderExits(slots, null, NOW)).toBe(slots);
     // And the healthy case is reference-stable too: /orders re-fires on every
     // till transaction, and a projection that changes nothing must not
     // invalidate every memo hanging off the slot map.
@@ -365,7 +369,7 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       createdAt: "2026-09-01T07:00:00.000Z",
                       displayRefillStatus: "refilled", displayRefillSize: "6",
                       displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
-    expect(slotsAfterOrderExits(slots, landed)).toBe(slots);
+    expect(slotsAfterOrderExits(slots, landed, NOW)).toBe(slots);
     // A `__proto__` store id is DATA, not a prototype assignment. RTDB will
     // hand back whatever key a writer put there, and a shop id is a key.
     //
@@ -406,8 +410,20 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
     expect(Object.getPrototypeOf(pidOut.ok)).toBe(null);
     expect(Object.hasOwn(pidOut.ok, "__proto__")).toBe(true);
     expect(pidOut.ok["__proto__"].sizeKey).toBe("6");
-    expect(slotsAfterOrderExits(null, [])).toEqual({});
-    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
+    // NOT LAUNDERED, and that half matters as much as the half above: with
+    // nothing to apply, the caller's own object comes back exactly as it was,
+    // prototype and all. The null-prototype guarantee is a property of a map
+    // this function BUILT, never a cleaning step applied to one it was handed.
+    // The docstring used to read as an unconditional promise and was corrected
+    // (db20547); this pins the code and the docstring together so they cannot
+    // drift apart again.
+    const asIs = { ok: {} };
+    expect(slotsAfterOrderExits(asIs, [], NOW)).toBe(asIs);
+    expect(Object.getPrototypeOf(slotsAfterOrderExits(asIs, [], NOW))).toBe(Object.prototype);
+    // The clock is passed in on every call here, for the reason at the top of
+    // this block: a fixture that rots is a fixture that lies.
+    expect(slotsAfterOrderExits(null, [], NOW)).toEqual({});
+    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }], NOW)).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
     // rather than guessing which came first.
     const noAt = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1" } } };

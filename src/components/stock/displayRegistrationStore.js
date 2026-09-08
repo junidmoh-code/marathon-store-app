@@ -46,6 +46,8 @@ import { isCleanupHub } from "./hubCleanupCore";
 
 export const CARD_VIA = "display_registration_card";
 
+const one = async (path) => (await get(ref(database, path))).val();
+
 const regPath = (hub, pid, sizeKey) =>
   `${HUB_COUNT_ROOT}/register/${assertSafeSegment(hub, "hub")}/${assertSafeSegment(pid, "productId")}__${assertSafeSegment(sizeKey, "sizeKey")}`;
 
@@ -86,26 +88,65 @@ export async function recordDisplayFact({ hub, product, size, store, slots = nul
     const path = regPath(hub, product.id, sizeKey);
     const nowIso = serverNowIso();
 
+    // ── "ALREADY REGISTERED" MEANS THE REGISTER ROW EXISTS ──────────────────
+    // This used to be decided by the SLOT alone, and that is how 52 displays
+    // ended up standing on shop floors that the register has never heard of
+    // (measured 2026-09-07). A display refill writes the SLOT and no register
+    // row; staff then open this card to register the pair properly, the guard
+    // sees a live slot at the same store/size/hub, says "Already registered"
+    // and writes nothing — so the row could never be created through the UI at
+    // all, and every attempt reported success.
+    //
+    // Registration is a register ROW plus a slot. Both are checked now: the
+    // early return is for a genuine duplicate, and a live slot with no row
+    // falls through to the transaction below, which creates it.
+    // The row check lives INSIDE the transaction below, for the same reason the
+    // store-less one does: a pre-transaction get let two concurrent callers
+    // both see "no row" and both bump. The first cut of this fix read the row
+    // with its own `await` up here and walked straight back into that race
+    // (CodeRabbit, and it is PR #460's finding a second time). All that is
+    // decided out here is whether the SLOT agrees — a fact about data this
+    // caller was handed, not a read that can go stale against itself.
     const existingSlot = store ? slots?.[store]?.[product.id] : null;
-    if (store && slotIsLive(existingSlot) && existingSlot.sizeKey === sizeKey && existingSlot.bookedHub === hub) {
-      // Same store, same size, already live: refresh the slot timestamp only.
-      const res = await setDisplaySlot({
-        store, productId: product.id, productName: product.name || "",
-        size: String(size), bookedHub: hub, source: "registration",
-      });
-      return { ok: true, already: true, warning: slotWarning(res, "Already registered") };
-    }
+    const slotAgrees = !!(store && slotIsLive(existingSlot)
+      && existingSlot.sizeKey === sizeKey && existingSlot.bookedHub === hub);
 
     // The store-less duplicate guard lives INSIDE the transaction: a
     // pre-transaction get let two concurrent store-less submissions both pass
     // and both bump (CodeRabbit, PR #460). Aborting on an existing row makes
     // the second submission fail deterministically whatever the interleaving.
+    let already = false;
     const txn = await runTransaction(ref(database, path), (cur) => {
       if (cur === null) return rowFor(product, size, sizeKey, nowIso);
       if (!store) return undefined;   // exists + no store → abort, report duplicate
+      // The slot already shows this exact display AND the row exists: this is
+      // a re-registration of something wholly recorded, not a second physical
+      // display. Abort rather than bump — deciding it in here is what makes it
+      // safe against a concurrent caller.
+      if (slotAgrees && (Number(cur.qty) || 0) > 0) { already = true; return undefined; }
       const q = (Number(cur.qty) || 0) + 1;
       return { ...cur, qty: q, bumps: highWater(cur, q), retiredAt: null, at: nowIso, by: auth.currentUser?.uid || null };
     });
+    if (already) {
+      // Re-assert the slot for a display already wholly recorded. `at: nowIso`
+      // is load-bearing, and the direction matters — an earlier draft of this
+      // comment had it backwards (adversarial review):
+      //
+      //   supersededBy aborts when the STORED record is NEWER than `at`. So a
+      //   LATER `at` (call time, minutes out on bad wifi) makes this write WIN
+      //   and clobber a transition that landed in between; nowIso — stamped
+      //   before the transaction, i.e. earlier — makes it correctly LOSE.
+      //
+      // And this is a full record replacement, not a timestamp touch:
+      // setDisplaySlot writes the whole slot object. That is right here (the
+      // caller is re-registering this very display, so `source: "registration"`
+      // is the truth) but it is why the instant has to be honest.
+      const res = await setDisplaySlot({
+        store, productId: product.id, productName: product.name || "",
+        size: String(size), bookedHub: hub, source: "registration", at: nowIso,
+      });
+      return { ok: true, already: true, warning: slotWarning(res, "Already registered") };
+    }
     if (!txn.committed) {
       return { ok: false, message: "Already registered (shop not recorded). If this is a SECOND display, pick its shop; to fix the size, use Change size." };
     }
@@ -187,18 +228,45 @@ export async function editDisplaySize({ hub, product, fromSizeKey, toSize, slotS
 // Retire a display fact (the display came down / never existed). The row is
 // kept at qty 0 — never deleted — so movement linkage and the bumps ladder
 // survive for the count lane and for addExtra's id derivation.
-export async function removeDisplayFact({ hub, product, sizeKey, slotStores = [] }) {
+//
+// `units` retires more than one in ONE transaction, and `expectQty` guards it.
+// Both exist for the Display Records screen (displayRecordCleanup.js), where an
+// over-registered row retires only its SURPLUS — "3 claimed, 1 shop floor shows
+// it, retire 2". Doing that as two unguarded calls was wrong twice over:
+//
+//   • it is not atomic, so a failure between them leaves a half-retired row;
+//   • it cannot tell a stale view from a fresh one. Two admins both looking at
+//     qty 3 would each retire 2 and take the row to 0 — wiping the legitimate
+//     matched record, which then makes the next count expect a pair on the
+//     shelf that is genuinely out at a shop and adjust a real unit away.
+//
+// With expectQty the second writer's transaction aborts and reports
+// `superseded`, exactly like the display-slot fence. Omit both and the
+// behaviour is byte-identical to before.
+//
+// THE TRANSACTION RESULT IS NOW READ. It never was: a transaction that did not
+// commit returned a cheerful { ok: true }, so a caller could mark work done
+// that had not happened.
+export async function removeDisplayFact({ hub, product, sizeKey, slotStores = [], units = 1, expectQty = null }) {
   try {
     if (!isCleanupHub(hub)) return { ok: false, message: `Displays are booked at hub1/hub2 — not ${hub}.` };
     const path = regPath(hub, product.id, sizeKey);
     const nowIso = serverNowIso();
-    await runTransaction(ref(database, path), (cur) => {
+    const take = Math.max(1, Number(units) || 1);
+    let stale = false;
+    const txn = await runTransaction(ref(database, path), (cur) => {
       if (cur === null) return null;   // nothing there — no-op commit
       const q = Number(cur.qty) || 0;
-      const next = Math.max(0, q - 1);
+      if (expectQty != null && q !== Number(expectQty)) { stale = true; return undefined; }
+      const next = Math.max(0, q - take);
       return { ...cur, qty: next, bumps: highWater(cur, q),
         ...(next === 0 ? { retiredAt: nowIso } : {}), at: nowIso, by: auth.currentUser?.uid || null };
     });
+    if (stale) {
+      return { ok: true, superseded: true,
+        message: "Someone else changed this display record while it was open — reopen the list and look again." };
+    }
+    if (txn && txn.committed === false) return { ok: true, superseded: true, message: "The display record was not changed — try again." };
     const warnings = [];
     for (const store of slotStores) {
       const res = await clearDisplaySlot({ store, productId: product.id, source: "manual" });
