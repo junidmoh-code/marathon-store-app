@@ -62,11 +62,15 @@ edited for this and deploying it would regress the live document
 
 ## Until it is pasted
 
-Nothing is broken and nothing waits. The staff list loads, the assignments load
-and every switch works — the device column alone says **"device unknown"**, and
-an amber banner says why. "Device unknown" is deliberately a different sentence
-from "no device": the second is a fact about a person, the first is a fact about
-this screen.
+The staff list loads, the assignments load and every switch works. The device
+column alone says **"device unknown"**, and an amber banner says why. "Device
+unknown" is deliberately a different sentence from "no device": the second is a
+fact about a person, the first is a fact about this screen.
+
+What you do NOT get until it is pasted is the warning this column exists for —
+**"N assigned with no device — they will not receive anything"**. Assignments
+can be made and are stored correctly; the screen simply cannot yet tell you
+which of them will never arrive.
 
 ## Verifying it took
 

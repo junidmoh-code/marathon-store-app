@@ -90,7 +90,7 @@
 // pasted: the staff list loads, assignments load, and the device column alone
 // says it does not know.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { get, ref, update } from "firebase/database";
 import { database } from "../firebase";
 import { serverNowMs } from "../utils/serverTime";
@@ -160,7 +160,24 @@ function PushAssignmentsAuthed({ onExit }) {
   const [savedAt, setSavedAt] = useState({});   // uid → ms, drives the "Saved ✓" pulse
   const [search, setSearch] = useState("");
 
+  // ── ONLY THE NEWEST LOAD MAY WRITE STATE ─────────────────────────────────
+  // `load` awaits several times before it calls setRows, and it can be running
+  // twice at once: React StrictMode double-invokes mount effects (src/main.jsx
+  // wraps the app in one), and "Try again" calls it directly. Two overlapping
+  // runs both finish with a plain setRows, so the one that RESOLVES last wins
+  // regardless of which STARTED last — an older run can therefore replace a
+  // newer render, including reverting a hub the admin has just switched on and
+  // whose write already landed. No warning would appear, because from the
+  // screen's point of view nothing failed.
+  //
+  // Every run takes a ticket. A run whose ticket is stale writes nothing.
+  const loadGen = useRef(0);
+  const [loading, setLoading] = useState(false);
+
   const load = useCallback(async () => {
+    const gen = ++loadGen.current;
+    const live = () => loadGen.current === gen;
+    setLoading(true);
     setLoadError(null); setAssignError(null); setTokensError(null); setTruncated(false); setHiddenPos(0);
 
     // The two node reads are independent, so neither waits on the other and
@@ -175,20 +192,34 @@ function PushAssignmentsAuthed({ onExit }) {
     // so the render puts up the "could not read" state rather than the "no
     // staff accounts match that" empty state. Those are different sentences
     // about different worlds.
+    if (!live()) return;
     if (usersRes.status !== "fulfilled") {
       const e = usersRes.reason;
       console.error("[push] could not load the staff roster:", e);
       setLoadError(e && e.message ? e.message : "Could not load staff accounts.");
       setRows(null);
+      setLoading(false);
       return;
     }
     const users = usersRes.value.data;
     if (!usersRes.value.complete) setTruncated(true);
 
-    let assignments = {};
-    if (assignRes.status === "fulfilled") {
+    let assignments = Object.create(null);
+    // ── A PARTIAL ASSIGNMENT READ IS AN UNKNOWN ONE ────────────────────────
+    // Truncation of the ROSTER is merely a short list, and the banner says so.
+    // Truncation of the ASSIGNMENTS is different in kind: a uid whose record
+    // fell past the boundary is absent from what we read, `assignedHubs`
+    // returns [] for it, and the row renders "not assigned" for somebody who
+    // is. Tapping that row writes BOTH hubs and clears the real assignment we
+    // never saw. That is the same unknown baseline as an outright refusal, so
+    // it takes the same answer: say so, and lock the switches.
+    let assignOk = false;
+    if (assignRes.status === "fulfilled" && assignRes.value.complete) {
       assignments = assignRes.value.data;
-      if (!assignRes.value.complete) setTruncated(true);
+      assignOk = true;
+    } else if (assignRes.status === "fulfilled") {
+      setTruncated(true);
+      setAssignError("There are more assignments than this screen reads in one go, so what is already set cannot be shown in full.");
     } else {
       const e = assignRes.reason;
       console.error("[push] could not load assignments:", e);
@@ -196,9 +227,12 @@ function PushAssignmentsAuthed({ onExit }) {
     }
 
     // ── WHO IS ON THE LIST ─────────────────────────────────────────────────
-    // Two exclusions, both positive identifications, both counted rather than
-    // silent: a uid that cannot be an RTDB path segment, and a POS till login.
-    // Everything else is shown, however sparse its record.
+    // Two exclusions, both positive identifications, and neither is a filter on
+    // a missing field: a uid that cannot be an RTDB path segment, and a POS
+    // till login. The till logins are COUNTED on screen. The illegal-key one is
+    // not, because a Firebase uid is always a legal key — it can only be
+    // reached by a hand-written record, and a count of it would be a line of
+    // interface nobody will ever see. Everything else is shown, however sparse.
     const candidates = Object.entries(users)
       // A uid that could not be a path segment cannot be assigned, and must
       // not be offered as if it could — the save would throw at the SDK.
@@ -206,7 +240,7 @@ function PushAssignmentsAuthed({ onExit }) {
       .map(([uid, rec]) => ({
         uid,
         record: rec,
-        hubs: assignRes.status === "fulfilled" ? assignedHubs(assignments[uid]) : [],
+        hubs: assignOk ? assignedHubs(assignments[uid]) : [],
       }));
     const { visible, hiddenPosOnly } = partitionRoster(candidates);
     setHiddenPos(hiddenPosOnly);
@@ -235,27 +269,44 @@ function PushAssignmentsAuthed({ onExit }) {
     // Bounded by the roster, in small batches so 35 rows do not open 35
     // sockets at once. Every one is settled: a refusal leaves that row's count
     // at null, which the row renders as "device unknown".
-    const counts = {};
+    const counts = Object.create(null);   // a uid may be "__proto__"; see pagedRead.js
     let anyRefused = false;
+    let firstRefusal = null;
     const BATCH = 8;
     for (let i = 0; i < list.length; i += BATCH) {
+      if (!live()) return;
       const slice = list.slice(i, i + BATCH);
       const settled = await Promise.allSettled(
         slice.map((r) => get(ref(database, `push_tokens/${r.uid}`))));
       settled.forEach((res, j) => {
-        if (res.status !== "fulfilled") { anyRefused = true; return; }
+        if (res.status !== "fulfilled") {
+          anyRefused = true;
+          if (!firstRefusal) firstRefusal = res.reason;
+          return;
+        }
         const v = res.value.val();
         counts[slice[j].uid] = v && typeof v === "object"
           ? Object.values(v).filter((d) => d && typeof d.token === "string").length
           : 0;
       });
     }
+    if (!live()) return;
     if (anyRefused) {
-      console.error("[push] device counts unavailable — see PUSH-TOKENS-ADMIN-READ-RULE.md");
-      setTokensError("The rule that lets this screen see devices is not published yet.");
+      console.error("[push] device counts unavailable — see PUSH-TOKENS-ADMIN-READ-RULE.md", firstRefusal);
+      // NAMES THE LIKELY CAUSE, DOES NOT DIAGNOSE ONE. The refusal is not
+      // inspected for a code, so a dropped connection reaches here too. Once
+      // the rule IS published, a banner that flatly said "the rule is not
+      // published yet" would send Junid to the console to fix something that
+      // is already correct.
+      setTokensError(firstRefusal && firstRefusal.message
+        ? `The read was refused: ${firstRefusal.message}. If this is the first time, the per-uid rule below has not been published yet.`
+        : "The read did not come back. If this is the first time, the per-uid rule below has not been published yet.");
     }
+    // Only `devices` is touched. A hub the admin switched during these awaits —
+    // or one that was rolled back by a refused write — survives untouched.
     setRows((prev) => (prev === null ? prev
       : prev.map((r) => (r.uid in counts ? { ...r, devices: counts[r.uid] } : r))));
+    setLoading(false);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -355,10 +406,10 @@ function PushAssignmentsAuthed({ onExit }) {
 
         {truncated && (
           <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
-            There are more accounts than this screen reads in one go, so this is
-            not the whole list. Nobody is assigned or unassigned by that — it
-            just means the list needs paging before it can be trusted as
-            complete.
+            There are more staff accounts than this screen reads in one go, so
+            this is not the whole list and somebody may be missing from it.
+            Nobody has been assigned or unassigned by that. This needs a change
+            to the screen, not a setting.
           </div>
         )}
 
@@ -394,12 +445,14 @@ function PushAssignmentsAuthed({ onExit }) {
           </div>
         )}
 
+        {!(rows === null && loadError) && (
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search staff"
           style={{ width: "100%", boxSizing: "border-box", marginBottom: 14, padding: "11px 13px", borderRadius: 11, border: `1px solid ${DIVIDER}`, background: CARD, color: "#fff", fontSize: 14, fontFamily: "inherit", outline: "none" }}
         />
+        )}
 
         {rows === null && loadError ? (
           // NOT an empty list. "No staff accounts match that" over a failed
@@ -407,7 +460,7 @@ function PushAssignmentsAuthed({ onExit }) {
           <div style={{ color: AMBER, fontSize: 13, lineHeight: 1.6, padding: "26px 4px" }}>
             The staff list could not be read, so there is nothing to show here —
             this is not an empty roster.
-            <button onClick={load} style={{ display: "block", marginTop: 12, background: "transparent", border: 0, color: BLUE, fontSize: 14, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", padding: 0 }}>
+            <button onClick={load} disabled={loading} style={{ display: "block", marginTop: 12, background: "transparent", border: 0, color: BLUE, fontSize: 14, fontWeight: 700, fontFamily: "inherit", cursor: "pointer", padding: 0 }}>
               Try again
             </button>
           </div>

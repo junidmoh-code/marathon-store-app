@@ -16,17 +16,22 @@
 //
 // ── WHAT A POS-ONLY ACCOUNT ACTUALLY LOOKS LIKE ─────────────────────────────
 // The tills are a separate app (marathon-pos-app) sharing this Firebase
-// project, and creating a till login writes a record under /users here. Those
-// records look like this, and nothing else does:
+// project, and creating a till login writes a record under /users here:
 //
 //   "58ayGw6WJAabRpH4j6EspZNGKrk2": {
 //     "stockRole": "pos",
 //     "posAccess": { "role": "cashier", "displayName": "yasmin", … }
 //   }
 //
-// No displayName, no username, no role, no permissions, no permFlags — no
-// store-app identity of any kind. The card renders `displayName || username ||
-// uid`, so today these appear as nine rows named after a raw Firebase uid.
+// Two of the nine live ones are barer still — `{ "stockRole": "pos" }` and
+// nothing else — because marathon-pos-app's removePosUser deletes ONLY the
+// posAccess child and leaves the /users record behind. So posAccess cannot be
+// required by the test either; a revoked till is still a till.
+//
+// What every one of them shares is what is ABSENT: no displayName, no
+// username, no role, no permissions, no permFlags — no store-app identity of
+// any kind. The card renders `displayName || username || uid`, so today these
+// appear as nine rows named after a raw Firebase uid.
 //
 // ── WHY stockRole === "pos" IS NOT ON ITS OWN THE TEST ──────────────────────
 // It is the obvious discriminator and it is WRONG. Ten accounts carry
@@ -92,6 +97,12 @@ export function isPosOnlyAccount(rec) {
  * the exact failure this feature is built to make impossible. This should never
  * fire — a till login has no browser to be assigned from — which is why it is
  * cheap to guarantee rather than to reason about.
+ *
+ * The guarantee is only as good as `hubs`, and the caller passes [] for every
+ * row when the assignment read FAILED — so in that state an assigned till
+ * would still be hidden. That is not a hole this function can close: the whole
+ * screen is showing "not known" there, it says so in a banner, and its
+ * switches are locked.
  *
  * @param {Array<{uid: string, record: object|null, hubs: string[]}>} candidates
  * @returns {{visible: typeof candidates, hiddenPosOnly: number}}

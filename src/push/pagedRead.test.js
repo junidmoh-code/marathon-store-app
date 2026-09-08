@@ -108,7 +108,7 @@ describe("truncation is reported, never passed off as the whole node", () => {
     const { data, complete, pages } = await readByKeyPages(NODE, { pageSize: 10, maxPages: 3 });
     expect(Object.keys(data)).toHaveLength(30);
     expect(pages).toBe(3);
-    expect(complete).toBe(false, "a slice must never claim to be the whole roster");
+    expect(complete, "a slice must never claim to be the whole roster").toBe(false);
   });
 
   it("the ceiling is finite by construction", async () => {

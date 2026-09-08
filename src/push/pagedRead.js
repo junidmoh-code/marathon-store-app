@@ -22,6 +22,16 @@
 // woken up at night from a list missing people, with nothing on screen saying
 // so. The card puts a banner up instead.
 //
+// ── THE ACCUMULATOR HAS NO PROTOTYPE ────────────────────────────────────────
+// `data` is Object.create(null), not {}. A child key is a uid, and RTDB is
+// perfectly happy to hold one called "__proto__". On a plain object
+// `data["__proto__"] = rec` sets the accumulator's prototype instead of an own
+// property, and the record then does not appear in Object.keys at all — so
+// that account would vanish from the Order alerts screen silently, with no
+// row, no count and no banner, which is the exact "shown as missing, never
+// omitted" promise this feature is built on. Same trap as the attribute
+// extractor's MAP["__proto__"].
+//
 // ── ORDER COMES FROM forEach, NOT FROM Object.keys ──────────────────────────
 // snap.val() on a query result loses the query's ordering, and RTDB will hand
 // back an ARRAY rather than an object when the keys look like small integers.
@@ -53,7 +63,7 @@ export async function readByKeyPages(node, opts = {}) {
   const pageSize = opts.pageSize || PAGE_SIZE;
   const maxPages = opts.maxPages || MAX_PAGES;
 
-  const data = {};
+  const data = Object.create(null);
   let cursor = null;
   let pages = 0;
 

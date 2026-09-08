@@ -78,6 +78,17 @@ const worldReader = (world) => async (r) => {
   return snapshotFor(null, r.constraints || []);
 };
 
+// The rendered TEXT, not the JSON tree — see the note at its first use below.
+const flattenTree = (tree) => {
+  const walk = (node) => {
+    if (node === null || node === undefined || node === false) return "";
+    if (Array.isArray(node)) return node.map(walk).join("");
+    if (typeof node === "object") return walk(node.children);
+    return String(node);
+  };
+  return walk(tree.toJSON());
+};
+
 const render = async (props) => {
   let tree;
   await act(async () => { tree = TestRenderer.create(<PushAssignmentsCard onExit={() => {}} {...props} />); });
@@ -211,10 +222,18 @@ describe("the roster it shows", () => {
   });
 
   it("a token row with no token STRING is not a device — an assignment there cannot deliver", async () => {
+    // Bongi HAS a /push_tokens/u_bare node; its one entry just carries no
+    // `token` string. Asserting only that "no device" appears somewhere was
+    // vacuous — Chris has no token node at all and renders the same words. So
+    // this pins Bongi's row specifically, against Ayanda's real device in the
+    // same render.
     withWorld();
     const tree = await render({ authUser: ADMIN });
-    const text = JSON.stringify(tree.toJSON());
-    expect(text).toContain("no device");
+    // Each row renders name, then "role · shop · devices", contiguously.
+    const t = flattenTree(tree);
+    expect(t).toContain("Bongino stock role · no shop · no device");
+    expect(t, "otherwise the token filter could be deleted")
+      .toContain("Ayandawarehouse · marathon-pe · 1 device");
   });
 });
 
@@ -255,7 +274,7 @@ describe("what a tap actually writes", () => {
     await act(async () => { sw().props.onClick(); });
     expect(JSON.stringify(tree.toJSON())).toContain("did not save");
     await act(async () => { sw().props.onClick(); });
-    expect(sw().props["aria-checked"]).toBe(true, "and the retry actually took");
+    expect(sw().props["aria-checked"], "and the retry actually took").toBe(true);
     expect(JSON.stringify(tree.toJSON())).not.toContain("did not save");
   });
 
@@ -278,8 +297,8 @@ describe("what a tap actually writes", () => {
     const text = JSON.stringify(tree.toJSON());
     expect(text).toContain("did not save");
     expect(text).toContain("Ayanda");
-    expect(swFor("Ayanda").props["aria-checked"]).toBe(false, "put back");
-    expect(swFor("Bongi").props["aria-checked"]).toBe(true, "and Bongi's save stands");
+    expect(swFor("Ayanda").props["aria-checked"], "put back").toBe(false);
+    expect(swFor("Bongi").props["aria-checked"], "and Bongi's save stands").toBe(true);
   });
 
   it("a row save cannot erase a failure to read the staff list", async () => {
@@ -347,7 +366,7 @@ describe("a read that fails is never rendered as an answer", () => {
     expect(t, "the banner stands").toContain("nothing rather than nobody");
     expect(t, "and says plainly that this is not an empty roster").toContain("not an empty roster");
     expect(t, "the empty-list wording must not appear").not.toContain("No staff accounts match that");
-    expect(t, "and no count is asserted").not.toContain("assigned</span>");
+    expect(t, "and no count is asserted at all").not.toMatch(/\d+ of \d+ assigned/);
     expect(tree.root.findAll((n) => n.props && n.props.role === "switch")).toHaveLength(0);
   });
 
@@ -452,5 +471,107 @@ describe("a read that fails is never rendered as an answer", () => {
     const tree = await render({ authUser: ADMIN });
     expect(tree.root.findAll((n) => n.props && n.props.role === "switch")
       .map((n) => n.props["aria-label"]).join("|")).toContain("Zee");
+  });
+});
+
+// ─── WHAT THE SECOND-OPINION REVIEWERS FOUND, PINNED ─────────────────────────
+// CodeRabbit was rate-limited on PR #579 and never ran. These are the findings
+// the substitute reviewers raised on the head it never saw. Each is a real
+// failure the tests above did not catch.
+describe("only the newest load may write state", () => {
+  const WORLD = { users: { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } } };
+
+  it("a STALE load cannot revert a hub the admin just switched on", async () => {
+    // The screen is wrapped in StrictMode (src/main.jsx), which double-invokes
+    // mount effects, and "Try again" calls load() directly. Two runs both end
+    // in setRows, so the one that RESOLVES last wins regardless of which
+    // STARTED last — an older run could put back a switch whose write landed,
+    // with nothing on screen saying anything failed.
+    //
+    // react-test-renderer does not emulate StrictMode's double effect, so the
+    // race is driven through the other door onto the same instance: `load` is
+    // a useCallback with no deps, so the retry button's handler is that one
+    // stable function and calling it twice is exactly what two overlapping
+    // mount effects do.
+    const base = worldReader(WORLD);
+    let rosterReads = 0;
+    let release;
+    const held = new Promise((r) => { release = r; });
+    getMock.mockImplementation(async (r) => {
+      if (r.path !== "users") return base(r);
+      rosterReads += 1;
+      if (rosterReads === 1) throw new Error("PERMISSION_DENIED");  // puts the retry button up
+      if (rosterReads === 2) { await held; }                        // the load that goes stale
+      return base(r);
+    });
+
+    const tree = await render({ authUser: ADMIN });
+    const retry = tree.root.findAll((n) => n.props && typeof n.props.onClick === "function"
+      && n.props.disabled !== undefined)[0].props.onClick;
+    expect(retry, "the failed-read state offers a retry").toBeTruthy();
+
+    await act(async () => { retry(); });                 // load 2 — held
+    await act(async () => { retry(); await new Promise((r) => setTimeout(r, 0)); });  // load 3 — wins
+    expect(rosterReads).toBe(3);
+
+    const sw = () => tree.root.findAll((n) => n.props && n.props.role === "switch")[0];
+    await act(async () => { sw().props.onClick(); });
+    expect(sw().props["aria-checked"], "the toggle took").toBe(true);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+
+    // NOW the older load 2 finally resolves. It must write nothing at all.
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
+    expect(sw().props["aria-checked"], "a stale load must not put the switch back").toBe(true);
+    expect(tree.root.findAll((n) => n.props && n.props.role === "switch"),
+      "and must not rebuild the list underneath it").toHaveLength(4);
+  });
+});
+
+describe("a PARTIAL assignment read is an unknown one, not an empty one", () => {
+  it("locks the switches and says so when the assignment read is truncated", async () => {
+    // Truncation of the roster is a short list. Truncation of the ASSIGNMENTS
+    // means a uid past the boundary reads as unassigned when it is not, and
+    // one tap would write both hubs and clear the record we never saw.
+    getMock.mockImplementation(async (r) => {
+      const base = worldReader({ users: { a0: { displayName: "Ayanda" } } });
+      if (r.path === "push_assignments") {
+        // A node with more children than the page budget: every page comes
+        // back FULL and with an advancing cursor, so the read runs out of
+        // pages instead of running out of children.
+        const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
+        const after = r.constraints.find((c) => c.kind === "startAfter");
+        let n = after ? Number(after.value.slice(1)) + 1 : 0;
+        const keys = Array.from({ length: limit }, () => `k${String(n++).padStart(8, "0")}`);
+        return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => ({ hub1: true }) })) return true; return false; } };
+      }
+      return base(r);
+    });
+    const tree = await render({ authUser: ADMIN });
+    const t = flattenTree(tree);
+    expect(t).toContain("assignments could not be read");
+    const switches = tree.root.findAll((n) => n.props && n.props.role === "switch");
+    expect(switches.every((n) => n.props.disabled === true)).toBe(true);
+    await act(async () => { switches[0].props.onClick(); });
+    expect(updateMock, "a truncated read is an unknown baseline").not.toHaveBeenCalled();
+  });
+});
+
+describe("a uid called __proto__ is a row, not a disappearance", () => {
+  it("keeps an account whose key would set an accumulator's prototype", async () => {
+    // data["__proto__"] = rec on a plain {} sets the prototype, and the record
+    // is then invisible to Object.keys — the account would vanish with no row,
+    // no count and no banner. Both accumulators are Object.create(null).
+    getMock.mockImplementation(worldReader({
+      // A computed key, NOT `__proto__:` — in an object literal that form is
+      // the prototype setter and would make this fixture a no-op.
+      users: { ["__proto__"]: { displayName: "Proto Person" }, u1: { displayName: "Ayanda" } },
+      push_tokens: { ["__proto__"]: { d1: { token: "t" } } },
+    }));
+    const tree = await render({ authUser: ADMIN });
+    const labels = tree.root.findAll((n) => n.props && n.props.role === "switch")
+      .map((n) => n.props["aria-label"]).join("|");
+    expect(labels, "the account must still have a row").toContain("Proto Person");
+    expect(labels).toContain("Ayanda");
+    expect(flattenTree(tree)).toContain("of 2 assigned");
   });
 });
