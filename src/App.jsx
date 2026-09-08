@@ -80,9 +80,9 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
-import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
+import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -2651,6 +2651,15 @@ const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  push_alerts: (
+    // lucide-style "bell + check": the alert bell with a small tick, so it
+    // reads as "who is signed up for alerts" rather than as an alert itself.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h14"/>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      <path d="m16 17 2 2 4-4"/>
+    </svg>
+  ),
   user_management: (
     // lucide-style "user + cog": person silhouette with a small adjust-mark to
     // distinguish from the customers_db two-people icon. Same stroke/weight.
@@ -2908,7 +2917,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -3059,6 +3068,13 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
+      // Order alerts — WHO is told when a shop places an order, and for which
+      // hub. Super-admin ONLY, on the email, exactly like the route below it:
+      // this is a decision about other people's phones, and Junid's /users
+      // record carries no permissions array, so a permission-keyed gate would
+      // lock out the one person the card exists for. GATE 1 of 3; the RTDB rule
+      // on /push_assignments is the one that actually enforces it.
+      isSuperAdmin && { key:"push_alerts", icon:RoleIcons.push_alerts, name:"Order Alerts", desc:"Who is alerted, and for which hub", onClick:()=>(window.location.hash = "#admin/notifications") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
@@ -3223,7 +3239,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
-          <NotificationSettingsRow push={push} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3275,7 +3290,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
-        <NotificationSettingsRow push={push} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
@@ -18818,9 +18832,12 @@ function AppInner() {
   // member with a persisted role opens straight into their workspace and may go
   // weeks without rendering home. The token has to be refreshed on every app
   // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
-  // from the one component every session mounts. The settings row still owns
-  // the switch; it receives this same object as a prop.
-  const push = usePushRegistration({ user: authUser, permRecord, isSuperAdmin });
+  // from the one component every session mounts.
+  //
+  // There is no switch to own any more: WHO receives is set by Junid on the
+  // Notifications card in Admin (#admin/notifications) and read by the fan-out
+  // from /push_hub_audience. This registers the ADDRESS, nothing else.
+  const push = usePushRegistration({ user: authUser });
   // The in-app half: banner + chime instead of an OS notification while the app
   // is open. No listener at all when push is off.
   // Gated on `ready` (this uid's registration actually returned ON), not merely
@@ -18886,6 +18903,11 @@ function AppInner() {
   // Management routes. This constant only recognises the HASH — it grants
   // nothing. Authorization happens at the mount below.
   const wantUserMgmt = hash === "#admin/users" || hash === "#admin/users/" || hash.startsWith("#admin/users/");
+  // /#admin/notifications — ORDER ALERTS, the card where recipients are
+  // assigned hub by hub. Like wantUserMgmt this recognises the HASH only and
+  // grants nothing; authorization happens at the mount below, and the real
+  // enforcement is the RTDB rule on /push_assignments.
+  const wantPushAssign = hash === "#admin/notifications" || hash === "#admin/notifications/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -19137,7 +19159,18 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantUserMgmt) {
+  if (wantPushAssign) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted at all, so none of its
+    // reads happen. Layer 1 is the tile; layer 3 — the only one that is
+    // ENFORCEMENT rather than UI — is the RTDB rule that refuses the write
+    // (PUSH-ASSIGNMENT-RULES-DEPLOY.md). The component re-checks this same
+    // condition independently, so deleting either client layer still leaves a
+    // working client gate.
+    view = isSuperAdmin
+      ? <PushAssignmentsCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantUserMgmt) {
     // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
     // A REAL check: a non-super-admin never gets UserManagement mounted at all,
     // so none of its state, effects or subscriptions are created. They get the
@@ -19159,7 +19192,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);

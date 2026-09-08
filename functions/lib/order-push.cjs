@@ -62,10 +62,28 @@
 // /push_tokens. Live bandwidth is the largest line on this project's bill, and
 // a whole-node read of any of them on every order — of which the engine sweep
 // alone can create hundreds in one run — would be the most expensive thing in
-// the codebase. Instead the client maintains a denormalised index
-// (src/push/registerPush.js) and this reads exactly two small nodes per burst:
-// the destination store's bucket and the `all` bucket, then one per-user token
-// node for each uid they name.
+// the codebase. Instead it reads ONE small node per burst — the assigned
+// audience for that order's hub, /push_hub_audience/{hub} — then one per-user
+// token node for each uid it names.
+//
+// ── WHO IS TOLD: AN ADMIN DECISION, SCOPED TO A HUB ─────────────────────────
+// Until 2026-09-07 recipients came from /push_audience, an index each CLIENT
+// wrote itself into, resolved from that person's stockRole, their destShop and
+// an explicit preference they set on a switch in the app. Three sources of
+// truth for one question, two of them fields maintained for entirely unrelated
+// reasons.
+//
+// It is now one source of truth and it is not a preference: Junid assigns
+// people to Hub 1, Hub 2 or both on the Order Alerts card, which writes
+// /push_assignments and the derived index this reads (src/push/pushAssignments.js).
+// ABSENCE OF AN ASSIGNMENT IS OFF. A person with a live token, full OS
+// permission and no entry in this index receives nothing, and nothing here
+// consults any other field to second-guess that.
+//
+// An order routed to hub3 (Pine, which picks on its own floor) therefore
+// resolves to nobody BY CONSTRUCTION rather than by a special case: no
+// assignment can name hub3, so /push_hub_audience/hub3 is always empty and the
+// burst closes quietly.
 //
 // ── THE BURST WINDOW ────────────────────────────────────────────────────────
 // A store does not place one order, it places a cart; the engine's sweep does
@@ -73,18 +91,30 @@
 // sweep is not a notification system, it is a denial of service against the
 // person holding the phone.
 //
-// So each order joins a per-DESTINATION-STORE window, and exactly one
-// invocation — the one whose transaction CREATED the window — waits, closes the
-// window, and sends a single notification naming how many landed. Every other
-// invocation increments the count and exits. The claim is the window's
-// creation, which a transaction makes atomic, so "exactly one" is a property of
-// the database rather than of timing.
+// So each order joins a PER-HUB window, and exactly one invocation — the one
+// whose transaction CREATED the window — waits, closes the window, and sends a
+// single notification naming how many landed. Every other invocation increments
+// the count and exits. The claim is the window's creation, which a transaction
+// makes atomic, so "exactly one" is a property of the database rather than of
+// timing.
 //
-// The window is keyed by destShop rather than by the fulfilling hub because
-// that is what the notification NAMES ("Marathon PE placed 6 orders") and what
-// the audience index is bucketed by: Central-side pickers sit in the `all`
-// wildcard, and store-side staff sit in their own shop's bucket. Keying by hub
-// would collapse two shops' unrelated orders into one sentence.
+// ── THE WINDOW IS KEYED BY THE HUB, AND THAT KEY IS LOAD-BEARING ────────────
+// It was keyed by destShop until 2026-09-07, when the audience was bucketed
+// that way. It is keyed by the fulfilling hub now, because the window key and
+// the recipient key MUST be the same thing: a collapse keyed by anything other
+// than what the audience is scoped to can swallow an order its recipients were
+// never told about.
+//
+// Concretely, with destShop keying and hub-scoped recipients, a Hub 1 order and
+// a Hub 2 order both destined for Marathon PE would share one window — one
+// notification, sent to the union of both hubs' assignees, and the Hub 2 picker
+// would read "Marathon PE — 2 new orders" for a burst containing one order that
+// is not theirs while the Hub 1 order they cannot see is counted in it. Keyed
+// by hub, a Hub 1 burst can only ever swallow Hub 1 orders, which is exactly
+// the set its recipients are entitled to hear about.
+//
+// The store is not lost: it is carried on the window's sample and named in the
+// body of a single-order notification.
 //
 // ── IDEMPOTENCY ─────────────────────────────────────────────────────────────
 // Eventarc delivery is at-least-once, so the same creation can arrive twice.
@@ -166,11 +196,18 @@ const REPLAY_TTL_MS = 30 * 60 * 1000;
 const MAX_SEEN = 250;
 
 // Ceiling on recipients resolved from the index. Not a policy — a blast-radius
-// stop, so a corrupted or abused index cannot turn one order into
-// hundreds of per-user reads. Grounded in the real staff count (~31 accounts),
-// with headroom, rather than in a round number: the console rules scope every
-// audience write to the writer's own uid, so the index cannot legitimately
-// exceed the number of people who work here.
+// stop, so a corrupted index cannot turn one order into hundreds of per-user
+// reads. Grounded in the real staff count (~31 accounts), with headroom,
+// rather than in a round number.
+//
+// The reason it cannot LEGITIMATELY be exceeded changed with the model, and
+// the old sentence here still described the old one. It used to be that the
+// rules scoped every audience write to the writer's own uid, so the index
+// could only ever hold people who had subscribed themselves. It is now that
+// /push_hub_audience is ADMIN-WRITE ONLY — one person maintains it, from one
+// screen, over the accounts that exist — so anything above this number is
+// corruption or a compromised admin session, and neither is a case to fan out
+// for. The cap is what makes that bounded rather than merely unlikely.
 const MAX_RECIPIENTS = 60;
 
 // The FCM error codes that mean "this address is dead, stop writing to it".
@@ -320,30 +357,52 @@ function shouldNotify(orderId, rec, expectedCreatedAt) {
   }
   const dest = typeof rec.destShop === "string" ? rec.destShop.trim() : "";
   if (!dest) return "no_destination";
-  // THIS VALUE BECOMES A PATH SEGMENT — push_bursts/{dest} and
-  // push_audience/{dest} — and it arrives from records this function does not
-  // write. RTDB refuses ".", "#", "$", "[" and "]" in a key, so db.ref() THROWS
-  // on one, before the send's own try/catch exists; and "/" would silently
-  // become a second path level, splitting one store's window across two nodes
-  // so the collapse quietly stops working. The data here is known to be dirty,
-  // so an unusable destination is refused rather than trusted.
+  // destShop is no longer a path segment — nothing is keyed by it since the
+  // window moved to the hub — but this guard STAYS. It arrives from records
+  // this function does not write, the data here is known to be dirty, and a
+  // record whose destination is unusable is a record something else has gone
+  // wrong with; announcing it as if it were fine is worse than refusing it.
+  // Every live producer writes a clean destShop, so this costs nothing.
   if (/[.#$/[\]]/.test(dest)) return "bad_destination";
+  // ── THE HUB, WHICH IS NOW THE KEY EVERYTHING ELSE HANGS OFF ───────────────
+  // The hub is on the order AT CREATION, in the same object literal as
+  // createdAt and status — every producer resolves it before the write
+  // (AssistantView.placeOrders via the cart allocation, placeRefillRequests,
+  // and refill-scan.cjs from the source hub) and writes it to BOTH `hub` and
+  // `placedAtHub`. So by the time this trigger fires there is nothing to wait
+  // for and nothing to resolve: the answer is in the record.
+  //
+  // Which is exactly why a record WITHOUT one is refused rather than guessed.
+  // A missing hub on a live order is a malformed record, not a timing
+  // question, and there is no safe default: sending to hub1 would put another
+  // hub's work on Hub 1's phones, and sending to everyone would undo the
+  // scoping this whole release is. The order still exists and is still worked
+  // — it is on the warehouse queue like any other — it simply does not
+  // announce itself. Refusing is the only outcome that cannot be WRONG.
+  //
+  // And, as with dest, THIS VALUE BECOMES A PATH SEGMENT (push_bursts/{hub},
+  // push_hub_audience/{hub}). db.ref() throws SYNCHRONOUSLY on an illegal key,
+  // before any try/catch downstream exists, so the whole invocation would die
+  // rather than degrade.
+  const hub = hubForOrder(rec);
+  if (!hub) return "no_hub";
+  if (/[.#$/[\]]/.test(hub)) return "bad_hub";
   return null;
 }
 
-/** uids subscribed to this destination: the `all` wildcard plus the store's own
- *  bucket. Two shallow reads of small nodes — never a scan of /users. */
+/** The uids Junid has ASSIGNED to this hub. ONE shallow read of one small node
+ *  — never a scan of /users, /push_assignments or /push_tokens.
+ *
+ *  There is no wildcard bucket and no fallback. An empty node means nobody was
+ *  assigned to this hub, and nobody assigned means nobody is told: that is the
+ *  default state of every account and it is the correct one. A "helpful"
+ *  fallback here — to an `all` bucket, to a role, to the last known audience —
+ *  would be the single line that quietly undoes the whole model. */
 async function resolveRecipients(db, hub) {
-  const [allSnap, hubSnap] = await Promise.all([
-    db.ref("push_audience/all").get(),
-    db.ref(`push_audience/${hub}`).get(),
-  ]);
-  const uids = new Set();
-  for (const snap of [allSnap, hubSnap]) {
-    const val = snap && snap.val();
-    if (val && typeof val === "object") for (const uid of Object.keys(val)) uids.add(uid);
-  }
-  return Array.from(uids).slice(0, MAX_RECIPIENTS);
+  const snap = await db.ref(`push_hub_audience/${hub}`).get();
+  const val = snap && snap.val();
+  if (!val || typeof val !== "object") return [];
+  return Object.keys(val).slice(0, MAX_RECIPIENTS);
 }
 
 /** Every live token for those uids, each carrying enough to delete it again. */
@@ -365,8 +424,14 @@ async function collectTokens(db, uids) {
  *  still names the first thing, because "6 orders" is a number and "Nike Air
  *  Max 90 and 5 more" is something you can picture from a lock screen — which
  *  is what tells someone whether to walk to the back or finish their coffee. */
-async function composeMessage(db, dest, count, sample) {
-  const where = hubLabel(dest);
+async function composeMessage(db, hub, count, sample) {
+  // The TITLE names the HUB, because the hub is what the reader is assigned to
+  // and what the burst was collapsed by. The STORE goes in the body of a single
+  // order, where it still tells the picker where the box is going; a burst can
+  // span stores, so it does not claim one.
+  const where = hubLabel(hub);
+  const store = sample && typeof sample.dest === "string" && sample.dest.trim()
+    ? `${hubLabel(sample.dest.trim())} · ` : "";
   // The order node CARRIES productName (every producer writes it), so the
   // normal path costs no read at all. The /products fallback is for a record
   // written without one rather than the usual case.
@@ -398,7 +463,9 @@ async function composeMessage(db, dest, count, sample) {
   const kind = sample && sample.refill ? "Shop refill: " : "";
   return {
     title: `${where} — new order`,
-    body: productName ? `${num}${kind}${productName}${size}${qty}` : `${num}${kind}1 item to pick.`,
+    body: productName
+      ? `${store}${num}${kind}${productName}${size}${qty}`
+      : `${store}${num}${kind}1 item to pick.`,
   };
 }
 
@@ -459,7 +526,8 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
   const skip = shouldNotify(orderId, record, createdAt);
   if (skip) return { sent: false, skipped: skip };
 
-  const hub = record.destShop.trim();
+  // Validated by shouldNotify above: non-empty, and a legal RTDB key.
+  const hub = hubForOrder(record);
   const seenKey = replayKey(orderId, record.createdAt);
   const windowId = (newWindowId || (() => `w_${nowMs}_${Math.random().toString(36).slice(2, 10)}`))();
   const burstRef = db.ref(`push_bursts/${hub}`);
@@ -471,7 +539,10 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
     size: record.size == null ? null : String(record.size),
     qty: Number(record.qty) || 1,
     refill: isRefillOrder(record),
-    hub: hubForOrder(record),
+    hub,
+    // The destination STORE, carried so a single-order notification can still
+    // say where the box is going. It is no longer a path segment anywhere.
+    dest: record.destShop.trim(),
     tab: warehouseTabFor(record),
   };
 
@@ -671,8 +742,10 @@ async function deliver({ db, messaging, hub, count, captured, closedAt }) {
       title,
       body,
       link,
-      // One tag per destination store, so a second notification for the same
-      // shop REPLACES the first on the lock screen instead of stacking.
+      // One tag PER HUB, so a second notification for the same hub REPLACES the
+      // first on the lock screen instead of stacking — and, just as
+      // importantly, so a Hub 2 notification never replaces a Hub 1 one on the
+      // phone of somebody assigned to both.
       tag: `order-${hub}`,
       sentAt: String(closedAt),
     },
