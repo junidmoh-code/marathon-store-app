@@ -56,7 +56,7 @@ const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
   classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, splitByHub,
-  leaseDecision, rowIsOpen, ageRefusalReason, DISPLAY_STORES,
+  leaseDecision, rowIsOpen, ageRefusalReason, openRowsInOrder, DISPLAY_STORES,
 } = require("./lib.cjs");
 
 if (!admin.apps.length) {
@@ -322,9 +322,22 @@ exports.closeDisplayRowOnSale = onValueCreated(
     // the client, and the two writers would mirror DIFFERENT survivors into the
     // same slot. Exactly the divergence the comment claims to prevent.
     // (Peer review, marathon-store-app-display-f8.)
-    const stillOpen = Object.values(after).filter(rowIsOpen)
-      .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || ""))
-        || String(a.rowId || "").localeCompare(String(b.rowId || "")));
+    //
+    // AND IT TIEBREAKS ON THE KEY, NOT ON A STORED FIELD. Adding the tiebreak
+    // was not enough: `Object.values` throws the keys away, so this compared
+    // `row.rowId` — a stored field — while openRowsFor maps over
+    // `Object.entries` and spreads `rowId` LAST, deliberately overriding the
+    // field with the key. The key IS the row's identity; it is the path the
+    // row lives at. So the two writers agreed only while every row's field
+    // equalled its key, which nothing enforces, nothing tests, and no close
+    // ever repairs — `closeFields` never rewrites the field, so a wrong one is
+    // permanent. A row with no `rowId` field at all sorted as "" here and on
+    // its real key there, which is enough on its own to pick different
+    // survivors from one world. Same derivation both sides now, and the `|| ""`
+    // guard goes with it because a key cannot be absent.
+    // (Peer review, marathon-store-app-display-f8.)
+    // The shared rule, not a local copy of it — a copy is what diverged twice.
+    const stillOpen = openRowsInOrder(after);
     const slotRef = db.ref(`${ROWS.replace("displayRows", "displaySlots")}/${store}/${productId}`);
     if (stillOpen.length === 0) {
       // Tombstone, never delete — the same contract clearDisplaySlot keeps on
@@ -340,7 +353,25 @@ exports.closeDisplayRowOnSale = onValueCreated(
                  at, by: `system:closeDisplayRowOnSale`, orderId: null, prevSize: cur.size || null };
       });
     } else {
-      const keep = stillOpen[stillOpen.length - 1];   // the NEWEST surviving row is what the wall shows now
+      // THE NEWEST SURVIVOR, and the reason is `decideCloses`. That closes the
+      // OLDEST matching row first, on the ground that the longest-standing
+      // claim is the likeliest to be stale. Newest-survives is the same
+      // judgement seen from the other end: if the oldest claim is likeliest to
+      // be wrong, the newest is likeliest to be what is actually on the wall.
+      // Oldest-wins would put the two rules in contradiction inside a single
+      // transaction — closing a row for being probably-stale and then mirroring
+      // the next probably-stale one.
+      //
+      // NOT re-pointing at all is the option ruled out: the slot currently
+      // names the row that just closed, so leaving it alone asserts a departed
+      // pair, which is worse than either choice.
+      //
+      // The honest residual: a slot holds ONE size and a duplicated wall has
+      // two, so whichever survivor is named the slot is a lossy view until a
+      // human resolves the wall. That is the Duplicate Displays tab's job and
+      // the slot should not try to encode it.
+      // (Peer review, marathon-store-app-display-f8.)
+      const keep = stillOpen[stillOpen.length - 1];
       await slotRef.transaction((cur) => {
         if (cur && typeof cur.at === "string" && cur.at > at) return undefined;
         return {

@@ -446,3 +446,50 @@ test("a genuinely post-sale row IS called post-sale, through the trigger", async
   assert.equal(db._get(`${ROWS}/trophy/p1/a`).status, "open");
   assert.match(db._get("settings/displayRows_meta/trophy/processed/m1").refused, /registered after this sale/);
 });
+
+// ─── IDENTITY IS THE KEY, NOT A STORED FIELD ────────────────────────────────
+//
+// Adding the rowId tiebreak was not enough. `Object.values` discarded the keys,
+// so the trigger tiebroke on `row.rowId` — a stored field — while openRowsFor
+// maps `Object.entries` and spreads `rowId` LAST, deliberately overriding the
+// field with the key. They agreed only while field === key for every row, which
+// nothing enforces and no close repairs (closeFields never rewrites it, so a
+// wrong one is permanent once written).
+//
+// Every other fixture in this file writes openRow({ rowId: "a" }) to path
+// .../a, so field and key are equal in all of them and the property is
+// invisible by construction. These two are the only shapes that can fail.
+// (Peer review, marathon-store-app-display-f8.)
+
+test("a survivor whose rowId FIELD disagrees with its key is sorted by the KEY", async () => {
+  const SAME = "2026-09-02T00:00:00.000Z";
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells
+  // Key "r001" carries a stale field "zzz"; key "seedZ" carries "aaa".
+  // By KEY, seedZ sorts last and survives. By FIELD, r001 ("zzz") would.
+  db._set(`${ROWS}/trophy/p1/r001`, openRow({ rowId: "zzz", size: "11", sizeKey: "11", openedAt: SAME }));
+  db._set(`${ROWS}/trophy/p1/seedZ`, openRow({ rowId: "aaa", size: "10", sizeKey: "10", openedAt: SAME }));
+  await run(db, soldAt("trophy"));
+  assert.equal(db._get("settings/displaySlots/trophy/p1").sizeKey, "10",
+    "the tiebreak used the stored rowId field; the client uses the key, so the two writers disagree");
+});
+
+test("a survivor with NO rowId field still sorts on its key, not on empty string", async () => {
+  const SAME = "2026-09-02T00:00:00.000Z";
+  const db = makeDb();
+  db._set(`${ROWS}/trophy/p1/a`, openRow({ rowId: "a" }));                       // sells
+  const noField = openRow({ size: "10", sizeKey: "10", openedAt: SAME });
+  delete noField.rowId;
+  db._set(`${ROWS}/trophy/p1/zzz`, noField);                                     // key sorts LAST
+  db._set(`${ROWS}/trophy/p1/bbb`, openRow({ rowId: "bbb", size: "11", sizeKey: "11", openedAt: SAME }));
+  await run(db, soldAt("trophy"));
+  // On the key, "zzz" > "bbb" so the fieldless row survives. Tiebreaking on the
+  // field would make it "" — first, not last — and pick the other one.
+  assert.equal(db._get("settings/displaySlots/trophy/p1").sizeKey, "10",
+    "a row with no rowId field collapsed to empty string in the tiebreak");
+});
+
+// The differential against the CLIENT's openRowsFor lives on the src side
+// (src/components/stock/displayRowFuzz.test.js): functions/ cannot import src/,
+// and src/ is ESM with extensionless specifiers that require() cannot resolve.
+// The shared rule it compares is lib.cjs's openRowsInOrder.

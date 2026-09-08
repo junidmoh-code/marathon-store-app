@@ -243,3 +243,74 @@ describe("the server's copy of the rules agrees with the client's", () => {
     expect(srv.decideCloses(null, "9", 1)).toEqual([]);
   });
 });
+
+// ─── THE MIRROR'S SURVIVOR — ONE RULE, BOTH WRITERS ─────────────────────────
+//
+// The slot must name the same surviving row whichever side re-points it, and it
+// twice did not:
+//   1. the trigger sorted in RTDB key order while the client sorted on
+//      `openedAt`; `seed…` ids sort after `r…`, so they disagreed outright;
+//   2. the trigger then gained the `openedAt` sort AND a rowId tiebreak — but
+//      read `rowId` as a stored FIELD (`Object.values` discards the keys) while
+//      `openRowsFor` maps `Object.entries` and spreads `rowId` last, overriding
+//      the field with the KEY.
+//
+// Both were invisible to the trigger's own suite, because every fixture there
+// wrote a row whose rowId field equalled its key. The rule now lives once, in
+// lib.cjs's openRowsInOrder, and this is the test that the client's reader and
+// that rule cannot drift apart — the same technique the size-key differential
+// above uses, and for the same reason.
+// (Peer review, marathon-store-app-display-f8.)
+describe("openRowsFor and the server's openRowsInOrder are the same ordering", () => {
+  const SAME = "2026-09-02T00:00:00.000Z";
+  const open = (o = {}) => ({ status: "open", sizeKey: "9", openedAt: SAME, ...o });
+
+  // Only the shapes that CAN differ. A world where every field equals its key
+  // and every instant is distinct cannot fail, which is exactly why the
+  // trigger's own fixtures proved nothing.
+  const worlds = {
+    "field disagrees with key": {
+      r001: open({ rowId: "zzz", sizeKey: "11" }),
+      seedZ: open({ rowId: "aaa", sizeKey: "10" }),
+    },
+    "no rowId field at all": {
+      zzz: open({ sizeKey: "10" }),
+      bbb: open({ rowId: "bbb", sizeKey: "11" }),
+    },
+    "seed vs send ids at the same instant": {
+      r001: open({ rowId: "r001", sizeKey: "11" }),
+      seedZ: open({ rowId: "seedZ", sizeKey: "10" }),
+    },
+    "distinct instants beat any tiebreak": {
+      a1: open({ rowId: "a1", sizeKey: "11", openedAt: "2026-09-02T00:00:00.000Z" }),
+      a2: open({ rowId: "a2", sizeKey: "10", openedAt: "2026-09-03T00:00:00.000Z" }),
+    },
+    "closed rows are excluded by both": {
+      a1: open({ rowId: "a1", sizeKey: "11" }),
+      a2: { status: "closed", rowId: "a2", sizeKey: "10", openedAt: "2026-09-09T00:00:00.000Z" },
+    },
+    "a one-size row is open to neither": {
+      a1: open({ rowId: "a1", sizeKey: "11" }),
+      a2: open({ rowId: "a2", sizeKey: "_" }),
+    },
+  };
+
+  for (const [name, byRow] of Object.entries(worlds)) {
+    it(name, () => {
+      const mine = openRowsFor({ trophy: { p1: byRow } }, "trophy", "p1");
+      const theirs = srv.openRowsInOrder(byRow);
+      expect(theirs.map((r) => r.rowId), name).toEqual(mine.map((r) => r.rowId));
+      // The survivor is the last of that order on both sides — which is the
+      // value that actually reaches the slot.
+      expect(theirs[theirs.length - 1]?.sizeKey).toBe(mine[mine.length - 1]?.sizeKey);
+    });
+  }
+
+  it("the identity used is the KEY, not the stored field — stated as its own assertion", () => {
+    const byRow = { r001: open({ rowId: "zzz", sizeKey: "11" }), seedZ: open({ rowId: "aaa", sizeKey: "10" }) };
+    // By key: r001 < seedZ, so seedZ survives. By field: "zzz" > "aaa" would
+    // make r001 survive. The two answers are different, which is what makes
+    // this world worth having.
+    expect(srv.openRowsInOrder(byRow).map((r) => r.rowId)).toEqual(["r001", "seedZ"]);
+  });
+});

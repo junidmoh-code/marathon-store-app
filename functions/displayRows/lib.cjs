@@ -513,6 +513,44 @@ function ageRefusalReason(byRow, sizeKey, movementTs) {
 }
 
 /**
+ * THE OPEN ROWS OF ONE WALL, IN THE ONE ORDER BOTH WRITERS USE.
+ *
+ * The mirror has to name the same survivor whichever side re-points the slot,
+ * and twice now it did not:
+ *   1. the trigger sorted in RTDB key order while the client sorted on
+ *      `openedAt`; `seed…` ids sort after `r…`, so they disagreed outright;
+ *   2. the trigger then gained the `openedAt` sort and an `a.rowId` tiebreak —
+ *      but read `rowId` as a STORED FIELD, because `Object.values` throws the
+ *      keys away, while `openRowsFor` maps `Object.entries` and spreads `rowId`
+ *      LAST, deliberately overriding the field with the key.
+ *
+ * The key IS the row's identity: it is the path the row lives at. The field is
+ * a convenience copy that nothing enforces, no close repairs (`closeFields`
+ * never rewrites it) and a hand-fix or a path migration can leave wrong
+ * forever. A row missing the field entirely sorted as "" on one side and on its
+ * real key on the other — enough on its own to pick different survivors out of
+ * one world.
+ *
+ * So the derivation lives HERE, once, and both sides are tested against it —
+ * the trigger by requiring it, the client differentially in
+ * src/components/stock/displayRowFuzz.test.js, which already runs both copies
+ * of this module's rules over shared worlds. Byte-identical to `openRowsFor`'s
+ * ordering by construction rather than by inspection.
+ * (Peer review, marathon-store-app-display-f8.)
+ *
+ * @param byRow /settings/displayRows/{store}/{productId} → { rowId: row }
+ * → open rows, OLDEST FIRST. The last is the newest — the survivor the slot
+ *   mirrors; see the trigger for why newest rather than oldest.
+ */
+function openRowsInOrder(byRow) {
+  return Object.entries(byRow || {})
+    .map(([rowId, row]) => ({ ...row, rowId }))
+    .filter(rowIsOpen)
+    .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || ""))
+      || a.rowId.localeCompare(b.rowId));
+}
+
+/**
  * The lease decision — returns the record to write, or undefined to ABORT the
  * transaction (already done, or somebody else holds a fresh lease).
  * Same shape as displayChecks/lib.cjs processedClaimDecision, deliberately.
@@ -525,5 +563,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, ageRefusalReason, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, ageRefusalReason, openRowsInOrder, leaseDecision,
 };
