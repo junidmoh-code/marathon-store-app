@@ -68,6 +68,12 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
 import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard";
+// Stock Audit — the daily shelf-walk lists (Out of Stock / Not Selling). Both
+// are precomputed once a day inside refillHealthScan; the screen reads one
+// small node per store and nothing else.
+import StockAuditCard from "./components/stock/StockAuditCard";
+import StockAuditView from "./components/stock/StockAuditView";
+import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
 import SocialView from "./components/social/SocialView";
@@ -385,7 +391,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", TV_AD: "tv_ad" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -2973,6 +2979,13 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const displayRegCard = (canAccessStock || isSuperAdmin)
     ? <DisplayRegistrationCard onOpen={() => onSelect(ROLES.DISPLAY_REGISTRATION)} />
     : null;
+  // Stock Audit — the two daily shelf-walk lists, Marathon PE and Trophy. Same
+  // identity as Stock, because the screen adjusts stock. Readless card: the
+  // lists are per-store and a home badge would cost two subscriptions for a
+  // number nobody acts on from the home screen.
+  const stockAuditCard = stockAuditVisibleForViewer({ canAccessStock, isSuperAdmin })
+    ? <StockAuditCard onOpen={() => onSelect(ROLES.STOCK_AUDIT)} />
+    : null;
   // Shopify Publishing — the online-store push pipeline (clean names,
   // condition grades, nominations). An ordinary row in the Administration
   // group now (owner spec 2026-08-14 — the oversized home card is gone),
@@ -3208,6 +3221,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
           {hubCountCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".18s" }}>{hubCountCard}</div>}
           {stockHoldCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".19s" }}>{stockHoldCard}</div>}
           {displayRegCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".2s" }}>{displayRegCard}</div>}
+          {stockAuditCard && <div className="hm-r" style={{ maxWidth:430, marginBottom:26, animationDelay:".21s" }}>{stockAuditCard}</div>}
 
           {!anyCards ? (
             <div style={{ textAlign:"center", color:"#555", padding:"4rem 1rem", fontSize:14 }}>
@@ -3271,6 +3285,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
         {hubCountCard}
         {stockHoldCard}
         {displayRegCard}
+        {stockAuditCard}
         {anyCards ? groups.filter(g => g.cards.length > 0).map(g => (
           <GroupSection key={g.label} label={g.label}>
             {g.cards.map((c, i) => (
@@ -19255,6 +19270,7 @@ function AppInner() {
   // Display Registration: any stock-capable staff — the display-wall lane is
   // a fact recorder (register rows + slots, never movements).
   const displayRegRouteOpen = !!authUser && canAccessStock;
+  const stockAuditRouteOpen = !!authUser && stockAuditVisibleForViewer({ canAccessStock, isSuperAdmin });
   // Shopify Publishing route — same identities the /shopify_publish console
   // write rule accepts (Junid via super-admin, or a stockRole admin).
   const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin" || hasPermission("shopify_publish");
@@ -19329,6 +19345,7 @@ function AppInner() {
     // The temporary Shipment Release surface obeys the same rule.
     if (role === ROLES.STOCK_HOLD && !stockHoldRouteOpen) { setRole(null); return; }
     if (role === ROLES.DISPLAY_REGISTRATION && !displayRegRouteOpen) { setRole(null); return; }
+    if (role === ROLES.STOCK_AUDIT && !stockAuditRouteOpen) { setRole(null); return; }
     // Shopify Publishing mirrors the console write rule on /shopify_publish
     // (super-admin or stockRole admin) — a stale persisted role drops home.
     if (role === ROLES.SHOPIFY_PUBLISH && !shopifyRouteOpen) { setRole(null); return; }
@@ -19338,7 +19355,7 @@ function AppInner() {
     if (role === ROLES.TV_AD && !tvAdRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, stockAuditRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -19615,6 +19632,9 @@ function AppInner() {
     // it needs the scope to refuse a wall it cannot read. Same two props the
     // Stock console passed it before the move.
     ? <DisplayRegistrationView products={products} orders={orders} ordersScope={myShop} onExit={() => setRole(null)} />
+    : null;
+  else if (role === ROLES.STOCK_AUDIT) view = stockAuditRouteOpen
+    ? <StockAuditView actorRole={stockRole} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
