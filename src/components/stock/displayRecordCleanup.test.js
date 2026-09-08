@@ -120,6 +120,19 @@ describe("classifyDisplayRecords — what the evidence says", () => {
     expect(r.byClass.unverified[0].retireQty).toBe(0);
   });
 
+  it("but it is still SHOWN, as its own kind, with a reason that is true", () => {
+    // Dropping it from the budget was right; dropping it from the SCREEN made
+    // the tab say "no shop was ever recorded" when a departure is on file. It
+    // is a third evidence kind, and the census must not print it as a plain
+    // TOMBSTONE either — that claims a hub attribution the record lacks.
+    const r = run(reg({ p1__6: row() }), { "marathon-pe": { p1: tomb({ bookedHub: null }) } });
+    const only = r.byClass.unverified[0];
+    expect(only.evidence).toHaveLength(1);
+    expect(only.evidence[0]).toMatchObject({ kind: "unattributed", store: "marathon-pe", size: "6" });
+    expect(only.why).toMatch(/does not say which hub/);
+    expect(only.why).not.toMatch(/No shop was ever recorded/);
+  });
+
   it("and the SAME hubless tombstone cannot be spent by the other hub either", () => {
     const slots = { "marathon-pe": { p1: tomb({ bookedHub: null }) } };
     for (const hub of ["hub1", "hub2"]) {

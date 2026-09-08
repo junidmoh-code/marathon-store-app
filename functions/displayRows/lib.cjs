@@ -313,7 +313,8 @@ function hubSaleTooOld(movementTs, nowMs) {
   return null;
 }
 
-function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguityCount = null }) {
+function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs,
+                          ambiguityCount = null, hublessCount = 0, postSaleCount = 0 }) {
   const tooOld = hubSaleTooOld(movementTs, nowMs);
   if (tooOld) return { ok: false, why: tooOld };
 
@@ -328,10 +329,19 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguity
   // `candidates` is empty AND blockers is not, and returning "no open row at
   // this hub" first recorded a refusal reason that was simply false — which
   // defeats the point of recording it. (Adversarial review of the fix round.)
-  const total = ambiguityCount == null ? candidates.length : ambiguityCount;
+  // The caller reports its two blocker kinds separately so the refusal can say
+  // which one it hit. `ambiguityCount` remains supported for callers that only
+  // have a total.
+  const hublessN = Number(hublessCount) || 0;
+  const postSaleN = Number(postSaleCount) || 0;
+  const total = ambiguityCount == null ? candidates.length + hublessN + postSaleN : ambiguityCount;
   if (total > candidates.length) {
+    const why = [];
+    if (postSaleN) why.push(`${postSaleN} display record${postSaleN === 1 ? " was" : "s were"} registered after this sale`);
+    if (hublessN) why.push(`${hublessN} display record${hublessN === 1 ? " names" : "s name"} no hub`);
     const n = total - candidates.length;
-    return { ok: false, why: `${n} display record${n === 1 ? "" : "s"} here name no hub, so which one sold is not knowable` };
+    if (!why.length) why.push(`${n} display record${n === 1 ? " is" : "s are"} an equally good explanation`);
+    return { ok: false, why: `${why.join(" and ")}, so which one sold is not knowable` };
   }
   if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
   if (candidates.length > 1) {
@@ -386,7 +396,7 @@ function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs, ambiguity
  *             third outcome and silence about it reads like an oversight.
  */
 function splitByHub(openRows, hub, movementTs = null) {
-  const closable = [], blockers = [];
+  const closable = [], hubless = [], postSale = [];
   for (const entry of openRows || []) {
     const row = (entry && entry.row) || {};
     // AGE FIRST. A row registered AFTER the sale cannot be the pair the sale
@@ -398,12 +408,16 @@ function splitByHub(openRows, hub, movementTs = null) {
     // It still BLOCKS: it is an open record at this size and this wall, so its
     // presence makes the attribution unknowable even though it cannot be the
     // answer. (CodeRabbit.)
-    if (!rowPredatesSale(row, movementTs)) { blockers.push(entry); continue; }
+    if (!rowPredatesSale(row, movementTs)) { postSale.push(entry); continue; }
     const h = row.bookedHub;
     if (h === hub) closable.push(entry);
-    else if (!h) blockers.push(entry);
+    else if (!h) hubless.push(entry);
   }
-  return { closable, blockers };
+  // TWO KINDS OF BLOCKER, REPORTED APART. Collapsing them made a post-sale row
+  // — which names the right hub — refuse with "names no hub", and a refusal
+  // reason that is false is exactly the fault the previous round said it was
+  // fixing. `blockers` stays as the total, for callers that only need a count.
+  return { closable, hubless, postSale, blockers: [...hubless, ...postSale] };
 }
 
 /** Was this row already open when the sale happened? `null` movementTs means

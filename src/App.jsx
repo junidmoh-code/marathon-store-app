@@ -10149,7 +10149,12 @@ function AssistantView({ products, onExit, orders = [] }) {
             // assistant all day) and closes ONE row or none.
             closeDisplayRowForPartnerSale({
               store: slotStore, productId: order.productId,
-              size: order.size || null, orderId: order.id, at: order.createdAt,
+              // `?? null`, NOT `|| null`: an empty-string size is MALFORMED and
+              // must reach the refusal inside, where it stops a row of some
+              // other size being closed. `||` collapsed it to "no size on the
+              // order", which is a different and permissive case.
+              // (Adversarial review of the fix round.)
+              size: order.size ?? null, orderId: order.id, at: order.createdAt,
             }).then((r) => { if (r && r.ok === false) console.warn(`Display row not closed for #${order.id}: ${r.message}`); })
               .catch(() => {});
             clearDisplaySlot({
@@ -12220,6 +12225,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     // opened by a wall walk has none and is untouched.
     const openForOrder = openRowsFor(displayRows, displaySlotStoreFor(order), order.productId)
       .filter((r) => r.requestOrderId === order.id);
+    let closedSoFar = 0;
     for (const row of openForOrder) {
       // eslint-disable-next-line no-await-in-loop
       const res = await closeDisplayRow({ rows: displayRows, row, reason: "cancelled", via: "undo",
@@ -12232,9 +12238,16 @@ function WarehouseView({ products = [], orders, onExit }) {
         // for that wall) but until then it is the very state this ledger exists
         // to prevent. (CodeRabbit.)
         console.warn(`Undo could not close display row ${row.rowId}: ${res.message}`);
-        window.alert(`The display record could not be reopened (${res.message}). Nothing was changed — try again.`);
+        // The message names what actually happened. An earlier version said
+        // "nothing was changed", which is untrue once an earlier row in the
+        // loop has already closed — and it is the ORDER that is being reopened,
+        // while the ROW is being closed. (Adversarial review of the fix round.)
+        window.alert(closedSoFar
+          ? `Part of this undo did not save (${res.message}). ${closedSoFar} display record${closedSoFar === 1 ? " was" : "s were"} already closed and the order was NOT reopened — try the undo again.`
+          : `The display record could not be closed (${res.message}). Nothing was changed — try again.`);
         return;
       }
+      closedSoFar++;
     }
     updateOrder(order.id, {
       displayRefillStatus:          null,

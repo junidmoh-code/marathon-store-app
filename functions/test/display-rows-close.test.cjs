@@ -273,13 +273,13 @@ test("a row that names NO hub blocks the close without ever being closed", () =>
   // not be the row that gets closed. Both reviewers were half right; this is
   // the shape that satisfies both.
   const r = resolveHubSale(fresh({
-    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0, ambiguityCount: 2,
+    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0, hublessCount: 1,
   }));
   assert.equal(r.ok, false);
-  assert.match(r.why, /name no hub/);
+  assert.match(r.why, /names no hub/);
   // With no hubless row in play the same input closes normally.
   assert.equal(resolveHubSale(fresh({
-    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0, ambiguityCount: 1,
+    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0,
   })).ok, true);
 });
 
@@ -310,21 +310,22 @@ test("splitByHub: this hub closes, no hub blocks, another hub is ignored", () =>
 });
 
 test("splitByHub survives an empty or malformed list", () => {
-  assert.deepEqual(splitByHub(null, "hub1"), { closable: [], blockers: [] });
-  assert.deepEqual(splitByHub([null, {}], "hub1").blockers.length, 2);
+  assert.deepEqual(splitByHub(null, "hub1"),
+    { closable: [], hubless: [], postSale: [], blockers: [] });
+  assert.equal(splitByHub([null, {}], "hub1").hubless.length, 2);
 });
 
 test("the hubless-only case reports the TRUE reason, not 'no open row here'", () => {
   // candidates empty (nothing closable) but one blocker: the refusal recorded
   // on the lease has to say WHY, and "no display record for this size at this
   // hub" is simply false when a hubless row is sitting right there.
-  const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0, ambiguityCount: 1 }));
+  const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0, hublessCount: 1 }));
   assert.equal(r.ok, false);
-  assert.match(r.why, /name no hub/);
+  assert.match(r.why, /names no hub/);
 });
 
 test("a genuinely empty wall still reports the empty reason", () => {
-  const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0, ambiguityCount: 0 }));
+  const r = resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0 }));
   assert.equal(r.ok, false);
   assert.match(r.why, /no open row at this hub/);
 });
@@ -368,10 +369,15 @@ test("a post-sale row still BLOCKS a hub attribution — it cannot be the answer
   const { closable, blockers } = splitByHub(rows, "hub1", SALE_TS);
   assert.deepEqual(closable.map((r) => r.rowId), ["old"]);
   assert.deepEqual(blockers.map((r) => r.rowId), ["new"]);
-  // so the sale refuses rather than closing the one row it could still reach
+  // so the sale refuses rather than closing the one row it could still reach —
+  // AND SAYS WHY IT REALLY REFUSED. A post-sale row names the right hub, so
+  // reporting it as "names no hub" is a false reason recorded on the lease,
+  // which is the exact fault the previous round claimed to fix.
   const r = resolveHubSale(fresh({
     openRowsByStore: { trophy: closable }, cellQty: 0,
-    ambiguityCount: closable.length + blockers.length,
+    hublessCount: 0, postSaleCount: blockers.length,
   }));
   assert.equal(r.ok, false);
+  assert.match(r.why, /registered after this sale/);
+  assert.doesNotMatch(r.why, /no hub/);
 });

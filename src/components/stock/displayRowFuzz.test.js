@@ -157,7 +157,13 @@ describe("no path opens a second open row for one product at one store", () => {
           // THE TILL — a sale, decided by the SERVER's own copy of the rule.
           const byRow = ((rows[store] || {})[productId]) || {};
           const sizeKey = stockSizeKey(size);
-          const closes = srv.decideCloses(byRow, sizeKey, 1);
+          // `at` IS PASSED, because the trigger always passes the movement's
+          // instant now. Without it the walk exercised a code path production
+          // no longer takes and the fourth parameter had zero fuzz coverage —
+          // so a regression in rowPredatesSale would be invisible to the one
+          // test whose job is holding the two copies together.
+          // (Adversarial review of the fix round.)
+          const closes = srv.decideCloses(byRow, sizeKey, 1, at);
           let updates = {};
           for (const { rowId: rid } of closes) {
             Object.assign(updates, srv.closeUpdates(rowPath(store, productId, rid), {

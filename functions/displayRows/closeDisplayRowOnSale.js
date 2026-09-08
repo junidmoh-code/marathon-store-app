@@ -118,6 +118,22 @@ exports.closeDisplayRowOnSale = onValueCreated(
       done: true, doneAt: Date.now(), closed: closedIds, ...(why ? { refused: why } : {}),
     });
 
+    // ── THE INSTANT HAS TO BE READABLE, ON BOTH PATHS ──────────────────────
+    // Both paths now order rows against `m.ts`. If it is absent, or epoch
+    // millis rather than an ISO string (applyMovement takes `ts` from its
+    // caller unvalidated, including from marathon-pos-app, which this repo
+    // cannot see), NO row can be ordered and the shop path silently closed
+    // nothing while logging "no display record for this size" — which is a lie:
+    // there was one, and the trigger refused it. It refuses out loud now, with
+    // its own reason, exactly as the hub path already did.
+    // (Adversarial review of the fix round.)
+    if (typeof m.ts !== "string" || !Number.isFinite(Date.parse(m.ts))) {
+      const why = "the sale carries no readable instant, so no display record can be ordered against it";
+      console.log(`closeDisplayRowOnSale: ${movementId} closed nothing — ${why}`);
+      await done([], why);
+      return;
+    }
+
     if (kind === "sold_hub") {
       // ── A SALE OUT OF A HUB CELL — the store is not on the movement ────────
       // Sneakers sell from the hub, and a hub-sourced movement carries no shop
@@ -141,7 +157,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
         return;
       }
       const perStore = {};
-      let candidates = 0;
+      let candidates = 0, hublessCount = 0, postSaleCount = 0;
       for (const s of DISPLAY_STORES) {
         // eslint-disable-next-line no-await-in-loop
         const rows = (await db.ref(`${ROWS}/${s}/${productId}`).get()).val();
@@ -158,12 +174,16 @@ exports.closeDisplayRowOnSale = onValueCreated(
         // present at all makes the attribution unknowable, which is the honest
         // answer — and the safe one, because refusing costs a missed close and
         // closing the wrong row costs a real display.
-        const { closable, blockers } = splitByHub(
+        const { closable, hubless, postSale } = splitByHub(
           decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER), hit.hub, m.ts);
         if (closable.length) perStore[s] = closable;
-        candidates += closable.length + blockers.length;
+        candidates += closable.length;
+        hublessCount += hubless.length;
+        postSaleCount += postSale.length;
       }
-      if (!candidates) { await done([], "no display record for this size at this hub"); return; }
+      if (!candidates && !hublessCount && !postSaleCount) {
+        await done([], "no display record for this size at this hub"); return;
+      }
       const cellQty = (await db.ref(`stock/${hit.hub}/${productId}/${sizeKey}/qty`).get()).val();
       // `candidates` is the AMBIGUITY count (closable + hubless blockers);
       // `perStore` is the CLOSABLE set. When they disagree, something on a wall
@@ -171,7 +191,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
       // refused rather than pinned on the row that happens to name a hub.
       const verdict = resolveHubSale({
         openRowsByStore: perStore, cellQty, movementTs: m.ts, nowMs,
-        ambiguityCount: candidates,
+        hublessCount, postSaleCount,
       });
       if (!verdict.ok) {
         // A refusal is the CORRECT outcome, not a failure — but it is recorded
@@ -222,9 +242,14 @@ exports.closeDisplayRowOnSale = onValueCreated(
       // earned exactly ONE row, under conditions checked once; re-reading and
       // taking "the next open row of that size" would walk straight past the
       // uniqueness test that made the inference safe in the first place.
+      // `m.ts` ON THE RE-READ TOO. Pass 0 excluded rows registered after the
+      // sale; pass 1 did not, so the retry — which exists precisely for the
+      // concurrent case — could close a row a wall walk had opened AFTER the
+      // sale, reinstating verbatim the bug the age filter had just fixed.
+      // (Adversarial review of the fix round.)
       const candidates = pass === 0 ? closes
         : inferred ? []
-        : decideCloses((await db.ref(`${ROWS}/${store}/${productId}`).get()).val(), sizeKey, wanted);
+        : decideCloses((await db.ref(`${ROWS}/${store}/${productId}`).get()).val(), sizeKey, wanted, m.ts);
       if (!candidates.length) break;
       for (const { rowId } of candidates) {
         if (wanted <= 0) break;

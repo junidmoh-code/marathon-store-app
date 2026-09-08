@@ -270,11 +270,21 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
  * `/settings/displayRows/{store}/{productId}` at placement is cheaper than a
  * whole-node listener mounted for every assistant all day.
  *
- * IT CLOSES ONE ROW OR NONE. With a size on the order it takes the open row at
- * that size; without one, or with several candidates, it closes NOTHING and
- * leaves the wall for the Duplicate Displays tab. One sale is one pair, and
- * guessing which of two records it was is the guess this whole feature refuses
- * to make.
+ * IT CLOSES ONE ROW OR NONE, and the rule is worth stating exactly because an
+ * earlier docstring described a stricter one than the code:
+ *
+ *   • a size on the order → the open row AT THAT SIZE, if there is one;
+ *   • NO size on the order → the only open row, whatever its size. A Display
+ *     Partner request is size-optional by design ("the display pair sold, send
+ *     another"), so requiring one would mean most display sales never close.
+ *     One open row is one pair, and one sale is one pair; there is nothing to
+ *     guess between.
+ *   • SEVERAL candidates either way → nothing, and the wall goes to the
+ *     Duplicate Displays tab. That is the case with a real choice in it.
+ *
+ * A size that is present but MALFORMED (blank, whitespace, "Free Size") is a
+ * refusal, not a stand-in for "no size" — it would otherwise close a row of
+ * some other size.
  *
  * Best-effort and never thrown: the ORDER is the fact that must not be lost.
  */
@@ -282,6 +292,13 @@ export async function closeDisplayRowForPartnerSale({ store, productId, size = n
   try {
     if (!store || !productId) return { ok: false, message: "Store and product are required." };
     const when = at || serverNowIso();
+    // An id that cannot be an RTDB key is a REFUSAL, not a quiet "nothing here".
+    // rowsNow returns {} for one, which is indistinguishable from a clean wall,
+    // and the caller only logs on ok === false. "A refusal is visible" has to
+    // hold on this path too. (Adversarial review of the fix round.)
+    if (!rowSegment(store) || !rowSegment(productId)) {
+      return { ok: false, message: `"${store}" or "${productId}" cannot be an RTDB key, so no display record could be looked up.` };
+    }
     const rows = await rowsNow(store, productId);
     let open = openRowsFor(rows, store, productId);
     // ONLY `size == null` MEANS "no size on the order". A supplied size that is
