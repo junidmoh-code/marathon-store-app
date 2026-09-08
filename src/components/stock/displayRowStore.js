@@ -29,11 +29,12 @@
 // write is lost, the rows are still right and the operator is TOLD — the
 // warning is returned, never swallowed.
 
-import { ref, get, update } from "firebase/database";
+import { ref, get, update, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowIso } from "../../utils/serverTime";
 import {
   DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowSegment, rowSizeText,
+  rowPath, rowIsOpen, CLOSE_REASON_TEXT,
 } from "./displayRowCore";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
@@ -214,7 +215,59 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
     const when = at || serverNowIso();
     const plan = closeRowPlan({ row, at: when, by: uid(), reason, via, detail });
     if (!plan.ok) return { ok: false, message: plan.message };
-    await apply(plan.updates);
+
+    // ── A CLOSE IS A COMPARE-AND-SET, NOT A BLIND FIELD WRITE ──────────────
+    //
+    // This wrote `status/closedAt/closedBy/closedReason/closedVia/closedRef`
+    // unconditionally, from the caller's row object, with no freshness check
+    // on the row itself (the re-read below is for the SURVIVORS, and happens
+    // after). So a row the till had ALREADY closed could be closed again by an
+    // operator whose tab had not caught up — and the second write silently
+    // replaced the first's provenance:
+    //
+    //   10:00  a display pair sells; closeDisplayRowOnSale closes the row
+    //          `sold` / `pos_sale`, with the movement id on closedRef.
+    //   10:00  the operator's Duplicate tab still shows it open. They tap
+    //          close, reason `corrected`.
+    //   result the row reads "a human corrected this record", the sale is gone
+    //          from it, and the timeline carries both events with the wrong one
+    //          winning every field a reader looks at.
+    //
+    // The row ends closed either way, so no stock and no duplicate follows —
+    // but the AUDIT TRAIL IS THE PRODUCT here. A ledger that cannot say whether
+    // a pair sold or was corrected off the record is not a ledger.
+    //
+    // The trigger has always done this properly (`claimClose` only commits on
+    // an open row). The client did not, and the two writers are in a genuine
+    // race by design: one fires off a till, the other off a tap. So the same
+    // rule, on the same shape, from the other side. (CodeRabbit.)
+    //
+    // WHY ONLY HERE, and not on the SEND's close: sendPlan's close travels in
+    // the one atomic multi-path update that also opens the new row and clears
+    // the request (clause 2), and a multi-path update cannot carry a
+    // transaction. That path plans from a fresh keyed re-read taken moments
+    // before, which is the guard it gets. This path had neither.
+    const base = rowPath(row.store, row.productId, row.rowId);
+    if (!base) return { ok: false, message: `"${row.store}" or "${row.productId}" cannot be an RTDB key, so no display record could be closed.` };
+    const claim = await runTransaction(ref(database, base), (cur) => {
+      if (!rowIsOpen(cur)) return undefined;                  // already closed — leave every field alone
+      const e = `closed_${String(when).replace(/[.#$/[\]\s:]/g, "-")}`;
+      return {
+        ...cur, status: "closed", closedAt: when, closedBy: uid(),
+        closedReason: reason, closedVia: via || null,
+        closedRef: (detail && (detail.movementId || detail.orderId || detail.replacedBy)) || null,
+        events: { ...(cur.events || {}), [e]: { at: when, what: "closed", by: uid(), detail: detail || { reason } } },
+      };
+    });
+    if (!claim.committed) {
+      // Someone got there first. Report what the record actually says rather
+      // than a bare failure — the operator's intent (this pair is not on the
+      // wall) has been satisfied, just not by them.
+      const wonBy = claim.snapshot && claim.snapshot.val();
+      const how = wonBy && wonBy.closedReason ? CLOSE_REASON_TEXT[wonBy.closedReason] || wonBy.closedReason : "closed";
+      return { ok: true, stockMoved: false, alreadyClosed: true,
+        warning: `That display record had already been closed (${how}) — left as it was, so the earlier reason is not overwritten.` };
+    }
 
     // THE SURVIVORS ARE READ AFTER THE CLOSE, not taken from the caller's
     // snapshot. Deciding "was that the last one?" from a stale map is how a
