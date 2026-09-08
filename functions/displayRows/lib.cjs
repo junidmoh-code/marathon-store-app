@@ -469,10 +469,18 @@ function rowPredatesSale(row, movementTs) {
  * postSale and unknownAge apart, for exactly this reason). The shop path never
  * got it. Same defect, second location. (Senior-architect review.)
  *
- * A third cause hides in the same branch and deserves its own sentence: when
- * the SALE carries no readable instant, `rowAgeVsSale` answers "unknown" for
- * every row, so every candidate is excluded and nothing about the ROWS is
- * wrong at all.
+ * A third cause is answered here too — when the SALE carries no readable
+ * instant, `rowAgeVsSale` answers "unknown" for every row, so every candidate
+ * is excluded and nothing about the ROWS is wrong at all.
+ *
+ * THAT THIRD BRANCH IS UNREACHABLE FROM THE TRIGGER, and the round that added
+ * it claimed otherwise. closeDisplayRowOnSale.js refuses an unreadable `m.ts`
+ * outright, before either path runs, with its own message — a gate a previous
+ * round already added. So the branch here is defence for a caller that does not
+ * exist yet rather than a cause this function newly names. It is kept because
+ * this module is pure and unit-driven and a future caller may not have that
+ * gate, and it is described accurately so nobody reads it as live coverage.
+ * (Adversarial review of the fix round.)
  *
  * → the sentence, or null when the age filter is not what emptied the list.
  */

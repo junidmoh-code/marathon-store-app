@@ -255,9 +255,12 @@ that delta with provenance recorded on the PR. Kimi is still returning
    that sentence is the permanent answer to "why did this display record not
    close?". The hub path already drew the distinction (`splitByHub` reports
    post-sale and unknown-age apart); the shop path never got it. Same defect,
-   second location. `ageRefusalReason` in `lib.cjs`, and it names a third cause
-   the old branch hid entirely: a sale whose own instant is unreadable, where
-   nothing about the rows is wrong at all.
+   second location. `ageRefusalReason` in `lib.cjs`. It also answers a third
+   cause — a sale whose own instant is unreadable — but **that branch is
+   unreachable from the trigger**, which refuses an unparseable `ts` outright
+   before either path runs. The round that added it claimed the branch newly
+   named a hidden cause; it does not. Kept as defence for a future caller of
+   this pure module, and now described as that.
 
 2. **A correction re-booked a hubless row onto the tab's hub.** The comment
    above `onWall` says a correction's `bookedHub` must come from the ROW,
@@ -267,14 +270,17 @@ that delta with provenance recorded on the PR. Kimi is still returning
    changed the hub. Now the null is carried through, which every consumer
    already supports.
 
-3. **A shop id in `placedAtHub` beat the real hub.** `rowHub` was
-   `displayRefillHub || placedAtHub || hub || selectedHub`, with a comment
-   explaining that `selectedHub` is the truth of last resort for an older order
-   holding a shop id — but `||` short-circuits on the first TRUTHY value, and a
-   shop id is truthy. So that order failed `rowEligible`, and the send cleared
-   the request and wrote a slot with **no ledger row**: the precise outcome the
-   fix was written to prevent, still reachable, under a comment claiming
-   otherwise. Now it takes the first value that is actually a gated hub.
+3. **`rowHub`'s fallback was dead code — but nothing reached it.** The chain
+   `displayRefillHub || placedAtHub || hub || selectedHub` carried a comment
+   calling `selectedHub` the truth of last resort for an order whose earlier
+   fields hold a SHOP id; `||` stops at the first truthy value and a shop id is
+   truthy, so that fallback could never run. It now takes the first value that
+   is actually a gated hub, so the expression means what its comment says.
+   **This changes no outcome today**, and the round that wrote it claimed it
+   did: every order reaching `setDisplayRefillStatus` comes through a card
+   filter that drops anything where `displayRefillHub !== selectedHub`, so the
+   two implementations agree on every reachable input. Robustness, not a live
+   bug fixed.
 
 4. **The depleted-task revival bypassed clause 1.** A revived card is a display
    task the warehouse can send, but it still carries

@@ -12165,14 +12165,24 @@ function WarehouseView({ products = [], orders, onExit }) {
     // is the truth of last resort, and it is the same value the patch already
     // stamps as displayRefilledBy. (Independent second-brain review.)
     //
-    // ...BUT `||` NEVER REACHED IT. The chain short-circuits on the first
+    // ...BUT `||` COULD NOT REACH IT. The chain short-circuits on the first
     // TRUTHY value, and the failure the paragraph above describes is a field
-    // holding a SHOP id — which is truthy. So `placedAtHub: "marathon-pe"` won,
-    // `rowEligible` went false, and the send cleared the request and wrote a
-    // slot with NO ledger row: the very outcome the fix was written to stop,
-    // still reachable, with a comment claiming otherwise. Take the first value
-    // that is actually a gated hub instead, and only then fall back to the hub
-    // doing the refill. (Spec-conformance review.)
+    // holding a SHOP id — which is truthy. So the fallback the comment called
+    // the truth of last resort was dead: `placedAtHub: "marathon-pe"` would win
+    // and `rowEligible` go false. Taking the first value that is actually a
+    // gated hub makes the expression do what the paragraph says.
+    //
+    // IT CHANGES NO OUTCOME TODAY, and the round that wrote it said it did.
+    // Every order that can reach setDisplayRefillStatus comes through the
+    // refill-card build below, which drops anything where
+    // `displayRefillHub !== selectedHub` — so displayRefillHub is always set,
+    // always equal to selectedHub, and both the old chain and this one pick it.
+    // The divergence needs an order with an unset or non-gated displayRefillHub
+    // reaching here while selectedHub is a different gated hub, and that filter
+    // makes it unreachable. Kept because the expression should mean what its
+    // comment says and because the filter is not this line's to rely on, but
+    // recorded as robustness, NOT as a live bug fixed.
+    // (Adversarial review of the fix round.)
     const rowHub = [order.displayRefillHub, order.placedAtHub, order.hub]
       .find((h) => GATED_SNEAKER_HUBS.includes(h)) || selectedHub || null;
     const rowEligible = productIsFootwear(resolveProductById(order.productId))

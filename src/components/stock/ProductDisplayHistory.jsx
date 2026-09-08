@@ -51,9 +51,9 @@ import { formatSize } from "../../utils/sizeLabel";
 import { BORDER, GREEN, GRAY, FONT } from "./ui";
 
 export default function ProductDisplayHistory({ productId, registry }) {
-  // Shaped as { [store]: { [rowId]: row } } so `allRows` — the shared reader
-  // the tabs use — takes it unchanged and there is no second traversal to keep
-  // in step with the first.
+  // Shaped as { [store]: { [productId]: { [rowId]: row } } } — the node's own
+  // three levels — so `allRows`, the shared reader the tabs use, takes it
+  // unchanged and there is no second traversal to keep in step with the first.
   const [rows, setRows] = useState({});
   const [settled, setSettled] = useState(false);
 
