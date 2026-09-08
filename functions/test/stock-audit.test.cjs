@@ -224,26 +224,32 @@ test("the same line missing from two places is two rows, never one", () => {
 });
 
 test("the STRONGER reading wins a collision, whatever order the records arrive in", () => {
-  // Two records for the SAME cell: an old still-open request (rank 2) and a
-  // newer human rejection against a source that still reads 7 (rank 1 — the
-  // loudest phantom the tab can produce). RTDB iterates push-ids
-  // chronologically, so the old one is seen FIRST; a first-writer-wins dedup
-  // would drop the rejection.
-  const both = {
-    "-old": { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "open",
-              createdAt: iso(2 * 3600e3), createdFrom: { source: "hub2" } },
-    "-new": { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
-              resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
-  };
+  // Two CANCELLED records for the same cell, and the source now reads 7:
+  //   • an old engine withdrawal — it gave up when hub2 was empty, and hub2 has
+  //     since restocked                                            → rank 2
+  //   • a newer human "not here" against that same restocked cell  → rank 1,
+  //     the loudest phantom this tab can produce
+  // RTDB iterates push-ids chronologically, so the old one is seen FIRST. A
+  // first-writer-wins dedup keeps the weaker reading and hands the row a rank
+  // that is the first thing the cap truncates.
+  //
+  // (The reviewer's original scenario — an OPEN request colliding with a
+  // rejection — is not reachable: the open branch only emits when the source
+  // reads <= 0, and rank 1 requires it to read > 0, so the two can never meet
+  // on one cell. The guard is real; this is the collision that reaches it.)
+  const older = { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
+                  cancelReason: "awaiting_upstream", resolvedAt: iso(4 * 3600e3), createdFrom: { source: "hub2" } };
+  const newer = { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
+                  resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } };
   const run = (rr) => sa.buildOutOfStock({
     store: "marathon-pe", nowMs: NOW, cfg: CFG,
     stock: { "marathon-pe": {}, hub2: STOCK.hub2, central: {} },
     products: PRODUCTS, refillRequests: rr, routes: ROUTES,
   }).rows.find((r) => r.k === "tee__L__hub2");
 
-  assert.equal(run(both).r, "rejected");
-  // and the same answer with the records the other way round
-  assert.equal(run({ "-new": both["-new"], "-old": both["-old"] }).r, "rejected");
+  assert.equal(run({ "-old": older, "-new": newer }).r, "rejected");
+  assert.equal(run({ "-new": newer, "-old": older }).r, "rejected");   // and the other way round
+  assert.equal(run({ "-old": older, "-new": newer }).q, 7);
 });
 
 test("a request with no recorded source falls back to the route table", () => {
