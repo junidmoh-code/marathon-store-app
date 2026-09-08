@@ -22,8 +22,6 @@ import MoveExcess from "./MoveExcess";
 import InTransit from "./InTransit";
 import DuplicatesTab from "./DuplicatesTab";
 import DisplayRecordsTab from "./DisplayRecordsTab";
-import DuplicateDisplaysTab from "./DuplicateDisplaysTab";
-import UnregisteredDisplaysTab from "./UnregisteredDisplaysTab";
 
 // Stock rework: Transfer (assistant-style) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -42,11 +40,11 @@ const BASE_TABS = [
   ["recount",   "Counted"],      // PERMANENT counted-stock review (admin-only; owner decision 2026-07-16)
   ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
   ["duplicates","Duplicates"],   // side-by-side twin records + a recommended survivor (admin-only)
-  // THE THREE DISPLAY TABS, and they answer three different questions. Naming
-  // them apart matters: two of them used to be one screen in two modes, and the
-  // one they could not answer was the one the owner actually asked for.
-  ["dupdisplays","Duplicate Displays"], // one product, more than one OPEN display row at a store (admin-only)
-  ["walldisplays","Unregistered Displays"], // hub stock with no display row for that store — the wall walk (admin-only)
+  // DUPLICATE DISPLAYS and UNREGISTERED DISPLAYS USED TO BE HERE. They moved
+  // into the Display Registration card (owner correction, 2026-09-08), beside
+  // its Hub 1 and Hub 2 tabs — that card is where an operator looks for
+  // anything about a display wall, and the Stock console is not. Display
+  // Records stays: it is about the hub REGISTER, which is stock-console work.
   ["displayrecs","Display Records"],  // a hub REGISTER row the shop floor contradicts (admin-only)
 ];
 
@@ -55,7 +53,7 @@ const BASE_TABS = [
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
 // Move Excess writes transfer_out (warehouse-permitted at the rule layer) but is a
 // bulk tool — deliberately admin-gated in the UI.
-const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess", "duplicates", "displayrecs", "dupdisplays", "walldisplays"]);
+const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess", "duplicates", "displayrecs"]);
 
 // Desktop shell — icons per tool, grouped in the sidebar, plus a one-line
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
@@ -73,9 +71,7 @@ const TAB_ICON = {
   // The display monitor, matching the shop-side marker glyph.
   displayrecs: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4M8 20h8" /></>,
   // two monitors overlapping — one product on the wall twice
-  dupdisplays: <><rect x="2" y="5" width="13" height="9" rx="2" /><rect x="9" y="10" width="13" height="9" rx="2" /></>,
   // the monitor with a question mark — a wall nobody wrote down
-  walldisplays: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4M8 20h8" /><path d="M10 8.2a2 2 0 1 1 2.4 2.2v.8" /></>,
 };
 const TAB_META = {
   transfer: ["Transfer", "Move stock between locations."],
@@ -88,15 +84,13 @@ const TAB_META = {
   count:    ["Count", "Run a stock-take."],
   recount:  ["Counted", "Review & post counted differences."],
   duplicates: ["Duplicates", "Twin records side by side, with a recommended survivor."],
-  dupdisplays: ["Duplicate Displays", "One product registered on a wall more than once — keep the size that is there, close the rest."],
-  walldisplays: ["Unregistered Displays", "Hub stock with no display record for this shop — the wall walk."],
   displayrecs: ["Display Records", "A hub display record the shop floor contradicts — retire the one that is wrong."],
 };
 const TAB_GROUPS = [
   ["Move & find", ["transfer", "intransit", "locate", "setqty"]],
   ["Audit", ["history", "adjust", "count", "recount", "excess"]],
   ["Catalogue", ["duplicates"]],
-  ["Displays", ["dupdisplays", "walldisplays", "displayrecs"]],
+  ["Displays", ["displayrecs"]],
 ];
 
 export default function StockView({ products = [], orders = [], ordersScope = null, onExit }) {
@@ -136,8 +130,6 @@ export default function StockView({ products = [], orders = [], ordersScope = nu
       {tab === "count"    && isAdmin && <CountSession {...shared} />}
       {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
       {tab === "duplicates" && isAdmin && <StockErrorBoundary><DuplicatesTab products={products} registry={registry} /></StockErrorBoundary>}
-      {tab === "dupdisplays" && isAdmin && <StockErrorBoundary><DuplicateDisplaysTab products={products} isAdmin={isAdmin} /></StockErrorBoundary>}
-      {tab === "walldisplays" && isAdmin && <StockErrorBoundary><UnregisteredDisplaysTab products={products} orders={orders} ordersScope={ordersScope} isAdmin={isAdmin} /></StockErrorBoundary>}
       {tab === "displayrecs" && isAdmin && <StockErrorBoundary><DisplayRecordsTab products={products} isAdmin={isAdmin} mode="records" /></StockErrorBoundary>}
     </>
   );

@@ -132,3 +132,63 @@ describe("the one-request guard cannot silently outgrow the feed it reads", () =
     expect(WALL).toContain("const canRequest = !ordersScope || ordersScope === store;");
   });
 });
+
+// ─── CLAUSE 1 SITS ON THE PATH THAT MINTS THE TASK ──────────────────────────
+//
+// The READY re-stamp IS the auto-raise — it schedules the refill task the
+// warehouse sees fifteen minutes later, and nothing raises it by hand. The
+// guard sat on the two places a request is CREATED and not on the two that
+// RE-OPEN one, which left two reachable routes to two pairs on one wall
+// (OOS→Available re-stamping a cleared order, and an undo re-opening one after
+// a newer request was raised).
+//
+// These are source pins because neither path is reachable from a unit test —
+// they live inside WarehouseView's status handler and its undo, both of which
+// need the whole warehouse screen. The predicate itself is exercised properly
+// in displayRowCore.test.js. (Spec-conformance review.)
+describe("the re-openers ask the guard before they re-open", () => {
+  it("the READY re-stamp is conditional on no OTHER open request", () => {
+    // The stamp must not be an unconditional `= now` any more: it lives in the
+    // ELSE of the blocker check, so a blocked READY reaches none of it.
+    expect(APP).toMatch(/if \(blockers\.length\) \{[\s\S]{0,300}?\} else \{\s*\n\s*patch\.displayRefillScheduledAt\s+= now;/);
+    expect(APP).toMatch(/otherOpenDisplayRequests\(orders, \{ store: reqStore, productId: order\.productId, exceptId: order\.id \}\)/);
+  });
+
+  it("a BLOCKED ready touches no display-refill field at all", () => {
+    // Nulling scheduledAt while still running the four resets wiped a resolved
+    // order's resolution and left it OPEN WITH NO TASK — a fence invisible in
+    // the warehouse list, held until the daily /orders id recycled. Every reset
+    // must sit inside the else. (CodeRabbit.)
+    // ANCHORED ON CODE, NOT A COMMENT. `APP` is comment-stripped (see the
+    // header), so slicing from a comment returned -1 and sliced from the END of
+    // the file — the assertion below then ran against a few closing braces and
+    // could never fail. Found by mutation-testing this very test.
+    const start = APP.indexOf("if (blockers.length) {");
+    expect(start).toBeGreaterThan(0);
+    const blockedArm = APP.slice(start, APP.indexOf("} else {", start));
+    expect(blockedArm).toMatch(/console\.warn/);      // we are looking at the right arm
+    expect(blockedArm).not.toMatch(/patch\.displayRefill/);
+    expect(blockedArm).not.toMatch(/patch\.displayRefilled/);
+  });
+
+  it("the READY path still lets the CUSTOMER's half through — no early return", () => {
+    // Withholding the wall's task must never swallow the order_ready WhatsApp
+    // or the insight log. An early return in that branch would do both.
+    // Same anchoring rule: code, not comments.
+    const s2 = APP.indexOf("const blockers = reqStore");
+    expect(s2).toBeGreaterThan(0);
+    const readyBranch = APP.slice(s2, APP.indexOf("} else if (status !== STATUS.COLLECTED) {", s2));
+    expect(readyBranch).not.toMatch(/\breturn;/);
+  });
+
+  it("the refill undo refuses when another request holds the wall", () => {
+    expect(APP).toMatch(/otherOpenDisplayRequests\(orders, \{ store: undoStore, productId: order\.productId, exceptId: order\.id \}\)/);
+    expect(APP).toMatch(/if \(undoBlockers\.length\) \{[\s\S]{0,400}?return;/);
+  });
+
+  it("both re-openers exclude the order in hand, or they would block themselves", () => {
+    const uses = APP.match(/otherOpenDisplayRequests\([^)]*\)/g) || [];
+    expect(uses.length).toBeGreaterThanOrEqual(2);
+    for (const u of uses) expect(u).toMatch(/exceptId: order\.id/);
+  });
+});
