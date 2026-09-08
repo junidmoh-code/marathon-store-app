@@ -802,7 +802,7 @@ export function applyEvictions(entries, evictions, nowMs, maxAgeMs) {
     if (!Number.isFinite(at) || nowMs - at > maxAgeMs) continue;
     if (!(key in (entries ?? {}))) continue;
     const cachedAt = entries[key];
-    if (Number.isFinite(cachedAt) && cachedAt > at) continue; // re-cached after the eviction — keep it
+    if (Number.isFinite(cachedAt) && cachedAt >= at) continue; // re-cached at or after the eviction — keep it
     delete entries[key]; removed++;
   }
   return removed;

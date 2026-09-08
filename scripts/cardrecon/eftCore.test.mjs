@@ -805,9 +805,9 @@ describe("eviction list — what the poller must forget, whatever its in-memory 
     expect(out).toEqual({ kept: 1800, n1: 2000, n2: 2000 });
   });
   it("an entry re-cached AFTER its eviction survives — the eviction has done its work", () => {
-    const entries = { k: 1500, stale: 900 };
-    expect(applyEvictions(entries, { k: 1000, stale: 1000 }, 2000, 5000)).toBe(1);
-    expect(entries).toEqual({ k: 1500 });
+    const entries = { k: 1500, same: 1000, stale: 900 };
+    expect(applyEvictions(entries, { k: 1000, same: 1000, stale: 1000 }, 2000, 5000)).toBe(1);
+    expect(entries).toEqual({ k: 1500, same: 1000 }); // an equal timestamp is not older
   });
   it("both tolerate null inputs", () => {
     expect(applyEvictions({}, null, 1, 1)).toBe(0);

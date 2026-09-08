@@ -36,7 +36,7 @@ import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { ImapFlow } from "imapflow";
 import { parseEnvText } from "./intakeCore.mjs";
-import { EFT_POOL_PATH, eftRetryPlan, envelopeCandidateKeys, mergeEvictions } from "./eftCore.mjs";
+import { EFT_POOL_PATH, eftRetryPlan, envelopeCandidateKeys, mergeEvictions, applyEvictions } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -91,16 +91,20 @@ function evictFromProcessedCache({ repo, messageId, uidValidity, uids }) {
     ...(envelopeCandidateKeys({ messageId }) ?? []),
     ...uids.map((uid) => `u:${String(uidValidity ?? "")}:${uid}`),
   ];
+  const now = Date.now();
   const evictFile = join(repo, "logs", "card-recon-evict.json");
   let existing = {};
   try { existing = JSON.parse(readFileSync(evictFile, "utf8")) || {}; } catch { /* first eviction */ }
-  writeFileSync(evictFile, JSON.stringify(mergeEvictions(existing, doomed, Date.now(), EVICT_WINDOW_MS)));
+  const evictions = mergeEvictions(existing, doomed, now, EVICT_WINDOW_MS);
+  writeFileSync(evictFile, JSON.stringify(evictions));
   const file = join(repo, "logs", "card-recon-processed.json");
   if (!existsSync(file)) return 0;
   let entries;
   try { entries = JSON.parse(readFileSync(file, "utf8")) || {}; } catch { return 0; }
-  let evicted = 0;
-  for (const k of doomed) if (k in entries) { delete entries[k]; evicted++; }
+  // The same timestamp rule as the poller's own: an entry the poller cached
+  // at or after this eviction (it reprocessed the mail between the claim
+  // clear and now) is newer and stays. (CodeRabbit.)
+  const evicted = applyEvictions(entries, evictions, now, EVICT_WINDOW_MS);
   if (evicted) writeFileSync(file, JSON.stringify(entries));
   return evicted;
 }
