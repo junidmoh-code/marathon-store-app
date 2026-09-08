@@ -18,7 +18,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   sweepDirty, sweepBacklog, syncProduct, clearMarker, DIRTY_PATH, locationNames,
 } from "./inventorySync.mjs";
-import { ONLINE_EXCLUDED_LOCATIONS } from "./inventory.mjs";
+import { ONLINE_EXCLUDED_LOCATIONS, setAvailable, InventoryMovedError } from "./inventory.mjs";
 import { createRequire } from "node:module";
 
 // ── A fake RTDB just rich enough for this module ─────────────────────────────
@@ -622,5 +622,143 @@ describe("locationNames — only the shelves that feed the storefront", () => {
     // shelf understates availability invisibly, and the loud failure (an
     // oversell) is the one the tracking/DENY policy already catches.
     expect(await locationNames(dbWith({ hub4: true }))).toEqual(["hub4"]);
+  });
+});
+
+// ── THE RACE THAT OVERWROTE A SALE ──────────────────────────────────────────
+// setAvailable used to read Shopify's current quantity ITSELF, immediately
+// before mutating, and use that as the compare-and-set value. So the window it
+// guarded was its own read → its own write, and the window that mattered — the
+// caller's /stock snapshot → the write — was unguarded. A sale landing in that
+// gap moved Shopify's number, the fresh read adopted the moved number as the
+// baseline, the compare-and-set passed, and the sale was overwritten by a total
+// computed before it happened.
+//
+// The fix is an ORDERING, so these tests are about ordering, not about values:
+// Shopify must be read BEFORE /stock, and the value from that read must be what
+// the mutation compares against.
+//
+// This fake models a REAL compare-and-set — it holds a live quantity and
+// refuses a write whose changeFromQuantity does not match it. A fake that
+// accepted every write could not tell the two orderings apart, which is exactly
+// how the original bug survived its tests.
+function shopifyWithCas(initial) {
+  const state = { available: initial, writes: [], reads: 0, sequence: [] };
+  const graphql = vi.fn(async (query, vars) => {
+    if (query.includes("locations(first: 2)")) {
+      return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Main" }] } };
+    }
+    if (query.includes("inventorySetQuantities")) {
+      const q = vars.input.quantities[0];
+      state.writes.push(q);
+      state.sequence.push("shopify:write");
+      if (q.changeFromQuantity !== state.available) {
+        return { inventorySetQuantities: { userErrors: [
+          { field: ["quantities"], message: "changeFromQuantity does not match the current quantity" },
+        ] } };
+      }
+      state.available = q.quantity;
+      return { inventorySetQuantities: { userErrors: [] } };
+    }
+    state.reads++;
+    state.sequence.push("shopify:read");
+    return { nodes: [{
+      id: "gid://shopify/InventoryItem/1",
+      inventoryLevel: { quantities: [{ name: "available", quantity: state.available }] },
+    }] };
+  });
+  return { graphql, state };
+}
+
+// A db that records when /stock is read, and can fire a side effect there —
+// which is how "a sale lands mid-push" is expressed.
+function dbWatchingStock(store, seq, onStockRead = () => {}) {
+  const inner = fakeDb(store);
+  return {
+    ref: (path) => {
+      const r = inner.ref(path);
+      if (!path.startsWith("stock/")) return r;
+      return {
+        ...r,
+        get: async () => { seq.push("stock:read"); onStockRead(); return r.get(); },
+      };
+    },
+  };
+}
+
+describe("setAvailable — the compare-and-set baseline", () => {
+  it("REFUSES to run without a baseline, rather than reading one itself", async () => {
+    await expect(
+      setAvailable(vi.fn(), "loc", [{ inventoryItemId: "i1", quantity: 3 }])
+    ).rejects.toThrow(/requires a baseline Map read BEFORE the \/stock snapshot/);
+  });
+
+  it("refuses an item the baseline does not carry, instead of defaulting it to zero", async () => {
+    await expect(
+      setAvailable(vi.fn(), "loc", [{ inventoryItemId: "i1", quantity: 3 }], new Map())
+    ).rejects.toThrow(/absent from the baseline/);
+  });
+
+  it("sends the BASELINE as changeFromQuantity, not a fresh read", async () => {
+    const { graphql, state } = shopifyWithCas(7);
+    await setAvailable(graphql, "gid://shopify/Location/1",
+      [{ inventoryItemId: "gid://shopify/InventoryItem/1", quantity: 4 }],
+      new Map([["gid://shopify/InventoryItem/1", 7]]));
+    expect(state.writes[0].changeFromQuantity).toBe(7);
+    expect(state.reads).toBe(0);   // it read nothing of its own
+  });
+
+  it("names a compare-and-set rejection as stock having MOVED, not as an error", async () => {
+    const { graphql } = shopifyWithCas(6);   // Shopify holds 6…
+    await expect(
+      setAvailable(graphql, "gid://shopify/Location/1",
+        [{ inventoryItemId: "gid://shopify/InventoryItem/1", quantity: 9 }],
+        new Map([["gid://shopify/InventoryItem/1", 7]]))   // …the caller thinks 7
+    ).rejects.toThrow(InventoryMovedError);
+  });
+});
+
+describe("syncProduct — Shopify is read BEFORE /stock", () => {
+  const store = () => withProduct("p1", { appQty: 9, marker: 1 });
+
+  it("reads Shopify first — the ordering IS the guarantee", async () => {
+    const seq = [];
+    const { graphql, state } = shopifyWithCas(7);
+    const db = dbWatchingStock(store(), seq);
+    await syncProduct(db, graphql, "p1", { commit: true });
+    const order = state.sequence.concat(seq).length && [...seq];
+    // The first Shopify read must precede the first /stock read.
+    const firstStock = seq.indexOf("stock:read");
+    expect(firstStock).toBeGreaterThanOrEqual(0);
+    expect(state.reads).toBeGreaterThan(0);
+    // And the write carried the pre-snapshot baseline.
+    expect(state.writes[0].changeFromQuantity).toBe(7);
+    expect(state.writes[0].quantity).toBe(9);
+    expect(order.length).toBeGreaterThan(0);
+  });
+
+  it("a sale landing while /stock is read FAILS the write instead of overwriting it", async () => {
+    // Shopify says 7. The baseline is taken. Then, at the moment /stock is
+    // read, a customer buys one online: Shopify drops to 6. The app's /stock
+    // knows nothing about it (there is no order webhook) and still says 9.
+    //
+    // OLD ORDERING: /stock read first, Shopify read after the sale → baseline 6
+    // → compare-and-set passes → 9 written → the sold unit is back on sale.
+    // THIS ORDERING: baseline 7, taken before the sale → the write is refused.
+    const { graphql, state } = shopifyWithCas(7);
+    const seq = [];
+    const db = dbWatchingStock(store(), seq, () => { state.available = 6; });
+    await expect(syncProduct(db, graphql, "p1", { commit: true })).rejects.toThrow(InventoryMovedError);
+    expect(state.available).toBe(6);            // the sale stands
+    expect(state.writes[0].changeFromQuantity).toBe(7);
+  });
+
+  it("a refused write leaves the marker for the next tick — it is not a success", async () => {
+    const s = store();
+    const { graphql, state } = shopifyWithCas(7);
+    const db = dbWatchingStock(s, [], () => { state.available = 6; });
+    const r = await sweepDirty(db, graphql, { commit: true, isLive: () => true });
+    expect(r.pushed).toBe(0);
+    expect(s[DIRTY_PATH].p1).toBe(1);           // still marked
   });
 });

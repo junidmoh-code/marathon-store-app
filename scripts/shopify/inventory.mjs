@@ -145,15 +145,17 @@ export async function requireSingleLocation(graphql) {
   return nodes[0].id;
 }
 
-// Set absolute available quantities at the single location.
-// items: [{ inventoryItemId, quantity }]. Absolute set (not delta), so a
-// re-run converges instead of double-counting. The 2026-07 API makes the set
-// a compare-and-set (changeFromQuantity is required), so the current
-// quantities are read first; a concurrent change makes the mutation error
-// rather than silently clobber — the caller re-runs.
-export async function setAvailable(graphql, locationId, items) {
-  if (!items.length) return { set: 0 };
-  const current = await graphql(
+// ── READ SHOPIFY'S SIDE, AND READ IT FIRST ───────────────────────────────────
+// Split out of setAvailable on purpose, because WHEN this read happens is the
+// whole correctness argument — see the block on setAvailable below. Callers
+// must take it BEFORE they snapshot /stock.
+// → Map(inventoryItemId → available quantity). An id Shopify does not know is
+//   absent from the map rather than defaulted to 0: "unknown" and "zero" are
+//   different facts and the caller has to be able to tell them apart.
+export async function readAvailable(graphql, locationId, inventoryItemIds) {
+  const out = new Map();
+  if (!inventoryItemIds.length) return out;
+  const data = await graphql(
     `query ($ids: [ID!]!, $loc: ID!) {
       nodes(ids: $ids) {
         ... on InventoryItem {
@@ -164,13 +166,77 @@ export async function setAvailable(graphql, locationId, items) {
         }
       }
     }`,
-    { ids: items.map((i) => i.inventoryItemId), loc: locationId }
+    { ids: inventoryItemIds, loc: locationId }
   );
-  const currentById = new Map();
-  for (const n of current.nodes ?? []) {
+  for (const n of data.nodes ?? []) {
     if (!n?.id) continue;
-    const q = n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0;
-    currentById.set(n.id, q);
+    out.set(n.id, n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0);
+  }
+  return out;
+}
+
+// Thrown when Shopify's quantity moved between the caller's baseline read and
+// this write. It is its own class because the CALLER must be able to tell it
+// apart from a transport failure: a transport failure means "try again", this
+// means "something sold and your number is stale" — a different sentence in a
+// log and a different decision.
+export class InventoryMovedError extends Error {
+  constructor(message, { pid = null, details = [] } = {}) {
+    super(message);
+    this.name = "InventoryMovedError";
+    this.inventoryMoved = true;
+    this.pid = pid;
+    this.details = details;
+  }
+}
+
+// Set absolute available quantities at the single location.
+// items: [{ inventoryItemId, quantity }]. Absolute set (not delta), so a
+// re-run converges instead of double-counting.
+//
+// ── THE BASELINE IS A PARAMETER, AND THAT IS THE POINT ───────────────────────
+// The 2026-07 API makes this a compare-and-set: `changeFromQuantity` must be
+// supplied and the mutation fails if Shopify no longer holds that value. Used
+// correctly, that is what stops a concurrent sale being silently overwritten.
+//
+// IT WAS NOT USED CORRECTLY. This function used to read the current quantities
+// ITSELF, immediately before mutating, and use that as the compare value. The
+// window it guarded was therefore its own read → its own write: microseconds,
+// and never the window that mattered. The caller had computed `quantity` from
+// a /stock snapshot taken EARLIER; a sale landing between that snapshot and
+// this read moved Shopify's value, the fresh read picked the moved value up as
+// the baseline, the compare-and-set passed, and the sale was overwritten with
+// a number that predated it. The guarantee the comment claimed — "a concurrent
+// change makes the mutation error rather than silently clobber" — was the
+// exact opposite of what the code did. A reviewer reproduced it: quantity 5
+// written with changeFromQuantity 4 while the true remaining stock was 4.
+//
+// So the baseline is now passed IN, and it is REQUIRED. A caller has to have
+// read Shopify before it snapshotted stock, which makes the compare-and-set
+// span the whole operation — every sale from the baseline read to this write
+// fails it. There is no default and no internal re-read, because either would
+// let a caller opt back into the bug without saying so.
+//
+// WHAT THIS DOES NOT FIX, stated plainly so nobody reads it as more than it
+// is: /stock never learns about an online sale (there is no order webhook), so
+// the number computed from it is systematically high by whatever has sold
+// online. This makes that collision VISIBLE and refuses the write; it does not
+// make the app's count right. See scripts/shopify/README.md.
+export async function setAvailable(graphql, locationId, items, baseline) {
+  if (!items.length) return { set: 0 };
+  if (!(baseline instanceof Map)) {
+    throw new TypeError(
+      "setAvailable requires a baseline Map read BEFORE the /stock snapshot — " +
+        "see readAvailable(). Passing none would silently restore the overwrite bug."
+    );
+  }
+  const unknown = items.filter((i) => !baseline.has(i.inventoryItemId));
+  if (unknown.length) {
+    throw new Error(
+      `setAvailable: ${unknown.length} inventory item(s) are absent from the baseline ` +
+        `(${unknown.map((i) => i.inventoryItemId).join(", ")}) — the caller must drop ` +
+        `ids Shopify does not know before writing, not let them default to zero.`
+    );
   }
   // 2026-07 requires @idempotent on this mutation. The key is minted once per
   // call, so the client's own retry of the same request replays, not doubles.
@@ -191,14 +257,27 @@ export async function setAvailable(graphql, locationId, items) {
           inventoryItemId,
           locationId,
           quantity,
-          changeFromQuantity: currentById.get(inventoryItemId) ?? 0,
+          changeFromQuantity: baseline.get(inventoryItemId),
         })),
       },
     },
     { mutation: true }
   );
   const errs = data.inventorySetQuantities.userErrors;
-  if (errs?.length) throw new Error(`inventorySetQuantities userErrors: ${JSON.stringify(errs)}`);
+  if (errs?.length) {
+    // A compare-and-set rejection is not a bug in this program — it is the
+    // guard doing its job, and it means a sale landed mid-push. Named, so the
+    // caller reports "stock moved" instead of "Shopify errored".
+    if (errs.some((e) => /changeFromQuantity|compare|stale|does not match/i.test(String(e?.message)))) {
+      throw new InventoryMovedError(
+        `Shopify's quantity moved between the baseline read and the write — a sale ` +
+          `landed mid-push. Nothing was written; the next run recomputes. ` +
+          `(${errs.map((e) => e.message).join("; ")})`,
+        { details: errs }
+      );
+    }
+    throw new Error(`inventorySetQuantities userErrors: ${JSON.stringify(errs)}`);
+  }
   return { set: items.length };
 }
 

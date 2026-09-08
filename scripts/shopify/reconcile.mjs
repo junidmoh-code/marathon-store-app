@@ -55,8 +55,8 @@ import {
 } from "./compliance.mjs";
 import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } from "./media.mjs";
 import {
-  networkTotals, requireSingleLocation, setAvailable,
-  TRACKED_VARIANT, untrackedVariants, enforceTracking,
+  networkTotals, requireSingleLocation, setAvailable, readAvailable,
+  TRACKED_VARIANT, untrackedVariants, enforceTracking, InventoryMovedError,
 } from "./inventory.mjs";
 import { buildMapping, writeIdMap, claimShopifyProduct, releaseClaim } from "./idMap.mjs";
 import { adoptionVerdict, requestFreshName } from "./adopt.mjs";
@@ -1034,6 +1034,18 @@ for (const { pid, want } of capped) {
     // Inventory at the moment it starts mattering to customers — from a FRESH
     // read of this product's cells (a sale mid-run must not be re-listed).
     const finalMap = (await db.ref(`shopify_sync/${pid}`).get()).val();
+    // ── SHOPIFY'S SIDE FIRST, THEN /stock ─────────────────────────────────────
+    // This baseline is the compare-and-set value for the write further down, and
+    // it is read BEFORE the stock snapshot on purpose: that is what makes the
+    // guard span the whole operation, so a sale landing while this product is
+    // being published fails the write instead of being overwritten by a total
+    // that predates it. See setAvailable in inventory.mjs for the bug this
+    // ordering fixes.
+    const invLocId = await requireSingleLocation(graphql);
+    const invBaseline = await readAvailable(
+      graphql, invLocId,
+      Object.values(finalMap.variants).map((v) => v.shopifyInventoryItemId).filter(Boolean),
+    );
     // Ten location keys, resolved ONCE per process from a SHALLOW read. This
     // line used to pull the whole of /stock — 6,204,009 measured bytes — for
     // every single product published.
@@ -1081,15 +1093,40 @@ for (const { pid, want } of capped) {
       }
     }
 
-    const locId = await requireSingleLocation(graphql);
-    await setAvailable(
-      graphql,
-      locId,
-      Object.entries(finalMap.variants).map(([sizeKey, v]) => ({
-        inventoryItemId: v.shopifyInventoryItemId,
-        quantity: totals[sizeKey] ?? 0,
-      }))
-    );
+    // An id the baseline does not carry is one Shopify could not resolve;
+    // sending it would make inventorySetQuantities reject the whole mutation
+    // and leave every other size on this product uncorrected.
+    try {
+      await setAvailable(
+        graphql,
+        invLocId,
+        Object.entries(finalMap.variants)
+          .filter(([, v]) => invBaseline.has(v.shopifyInventoryItemId))
+          .map(([sizeKey, v]) => ({
+            inventoryItemId: v.shopifyInventoryItemId,
+            quantity: totals[sizeKey] ?? 0,
+          })),
+        invBaseline,
+      );
+    } catch (e) {
+      // STOCK MOVED WHILE THIS PRODUCT WAS BEING PUBLISHED — something sold
+      // between the baseline read and this write, so the quantity computed a
+      // moment ago is stale and the compare-and-set refused it.
+      //
+      // SAID PLAINLY, THEN RETHROWN, and deliberately NOT refuse()d. refuse()
+      // calls markBlocked, which CONSUMES desiredState — the product would sit
+      // blocked until a human re-published it, which is a permanent answer to a
+      // transient event. The catch further down already has the right policy
+      // for exactly this shape ("a throw here is usually transient... blocking
+      // would consume the intent, so the next tick would never retry"), plus
+      // the fail-safe unpublish if this product had already reached the
+      // channel. This rethrow hands it there with a message an operator can
+      // read, instead of a wall of Shopify userErrors.
+      if (e instanceof InventoryMovedError) {
+        console.error(`  ↺ ${pid}: stock moved mid-publish (a sale landed) — quantities refused as stale; the next tick recomputes`);
+      }
+      throw e;
+    }
     console.log(`  inventory set: ${JSON.stringify(totals)}`);
 
     // LAST-MOMENT INTENT CHECK, at the point of no return: the page's Cancel

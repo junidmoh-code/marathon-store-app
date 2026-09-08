@@ -36,7 +36,8 @@
 // clearing none. Markers are the fast path, not the only path.
 
 import {
-  networkTotals, requireSingleLocation, setAvailable, ONLINE_EXCLUDED_LOCATIONS,
+  networkTotals, requireSingleLocation, setAvailable, readAvailable,
+  ONLINE_EXCLUDED_LOCATIONS,
 } from "./inventory.mjs";
 
 // The node the trigger writes to and this sweep drains.
@@ -106,30 +107,30 @@ export async function locationNames(db) {
  * reconcile.mjs already has.
  */
 export async function syncProduct(db, graphql, pid, { commit = false, locationId = null, locNames = null } = {}) {
-  const desired = await desiredFor(db, pid, locNames);
-  if (!desired) return { pid, skipped: "no shopify_sync id map" };
-  const { map, totals } = desired;
+  // ── ORDER OF READS IS LOAD-BEARING ─────────────────────────────────────────
+  // Shopify is read BEFORE /stock, and the value it gives is the compare-and-set
+  // baseline for the write at the end. That ordering is the whole protection
+  // against overwriting a sale: it makes the compare-and-set span the entire
+  // operation, so anything that sells between here and the mutation fails the
+  // write instead of being silently replaced by a number that predates it.
+  // Reading Shopify after /stock — which is what this did — guarded a window of
+  // microseconds and left the window that mattered wide open.
+  const map = (await db.ref(`shopify_sync/${pid}`).get()).val();
+  if (!map?.variants) return { pid, skipped: "no shopify_sync id map" };
 
-  const items = Object.entries(map.variants)
+  const mapped = Object.entries(map.variants)
     .filter(([, v]) => v.shopifyInventoryItemId)
-    .map(([sizeKey, v]) => ({ sizeKey, inventoryItemId: v.shopifyInventoryItemId, quantity: totals[sizeKey] ?? 0 }));
-  if (!items.length) return { pid, skipped: "no mapped inventory items" };
+    .map(([sizeKey, v]) => ({ sizeKey, inventoryItemId: v.shopifyInventoryItemId }));
+  if (!mapped.length) return { pid, skipped: "no mapped inventory items" };
 
   const locId = locationId || await requireSingleLocation(graphql);
+  const baseline = await readAvailable(graphql, locId, mapped.map((i) => i.inventoryItemId));
 
-  // Read Shopify's side first, so a no-op costs one query and no mutation, and
-  // so the report can say what the drift WAS rather than only that it is gone.
-  const q = await graphql(
-    `query ($ids: [ID!]!, $loc: ID!) {
-      nodes(ids: $ids) { ... on InventoryItem { id inventoryLevel(locationId: $loc) { quantities(names: ["available"]) { name quantity } } } }
-    }`,
-    { ids: items.map((i) => i.inventoryItemId), loc: locId }
-  );
-  const currentById = new Map();
-  for (const n of q.nodes ?? []) {
-    if (!n?.id) continue;
-    currentById.set(n.id, n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0);
-  }
+  // NOW the stock snapshot, strictly after the baseline.
+  const desired = await desiredFor(db, pid, locNames);
+  if (!desired) return { pid, skipped: "no shopify_sync id map" };
+  const { totals } = desired;
+  const items = mapped.map((i) => ({ ...i, quantity: totals[i.sizeKey] ?? 0 }));
 
   // ── AN ID SHOPIFY DOES NOT KNOW COSTS ONE VARIANT, NOT THE PRODUCT ────────
   // One live product's id map points at inventory items that no longer exist
@@ -138,14 +139,14 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // oversellable variants stayed oversellable — the id map is stale, and the
   // correction it blocked was the thing that mattered.
   //
-  // The read-back above already says which ids Shopify knows: an id missing
-  // from its response is one it cannot resolve. Those are dropped from the
-  // write and reported, rather than being allowed to veto their neighbours.
-  const known = items.filter((i) => currentById.has(i.inventoryItemId));
-  const unknown = items.filter((i) => !currentById.has(i.inventoryItemId));
+  // The baseline read already says which ids Shopify knows: an id missing from
+  // it is one it cannot resolve. Those are dropped from the write and
+  // reported, rather than being allowed to veto their neighbours.
+  const known = items.filter((i) => baseline.has(i.inventoryItemId));
+  const unknown = items.filter((i) => !baseline.has(i.inventoryItemId));
 
   const drift = known
-    .map((i) => ({ ...i, shopify: currentById.get(i.inventoryItemId) }))
+    .map((i) => ({ ...i, shopify: baseline.get(i.inventoryItemId) }))
     .filter((i) => i.shopify !== i.quantity);
 
   const stale = unknown.length ? { staleVariants: unknown.map((i) => i.sizeKey) } : {};
@@ -154,14 +155,14 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // interesting half. The 2026-09-05 correction run refused 7 products this
   // way; every one of them turned out to have been DELETED FROM SHOPIFY while
   // the app still recorded state:"live", liveState:"on". Those are not
-  // overselling — they are the opposite: seven products the shop believes it is
+  // overselling — they are the opposite: products the shop believes it is
   // selling online and is not, with nothing anywhere saying so.
   //
-  // One extra query, asked ONLY on the path that has already failed (7 products
-  // out of 1,152), turns an ambiguous message into a fact. Nothing is written:
-  // what a deleted product should do to its publish node is a separate question
-  // with a separate answer, and guessing it here would be a third way this file
-  // could quietly disagree with the storefront.
+  // One extra query, asked ONLY on the path that has already failed, turns an
+  // ambiguous message into a fact. Nothing is written: what a deleted product
+  // should do to its publish node is a separate question with a separate
+  // answer, and guessing it here would be a third way this file could quietly
+  // disagree with the storefront.
   if (!known.length) {
     let gone = null;   // null = could not be established — NOT "present"
     try {
@@ -182,8 +183,12 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // Write EVERY mapped item, not just the drifted ones. inventorySetQuantities
   // is absolute, and sending the full set means one call whose result is the
   // whole truth for this product rather than a patch whose correctness depends
-  // on the read above still being current.
-  await setAvailable(graphql, locId, known.map(({ inventoryItemId, quantity }) => ({ inventoryItemId, quantity })));
+  // on the baseline still being current — which the compare-and-set decides.
+  await setAvailable(
+    graphql, locId,
+    known.map(({ inventoryItemId, quantity }) => ({ inventoryItemId, quantity })),
+    baseline,
+  );
   return { pid, ok: true, drift, changed: drift.length, ...stale };
 }
 

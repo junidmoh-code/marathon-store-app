@@ -44,7 +44,7 @@ import { findSizeCollisions } from "./sizeOrder.mjs";
 import { isProductRecordKey } from "./idMap.mjs";
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import {
-  networkTotals, requireSingleLocation, setAvailable,
+  networkTotals, requireSingleLocation, setAvailable, readAvailable,
   untrackedVariants, enforceTracking,
 } from "./inventory.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
@@ -225,6 +225,15 @@ for (const pid of pids) {
       continue;
     }
 
+    // Shopify's side FIRST — this is the compare-and-set baseline for the write
+    // below, and reading it before the /stock snapshot is what makes that guard
+    // cover the whole operation rather than its own last microsecond. See
+    // setAvailable in inventory.mjs.
+    const invBaseline = await readAvailable(
+      graphql, locId,
+      Object.values(variantMap).map((v) => v.shopifyInventoryItemId).filter(Boolean),
+    );
+
     // Current network quantity per RAW size token, from /stock. One request per
     // location, ALL IN FLIGHT AT ONCE rather than ten sequential round-trips
     // per product.
@@ -271,7 +280,11 @@ for (const pid of pids) {
     }
 
     if (untracked.length) await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));
-    await setAvailable(graphql, locId, items);
+    await setAvailable(
+      graphql, locId,
+      items.filter((i) => invBaseline.has(i.inventoryItemId)),
+      invBaseline,
+    );
     results.push({
       pid, status: untracked.length ? "tracked" : "quantities-refreshed",
       detail: `${bp.title} · ${untracked.length} variant(s) tracked · quantities ${JSON.stringify(totals)}` +
