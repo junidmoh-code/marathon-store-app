@@ -148,15 +148,36 @@ describe("the one-request guard cannot silently outgrow the feed it reads", () =
 // in displayRowCore.test.js. (Spec-conformance review.)
 describe("the re-openers ask the guard before they re-open", () => {
   it("the READY re-stamp is conditional on no OTHER open request", () => {
-    // The stamp must not be an unconditional `= now` any more.
-    expect(APP).toContain("patch.displayRefillScheduledAt     = blockers.length ? null : now;");
+    // The stamp must not be an unconditional `= now` any more: it lives in the
+    // ELSE of the blocker check, so a blocked READY reaches none of it.
+    expect(APP).toMatch(/if \(blockers\.length\) \{[\s\S]{0,300}?\} else \{\s*\n\s*patch\.displayRefillScheduledAt\s+= now;/);
     expect(APP).toMatch(/otherOpenDisplayRequests\(orders, \{ store: reqStore, productId: order\.productId, exceptId: order\.id \}\)/);
+  });
+
+  it("a BLOCKED ready touches no display-refill field at all", () => {
+    // Nulling scheduledAt while still running the four resets wiped a resolved
+    // order's resolution and left it OPEN WITH NO TASK — a fence invisible in
+    // the warehouse list, held until the daily /orders id recycled. Every reset
+    // must sit inside the else. (CodeRabbit.)
+    // ANCHORED ON CODE, NOT A COMMENT. `APP` is comment-stripped (see the
+    // header), so slicing from a comment returned -1 and sliced from the END of
+    // the file — the assertion below then ran against a few closing braces and
+    // could never fail. Found by mutation-testing this very test.
+    const start = APP.indexOf("if (blockers.length) {");
+    expect(start).toBeGreaterThan(0);
+    const blockedArm = APP.slice(start, APP.indexOf("} else {", start));
+    expect(blockedArm).toMatch(/console\.warn/);      // we are looking at the right arm
+    expect(blockedArm).not.toMatch(/patch\.displayRefill/);
+    expect(blockedArm).not.toMatch(/patch\.displayRefilled/);
   });
 
   it("the READY path still lets the CUSTOMER's half through — no early return", () => {
     // Withholding the wall's task must never swallow the order_ready WhatsApp
     // or the insight log. An early return in that branch would do both.
-    const readyBranch = APP.slice(APP.indexOf("CLAUSE 1 ON THE PATH THAT ACTUALLY MINTS"), APP.indexOf("Phase 14B: refill task routes by where"));
+    // Same anchoring rule: code, not comments.
+    const s2 = APP.indexOf("const blockers = reqStore");
+    expect(s2).toBeGreaterThan(0);
+    const readyBranch = APP.slice(s2, APP.indexOf("} else if (status !== STATUS.COLLECTED) {", s2));
     expect(readyBranch).not.toMatch(/\breturn;/);
   });
 

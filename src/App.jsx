@@ -11825,18 +11825,32 @@ function WarehouseView({ products = [], orders, onExit }) {
         // order_ready WhatsApp, the normal write below. Only the wall's refill
         // task is withheld. Returning here would have silently swallowed a
         // customer notification to enforce a rule about a display wall.
-        patch.displayRefillScheduledAt     = blockers.length ? null : now;
+        //
+        // AND WITHHOLDING TOUCHES NOTHING ELSE. A first cut nulled scheduledAt
+        // but still ran the four resets below, which was worse than the bug it
+        // fixed: an order that had ALREADY been resolved (`refilled`) and was
+        // then marked READY while blocked had its resolution wiped, leaving
+        // scheduledAt null, displayRefillStatus null and status "ready" — which
+        // isOpenDisplayRequest reads as OPEN. A fence with no task behind it:
+        // invisible in the warehouse list, and it would hold that wall until
+        // the daily /orders id recycled, long after the real blocker resolved.
+        // (CodeRabbit.)
+        //
+        // So a blocked READY leaves every display-refill field exactly as it
+        // found them. A resolved order stays resolved and fences nothing.
         if (blockers.length) {
           console.warn(`Display refill NOT scheduled for #${order.id}: order #${blockers[0].id} already holds an open display request for ${order.productId} at ${reqStore}.`);
+        } else {
+          patch.displayRefillScheduledAt     = now;
+          // Phase 14B: refill task routes by where the order was placed —
+          // Pine-placed orders go to Hub 3's refill section. Falls back to the
+          // product's stocking hub for legacy orders without placedAtHub.
+          patch.displayRefillHub             = order.placedAtHub || getProductHubs(product)[0] || "hub1";
+          patch.displayRefillStatus          = null;
+          patch.displayRefilledAt            = null;
+          patch.displayRefillStockDepletedAt = null;
+          patch.displayRefilledBy            = null;
         }
-        // Phase 14B: refill task routes by where the order was placed —
-        // Pine-placed orders go to Hub 3's refill section. Falls back to the
-        // product's stocking hub for legacy orders without placedAtHub.
-        patch.displayRefillHub             = order.placedAtHub || getProductHubs(product)[0] || "hub1";
-        patch.displayRefillStatus          = null;
-        patch.displayRefilledAt            = null;
-        patch.displayRefillStockDepletedAt = null;
-        patch.displayRefilledBy            = null;
       } else if (status !== STATUS.COLLECTED) {
         patch.displayRefillScheduledAt = null;
         patch.displayRefillHub         = null;

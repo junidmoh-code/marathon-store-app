@@ -594,3 +594,50 @@ describe("a re-opener asks whether any OTHER request is open", () => {
     expect(hasOpenDisplayRequest(orders, { store: "trophy", productId: "p1", exceptId: "100" })).toBe(false);
   });
 });
+
+// ─── WITHHOLDING MUST NOT MINT A FENCE WITH NO TASK BEHIND IT ───────────────
+//
+// The first cut of the READY guard nulled scheduledAt but still ran the four
+// resets, so an order that had ALREADY been resolved and was then marked READY
+// while blocked had its resolution wiped — leaving scheduledAt null,
+// displayRefillStatus null and status "ready", which this predicate reads as
+// OPEN. A fence invisible in the warehouse list, holding a wall until the daily
+// /orders id recycled, long after the real blocker resolved.
+//
+// This walks CodeRabbit's exact five-step sequence over the predicate.
+describe("a blocked READY leaves a resolved order resolved", () => {
+  const at = "2026-09-08T12:00:00.000Z";
+  const A = { id: "100", requestDisplayPartner: true, productId: "p1", destShop: "trophy" };
+  const B = { id: "101", requestDisplayPartner: true, productId: "p1", destShop: "trophy",
+              displayRefillScheduledAt: at, displayRefillStatus: null, status: "ready" };
+
+  it("A refilled, B open, A marked READY while blocked, B resolved -> A fences nothing", () => {
+    // 1. A is resolved.
+    const aResolved = { ...A, displayRefillScheduledAt: at, displayRefillStatus: "refilled", status: "collected" };
+    expect(isOpenDisplayRequest(aResolved)).toBe(false);
+    // 2. B is open for the same wall, so it is the blocker.
+    expect(otherOpenDisplayRequests([aResolved, B], { store: "trophy", productId: "p1", exceptId: "100" })
+      .map((o) => o.id)).toEqual(["101"]);
+    // 3. A is marked READY while blocked. The guard withholds, which now means
+    //    it touches NO display-refill field — only `status` changes.
+    const aAfterBlockedReady = { ...aResolved, status: "ready" };
+    expect(isOpenDisplayRequest(aAfterBlockedReady)).toBe(false);   // still resolved
+    // 4. B resolves.
+    const bDone = { ...B, displayRefillStatus: "refilled" };
+    // 5. The wall is free — A must not still be fencing it.
+    expect(hasOpenDisplayRequest([aAfterBlockedReady, bDone], { store: "trophy", productId: "p1" })).toBe(false);
+  });
+
+  it("the shape the bug produced IS open — so the test above is not vacuous", () => {
+    // Exactly what the first cut wrote: resolution wiped, no task, status ready.
+    const phantom = { ...A, displayRefillScheduledAt: null, displayRefillStatus: null, status: "ready" };
+    expect(isOpenDisplayRequest(phantom)).toBe(true);
+  });
+
+  it("an UNRESOLVED order blocked at READY still fences, and that is correct", () => {
+    // It is a genuine outstanding request for that wall; it simply has no task
+    // scheduled yet. Re-marking it READY once the blocker clears schedules one.
+    const aFresh = { ...A, displayRefillScheduledAt: null, displayRefillStatus: null, status: "ready" };
+    expect(isOpenDisplayRequest(aFresh)).toBe(true);
+  });
+});
