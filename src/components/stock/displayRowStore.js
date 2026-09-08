@@ -33,8 +33,9 @@ import { ref, get, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowIso } from "../../utils/serverTime";
 import {
-  DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor,
+  DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowSegment,
 } from "./displayRowCore";
+import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
 
 /** One row id per transition instant. A retried tap in the same millisecond
@@ -168,6 +169,55 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
     }
     if (res && res.ok === false) warning = `The display record is closed, but the count's display slot could not be updated (${res.message || "write failed"}) — retry once.`;
     return { ok: true, stockMoved: false, warning };
+  } catch (err) {
+    return { ok: false, message: String(err?.message || err) };
+  }
+}
+
+
+/**
+ * A DISPLAY PARTNER ORDER IS A DISPLAY SALE — close the row it describes.
+ *
+ * When a shop raises a Display Partner request, the pair on its wall is being
+ * sold right now; that is the moment this app first learns the display is
+ * leaving, and it is why placement already tombstones the display SLOT
+ * (App.jsx, `clearDisplaySlot(source: "display_sold")`). The ledger has to
+ * follow, or the slot and the rows disagree from the first sale onward.
+ *
+ * IT DOES ITS OWN KEYED READ rather than taking a subscription. The caller is
+ * the ordering screen — the hottest surface in the app — and one small read of
+ * `/settings/displayRows/{store}/{productId}` at placement is cheaper than a
+ * whole-node listener mounted for every assistant all day.
+ *
+ * IT CLOSES ONE ROW OR NONE. With a size on the order it takes the open row at
+ * that size; without one, or with several candidates, it closes NOTHING and
+ * leaves the wall for the Duplicate Displays tab. One sale is one pair, and
+ * guessing which of two records it was is the guess this whole feature refuses
+ * to make.
+ *
+ * Best-effort and never thrown: the ORDER is the fact that must not be lost.
+ */
+export async function closeDisplayRowForPartnerSale({ store, productId, size = null, orderId = null, at = null }) {
+  try {
+    if (!store || !productId) return { ok: false, message: "Store and product are required." };
+    const when = at || serverNowIso();
+    const byRow = (await get(ref(database, `${storeRowsPath(store)}/${rowSegment(productId)}`))).val() || {};
+    const rows = { [store]: { [productId]: byRow } };
+    let open = openRowsFor(rows, store, productId);
+    const wantKey = size == null ? null : stockSizeKey(String(size));
+    if (wantKey && wantKey !== "_") {
+      const exact = open.filter((r) => r.sizeKey === wantKey);
+      if (exact.length) open = exact;
+    }
+    if (open.length !== 1) {
+      return { ok: true, closed: null,
+        message: open.length === 0 ? "no open display record for this wall" : `${open.length} display records claim this wall — left for a human` };
+    }
+    const plan = closeRowPlan({ row: open[0], at: when, by: uid(), reason: "sold", via: "partner_order",
+                                detail: { reason: "sold", orderId } });
+    if (!plan.ok) return { ok: false, message: plan.message };
+    await apply(plan.updates);
+    return { ok: true, closed: open[0].rowId };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }

@@ -80,7 +80,7 @@ follows, fenced, and its failure is **reported**, never swallowed.
 |---|---|---|
 | 1 | ≤1 open display request per product per store | `displayRowCore.hasOpenDisplayRequest`, enforced in `App.jsx` checkout and in `displayRequestStore.raiseDisplayRequest` |
 | 2 | Send = ONE atomic write (close old, open new, clear request) | `displayRowCore.sendPlan` → `displayRowStore.sendDisplayRow`, called from `setDisplayRefillStatus` |
-| 3 | Close at sale, server-side, no POS change | `functions/displayRows/closeDisplayRowOnSale.js` + `lib.cjs` — see **Where a sale comes from** below |
+| 3 | Close at sale, server-side, no POS change | `functions/displayRows/closeDisplayRowOnSale.js` + `lib.cjs` — see **Where a sale comes from** below. Plus the app-side close when a Display Partner request is raised (`closeDisplayRowForPartnerSale`), which is the moment this app first learns a display is leaving |
 | 4 | Duplicate Displays tab | `DuplicateDisplaysTab.jsx` |
 | 5 | Unregistered Displays tab (wall walk + scan) | `UnregisteredDisplaysTab.jsx` |
 | 6 | Timeline on every row | `displayRowCore.rowTimeline`, `displayRowUi.RowHistory` |

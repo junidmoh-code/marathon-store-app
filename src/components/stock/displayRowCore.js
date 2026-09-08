@@ -92,6 +92,10 @@ export const OPEN_VIA_TEXT = {
 
 const seg = (s) => String(s ?? "").replace(/[.#$/[\]\s]/g, "_");
 
+/** The same segment rule, exported, so a caller building a targeted path by
+ *  hand cannot use a different one from the one the writers use. */
+export const rowSegment = seg;
+
 export const rowPath = (store, productId, rowId) =>
   `${DISPLAY_ROWS_ROOT}/${seg(store)}/${seg(productId)}/${seg(rowId)}`;
 

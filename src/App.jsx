@@ -111,7 +111,7 @@ import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
-import { sendDisplayRow, closeDisplayRow } from "./components/stock/displayRowStore";
+import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
@@ -10140,6 +10140,18 @@ function AssistantView({ products, onExit, orders = [] }) {
         {
           const slotStore = displaySlotStoreFor(order);
           if (order.requestDisplayPartner && slotStore) {
+            // THE LEDGER FOLLOWS THE SLOT. A Display Partner request means the
+            // pair on that wall is being sold right now — which is exactly why
+            // the slot is tombstoned here — so the display ROW it describes has
+            // to close too, or the two records disagree from the first sale
+            // onward. It does its own small keyed read (this is the ordering
+            // screen; a whole-node listener here would be mounted for every
+            // assistant all day) and closes ONE row or none.
+            closeDisplayRowForPartnerSale({
+              store: slotStore, productId: order.productId,
+              size: order.size || null, orderId: order.id, at: order.createdAt,
+            }).then((r) => { if (r && r.ok === false) console.warn(`Display row not closed for #${order.id}: ${r.message}`); })
+              .catch(() => {});
             clearDisplaySlot({
               store: slotStore, productId: order.productId,
               source: "display_sold", orderId: order.id,
