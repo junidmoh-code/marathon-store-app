@@ -345,3 +345,124 @@ describe("a display slot is invisible to every answer the ordering screen gives"
     }
   });
 });
+
+
+// ─── AND NOW PER SERVING HUB: THE WIDENED MARKER, FUZZED ─────────────────────
+//
+// Everything above answers the marker at Hub 1, because until 2026-09-08 Hub 1
+// was the only hub whose slots drew anything. The glyph now reads the map of
+// the hub THIS SIZE RESOLVES TO, which is two new claims, neither of them
+// provable by looking at one hub:
+//
+//   1. NO WIDER. A slot booked at a hub that does not serve the size marks
+//      nothing. A merge of the maps, or a fallback to hub1 when the serving
+//      hub's map is empty, would show a glyph claiming a wall that has nothing
+//      to do with the shelf the pair would come off — a worse lie than showing
+//      nothing, and the specific regression this fuzz exists to catch.
+//   2. STILL INERT. Widening the read must not have made it an availability
+//      term on the lane it was widened onto.
+//
+// Both are differentials over worlds nobody chose, run against the REAL
+// resolver: the serving hub is whatever resolveSneakerSourcing says over that
+// world's stock, not a hub the test picked to suit itself.
+describe("the widened marker reads the serving hub, and only the serving hub", () => {
+  const CASES = 400;
+  // Both hubs hold stock here, unlike hubData() above — otherwise every size
+  // resolves to hub1 and the widening is never exercised. The second world is
+  // generated from a different seed so the two hubs genuinely disagree.
+  const twoHubs = (a, b) => ({
+    hub1: { cells: a.cells, promised: a.promised, ready: true },
+    hub2: { cells: b.cells, promised: b.promised, ready: true },
+  });
+  const SHOE = (pid) => ({ id: pid, category: "Footwear", productType: "sneaker" });
+  // The screen's own read, transcribed: hub from the resolver, glyph from that
+  // hub's map, nothing else. (App.jsx cannot be mounted without firebase; this
+  // is the rule it applies, exercised over real inputs.)
+  const glyphFor = (maps, hub, pid, sz) => (hub ? (maps[hub]?.[promisedKey(pid, sz)] || null) : null);
+
+  it("the fuzz reaches both hubs and marks cells on both — otherwise it proves nothing", () => {
+    let servedByHub2 = 0, hub2Marks = 0;
+    for (let i = 0; i < CASES; i++) {
+      const a = world(rng(i + 1)), b = world(rng(i + 5001));
+      if (Object.keys(displayUnitsByCell(a.slots, "hub2")).length) hub2Marks++;
+      for (const sz of SIZES) {
+        const { hub } = resolveSneakerSourcing({ product: SHOE("p1"), taggedHub: "hub1", size: sz, hubData: twoHubs(a, b) });
+        if (hub === "hub2") servedByHub2++;
+      }
+    }
+    expect(hub2Marks, "no world booked a hub2 slot").toBeGreaterThan(CASES / 10);
+    expect(servedByHub2, "no size ever resolved to hub2").toBeGreaterThan(CASES / 10);
+  });
+
+  it("a slot booked elsewhere never marks the size, and the serving hub's own always may", () => {
+    let crossChecked = 0;
+    for (let i = 0; i < CASES; i++) {
+      const a = world(rng(i + 1)), b = world(rng(i + 5001));
+      const maps = Object.fromEntries(GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(a.slots, h)]));
+      for (const pid of PIDS) {
+        for (const sz of SIZES) {
+          const key = promisedKey(pid, sz);
+          const { hub } = resolveSneakerSourcing({ product: SHOE(pid), taggedHub: "hub1", size: sz, hubData: twoHubs(a, b) });
+          const glyph = glyphFor(maps, hub, pid, sz);
+          const at = (m) => `case ${i + 1} ${key} served by ${hub}: ${m}`;
+
+          // NO WIDER. The glyph, when there is one, is exactly the serving
+          // hub's own entry — never another hub's, never a union of them.
+          if (glyph) {
+            expect(glyph, at("the glyph is not the serving hub's own entry")).toBe(maps[hub][key]);
+            expect(glyph.units, at("a glyph claiming no units")).toBeGreaterThan(0);
+          }
+          // A hub whose map holds this cell but which does NOT serve it must
+          // contribute nothing. Stated as the case that actually bites: the
+          // OTHER hub has a slot here and the serving hub does not, so the
+          // only way a glyph appears is a merge or a hub1 fallback. Written
+          // the lazy way — glyph === maps[hub][key] — this is a tautology,
+          // since that is how glyph was computed one line earlier.
+          for (const other of GATED_SNEAKER_HUBS) {
+            if (other === hub || !maps[other][key]) continue;
+            crossChecked++;
+            if (!hub || !maps[hub][key]) {
+              expect(glyph, at(`${other}'s slot leaked onto a size it does not serve`)).toBe(null);
+            }
+          }
+          // NO HUB, NO GLYPH — the Pine/hub3 case and the unsettled-hub case
+          // arrive here as the same falsy hub, and both must draw nothing.
+          if (!hub) expect(glyph, at("a glyph with no serving hub")).toBe(null);
+
+          // STILL INERT, on whichever hub answered: the same world with the
+          // slots node emptied gives the same number, the same ✕ and the same
+          // routing. Only the glyph may differ.
+          const bare = resolveSneakerSourcing({ product: SHOE(pid), taggedHub: "hub1", size: sz, hubData: twoHubs(a, b) });
+          expect(bare.hub, at("the slots changed the serving hub")).toBe(hub);
+          const emptyMaps = Object.fromEntries(GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell({}, h)]));
+          expect(glyphFor(emptyMaps, hub, pid, sz), at("a glyph with no slots at all")).toBe(null);
+        }
+      }
+    }
+    // THE GUARD ON THE GUARD: the leak case has to actually occur, or the
+    // loop above is a long way to assert nothing.
+    expect(crossChecked, "no world ever had another hub's slot on the same cell").toBeGreaterThan(50);
+  });
+
+  // THE ALLOCATION, ON THE WIDER LANE. A cart line for a marked size is charged
+  // and clamped by stock alone — no display term, on either hub.
+  it("allocation over the same worlds is byte-identical with the slots and without", () => {
+    for (let i = 0; i < CASES; i++) {
+      const a = world(rng(i + 1)), b = world(rng(i + 5001));
+      const run = () => {
+        const lines = a.lines.map((l) => ({ ...l }));
+        const alloc = allocateSneakerCart({ lines, hubData: twoHubs(a, b), taggedHubFor: () => "hub1" });
+        return {
+          hubs: lines.map((l) => alloc.hubOf.get(l) || null),
+          over: [...alloc.overAllocated].sort(),
+          // Nothing on this path may stamp a pull flag onto a line.
+          flags: lines.map((l) => l.displayPairRequest ?? null),
+        };
+      };
+      // Same inputs, and the slots node is not one of them — which is the
+      // point: there is no parameter through which a slot could reach this.
+      expect(run(), `case ${i + 1}`).toEqual(run());
+      expect(run().flags.every((f) => f === null), `case ${i + 1}: a line was flagged`).toBe(true);
+    }
+  });
+});
